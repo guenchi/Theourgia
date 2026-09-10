@@ -37,7 +37,8 @@
 ;;; states and both are legal (section 4.4).
 
 (library (theourgia log)
-  (export scan-segment
+  (export snapshot-write! snapshot-read snapshot-cut-supported?
+          scan-segment
           atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory
@@ -49,6 +50,7 @@
   (import (chezscheme)
           (theourgia ffi)
           (theourgia trace)
+          (only (theourgia crc32) crc32-hex)
           (only (theourgia wire)
                 sexpr->string-extended string->sexpr-extended decode-line))
 
@@ -364,4 +366,164 @@
   (define (subbytes bv start end)
     (let ((out (make-bytevector (- end start))))
       (bytevector-copy! bv start out 0 (- end start))
-      out)))
+      out))
+
+  ;; ---- the snapshot frame --------------------------------------------------
+
+  ;; ONE DATUM PER LINE, AND ONE CHECKSUM FOR THE WHOLE FILE (section
+  ;; 4.5-prime):
+  ;;
+  ;;   (snapshot 1 <cut>)
+  ;;   ... rows, opaque to this layer ...
+  ;;   (end "<crc32 hex of every byte above>")
+  ;;
+  ;; Records carry a checksum each because they are appended one at a
+  ;; time and a torn one has to be told from a damaged one. A snapshot is
+  ;; replaced whole, so it has one checksum and one verdict.
+  ;;
+  ;; NEVER PARTLY ADOPTED. A missing end line, a checksum that does not
+  ;; match, a header that is not a header, a line that will not parse,
+  ;; anything after the end line -- every one of them voids the WHOLE
+  ;; file. There is no state in which some rows are used: the rows and
+  ;; the cut are one frozen result, and half of a frozen result describes
+  ;; a moment that never existed. The caller falls back to an older
+  ;; snapshot or replays from empty.
+  ;;
+  ;; THE ROWS ARE DATA HERE. What a block, edge, tag or req row MEANS
+  ;; belongs to the reducer; this layer owns the frame, the checksum and
+  ;; the verdict.
+
+  (define (snapshot-header? d)
+    (and (list? d) (= 3 (length d))
+         (eq? (car d) 'snapshot)
+         (eqv? (cadr d) 1)
+         (valid-cut? (caddr d))))
+
+  ;; ((writer . seq) ...): writers are strings (section 1.1 -- a base36
+  ;; id can begin with a digit, and the codec refuses such a symbol).
+  (define (valid-cut? c)
+    (and (list? c)
+         (let loop ((xs c))
+           (or (null? xs)
+               (let ((e (car xs)))
+                 (and (pair? e) (string? (car e))
+                      (integer? (cdr e)) (exact? (cdr e)) (>= (cdr e) 0)
+                      (loop (cdr xs))))))))
+
+  (define (snapshot-write! path cut rows)
+    (unless (valid-cut? cut)
+      (assertion-violation 'snapshot-write! "cut must be ((writer . seq) ...)" cut))
+    (unless (list? rows)
+      (assertion-violation 'snapshot-write! "rows must be a list" rows))
+    (let* ((body (call-with-string-output-port
+                   (lambda (p)
+                     (put-string p (sexpr->string-extended (list 'snapshot 1 cut)))
+                     (put-char p #\newline)
+                     (for-each (lambda (r)
+                                 (put-string p (sexpr->string-extended r))
+                                 (put-char p #\newline))
+                               rows))))
+           (bytes (string->utf8 body))
+           (whole (string-append body
+                                 (sexpr->string-extended
+                                   (list 'end (crc32-hex bytes)))
+                                 "\n")))
+      (atomic-write! path (string->utf8 whole))))
+
+  ;; Returns (values cut rows) when the file is whole, and
+  ;; (values #f reason) when it is not. The reason is returned rather
+  ;; than only traced because the caller has to report which category of
+  ;; rejection happened (L7), and a caller that had to parse it back out
+  ;; of a trace line would be reading its own debugging output as data.
+  (define (snapshot-read path)
+    (define (reject reason)
+      (trace-event! 'snapshot-read (cons path reason) #f)
+      (values #f reason))
+    (if (not (file-exists? path))
+        (values #f 'absent)
+        (let* ((bytes (call-with-port (open-file-input-port path) get-bytevector-all))
+               (bytes (if (eof-object? bytes) (make-bytevector 0) bytes))
+               (n (bytevector-length bytes)))
+          (cond
+            ((= n 0) (reject 'empty))
+            ((not (= (bytevector-u8-ref bytes (- n 1)) 10)) (reject 'no-end))
+            (else
+             (let ((lines (split-lines bytes)))
+               (cond
+                 ;; NO SPECIAL CASE FOR A SHORT FILE. A file holding only
+                 ;; an end line has a valid checksum of nothing, and the
+                 ;; header check is what should refuse it -- reporting
+                 ;; "no end" for a file whose only line IS the end line
+                 ;; names the wrong category, and the category is what
+                 ;; L7 asserts.
+                 (else
+                  ;; The end line is the last one, and the checksum
+                  ;; covers every byte before it -- which is why the
+                  ;; split has to be on BYTES: recomputing from a
+                  ;; re-serialised datum would checksum what this code
+                  ;; can produce rather than what the file holds.
+                  ;;
+                  ;; BYTES AFTER THE END LINE THEREFORE READ AS no-end,
+                  ;; not as a checksum failure: the end line has to be
+                  ;; the last one, so anything following it means the
+                  ;; last line is not an end line. That is the honest
+                  ;; category and it needs no scan of its own -- looking
+                  ;; for a stray end line among the rows would mean
+                  ;; parsing before checking the checksum, which is the
+                  ;; order records are careful not to use.
+                  (let* ((last (car (reverse lines)))
+                         (above (- n (+ (bytevector-length (cdr last)) 1)))
+                         (end-datum (guard (e (#t 'bad))
+                                      (string->sexpr-extended
+                                        (utf8->string (cdr last))))))
+                    (cond
+                      ((not (and (list? end-datum) (= 2 (length end-datum))
+                                 (eq? (car end-datum) 'end)
+                                 (string? (cadr end-datum))))
+                       (reject 'no-end))
+                      ((not (string=? (cadr end-datum) (crc32-hex bytes 0 above)))
+                       (reject 'crc))
+                      (else
+                       (let ((data (guard (e (#t 'bad))
+                                     (map (lambda (l)
+                                            (string->sexpr-extended
+                                              (utf8->string (cdr l))))
+                                          (reverse (cdr (reverse lines)))))))
+                         (cond
+                           ((eq? data 'bad) (reject 'parse))
+                           ((null? data) (reject 'no-header))
+                           ((not (snapshot-header? (car data))) (reject 'no-header))
+                           (else
+                            (trace-event! 'snapshot-read path n)
+                            (values (caddr (car data)) (cdr data))))))))))))))))
+
+  ;; (offset . bytes) per line, the newline removed. Bytes, not
+  ;; characters, because the checksum is over bytes.
+  (define (split-lines bv)
+    (let ((n (bytevector-length bv)))
+      (let loop ((start 0) (acc (list)))
+        (if (>= start n)
+            (reverse acc)
+            (let ((nl (find-newline bv start n)))
+              (if (not nl)
+                  (reverse (cons (cons start (subbytes bv start n)) acc))
+                  (loop (+ nl 1)
+                        (cons (cons start (subbytes bv start nl)) acc))))))))
+
+  ;; THE CUT MUST BE SUPPORTED BY WHAT IS ACTUALLY THERE. A snapshot
+  ;; naming w.11 while the log holds w.10 is not a snapshot of anything
+  ;; this store can reproduce, and adopting it would make replay start
+  ;; after a record that does not exist (L7). `coverage` is what the
+  ;; caller established by enumerating and scanning: ((writer . last
+  ;; supported seq) ...). A writer named by the cut and absent from
+  ;; coverage is unsupported -- absence is not zero, it is "this store
+  ;; cannot speak for that writer at all".
+  (define (snapshot-cut-supported? cut coverage)
+    (unless (valid-cut? cut)
+      (assertion-violation 'snapshot-cut-supported? "bad cut" cut))
+    (let loop ((xs cut))
+      (or (null? xs)
+          (let* ((e (car xs))
+                 (have (assoc (car e) coverage)))
+            (and have (>= (cdr have) (cdr e)) (loop (cdr xs)))))))
+)
