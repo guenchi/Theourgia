@@ -86,9 +86,23 @@
 ;;;   short-write               the first write offers min(7, n) bytes
 ;;;   eintr-once                the first write is skipped, reporting EINTR
 ;;;   write-eio-after-partial   min(7, n) bytes, then EIO
-;;;   fsync-fail:<substr>       fsync on a matching path reports EIO
-;;;   no-log-fsync:<substr>     fsync on a matching path is SKIPPED and
-;;;                             reports success
+;;;   fsync-fail                fsync reports EIO
+;;;   no-log-fsync              fsync is SKIPPED and reports success
+;;;
+;;; THE SPEC IS <fault>@<stage>[:<path substring>] AND THE STAGE IS NOT
+;;; OPTIONAL. stage is one of deliver-barrier, commit, registry,
+;;; publish, snapshot, repair, and the caller says which one it is in by
+;;; parameterizing theourgia-stage.
+;;;
+;;; WITHOUT IT A FAULT LANDS ON WHATEVER RUNS FIRST, which is not a
+;;; hypothetical: once records are flushed before delivery, a
+;;; path-scoped fsync-fail aimed at the log file hits the PRE-DELIVERY
+;;; flush and never reaches the commit flush the case meant to break;
+;;; and once the registry is written with write-all!, the one-shot
+;;; short-write is consumed by the registry's temporary file instead of
+;;; the log record. Both reads as the injection having worked. The
+;;; one-shot is therefore counted per stage as well: a fault fires on
+;;; the first qualifying operation IN ITS STAGE and not before.
 ;;;
 ;;; THE SUBSTRING IS MATCHED AGAINST THE WHOLE PATH, DIRECTORIES AND
 ;;; ALL, which is a trap worth naming because it has already sprung
@@ -150,7 +164,7 @@
           lock-acquire! lock-release! lock-fd lock-held?
           path-device-inode
           fs-error? fs-error-op fs-error-target fs-error-errno
-          theourgia-fault theourgia-fault-armed?
+          theourgia-fault theourgia-fault-armed? theourgia-stage
           theourgia-trace? trace-event!)
   (import (chezscheme)
           (theourgia trace)
@@ -287,21 +301,65 @@
 
      (define fault-spec (getenv "THEOURGIA_FAULT"))
 
+     ;; The stage a caller is currently in. #f means "no stage
+     ;; declared", and a staged fault never matches that -- an
+     ;; unlabelled call site cannot be the one a case is aiming at.
+     (define theourgia-stage (make-parameter #f))
+
+     (define known-stages
+       '(deliver-barrier commit registry publish snapshot repair))
+
+     ;; RETURNS TWO STRINGS, and the callers make the symbols they need.
+     ;; An earlier version symbolized the head here, which was right for
+     ;; its first caller and silently wrong for its second: the stage
+     ;; came back as a symbol and was handed to string->symbol.
      (define (split-at-colon s)
        (let ((n (string-length s)))
          (let loop ((i 0))
            (cond
-             ((= i n) (values (string->symbol s) #f))
+             ((= i n) (values s #f))
              ((char=? (string-ref s i) #\:)
-              (values (string->symbol (substring s 0 i))
-                      (substring s (+ i 1) n)))
+              (values (substring s 0 i) (substring s (+ i 1) n)))
              (else (loop (+ i 1)))))))
 
-     (define-values (fault-name fault-arg)
-       (if fault-spec (split-at-colon fault-spec) (values #f #f)))
+     ;; <fault>@<stage>[:<substring>]
+     (define (split-at-sign s)
+       (let ((n (string-length s)))
+         (let loop ((i 0))
+           (cond
+             ((= i n) (values s #f))
+             ((char=? (string-ref s i) #\@)
+              (values (substring s 0 i) (substring s (+ i 1) n)))
+             (else (loop (+ i 1)))))))
+
+     (define-values (fault-name fault-stage fault-arg)
+       (if fault-spec
+           (let-values (((head rest) (split-at-sign fault-spec)))
+             (if rest
+                 (let-values (((stage arg) (split-at-colon rest)))
+                   (values (string->symbol head) stage arg))
+                 (values (string->symbol head) #f #f)))
+           (values #f #f #f)))
 
      (define (theourgia-fault) fault-name)
      (define (theourgia-fault-armed?) (and fault-name #t))
+
+     ;; Refused at startup rather than ignored: a spec without a stage
+     ;; would fire somewhere, and "somewhere" reads in a test log
+     ;; exactly like the intended place.
+     (define fault-stage-checked
+       (when fault-name
+         (unless (and (string? fault-stage)
+                      (memq (string->symbol fault-stage) known-stages))
+           (assertion-violation 'theourgia-ffi
+             "THEOURGIA_FAULT must be <fault>@<stage>[:<substring>]"
+             fault-spec known-stages))))
+
+     (define fault-stage-symbol
+       (and (string? fault-stage) (string->symbol fault-stage)))
+
+     (define (in-fault-stage?)
+       (eq? (theourgia-stage) fault-stage-symbol))
 
      ;; A PATH-SCOPED FAULT WITH NO PATH IS REFUSED AT STARTUP. Both of
      ;; these exist to hit one file and not the other -- the log's flush
@@ -309,6 +367,10 @@
      ;; injection either inert or global, and both of those read in a
      ;; test log exactly like the fault having worked. An empty substring
      ;; is the same mistake: it matches every path.
+     ;; A path substring stays REQUIRED for the two flush faults: the
+     ;; stage says which phase, the substring says which file, and L19
+     ;; needs both to tell the log's flush from the registry's inside
+     ;; one phase.
      (define fault-argument-checked
        (when (memq fault-name '(fsync-fail no-log-fsync))
          (unless (and (string? fault-arg) (> (string-length fault-arg) 0))
@@ -349,7 +411,10 @@
      (define barrier-spec (getenv "THEOURGIA_BARRIER"))
 
      (define-values (barrier-name barrier-fifo)
-       (if barrier-spec (split-at-colon barrier-spec) (values #f #f)))
+       (if barrier-spec
+           (let-values (((n f) (split-at-colon barrier-spec)))
+             (values (string->symbol n) f))
+           (values #f #f)))
 
      (define barrier-argument-checked
        (when barrier-name
@@ -379,6 +444,7 @@
      (define (fsync-fault fd subject)
        (cond
          ((not fault-name) #f)
+         ((not (in-fault-stage?)) #f)
          ((and (eq? fault-name 'no-log-fsync) (fault-path-match? fd subject)) 'skip)
          ((and (eq? fault-name 'fsync-fail) (fault-path-match? fd subject)) 'fail)
          (else #f)))
@@ -389,6 +455,11 @@
      ;; that never occurred -- and for the EIO fault, "after partial"
      ;; would be a lie: the retry would be refused with nothing on disk.
      (define (write-once fd bv count)
+       (if (not (in-fault-stage?))
+           (real-write fd bv count)
+           (staged-write-once fd bv count)))
+
+     (define (staged-write-once fd bv count)
        (case fault-name
          ((eintr-once)
           (if (eq? (unbox fault-state) 'fresh)
@@ -409,6 +480,7 @@
          (else (real-write fd bv count)))))
 
     (else
+     (define theourgia-stage (make-parameter #f))
      ;; NOTHING ABOVE EXISTS IN THIS BUILD. These two are the whole of
      ;; what the rest of the library calls, and they say "no fault" in a
      ;; form the compiler can fold away.

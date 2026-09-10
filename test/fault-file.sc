@@ -1,7 +1,7 @@
 #!chezscheme
 ;; The faults that leave a file behind, so the file can be asked what
 ;; actually happened rather than the error being taken at its word.
-(import (chezscheme) (theourgia ffi))
+(import (chezscheme) (theourgia ffi) (theourgia trace))
 (define dir (cadr (command-line)))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "/reg"))
 (define log (string-append dir "/000001.sexp"))
@@ -9,17 +9,21 @@
 (define line (string->utf8 "0123456789abcdefghijklmnopqrstuvwxyz\n"))
 (define fd (fd-open log '(read-write create append)))
 (define rfd (fd-open reg '(read-write create append)))
+;; A call site must say which stage it is, or a staged fault cannot aim
+;; at it -- which is the whole point of the stage dimension. The log
+;; layer will declare these; this fixture stands in for it.
 (parameterize ((theourgia-trace? #t))
   (guard (e ((fs-error? e)
              (printf "write raised op=~a errno=~a\n" (fs-error-op e) (fs-error-errno e))))
-    (printf "write-all! -> ~a\n" (write-all! fd line)))
+    (parameterize ((theourgia-stage 'commit))
+      (printf "write-all! -> ~a\n" (write-all! fd line))))
   (guard (e ((fs-error? e)
              (printf "fsync(log) raised op=~a errno=~a\n" (fs-error-op e) (fs-error-errno e))))
-    (fsync! fd)
+    (parameterize ((theourgia-stage 'commit)) (fsync! fd))
     (printf "fsync(log) returned\n"))
   (guard (e ((fs-error? e)
              (printf "fsync(registry) raised op=~a errno=~a\n" (fs-error-op e) (fs-error-errno e))))
-    (fsync! rfd)
+    (parameterize ((theourgia-stage 'registry)) (fsync! rfd))
     (printf "fsync(registry) returned\n")))
 (fd-close fd) (fd-close rfd)
 (printf "log holds ~a of ~a bytes\n" (file-size log) (bytevector-length line))
