@@ -25,7 +25,7 @@
 ;; A call site must say which stage it is, or a staged fault cannot aim
 ;; at it -- which is the whole point of the stage dimension. The log
 ;; layer will declare these; this fixture stands in for it.
-(parameterize ((theourgia-trace? #t))
+(begin (trace-enable! #t)
   (guard (e ((fs-error? e)
              (printf "write raised op=~a errno=~a\n" (fs-error-op e) (fs-error-errno e))))
     (parameterize ((theourgia-stage 'commit))

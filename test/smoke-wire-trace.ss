@@ -31,7 +31,7 @@
 
 (define (run label bv)
   (printf "~a: " label)
-  (let ((r (parameterize ((theourgia-trace? #t)) (decode-line bv))))
+  (let ((r (begin (trace-enable! #t) (decode-line bv))))
     (printf "-> ~s\n" r)))
 (run "good line (control: a parse event MUST appear)" good)
 (run "bad crc  (no parse event may appear)" bad)

@@ -30,7 +30,7 @@
             (bytevector-u8-set! bv i (modulo (quotient x 65536) 256))
             (loop (+ i 1) x))))))
 (define fd (fd-open (string-append dir "/f") '(write)))
-(parameterize ((theourgia-trace? #t))
+(begin (trace-enable! #t)
   (printf "returned ~a of ~a\n" (write-all! fd payload) n))
 (fd-close fd)
 (sleep (make-time 'time-duration 0 1))
