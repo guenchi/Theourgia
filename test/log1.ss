@@ -65,21 +65,36 @@
 ;; file reads back correctly whether or not it happened. The trace is
 ;; the only evidence, so it is asserted rather than printed.
 (define trace-lines '())
+;; ONLY A LINE THAT STARTS "(trace " IS AN EVENT. Matching a bare
+;; open paren also matched the parenthesis inside a PAIR subject --
+;; (rename (old . new)) yielded "rename" and then a fragment of a path
+;; as if it were a second event. Subjects have been pairs since flock;
+;; this helper only met one when rename started being traced.
 (define (ops-of text)
-  (let loop ((i 0) (acc '()))
-    (cond
-      ((>= i (string-length text)) (reverse acc))
-      ((char=? (string-ref text i) #\()
-       (let ((j (let scan ((j (+ i 7))) (if (or (>= j (string-length text))
-                                                (char=? (string-ref text j) #\space)) j (scan (+ j 1))))))
-         (loop j (cons (substring text (+ i 7) j) acc))))
-      (else (loop (+ i 1) acc)))))
+  (let ((n (string-length text)))
+    (let loop ((i 0) (acc '()))
+      (cond
+        ((>= i n) (reverse acc))
+        ((and (<= (+ i 7) n) (string=? (substring text i (+ i 7)) "(trace "))
+         (let ((j (let scan ((j (+ i 7)))
+                    (if (or (>= j n) (char=? (string-ref text j) #\space))
+                        j
+                        (scan (+ j 1))))))
+           (loop j (cons (substring text (+ i 7) j) acc))))
+        (else (loop (+ i 1) acc))))))
 (let ((p (open-output-string)))
   (parameterize ((theourgia-trace? #t) (current-error-port p))
     (atomic-write! (string-append d "/probe.sexp") (string->utf8 "x\n") 'snapshot))
   (set! trace-lines (get-output-string p)))
-(want "atomic-write! is write, fsync file, fsync directory -- in that order"
-      (ops-of trace-lines) '("write" "fsync" "fsync"))
+;; The whole directory-entry sequence is traced now: the crash model
+;; reconstructs which entries survive by reading the trace, so it has to
+;; see the temporary appear (create), the bytes land, the file flush, the
+;; entry move (rename) and the directory flush. The rename's position
+;; BETWEEN the two fsyncs is the ordering this row exists for, and an
+;; untraced create would be an entry the reconstruction cannot know was
+;; ever there.
+(want "atomic-write! is create, write, fsync file, rename, fsync directory"
+      (ops-of trace-lines) '("create" "write" "fsync" "rename" "fsync"))
 (want "and the last fsync is the DIRECTORY, not the file"
       (let* ((ls (let loop ((i 0) (start 0) (acc '()))
                    (cond ((>= i (string-length trace-lines)) (reverse acc))

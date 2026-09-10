@@ -58,6 +58,13 @@
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
           log-open log-open-in-session load-prefix load-writers load-integrity
+          log-begin log-end! session? session-store session-epoch
+          session-frontiers session-view session-applied! session-load
+          make-frame frame? frame-view-id frame-epoch frame-writer
+          frame-expect-seq frame-actor frame-deps frame-payload
+          view? view-revision view-epoch view-writer view-expect-seq
+          view-applied-cut
+          with-store-operation store-operation-active?
           load-commit! load-abort! load-outcome load-deliver!
           load-snapshot-cut load-snapshot-rows load-snapshot-reason
           snapshot-write! snapshot-read snapshot-cut-supported?
@@ -159,12 +166,9 @@
             ;; neither the cause nor the candidate. Anything that is not
             ;; a name clash is the caller's answer and is re-raised
             ;; unchanged.
-            (let ((port (guard (e ((i/o-file-already-exists-error? e) #f)
-                                  (#t (raise e)))
-                          (open-file-output-port tmp))))
-              (if (not port)
-                  (loop (+ tries 1))
-                  (begin (close-port port) tmp)))))))
+            (if (file-create-exclusive! tmp)
+                tmp
+                (loop (+ tries 1)))))))
 
   ;; THE STAGE IS AN ARGUMENT, NOT A DEFAULT. Fault targeting is
   ;; <fault>@<stage>[:<path>] and a call site that declares no stage
@@ -207,7 +211,7 @@
                        (when (unbox open?)
                          (set-box! open? #f)
                          (guard (e2 (#t (void))) (fd-close fd)))
-                       (guard (e2 (#t (void))) (delete-file tmp))
+                       (guard (e2 (#t (void))) (unlink! tmp))
                        (raise e)))
               (write-all! fd bytes tmp))
             (fsync! fd tmp)
@@ -1279,6 +1283,202 @@
               (let ((ls (make-load-session store lock prefixes '() 'open #f)))
                 (load-session-snapshot-set! ls (select-snapshot store prefixes))
                 ls)))))))
+
+
+  ;; ---- the write session (section 5.2 / 5.2-prime) --------------------------
+
+  ;; ONE ACTIVE OPERATION PER STORE, CHECKED IN THIS PROCESS. flock is
+  ;; per open file description, so a second log-begin inside the first
+  ;; would open its own descriptor and block forever waiting for a lock
+  ;; this very thread is holding. A check cannot replace the lock -- it
+  ;; says nothing about other processes -- but the lock cannot replace
+  ;; the check either, because against yourself the lock does not fail,
+  ;; it hangs. Publication and adopt take the same guard when they exist.
+  (define active-operations (make-hashtable string-hash string=?))
+
+  (define (store-operation-active? store)
+    (and (hashtable-ref active-operations store #f) #t))
+
+  (define (claim-store! store who)
+    (when (hashtable-ref active-operations store #f)
+      (raise (make-log-error 'active-operation #f #f #f
+                             (list (cons 'store store) (cons 'attempted who)))))
+    (hashtable-set! active-operations store #t))
+
+  (define (release-store! store) (hashtable-delete! active-operations store))
+
+  ;; The guard as a scope, for callers that are not log-begin. Releases on
+  ;; every exit, including an escape, so a failed publication does not
+  ;; wedge the store for the rest of the process.
+  (define (with-store-operation store who thunk)
+    (claim-store! store who)
+    (let ((done (vector #f)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda () (let ((r (thunk))) (vector-set! done 0 #t) r))
+        (lambda () (release-store! store)))))
+
+  (define-record-type view
+    (fields revision epoch writer expect-seq applied-cut))
+
+  ;; THE FRAME CARRIES THE CONTEXT IT WAS PREPARED IN. Checking only the
+  ;; sequence number and the current authority is not enough: a reset
+  ;; changes the reduced state without changing either, so a frame
+  ;; computed against the old state would still look current. seq and the
+  ;; timestamp are the log layer's to assign and are deliberately absent.
+  (define-record-type frame
+    (fields view-id epoch writer expect-seq actor deps payload))
+
+  (define-record-type session
+    (fields store lock load on-deliver
+            (mutable epoch) (mutable applied) (mutable revision)
+            (mutable ended)))
+
+  ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
+  ;; obligation and it runs before the first callback -- not per record,
+  ;; and not after. What the reducer receives becomes the basis for deps
+  ;; and snapshot cuts; a record it applied that a crash then removes
+  ;; would leave those pointing at history that never existed. This
+  ;; writer's own unflushed residue is included: it is the most likely
+  ;; thing to be unflushed and the least likely to be noticed.
+  (define (takeover-barrier! store prefixes)
+    (parameterize ((theourgia-stage 'deliver-barrier))
+      (takeover-flush! store prefixes)))
+
+  (define (takeover-flush! store prefixes)
+    (for-each
+      (lambda (entry)
+        (let* ((writer (car entry))
+               (p (cdr entry))
+               (dir (writer-directory store writer))
+               (segs (map car (discovery-segment-ranges p))))
+          (unless (null? segs)
+            (for-each
+              (lambda (seg)
+                (let ((path (string-append dir "/" (segment-file-name seg))))
+                  (when (file-exists? path)
+                    (let ((fd (fd-open path '(read))))
+                      (dynamic-wind
+                        (lambda () (if #f #f))
+                        (lambda () (fsync! fd path))
+                        (lambda () (fd-close fd)))))))
+              segs)
+            (fsync-dir! dir))))
+      prefixes))
+
+  (define (log-begin store on-deliver)
+    (unless (procedure? on-deliver)
+      (assertion-violation 'log-begin "on-deliver must be a procedure" on-deliver))
+    (claim-store! store 'log-begin)
+    (let ((handed-over (vector #f)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda ()
+          (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
+            (guard (e (#t (lock-release! lock) (raise e)))
+              (trace-event! 'enter-critical
+                            (cons (string-append store "/lock") 'exclusive) #f)
+              (let ((ls (open-load store 'held-exclusive)))
+                (takeover-barrier! store (load-session-prefixes ls))
+                (let ((s (make-session store lock ls on-deliver 0 '() 0 #f)))
+                  (deliver-into! s)
+                  (vector-set! handed-over 0 #t)
+                  s)))))
+        (lambda ()
+          (unless (vector-ref handed-over 0) (release-store! store))))))
+
+  ;; THE APPLIED CURSOR MOVES ONLY ON THE REDUCER'S WORD. Reading a
+  ;; record, checking it, and flushing it all leave it where it was:
+  ;; those establish that the bytes are there, not that anything has been
+  ;; applied to the state deps and cuts are computed against.
+  (define (deliver-into! s)
+    (let ((ls (session-load s))
+          (on-deliver (session-on-deliver s)))
+      (load-deliver! ls '()
+        (lambda (writer seg off seq ts actor deps payload)
+          (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
+            (when (eq? answer 'applied)
+              (note-applied! s writer seq))
+            answer)))))
+
+  (define (note-applied! s writer seq)
+    (let* ((applied (session-applied s))
+           (entry (assoc writer applied)))
+      (session-applied-set!
+        s
+        (if entry
+            (map (lambda (e)
+                   (if (string=? (car e) writer) (cons writer seq) e))
+                 applied)
+            (append applied (list (cons writer seq)))))))
+
+  (define (session-applied-cut s) (session-applied s))
+
+  ;; The reducer's out-of-band confirmation, for records it drained from
+  ;; pending after the callback returned. A report from a superseded
+  ;; epoch is refused rather than merged: it describes state that has
+  ;; been discarded.
+  (define (session-applied! s epoch cut)
+    (check-live! 'session-applied! s)
+    (unless (eqv? epoch (session-epoch s))
+      (raise (make-log-error 'stale-epoch #f #f #f
+                             (list (cons 'reported epoch)
+                                   (cons 'current (session-epoch s))))))
+    (unless (and (list? cut)
+                 (for-all (lambda (e)
+                            (and (pair? e) (string? (car e))
+                                 (integer? (cdr e)) (exact? (cdr e))))
+                          cut))
+      (assertion-violation 'session-applied! "cut must be an alist of writer to seq" cut))
+    (for-each (lambda (e) (note-applied! s (car e) (cdr e))) cut)
+    (session-revision-set! s (+ 1 (session-revision s)))
+    (session-applied s))
+
+  ;; FOUR FRONTIERS, PER WRITER, and they are deliberately not one
+  ;; number: read, validated, applied and durable answer different
+  ;; questions and the gaps between them are where the interesting
+  ;; failures live.
+  (define (session-frontiers s)
+    (check-live! 'session-frontiers s)
+    (let ((ls (session-load s)))
+      (map (lambda (entry)
+             (let* ((writer (car entry))
+                    (p (cdr entry))
+                    (applied (assoc writer (session-applied s))))
+               (list writer
+                     (cons 'physical (discovery-end-offset p))
+                     (cons 'contiguous (discovery-end-seq p))
+                     (cons 'applied (if applied (cdr applied) 0))
+                     (cons 'durable (discovery-end-seq p)))))
+           (load-session-prefixes ls))))
+
+  ;; NO USABLE PREPARATION VIEW UNTIL THE REDUCER HAS CONFIRMED. Between
+  ;; a committed append and its confirmation the log layer knows the
+  ;; record is on disk and does NOT know whether the state the next
+  ;; record's facts would be computed from includes it.
+  (define (session-view s writer)
+    (check-live! 'session-view s)
+    (let* ((ls (session-load s))
+           (entry (assoc writer (load-session-prefixes ls))))
+      (and entry
+           (make-view (session-revision s) (session-epoch s) writer
+                      (+ 1 (discovery-end-seq (cdr entry)))
+                      (session-applied s)))))
+
+  (define (check-live! who s)
+    (unless (session? s)
+      (assertion-violation who "not a session" s))
+    (when (session-ended s)
+      (assertion-violation who "this session has ended" (session-store s))))
+
+  (define (log-end! s)
+    (check-live! 'log-end! s)
+    (session-ended-set! s #t)
+    (let ((ls (session-load s)))
+      (when (eq? (load-outcome ls) 'open) (load-commit! ls)))
+    (lock-release! (session-lock s))
+    (release-store! (session-store s))
+    'ended)
 
   ;; ---- snapshot selection ---------------------------------------------------
 

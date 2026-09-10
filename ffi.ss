@@ -217,6 +217,7 @@
           theourgia-fault theourgia-fault-armed? theourgia-stage
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
+          unlink! file-create-exclusive!
           process-id)
   (import (chezscheme)
           (theourgia trace)
@@ -249,7 +250,45 @@
   ;; replacement, and it is NOT R6RS: the standard has delete-file but no
   ;; rename at all. Measured on both targets: it replaces the target
   ;; atomically and the source is gone afterwards.
-  (define (rename-over! from to) (rename-file from to))
+  ;; DIRECTORY-ENTRY OPERATIONS ARE TRACED because the crash model
+  ;; (design section 13', open question 6) reconstructs the
+  ;; only-what-was-persisted state from the trace alone: an entry created
+  ;; by one of these survives only if its directory was fsynced
+  ;; afterwards. A rename that is not in the trace is a rename the
+  ;; reconstruction would silently keep.
+  (define (rename-over! from to)
+    (unless (and (string? from) (string? to))
+      (assertion-violation 'rename-over! "paths must be strings" from to))
+    (rename-file from to)
+    (trace-event! 'rename (cons from to) #f))
+
+  ;; CREATE-IF-ABSENT'S SIBLING: create-or-fail. Both are here rather
+  ;; than at the call site so that every directory entry this library
+  ;; makes appear is traced in one place -- the crash model reconstructs
+  ;; surviving entries from the trace, and an untraced create is an entry
+  ;; the reconstruction cannot know existed. Returns #f when the name is
+  ;; already taken, which is a collision the caller retries, and raises
+  ;; for everything else.
+  (define (file-create-exclusive! path)
+    (unless (string? path)
+      (assertion-violation 'file-create-exclusive! "path must be a string" path))
+    (let ((port (guard (e ((i/o-file-already-exists-error? e) #f)
+                          ((fs-error? e) (raise e))
+                          (#t (raise e)))
+                  (open-file-output-port path))))
+      (and port
+           (begin (close-port port)
+                  (trace-event! 'create path #f)
+                  path))))
+
+  (define (unlink! path)
+    (unless (string? path)
+      (assertion-violation 'unlink! "path must be a string" path))
+    (guard (e ((fs-error? e) (raise e))
+              (#t (raise (fs-err 'unlink path #f))))
+      (delete-file path)
+      (trace-event! 'unlink path #f)
+      path))
 
   (define (process-id) (get-process-id))
 
@@ -605,7 +644,8 @@
               (#t (raise (fs-err 'create path #f))))
       (unless (file-exists? path)
         (close-port
-          (open-file-output-port path (file-options no-fail no-truncate))))
+          (open-file-output-port path (file-options no-fail no-truncate)))
+        (trace-event! 'create path #f))
       path))
 
   ;; COMBINED WITH bitwise-ior AND NOT WITH ADDITION, because a repeated
@@ -902,7 +942,7 @@
       (assertion-violation 'link! "paths must be strings" from to))
     (let ((rc (c-link from to)))
       (cond
-        ((>= rc 0) 'linked)
+        ((>= rc 0) (trace-event! 'link to #f) 'linked)
         ((= (errno) EEXIST) 'exists)
         (else (fail! 'link to)))))
 
