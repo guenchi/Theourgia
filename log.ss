@@ -452,7 +452,7 @@
                     (list 'torn start last-seq)
                     (list 'integrity
                           (make-log-error 'torn-in-sealed writer segment start
-                                          (list (cons 'bytes (- n start)))))))
+                                          (list (cons 'bytes (- n start)))) last-seq start)))
                (else
                 (let* ((end (+ nl 1))
                        (line (subbytes bv start end))
@@ -475,16 +475,16 @@
                          ((not (and (integer? seq) (exact? seq) (>= seq 0)))
                           (list 'integrity
                                 (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'seq-not-a-number)))))
+                                                (list (cons 'reason 'seq-not-a-number))) last-seq start))
                          ((not (and (integer? (caddr r)) (exact? (caddr r))))
                           (list 'integrity
                                 (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'ts-not-a-number)))))
+                                                (list (cons 'reason 'ts-not-a-number))) last-seq start))
                          ((and expect (not (= seq expect)))
                           (list 'integrity
                                 (make-log-error 'seq writer segment start
                                                 (list (cons 'expected expect)
-                                                      (cons 'actual seq)))))
+                                                      (cons 'actual seq))) last-seq start))
                          (else
                           (let ((v (deliver start seq (caddr r) (cadddr r)
                                             (list-ref r 4) (list-ref r 5))))
@@ -494,17 +494,17 @@
                     ((bad-crc)
                      (list 'integrity
                            (make-log-error 'crc writer segment start
-                                           (list (cons 'bytes (- end start))))))
+                                           (list (cons 'bytes (- end start)))) last-seq start))
                     ((frame-error)
                      (list 'integrity
                            (make-log-error 'frame writer segment start
-                                           (list (cons 'reason (cadr r))))))
+                                           (list (cons 'reason (cadr r)))) last-seq start))
                     ;; decode-line answers torn only without a trailing
                     ;; newline, and this branch has one.
                     (else
                      (list 'integrity
                            (make-log-error 'frame writer segment start
-                                           (list (cons 'reason (car r)))))))))))))))) 
+                                           (list (cons 'reason (car r)))) last-seq start)))))))))))) 
 
   (define (find-newline bv start end)
     (let loop ((i start))
@@ -938,12 +938,35 @@
                                                (or last (- expect 1)))
                                          errs quarantine retired versions)))
                          (else
+                          ;; THE RECORDS BEFORE THE ERROR ARE STILL
+                          ;; HISTORY -- the same defect the torn branch
+                          ;; above was already fixed for, left standing
+                          ;; in its sibling. A segment holding a valid
+                          ;; record 1, a CRC-damaged record 2 and a
+                          ;; valid record 3 reported an extent of 0 with
+                          ;; no ranges at all, discarding record 1,
+                          ;; which is CRC-valid and contiguous. The
+                          ;; error stops the extent AT the last good
+                          ;; record, it does not annul the segment.
+                          ;;
+                          ;; This is not the whole-segment exclusion a
+                          ;; manifest-hash failure causes: there the
+                          ;; file's identity is in doubt, so no record
+                          ;; in it is history. Here the file is the
+                          ;; right one and the damage is local.
                           (note-error! note! (cadr outcome))
-                          (finish-with origin end ranges
-                                       (physical-of store writer origin retired highest)
-                                       (if current? (cons seg clipped) buffer)
-                                       torn errs quarantine retired
-                                       versions)))))))))))))))
+                          (let ((last (caddr outcome)))
+                            (finish-with origin
+                                         (if last
+                                             (list seg (cadddr outcome) last)
+                                             end)
+                                         (cons (list seg (or expect 1)
+                                                     (or last (- expect 1)))
+                                               ranges)
+                                         (physical-of store writer origin retired highest)
+                                         (if current? (cons seg clipped) buffer)
+                                         torn errs quarantine retired
+                                         versions))))))))))))))))
 
   (define (note-error! note! e)
     (note! (log-error-kind e) (log-error-segment e) (log-error-offset e)
@@ -1185,12 +1208,31 @@
                                  (discovery-integrity (cdr e))))
                 (load-session-prefixes ls))))
 
+  ;; A TERMINAL OPERATION IS TERMINAL, AND NEITHER MAY RUN WHILE
+  ;; DELIVERY IS IN FLIGHT. Without these checks a callback could commit
+  ;; from inside delivery -- releasing the lock while the remaining
+  ;; segments were still being read against files a writer was now free
+  ;; to change -- and a later commit could overwrite an abort, turning a
+  ;; discarded load into a committed one.
+  (define (check-terminal! who ls)
+    (let ((o (load-session-outcome ls)))
+      (cond
+        ((eq? o 'delivering)
+         (assertion-violation who "not permitted while delivery is in flight" o))
+        ((eq? o 'open) (if #f #f))
+        (else (assertion-violation who "this load has already finished" o)))))
+
   (define (load-commit! ls)
+    (check-terminal! 'load-commit! ls)
     (load-session-outcome-set! ls 'committed)
     (release-load! ls)
     (load-session-state ls))
 
   (define (load-abort! ls reason)
+    (check-terminal! 'load-abort! ls)
+    (finish-abort! ls reason))
+
+  (define (finish-abort! ls reason)
     (load-session-state-set! ls '())
     (load-session-outcome-set! ls (list 'aborted reason))
     (release-load! ls)
@@ -1223,10 +1265,32 @@
   ;; rejected and the healthy writers' history below its cut was
   ;; deliberately skipped -- removing the failed writer's rows cannot
   ;; recover their state.
+  ;; AN EXCEPTION OR AN ESCAPE OUT OF DELIVERY ABORTS THE LOAD. Without
+  ;; this a callback that raised left the session open with its lock
+  ;; still held -- an exclusive writer waiting on a reader that had
+  ;; already given up -- and load-commit! would still accept it.
   (define (load-deliver! ls cut on-deliver)
+    (check-terminal! 'load-deliver! ls)
+    (load-session-outcome-set! ls 'delivering)
+    (let ((finished (vector #f)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda ()
+          (let ((r (deliver-all ls cut on-deliver)))
+            (vector-set! finished 0 #t)
+            r))
+        (lambda ()
+          (unless (vector-ref finished 0)
+            (when (eq? (load-session-outcome ls) 'delivering)
+              (finish-abort! ls 'delivery-escaped)))))))
+
+  (define (deliver-all ls cut on-deliver)
     (let loop ((ws (load-session-prefixes ls)))
       (cond
-        ((null? ws) 'delivered)
+        ((null? ws)
+         (when (eq? (load-session-outcome ls) 'delivering)
+           (load-session-outcome-set! ls 'open))
+         'delivered)
         (else
          (let* ((writer (caar ws))
                 (p (cdar ws))
@@ -1235,7 +1299,7 @@
            (if (eq? r 'ok)
                (loop (cdr ws))
                (begin
-                 (load-abort! ls (list 'delivery-failed writer))
+                 (finish-abort! ls (list 'delivery-failed writer))
                  (list 'delivery-failed writer))))))))
 
   (define (segment-holding ranges seq)
@@ -1269,9 +1333,50 @@
                       (cond
                         ((eq? bytes 'unreadable) 'failed)
                         (else
-                         (scan-segment bytes writer seg (cadr (car rs)) #t
-                           (lambda (off seq ts actor deps payload)
-                             (when (and (> seq from) (<= seq limit))
-                               (on-deliver writer seg off seq ts actor deps payload))))
-                         (loop (cdr rs)))))))))))))
+                         ;; THE SCANNER'S VERDICT IS THE POINT OF CALLING
+                         ;; IT. Discarding it meant only a literal
+                         ;; unreadable file aborted: malformed bytes in a
+                         ;; later segment were skipped in silence and the
+                         ;; load committed anyway. Delivery must fulfil
+                         ;; the discovered extent or fail -- it may not
+                         ;; deliver less and call that success.
+                         (let* ((outcome
+                                  (scan-segment bytes writer seg (cadr (car rs)) #t
+                                    (lambda (off seq ts actor deps payload)
+                                      ;; THE REDUCER'S RETURN VALUE MAY
+                                      ;; NOT TRUNCATE DELIVERY. The
+                                      ;; scanner stops on 'stop, and a
+                                      ;; reducer that happened to return
+                                      ;; that symbol would silently end
+                                      ;; the segment early -- reported as
+                                      ;; success, since the scan
+                                      ;; completed. Delivery has no stop
+                                      ;; protocol; swallow the value.
+                                      (when (and (> seq from) (<= seq limit))
+                                        (on-deliver writer seg off seq ts actor
+                                                    deps payload))
+                                      (if #f #f))))
+                                (reached (if (eq? (car outcome) 'complete)
+                                             (cadr outcome)
+                                             (caddr outcome)))
+                                (needed (min limit (caddr (car rs)))))
+                           ;; DELIVERY MUST REACH THE DISCOVERED
+                           ;; BOUNDARY. Not "did the scan raise": a
+                           ;; shortened read, a truncating callback and a
+                           ;; residual before the extent all complete
+                           ;; without raising and all deliver less than
+                           ;; validation promised. What makes them
+                           ;; failures is the same thing in each case --
+                           ;; the last record actually seen falls short
+                           ;; of what this segment's range says it holds.
+                           ;; Stopping exactly AT the boundary is correct
+                           ;; and common: the extent stops there because
+                           ;; validation met the same damage.
+                           (cond
+                             ((and reached (>= reached needed)) (loop (cdr rs)))
+                             ((and (not reached)
+                                   (< (caddr (car rs)) (cadr (car rs))))
+                              (loop (cdr rs)))
+                             (else 'failed)))))))))))))
 ))
+)

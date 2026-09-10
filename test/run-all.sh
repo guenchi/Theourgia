@@ -27,8 +27,13 @@ root=$(cd "$here/../.." && pwd)
 export CHEZSCHEMELIBDIRS="$root"
 export CHEZSCHEMELIBEXTS=.chezscheme.sls::.no-obj:.ss::.no-obj:.sls::.no-obj:.scm::.no-obj:.sch::.no-obj:.sc::.no-obj
 status=0
+# The log fixtures inject faults through the expand-time gate, so the
+# gate is opened for the whole run; nothing fires unless a fixture also
+# names a fault.
+export THEOURGIA_INJECT=on
 for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
-         regression verify-l4 verify-guard actor-check dep-check; do
+         regression verify-l4 verify-guard actor-check dep-check \
+         log1 log2 log3 log5 log6 log7; do
   printf '== %s\n' "$f"
   out=$(scheme --script "$here/$f.ss" 2>&1); rc=$?
   printf '%s\n' "$out"
