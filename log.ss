@@ -65,9 +65,8 @@
           atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory
-          enumerate-segment-files current-segment-number
+          enumerate-segment-files
           read-manifest write-manifest! manifest-segments
-          loadable-segments
           log-error? log-error-kind log-error-writer log-error-segment
           log-error-offset log-error-detail make-log-error)
   (import (chezscheme)
@@ -324,13 +323,6 @@
                                   n)))
                          (directory-entries dir)))))))
 
-  ;; The current segment is the highest-numbered file that EXISTS, not
-  ;; the highest listed anywhere: rotation creates N+1 before anything
-  ;; records it, and an empty N+1 is a legal recovery state.
-  (define (current-segment-number store writer)
-    (let ((ns (enumerate-segment-files store writer)))
-      (and (pair? ns) (car (reverse ns)))))
-
   ;; ---- the manifest -------------------------------------------------------
 
   ;; ((<segment number> . "<hex sha256>") ...), ascending, written whole
@@ -379,21 +371,6 @@
     (atomic-write! (manifest-path store writer)
                    (string->utf8 (string-append (sexpr->string-extended entries) "\n"))
                    'publish))
-
-  ;; ---- which segments participate in loading -------------------------------
-
-  ;; THE LOCAL WRITER HAS NO MANIFEST AND NEEDS NONE. It owns the
-  ;; directory; its segments are its own and nobody publishes them to
-  ;; it. Any other writer's segment counts only if the manifest lists
-  ;; it, so that a segment which was linked into place and never entered
-  ;; the manifest -- a publication interrupted before its final step --
-  ;; is ignored rather than adopted (L18 a).
-  (define (loadable-segments store writer local?)
-    (let ((present (enumerate-segment-files store writer)))
-      (if local?
-          present
-          (let ((listed (manifest-segments (read-manifest store writer))))
-            (filter (lambda (n) (memv n listed)) present)))))
 
   ;; ---- scanning one segment ------------------------------------------------
 

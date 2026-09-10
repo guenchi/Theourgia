@@ -106,7 +106,6 @@
               (lambda (p) (put-bytevector p (string->utf8 "()\n")))))
           '("owner.sexp" "quarantine.sexp"))
 (want "ascending, and only the segments" (enumerate-segment-files d "k3m9x2qa") '(1 2 3))
-(want "current is the highest" (current-segment-number d "k3m9x2qa") 3)
 (want "writers are found" (store-writers d) '("c9xq01mz" "k3m9x2qa"))
 (want "a store with no writers dir" (store-writers "/nonexistent") '())
 
@@ -124,6 +123,20 @@
       '(#t #t #t))
 
 (printf "== which segments participate ==\n")
+;; THE SELECTION RULE IS NOT TESTED HERE ANY MORE. loadable-segments and
+;; current-segment-number answered "which segments count" and "where does
+;; an append go" beside discover-prefix, which owns both -- and they
+;; answered differently: with segment 2 listed but absent, loadable-
+;; segments returned (1 3) while discovery stops the extent at 1. Nothing
+;; called them, so they were a bypass waiting for a caller rather than a
+;; second opinion anyone had acted on. They are gone, and each row that
+;; stood here names its successor:
+;;   "an unlisted segment file is IGNORED"  -> log6, L4'(a), through the
+;;      extent, with the control that listing it makes it count
+;;   "the local writer needs no manifest"   -> log6's local-writer extent
+;;   "current is the highest"               -> log9 C7-1, which asserts
+;;      physical-current, the field that actually names the append target
+;;   listed-but-missing                     -> log9 C8-1
 (write-manifest! d "c9xq01mz" '((1 . "aa")))
 (for-each (lambda (n)
             (call-with-port (open-file-output-port
@@ -131,12 +144,8 @@
                               (file-options no-fail))
               (lambda (p) (put-bytevector p (string->utf8 "x\n")))))
           '(1 2))
-(want "an unlisted segment file is IGNORED for another writer"
-      (loadable-segments d "c9xq01mz" #f) '(1))
 (want "CONTROL: both files really exist"
       (enumerate-segment-files d "c9xq01mz") '(1 2))
-(want "CONTROL: the local writer needs no manifest and counts all"
-      (loadable-segments d "k3m9x2qa" #t) '(1 2 3))
 (want "a corrupt manifest raises a log-error, not a parse error"
       (begin
         (call-with-port (open-file-output-port (string-append d "/writers/c9xq01mz/published.sexp")
