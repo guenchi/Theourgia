@@ -83,3 +83,6 @@
       #t)
 
 (printf "\n~a failures\n" bad)
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "regression complete\n")

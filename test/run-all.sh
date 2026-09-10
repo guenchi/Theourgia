@@ -4,6 +4,8 @@
 # <libdir>/igropyr/X.sc and (theourgia X) to <libdir>/theourgia/X.sc, so
 # the common parent directory is the single libdir that answers for both.
 # No .so is loaded: CHEZSCHEMELIBEXTS below carries no object extension.
+# Every suite must end by printing '<name> complete'; a run without that
+# line is reported as not finished even when the exit status is zero.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -13,8 +15,13 @@ status=0
 for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
          regression verify-l4 verify-guard actor-check dep-check; do
   printf '== %s\n' "$f"
-  if ! scheme --script "$here/$f.sc"; then
-    printf '!! %s failed\n' "$f"
+  out=$(scheme --script "$here/$f.sc" 2>&1); rc=$?
+  printf '%s\n' "$out"
+  if [ $rc -ne 0 ]; then
+    printf '!! %s failed (exit %s)\n' "$f" "$rc"
+    status=1
+  elif ! printf '%s\n' "$out" | grep -q "^$f complete\$"; then
+    printf '!! %s DID NOT FINISH: no completion sentinel (a crash is a detection, not a pass)\n' "$f"
     status=1
   fi
 done

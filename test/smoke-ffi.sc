@@ -57,3 +57,6 @@
 (printf "~a\n"
         (guard (e (#t ((let () (import (only (igropyr durable) durable-error?)) durable-error?) e)))
           (fd-open (string-append dir "/nope") '(read))))
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "smoke-ffi complete\n")

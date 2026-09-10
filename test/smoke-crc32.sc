@@ -33,3 +33,6 @@
                 (crc32-bytes (string->utf8 "a2\x00b7;\x65e5;\x672c;\x8a9e;\x1f600;"))))
 (printf "hex-agrees ~a\n"
         (equal? (crc32-string-hex "hello") (crc32-hex (string->utf8 "hello"))))
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "smoke-crc32 complete\n")

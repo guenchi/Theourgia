@@ -30,3 +30,6 @@
 (printf "5. gensym payload without storable-encode:\n   ~s\n"
         (let ((g (gensym "a")))
           (list 'wrote g 'read (list-ref (decode-line (encode-record 0 0 "a" '() g)) 5))))
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "verify-l4 complete\n")

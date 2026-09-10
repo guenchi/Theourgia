@@ -19,3 +19,6 @@
           (lambda () (set! log (cons 'in log)))
           (lambda () (raise 'boom))
           (lambda () (set! log (cons 'out log))))))))
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "verify-guard complete\n")

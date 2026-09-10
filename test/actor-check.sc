@@ -24,3 +24,6 @@
             (encode-record 0 0 (list shared "b" 0 "d" shared) '() '(a)))))))
 (printf "CONTROL 'single accepted:        ~s\n"
         (decode-line (encode-record 0 0 (list "agent:claude" "req-1" 'single "fp" #f) '() '(a))))
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "actor-check complete\n")

@@ -62,3 +62,6 @@
 (printf "~a data, ~a of them improper somewhere\n" n improper)
 (printf "round-trip failures ~a\ninjectivity collisions ~a\nunwritable encodings ~a\n"
         rt-bad inj-bad write-bad)
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "smoke-wire-fuzz complete\n")

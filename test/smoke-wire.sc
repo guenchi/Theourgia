@@ -137,3 +137,6 @@
 (check 'good-still-works (bytevector? (encode-record 1 2 "w" '() '(a))) #t)
 
 (printf "\n~a mismatches\n" fails)
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "smoke-wire complete\n")

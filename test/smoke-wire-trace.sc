@@ -24,3 +24,6 @@
 (run "bad crc  (no parse event may appear)" bad)
 (run "torn     (no parse event may appear)" torn)
 (run "padded   (no parse event may appear)" padded)
+
+;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+(printf "smoke-wire-trace complete\n")
