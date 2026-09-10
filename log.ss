@@ -148,10 +148,15 @@
       (let ((tmp (temp-name-for path)))
         (if (file-exists? tmp)
             (loop (+ tries 1))
-            (let ((port (guard (e (#t #f))
-                          ;; No no-fail: this raises if the name was
-                          ;; taken between the test and here, and the
-                          ;; loop tries another.
+            ;; ONLY "IT ALREADY EXISTS" IS A COLLISION. Catching every
+            ;; exception here turned an unwritable directory, a read-only
+            ;; filesystem or an exhausted descriptor table into 65
+            ;; pointless retries and then a generic error that named
+            ;; neither the cause nor the candidate. Anything that is not
+            ;; a name clash is the caller's answer and is re-raised
+            ;; unchanged.
+            (let ((port (guard (e ((i/o-file-already-exists-error? e) #f)
+                                  (#t (raise e)))
                           (open-file-output-port tmp))))
               (if (not port)
                   (loop (+ tries 1))
@@ -201,7 +206,17 @@
                        (guard (e2 (#t (void))) (delete-file tmp))
                        (raise e)))
               (write-all! fd bytes tmp))
-            (fsync! fd tmp))
+            (fsync! fd tmp)
+            ;; CLOSED HERE, WHERE ITS FAILURE CAN STILL STOP THE INSTALL.
+            ;; Leaving the close to the unwind alone was a regression:
+            ;; that path swallows errors so that it cannot replace an
+            ;; exception already on its way out, and a close failing with
+            ;; EIO after a successful write and flush then vanished --
+            ;; the rename went ahead and this returned success. The flag
+            ;; makes the two closes exclusive: this one on the way
+            ;; through, the quiet one only on the way out.
+            (set-box! open? #f)
+            (fd-close fd))
           (lambda ()
             (when (unbox open?)
               (set-box! open? #f)
@@ -285,12 +300,24 @@
           '()
           (sort string<? (filter writer-id? (directory-list dir))))))
 
+  ;; A SEGMENT MUST BE A REGULAR FILE. The name check alone accepts a
+  ;; fifo called 000002.sexp, and opening one for reading blocks until a
+  ;; writer appears -- inside the shared lock, which would then be held
+  ;; forever and block every exclusive operation on the store. A symlink
+  ;; to an endless byte source is the same shape. Neither can be
+  ;; recovered from by an exception handler, because nothing raises.
   (define (enumerate-segment-files store writer)
     (let ((dir (writer-directory store writer)))
       (if (not (file-directory? dir))
           '()
-          (sort < (filter (lambda (n) n)
-                          (map segment-file-number (directory-list dir)))))))
+          (sort < (filter
+                    (lambda (n) n)
+                    (map (lambda (name)
+                           (let ((n (segment-file-number name)))
+                             (and n
+                                  (file-regular? (string-append dir "/" name))
+                                  n)))
+                         (directory-list dir)))))))
 
   ;; The current segment is the highest-numbered file that EXISTS, not
   ;; the highest listed anywhere: rotation creates N+1 before anything

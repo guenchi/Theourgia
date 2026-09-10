@@ -14,7 +14,7 @@
 # limitations under the License.
 # Run the argument-free suites from source. Requires the igropyr checkout
 # to be a sibling directory of this repository: (igropyr X) resolves to
-# <libdir>/igropyr/X.sc and (theourgia X) to <libdir>/theourgia/X.sc, so
+# <libdir>/igropyr/X.sc and (theourgia X) to <libdir>/theourgia/X.ss, so
 # the common parent directory is the single libdir that answers for both.
 # No .so is loaded: CHEZSCHEMELIBEXTS below carries no object extension.
 # Every suite must end by printing '<name> complete'; a run without that
@@ -30,7 +30,7 @@ status=0
 for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
          regression verify-l4 verify-guard actor-check dep-check; do
   printf '== %s\n' "$f"
-  out=$(scheme --script "$here/$f.sc" 2>&1); rc=$?
+  out=$(scheme --script "$here/$f.ss" 2>&1); rc=$?
   printf '%s\n' "$out"
   if [ $rc -ne 0 ]; then
     printf '!! %s failed (exit %s)\n' "$f" "$rc"
@@ -43,5 +43,5 @@ for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
     status=1
   fi
 done
-printf '== not run here: fault-file.sc fault-pipe.sc shared-lock.sc (driven with arguments by the fault matrix and the lock test)\n'
+printf '== not run here: fault-file.ss fault-pipe.ss shared-lock.ss (driven with arguments by the fault matrix and the lock test)\n'
 exit $status
