@@ -35,6 +35,9 @@
 (printf "ok\n")
 
 (printf "-- lock held across body, released on exception --\n")
+;; The lock file is created once, at store init -- the lock helpers
+;; deliberately do not create it, so that a reader cannot.
+(file-ensure! lock)
 (with-exclusive-lock lock (lambda (lfd) (printf "in exclusive, lfd int? ~a\n" (integer? lfd))))
 (guard (e (#t (printf "escaped with: ~a\n" (condition? e))))
   (with-exclusive-lock lock (lambda (lfd) (error 'test "boom"))))

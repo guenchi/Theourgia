@@ -25,6 +25,7 @@
 ;; then replaced the real error with an assertion violation. This row is
 ;; what that removal has to keep true.
 (define lock (string-append dir "/lock"))
+(file-ensure! lock)
 (want "a declining inner guard does not change the error"
       (guard (e (#t (and (vector? e) (vector-ref e 0))))
         (guard (e ((and (vector? e) (eq? (vector-ref e 0) 'never-matches)) 'inner))

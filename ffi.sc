@@ -19,7 +19,8 @@
 ;;;   macOS 15.3 (arm64)  O_RDONLY 0  O_WRONLY 1  O_RDWR 2  O_APPEND 8
 ;;;                       LOCK_SH 1  LOCK_EX 2  LOCK_NB 4  LOCK_UN 8
 ;;;                       SEEK_SET 0  SEEK_CUR 1  SEEK_END 2
-;;;                       EINTR 4  F_FULLFSYNC 51  sizeof(off_t) 8
+;;;                       EINTR 4  EIO 5  EEXIST 17
+;;;                       F_FULLFSYNC 51  sizeof(off_t) 8
 ;;;   FreeBSD 15.0        identical for all of the above except
 ;;;                       F_FULLFSYNC, which that platform does not
 ;;;                       define at all and which is never issued there
@@ -65,10 +66,10 @@
 ;;; THE SET OF OPERATIONS THAT EMIT A LINE IS PART OF THE INTERFACE,
 ;;; because tests assert the sequence and a line added later moves every
 ;;; assertion that counts them. It is: flock, lock-wait, unlock,
-;;; ftruncate, write, fsync. open and close emit nothing. fsync emits
-;;; ONE line even on macOS, where it is two syscalls -- a
-;;; platform-conditional second event would make the same run read
-;;; differently on the two platforms this ships to.
+;;; ftruncate, write, fsync, and barrier. open, close and link emit
+;;; nothing. fsync emits ONE line even on macOS, where it is two
+;;; syscalls -- a platform-conditional second event would make the same
+;;; run read differently on the two platforms this ships to.
 ;;;
 ;;; SUBJECTS ARE PATHS, NOT DESCRIPTOR NUMBERS, because a reader of the
 ;;; trace has to tell one flush from another -- the log's from the
@@ -98,6 +99,15 @@
 ;;; out of the enclosing directory names, or the control is not a
 ;;; control.
 ;;;
+;;; A BARRIER IS THE OTHER HALF OF THE SAME SWITCH. THEOURGIA_BARRIER=
+;;; <name>:<fifo> parks the process at the named point until a
+;;; controller writes to the fifo, which is how a test puts a second
+;;; process between two steps of the first. It reports (trace barrier
+;;; <name> #f) BEFORE parking, so the controller learns the point was
+;;; reached rather than guessing from a sleep. Both halves are behind
+;;; THEOURGIA_INJECT because two switches in two repositories is how a
+;;; test runner ends up with one of them off.
+;;;
 ;;; EVERY ONE OF THESE CHANGES WHAT THE SYSCALL DOES rather than lying
 ;;; about what it did. A short write really writes seven bytes; a skipped
 ;;; write really writes none; a skipped fsync really does not flush. The
@@ -111,21 +121,32 @@
 ;;; red; printing the line anyway would forge the evidence the test
 ;;; reads, which is the one thing an injection may not do.
 ;;;
-;;; ARMED AT RUN TIME, AND IT SAYS SO. The switch is read once when the
-;;; library is initialised, so an unset variable costs one boolean test
-;;; per syscall and nothing else -- but it also means a released build
-;;; can still be told to skip a flush by its environment. That is a real
-;;; hazard for a durability library and the reason (igropyr inject) gates
-;;; itself at EXPANSION time instead, leaving no injection code in a
-;;; compiled object at all. Until this follows suit, an armed process
-;;; announces itself on stderr at startup, so the state is at least never
-;;; silent.
+;;; TWO SWITCHES, AND THE OUTER ONE ACTS AT EXPANSION TIME. Injection
+;;; code exists only in a build expanded with THEOURGIA_INJECT=on; with
+;;; the variable unset or "off" there is no fault branch in the object at
+;;; all -- not a disabled one, not a flag test. THEOURGIA_FAULT then
+;;; chooses WHICH fault at run time, and nothing reads it in a build that
+;;; has no injection code to select from.
+;;;
+;;; THE OUTER SWITCH IS THE ONE THAT MATTERS. A run-time-only gate would
+;;; let a released process be told to skip its flushes by its
+;;; environment, which for a durability library is not a debugging
+;;; convenience but a way to turn off the guarantee the library exists to
+;;; make. This is the same mechanism and the same reasoning as (igropyr
+;;; inject), which is where it is stated at length.
+;;;
+;;; An armed EXPANSION says so on stderr, and so does an armed process.
+;;; Neither is a tripwire: the expansion banner describes the process
+;;; doing the expanding, so a tree still holding an object compiled while
+;;; armed stays silent about it. What stops an armed artifact is not
+;;; compiling one -- development runs from source.
 
 (library (theourgia ffi)
   (export fd-open fd-close
           with-exclusive-lock with-shared-lock
           ftruncate! fsync! fsync-dir! write-all!
-          fd-seek! fd-size file-size file-ensure! fd-path
+          fd-seek! fd-size file-size file-ensure! fd-path link!
+          barrier!
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed?
           theourgia-trace? trace-event!)
@@ -151,6 +172,7 @@
   (define c-ftruncate (foreign-procedure "ftruncate" (int integer-64) int))
   (define c-lseek (foreign-procedure "lseek" (int integer-64 int) integer-64))
   (define c-write (foreign-procedure "write" (int u8* size_t) ssize_t))
+  (define c-link  (foreign-procedure "link"  (string string) int))
 
   ;; errno is a per-thread location reached through a function, and the
   ;; function has a different name on the BSDs than on glibc. Whichever
@@ -181,6 +203,7 @@
   (define SEEK_END 2)
   (define EINTR 4)
   (define EIO 5)
+  (define EEXIST 17)
   (define F_FULLFSYNC 51)
   (define macos? (eq? platform-os 'macos))
 
@@ -237,89 +260,160 @@
 
   ;; ---- fault injection ---------------------------------------------------
 
-  (define fault-spec (getenv "THEOURGIA_FAULT"))
+  ;; Read by the process doing the EXPANDING, exactly as (igropyr
+  ;; inject) and (igropyr checked) read theirs. Development runs from
+  ;; source, so expansion and run are the same process and the variable
+  ;; behaves the way a run-time one would; a compiled object simply has
+  ;; no fault code to select.
+  (meta define inject-mode
+    (let ((v (getenv "THEOURGIA_INJECT")))
+      (cond
+        ((or (not v) (string=? v "off")) 'off)
+        ((string=? v "on") 'on)
+        (else (assertion-violation 'theourgia-ffi
+                "THEOURGIA_INJECT must be \"on\", \"off\", or unset" v)))))
 
-  (define (split-at-colon s)
-    (let ((n (string-length s)))
-      (let loop ((i 0))
-        (cond
-          ((= i n) (values (string->symbol s) #f))
-          ((char=? (string-ref s i) #\:)
-           (values (string->symbol (substring s 0 i))
-                   (substring s (+ i 1) n)))
-          (else (loop (+ i 1)))))))
+  (meta define inject-visit-announced
+    (begin (when (eq? inject-mode 'on)
+             (display "theourgia: EXPANDING WITH FAULT INJECTION ON\n"
+                      (current-error-port)))
+           #t))
 
-  (define-values (fault-name fault-arg)
-    (if fault-spec (split-at-colon fault-spec) (values #f #f)))
+  (meta-cond
+    ((eq? inject-mode 'on)
 
-  (define fault-armed? (and fault-name #t))
+     (define fault-spec (getenv "THEOURGIA_FAULT"))
 
-  ;; A PATH-SCOPED FAULT WITH NO PATH IS REFUSED AT STARTUP. Both of
-  ;; these exist to hit one file and not the other -- the log's flush and
-  ;; the registry's -- so a missing substring would make the injection
-  ;; either inert or global, and both of those read in a test log exactly
-  ;; like the fault having worked. An empty substring is the same
-  ;; mistake: it matches every path.
-  (define fault-argument-checked
-    (when (memq fault-name '(fsync-fail no-log-fsync))
-      (unless (and (string? fault-arg) (> (string-length fault-arg) 0))
-        (assertion-violation 'theourgia-ffi
-                             "this fault needs a non-empty path substring"
-                             fault-spec))))
+     (define (split-at-colon s)
+       (let ((n (string-length s)))
+         (let loop ((i 0))
+           (cond
+             ((= i n) (values (string->symbol s) #f))
+             ((char=? (string-ref s i) #\:)
+              (values (string->symbol (substring s 0 i))
+                      (substring s (+ i 1) n)))
+             (else (loop (+ i 1)))))))
 
-  (define (theourgia-fault) fault-name)
-  (define (theourgia-fault-armed?) fault-armed?)
+     (define-values (fault-name fault-arg)
+       (if fault-spec (split-at-colon fault-spec) (values #f #f)))
 
-  ;; ANNOUNCED, NOT ASSUMED ABSENT. See the note at the top: this switch
-  ;; survives into a release, so a process running with it set says so
-  ;; before it does anything. One line, on stderr, whether or not the
-  ;; trace is on.
-  (define fault-announced
-    (when fault-armed?
-      (guard (e (#t (void)))
-        (let ((p (current-error-port)))
-          (fprintf p "(theourgia fault-injection-armed ~a)\n" fault-spec)
-          (flush-output-port p)))))
+     (define (theourgia-fault) fault-name)
+     (define (theourgia-fault-armed?) (and fault-name #t))
 
-  ;; One box for all of them, because exactly one fault is ever armed:
-  ;; fresh -> done for the two that fire once, fresh -> partial -> EIO
-  ;; for the one that fires twice.
-  (define fault-state (box 'fresh))
+     ;; A PATH-SCOPED FAULT WITH NO PATH IS REFUSED AT STARTUP. Both of
+     ;; these exist to hit one file and not the other -- the log's flush
+     ;; and the registry's -- so a missing substring would make the
+     ;; injection either inert or global, and both of those read in a
+     ;; test log exactly like the fault having worked. An empty substring
+     ;; is the same mistake: it matches every path.
+     (define fault-argument-checked
+       (when (memq fault-name '(fsync-fail no-log-fsync))
+         (unless (and (string? fault-arg) (> (string-length fault-arg) 0))
+           (assertion-violation 'theourgia-ffi
+                                "this fault needs a non-empty path substring"
+                                fault-spec))))
 
-  (define (string-contains? s sub)
-    (let ((n (string-length s)) (m (string-length sub)))
-      (let loop ((i 0))
-        (cond
-          ((> (+ i m) n) #f)
-          ((string=? (substring s i (+ i m)) sub) #t)
-          (else (loop (+ i 1)))))))
+     ;; ANNOUNCED, NOT ASSUMED ABSENT: a process running with a fault
+     ;; selected says so before it does anything.
+     (define fault-announced
+       (when (and fault-name)
+         (guard (e (#t (void)))
+           (let ((p (current-error-port)))
+             (fprintf p "(theourgia fault-injection-armed ~a)\n" fault-spec)
+             (flush-output-port p)))))
 
-  ;; The path a fault is aimed at, taken from the subject when it is one
-  ;; and from the registry otherwise. A fault with no argument matches
-  ;; nothing here, so fsync-fail without a substring is inert rather than
-  ;; global -- an injection that hit every flush at once could not
-  ;; distinguish the log's from the registry's, which is the whole reason
-  ;; these two take an argument.
-  (define (fault-path-match? fd subject)
-    (let ((p (cond ((string? subject) subject)
-                   ((and (pair? subject) (string? (car subject))) (car subject))
-                   (else (fd-path fd)))))
-      (and (string? p) (string? fault-arg) (string-contains? p fault-arg))))
+     ;; One box for all of them, because exactly one fault is ever
+     ;; selected: fresh -> done for the two that fire once, fresh ->
+     ;; partial -> EIO for the one that fires twice.
+     (define fault-state (box 'fresh))
 
-  (define (fsync-skipped? fd subject)
-    (and fault-armed? (eq? fault-name 'no-log-fsync)
-         (fault-path-match? fd subject)))
+     (define (string-contains? s sub)
+       (let ((n (string-length s)) (m (string-length sub)))
+         (let loop ((i 0))
+           (cond
+             ((> (+ i m) n) #f)
+             ((string=? (substring s i (+ i m)) sub) #t)
+             (else (loop (+ i 1)))))))
 
-  (define (fsync-forced-failure? fd subject)
-    (and fault-armed? (eq? fault-name 'fsync-fail)
-         (fault-path-match? fd subject)))
+     ;; The path a fault is aimed at, taken from the subject when it is
+     ;; one and from the registry otherwise.
+     (define (fault-path-match? fd subject)
+       (let ((p (cond ((string? subject) subject)
+                      ((and (pair? subject) (string? (car subject))) (car subject))
+                      (else (fd-path fd)))))
+         (and (string? p) (string? fault-arg) (string-contains? p fault-arg))))
 
-  ;; ---- trace ------------------------------------------------------------
+     (define barrier-spec (getenv "THEOURGIA_BARRIER"))
 
-  ;; The switch and the printer live in (theourgia trace) so that the
-  ;; record codec can report events without importing libc; they are
-  ;; re-exported here because a caller of this library should not have
-  ;; to know that.
+     (define-values (barrier-name barrier-fifo)
+       (if barrier-spec (split-at-colon barrier-spec) (values #f #f)))
+
+     (define barrier-argument-checked
+       (when barrier-name
+         (unless (and (string? barrier-fifo) (> (string-length barrier-fifo) 0))
+           (assertion-violation 'theourgia-ffi
+                                "THEOURGIA_BARRIER needs <name>:<fifo path>"
+                                barrier-spec))))
+
+     ;; REPORTED BEFORE PARKING, or the controller has nothing to wait
+     ;; for and falls back to sleeping -- and a sleep is not a
+     ;; synchronisation, it is a race that usually wins.
+     ;;
+     ;; Opening a fifo for reading blocks until a writer opens it, so
+     ;; the open IS the rendezvous and the byte is the release. Chez's
+     ;; port is used rather than a read(2) binding because blocking on
+     ;; open is exactly the behaviour wanted and nothing here needs a
+     ;; partial read.
+     (define (barrier! name)
+       (when (and barrier-name (eq? name barrier-name))
+         (trace-event! 'barrier name #f)
+         (guard (e (#t (void)))
+           (let ((p (open-file-input-port barrier-fifo)))
+             (get-u8 p)
+             (close-port p)))))
+
+     ;; -> skip | fail | #f
+     (define (fsync-fault fd subject)
+       (cond
+         ((not fault-name) #f)
+         ((and (eq? fault-name 'no-log-fsync) (fault-path-match? fd subject)) 'skip)
+         ((and (eq? fault-name 'fsync-fail) (fault-path-match? fd subject)) 'fail)
+         (else #f)))
+
+     ;; THE STATE MOVES ONLY IF THE WRITE ACTUALLY HAPPENED. Marking the
+     ;; fault spent before the call would let a real EINTR from the
+     ;; kernel consume it, and the run would then look like a short write
+     ;; that never occurred -- and for the EIO fault, "after partial"
+     ;; would be a lie: the retry would be refused with nothing on disk.
+     (define (write-once fd bv count)
+       (case fault-name
+         ((eintr-once)
+          (if (eq? (unbox fault-state) 'fresh)
+              (begin (set-box! fault-state 'done) (values -1 EINTR))
+              (real-write fd bv count)))
+         ((short-write)
+          (if (eq? (unbox fault-state) 'fresh)
+              (let-values (((n code) (real-write fd bv (min short-count count))))
+                (when (> n 0) (set-box! fault-state 'done))
+                (values n code))
+              (real-write fd bv count)))
+         ((write-eio-after-partial)
+          (if (eq? (unbox fault-state) 'fresh)
+              (let-values (((n code) (real-write fd bv (min short-count count))))
+                (when (> n 0) (set-box! fault-state 'partial))
+                (values n code))
+              (values -1 EIO)))
+         (else (real-write fd bv count)))))
+
+    (else
+     ;; NOTHING ABOVE EXISTS IN THIS BUILD. These two are the whole of
+     ;; what the rest of the library calls, and they say "no fault" in a
+     ;; form the compiler can fold away.
+     (define (theourgia-fault) #f)
+     (define (theourgia-fault-armed?) #f)
+     (define (fsync-fault fd subject) #f)
+     (define (barrier! name) (void))
+     (define (write-once fd bv count) (real-write fd bv count))))
 
   ;; ---- opening ----------------------------------------------------------
 
@@ -409,27 +503,45 @@
   ;; The platform-conditional second step is not a second event: a test
   ;; asserting an order of flushes would otherwise read differently on
   ;; the two platforms this runs on.
+  ;; ONE FLUSH SEQUENCE, USED TWICE. fsync then F_FULLFSYNC on macOS,
+  ;; both required to succeed, matching (igropyr durable). fsync there
+  ;; tells the drive nothing about its own write cache; F_FULLFSYNC asks
+  ;; it to empty one. Nothing in this process can observe the
+  ;; difference, so what the tests around this assert is the call
+  ;; sequence, not durability itself.
+  ;;
+  ;; THE OP SYMBOLS ARE PARAMETERS BECAUSE THE DIRECTORY FLUSH NEEDS ITS
+  ;; OWN, and the two callers must not be two copies of the sequence. An
+  ;; earlier version wrote it out twice, which cost the directory flush
+  ;; its fault hook -- it could not be injected at all, so L18's and
+  ;; L19's directory barriers had nothing to test against -- and left a
+  ;; second place for the macOS branch to drift out of step silently.
+  ;; (igropyr durable) explains why the symbols differ: a failure before
+  ;; a rename leaves the old contents intact, one after it does not, and
+  ;; collapsing them takes away the distinction the caller most needs.
+  ;;
+  ;; ONE TRACE LINE PER CALL, emitted after both steps have returned.
+  ;; The platform-conditional second step is not a second event: a test
+  ;; asserting an order of flushes would otherwise read differently on
+  ;; the two platforms this runs on.
+  (define (flush! fd subject fsync-op fullfsync-op)
+    (case (fsync-fault fd subject)
+      ;; Skipped AND unreported: see the note at the top on why this one
+      ;; must not print a line. In a build without injection fsync-fault
+      ;; is the constant #f and this dispatch folds away.
+      ((skip) (void))
+      ((fail) (raise (fs-err fsync-op subject EIO)))
+      (else
+       (let ((rc (c-fsync fd)))
+         (when (< rc 0) (fail! fsync-op subject)))
+       (when macos?
+         (let ((rc (c-fcntl fd F_FULLFSYNC 0)))
+           (when (< rc 0) (fail! fullfsync-op subject))))
+       (trace-event! 'fsync subject #f)
+       (void))))
+
   (define (fsync! fd . opts)
-    (let ((subject (subject-of fd opts)))
-      (cond
-        ;; Skipped AND unreported: see the note at the top on why this
-        ;; one must not print a line. Both flush faults are behind ONE
-        ;; test of the switch, so an unarmed process pays for the feature
-        ;; exactly once per flush.
-        ((and fault-armed?
-              (cond ((fsync-skipped? fd subject) (void) #t)
-                    ((fsync-forced-failure? fd subject)
-                     (raise (fs-err 'fsync subject EIO)))
-                    (else #f)))
-         (void))
-        (else
-         (let ((rc (c-fsync fd)))
-           (when (< rc 0) (fail! 'fsync subject)))
-         (when macos?
-           (let ((rc (c-fcntl fd F_FULLFSYNC 0)))
-             (when (< rc 0) (fail! 'fullfsync subject))))
-         (trace-event! 'fsync subject #f)
-         (void)))))
+    (flush! fd (subject-of fd opts) 'fsync 'fullfsync))
 
   ;; A directory is opened read-only because opening one for writing
   ;; fails with EISDIR; fsync takes a descriptor for the file, not a
@@ -442,13 +554,7 @@
         (let ((done (box #f)))
           (dynamic-wind
             void
-            (lambda ()
-              (let ((rc (c-fsync fd)))
-                (when (< rc 0) (fail! 'dir-fsync subject)))
-              (when macos?
-                (let ((rc (c-fcntl fd F_FULLFSYNC 0)))
-                  (when (< rc 0) (fail! 'dir-fullfsync subject))))
-              (trace-event! 'fsync subject #f))
+            (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync))
             (lambda ()
               (unless (unbox done)
                 (set-box! done #t)
@@ -527,44 +633,14 @@
   ;; freed on every escape from it, including the raising ones.
   ;; THE ONLY PLACE write(2) IS CALLED, which is what makes the three
   ;; write faults one decision rather than three scattered ones. Returns
-  ;; the count accepted and #f, or -1 and the errno to report.
+  ;; the count accepted and #f, or -1 and the errno to report. write-once
+  ;; wraps it and is chosen at expansion time: in a build without
+  ;; injection it IS this, with no branch in between.
   (define (real-write fd bv count)
     (let ((r (c-write fd bv count)))
       (if (< r 0) (values -1 (errno)) (values r #f))))
 
   (define short-count 7)
-
-  (define (write-once fd bv count)
-    (if (not fault-armed?)
-        (real-write fd bv count)
-        (case fault-name
-          ;; Skipped, not performed-then-relabelled: EINTR means nothing
-          ;; was written, and it has to actually be true.
-          ((eintr-once)
-           (if (eq? (unbox fault-state) 'fresh)
-               (begin (set-box! fault-state 'done) (values -1 EINTR))
-               (real-write fd bv count)))
-          ;; A genuinely short write: the kernel is offered fewer bytes,
-          ;; so the file really does hold only those.
-          ;; THE STATE MOVES ONLY IF THE WRITE ACTUALLY HAPPENED. Marking
-          ;; the fault spent before the call would let a real EINTR from
-          ;; the kernel consume it, and the run would then look like a
-          ;; short write that never occurred -- and for the EIO fault,
-          ;; "after partial" would be a lie: the retry would be refused
-          ;; with nothing on disk.
-          ((short-write)
-           (if (eq? (unbox fault-state) 'fresh)
-               (let-values (((n code) (real-write fd bv (min short-count count))))
-                 (when (> n 0) (set-box! fault-state 'done))
-                 (values n code))
-               (real-write fd bv count)))
-          ((write-eio-after-partial)
-           (if (eq? (unbox fault-state) 'fresh)
-               (let-values (((n code) (real-write fd bv (min short-count count))))
-                 (when (> n 0) (set-box! fault-state 'partial))
-                 (values n code))
-               (values -1 EIO)))
-          (else (real-write fd bv count)))))
 
   (define (write-all! fd bv . opts)
     (unless (bytevector? bv)
@@ -591,6 +667,28 @@
                          (bytevector-copy! bv pos tail 0 (- total pos))
                          (loop pos tail)))))))))))
 
+  ;; ---- linking ----------------------------------------------------------
+
+  ;; THE WHOLE PUBLISH PROTOCOL RESTS ON THIS CALL FAILING. link(2)
+  ;; refuses when the target exists, and that refusal -- not a preceding
+  ;; existence test -- is what makes installing a segment safe against a
+  ;; second process doing the same thing at the same moment. A check
+  ;; followed by a link is two operations with a gap; this is one.
+  ;; Measured on both platforms: EEXIST, 17.
+  ;;
+  ;; SO THE REFUSAL IS A RESULT, NOT AN ERROR. 'exists is an ordinary
+  ;; answer the caller acts on (re-read the target and compare); every
+  ;; other failure raises, because none of them has a next step this
+  ;; library could name.
+  (define (link! from to)
+    (unless (and (string? from) (string? to))
+      (assertion-violation 'link! "paths must be strings" from to))
+    (let ((rc (c-link from to)))
+      (cond
+        ((>= rc 0) 'linked)
+        ((= (errno) EEXIST) 'exists)
+        (else (fail! 'link to)))))
+
   ;; ---- locking ----------------------------------------------------------
 
   ;; flock IS PER OPEN FILE DESCRIPTION, NOT PER PROCESS. Two of these
@@ -605,6 +703,20 @@
   ;; concurrency test needs to see, and it cannot be recovered from the
   ;; outcome: the same final state is reached whether the wait happened
   ;; or not.
+  ;; NEITHER HELPER CREATES THE LOCK FILE, and that is what makes "a
+  ;; reader changes no files" a property of the code rather than a rule
+  ;; someone has to keep. An earlier version called file-ensure! here,
+  ;; so taking a SHARED lock on a store whose lock file was missing
+  ;; CREATED it -- measured, a zero-byte file appearing under a
+  ;; read-only command, which is the invariant read-only callers exist
+  ;; to preserve and the file-set assertion in the reader case would
+  ;; have caught only if it thought to look for a file nobody wrote.
+  ;;
+  ;; The lock file is created once, when the store is initialised, and
+  ;; is then never deleted or replaced. file-ensure! is exported for
+  ;; that one caller. A missing lock file here means the store was never
+  ;; initialised or has been damaged, and refusing says so at the point
+  ;; where it is still true.
   (define (call-with-lock who path mode mode-name proc)
     (unless (procedure? proc)
       (assertion-violation who "not a procedure" proc))
@@ -612,7 +724,6 @@
     ;; shared and an exclusive acquisition of a free lock look identical
     ;; afterwards -- so the mode travels with the path.
     (let ((subject (cons path mode-name)))
-      (file-ensure! path)
       (let ((fd (c-open path O_RDONLY)))
         (when (< fd 0) (fail! 'open path))
         (hashtable-set! fd-paths fd path)
