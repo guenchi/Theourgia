@@ -33,13 +33,44 @@
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace)
         (only (igropyr crypto) sha256 bytevector->hex))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
+;; under one session's scratchpad is green only while that exact
+;; directory survives: tmp is swept, and another machine has no such path
+;; at all -- the whole suite would then be red for a reason with nothing
+;; to do with the code under test. THEOURGIA_TEST_ROOT overrides the
+;; default; the pid keeps two runs, or two fixtures, out of each other's
+;; way. The directories are left behind deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 (define bad 0)
 (define (want label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
-(define d "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log11work")
+(define d (test-dir "log11work"))
 ;; Ordered so that lexical order and "which one is local" disagree: if
 ;; delivery ever ordered by anything but the writer id, the b-first
 ;; expectation below would still pass with the ids the other way round.
@@ -106,6 +137,18 @@
             ((string=? (substring s i (+ i m)) sub) #t)
             (else (loop (+ i 1)))))))
 (define (events text) (filter (lambda (l) (has-substring? l "(trace ")) (lines-of text)))
+;; The subject is the second field, so "ends with" means "ends with,
+;; just before the space that starts the bytes field".
+(define (ends-with-before-space? line suffix)
+  (let* ((n (string-length line))
+         (cut (let loop ((i (- n 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref line i) #\space) i)
+                      (else (loop (- i 1))))))
+         (subject-end (or cut n))
+         (m (string-length suffix)))
+    (and (>= subject-end m)
+         (string=? (substring line (- subject-end m) subject-end) suffix))))
 (define (op-of line)
   (let* ((i (+ 7 (let loop ((k 0)) (if (string=? (substring line k (+ k 7)) "(trace ") k (loop (+ k 1))))))
          (j (let scan ((j i)) (if (or (>= j (string-length line))
@@ -472,7 +515,9 @@
       #t)
 (want "fsync carries a bare path and no byte count"
       (let ((ls (filter (lambda (l) (string=? (op-of l) "fsync")) (events k-trace))))
-        (list (and (pair? ls) (has-substring? (car ls) ".sexp"))
+        ;; ENDS WITH, NOT CONTAINS. A root that happens to contain
+        ;; ".sexp" made a directory flush satisfy a row about file paths.
+        (list (and (pair? ls) (ends-with-before-space? (car ls) ".sexp"))
               (and (pair? ls) (has-substring? (car ls) " #f)")))) 
       (list #t #t))
 (want "every session takes and releases exactly one store lock"

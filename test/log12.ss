@@ -29,13 +29,44 @@
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace)
         (only (igropyr crypto) sha256 bytevector->hex))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
+;; under one session's scratchpad is green only while that exact
+;; directory survives: tmp is swept, and another machine has no such path
+;; at all -- the whole suite would then be red for a reason with nothing
+;; to do with the code under test. THEOURGIA_TEST_ROOT overrides the
+;; default; the pid keeps two runs, or two fixtures, out of each other's
+;; way. The directories are left behind deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 (define bad 0)
 (define (want label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
-(define d "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log12work")
+(define d (test-dir "log12work"))
 (define W "wwwx7q2a")
 (define (rec seq ts deps payload)
   (encode-record seq ts "agent:claude" deps (storable-encode payload)))
@@ -294,7 +325,11 @@
 ;; mechanisms at once, and a change to either would rewrite it.
 (define (about-segment? l)
   (or (has-substring? l "000001.sexp") (has-substring? l "000002.sexp")))
-(define (about-store-lock? l) (has-substring? l "log12work/lock"))
+;; DERIVED FROM d, NOT SPELLED OUT. The work directory now carries
+;; a pid, so a row that matched the old fixed name matched nothing
+;; at all -- and "no events of that kind" is a reading a wrong
+;; implementation produces too.
+(define (about-store-lock? l) (has-substring? l (string-append d "/lock")))
 (define (segment-ops text)
   (map op-of
        (filter (lambda (l)

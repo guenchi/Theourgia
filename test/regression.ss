@@ -12,9 +12,42 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
+
 ;; The defects the review named, each with a case that FAILED before the
 ;; fix and a control that must keep passing.
 (import (chezscheme) (theourgia wire) (theourgia ffi) (theourgia crc32))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
+;; an absolute path under one session's scratchpad. That is green only
+;; while that particular directory happens to still exist: tmp is swept,
+;; and another machine has no such path at all -- so the whole suite
+;; would go red for a reason with nothing to do with the code under test.
+;; THEOURGIA_TEST_ROOT overrides the default; the pid keeps two runs, or
+;; two fixtures, out of each other's way. Directories are left behind
+;; deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 (define bad 0)
 (define (want label got expect)
   (unless (equal? got expect)
@@ -24,7 +57,7 @@
 (define (raises? thunk) (guard (e (#t #t)) (thunk) #f))
 
 (printf "== ffi: duplicate flags must not become another flag ==\n")
-(define dir "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/regwork")
+(define dir (test-dir "regwork"))
 (system (string-append "rm -rf " dir "; mkdir -p " dir))
 (define log (string-append dir "/l"))
 (let ((fd (fd-open log '(write create append)))) (write-all! fd (string->utf8 "AAA")) (fd-close fd))
@@ -97,5 +130,6 @@
 
 (printf "\n~a failures\n" bad)
 
-;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+;; A run that did not reach here is not a pass. The runner requires
+;; this line AND a zero failure count: they are two propositions.
 (printf "regression complete\n")

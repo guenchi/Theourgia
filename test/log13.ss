@@ -30,14 +30,46 @@
 ;; restore to just before it would look legitimate.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
+;; under one session's scratchpad is green only while that exact
+;; directory survives: tmp is swept, and another machine has no such path
+;; at all -- the whole suite would then be red for a reason with nothing
+;; to do with the code under test. THEOURGIA_TEST_ROOT overrides the
+;; default; the pid keeps two runs, or two fixtures, out of each other's
+;; way. The directories are left behind deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 (define bad 0)
 (define (want label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
-(define d "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log13work")
+(define d (test-dir "log13work"))
 (define W "wwwc3q2a")
+(define home (string-append d "/home"))
 (define fixed-ts 1757300000003)
 (define (rec seq ts deps payload)
   (encode-record seq ts "agent:claude" deps (storable-encode payload)))
@@ -59,11 +91,11 @@
   (let ((b (slurp path))) (if (bytevector? b) (bytevector-length b) b)))
 (define (wpath n) (string-append d "/writers/" W "/" (segment-file-name n)))
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/snap " d "/home"))
+  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/snap " home))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"c3\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
-  (putenv "THEOURGIA_HOME" (string-append d "/home"))
+  (putenv "THEOURGIA_HOME" home)
   ;; ONLY THE LOCAL WRITER GETS AN owner.sexp -- that file is what makes
   ;; a writer local, so stamping every directory turned the mirrored
   ;; writer into a second local one.
@@ -143,10 +175,10 @@
 (define (step-of l)
   (let ((op (op-of l)))
     (cond
-      ((and (string=? op "flock") (has-substring? l "log13work/lock")) "store-lock")
-      ((and (string=? op "flock") (has-substring? l "home/lock")) "machine-lock")
-      ((and (string=? op "unlock") (has-substring? l "log13work/lock")) "store-unlock")
-      ((and (string=? op "unlock") (has-substring? l "home/lock")) "machine-unlock")
+      ((and (string=? op "flock") (has-substring? l (string-append d "/lock"))) "store-lock")
+      ((and (string=? op "flock") (has-substring? l (string-append home "/lock"))) "machine-lock")
+      ((and (string=? op "unlock") (has-substring? l (string-append d "/lock"))) "store-unlock")
+      ((and (string=? op "unlock") (has-substring? l (string-append home "/lock"))) "machine-unlock")
       ((string=? op "catch-up") "catch-up")
       ((string=? op "frame") "frame")
       ((string=? op "registry-check") "registry-check")
@@ -213,10 +245,10 @@
 ;; then be refused for identity rather than for the mark -- a control
 ;; that varies two things at once cannot show which one refused.
 (want "CONTROL: same machine, empty registry, the restored store writes fine"
-      (begin (system (string-append "mkdir -p " d "/home2; cp " d "/home/machine.sexp " d "/home2/"))
+      (begin (system (string-append "mkdir -p " d "/home2; cp " home "/machine.sexp " d "/home2/"))
              (putenv "THEOURGIA_HOME" (string-append d "/home2"))
              (let ((res (with-session (lambda (s) (append-one! s '(put "w.3" ()))))))
-               (putenv "THEOURGIA_HOME" (string-append d "/home"))
+               (putenv "THEOURGIA_HOME" home)
                (car res)))
       'committed)
 
@@ -372,7 +404,7 @@
              (let ((out (guard (e (#t 'refused))
                           (with-session (lambda (s) (append-one! s '(put "w.3" ()))))
                           'accepted)))
-               (putenv "THEOURGIA_HOME" (string-append d "/home"))
+               (putenv "THEOURGIA_HOME" home)
                out))
       'refused)
 

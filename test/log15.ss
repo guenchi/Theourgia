@@ -27,6 +27,37 @@
 ;; pair is what says the flushes are in the right places rather than
 ;; merely present.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
+;; under one session's scratchpad is green only while that exact
+;; directory survives: tmp is swept, and another machine has no such path
+;; at all -- the whole suite would then be red for a reason with nothing
+;; to do with the code under test. THEOURGIA_TEST_ROOT overrides the
+;; default; the pid keeps two runs, or two fixtures, out of each other's
+;; way. The directories are left behind deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 (define here
   (let* ((script (car (command-line)))
          (n (let loop ((i (- (string-length script) 1)))
@@ -41,7 +72,7 @@
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
-(define base "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log15")
+(define base (test-dir "log15"))
 (define d (string-append base "/store"))
 (define home (string-append base "/home"))
 (define W "wwwe5q2a")
@@ -133,6 +164,10 @@
                            " & echo $! > " pidf))
     (let ((reached (wait-for-barrier trace barrier 200)))
       (cond
+        ;; NOT PARKED MEANS NOT RELEASED. Writing to a fifo with no
+        ;; reader blocks forever, so a child that never reached the
+        ;; barrier is killed and reported -- the case then goes red on a
+        ;; reading instead of hanging the suite.
         ((not reached)
          (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null"))
          'never-parked)
@@ -142,8 +177,19 @@
          (text-of trace))
         (else
          (system (string-append "printf x > " fifo))
-         (system "sleep 0.3")
-         (text-of trace))))))
+         (if (wait-for-file (string-append base "/answer") 200)
+             (text-of trace)
+             'no-answer))))))
+
+;; WAITS FOR THE CHILD'S ANSWER, which is the only thing that says it
+;; finished. Sleeping a fixed interval and hoping is a bet on the
+;; scheduler: lose it and the row is red for a reason that has nothing to
+;; do with the code.
+(define (wait-for-file path limit)
+  (let loop ((n 0))
+    (cond ((file-exists? path) #t)
+          ((> n limit) #f)
+          (else (system "sleep 0.05") (loop (+ n 1))))))
 
 ;; What a store looks like to a fresh reader, which is the only question
 ;; recovery has to answer.
@@ -173,12 +219,16 @@
         (system (string-append "rm -rf " t " " bt "; mkdir -p " t))
         (put! (string-append t "/a") (string->utf8 "AAAA"))
         (system (string-append "cp -R " t " " bt))
-        (put! (string-append t "/a") (string->utf8 "AAAABBBB"))
+        (put! (string-append t "/a") (string->utf8 "AAAABBBBCCCC"))
         (crash-durable-only! t bt
           (string-append "(trace write " t "/a 4)\n"
                          "(trace fsync " t "/a #f)\n"
                          "(trace write " t "/a 4)\n"))
         (text-of (string-append t "/a")))
+      ;; THE ANSWER DIFFERS FROM BOTH INPUTS. An earlier version expected
+      ;; exactly what the crashed tree already held, so a device that did
+      ;; nothing at all passed this check -- the one thing it exists to
+      ;; rule out.
       "AAAABBBB")
 
 (printf "== L10: the six points, killed ==\n")
@@ -232,6 +282,68 @@
           (let ((st (recovered-state)))
             (list (car st) (cadr st) (caddr st))))
       (list 3 '(1 2 3) '()))
+
+(printf "== L10: what the tree looks like at each boundary ==\n")
+;; "It loads and the first two records are there" is satisfied at every
+;; one of the six points, which is why it could not tell a rotation with
+;; its flushes in the wrong order from one with them in the right order.
+;; These assert the tree itself, worked out from section 4.4's sequence:
+;;
+;;   before-rotate-write   N+1 absent
+;;   after-current-fsync   N+1 absent, N flushed
+;;   after-create-next     N+1 present and empty
+;;   after-next-fsync      N+1 present and empty
+;;   after-dir-fsync       N+1 present and empty, its entry durable
+;;   after-first-write-next N+1 holds record 3
+;;
+;; In the durable-only state the same points differ in one place: until
+;; the directory is flushed, N+1's entry does not survive at all.
+(define (segments-after point state)
+  (build!)
+  (let ((trace (run-to-barrier point 'kill)))
+    (if (memq trace '(never-parked no-answer))
+        trace
+        (begin
+          (when (eq? state 'durable) (crash-durable-only! d before-image trace))
+          (list (enumerate-segment-files d W)
+                (let ((b (slurp (wpath 2))))
+                  (cond ((eq? b 'no-such-file) 'absent)
+                        ((= 0 (bytevector-length b)) 'empty)
+                        ((equal? b (rec 3 (+ 1757300000000 3600000 5000) '()
+                                        '(put "w.3" ())))
+                         'record-3)
+                        (else (list 'other (bytevector-length b))))))))))
+(for-each
+  (lambda (point expect)
+    (want (string-append "killed at " point ": the tree is exactly this")
+          (segments-after point 'kill) expect))
+  points
+  (list (list '(1) 'absent)
+        (list '(1) 'absent)
+        (list '(1 2) 'empty)
+        (list '(1 2) 'empty)
+        (list '(1 2) 'empty)
+        (list '(1 2) 'record-3)))
+(for-each
+  (lambda (point expect)
+    (want (string-append "durable-only at " point ": the tree is exactly this")
+          (segments-after point 'durable) expect))
+  points
+  (list (list '(1) 'absent)
+        (list '(1) 'absent)
+        ;; The entry for N+1 is not durable until the directory is
+        ;; flushed, so the first three points lose it entirely.
+        (list '(1) 'absent)
+        (list '(1) 'absent)
+        (list '(1 2) 'empty)
+        ;; AND HERE THE TWO STATES DIFFER, which is the point of having
+        ;; both. The record has been written into N+1 and not yet
+        ;; flushed: killing the process keeps it (the bytes reached the
+        ;; OS), and the durable-only state discards it. Nothing promised
+        ;; it -- the append had not returned -- so losing it is correct,
+        ;; and the row below is where a record that WAS promised has to
+        ;; survive the same rewrite.
+        (list '(1 2) 'empty)))
 
 (printf "== a committed record survives the durable-only state ==\n")
 ;; THIS IS THE CRITERION THE DESIGN NAMES, and the rows above cannot
@@ -321,15 +433,24 @@
     (let ((t (text-of q-trace)))
       (cond
         ((crash-has-substring? t "(trace registry-write") 'entered-the-section)
-        ((crash-has-substring? t "(trace lock-wait") 'waiting)
+        ;; NAMED, NOT ANY WAIT. "some lock-wait appeared" is satisfied by
+        ;; contention on something else entirely.
+        ((crash-has-substring? t (string-append "(trace lock-wait (" home "/lock . exclusive)"))
+         'waiting)
         ((> n 200) 'neither)
         (else (system "sleep 0.05") (loop (+ n 1)))))))
 (want "P parked inside the registry's critical section" p-parked #t)
 (want "and Q waits on the machine lock rather than entering it"
       q-verdict 'waiting)
 ;; Release P, let both finish, and check the marks.
-(system (string-append "printf x > " p-fifo))
-(system "sleep 1")
+;; RELEASE ONLY IF SOMEONE IS PARKED, then wait for both answers. The
+;; unconditional write blocked forever whenever P failed to reach its
+;; barrier, and `sleep 1` was a bet that Q would be scheduled in time.
+(when p-parked (system (string-append "printf x > " p-fifo)))
+(define p-done (wait-for-file (string-append base "/p-answer") 400))
+(define q-done (wait-for-file (string-append base "/q-answer") 400))
+(want "both children finished, so the marks below are their final ones"
+      (list p-done q-done) (list #t #t))
 (want "both stores committed, and each mark is exactly its own last sequence"
       (let* ((reg (text-of (string-append home "/instances.sexp")))
              (entries (guard (e (#t 'unreadable)) (read (open-string-input-port reg)))))

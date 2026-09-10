@@ -16,6 +16,38 @@
 ;; Piece 3: the snapshot frame, against L7's four void variants and the
 ;; cut-support entry point.
 (import (chezscheme) (theourgia log) (theourgia trace) (theourgia crc32))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
+;; an absolute path under one session's scratchpad. That is green only
+;; while that particular directory happens to still exist: tmp is swept,
+;; and another machine has no such path at all -- so the whole suite
+;; would go red for a reason with nothing to do with the code under test.
+;; THEOURGIA_TEST_ROOT overrides the default; the pid keeps two runs, or
+;; two fixtures, out of each other's way. Directories are left behind
+;; deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
 ;; The trace switch is injected now, not a parameter: (theourgia trace)
 ;; takes neither getenv nor make-parameter so that it stays portable.
 (define theourgia-trace?
@@ -26,7 +58,7 @@
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
-(define d "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log3work")
+(define d (test-dir "log3work"))
 (system (string-append "rm -rf " d "; mkdir -p " d))
 (define snap (string-append d "/snap.sexp"))
 (define cut '(("k3m9x2qa" . 10) ("c9xq01mz" . 3)))
