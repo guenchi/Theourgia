@@ -5,3 +5,6 @@
 # Runtime data
 data/
 .DS_Store
+
+# Local self-link so (theourgia x) resolves from the checkout; never tracked.
+/theourgia
