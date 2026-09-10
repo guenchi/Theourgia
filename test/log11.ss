@@ -69,6 +69,11 @@
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" A "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
+  (putenv "THEOURGIA_HOME" (string-append d "/home"))
+  ;; ONLY THE LOCAL WRITER GETS AN owner.sexp -- that file is what makes
+  ;; a writer local, so stamping every directory turned the mirrored
+  ;; writer into a second local one.
+  (let ((n (instance-install! d))) (owner-install! d A n))
   (put! (wpath A 1) (cat (r "a" 1) (r "a" 2)))
   (put! (wpath B 1) (r "b" 1))
   (put! (wpath B 2) (r "b" 2))

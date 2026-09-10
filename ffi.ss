@@ -217,8 +217,8 @@
           theourgia-fault theourgia-fault-armed? theourgia-stage
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
-          unlink! file-create-exclusive!
-          process-id wall-clock-ms)
+          unlink! file-create-exclusive! mkdir-p!
+          process-id wall-clock-ms machine-home)
   (import (chezscheme)
           (theourgia trace)
           (only (igropyr platform)
@@ -281,6 +281,37 @@
                   (trace-event! 'create path #f)
                   path))))
 
+  ;; CREATE A DIRECTORY, PARENTS INCLUDED. R6RS has no mkdir; this is
+  ;; the platform layer's job like every other name-space change, and it
+  ;; is traced for the same reason the others are -- the crash model
+  ;; rebuilds surviving entries from the trace.
+  (define (mkdir-p! path)
+    (unless (and (string? path) (> (string-length path) 0))
+      (assertion-violation 'mkdir-p! "path must be a non-empty string" path))
+    (let loop ((i 1))
+      (cond
+        ((> i (string-length path))
+         (unless (file-is-directory? path)
+           (mkdir-one! path))
+         path)
+        ((or (= i (string-length path)) (char=? (string-ref path i) #\/))
+         (let ((prefix (substring path 0 i)))
+           (unless (or (string=? prefix "") (file-is-directory? prefix))
+             (mkdir-one! prefix)))
+         (loop (+ i 1)))
+        (else (loop (+ i 1))))))
+
+  ;; A SWALLOWED FAILURE IS ACCEPTED ONLY IF THE DIRECTORY IS THERE
+  ;; AFTERWARDS. The race this tolerates is another process creating the
+  ;; same directory first; every other failure -- a permission error, a
+  ;; regular file already occupying the name -- was being reported as
+  ;; success, so mkdir-p! on "/dev/null" answered "/dev/null".
+  (define (mkdir-one! path)
+    (guard (e (#t (unless (file-is-directory? path)
+                    (raise (fs-err 'mkdir path #f)))))
+      (mkdir path)
+      (trace-event! 'create path #f)))
+
   (define (unlink! path)
     (unless (string? path)
       (assertion-violation 'unlink! "path must be a string" path))
@@ -291,6 +322,30 @@
       path))
 
   (define (process-id) (get-process-id))
+
+  ;; THE MACHINE HOME IS A SEAM AND A HAZARD, and it is read here because
+  ;; reading the environment is this layer's job. THEOURGIA_HOME lets a
+  ;; fixture keep its own registry -- without it every test on a machine
+  ;; would share one water mark. It is also a switch that lets a process
+  ;; ignore a rollback, which is exactly what the registry exists to
+  ;; catch, so a non-default value announces itself on startup rather
+  ;; than being silently in force.
+  (define (machine-home)
+    (let ((v (getenv "THEOURGIA_HOME")))
+      (if (and (string? v) (> (string-length v) 0))
+          v
+          (let ((h (getenv "HOME")))
+            (string-append (if (string? h) h "/tmp") "/.theourgia")))))
+
+  (define machine-home-announced
+    (let ((v (getenv "THEOURGIA_HOME")))
+      (when (and (string? v) (> (string-length v) 0))
+        (let ((p (current-error-port)))
+          (put-string p "(theourgia machine-home ")
+          (put-string p v)
+          (put-string p ")\n")
+          (flush-output-port p)))
+      #t))
 
   ;; MILLISECONDS SINCE THE EPOCH, and it has to come from here because
   ;; it is the one clock the record format names. Chez's `real-time` is
@@ -583,6 +638,19 @@
              (get-u8 p)
              (close-port p)))))
 
+     ;; A ONE-SHOT STAT FAILURE, path-scoped like the write faults.
+     ;; Without it, "a probe that cannot answer is not an answer of no"
+     ;; is a rule no input can exercise: the guarded and unguarded
+     ;; versions of a size probe behave identically whenever stat works,
+     ;; so the guard survives every mutation unpunished.
+     (define (stat-fault? path)
+       (and fault-name
+            (eq? fault-name 'stat-fail)
+            (in-fault-stage?)
+            (or (not fault-arg) (fault-path-match? #f path))
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) #t)))
+
      ;; -> skip | fail | #f
      (define (fsync-fault fd subject kind)
        (cond
@@ -628,6 +696,15 @@
                 (when (> n 0) (set-box! fault-state 'partial))
                 (values n code))
               (values -1 EIO)))
+         ;; FAILS BEFORE THE FIRST BYTE. write-eio-after-partial cannot
+         ;; produce this: it fails only after its partial has landed, so
+         ;; the outcome that means "reserved and nothing written" had no
+         ;; way to be reached, and a caller could not be shown that a
+         ;; retry is safe there.
+         ((write-eio-first)
+          (if (eq? (unbox fault-state) 'fresh)
+              (begin (set-box! fault-state 'done) (values -1 EIO))
+              (real-write fd bv count)))
          (else (real-write fd bv count)))))
 
     (else
@@ -637,6 +714,7 @@
      ;; form the compiler can fold away.
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
+     (define (stat-fault? path) #f)
      (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
      (define (write-once fd bv count subject) (real-write fd bv count))))
@@ -818,6 +896,7 @@
   ;; field, while lseek returns one integer that means the same thing
   ;; everywhere.
   (define (file-size path)
+    (when (stat-fault? path) (fail-with! 'stat path EIO))
     (let ((fd (fd-open path '(read))))
       (let ((done (box #f)))
         (dynamic-wind
@@ -827,6 +906,9 @@
             (unless (unbox done)
               (set-box! done #t)
               (close-quietly fd)))))))
+
+  (define (fail-with! op target code)
+    (raise (fs-err op target code)))
 
   (define (ftruncate! fd length . opts)
     (unless (and (integer? length) (exact? length) (>= length 0))

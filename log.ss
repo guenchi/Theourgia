@@ -57,7 +57,8 @@
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
-          log-clock
+          log-clock registry-path machine-lock-path instance-install!
+          session-retired? owner-install!
           log-open log-open-in-session load-prefix load-writers load-integrity
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
@@ -1409,9 +1410,7 @@
     (let loop ((es (load-session-prefixes ls)))
       (cond
         ((null? es) #f)
-        ((and (eq? (discovery-origin (cdar es)) 'local)
-              (not (discovery-retired (cdar es))))
-         (caar es))
+        ((eq? (discovery-origin (cdar es)) 'local) (caar es))
         (else (loop (cdr es))))))
 
   ;; THE LOCK IS RELEASED BY THE SAME UNWIND THAT RELEASES THE GUARD.
@@ -1574,10 +1573,16 @@
   ;; state the next record's facts would be computed from includes it.
   ;; Handing out a view here would let a caller compute deps and an
   ;; ordering against a reduction that has not seen its own predecessor.
+  (define (session-retired? s)
+    (let* ((writer (session-writer s))
+           (entry (and writer (assoc writer (load-session-prefixes (session-load s))))))
+      (and entry (discovery-retired (cdr entry)) #t)))
+
   (define (session-view s)
     (check-live! 'session-view s)
     (let ((writer (session-writer s)))
       (and writer
+           (not (session-retired? s))
            (not (session-unconfirmed s))
            (session-next-seq s)
            (make-view (session-revision s) (session-epoch s) writer
@@ -1613,6 +1618,303 @@
 
   (define (now-ms) ((log-clock)))
 
+
+  ;; ---- instance identity (section 4.1) --------------------------------------
+
+  ;; FOUR FIELDS, ALL OF THEM, ON EVERY APPEND. Comparing the water mark
+  ;; alone is not enough and the counterexample is concrete: P opens W,
+  ;; Q adopts W into U, P then takes the lock -- W's last sequence still
+  ;; equals the mark, the number check passes, and W has been retired.
+  ;; The identity is re-read inside the lock rather than cached from
+  ;; log-begin, because that is the window the adopt happens in.
+  (define (read-instance store)
+    (let ((path (string-append store "/instance.sexp")))
+      (and (file-exists? path)
+           (let ((d (guard (e (#t 'malformed))
+                      (string->sexpr-extended (utf8->string (read-whole path))))))
+             (if (eq? d 'malformed) 'malformed d)))))
+
+  (define (alist-ref d key)
+    (let loop ((xs (if (list? d) d '())))
+      (cond
+        ((null? xs) #f)
+        ((and (list? (car xs)) (= 2 (length (car xs))) (eq? (caar xs) key))
+         (cadr (car xs)))
+        (else (loop (cdr xs))))))
+
+  ;; -> ok | (mismatch field) | absent | malformed
+  (define (verify-instance store)
+    (let ((d (read-instance store)))
+      (cond
+        ((not d) 'absent)
+        ((eq? d 'malformed) 'malformed)
+        (else
+         (call-with-values (lambda () (path-device-inode store))
+           (lambda (dev ino)
+             (cond
+               ((not (equal? (alist-ref d 'machine) (machine-id))) (list 'mismatch 'machine))
+               ((not (eqv? (alist-ref d 'device) dev)) (list 'mismatch 'device))
+               ((not (eqv? (alist-ref d 'inode) ino)) (list 'mismatch 'inode))
+               ((not (alist-ref d 'nonce)) (list 'mismatch 'nonce))
+               ;; THE NONCE IS THE REGISTRY KEY, so "it is present" is
+               ;; not enough. Changing it alone -- machine, device and
+               ;; inode all still right -- moves the lookup to an entry
+               ;; that does not exist, and the water mark that would have
+               ;; refused a restored log is simply not found. owner.sexp
+               ;; records which instance the writer belongs to; the two
+               ;; must agree.
+               ((let ((owned (owner-nonce store)))
+                  (and owned (not (equal? owned (alist-ref d 'nonce)))))
+                (list 'mismatch 'nonce))
+               (else 'ok))))))))
+
+  (define (owner-nonce store)
+    (let loop ((ws (store-writers store)))
+      (cond
+        ((null? ws) #f)
+        (else
+         (let* ((path (writer-file store (car ws) "owner.sexp"))
+                (d (and (file-exists? path)
+                        (guard (e (#t #f))
+                          (string->sexpr-extended (utf8->string (read-whole path)))))))
+           (or (and d (alist-ref d 'instance)) (loop (cdr ws))))))))
+
+  ;; The machine's own identity: a name plus a nonce minted once and kept
+  ;; in the machine home, so that two machines that happen to share a
+  ;; host name are still two machines.
+  ;; MINTED ONCE PER MACHINE HOME, on first use. Two machines that
+  ;; happen to share a host name are still two machines, so the identity
+  ;; is a nonce rather than the name; it lives beside the registry
+  ;; because that is the thing it qualifies.
+  (define (machine-id)
+    (let ((path (string-append (machine-home) "/machine.sexp")))
+      (if (file-exists? path)
+          (guard (e (#t "unknown"))
+            (alist-ref (string->sexpr-extended (utf8->string (read-whole path))) 'machine))
+          ;; MINTED UNDER THE MACHINE LOCK, and re-read inside it. Two
+          ;; processes that both find the file missing would otherwise
+          ;; both mint, and the loser's freshly initialised store fails
+          ;; its own identity check on the very next append.
+          (begin
+            (ensure-machine-home!)
+            (with-machine-lock
+              (lambda ()
+                (if (file-exists? path)
+                    (guard (e (#t "unknown"))
+                      (alist-ref (string->sexpr-extended (utf8->string (read-whole path)))
+                                 'machine))
+                    (let ((minted (string-append "m-" (number->string (process-id))
+                                                 "-" (number->string (wall-clock-ms)))))
+                      (atomic-write! path
+                                     (string->utf8
+                                       (string-append "((machine \"" minted "\"))\n"))
+                                     'registry)
+                      minted))))))))
+
+  ;; WRITES THE STORE'S INSTANCE IDENTITY. This is what init and the
+  ;; identity-mismatch branch of adopt install; it is here rather than in
+  ;; a fixture because the four fields it records are the same four that
+  ;; every append re-verifies, and two places writing them is two places
+  ;; to disagree.
+  ;; owner.sexp RECORDS WHICH INSTANCE THE WRITER BELONGS TO. Without it
+  ;; the nonce in instance.sexp has nothing to be checked against, and a
+  ;; swapped nonce silently moves the registry lookup to an entry that
+  ;; does not exist -- so the water mark that should refuse a restored
+  ;; log is simply not found.
+  (define (owner-install! store writer nonce)
+    (atomic-write! (writer-file store writer "owner.sexp")
+                   (string->utf8
+                     (string-append "((machine \"" (machine-id) "\")"
+                                    " (instance \"" nonce "\"))\n"))
+                   'registry)
+    writer)
+
+  (define (instance-install! store)
+    (call-with-values (lambda () (path-device-inode store))
+      (lambda (dev ino)
+        (let ((nonce (string-append "n-" (number->string (process-id))
+                                    "-" (number->string (wall-clock-ms)))))
+          (atomic-write! (string-append store "/instance.sexp")
+                         (string->utf8
+                           (string-append "((machine \"" (machine-id) "\")"
+                                          " (device " (number->string dev) ")"
+                                          " (inode " (number->string ino) ")"
+                                          " (nonce \"" nonce "\"))\n"))
+                         'registry)
+          nonce))))
+
+  (define (instance-nonce store)
+    (let ((d (read-instance store)))
+      (and (list? d) (alist-ref d 'nonce))))
+
+  (define (store-id-of store)
+    (let ((d (guard (e (#t #f))
+               (string->sexpr-extended (utf8->string (read-whole (string-append store "/meta.sexp")))))))
+      (or (alist-ref d 'store-id) "unknown")))
+
+  ;; ---- the machine registry (section 4.1) -----------------------------------
+
+  ;; THE REGISTRY IS OUTSIDE THE STORE, and that is the whole point. An
+  ;; in-place restore of a backup leaves the store's own metadata
+  ;; consistent with itself -- same identity triple, same owner, an
+  ;; earlier log -- so nothing inside the directory can tell that history
+  ;; was rolled back. A water mark kept somewhere the backup did not
+  ;; cover can.
+  ;;
+  ;; IT IS A PRECONDITION OF THE COMMIT, NOT A RECORD OF IT. The mark is
+  ;; raised and made durable BEFORE the log write, so the only way the
+  ;; two can disagree after a crash is registry-ahead-of-log, which is
+  ;; refused and repaired by adopt. The other order would let a log entry
+  ;; survive with no mark, and then a restore to just before it would
+  ;; look legitimate.
+  ;; READ ONCE PER OPERATION. Consulting the environment at every use
+  ;; let one reservation read its registry from one home and write it
+  ;; back to another, losing a mark a second process had raised in
+  ;; between -- and the maximum-merge cannot recover a value that was
+  ;; never read.
+  (define current-machine-home (make-parameter #f))
+
+  (define (home-now)
+    (or (current-machine-home) (machine-home)))
+
+  (define (registry-path) (string-append (home-now) "/instances.sexp"))
+  (define (machine-lock-path) (string-append (home-now) "/lock"))
+
+  ;; THE HOME'S OWN ENTRY HAS TO SURVIVE THE CRASH TOO. Creating the
+  ;; directory and then flushing only files inside it leaves the whole
+  ;; registry removable by the crash model while the log record it
+  ;; vouches for survives -- a record with no mark, which is the one
+  ;; state the registry exists to make impossible.
+  (define (ensure-machine-home!)
+    (let ((home (machine-home)))
+      (unless (file-is-directory? home)
+        (mkdir-p! home)
+        (fsync-dir! (parent-of home)))
+      (file-ensure! (machine-lock-path))
+      home))
+
+  (define (parent-of path)
+    (let loop ((i (- (string-length path) 1)))
+      (cond
+        ((< i 1) "/")
+        ((char=? (string-ref path i) #\/) (substring path 0 i))
+        (else (loop (- i 1))))))
+
+  (define (read-registry)
+    (let ((path (registry-path)))
+      (trace-event! 'registry-check path #f)
+      (if (not (file-exists? path))
+          '()
+          (let ((d (guard (e (#t 'malformed))
+                     (string->sexpr-extended (utf8->string (read-whole path))))))
+            (cond
+              ((eq? d 'malformed)
+               (raise (make-log-error 'registry-malformed #f #f #f
+                                      (list (cons 'path path)))))
+              ((list? d) d)
+              (else
+               (raise (make-log-error 'registry-malformed #f #f #f
+                                      (list (cons 'path path))))))))))
+
+  ;; ENTRIES ARE (store-id instance writer seq state), keyed by the first
+  ;; four; the mark only ever rises. "Only ever rises" is what makes a
+  ;; concurrent reader-modifier safe under the machine lock: two
+  ;; processes that both read 100 and write 101 and 102 cannot lose the
+  ;; larger, because the merge takes the maximum rather than the later
+  ;; write.
+  (define (registry-entry reg store-id instance writer)
+    (let loop ((es reg))
+      (cond
+        ((null? es) #f)
+        ((and (list? (car es)) (>= (length (car es)) 4)
+              (equal? (car (car es)) store-id)
+              (equal? (cadr (car es)) instance)
+              (equal? (caddr (car es)) writer))
+         (car es))
+        (else (loop (cdr es))))))
+
+  (define (registry-mark reg store-id instance writer)
+    (let ((e (registry-entry reg store-id instance writer)))
+      (and e (cadddr e))))
+
+  (define (registry-raise reg store-id instance writer seq)
+    (let ((found (vector #f)))
+      (let ((updated
+              (map (lambda (e)
+                     (if (and (list? e) (>= (length e) 4)
+                              (equal? (car e) store-id)
+                              (equal? (cadr e) instance)
+                              (equal? (caddr e) writer))
+                         (begin (vector-set! found 0 #t)
+                                (list store-id instance writer
+                                      (max seq (cadddr e))
+                                      (if (>= (length e) 5) (list-ref e 4) 'active)))
+                         e))
+                   reg)))
+        (if (vector-ref found 0)
+            updated
+            (append updated (list (list store-id instance writer seq 'active)))))))
+
+  ;; THE MACHINE LOCK IS TAKEN AFTER THE STORE LOCK, ALWAYS. The order is
+  ;; fixed so that two processes touching two stores cannot each hold one
+  ;; of the pair and wait for the other.
+  (define (with-machine-lock thunk)
+    (ensure-machine-home!)
+    ;; THE MACHINE HOME MAY NOT BE THE STORE. The store lock is already
+    ;; held when this runs, so a home inside the store would make this
+    ;; acquire the same file through a second descriptor and wait for a
+    ;; lock this very call stack is holding.
+    (when (store-lock-collision?)
+      (assertion-violation 'with-machine-lock
+        "THEOURGIA_HOME must not put the machine lock inside a store" (home-now)))
+    (let ((lock (lock-acquire! (machine-lock-path) 'exclusive)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        thunk
+        (lambda () (guard (e (#t (if #f #f))) (lock-release! lock))))))
+
+  ;; STEP 7: THE WATER MARK IS RECHECKED AND RAISED IN ONE CRITICAL
+  ;; SECTION. Checking at load time is not enough -- another process can
+  ;; adopt this writer in between, and the check that matters is the one
+  ;; that happens on the way to this write.
+  ;; THE STORE WHOSE LOCK IS ALREADY HELD, so that every path that takes
+  ;; the machine lock can check for the collision -- including minting
+  ;; the machine identity, which is where it first bit: identity
+  ;; verification runs inside the store lock, and a home with no
+  ;; machine.sexp mints one under the machine lock.
+  (define current-store (make-parameter #f))
+
+  (define (store-lock-collision?)
+    (let ((store (current-store)))
+      (and store
+           (let ((a (guard (e (#t #f))
+                      (call-with-values (lambda () (path-device-inode (machine-lock-path)))
+                        (lambda (d i) (cons d i)))))
+                 (b (guard (e (#t #f))
+                      (call-with-values
+                        (lambda () (path-device-inode (string-append store "/lock")))
+                        (lambda (d i) (cons d i))))))
+             (and a b (equal? a b))))))
+
+  (define (reserve! store store-id instance writer seq)
+    (parameterize ((current-machine-home (machine-home)))
+      (with-machine-lock
+      (lambda ()
+        (let* ((reg (read-registry))
+               (mark (registry-mark reg store-id instance writer)))
+          (barrier! 'registry-read)
+          (cond
+            ((and mark (>= mark seq))
+             (list 'registry-ahead mark))
+            (else
+             (let ((next (registry-raise reg store-id instance writer seq)))
+               (trace-event! 'registry-write (registry-path) #f)
+               (atomic-write! (registry-path)
+                              (string->utf8 (string-append (sexpr->string-extended next) "\n"))
+                              'registry)
+               (barrier! 'after-reserve)
+               'reserved))))))))
+
   ;; ---- session-append! (section 5.2, steps 1-9) -----------------------------
 
   ;; THE ORDER OF THE STEPS IS THE CONTRACT, not an implementation
@@ -1635,6 +1937,10 @@
                              (list (cons 'store (session-store s))
                                    (cons 'remedy 'adopt)))))
     (barrier! 'before-append)
+    (parameterize ((current-store (session-store s)))
+      (append-under-store s frame)))
+
+  (define (append-under-store s frame)
     (let ((refusal (binding-refusal s frame)))
       (if refusal
           (list 'refused-before-reserve refusal)
@@ -1647,6 +1953,7 @@
   (define (binding-refusal s frame)
     (let ((view (session-view s)))
       (cond
+        ((and (not view) (session-retired? s)) 'retired)
         ((and (not view) (session-unconfirmed s)) 'not-ready)
         ((not view) 'no-local-writer)
         ((not (eqv? (frame-epoch frame) (session-epoch s))) 'epoch)
@@ -1696,7 +2003,50 @@
   ;; that is repaired rather than refused, and the repair is a truncation
   ;; to the last complete frame -- never a rewrite, never a sealed
   ;; segment.
+  ;; STEP 7 SITS BETWEEN MAINTENANCE AND THE WRITE, and it is the only
+  ;; step that touches anything outside the store. Its failure modes are
+  ;; deliberately different from the write's: a refused reservation means
+  ;; nothing was written and nothing will be, while a reservation that
+  ;; succeeds and is then followed by a failed write leaves the mark
+  ;; ahead of the log -- which the next load refuses and adopt repairs.
+  ;; RETIREMENT IS NOT RE-DECIDED HERE. The binding refuses a retired
+  ;; writer before this is reached -- session-view withholds the view and
+  ;; binding-refusal names it -- and a second check of the same rule is a
+  ;; second supplier that can disagree with the first.
+  (define (reserve-then-write! s frame p line seq target target-path)
+    (let* ((store (session-store s))
+           (writer (session-writer s))
+           (identity (verify-instance store)))
+      (cond
+        ((eq? identity 'malformed)
+         (list 'refused-before-reserve 'instance-malformed))
+        ;; A STORE WITH NO INSTANCE IDENTITY CANNOT BE WRITTEN. It has
+        ;; never been through init, so there is nothing to compare a
+        ;; copy against -- and the copy is what the identity exists to
+        ;; catch.
+        ((eq? identity 'absent)
+         (list 'refused-before-reserve 'no-instance))
+        ((pair? identity)
+         (list 'refused-before-reserve (list 'instance (cadr identity))))
+        (else
+         (let ((outcome (reserve! store (store-id-of store) (instance-nonce store)
+                                  writer seq)))
+           (cond
+             ((and (pair? outcome) (eq? (car outcome) 'registry-ahead))
+              (list 'refused-before-reserve 'registry-ahead))
+             (else (write-line! s frame line seq target target-path))))))))
+
+  ;; THE STAGE COVERS MAINTENANCE AS WELL AS THE WRITE. Rotation's size
+  ;; probe, its flushes and the torn-tail truncation are all part of
+  ;; committing this record, and a fault aimed at the commit stage that
+  ;; cannot reach them leaves those paths untestable -- the size probe
+  ;; ran with no stage declared at all, so stat-fail@commit passed
+  ;; straight through it.
   (define (maintain-and-write! s frame p line seq)
+    (parameterize ((theourgia-stage 'commit))
+      (maintain-and-write-staged! s frame p line seq)))
+
+  (define (maintain-and-write-staged! s frame p line seq)
     (let* ((store (session-store s))
            (writer (session-writer s))
            (dir (writer-directory store writer))
@@ -1720,7 +2070,7 @@
             (let* ((rotated (maybe-rotate! store writer seg path p line))
                    (target (car rotated))
                    (target-path (cdr rotated)))
-              (write-line! s frame line seq target target-path))))))
+              (reserve-then-write! s frame p line seq target target-path))))))
 
   ;; ROTATION IS A DIRECTORY-ENTRY TRANSACTION and its order is the
   ;; recoverable one: flush what is there, make the new entry, flush it,

@@ -65,6 +65,15 @@
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
+  ;; ITS OWN MACHINE HOME. Without this the fixture shares one registry
+  ;; with every other store on the machine, so its water marks persist
+  ;; across rows and across runs -- the second row would be refused as a
+  ;; rollback of the first.
+  (putenv "THEOURGIA_HOME" (string-append d "/home"))
+  ;; ONLY THE LOCAL WRITER GETS AN owner.sexp -- that file is what makes
+  ;; a writer local, so stamping every directory turned the mirrored
+  ;; writer into a second local one.
+  (let ((n (instance-install! d))) (owner-install! d W n))
   (if (null? segs)
       (put! (wpath 1) (cat (r 1) (r 2)))
       (for-each (lambda (i bytes) (put! (wpath i) bytes))
@@ -279,9 +288,26 @@
     (cond ((null? os) '())
           ((string=? (car os) mark) (cdr os))
           (else (loop (cdr os))))))
+;; SCOPED TO THIS WRITER'S SEGMENT AND THIS STORE'S LOCK. The registry
+;; sits between framing and the log write and does its own writes,
+;; flushes and unlocking; folding those in would make the row assert two
+;; mechanisms at once, and a change to either would rewrite it.
+(define (about-segment? l)
+  (or (has-substring? l "000001.sexp") (has-substring? l "000002.sexp")))
+(define (about-store-lock? l) (has-substring? l "log12work/lock"))
+(define (segment-ops text)
+  (map op-of
+       (filter (lambda (l)
+                 (or (string=? (op-of l) "apply")
+                     (and (about-segment? l)
+                          (member (op-of l) '("ftruncate" "write" "fsync")))
+                     (and (about-store-lock? l) (string=? (op-of l) "unlock"))))
+               (let loop ((ls (events text)))
+                 (cond ((null? ls) '())
+                       ((string=? (op-of (car ls)) "catch-up") (cdr ls))
+                       (else (loop (cdr ls))))))))
 (want "the repair truncates, then writes, then flushes, then applies"
-      (filter (lambda (o) (member o '("ftruncate" "write" "fsync" "apply" "unlock")))
-              (ops-after l1-trace "catch-up"))
+      (segment-ops l1-trace)
       '("ftruncate" "write" "fsync" "apply" "unlock"))
 (want "and the file is the valid prefix plus the new record, byte for byte"
       (equal? (slurp (wpath 1)) (cat (r 1) (r 2) (rec 3 fixed-ts '() '(put "w.3" ()))))
@@ -301,16 +327,7 @@
 ;; and unlock. The events are taken from the append onward and the fsync
 ;; must name the segment that was written.
 (want "write the segment, flush THAT segment, apply, unlock -- in that order"
-      (let ((es (let loop ((l (events i-trace)))
-                  (cond ((null? l) '())
-                        ((string=? (op-of (car l)) "catch-up") (cdr l))
-                        (else (loop (cdr l)))))))
-        (map op-of
-             (filter (lambda (l)
-                       (or (member (op-of l) '("apply" "unlock"))
-                           (and (member (op-of l) '("write" "fsync"))
-                                (has-substring? l "000001.sexp"))))
-                     es)))
+      (segment-ops i-trace)
       '("write" "fsync" "apply" "unlock"))
 
 (printf "== L9 / 4.4: rotation, and sealed segments stay sealed ==\n")
@@ -325,11 +342,18 @@
       (list (enumerate-segment-files d W) (len-of (wpath 1)) (len-of (wpath 2)))
       (list '(1 2) (* 2 R) R))
 (want "rotation is fsync current, create next, fsync next, fsync directory"
-      (let loop ((os (ops-after rot-trace "catch-up")) (acc '()))
-        (cond ((null? os) (reverse acc))
-              ((string=? (car os) "write") (reverse acc))
-              ((member (car os) '("create" "fsync")) (loop (cdr os) (cons (car os) acc)))
-              (else (loop (cdr os) acc))))
+      (let loop ((ls (let inner ((l (events rot-trace)))
+                       (cond ((null? l) '())
+                             ((string=? (op-of (car l)) "catch-up") (cdr l))
+                             (else (inner (cdr l))))))
+                 (acc '()))
+        (cond ((null? ls) (reverse acc))
+              ((and (about-segment? (car ls)) (string=? (op-of (car ls)) "write"))
+               (reverse acc))
+              ((and (has-substring? (car ls) (string-append "writers/" W))
+                    (member (op-of (car ls)) '("create" "fsync")))
+               (loop (cdr ls) (cons (op-of (car ls)) acc)))
+              (else (loop (cdr ls) acc))))
       '("fsync" "create" "fsync" "fsync"))
 (want "and nothing writes to or truncates the sealed segment"
       (filter (lambda (l) (and (has-substring? l "000001.sexp")
