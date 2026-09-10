@@ -1473,8 +1473,13 @@
               'suppressed
               (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
                 (cond
+                  ;; NO `apply` EVENT HERE. Plan section 0 defines that op
+                  ;; as step 9's in-lock application, between the log
+                  ;; fsync and the unlock; emitting it for a delivery
+                  ;; confirmation as well gave one name two meanings, and
+                  ;; the delivery-time events then masked the commit-time
+                  ;; one in any row that deduplicated.
                   ((eq? answer 'applied)
-                   (trace-event! 'apply (cons writer seq) #f)
                    (note-applied! s writer seq))
                   ((and (pair? answer) (eq? (car answer) 'rejected))
                    (set! stopped (cons writer stopped))))
@@ -1522,10 +1527,23 @@
     ;; AND IT NEVER GOES BACKWARDS within an epoch: a delayed report of
     ;; an earlier sequence is stale, not a retraction. Retracting applied
     ;; state is what a reset is for.
+    ;; A CONFIRMATION CANNOT EXCEED WHAT EXISTS. Reporting a sequence
+    ;; the store does not hold used to be accepted, and the readiness
+    ;; gate then compared "applied 99" against "reaches 2" and handed
+    ;; out a preparation view for history that was never there. The
+    ;; bound includes this session's own commits, because confirming a
+    ;; record this session just wrote is legitimate even though the
+    ;; discovery it was opened with ends earlier.
+    (for-each (lambda (e)
+                (let ((limit (available-through s (car e))))
+                  (when (and limit (> (cdr e) limit))
+                    (assertion-violation 'session-applied!
+                      "confirmed past the end of that writer's history"
+                      (list (car e) (cdr e) limit)))))
+              cut)
     (for-each (lambda (e)
                 (let ((have (assoc (car e) (session-applied s))))
                   (when (or (not have) (> (cdr e) (cdr have)))
-                    (trace-event! 'apply (cons (car e) (cdr e)) #f)
                     (note-applied! s (car e) (cdr e)))))
               cut)
     (let ((mine (and (session-writer s) (assoc (session-writer s) cut)))
@@ -1540,6 +1558,21 @@
   ;; alist made (set-cdr! (car cut) 99) a third path -- no epoch check,
   ;; no revision bump, no confirmation.
   (define (copy-cut cut) (map (lambda (e) (cons (car e) (cdr e))) cut))
+
+  ;; How far that writer's history reaches as far as this session knows:
+  ;; what discovery found, extended by anything this session has since
+  ;; committed for its own writer.
+  (define (available-through s writer)
+    (let* ((entry (assoc writer (load-session-prefixes (session-load s))))
+           (found (and entry (discovery-end-seq (cdr entry))))
+           (mine (and (session-writer s) (string=? writer (session-writer s))
+                      (session-next-seq s)
+                      (- (session-next-seq s) 1))))
+      (cond
+        ((and found mine) (max found mine))
+        (found found)
+        (mine mine)
+        (else #f))))
 
   ;; FOUR FRONTIERS, PER WRITER, and they are deliberately not one
   ;; number: read, validated, applied and durable answer different
@@ -1578,12 +1611,29 @@
            (entry (and writer (assoc writer (load-session-prefixes (session-load s))))))
       (and entry (discovery-retired (cdr entry)) #t)))
 
+  ;; THE READINESS GATE. Two different ways the reducer can be behind,
+  ;; and only one of them blocks: a record of THIS writer that was
+  ;; delivered and answered `pending` means the append's own predecessor
+  ;; has not been applied, so the facts the next record would carry
+  ;; would be computed against a state that does not include it. Another
+  ;; writer's pending records are unrelated history and are no reason to
+  ;; refuse -- the log is not a total order.
+  (define (predecessor-applied? s)
+    (let* ((writer (session-writer s))
+           (entry (and writer (assoc writer (load-session-prefixes (session-load s)))))
+           (reach (and entry (discovery-end-seq (cdr entry))))
+           (have (let ((e (and writer (assoc writer (session-applied s)))))
+                   (if e (cdr e) 0))))
+      (and reach (>= have reach))))
+
   (define (session-view s)
     (check-live! 'session-view s)
     (let ((writer (session-writer s)))
       (and writer
+           (not (session-poisoned s))
            (not (session-retired? s))
            (not (session-unconfirmed s))
+           (predecessor-applied? s)
            (session-next-seq s)
            (make-view (session-revision s) (session-epoch s) writer
                       (session-next-seq s)
@@ -1953,8 +2003,10 @@
   (define (binding-refusal s frame)
     (let ((view (session-view s)))
       (cond
+        ((and (not view) (session-poisoned s)) 'writer-stopped)
         ((and (not view) (session-retired? s)) 'retired)
         ((and (not view) (session-unconfirmed s)) 'not-ready)
+        ((and (not view) (not (predecessor-applied? s))) 'predecessor-not-applied)
         ((not view) 'no-local-writer)
         ((not (eqv? (frame-epoch frame) (session-epoch s))) 'epoch)
         ((not (eqv? (frame-view-id frame) (view-revision view))) 'view)
