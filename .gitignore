@@ -1,0 +1,7 @@
+# Build products
+*.so
+*.wpo
+
+# Runtime data
+data/
+.DS_Store
