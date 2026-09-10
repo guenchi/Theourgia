@@ -15,6 +15,10 @@
 ;; The faults that leave a file behind, so the file can be asked what
 ;; actually happened rather than the error being taken at its word.
 (import (chezscheme) (theourgia ffi) (theourgia trace))
+;; The trace switch is injected now, not a parameter: (theourgia trace)
+;; takes neither getenv nor make-parameter so that it stays portable.
+(define theourgia-trace?
+  (make-parameter #f (lambda (v) (trace-enable! v) v)))
 (define dir (cadr (command-line)))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "/reg"))
 (define log (string-append dir "/000001.sexp"))
@@ -25,7 +29,7 @@
 ;; A call site must say which stage it is, or a staged fault cannot aim
 ;; at it -- which is the whole point of the stage dimension. The log
 ;; layer will declare these; this fixture stands in for it.
-(begin (trace-enable! #t)
+(parameterize ((theourgia-trace? #t))
   (guard (e ((fs-error? e)
              (printf "write raised op=~a errno=~a\n" (fs-error-op e) (fs-error-errno e))))
     (parameterize ((theourgia-stage 'commit))

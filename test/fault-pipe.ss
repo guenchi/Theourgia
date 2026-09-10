@@ -18,6 +18,10 @@
 ;; re-enters -- runs for real, and out.dat says whether it copied the
 ;; right bytes.
 (import (chezscheme) (theourgia ffi))
+;; The trace switch is injected now, not a parameter: (theourgia trace)
+;; takes neither getenv nor make-parameter so that it stays portable.
+(define theourgia-trace?
+  (make-parameter #f (lambda (v) (trace-enable! v) v)))
 (define dir (cadr (command-line)))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "; mkfifo " dir "/f"))
 (system (string-append "cat " dir "/f > " dir "/out.dat &"))
@@ -30,7 +34,7 @@
             (bytevector-u8-set! bv i (modulo (quotient x 65536) 256))
             (loop (+ i 1) x))))))
 (define fd (fd-open (string-append dir "/f") '(write)))
-(begin (trace-enable! #t)
+(parameterize ((theourgia-trace? #t))
   (printf "returned ~a of ~a\n" (write-all! fd payload) n))
 (fd-close fd)
 (sleep (make-time 'time-duration 0 1))

@@ -16,6 +16,10 @@
 ;; fails must never reach the parser. A good line is the control -- if
 ;; it also emitted no parse event the silence below would mean nothing.
 (import (chezscheme) (theourgia wire) (theourgia crc32) (theourgia trace))
+;; The trace switch is injected now, not a parameter: (theourgia trace)
+;; takes neither getenv nor make-parameter so that it stays portable.
+(define theourgia-trace?
+  (make-parameter #f (lambda (v) (trace-enable! v) v)))
 (define good (encode-record 412 1757300000123 "who" '() '(put "x" ((a . 1)))))
 (define bad (let ((c (bytevector-copy good)))
               (bytevector-u8-set! c 20 (if (= 65 (bytevector-u8-ref c 20)) 66 65))
@@ -31,7 +35,7 @@
 
 (define (run label bv)
   (printf "~a: " label)
-  (let ((r (begin (trace-enable! #t) (decode-line bv))))
+  (let ((r (parameterize ((theourgia-trace? #t)) (decode-line bv))))
     (printf "-> ~s\n" r)))
 (run "good line (control: a parse event MUST appear)" good)
 (run "bad crc  (no parse event may appear)" bad)
