@@ -52,9 +52,13 @@
 
 (library (theourgia log)
   (export directory-entry-durable!
-          log-open log-replay log-integrity log-torn-tails
-          log-adopted-snapshot log-quarantine-version log-writer-origin
-          log-store log-writers
+          discover-prefix
+          discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
+          discovery-segment-ranges discovery-physical-current discovery-current-buffer
+          discovery-torn discovery-integrity discovery-quarantine discovery-retired
+          discovery-versions discovery-clean?
+          log-open log-open-in-session load-prefix load-writers load-integrity
+          load-commit! load-abort! load-outcome
           snapshot-write! snapshot-read snapshot-cut-supported?
           scan-segment
           atomic-write!
@@ -682,356 +686,434 @@
                  (have (assoc (car e) coverage)))
             (and have (>= (cdr have) (cdr e)) (loop (cdr xs)))))))
 
-  ;; ---- opening and replaying ----------------------------------------------
+  ;; ---- validated prefix discovery ------------------------------------------
 
-  ;; A READER TOUCHES NOTHING. Not a byte, not a name, not a timestamp:
-  ;; invariant 9.7.2, and L4 asserts it by comparing the whole directory
-  ;; listing and every file's hash before and after. That is why the lock
-  ;; helpers refuse to create the lock file, why nothing here calls
-  ;; atomic-write!, and why a read-only open performs NO takeover barrier
-  ;; -- delivery-implies-durability is a property of a writing session,
-  ;; and a reader has no dependencies to underwrite.
+  ;; THE SINGLE SUPPLIER. "How far does this writer's valid history
+  ;; reach?" is answered here and nowhere else. It had two approximate
+  ;; implementations once -- one scanning a single segment for coverage,
+  ;; one scanning all of them for replay -- and they disagreed; three
+  ;; defects came out of one round of patching them. Coverage, replay
+  ;; and snapshot selection now consume one result.
   ;;
-  ;; WHICH WRITER MAY HAVE A TORN TAIL IS DECIDED BY THE FILE LAYOUT, not
-  ;; by identity. A mirrored writer is one with a `published.sexp`: every
-  ;; segment it offers is sealed, arrived whole, and a residual there is
-  ;; damage. A writer with no manifest is local in origin -- this store
-  ;; is where its records were written -- so its highest-numbered segment
-  ;; is the one a crash could have interrupted. The rule is checkable
-  ;; from the directory rather than inferred from an identity this layer
-  ;; does not yet establish; piece five, which reads owner.sexp and the
-  ;; instance, may narrow it and must not widen it.
+  ;; WHAT MAKES DELIVERY ABLE TO FULFIL VALIDATION IS OWNERSHIP, NOT
+  ;; IMMUTABILITY. An earlier draft argued that sealed segments cannot
+  ;; change, so a second read returns the same bytes. Section 9.7.8
+  ;; explicitly permits atomic replacement by repair and by retirement
+  ;; extension, and no acceptance row schedules one between the two
+  ;; passes -- so that draft could have stayed green over a wrong split.
+  ;; The lock is held across BOTH passes instead: a session already owns
+  ;; the exclusive lock throughout, and a standalone load holds the
+  ;; shared lock for the whole load. Version hashes cannot substitute:
+  ;; in the repair and extension transactions the segment replacement
+  ;; precedes the manifest installation, so equal versions do not mean
+  ;; equal bytes.
+  ;;
+  ;; TWO PASSES, ONE SEGMENT OF MEMORY. Validation reads each segment,
+  ;; verifies its manifest hash, frames and checksums every record,
+  ;; advances the sequence counter and records that segment's seq range;
+  ;; it keeps only the locked copy of the current segment. Delivery then
+  ;; opens the segment CONTAINING THE CUT directly -- that is what the
+  ;; ranges are for -- and suppresses only within it. It does not rescan
+  ;; from the beginning suppressing everything below the cut: that is a
+  ;; different promise and a whole extra traversal.
 
-  (define-record-type log-handle
-    (fields store meta writers (mutable integrity) (mutable torn)
-            (mutable quarantine) snapshot-cut snapshot-rows snapshot-reason))
+  (define-record-type discovery
+    (fields origin end-segment end-offset end-seq segment-ranges
+            physical-current current-buffer torn integrity
+            quarantine retired versions))
 
-  (define (log-store h) (log-handle-store h))
-  (define (log-writers h) (log-handle-writers h))
-  (define (log-integrity h) (reverse (log-handle-integrity h)))
-  (define (log-torn-tails h) (reverse (log-handle-torn h)))
-  (define (log-quarantine-version h writer)
-    (let ((e (assoc writer (log-handle-quarantine h)))) (and e (cdr e))))
+  (define (discovery-clean? p) (null? (discovery-integrity p)))
 
-  (define (log-adopted-snapshot h)
-    (if (log-handle-snapshot-cut h)
-        (values (log-handle-snapshot-cut h) (log-handle-snapshot-rows h))
-        (values #f (log-handle-snapshot-reason h))))
+  ;; ORIGIN IS DECIDED BY owner.sexp, WHICH ONLY THIS STORE WRITES. A
+  ;; mirror's first publication can link a segment and crash before
+  ;; creating published.sexp, leaving a directory with neither file:
+  ;; that is an interrupted publication, and every segment in it is
+  ;; ignored -- not delivered, not read as a torn tail -- so the next
+  ;; synchronisation can finish what it started.
+  (define (origin-of store writer)
+    (cond
+      ((file-exists? (writer-file store writer "owner.sexp")) 'local)
+      ((file-exists? (writer-file store writer "published.sexp")) 'mirrored)
+      (else 'incomplete-publication)))
 
   (define (writer-file store writer name)
     (string-append (writer-directory store writer) "/" name))
 
-  ;; ORIGIN IS DECIDED BY owner.sexp, WHICH ONLY THIS STORE WRITES.
-  ;; The earlier rule -- "no manifest means local" -- had a hole that is
-  ;; a legal state rather than a corner case: a mirror's FIRST
-  ;; publication links the segment and then crashes before creating
-  ;; published.sexp, leaving a writer with neither file. That was
-  ;; classified local, its unpublished records were delivered, and its
-  ;; highest segment's residual was treated as a recoverable torn tail.
-  ;;
-  ;; Three answers, not two. A directory with neither owner nor manifest
-  ;; is an interrupted first publication: every segment is ignored, not
-  ;; delivered and not read as a torn tail, so the next synchronisation
-  ;; can finish what it started.
-  (define (log-writer-origin h writer)
-    (let ((store (log-handle-store h)))
-      (cond
-        ((file-exists? (writer-file store writer "owner.sexp")) 'local)
-        ((file-exists? (writer-file store writer "published.sexp")) 'mirrored)
-        (else 'incomplete-publication))))
-
-  ;; call-with-port CLOSES ON A NORMAL RETURN ONLY. An I/O error part way
-  ;; through a read, or a continuation escaping from the caller, leaves
-  ;; the descriptor open -- and a caller that catches the error and
-  ;; retries leaks one per attempt. dynamic-wind is what closes on every
-  ;; exit, and every read in this file goes through here.
+  ;; call-with-port closes on a NORMAL return only, so an I/O error part
+  ;; way through a read would leak the descriptor and a caller that
+  ;; retries would leak one per attempt.
   (define (read-whole path)
     (let ((port (open-file-input-port path))
-          (open? (box #t)))
+          (open? (vector #t)))
       (dynamic-wind
-        void
+        (lambda () (if #f #f))
         (lambda ()
           (let ((b (get-bytevector-all port)))
             (if (eof-object? b) (make-bytevector 0) b)))
         (lambda ()
-          (when (unbox open?)
-            (set-box! open? #f)
-            (guard (e (#t (void))) (close-port port)))))))
+          (when (vector-ref open? 0)
+            (vector-set! open? 0 #f)
+            (guard (e (#t (if #f #f))) (close-port port)))))))
 
-  ;; The version of a quarantine file is the checksum of its bytes: what
-  ;; matters is whether it CHANGED since the version a decision was made
-  ;; against (section 5.2's isolation barrier), and equality of content
-  ;; is exactly that question.
-  (define (quarantine-version store writer)
+  (define (quarantine-of store writer)
     (let ((p (writer-file store writer "quarantine.sexp")))
-      (and (file-exists? p) (crc32-hex (read-whole p)))))
+      (and (file-exists? p)
+           (let* ((bytes (read-whole p))
+                  (version (crc32-hex bytes))
+                  (d (guard (e (#t #f))
+                       (string->sexpr-extended (utf8->string bytes)))))
+             (list version (and (list? d) (pair? d)
+                                (let loop ((xs d))
+                                  (cond
+                                    ((null? xs) #f)
+                                    ((and (list? (car xs)) (= 2 (length (car xs)))
+                                          (eq? (caar xs) 'fork))
+                                     (cadr (car xs)))
+                                    (else (loop (cdr xs)))))))))))
 
-  ;; THE RETIRED PREFIX IS A STOPPING POINT, not a filter. retired.sexp
-  ;; records the last valid (segment, offset, seq) of a writer that may
-  ;; no longer continue here; history past it is evidence and is not
-  ;; read (section 1.1). The shape read here is
-  ;;   ((prefix <segment> <offset> <seq>) ...)
-  ;; and the rest of the file is ignored by this layer.
-  (define (retired-prefix store writer)
+  ;; THE READ IS NOT GUARDED, ONLY THE PARSE. Swallowing an I/O failure
+  ;; here answers "this writer was never retired", which makes a retired
+  ;; writer look active and exposes the evidence bytes past its
+  ;; retirement boundary as history -- the most dangerous available
+  ;; wrong answer. A malformed marker is an integrity error, not a
+  ;; writer that may be replayed freely.
+  (define (retired-of store writer)
     (let ((p (writer-file store writer "retired.sexp")))
       (and (file-exists? p)
-           ;; THE READ IS NOT GUARDED, ONLY THE PARSE. Swallowing an I/O
-           ;; failure here answered "this writer was never retired",
-           ;; which is the most dangerous possible wrong answer: it makes
-           ;; a retired writer look active and exposes the evidence bytes
-           ;; past its retirement boundary as history.
-           (let ((d (let ((text (utf8->string (read-whole p))))
-                      (guard (e (#t #f)) (string->sexpr-extended text)))))
-             (and (list? d)
-                  (let loop ((xs d))
-                    (cond
-                      ((null? xs) #f)
-                      ((and (list? (car xs)) (= 4 (length (car xs)))
-                            (eq? (caar xs) 'prefix))
-                       (cdr (car xs)))
-                      (else (loop (cdr xs))))))))))
+           (let* ((bytes (read-whole p))
+                  (version (crc32-hex bytes))
+                  (d (guard (e (#t 'malformed))
+                       (string->sexpr-extended (utf8->string bytes)))))
+             (if (eq? d 'malformed)
+                 (list 'malformed version)
+                 (let loop ((xs (if (list? d) d '())))
+                   (cond
+                     ((null? xs) (list 'malformed version))
+                     ((and (list? (car xs)) (= 4 (length (car xs)))
+                           (eq? (caar xs) 'prefix)
+                           (for-all (lambda (v) (and (integer? v) (exact? v)))
+                                    (cdr (car xs))))
+                      (append (cdr (car xs)) (list (transaction-of d) version)))
+                     (else (loop (cdr xs))))))))))
 
-  ;; Snapshots live in snap/ under the segment naming convention and are
-  ;; tried newest first: a snapshot that is void, or whose cut the log
-  ;; cannot support, falls back to an older one rather than to nothing
-  ;; (section 4.5-prime, L7).
-  (define (choose-snapshot store coverage)
-    (let ((dir (string-append store "/snap")))
-      (if (not (file-is-directory? dir))
-          (values #f #f '() 'absent)
-          (let loop ((ns (reverse (list-sort < (filter (lambda (n) n)
-                                                  (map segment-file-number
-                                                       (directory-entries dir))))))
-                     (last-reason 'absent))
-            (if (null? ns)
-                (values #f #f '() last-reason)
-                (let ((path (string-append dir "/" (segment-file-name (car ns)))))
-                  (let-values (((cut rows) (snapshot-read path)))
-                    (cond
-                      ((not cut) (loop (cdr ns) rows))
-                      ((not (snapshot-cut-supported? cut coverage))
-                       (trace-event! 'snapshot-read (cons path 'unsupported-cut) #f)
-                       (loop (cdr ns) 'unsupported-cut))
-                      (else (values (car ns) cut rows #f))))))))))
-
-  ;; Coverage is what the store can speak for: for each writer, the last
-  ;; seq its loadable segments could contain. Established WITHOUT
-  ;; scanning, from the segment set alone, because a snapshot's cut has
-  ;; to be judged before replay decides where to start.
-  ;; COVERAGE IS MEASURED, NOT ASSUMED. An earlier version answered
-  ;; 'unbounded for any writer that had segments at all, which
-  ;; snapshot-cut-supported? then compared against a number so large
-  ;; that every cut was supported -- the check was present, tested in
-  ;; isolation, and dead in the only place it mattered. A snapshot
-  ;; naming A.11 over a log holding ten records was adopted, and replay
-  ;; then suppressed all ten and reported nothing.
-  ;;
-  ;; Only the LAST loadable segment is scanned, which is the smallest
-  ;; amount of reading that can answer the question: the last valid seq
-  ;; of a writer is in its last segment, and earlier segments cannot
-  ;; raise it.
-  (define (writer-coverage store writer origin)
-    (let* ((segs (if (eq? origin 'incomplete-publication)
-                     '()
-                     (loadable-segments store writer (eq? origin 'local))))
-           (retired (retired-prefix store writer)))
+  (define (transaction-of d)
+    (let loop ((xs (if (list? d) d '())))
       (cond
-        (retired (caddr retired))
-        ((null? segs) 0)
+        ((null? xs) #f)
+        ((and (list? (car xs)) (= 2 (length (car xs))) (eq? (caar xs) 'tx))
+         (cadr (car xs)))
+        (else (loop (cdr xs))))))
+
+  ;; THE VALIDATE PASS. Everything about this writer that goes wrong is
+  ;; recorded in its own integrity list; nothing about this writer
+  ;; escapes as an exception. A store- or runtime-scoped fault -- the
+  ;; store lock, enumerating writers/, meta.sexp -- is a different kind
+  ;; of fact and is raised, because recording a missing store lock as
+  ;; the first-visited writer's damage would make L4's refusal pass for
+  ;; the wrong reason. And a failed READ is never reported as an ABSENT
+  ;; file.
+  (define (discover-prefix store writer lock-context)
+    (let ((origin (origin-of store writer)))
+      (if (eq? origin 'incomplete-publication)
+          (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '())
+          (validate store writer origin lock-context))))
+
+  (define (validate store writer origin lock-context)
+    (let* ((quarantine (quarantine-of store writer))
+           (retired (retired-of store writer))
+           (manifest (if (eq? origin 'local) #f (read-manifest-safely store writer)))
+           (versions (list (cons 'manifest (manifest-version store writer))
+                           (cons 'retired (and retired (car (reverse retired))))
+                           (cons 'quarantine (and quarantine (car quarantine)))))
+           (errs (vector '()))
+           (note! (lambda (kind seg off detail)
+                    (vector-set! errs 0 (cons (make-log-error kind writer seg off detail)
+                                              (vector-ref errs 0))))))
+      (cond
+        ((eq? manifest 'malformed)
+         (note! 'manifest #f #f '())
+         (finish origin 0 '() #f #f errs quarantine retired versions))
+        ((and retired (eq? (car retired) 'malformed))
+         (note! 'retired-malformed #f #f '())
+         (finish origin 0 '() #f #f errs quarantine retired versions))
         (else
-         (let* ((last-seg (car (reverse segs)))
-                (path (string-append (writer-directory store writer) "/"
-                                     (segment-file-name last-seg)))
-                (bytes (guard (e (#t (make-bytevector 0))) (read-whole path)))
-                (top (box 0)))
-           ;; Scanned with continuity switched off (expected seq #f):
-           ;; this is asking how far the bytes reach, not whether they
-           ;; are sound. Soundness is replay's answer and it is reported
-           ;; separately.
-           (scan-segment bytes writer last-seg #f #t
-                         (lambda (off seq ts actor deps payload)
-                           (when (and (integer? seq) (> seq (unbox top)))
-                             (set-box! top seq))))
-           (unbox top))))))
+         (let* ((present (enumerate-segment-files store writer))
+                (listed (manifest-segments manifest))
+                (segs (if (eq? origin 'local)
+                          present
+                          (filter (lambda (n) (memv n listed)) present)))
+                (missing (if (eq? origin 'local)
+                             '()
+                             (filter (lambda (n) (not (memv n present))) listed)))
+                (stop-before (and (pair? missing) (car (list-sort < missing))))
+                (segs (if stop-before
+                          (filter (lambda (n) (< n stop-before)) segs)
+                          segs))
+                (highest (and (pair? segs) (car (reverse segs))))
+                (tail (and (eq? origin 'local) highest (not retired)
+                           (capture-tail store writer highest lock-context))))
+           ;; THE TAIL EXTENDS THE SEGMENT LIST, IT DOES NOT REPLACE IT.
+           ;; Walking only the captured tail dropped every sealed segment
+           ;; before it: a store whose segment 1 held records 1-2 and
+           ;; whose freshly rotated segment 2 was empty reported an
+           ;; extent of 0, because segment 1 was never visited. That is
+           ;; L10's case and it is why the extent and the append target
+           ;; are separate facts in the first place.
+           (let loop ((ss (if tail
+                              (append (filter (lambda (n) (< n (caar tail))) segs)
+                                      (map car tail))
+                              segs))
+                      (expect 1) (ranges '()) (end #f) (torn #f) (buffer #f))
+             (cond
+               ((null? ss)
+                (when stop-before
+                  (note! 'manifest-missing-segment stop-before #f '()))
+                (finish-with origin end ranges
+                             (physical-of store writer origin retired
+                                          (if tail (car (reverse (map car tail))) highest))
+                             buffer torn errs quarantine retired versions))
+               (else
+                (let* ((seg (car ss))
+                       (from-tail (and tail (assv seg tail)))
+                       (current? (and from-tail (eqv? seg (car (reverse (map car tail))))))
+                       (bytes (if from-tail (cdr from-tail) (read-segment store writer seg)))
+                       (want (manifest-hash manifest seg)))
+                  (cond
+                    ((eq? bytes 'unreadable)
+                     (note! 'segment-unreadable seg #f '())
+                     (finish-with origin end ranges
+                                  (physical-of store writer origin retired highest)
+                                  buffer torn errs quarantine retired versions))
+                    ;; VERIFIED WHILE THE BYTES ARE IN HAND. Without it a
+                    ;; published segment could be replaced by different
+                    ;; content whose records each carry a correct CRC.
+                    ;; Records inside a hash-mismatched file are repair
+                    ;; EVIDENCE only: not in end-*, never delivered.
+                    ((and want (not (string=? want (bytevector->hex (sha256 bytes)))))
+                     (note! 'manifest-hash seg 0 (list (cons 'expected want)))
+                     (finish-with origin end ranges
+                                  (physical-of store writer origin retired highest)
+                                  buffer torn errs quarantine retired versions))
+                    (else
+                     (let* ((clipped (clip-to-retirement bytes seg retired note!))
+                            (outcome
+                              (scan-segment clipped writer seg expect current?
+                                            (lambda (off seq ts actor deps payload)
+                                              (if #f #f)))))
+                       (case (car outcome)
+                         ((complete)
+                          (let* ((last (cadr outcome))
+                                 (ranges (cons (list seg (or expect 1) (or last (- expect 1)))
+                                               ranges))
+                                 (end (if last
+                                          (list seg (caddr outcome) last)
+                                          end))
+                                 (buffer (if current? (cons seg clipped) buffer)))
+                            (if (retirement-ends-here? seg retired)
+                                (finish-with origin end ranges
+                                             (physical-of store writer origin retired highest)
+                                             buffer torn errs quarantine retired versions)
+                                (loop (cdr ss) (if last (+ last 1) expect)
+                                      ranges end torn buffer))))
+                         ((torn)
+                          (finish-with origin end
+                                       (cons (list seg (or expect 1) (- expect 1)) ranges)
+                                       (physical-of store writer origin retired highest)
+                                       (if current? (cons seg clipped) buffer)
+                                       (list seg (cadr outcome)
+                                             (or (caddr outcome) (- expect 1)))
+                                       errs quarantine retired versions))
+                         (else
+                          (note-error! note! (cadr outcome))
+                          (finish-with origin end ranges
+                                       (physical-of store writer origin retired highest)
+                                       (if current? (cons seg clipped) buffer)
+                                       torn errs quarantine retired
+                                       versions)))))))))))))))
 
-  (define (log-open store)
-    (unless (string? store)
-      (assertion-violation 'log-open "store must be a path string" store))
-    (let* ((meta-path (string-append store "/meta.sexp"))
-           (meta (if (file-exists? meta-path)
-                     (guard (e (#t #f))
-                       (string->sexpr-extended (utf8->string (read-whole meta-path))))
-                     #f)))
-      ;; THE VERSION IS CHECKED, NOT JUST THE PARSE (section 5.1 step 1).
-      ;; A store written by a later format would otherwise be read under
-      ;; this one's rules, which is the failure a version number exists
-      ;; to prevent.
-      (unless (and meta (list? meta)
-                   (let loop ((xs meta))
-                     (cond
-                       ((null? xs) #f)
-                       ((and (list? (car xs)) (= 2 (length (car xs)))
-                             (eq? (caar xs) 'format))
-                        (eqv? (cadr (car xs)) 1))
-                       (else (loop (cdr xs))))))
-        (raise (make-log-error 'meta #f #f #f
-                               (list (cons 'path meta-path)
-                                     (cons 'supported 1)))))
-      (let* ((writers (store-writers store))
-             (quarantine (map (lambda (w) (cons w (quarantine-version store w)))
-                              writers))
-             (coverage (map (lambda (w)
-                              (cons w (writer-coverage
-                                        store w
-                                        (cond
-                                ((file-exists? (writer-file store w "owner.sexp")) 'local)
-                                ((file-exists? (writer-file store w "published.sexp"))
-                                 'mirrored)
-                                (else 'incomplete-publication)))))
-                            writers)))
-        (let-values (((n cut rows reason)
-                      (choose-snapshot store coverage)))
-          (make-log-handle store meta writers '() '() quarantine
-                           cut rows (and (not cut) reason))))))
+  (define (note-error! note! e)
+    (note! (log-error-kind e) (log-error-segment e) (log-error-offset e)
+           (log-error-detail e)))
 
-  ;; Delivery order is section 5.1's: per writer, segments ascending,
-  ;; records in file order. `proc` is called as
-  ;;   (proc writer segment offset seq ts actor deps payload)
-  ;; and may answer stop to end the replay.
-  (define (log-replay h proc)
-    (let ((store (log-handle-store h)))
-      (call/cc
-        (lambda (done)
-          (for-each
-            (lambda (writer)
-              (replay-writer h store writer proc done))
-            (log-handle-writers h))))))
+  (define (finish origin end-seq ranges phys buffer errs quarantine retired versions)
+    (make-discovery origin #f #f end-seq ranges phys buffer #f
+                 (reverse (vector-ref errs 0)) quarantine retired versions))
 
-  (define (replay-writer h store writer proc done)
-    (let ((origin (log-writer-origin h writer)))
-      ;; An interrupted first publication is not history yet.
-      (unless (eq? origin 'incomplete-publication)
-        (replay-writer* h store writer origin proc done))))
+  ;; THE QUARANTINED SUFFIX IS EXCLUDED FROM THE EXTENT ITSELF, not
+  ;; merely from snapshot eligibility -- otherwise ordinary replay
+  ;; delivers it.
+  (define (finish-with origin end ranges phys buffer torn errs quarantine retired versions)
+    (let* ((raw (if end (caddr end) 0))
+           (fork (and quarantine (cadr quarantine)))
+           (capped (if (and fork (>= raw fork)) (- fork 1) raw)))
+      (make-discovery origin
+                   (and end (car end)) (and end (cadr end)) capped
+                   (reverse ranges) phys buffer torn
+                   (reverse (vector-ref errs 0)) quarantine retired versions)))
 
-  (define (replay-writer* h store writer origin proc done)
-    (let* ((cut (log-handle-snapshot-cut h))
-           (from (let ((e (and cut (assoc writer cut)))) (if e (cdr e) 0)))
-           (local? (eq? origin 'local))
-           (retired (retired-prefix store writer))
-           (manifest (if local? #f (read-manifest store writer)))
-           (present (enumerate-segment-files store writer))
-           (listed (manifest-segments manifest))
-           (segs (if local? present (filter (lambda (n) (memv n listed)) present)))
-           (missing (if local? '() (filter (lambda (n) (not (memv n present))) listed)))
-           (highest (and (pair? segs) (car (reverse segs)))))
-      ;; A LISTED SEGMENT THAT IS NOT THERE IS EVIDENCE, NOT SILENCE. The
-      ;; earlier code filtered the present files by the listed numbers
-      ;; and threw away the other half of the comparison, so a manifest
-      ;; promising segments 1 and 2 over a directory holding only 1
-      ;; ended cleanly with no diagnostic at all.
-      (let* ((stop-before (if (pair? missing) (car (list-sort < missing)) #f))
-             (segs (if stop-before (filter (lambda (n) (< n stop-before)) segs) segs)))
-        (let loop ((ss segs) (expect 1) (sealed-done #f))
-          (cond
-            ((null? ss)
-             (when stop-before
-               (log-handle-integrity-set!
-                 h (cons (make-log-error 'manifest-missing-segment writer
-                                         stop-before #f '())
-                         (log-handle-integrity h)))))
-            (else
-             (let* ((seg (car ss))
-                    (current? (and local? (eqv? seg highest) (not retired)))
-                    ;; Reaching the believed-current segment switches to
-                    ;; the locked read, which also picks up anything that
-                    ;; was rotated into place while we queued.
-                    (tail (and current? (read-tail-under-lock store writer seg)))
-                    (ss (if tail (map car tail) ss))
-                    (seg (car ss))
-                    (bytes (if tail (cdr (car tail)) (read-sealed store writer seg)))
-                    (want-hash (manifest-hash manifest seg)))
-               (cond
-                 ;; VERIFIED WHILE THE BYTES ARE ALREADY IN HAND. The scan
-                 ;; reads every byte anyway, so the hash the manifest
-                 ;; promised costs almost nothing to check here -- and
-                 ;; without it a published segment could be replaced by
-                 ;; different content whose records each carry a correct
-                 ;; CRC, and replay would deliver the replacement.
-                 ((and want-hash
-                       (not (string=? want-hash (bytevector->hex (sha256 bytes)))))
-                  (log-handle-integrity-set!
-                    h (cons (make-log-error 'manifest-hash writer seg 0
-                                            (list (cons 'expected want-hash)))
-                            (log-handle-integrity h))))
-                 (else
-                  (let* ((bytes (if (and retired (= seg (car retired)))
-                                    (clip bytes (cadr retired))
-                                    bytes))
-                         (outcome
-                           (scan-segment
-                             bytes writer seg expect current?
-                             (lambda (off seq ts actor deps payload)
-                               (if (<= seq from)
-                                   (void)
-                                   (let ((v (proc writer seg off seq ts actor
-                                                  deps payload)))
-                                     (if (eq? v 'stop) (done (void)) v)))))))
-                    (case (car outcome)
-                      ((complete)
-                       (unless (and retired (= seg (car retired)))
-                         (loop (cdr ss)
-                               (if (cadr outcome) (+ (cadr outcome) 1) expect)
-                               (or sealed-done (and tail #t)))))
-                      ((torn)
-                       (log-handle-torn-set!
-                         h (cons (list writer seg (cadr outcome)
-                                       (or (caddr outcome) (- expect 1)))
-                                 (log-handle-torn h))))
-                      ((integrity)
-                       (log-handle-integrity-set!
-                         h (cons (cadr outcome)
-                                 (log-handle-integrity h))))))))))))))) 
+  ;; ---- the pieces validate leans on ----------------------------------------
 
-  (define (clip bv end)
-    (if (>= end (bytevector-length bv)) bv (subbytes bv 0 end)))
+  (define (read-manifest-safely store writer)
+    (guard (e (#t 'malformed)) (read-manifest store writer)))
 
-  ;; THE CURRENT SEGMENT IS COPIED UNDER A SHARED LOCK AND PARSED
-  ;; AFTERWARDS (section 5.1). The lock is held for the copy alone: long
-  ;; enough that a writer cannot append into the middle of what is being
-  ;; read, short enough that parsing does not block one. A sealed
-  ;; segment needs no lock -- nothing may write it.
-  ;; THE SEGMENT SET IS RE-ESTABLISHED INSIDE THE LOCK, and the tail is
-  ;; taken in one critical section. Enumerating first and then queueing
-  ;; for the lock reads a set that may be stale by the time it is
-  ;; granted: P holds the exclusive lock, rotates, commits into N+1 and
-  ;; unlocks, and a reader that decided "the current segment is N"
-  ;; before waiting copies N and never learns of a record committed
-  ;; BEFORE its own copy. So everything from the believed-current
-  ;; segment onward is enumerated and copied together, and what comes
-  ;; back is what the store held at one instant.
+  (define (manifest-version store writer)
+    (let ((p (writer-file store writer "published.sexp")))
+      (and (file-exists? p) (crc32-hex (read-whole p)))))
+
+  ;; A READ FAILURE IS NOT AN ABSENT FILE. Returning 'unreadable keeps
+  ;; the two apart; answering with empty bytes would report a writer as
+  ;; having no history when its history could not be read.
+  (define (read-segment store writer seg)
+    (guard (e (#t 'unreadable))
+      (read-whole (string-append (writer-directory store writer)
+                                 "/" (segment-file-name seg)))))
+
+  ;; THE SEGMENT SET IS RE-ESTABLISHED INSIDE THE LOCK and the whole
+  ;; tail is copied there: enumerating first and then queueing for the
+  ;; lock reads a set that may be stale by the time it is granted, and a
+  ;; reader that decided "N is current" before waiting would copy N and
+  ;; never learn of a record committed before its own copy.
   ;;
-  ;; THE TRACE IS EMITTED AFTER THE LOCK IS RELEASED. Reporting inside
-  ;; it puts a write to stderr -- which can block on a full pipe --
-  ;; inside the region a writer is waiting on, so a slow reader of the
-  ;; trace becomes a stalled writer.
-  (define (read-tail-under-lock store writer from-seg)
-    (let ((got (with-shared-lock (string-append store "/lock")
-                 (lambda (fd)
-                   (let ((now (enumerate-segment-files store writer)))
-                     (map (lambda (n)
-                            (cons n (read-whole
-                                      (string-append (writer-directory store writer)
-                                                     "/" (segment-file-name n)))))
-                          (filter (lambda (n) (>= n from-seg)) now)))))))
+  ;; THIS TAKES NO LOCK. The enclosing load owns one -- exclusive for a
+  ;; session, shared for a standalone load -- for its whole duration,
+  ;; and a helper that acquired its own would be the wrong shape twice
+  ;; over: a second acquisition per writer instead of one lifetime for
+  ;; the load, and, under held-exclusive, a shared acquisition inside an
+  ;; exclusive session, which self-deadlocks because flock is per
+  ;; descriptor. Measured before the fix: two flock events for a load
+  ;; that must show one.
+  (define (capture-tail store writer from-seg lock-context)
+    (let ((got (let ((now (enumerate-segment-files store writer)))
+                 (map (lambda (n) (cons n (read-segment store writer n)))
+                      (filter (lambda (n) (>= n from-seg)) now)))))
       (for-each (lambda (e)
-                  (trace-event! 'copy
-                                (string-append (writer-directory store writer)
-                                               "/" (segment-file-name (car e)))
-                                (bytevector-length (cdr e))))
+                  (unless (eq? (cdr e) 'unreadable)
+                    (trace-event! 'copy
+                                  (string-append (writer-directory store writer)
+                                                 "/" (segment-file-name (car e)))
+                                  (bytevector-length (cdr e)))))
                 got)
       got))
 
-  (define (read-sealed store writer seg)
-    (read-whole (string-append (writer-directory store writer)
-                               "/" (segment-file-name seg))))
+  ;; physical-current is NOT end-*: L10 leaves N ending at seq 100 and a
+  ;; freshly rotated N+1 empty, so the extent stays 100 while an append
+  ;; goes to N+1. A mirrored or retired writer has no append target at
+  ;; all, and saying so explicitly stops the highest file being taken
+  ;; for a writable one.
+  (define (physical-of store writer origin retired highest)
+    (if (or (not (eq? origin 'local)) retired)
+        'no-append-target
+        (and highest
+             (list highest
+                   (guard (e (#t 0))
+                     (file-size (string-append (writer-directory store writer)
+                                               "/" (segment-file-name highest))))))))
+
+  (define (retirement-ends-here? seg retired)
+    (and retired (not (eq? (car retired) 'malformed)) (= seg (car retired))))
+
+  ;; THE RETIREMENT BOUNDARY IS VERIFIED, NOT BELIEVED. A marker naming
+  ;; an offset past the end of its file is an integrity error rather
+  ;; than a clip that silently accepts the shorter file.
+  (define (clip-to-retirement bytes seg retired note!)
+    (if (not (retirement-ends-here? seg retired))
+        bytes
+        (let ((off (cadr retired)))
+          (cond
+            ((> off (bytevector-length bytes))
+             (note! 'retired-beyond-file seg off
+                    (list (cons 'file-length (bytevector-length bytes))))
+             bytes)
+            (else (subbytes bytes 0 off))))))
+
+  ;; ---- the load transaction -------------------------------------------------
+
+  ;; DELIVERY IS PROVISIONAL AND THE TRANSACTION IS THE WHOLE LOAD. A
+  ;; writer spanning three segments has segments 1 and 2 applied by the
+  ;; time segment 3 fails to open -- the lock worked, the state is
+  ;; already in -- so "apply none of that writer" cannot be an ordinary
+  ;; streaming branch. The reducer accumulates into a staging state that
+  ;; no consumer sees; the load publishes once, at the end.
+  ;;
+  ;; THE GRANULARITY IS THE LOAD, NOT THE WRITER, because a snapshot
+  ;; covering the failed writer must be rejected -- and the healthy
+  ;; writers' history below its cut was deliberately skipped during
+  ;; delivery, so removing the failed writer's rows cannot recover their
+  ;; state. Only replay from an earlier baseline can.
+  ;;
+  ;; WHAT THIS CANNOT DO, said rather than implied: load-abort! discards
+  ;; the staging root. It cannot undo a callback that mutated something
+  ;; globally reachable, wrote a file, or leaked a staging reference.
+  ;; That is the reducer's side of the provisional contract, and a
+  ;; shallow copy is the easy way to break it -- a private root whose
+  ;; nested mutable children still belong to committed state.
+
+  (define-record-type load-session
+    (fields store (mutable lock) (mutable prefixes) (mutable state) (mutable outcome)))
+
+  (define (log-open store)
+    (open-load store 'acquire-shared))
+
+  (define (log-open-in-session store)
+    (open-load store 'held-exclusive))
+
+  (define (open-load store lock-context)
+    (unless (string? store)
+      (assertion-violation 'log-open "store must be a path string" store))
+    (let ((meta-path (string-append store "/meta.sexp")))
+      (unless (file-exists? meta-path)
+        (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
+      (let ((meta (guard (e (#t #f))
+                    (string->sexpr-extended (utf8->string (read-whole meta-path))))))
+        (unless (and meta (list? meta) (format-1? meta))
+          (raise (make-log-error 'meta #f #f #f
+                                 (list (cons 'path meta-path) (cons 'supported 1)))))
+        ;; THE SHARED LOCK BELONGS TO THE WHOLE LOAD -- enumeration and
+        ;; every writer's discovery -- not to one discover-prefix call,
+        ;; and every exit releases it.
+        (let ((lock (if (eq? lock-context 'acquire-shared)
+                        (lock-acquire! (string-append store "/lock") 'shared)
+                        #f)))
+          (guard (e (#t (when lock (lock-release! lock)) (raise e)))
+            (let* ((writers (store-writers store))
+                   (prefixes (map (lambda (w)
+                                    (cons w (discover-prefix store w lock-context)))
+                                  writers)))
+              (make-load-session store lock prefixes '() 'open)))))))
+
+  (define (format-1? meta)
+    (let loop ((xs meta))
+      (cond
+        ((null? xs) #f)
+        ((and (list? (car xs)) (= 2 (length (car xs))) (eq? (caar xs) 'format))
+         (eqv? (cadr (car xs)) 1))
+        (else (loop (cdr xs))))))
+
+  (define (load-prefix ls writer)
+    (let ((e (assoc writer (load-session-prefixes ls)))) (and e (cdr e))))
+
+  (define (load-writers ls) (map car (load-session-prefixes ls)))
+
+  (define (load-integrity ls)
+    (apply append
+           (map (lambda (e) (map (lambda (x) (cons (car e) x))
+                                 (discovery-integrity (cdr e))))
+                (load-session-prefixes ls))))
+
+  (define (load-commit! ls)
+    (load-session-outcome-set! ls 'committed)
+    (release-load! ls)
+    (load-session-state ls))
+
+  (define (load-abort! ls reason)
+    (load-session-state-set! ls '())
+    (load-session-outcome-set! ls (list 'aborted reason))
+    (release-load! ls)
+    (load-session-outcome ls))
+
+  (define (release-load! ls)
+    (let ((l (load-session-lock ls)))
+      (when l (load-session-lock-set! ls #f) (lock-release! l))))
+
+  (define (load-outcome ls) (load-session-outcome ls))
 )
