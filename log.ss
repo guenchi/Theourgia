@@ -2065,7 +2065,7 @@
   ;; writer before this is reached -- session-view withholds the view and
   ;; binding-refusal names it -- and a second check of the same rule is a
   ;; second supplier that can disagree with the first.
-  (define (reserve-then-write! s frame p line seq target target-path)
+  (define (reserve-then-write! s frame p line seq target target-path fresh?)
     (let* ((store (session-store s))
            (writer (session-writer s))
            (identity (verify-instance store)))
@@ -2086,7 +2086,7 @@
            (cond
              ((and (pair? outcome) (eq? (car outcome) 'registry-ahead))
               (list 'refused-before-reserve 'registry-ahead))
-             (else (write-line! s frame line seq target target-path))))))))
+             (else (write-line! s frame line seq target target-path fresh?))))))))
 
   ;; THE STAGE COVERS MAINTENANCE AS WELL AS THE WRITE. Rotation's size
   ;; probe, its flushes and the torn-tail truncation are all part of
@@ -2122,7 +2122,8 @@
             (let* ((rotated (maybe-rotate! store writer seg path p line))
                    (target (car rotated))
                    (target-path (cdr rotated)))
-              (reserve-then-write! s frame p line seq target target-path))))))
+              (reserve-then-write! s frame p line seq target target-path
+                                   (not (eqv? target seg))))))))
 
   ;; ROTATION IS A DIRECTORY-ENTRY TRANSACTION and its order is the
   ;; recoverable one: flush what is there, make the new entry, flush it,
@@ -2215,7 +2216,7 @@
   ;; at all: every short-write, EINTR and fsync-failure injection aimed
   ;; at the log would pass straight through and the case would go green
   ;; for the wrong reason.
-  (define (write-line! s frame line seq target target-path)
+  (define (write-line! s frame line seq target target-path fresh?)
     (parameterize ((theourgia-stage 'commit))
       (let* ((writer (session-writer s))
              (wrote (vector 0))
@@ -2224,6 +2225,12 @@
                 (guard (e (#t 'write-failed))
                   (write-all! fd line target-path
                               (lambda (n) (vector-set! wrote 0 n)))
+                  ;; THE LAST OF ROTATION'S STOPPING POINTS. Section 13'
+                  ;; names it and nothing emitted it: the first write into
+                  ;; a freshly created segment is a distinct place to
+                  ;; lose power, because the entry for that segment may
+                  ;; be durable while its first record is not.
+                  (when fresh? (barrier! 'after-first-write-next))
                   'written)))
           (cond
             ((eq? outcome 'write-failed)

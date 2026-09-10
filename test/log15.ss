@@ -1,0 +1,344 @@
+#!chezscheme
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; Rotation across a crash (plan L10, design 4.4 and 13').
+;;
+;; Every point in rotation's sequence is a place the machine can stop,
+;; and the sequence exists so that each of those places is recoverable:
+;; either N+1 is absent and N is still the current segment, or N+1 is
+;; present and is the current segment, possibly empty. Both are legal.
+;;
+;; TWO STATES PER POINT. Killing the process leaves everything it had
+;; written, buffered or not; the durable-only state keeps only what was
+;; fsynced. A store must come back from both, and "a record that was
+;; reported committed exists exactly once" has to hold in both -- that
+;; pair is what says the flushes are in the right places rather than
+;; merely present.
+(import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi))
+(define here
+  (let* ((script (car (command-line)))
+         (n (let loop ((i (- (string-length script) 1)))
+              (cond ((< i 0) #f)
+                    ((char=? (string-ref script i) #\/) i)
+                    (else (loop (- i 1)))))))
+    (if n (substring script 0 n) ".")))
+(load (string-append here "/crash.ss"))
+(define bad 0)
+(define (want label got expect)
+  (let ((ok (equal? got expect)))
+    (unless ok (set! bad (+ bad 1)))
+    (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
+            (if ok "" (format "   WANT ~s" expect)))))
+(define base "/private/tmp/claude-501/-Users-guenchi-Workshop/ff8debcd-6740-4e42-80ca-8d637b6249df/scratchpad/tg/log15")
+(define d (string-append base "/store"))
+(define home (string-append base "/home"))
+(define W "wwwe5q2a")
+(define fixed-ts 1757300000003)
+(define (rec seq ts deps payload)
+  (encode-record seq ts "agent:claude" deps (storable-encode payload)))
+(define (r n) (rec n (+ 1757300000000 n) '() (list 'put (string-append "w." (number->string n)) '())))
+(define R (bytevector-length (r 1)))
+(define (cat . bs)
+  (let* ((n (apply + (map bytevector-length bs))) (o (make-bytevector n)))
+    (let loop ((bs bs) (i 0))
+      (if (null? bs) o (begin (bytevector-copy! (car bs) 0 o i (bytevector-length (car bs)))
+                              (loop (cdr bs) (+ i (bytevector-length (car bs)))))))))
+(define (put! path bv)
+  (call-with-port (open-file-output-port path (file-options no-fail))
+    (lambda (p) (put-bytevector p bv))))
+(define (slurp path)
+  (guard (e (#t 'no-such-file))
+    (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
+      (if (eof-object? b) (make-bytevector 0) b))))
+(define (text-of path) (let ((b (slurp path))) (if (bytevector? b) (utf8->string b) "")))
+(define (wpath n) (string-append d "/writers/" W "/" (segment-file-name n)))
+(define before-image (string-append base "/before"))
+(define (snapshot-before!)
+  ;; THE DEVICE NEEDS WHAT THE DISK HELD BEFORE THE RUN. A truncation
+  ;; after the last flush, an unlink, a rename over an existing file --
+  ;; none of those can be undone from the trace and the crashed tree
+  ;; alone, and the device used to answer them with empty files.
+  (system (string-append "rm -rf " before-image "; cp -R " d " " before-image)))
+(define (build!)
+  (system (string-append "rm -rf " base "; mkdir -p " d "/writers/" W " " d "/snap " home))
+  (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"e5\"))\n"))
+  (file-ensure! (string-append d "/lock"))
+  (putenv "THEOURGIA_HOME" home)
+  ;; A segment already old enough to rotate, so the append under test
+  ;; takes the rotation path rather than an ordinary write.
+  (put! (wpath 1) (cat (r 1) (r 2)))
+  (let ((n (instance-install! d))) (owner-install! d W n))
+  (snapshot-before!))
+
+;; ---- the barrier controller ------------------------------------------------
+;; THE PRODUCT ANNOUNCES ITSELF BEFORE IT PARKS. barrier! emits its trace
+;; line and only then blocks on the fifo, so waiting for that line is
+;; waiting for a real event -- not sleeping and hoping. `sleep` appears
+;; only as the interval between looks at a file that the child is
+;; writing; nothing is synchronised by elapsed time.
+(define (wait-for-barrier trace-path name limit)
+  (let loop ((n 0))
+    (cond
+      ((> n limit) #f)
+      ((let ((t (text-of trace-path)))
+         (crash-has-substring? t (string-append "(trace barrier " name " #f)")))
+       #t)
+      (else (system "sleep 0.05") (loop (+ n 1))))))
+
+(define child-path (string-append base "/child.ss"))
+(define (write-child!)
+  (put! child-path
+        (string->utf8
+          (string-append
+            "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
+            "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
+            "(parameterize ((log-clock (lambda () " (number->string (+ 1757300000000 3600000 5000)) ")))\n"
+            "  (let* ((s (log-begin \"" d "\" (lambda args 'applied)))\n"
+            "         (v (session-view s))\n"
+            "         (res (session-append! s (make-frame (view-revision v) (view-epoch v)\n"
+            "                                             (view-writer v) (view-expect-seq v)\n"
+            "                                             \"agent:claude\" '() '(put \"w.3\" ())))))\n"
+            "    (log-end! s)\n"
+            "    (call-with-port (open-file-output-port \"" base "/answer\" (file-options no-fail))\n"
+            "      (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))))\n"))))
+
+;; Runs the child up to BARRIER, then either kills it or releases it.
+;; Returns the trace it produced.
+(define (run-to-barrier barrier action)
+  (let ((fifo (string-append base "/fifo"))
+        (trace (string-append base "/trace"))
+        (pidf (string-append base "/pid")))
+    (system (string-append "rm -f " fifo " " trace " " pidf " " base "/answer"))
+    (system (string-append "mkfifo " fifo))
+    (write-child!)
+;; THE BARRIER ONLY EXISTS IN AN INJECTION BUILD. Without
+    ;; THEOURGIA_INJECT the barrier procedure compiles to a no-op, the
+    ;; child runs straight through, and every row reads "never parked" --
+    ;; which is at least loud, unlike a child that silently completed.
+    (system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 "
+                           "THEOURGIA_BARRIER=" barrier ":" fifo " "
+                           "scheme --script " child-path " > /dev/null 2> " trace
+                           " & echo $! > " pidf))
+    (let ((reached (wait-for-barrier trace barrier 200)))
+      (cond
+        ((not reached)
+         (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null"))
+         'never-parked)
+        ((eq? action 'kill)
+         (system (string-append "kill -9 $(cat " pidf ") 2>/dev/null"))
+         (system "sleep 0.1")
+         (text-of trace))
+        (else
+         (system (string-append "printf x > " fifo))
+         (system "sleep 0.3")
+         (text-of trace))))))
+
+;; What a store looks like to a fresh reader, which is the only question
+;; recovery has to answer.
+(define (recovered-state)
+  (parameterize ((log-clock (lambda () fixed-ts)))
+    (let* ((ls (log-open d))
+           (p (load-prefix ls W))
+           (seen '()))
+      (load-deliver! ls '() (lambda (w seg off seq . rest) (set! seen (cons seq seen))))
+      (let ((out (list (discovery-end-seq p)
+                       (reverse seen)
+                       (map (lambda (e) (log-error-kind (cdr e))) (load-integrity ls)))))
+        (load-commit! ls)
+        out))))
+
+(printf "== the device is trusted only after its own self-check ==\n")
+;; crash.ss checks itself against hand-computed answers when it is run as
+;; a script; this row is here so a case that USES it fails loudly if that
+;; ever stops being true.
+;; NOT MERELY procedure? -- that accepts a device that does nothing at
+;; all. The device is run here on a hand-made case with a hand-computed
+;; answer, so a case that uses it cannot be presided over by a judge that
+;; has silently stopped working.
+(want "the device still gives the hand-computed answer on a known case"
+      (let ((t (string-append base "/devcheck"))
+            (bt (string-append base "/devcheck-before")))
+        (system (string-append "rm -rf " t " " bt "; mkdir -p " t))
+        (put! (string-append t "/a") (string->utf8 "AAAA"))
+        (system (string-append "cp -R " t " " bt))
+        (put! (string-append t "/a") (string->utf8 "AAAABBBB"))
+        (crash-durable-only! t bt
+          (string-append "(trace write " t "/a 4)\n"
+                         "(trace fsync " t "/a #f)\n"
+                         "(trace write " t "/a 4)\n"))
+        (text-of (string-append t "/a")))
+      "AAAABBBB")
+
+(printf "== L10: the six points, killed ==\n")
+(define points '("before-rotate-write" "after-current-fsync" "after-create-next"
+                 "after-next-fsync" "after-dir-fsync" "after-first-write-next"))
+(define (kill-at point)
+  (build!)
+  (let ((trace (run-to-barrier point 'kill)))
+    (if (eq? trace 'never-parked)
+        'never-parked
+        (recovered-state))))
+(for-each
+  (lambda (point)
+    (let ((got (kill-at point)))
+      ;; THE RECORD UNDER TEST WAS NEVER REPORTED COMMITTED -- the child
+      ;; was killed before it could return -- so the only requirement is
+      ;; that the store comes back readable with its first two records
+      ;; and no integrity error. A third record MAY be there (the kill
+      ;; state keeps whatever was written); what must never happen is a
+      ;; store that will not load or that lost history.
+      (want (string-append "killed at " point ": history intact, no integrity error")
+            (if (eq? got 'never-parked)
+                'never-parked
+                (list (>= (car got) 2) (list-head (cadr got) 2) (caddr got)))
+            (list #t '(1 2) '()))))
+  points)
+
+(printf "== L10: the six points, only what was fsynced ==\n")
+(define (durable-at point)
+  (build!)
+  (let ((trace (run-to-barrier point 'kill)))
+    (if (eq? trace 'never-parked)
+        'never-parked
+        (begin (crash-durable-only! d before-image trace) (recovered-state)))))
+(for-each
+  (lambda (point)
+    (let ((got (durable-at point)))
+      (want (string-append "durable-only at " point ": history intact, no integrity error")
+            (if (eq? got 'never-parked)
+                'never-parked
+                (list (>= (car got) 2) (list-head (cadr got) 2) (caddr got)))
+            (list #t '(1 2) '()))))
+  points)
+
+(printf "== released rather than killed, the record is committed exactly once ==\n")
+(build!)
+(define release-trace (run-to-barrier "after-dir-fsync" 'release))
+(want "letting it through commits, and the record exists exactly once"
+      (if (eq? release-trace 'never-parked)
+          'never-parked
+          (let ((st (recovered-state)))
+            (list (car st) (cadr st) (caddr st))))
+      (list 3 '(1 2 3) '()))
+
+(printf "== a committed record survives the durable-only state ==\n")
+;; THIS IS THE CRITERION THE DESIGN NAMES, and the rows above cannot
+;; reach it: they kill the child before it returns, so no record was ever
+;; reported committed and losing one is legal. Here the append is allowed
+;; to finish -- the caller has been told `committed` -- and only then is
+;; the durable-only rewrite applied. A rotation that creates the new
+;; segment without flushing its directory loses that entry, and with it a
+;; record the caller was promised.
+(build!)
+(define committed-trace
+  (let ((trace (string-append base "/full-trace")))
+    (system (string-append "rm -f " trace " " base "/answer"))
+    (write-child!)
+    (system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 scheme --script "
+                           child-path " > /dev/null 2> " trace))
+    (text-of trace)))
+(want "the child reported the record committed"
+      (crash-has-substring? (text-of (string-append base "/answer")) "committed") #t)
+(want "and after keeping only what was fsynced, it is still there exactly once"
+      (begin (crash-durable-only! d before-image committed-trace)
+             (let ((st (recovered-state)))
+               (list (car st) (cadr st) (caddr st))))
+      (list 3 '(1 2 3) '()))
+
+(printf "== L19(c): two stores racing for the machine lock ==\n")
+;; Two stores, one machine registry. P is held inside the registry's
+;; critical section -- it has read the marks and not yet written them
+;; back -- while Q is started. A correct implementation makes Q wait on
+;; the machine lock; a broken one lets Q into the section, and then the
+;; two read-modify-writes can lose each other.
+;;
+;; THE CONTROLLER WAITS FOR EITHER OUTCOME, not only for the good one.
+;; Waiting only for Q's lock-wait would hang forever exactly when the
+;; product is wrong, and a hang is the failure a suite reports worst.
+(define d2 (string-append base "/store2"))
+(define (build-two!)
+  (system (string-append "rm -rf " base "; mkdir -p " d "/writers/" W " " d "/snap "
+                         d2 "/writers/" W " " d2 "/snap " home))
+  (for-each
+    (lambda (root id)
+      (put! (string-append root "/meta.sexp")
+            (string->utf8 (string-append "((format 1) (store-id \"" id "\"))\n")))
+      (file-ensure! (string-append root "/lock"))
+      (put! (string-append root "/writers/" W "/" (segment-file-name 1))
+            (cat (r 1) (r 2))))
+    (list d d2) (list "e5" "e6"))
+  (putenv "THEOURGIA_HOME" home)
+  (let ((n (instance-install! d))) (owner-install! d W n))
+  (let ((n (instance-install! d2))) (owner-install! d2 W n)))
+
+(define (racer-child store out)
+  (let ((path (string-append base "/racer-" out ".ss")))
+    (put! path
+          (string->utf8
+            (string-append
+              "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
+              "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
+              "(parameterize ((log-clock (lambda () " (number->string fixed-ts) ")))\n"
+              "  (let* ((s (log-begin \"" store "\" (lambda args 'applied)))\n"
+              "         (v (session-view s))\n"
+              "         (res (session-append! s (make-frame (view-revision v) (view-epoch v)\n"
+              "                                             (view-writer v) (view-expect-seq v)\n"
+              "                                             \"agent:claude\" '() '(put \"w.3\" ())))))\n"
+              "    (log-end! s)\n"
+              "    (call-with-port (open-file-output-port \"" base "/" out "\" (file-options no-fail))\n"
+              "      (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))))\n")))
+    path))
+
+(build-two!)
+(define p-fifo (string-append base "/p-fifo"))
+(define p-trace (string-append base "/p-trace"))
+(define q-trace (string-append base "/q-trace"))
+(system (string-append "rm -f " p-fifo "; mkfifo " p-fifo))
+(define p-script (racer-child d "p-answer"))
+(define q-script (racer-child d2 "q-answer"))
+;; P stops after reading the registry and before writing it back.
+(system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_BARRIER=registry-read:"
+                       p-fifo " scheme --script " p-script " > /dev/null 2> " p-trace
+                       " & echo $! > " base "/p-pid"))
+(define p-parked (wait-for-barrier p-trace "registry-read" 200))
+;; Q now runs to completion or blocks; either way its trace tells us which.
+(system (string-append "THEOURGIA_TRACE=1 scheme --script " q-script
+                       " > /dev/null 2> " q-trace " & echo $! > " base "/q-pid"))
+(define q-verdict
+  (let loop ((n 0))
+    (let ((t (text-of q-trace)))
+      (cond
+        ((crash-has-substring? t "(trace registry-write") 'entered-the-section)
+        ((crash-has-substring? t "(trace lock-wait") 'waiting)
+        ((> n 200) 'neither)
+        (else (system "sleep 0.05") (loop (+ n 1)))))))
+(want "P parked inside the registry's critical section" p-parked #t)
+(want "and Q waits on the machine lock rather than entering it"
+      q-verdict 'waiting)
+;; Release P, let both finish, and check the marks.
+(system (string-append "printf x > " p-fifo))
+(system "sleep 1")
+(want "both stores committed, and each mark is exactly its own last sequence"
+      (let* ((reg (text-of (string-append home "/instances.sexp")))
+             (entries (guard (e (#t 'unreadable)) (read (open-string-input-port reg)))))
+        (list (crash-has-substring? (text-of (string-append base "/p-answer")) "committed")
+              (crash-has-substring? (text-of (string-append base "/q-answer")) "committed")
+              (and (list? entries)
+                   (list-sort (lambda (a b) (string<? (car a) (car b)))
+                              (map (lambda (e) (cons (car e) (cadddr e))) entries)))))
+      (list #t #t (list (cons "e5" 3) (cons "e6" 3))))
+
+(printf "\n~a failures\n" bad)
+(printf "log15 complete\n")
