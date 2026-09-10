@@ -59,6 +59,7 @@
           discovery-versions discovery-clean?
           log-open log-open-in-session load-prefix load-writers load-integrity
           load-commit! load-abort! load-outcome load-deliver!
+          load-snapshot-cut load-snapshot-rows load-snapshot-reason
           snapshot-write! snapshot-read snapshot-cut-supported?
           scan-segment
           atomic-write!
@@ -1062,7 +1063,8 @@
   ;; nested mutable children still belong to committed state.
 
   (define-record-type load-session
-    (fields store (mutable lock) (mutable prefixes) (mutable state) (mutable outcome)))
+    (fields store (mutable lock) (mutable prefixes) (mutable state)
+            (mutable outcome) (mutable snapshot)))
 
   (define (log-open store)
     (open-load store 'acquire-shared))
@@ -1092,7 +1094,77 @@
                    (prefixes (map (lambda (w)
                                     (cons w (discover-prefix store w lock-context)))
                                   writers)))
-              (make-load-session store lock prefixes '() 'open)))))))
+              (let ((ls (make-load-session store lock prefixes '() 'open #f)))
+                (load-session-snapshot-set! ls (select-snapshot store prefixes))
+                ls)))))))
+
+  ;; ---- snapshot selection ---------------------------------------------------
+
+  ;; NEWEST FIRST, FALLING BACK. A void frame, a cut the log cannot
+  ;; support, a cut reaching into quarantined history, or a malformed
+  ;; cut all reject THAT snapshot and the next older one is tried --
+  ;; falling back to an older valid snapshot rather than to nothing
+  ;; (section 4.5-prime, L7).
+  ;;
+  ;; SUPPORT IS MEASURED FROM THE DISCOVERY RESULT. There is no second
+  ;; scan here: coverage is each writer's end-seq, which already has the
+  ;; quarantined suffix removed and the retirement boundary applied.
+  (define (select-snapshot store prefixes)
+    (let ((dir (string-append store "/snap"))
+          (coverage (map (lambda (e) (cons (car e) (discovery-end-seq (cdr e))))
+                         prefixes)))
+      (if (not (file-is-directory? dir))
+          (list #f #f 'absent)
+          (let loop ((ns (reverse (list-sort <
+                          (filter (lambda (n) n)
+                                  (map segment-file-number (directory-entries dir))))))
+                     (why 'absent))
+            (if (null? ns)
+                (list #f #f why)
+                (let ((path (string-append dir "/" (segment-file-name (car ns)))))
+                  (let-values (((cut rows) (snapshot-read path)))
+                    (cond
+                      ((not cut) (loop (cdr ns) rows))
+                      ;; A CUT NAMING ONE WRITER TWICE IS MALFORMED, not
+                      ;; a cut whose first entry wins: interpretation
+                      ;; would depend on duplicate-key order.
+                      ((duplicate-writer? cut)
+                       (reject-snapshot path 'duplicate-writer)
+                       (loop (cdr ns) 'duplicate-writer))
+                      ((cut-crosses-quarantine? cut prefixes)
+                       (reject-snapshot path 'quarantined)
+                       (loop (cdr ns) 'quarantined))
+                      ((not (snapshot-cut-supported? cut coverage))
+                       (reject-snapshot path 'unsupported-cut)
+                       (loop (cdr ns) 'unsupported-cut))
+                      (else (list cut rows #f))))))))))
+
+  (define (reject-snapshot path why)
+    (trace-event! 'snapshot-read (cons path why) #f))
+
+  (define (duplicate-writer? cut)
+    (let loop ((xs cut) (seen '()))
+      (cond
+        ((null? xs) #f)
+        ((member (caar xs) seen) #t)
+        (else (loop (cdr xs) (cons (caar xs) seen))))))
+
+  ;; A snapshot whose cut reaches at or past a writer's fork covers
+  ;; history that is no longer admissible, so it is void -- rejecting it
+  ;; is not the same as merely excluding the suffix from replay.
+  (define (cut-crosses-quarantine? cut prefixes)
+    (let loop ((xs cut))
+      (cond
+        ((null? xs) #f)
+        (else
+         (let* ((e (assoc (caar xs) prefixes))
+                (q (and e (discovery-quarantine (cdr e))))
+                (fork (and q (cadr q))))
+           (if (and fork (>= (cdar xs) fork)) #t (loop (cdr xs))))))))
+
+  (define (load-snapshot-cut ls) (car (load-session-snapshot ls)))
+  (define (load-snapshot-rows ls) (cadr (load-session-snapshot ls)))
+  (define (load-snapshot-reason ls) (caddr (load-session-snapshot ls)))
 
   (define (format-1? meta)
     (let loop ((xs meta))
