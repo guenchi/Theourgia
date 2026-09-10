@@ -94,6 +94,15 @@
 ;;; publish, snapshot, repair, and the caller says which one it is in by
 ;;; parameterizing theourgia-stage.
 ;;;
+;;; TWO CLASSES, AND THE DIFFERENCE IS DELIBERATE. short-write and
+;;; eintr-once are ONE-SHOT within their stage: they model a transient
+;;; event, and a caller that retries must be able to succeed.
+;;; fsync-fail, no-log-fsync, and write-eio-after-partial once it has
+;;; delivered its partial are PERSISTENT within their stage: they model
+;;; a device or a filesystem that has stopped working, and one that
+;;; healed on the retry would let a test pass for the wrong reason.
+;;; Both classes end with the stage.
+;;;
 ;;; WITHOUT IT A FAULT LANDS ON WHATEVER RUNS FIRST, which is not a
 ;;; hypothetical: once records are flushed before delivery, a
 ;;; path-scoped fsync-fail aimed at the log file hits the PRE-DELIVERY
@@ -454,10 +463,17 @@
      ;; kernel consume it, and the run would then look like a short write
      ;; that never occurred -- and for the EIO fault, "after partial"
      ;; would be a lie: the retry would be refused with nothing on disk.
-     (define (write-once fd bv count)
-       (if (not (in-fault-stage?))
-           (real-write fd bv count)
-           (staged-write-once fd bv count)))
+     ;; THE PATH QUALIFIER APPLIES TO WRITE FAULTS TOO. An earlier
+     ;; version checked the stage and then ignored fault-arg entirely,
+     ;; so short-write@commit:000001.sexp fired on whatever the commit
+     ;; stage wrote first -- the registry's temporary file as readily as
+     ;; the log record. A qualifier that is accepted and then ignored is
+     ;; worse than one that is refused: the run looks aimed.
+     (define (write-once fd bv count subject)
+       (if (and (in-fault-stage?)
+                (or (not fault-arg) (fault-path-match? fd subject)))
+           (staged-write-once fd bv count)
+           (real-write fd bv count)))
 
      (define (staged-write-once fd bv count)
        (case fault-name
@@ -488,7 +504,7 @@
      (define (theourgia-fault-armed?) #f)
      (define (fsync-fault fd subject) #f)
      (define (barrier! name) (void))
-     (define (write-once fd bv count) (real-write fd bv count))))
+     (define (write-once fd bv count subject) (real-write fd bv count))))
 
   ;; ---- opening ----------------------------------------------------------
 
@@ -725,7 +741,7 @@
       (let loop ((pos 0) (chunk bv))
         (if (>= pos total)
             total
-            (let-values (((n code) (write-once fd chunk (- total pos))))
+            (let-values (((n code) (write-once fd chunk (- total pos) subject)))
               (cond
                 ((and (< n 0) (= code EINTR))
                  (loop pos chunk))
