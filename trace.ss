@@ -36,16 +36,26 @@
 ;;; have to know which of the two it is looking at.
 
 (library (theourgia trace)
-  (export theourgia-trace? trace-event!)
-  (import (chezscheme))
+  (export trace-enabled? trace-enable! trace-event!)
+  (import (rnrs base) (rnrs control) (rnrs io ports)
+          (rnrs io simple) (rnrs exceptions) (rnrs unicode))
 
-  ;; Read once, when the library is initialised. A process either was
-  ;; started to be traced or it was not, and re-reading the environment
-  ;; on every syscall would put a getenv on the write path to buy a
-  ;; capability nothing wants. The parameter is exported so an
-  ;; in-process test can turn it on without spawning a fresh process.
-  (define theourgia-trace?
-    (make-parameter (equal? (getenv "THEOURGIA_TRACE") "1")))
+  ;; THE SWITCH IS INJECTED, NOT READ. Neither getenv nor a parameter is
+  ;; R6RS, and this library is the one place the whole tree's tracing
+  ;; passes through -- so it takes neither. The platform layer reads the
+  ;; environment once at load and calls trace-enable!; a test calls it
+  ;; directly. That keeps this file portable to a host with no
+  ;; environment at all, which is the point of separating it from the
+  ;; FFI in the first place.
+  ;; A one-slot VECTOR, not a pair: R6RS pairs are immutable and
+  ;; set-car! lives in (rnrs mutable-pairs), which is exactly the kind of
+  ;; extra dependency this file exists to avoid. Vectors are mutable in
+  ;; plain R6RS.
+  (define enabled (vector #f))
+
+  (define (trace-enabled?) (vector-ref enabled 0))
+
+  (define (trace-enable! on?) (vector-set! enabled 0 (and on? #t)))
 
   ;; FLUSHED ON EVERY LINE, because the sequence is the thing being
   ;; asserted and two processes writing an unflushed stderr interleave
@@ -55,9 +65,24 @@
   ;; turn a write that worked into a write that raised: that would make
   ;; the traced run and the untraced run different programs, and the
   ;; traced one is the one being believed.
+  ;; DISPLAY, NOT WRITE. R6RS has no fprintf, so the line is assembled
+  ;; by hand -- and the first version reached for `write`, which quotes
+  ;; strings: every path in the trace gained a pair of quotes and every
+  ;; assertion that matched a bare path stopped matching. The format is
+  ;; part of this library's interface because tests assert it, so the
+  ;; replacement has to reproduce it exactly, not merely produce
+  ;; something reasonable.
+  (define (write-field p x) (display x p))
+
   (define (trace-event! op subject bytes)
-    (when (theourgia-trace?)
-      (guard (e (#t (void)))
+    (when (trace-enabled?)
+      (guard (e (#t (if #f #f)))
         (let ((p (current-error-port)))
-          (fprintf p "(trace ~a ~a ~a)\n" op subject bytes)
+          (put-string p "(trace ")
+          (write-field p op)
+          (put-string p " ")
+          (write-field p subject)
+          (put-string p " ")
+          (write-field p bytes)
+          (put-string p ")\n")
           (flush-output-port p))))))

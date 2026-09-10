@@ -215,7 +215,9 @@
           path-device-inode
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed? theourgia-stage
-          theourgia-trace? trace-event!)
+          trace-enabled? trace-enable! trace-event!
+          directory-entries file-is-directory? file-is-regular? rename-over!
+          process-id)
   (import (chezscheme)
           (theourgia trace)
           (only (igropyr platform)
@@ -223,6 +225,33 @@
                 load-first-shared-object!))
 
   (define platform-checked (begin (ensure-supported-platform!) #t))
+
+  ;; THE PLATFORM LAYER READS THE ENVIRONMENT AND INJECTS THE SWITCH.
+  ;; (theourgia trace) takes neither getenv nor a parameter so that it
+  ;; stays portable to a host with no environment; this is the one place
+  ;; that knows there is one.
+  (define trace-switch-installed
+    (begin (trace-enable! (equal? (getenv "THEOURGIA_TRACE") "1")) #t))
+
+  ;; ---- the filesystem operations that are not R6RS ------------------------
+  ;;
+  ;; Directory listing, the two file-kind predicates, renaming over an
+  ;; existing name, and the process id are all host facilities with no
+  ;; R6RS spelling. They live here, with the syscalls, so that everything
+  ;; above this file is portable R6RS -- the same reason open, flock and
+  ;; fsync are here. Chez provides all five; another host substitutes
+  ;; this file and nothing else.
+  (define (directory-entries path) (directory-list path))
+  (define (file-is-directory? path) (file-directory? path))
+  (define (file-is-regular? path) (file-regular? path))
+
+  ;; Renaming over an existing name is the install step of every atomic
+  ;; replacement, and it is NOT R6RS: the standard has delete-file but no
+  ;; rename at all. Measured on both targets: it replaces the target
+  ;; atomically and the source is gone afterwards.
+  (define (rename-over! from to) (rename-file from to))
+
+  (define (process-id) (get-process-id))
 
   (define libc
     (load-first-shared-object!

@@ -106,7 +106,7 @@
   (define (temp-name-for path)
     (set-box! temp-counter (+ 1 (unbox temp-counter)))
     (string-append path ".tmp-"
-                   (number->string (get-process-id)) "-"
+                   (number->string (process-id)) "-"
                    (number->string (unbox temp-counter))))
 
   (define (parent-directory path)
@@ -221,7 +221,7 @@
             (when (unbox open?)
               (set-box! open? #f)
               (guard (e (#t (void))) (fd-close fd))))))
-      (rename-file tmp path)
+      (rename-over! tmp path)
       (fsync-dir! dir)
       path)))
 
@@ -296,9 +296,9 @@
 
   (define (store-writers store)
     (let ((dir (string-append store "/writers")))
-      (if (not (file-directory? dir))
+      (if (not (file-is-directory? dir))
           '()
-          (sort string<? (filter writer-id? (directory-list dir))))))
+          (list-sort string<? (filter writer-id? (directory-entries dir))))))
 
   ;; A SEGMENT MUST BE A REGULAR FILE. The name check alone accepts a
   ;; fifo called 000002.sexp, and opening one for reading blocks until a
@@ -308,16 +308,16 @@
   ;; recovered from by an exception handler, because nothing raises.
   (define (enumerate-segment-files store writer)
     (let ((dir (writer-directory store writer)))
-      (if (not (file-directory? dir))
+      (if (not (file-is-directory? dir))
           '()
-          (sort < (filter
+          (list-sort < (filter
                     (lambda (n) n)
                     (map (lambda (name)
                            (let ((n (segment-file-number name)))
                              (and n
-                                  (file-regular? (string-append dir "/" name))
+                                  (file-is-regular? (string-append dir "/" name))
                                   n)))
-                         (directory-list dir)))))))
+                         (directory-entries dir)))))))
 
   ;; The current segment is the highest-numbered file that EXISTS, not
   ;; the highest listed anywhere: rotation creates N+1 before anything
@@ -797,11 +797,11 @@
   ;; (section 4.5-prime, L7).
   (define (choose-snapshot store coverage)
     (let ((dir (string-append store "/snap")))
-      (if (not (file-directory? dir))
+      (if (not (file-is-directory? dir))
           (values #f #f '() 'absent)
-          (let loop ((ns (reverse (sort < (filter (lambda (n) n)
+          (let loop ((ns (reverse (list-sort < (filter (lambda (n) n)
                                                   (map segment-file-number
-                                                       (directory-list dir))))))
+                                                       (directory-entries dir))))))
                      (last-reason 'absent))
             (if (null? ns)
                 (values #f #f '() last-reason)
@@ -929,7 +929,7 @@
       ;; and threw away the other half of the comparison, so a manifest
       ;; promising segments 1 and 2 over a directory holding only 1
       ;; ended cleanly with no diagnostic at all.
-      (let* ((stop-before (if (pair? missing) (car (sort < missing)) #f))
+      (let* ((stop-before (if (pair? missing) (car (list-sort < missing)) #f))
              (segs (if stop-before (filter (lambda (n) (< n stop-before)) segs) segs)))
         (let loop ((ss segs) (expect 1) (sealed-done #f))
           (cond

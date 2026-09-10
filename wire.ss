@@ -115,10 +115,14 @@
   ;; the predicate: does this symbol come back from the codec AS ITSELF.
   ;; Writing it and reading it answers that with the actual mechanism.
   ;;
-  ;; Memoised in a WEAK table: symbols are interned and the answer never
-  ;; changes for a given one, but a strong table would keep every symbol
-  ;; ever asked about alive for the life of the process.
-  (define symbol-cache (make-weak-eq-hashtable))
+  ;; Memoised in an ORDINARY eq table, because R6RS has no weak one and
+  ;; this file is portable. The cost, stated rather than discovered: an
+  ;; entry keeps its symbol alive for the life of the process. That is
+  ;; nearly free here -- storable-encode is only ever asked about
+  ;; symbols that are already interned, and interning already keeps them
+  ;; alive -- but on a host where the reader can produce collectable
+  ;; symbols this table would retain them.
+  (define symbol-cache (make-eq-hashtable))
 
   ;; AN UNINTERNED SYMBOL CANNOT BE STORED, and it has to be refused
   ;; rather than approximated. A gensym's identity is not its name: two
