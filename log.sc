@@ -37,7 +37,8 @@
 ;;; states and both are legal (section 4.4).
 
 (library (theourgia log)
-  (export atomic-write!
+  (export scan-segment
+          atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory
           enumerate-segment-files current-segment-number
@@ -48,7 +49,8 @@
   (import (chezscheme)
           (theourgia ffi)
           (theourgia trace)
-          (only (theourgia wire) sexpr->string-extended string->sexpr-extended))
+          (only (theourgia wire)
+                sexpr->string-extended string->sexpr-extended decode-line))
 
   ;; ---- errors -------------------------------------------------------------
 
@@ -258,4 +260,108 @@
       (if local?
           present
           (let ((listed (manifest-segments (read-manifest store writer))))
-            (filter (lambda (n) (memv n listed)) present))))))
+            (filter (lambda (n) (memv n listed)) present)))))
+
+  ;; ---- scanning one segment ------------------------------------------------
+
+  ;; ONE RECOVERABLE SHAPE, AND IT IS THE ONLY ONE. A crash can interrupt
+  ;; write-all! part way through a line, and the visible result is a
+  ;; final line with no terminating newline. That is the whole of what
+  ;; automatic recovery covers (section 4.4-prime). Everything else --
+  ;; a line that HAS its newline and fails its CRC, a sequence that
+  ;; jumps, repeats or goes backwards, anything wrong in a sealed
+  ;; segment -- is an integrity error that stops the writer, because it
+  ;; is indistinguishable from bytes that were acknowledged and then
+  ;; damaged.
+  ;;
+  ;; A TORN TAIL IN A SEALED SEGMENT IS NOT A TORN TAIL. The shape is
+  ;; identical; what differs is whether anything is allowed to be
+  ;; writing there. Only the local writer's current segment can hold an
+  ;; interrupted write, so `recoverable-tail?` is the caller's statement
+  ;; about which file this is, and it is not inferred here -- inferring
+  ;; it would mean this function deciding, from bytes alone, a question
+  ;; the bytes cannot answer.
+  ;;
+  ;; A BROKEN LINE FOLLOWED BY MORE BYTES FALLS OUT CORRECTLY without a
+  ;; rule of its own: splitting at newlines makes the interrupted bytes
+  ;; and whatever followed them into one line that ends with a newline,
+  ;; so it is judged as a complete line and fails its CRC or its frame.
+  ;; That is L4-prime variant c, and it wants an integrity error rather
+  ;; than a truncation.
+  ;;
+  ;; THE OFFSET REPORTED IS THE START OF THE OFFENDING RECORD, not the
+  ;; position of the byte that gave it away. L3 asserts the reported
+  ;; (segment, offset, expected seq, actual seq) is exactly the
+  ;; injection point, and a scanner that reported where it noticed --
+  ;; the end of a line, or the parser's index -- would be off by the
+  ;; length of the record in a way that still looks plausible.
+  ;;
+  ;; Returns one of:
+  ;;   (complete <last-seq> <end-offset>)
+  ;;   (torn <offset of the residual> <last valid seq>)
+  ;;   (integrity <log-error>)
+  ;; `deliver` is called per record as (deliver offset seq ts actor deps
+  ;; payload) and may return the symbol stop to end the scan early, in
+  ;; which case the outcome describes what had been consumed.
+  (define (scan-segment bv writer segment expected-seq recoverable-tail? deliver)
+    (unless (bytevector? bv)
+      (assertion-violation 'scan-segment "not a bytevector" bv))
+    (let ((n (bytevector-length bv)))
+      (let loop ((start 0) (expect expected-seq) (last-seq #f))
+        (cond
+          ((>= start n) (list 'complete last-seq n))
+          (else
+           (let ((nl (find-newline bv start n)))
+             (cond
+               ;; no newline to the end: the residual
+               ((not nl)
+                (if recoverable-tail?
+                    (list 'torn start last-seq)
+                    (list 'integrity
+                          (make-log-error 'torn-in-sealed writer segment start
+                                          (list (cons 'bytes (- n start)))))))
+               (else
+                (let* ((end (+ nl 1))
+                       (line (subbytes bv start end))
+                       (r (decode-line line)))
+                  (case (car r)
+                    ((ok)
+                     (let ((seq (cadr r)))
+                       (cond
+                         ((and expect (not (= seq expect)))
+                          (list 'integrity
+                                (make-log-error 'seq writer segment start
+                                                (list (cons 'expected expect)
+                                                      (cons 'actual seq)))))
+                         (else
+                          (let ((v (deliver start seq (caddr r) (cadddr r)
+                                            (list-ref r 4) (list-ref r 5))))
+                            (if (eq? v 'stop)
+                                (list 'complete seq end)
+                                (loop end (+ seq 1) seq)))))))
+                    ((bad-crc)
+                     (list 'integrity
+                           (make-log-error 'crc writer segment start
+                                           (list (cons 'bytes (- end start))))))
+                    ((frame-error)
+                     (list 'integrity
+                           (make-log-error 'frame writer segment start
+                                           (list (cons 'reason (cadr r))))))
+                    ;; decode-line answers torn only without a trailing
+                    ;; newline, and this branch has one.
+                    (else
+                     (list 'integrity
+                           (make-log-error 'frame writer segment start
+                                           (list (cons 'reason (car r)))))))))))))))) 
+
+  (define (find-newline bv start end)
+    (let loop ((i start))
+      (cond
+        ((>= i end) #f)
+        ((= (bytevector-u8-ref bv i) 10) i)
+        (else (loop (+ i 1))))))
+
+  (define (subbytes bv start end)
+    (let ((out (make-bytevector (- end start))))
+      (bytevector-copy! bv start out 0 (- end start))
+      out)))
