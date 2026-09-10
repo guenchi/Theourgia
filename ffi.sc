@@ -147,6 +147,8 @@
           ftruncate! fsync! fsync-dir! write-all!
           fd-seek! fd-size file-size file-ensure! fd-path link!
           barrier!
+          lock-acquire! lock-release! lock-fd lock-held?
+          path-device-inode
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed?
           theourgia-trace? trace-event!)
@@ -173,6 +175,7 @@
   (define c-lseek (foreign-procedure "lseek" (int integer-64 int) integer-64))
   (define c-write (foreign-procedure "write" (int u8* size_t) ssize_t))
   (define c-link  (foreign-procedure "link"  (string string) int))
+  (define c-stat  (foreign-procedure "stat"  (string u8*) int))
 
   ;; errno is a per-thread location reached through a function, and the
   ;; function has a different name on the BSDs than on glibc. Whichever
@@ -667,6 +670,48 @@
                          (bytevector-copy! bv pos tail 0 (- total pos))
                          (loop pos tail)))))))))))
 
+  ;; ---- identity ----------------------------------------------------------
+
+  ;; A STORE'S IDENTITY IS BOUND TO ITS DIRECTORY'S (device, inode), so
+  ;; that a copy made to another path or another machine is refused the
+  ;; identity it copied. That needs two fields of struct stat, and this
+  ;; is the one place this library reads a C structure -- the thing its
+  ;; header says it avoided, taken deliberately and narrowly because
+  ;; nothing else can answer the question.
+  ;;
+  ;; MEASURED ON BOTH TARGETS, and they are NOT the same, which is
+  ;; exactly why this is not read from a table:
+  ;;
+  ;;   macOS 15.3 arm64   sizeof(struct stat) 144
+  ;;                      st_dev at 0, FOUR bytes    st_ino at 8, eight
+  ;;   FreeBSD 15.0       sizeof(struct stat) 224
+  ;;                      st_dev at 0, EIGHT bytes   st_ino at 8, eight
+  ;;
+  ;; Reading eight bytes of st_dev on macOS would take st_mode and
+  ;; st_nlink along with it and produce an enormous number that differs
+  ;; run to run -- an identity check that fails for a store nobody
+  ;; touched. st_ino agrees on both, and that agreement is measured and
+  ;; not assumed.
+  ;;
+  ;; A THIRD PLATFORM MEANS COMPILING THE PROGRAM THERE. The buffer is
+  ;; oversized so that a wrong guess cannot smash the heap, but an
+  ;; oversized buffer does not make wrong offsets right: the values
+  ;; would simply be some other fields, silently.
+  (define stat-buffer-size 512)
+  (define st-dev-offset 0)
+  (define st-ino-offset 8)
+
+  (define (path-device-inode path)
+    (unless (string? path)
+      (assertion-violation 'path-device-inode "path must be a string" path))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let ((rc (c-stat path buf)))
+        (when (< rc 0) (fail! 'stat path))
+        (values (if macos?
+                    (bytevector-u32-native-ref buf st-dev-offset)
+                    (bytevector-u64-native-ref buf st-dev-offset))
+                (bytevector-u64-native-ref buf st-ino-offset)))))
+
   ;; ---- linking ----------------------------------------------------------
 
   ;; THE WHOLE PUBLISH PROTOCOL RESTS ON THIS CALL FAILING. link(2)
@@ -717,68 +762,104 @@
   ;; that one caller. A missing lock file here means the store was never
   ;; initialised or has been damaged, and refusing says so at the point
   ;; where it is still true.
-  (define (call-with-lock who path mode mode-name proc)
-    (unless (procedure? proc)
-      (assertion-violation who "not a procedure" proc))
-    ;; Which lock was taken is not recoverable from the outcome -- a
-    ;; shared and an exclusive acquisition of a free lock look identical
-    ;; afterwards -- so the mode travels with the path.
-    (let ((subject (cons path mode-name)))
+  ;; A LOCK THAT OUTLIVES A CALL, because the log layer's session takes
+  ;; the store lock in one operation and releases it in another: a
+  ;; scoped helper cannot express that, and a session returned from
+  ;; inside one would be holding nothing.
+  ;;
+  ;; THE COST IS THAT RELEASING IS NOW SOMEBODY'S JOB. The scoped
+  ;; helpers below still exist and are still what to use for anything
+  ;; that fits in one call; this pair is for the one caller that cannot,
+  ;; and that caller owns the release on every path out, including the
+  ;; raising ones. Nothing here can do it for them -- that is the whole
+  ;; difference between the two shapes, and it is why this one is not
+  ;; the default.
+  (define-record-type lock-handle
+    (fields path mode-name (mutable fd) (mutable held)))
+
+  (define (lock-fd l) (lock-handle-fd l))
+  (define (lock-held? l) (and (lock-handle-held l) #t))
+
+  (define (mode->int who m)
+    (case m
+      ((exclusive) LOCK_EX)
+      ((shared) LOCK_SH)
+      (else (assertion-violation who "mode must be exclusive or shared" m))))
+
+  ;; THE NON-BLOCKING ATTEMPT COMES FIRST so that waiting is observable.
+  ;; Whether a writer had to queue behind another is exactly what a
+  ;; concurrency test needs to see, and it cannot be recovered from the
+  ;; outcome: the same final state is reached whether the wait happened
+  ;; or not.
+  (define (lock-acquire! path mode)
+    (unless (string? path)
+      (assertion-violation 'lock-acquire! "path must be a string" path))
+    (let* ((m (mode->int 'lock-acquire! mode))
+           (subject (cons path mode)))
       (let ((fd (c-open path O_RDONLY)))
         (when (< fd 0) (fail! 'open path))
         (hashtable-set! fd-paths fd path)
-        (let ((held (box #f)) (closed (box #f)))
-          (dynamic-wind
-            ;; A LOCKED REGION IS NOT RE-ENTRANT, AND THAT IS A RULE FOR
-            ;; CALLERS RATHER THAN A CHECK HERE. dynamic-wind will run
-            ;; this thunk again if proc captured a continuation, escaped
-            ;; -- releasing the lock and closing the descriptor on the
-            ;; way out -- and was then re-invoked; the body would resume
-            ;; holding nothing, against a descriptor number the kernel
-            ;; may since have handed to another file.
-            ;;
-            ;; A GUARD HERE WAS WRITTEN AND THEN TAKEN OUT, because it
-            ;; fires on ordinary exception propagation. R6RS `guard`
-            ;; re-raises in the dynamic environment of the original
-            ;; raise, so a guard clause that DECLINES re-enters every
-            ;; dynamic-wind it unwound: measured as (in out in out) on a
-            ;; bare dynamic-wind, and with the check installed an
-            ;; ordinary #(durable-error write ...) raised inside proc
-            ;; reached the outer handler as an assertion violation
-            ;; instead. Replacing a real failure with a false one is a
-            ;; worse defect than the re-entry it was guarding, and no
-            ;; test here can tell the two re-entries apart.
-            void
-            (lambda ()
-              (let ((rc (c-flock fd (+ mode LOCK_NB))))
-                (when (< rc 0)
-                  (trace-event! 'lock-wait subject #f)
-                  (let retry ()
-                    (let ((rc (c-flock fd mode)))
-                      (when (< rc 0)
-                        (if (= (errno) EINTR)
-                            (retry)
-                            (fail! 'flock path)))))))
-              (set-box! held #t)
-              (trace-event! 'flock subject #f)
-              (proc fd))
-            (lambda ()
-              (unless (unbox closed)
-                (set-box! closed #t)
-                ;; UNLOCK, CLOSE, THEN REPORT. Reporting last means an
-                ;; escape from inside trace-event! cannot leave the
-                ;; descriptor open, and the line is only printed if
-                ;; LOCK_UN actually returned success -- a trace that
-                ;; announced an unlock which failed would be forging the
-                ;; evidence a test reads. The close releases the lock in
-                ;; either case, which is why a failed LOCK_UN is not
-                ;; escalated here.
-                (let ((released (and (unbox held) (>= (c-flock fd LOCK_UN) 0))))
-                  (close-quietly fd)
-                  (when released (trace-event! 'unlock subject #f))))))))))
+        (guard (e (#t (close-quietly fd) (raise e)))
+          (let ((rc (c-flock fd (+ m LOCK_NB))))
+            (when (< rc 0)
+              (trace-event! 'lock-wait subject #f)
+              (let retry ()
+                (let ((rc (c-flock fd m)))
+                  (when (< rc 0)
+                    (if (= (errno) EINTR)
+                        (retry)
+                        (fail! 'flock path))))))))
+        (trace-event! 'flock subject #f)
+        (make-lock-handle path mode fd #t))))
+
+  ;; Idempotent, because the caller owning the release will sometimes
+  ;; release on two paths out of the same region and must not have to
+  ;; track which one ran.
+  (define (lock-release! l)
+    (unless (lock-handle? l)
+      (assertion-violation 'lock-release! "not a lock" l))
+    (when (lock-handle-held l)
+      (lock-handle-held-set! l #f)
+      (let* ((fd (lock-handle-fd l))
+             (subject (cons (lock-handle-path l) (lock-handle-mode-name l)))
+             (released (>= (c-flock fd LOCK_UN) 0)))
+        (close-quietly fd)
+        (when released (trace-event! 'unlock subject #f))))
+    (void))
+
+  ;; NEITHER HELPER CREATES THE LOCK FILE, and that is what makes "a
+  ;; reader changes no files" a property of the code rather than a rule
+  ;; someone has to keep. An earlier version called file-ensure! here,
+  ;; so taking a SHARED lock on a store whose lock file was missing
+  ;; CREATED it -- measured, a zero-byte file appearing under a
+  ;; read-only command, which is the invariant read-only callers exist
+  ;; to preserve.
+  ;;
+  ;; The lock file is created once, when the store is initialised, and
+  ;; is then never deleted or replaced. file-ensure! is exported for
+  ;; that one caller. A missing lock file here means the store was never
+  ;; initialised or has been damaged, and refusing says so at the point
+  ;; where it is still true.
+  ;;
+  ;; flock IS PER OPEN FILE DESCRIPTION, NOT PER PROCESS. Two of these
+  ;; nested on the same path in one process deadlock against each other,
+  ;; because the inner one opens a second descriptor and waits for the
+  ;; outer one to let go. That is a property of the syscall and not
+  ;; something this wrapper can soften.
+  ;;
+  ;; BUILT ON THE PAIR ABOVE so the acquisition sequence has one
+  ;; implementation. What this adds is the release, on every path out.
+  (define (call-with-lock who path mode-name proc)
+    (unless (procedure? proc)
+      (assertion-violation who "not a procedure" proc))
+    (let ((l (lock-acquire! path mode-name)))
+      (dynamic-wind
+        void
+        (lambda () (proc (lock-fd l)))
+        (lambda () (lock-release! l)))))
 
   (define (with-exclusive-lock path proc)
-    (call-with-lock 'with-exclusive-lock path LOCK_EX 'exclusive proc))
+    (call-with-lock 'with-exclusive-lock path 'exclusive proc))
 
   (define (with-shared-lock path proc)
-    (call-with-lock 'with-shared-lock path LOCK_SH 'shared proc)))
+    (call-with-lock 'with-shared-lock path 'shared proc)))
