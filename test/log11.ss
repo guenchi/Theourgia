@@ -137,6 +137,13 @@
             ((string=? (substring s i (+ i m)) sub) #t)
             (else (loop (+ i 1)))))))
 (define (events text) (filter (lambda (l) (has-substring? l "(trace ")) (lines-of text)))
+;; The store directory's own name, which the work directory carries a pid
+;; suffix on -- so it is read from d rather than spelled out.
+(define (store-basename)
+  (let loop ((i (- (string-length d) 1)))
+    (cond ((< i 0) d)
+          ((char=? (string-ref d i) #\/) (substring d (+ i 1) (string-length d)))
+          (else (loop (- i 1))))))
 ;; The subject is the second field, so "ends with" means "ends with,
 ;; just before the space that starts the bytes field".
 (define (ends-with-before-space? line suffix)
@@ -207,8 +214,20 @@
                                       (else (scan (- k 1)))))))
                           (filter (lambda (l) (string=? (op-of l) "fsync")) (events g-trace)))))
         (list-sort string<? flushed))
+      ;; EVERY NAME A CRASH COULD TAKE AWAY while leaving a record that
+      ;; depended on it. The mirror's directory appears twice from two
+      ;; obligations that neither may assume the other ran: the takeover
+      ;; barrier flushes the segments about to be delivered, and the
+      ;; version barrier flushes the manifest those segments are history
+      ;; BY -- and after a mid-session reload the second runs again and
+      ;; the first does not. Above those sit writers/ (a writer directory
+      ;; that appeared has its own entry), and the store's own identity
+      ;; files with the store directory that holds them.
       (list-sort string<? (list "000001.sexp" A
-                                "000001.sexp" "000002.sexp" "published.sexp" B)))
+                                "000001.sexp" "000002.sexp" "published.sexp" B B
+                                "writers"
+                                "meta.sexp" (store-basename)
+                                "instance.sexp" (store-basename))))
 
 ;; INJECTED FAILURE AT THE BARRIER MUST DELIVER NOTHING. Half a barrier
 ;; is worse than none: the reducer would have applied records whose

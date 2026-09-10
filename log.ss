@@ -1360,7 +1360,7 @@
             (mutable ended) (mutable poisoned)
             (mutable next-seq) (mutable unconfirmed)
             (mutable versions) (mutable reset-pending) (mutable rejected)
-            (mutable delivered)))
+            (mutable delivered) (mutable barriered)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1391,17 +1391,13 @@
           (unless (null? segs)
             (for-each (lambda (seg) (flush-file! (string-append dir "/" (segment-file-name seg))))
                       segs)
-            ;; THE METADATA IS PART OF THE DURABLE FRONTIER, not a
-            ;; separate concern. A mirrored writer's records are history
-            ;; because published.sexp says so, so flushing its segment
-            ;; while leaving that file's contents unflushed delivers
-            ;; records whose admissibility can vanish -- the bytes
-            ;; survive the crash and the manifest that vouches for them
-            ;; does not. Directory durability is not content durability.
-            (for-each (lambda (name)
-                        (let ((path (string-append dir "/" name)))
-                          (when (file-exists? path) (flush-file! path))))
-                      '("published.sexp" "retired.sexp" "quarantine.sexp"))
+            ;; THE METADATA IS FLUSHED BY THE VERSION BARRIER, not here.
+            ;; It is part of the durable frontier for the same reason --
+            ;; a mirror's records are history because published.sexp says
+            ;; so -- but it is keyed to the VERSION being depended on
+            ;; rather than to a segment being delivered, and a fork at a
+            ;; writer's first event would otherwise leave a directory
+            ;; this loop never visits.
             (fsync-dir! dir))))
       prefixes))
 
@@ -1445,7 +1441,8 @@
                                         (and entry (+ 1 (discovery-end-seq (cdr entry))))
                                         #f
                                         (metadata-versions store)
-                                        #f '() '())))
+                                        #f '() '() '())))
+                  (metadata-barrier! s)
                   (deliver-into! s)
                   (vector-set! handed-over 0 #t)
                   s)))))
@@ -1473,7 +1470,8 @@
           (stopped '()))
       (load-deliver! (session-load s) cut
         (lambda (writer seg off seq ts actor deps payload)
-          (if (or (member writer stopped) (writer-rejected? s writer))
+          (if (or (member writer stopped)
+                  (let ((at (writer-rejected-at s writer))) (and at (>= seq at))))
               'suppressed
               (begin
                 (session-delivered-set! s (cons (cons writer seq) (session-delivered s)))
@@ -1481,6 +1479,16 @@
                   (cond
                     ((eq? answer 'applied) (note-applied! s writer seq))
                     ((and (pair? answer) (eq? (car answer) 'rejected))
+                     ;; RECORDED, NOT MERELY NOTED FOR THIS PASS. A
+                     ;; rejection the reducer returned is the same
+                     ;; decision as one it announces later, and keeping
+                     ;; it only in a local list meant a reload delivered
+                     ;; the record again and asked the same unanswerable
+                     ;; question.
+                     (session-rejected-set!
+                       s (cons (list writer seq
+                                     (if (pair? (cdr answer)) (cadr answer) 'rejected))
+                               (session-rejected s)))
                      (set! stopped (cons writer stopped))))
                   answer)))))))
 
@@ -1691,6 +1699,100 @@
 
 
 
+
+  ;; ---- the metadata version barrier (L22) -----------------------------------
+
+  ;; A VERSION MUST BE DURABLE BEFORE ANYTHING DEPENDS ON IT. The
+  ;; manifest says which of a mirror's segments are history, the
+  ;; quarantine says where a writer's history stops, the retirement says
+  ;; that it stopped -- and a session that writes a record, or freezes a
+  ;; snapshot, on the strength of one of those has made a claim that a
+  ;; crash can erase while the record survives. Directory durability is
+  ;; not content durability: the name being there says nothing about the
+  ;; bytes.
+  ;;
+  ;; SEGMENT BARRIERS CANNOT STAND IN. If the fork is at a writer's very
+  ;; first event the session may deliver nothing at all from it and
+  ;; never touch that directory, so the flush has to be keyed to the
+  ;; VERSION being depended on rather than to any record being read.
+  ;;
+  ;; ONCE PER VERSION PER SESSION. A confirmation is not carried across
+  ;; log-end!: a new session re-establishes all of them, because neither
+  ;; inode nor length nor hash proves that the write which produced those
+  ;; bytes was ever flushed.
+  (define metadata-files '("published.sexp" "retired.sexp" "quarantine.sexp"))
+
+  ;; THE STAGE IS DECLARED HERE, like every other flush site. A barrier
+  ;; that names no stage cannot be hit by a staged fault at all, so the
+  ;; case for "a version that cannot be made durable refuses the write"
+  ;; would pass without the failure ever happening.
+  (define (metadata-barrier! s)
+    (parameterize ((theourgia-stage 'deliver-barrier))
+      (metadata-barrier-staged! s)))
+
+  ;; WHAT WAS LAST FLUSHED FOR THIS FILE, not the set of everything ever
+  ;; flushed for it. Remembering every version certified A, then B, then
+  ;; A again as already durable -- and the second installation of A is a
+  ;; different installation: an old certificate proves that those bytes
+  ;; were once made durable, not that the rename which put them back has
+  ;; been. A crash there restores B.
+  (define (last-flushed s w name)
+    (let loop ((es (session-barriered s)))
+      (cond ((null? es) #f)
+            ((and (equal? (car (car es)) w) (equal? (cadr (car es)) name))
+             (caddr (car es)))
+            (else (loop (cdr es))))))
+
+  (define (note-flushed! s w name version)
+    (session-barriered-set!
+      s
+      (cons (list w name version)
+            (remp (lambda (e) (and (equal? (car e) w) (equal? (cadr e) name)))
+                  (session-barriered s)))))
+
+  (define (metadata-barrier-staged! s)
+    (let* ((store (session-store s))
+           (any (vector #f)))
+      (for-each
+        (lambda (w)
+          (let ((dir (writer-directory store w))
+                (touched (vector #f)))
+            (for-each
+              (lambda (name)
+                (let ((version (file-version store w name)))
+                  (when (and version (not (equal? version (last-flushed s w name))))
+                    (flush-file! (writer-file store w name))
+                    (note-flushed! s w name version)
+                    (vector-set! touched 0 #t))))
+              metadata-files)
+            ;; The namespace entry as well as the contents: a version
+            ;; whose file is flushed but whose name is not is a version
+            ;; that can vanish whole.
+            (when (vector-ref touched 0)
+              (fsync-dir! dir)
+              (vector-set! any 0 #t))))
+        (store-writers store))
+      ;; P1: THE WRITERS DIRECTORY ITSELF. A writer directory that
+      ;; appeared mid-session has its own entry in writers/, and flushing
+      ;; the contents of that directory says nothing about whether the
+      ;; directory is still there after a crash -- a record whose deps
+      ;; name that writer would then point at nothing.
+      (when (vector-ref any 0)
+        (fsync-dir! (string-append store "/writers")))
+      ;; The store's own identity files are depended on by every append
+      ;; and are not any writer's.
+      (for-each
+        (lambda (name)
+          (let* ((path (string-append store "/" name))
+                 (version (and (file-exists? path)
+                               (bytevector->hex (sha256 (read-whole path))))))
+            (when (and version (not (equal? version (last-flushed s "" name))))
+              (flush-file! path)
+              (note-flushed! s "" name version)
+              (fsync-dir! store))))
+        '("meta.sexp" "instance.sexp"))
+      'barriered))
+
   ;; ---- metadata versions, reload and the epoch ------------------------------
 
   ;; THE THREE FILES A SESSION'S VIEW OF HISTORY RESTS ON, read cheaply
@@ -1735,6 +1837,10 @@
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
+      ;; WHAT WAS DELIVERED IS A FACT ABOUT AN EPOCH. Carrying the list
+      ;; across a reload let session-reject! accept a record that the new
+      ;; boundary has removed and that this epoch never delivered.
+      (session-delivered-set! s '())
       (session-versions-set! s (metadata-versions store))
       (session-epoch-set! s (+ 1 (session-epoch s)))
       (session-revision-set! s (+ 1 (session-revision s)))
@@ -1785,6 +1891,10 @@
       (raise (make-log-error 'stale-epoch #f #f #f
                              (list (cons 'reported epoch)
                                    (cons 'current (session-epoch s))))))
+    ;; THE REPLAY IS A DELIVERY TOO, so the versions it will deliver
+    ;; against have to be durable first -- a failed barrier before the
+    ;; reset must not be bypassed by acknowledging it.
+    (metadata-barrier! s)
     (session-reset-pending-set! s #f)
     (deliver-into! s)
     (session-epoch s))
@@ -1827,11 +1937,19 @@
   ;; session rather than of one delivery pass -- recording the rejection
   ;; and then letting the next pass deliver that writer again would make
   ;; the rejection advice rather than a decision.
-  (define (writer-rejected? s writer)
-    (let loop ((rs (session-rejected s)))
-      (cond ((null? rs) #f)
-            ((string=? (car (car rs)) writer) #t)
-            (else (loop (cdr rs))))))
+  ;; THE LOWEST REJECTED SEQUENCE, not merely "was anything rejected".
+  ;; Suppressing the writer entirely threw away the valid prefix BELOW
+  ;; the rejected record: after a reset the replay rebuilt state without
+  ;; history that was never in question. The rejection stops that writer
+  ;; where it stands, which is a boundary.
+  (define (writer-rejected-at s writer)
+    (let loop ((rs (session-rejected s)) (lowest #f))
+      (cond
+        ((null? rs) lowest)
+        ((string=? (car (car rs)) writer)
+         (let ((seq (cadr (car rs))))
+           (loop (cdr rs) (if (or (not lowest) (< seq lowest)) seq lowest))))
+        (else (loop (cdr rs) lowest)))))
 
   ;; ---- instance identity (section 4.1) --------------------------------------
 
@@ -2151,12 +2269,21 @@
                              (list (cons 'store (session-store s))
                                    (cons 'remedy 'adopt)))))
     (barrier! 'before-append)
-    ;; THE VERSIONS ARE RE-READ BEFORE ANYTHING ELSE. A quarantine
-    ;; installed since this session loaded moves a boundary backwards,
-    ;; and an append computed against the old one would carry facts about
-    ;; history the store no longer has.
-    (when (and (not (session-reset-pending s)) (versions-changed? s))
-      (reload! s))
+    ;; THE BARRIER COMES FIRST, BEFORE THE RELOAD. A reload delivers the
+    ;; records the new metadata admits, and delivery implies durability --
+    ;; so flushing afterwards means the reducer has already been handed
+    ;; records whose manifest may not survive the crash. The versions are
+    ;; on disk by now either way; what this decides is whether they are
+    ;; durable before anything is computed from them.
+    (let ((durable (guard (e (#t 'barrier-failed)) (metadata-barrier! s))))
+      (if (eq? durable 'barrier-failed)
+          (list 'refused-before-reserve 'metadata-not-durable)
+          (begin
+            (when (and (not (session-reset-pending s)) (versions-changed? s))
+              (reload! s))
+            (append-after-barrier! s frame)))))
+
+  (define (append-after-barrier! s frame)
     (if (session-reset-pending s)
         ;; A STRUCTURED READINESS REFUSAL, naming the state. Not `unseen`
         ;; and not `unknown`: those are answers about the request, and
