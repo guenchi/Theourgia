@@ -1,0 +1,903 @@
+#!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; Deterministic reduction: candidates, tombstones, edges, order
+;; (plan R1 R2 R4 R5 R7 R11, design 9.1 through 9.5).
+;;
+;; A WRITE DOES NOT OVERWRITE. It removes the candidates it could have
+;; seen and leaves the rest, so two writers who did not see each other
+;; leave two candidates and that is a conflict -- not a race whose winner
+;; depends on which segment was enumerated first. Every row here is some
+;; consequence of that.
+(import (chezscheme) (theourgia reduce)
+        (only (theourgia wire) sexpr->string-extended))
+
+;; The work directory is decided at run time; see the note in the log
+;; fixtures.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    (system (string-append "mkdir -p " path))
+    path))
+(define bad 0)
+(define (want label got expect)
+  (let ((ok (equal? got expect)))
+    (unless ok (set! bad (+ bad 1)))
+    (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
+            (if ok "" (format "   WANT ~s" expect)))))
+;; The fixtures name events the way the plan does -- a.1, b.2 -- and the
+;; block ids follow from them by the derivation rule.
+(define (feed! r . events)
+  (for-each (lambda (e) (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))) events)
+  r)
+(define (field-of r id name)
+  (let* ((b (state-read r id)) (fs (and b (cdr (assq 'fields b)))))
+    (and fs (let ((e (assq name fs))) (and e (cdr e))))))
+
+(printf "== R1: field candidates ==\n")
+;; (a) one writer, three events in sequence: each supersedes the last,
+;; because a writer's own predecessors are always in its past.
+(want "sequential writes leave exactly one candidate"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("a" 3 () (set "a.1" title "q")))
+        (field-of r "a.1" 'title))
+      "q")
+;; (b) two writers who did not see each other: two candidates, and the
+;; read says conflict rather than picking one.
+(want "concurrent writes leave both candidates, in event order"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r")))
+        (field-of r "a.1" 'title))
+      '(conflict (("p" "a" 2) ("r" "b" 1))))
+;; (c) a write that saw both resolves it -- and resolution is an ordinary
+;; write, not a special operation.
+(want "a write whose past covers both candidates settles it"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("a" 3 (("b" . 1)) (set "a.1" title "s")))
+        (field-of r "a.1" 'title))
+      "s")
+;; (d) three concurrent writers: three candidates. Two is not a special
+;; case of the rule.
+(want "three concurrent writers leave three candidates"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("c" 1 (("a" . 1)) (set "a.1" title "t")))
+        (field-of r "a.1" 'title))
+      '(conflict (("p" "a" 2) ("r" "b" 1) ("t" "c" 1))))
+;; (f) a different field is not a conflict -- supersession is per field.
+(want "CONTROL: concurrent writes to different fields do not conflict"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" summary "r")))
+        (list (field-of r "a.1" 'title) (field-of r "a.1" 'summary)))
+      (list "p" "r"))
+
+;; (e) TRANSITIVITY. c saw b, and b saw a -- so c's past contains a even
+;; though c never names it. Without the transitive closure a's candidate
+;; survives and the field reads as a conflict nobody is in.
+;; THE INTERVENING WRITES TOUCH A DIFFERENT FIELD, which is what makes
+;; the closure matter at all. If they had written `title` they would have
+;; superseded the old candidate themselves and c would only need to see
+;; the nearest one -- so a version that never walks past its direct deps
+;; would pass. Here the only thing that can remove a.1's title is c's
+;; past reaching a.1 through b and a.2.
+(want "a past reaches through the events it saw, not only the ones it names"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (set "a.1" summary "p"))
+               '("b" 1 (("a" . 2)) (set "a.1" summary "r"))
+               '("c" 1 (("b" . 1)) (set "a.1" title "t")))
+        (field-of r "a.1" 'title))
+      "t")
+(want "CONTROL: a writer that never saw the block's creation conflicts with it"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (set "a.1" summary "p"))
+               '("b" 1 (("a" . 2)) (set "a.1" summary "r"))
+               '("c" 1 () (set "a.1" title "t")))
+        (field-of r "a.1" 'title))
+      '(conflict (("x" "a" 1) ("t" "c" 1))))
+
+(printf "== R11: the two-argument set ==\n")
+;; ABSENT IS A VALUE. Removing the candidates instead would make the
+;; deletion invisible to a concurrent write, which would then look like
+;; the only candidate rather than one of two.
+;; A DELETED FIELD IS NOT REPORTED BY read -- it is gone, and a reader
+;; asking what the block says should not be told about it. It is still in
+;; the canonical state, because a concurrent write has to be able to
+;; conflict with the deletion.
+;; The marker is a tagged list, matching the codec's convention for
+;; values that need a name the printer can carry.
+(define absent-marker (list "#%absent"))
+(want "a two-argument set removes the field from what a read reports"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (foo . 1))))
+               '("a" 2 () (set "a.1" foo)))
+        (list (field-of r "a.1" 'foo)
+              (cadr (assq 'fields (cddr (car (state-datum r)))))))
+      (list #f (list (list 'foo (list (cons absent-marker (cons "a" 2))))
+                     (list 'kind (list (cons 'section (cons "a" 1)))))))
+;; AND IT IS NOT THE SAME AS ANY ORDINARY VALUE. Assigning the symbol
+;; #%absent by hand is the one case that could collide, so it is here
+;; beside the others.
+(want "deleting, false, the empty list and the literal symbol are four states"
+      (let ((mk (lambda (payload)
+                  (let ((r (reduce-empty)))
+                    (feed! r
+                           '("a" 1 () (put ((kind . section) (foo . 1))))
+                           (list "a" 2 '() payload))
+                    (block-hash r "a.1")))))
+        (let ((a (mk '(set "a.1" foo)))
+              (b (mk '(set "a.1" foo #f)))
+              (c (mk '(set "a.1" foo ())))
+              (d (mk (list 'set "a.1" 'foo (list "#%absent")))))
+          (list (equal? a b) (equal? a c) (equal? b c) (equal? a d))))
+      (list #f #f #f #t))
+(want "a two-argument set concurrent with a write conflicts like any other"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (foo . 1))))
+               '("a" 2 () (set "a.1" foo))
+               '("b" 1 (("a" . 1)) (set "a.1" foo 1)))
+        (field-of r "a.1" 'foo))
+      (list 'conflict (list (list absent-marker "a" 2) (list 1 "b" 1))))
+
+(printf "== R4: tombstones ==\n")
+;; PERMANENT, NOT CASCADING, NOT REVIVABLE -- and it does not clear the
+;; fields: a later write is still recorded as evidence of what someone
+;; believed, even though the block is gone.
+;; The later write SAW the put -- its deps name a.1 -- so it supersedes
+;; that title; what the row establishes is that it was recorded at all,
+;; against a block that is already dead. The tombstone does not clear
+;; fields and does not stop evidence accumulating.
+(want "a deleted block is still readable, marked, and later writes still land"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (del "a.1"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "y")))
+        (let ((b (state-read r "a.1")))
+          (list (cdr (assq 'deleted b)) (field-of r "a.1" 'title))))
+      (list #t "y"))
+;; AND THE FIELDS THE DELETE DID NOT TOUCH ARE STILL THERE. Clearing them
+;; would lose what the block was, which is exactly what someone reading a
+;; deleted block wants to know.
+(want "a field written before the delete survives it"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (del "a.1")))
+        (list (field-of r "a.1" 'kind) (field-of r "a.1" 'title)))
+      (list 'section "x"))
+(want "and it is not listed in the outline"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (del "a.1")))
+        (state-outline r))
+      '())
+(want "CONTROL: an undeleted block is listed"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (put ((kind . section)))))
+        (state-outline r))
+      '((root 0 "a.1")))
+
+(printf "== R5: the edge set ==\n")
+(want "link then unlink by the same writer leaves no edge"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (link "S" explains "T"))
+               '("a" 2 () (unlink "S" explains "T")))
+        (cdr (assq 'links (state-dump r))))
+      '())
+;; THE UNLINK REMOVES WHAT IT SAW. A link it never saw survives, which is
+;; what stops one writer's removal from silently undoing another's
+;; addition.
+(want "an unlink does not remove a concurrent link it never saw"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (link "S" explains "T"))
+               '("b" 1 () (link "S" explains "T"))
+               '("a" 2 () (unlink "S" explains "T")))
+        (map (lambda (l) (list (car l) (cadddr l)))
+             (cdr (assq 'links (state-dump r)))))
+      '(("S" ("b" . 1))))
+(want "removing an edge that is not there is not an error"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (unlink "S" explains "T")))
+        (cdr (assq 'links (state-dump r))))
+      '())
+
+(printf "== R7: tags ==\n")
+;; THE WHOLE CANDIDATE SET, values and event ids. A count of one is
+;; satisfied by keeping the WRONG one, which is the failure a resolution
+;; rule can actually have.
+(define (tags-of r name)
+  (let ((e (assoc name (cdr (assq 'tags (state-dump r))))))
+    (and e (map (lambda (c) (list (car c) (car (cdr c)) (cdr (cdr c)))) (cdr e)))))
+(want "concurrent tags of one name leave both candidates"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (tag "t" (("a" . 1))))
+               '("b" 1 () (tag "t" (("b" . 1)))))
+        (tags-of r "t"))
+      ;; Sorted by event id, not by arrival: the dump is a function of
+      ;; the state, so two libraries holding these records print the same
+      ;; thing however the records reached them.
+      (list (list '(("a" . 1)) "a" 1) (list '(("b" . 1)) "b" 1)))
+(want "and a write covering both leaves exactly the new one"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (tag "t" (("a" . 1))))
+               '("b" 1 () (tag "t" (("b" . 1))))
+               '("a" 2 (("b" . 1)) (tag "t" (("a" . 2)))))
+        (tags-of r "t"))
+      (list (list '(("a" . 2)) "a" 2)))
+
+(printf "== R2: the total order, and the bucket ==\n")
+;; Stern-Brocot rather than the midpoint: repeated midpoints double the
+;; denominator each time and the number stops fitting anything.
+;; NOT THE MEDIANT OF THE ENDPOINTS. That is the same answer on (0,1)
+;; and wrong as soon as they are not neighbours in the tree: between 1/5
+;; and 1/2 the mediant is 2/7, while 1/3 is simpler and sits in the same
+;; gap. Repeated, that is exactly the denominator growth the rule exists
+;; to avoid.
+(want "the simplest rational in the gap, not the mediant of its ends"
+      (list (ord-between 0 1) (ord-between 0 1/2) (ord-between 0 1/3)
+            (ord-between 1/5 1/2) (ord-between 1/4 1/2)
+            (ord-between -1/2 -1/5) (ord-between -1/2 1/2))
+      (list 1/2 1/3 1/4 1/3 1/3 -1/3 0))
+(want "and a gap that straddles zero has zero in it, however narrow"
+      (let ((tiny (/ 1 (expt 2 128))))
+        (ord-between (- tiny) tiny))
+      0)
+;; AN OPEN END TAKES AN INTEGER, and that IS the smallest denominator:
+;; between 3 and infinity the simplest rational is 4, and below 1 it is
+;; 0 -- descending the tree would have answered 1/2, whose denominator is
+;; larger than an integer that fits just as well.
+(want "an open end takes an integer, at either end"
+      (list (ord-between 3 #f) (ord-between #f 1) (ord-between #f #f)
+            (ord-between 5/2 #f))
+      (list 4 0 0 3))
+(want "a gap that needs a denominator past the limit is refused"
+      (let ((tiny (/ 1 (expt 2 128))))
+        (ord-between 0 tiny))
+      '(refused too-deep))
+;; A BUCKET IS NOT AN ERROR. Two blocks share an ord because they were
+;; inserted concurrently into one gap; v1 declines to order within it and
+;; names the two places that ARE available.
+(want "asking to insert inside a bucket names the two places that exist"
+      (list (ord-between 1 1) (ord-between 3/2 3/2))
+      (list '(refused bucket (before . 1) (after . 1))
+            '(refused bucket (before . 3/2) (after . 3/2))))
+(want "CONTROL: one step short of the limit still answers"
+      (let ((nearly (/ 1 (- (expt 2 128) 2))))
+        (let ((o (ord-between 0 nearly)))
+          (list (and (not (pair? o)) #t) (< (denominator o) (expt 2 128)))))
+      (list #t #t))
+;; TIES ARE BROKEN BY THE ID, and both halves matter: concurrent inserts
+;; into one gap get the same ord, which is a bucket rather than an error.
+(want "blocks with equal ord are ordered by their ids"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("b" 1 () (put ((kind . section) (ord . 1))))
+               '("a" 1 () (put ((kind . section) (ord . 1))))
+               '("a" 2 () (put ((kind . section) (ord . 1)))))
+        (map caddr (state-outline r)))
+      '("a.1" "a.2" "b.1"))
+
+(printf "== the reduction is a pure function of the record set ==\n")
+;; SAME RECORDS, ANY ARRIVAL ORDER, SAME STATE. A record whose premises
+;; have not arrived waits rather than being applied against a state that
+;; does not contain them.
+(define the-records
+  '(("a" 1 () (put ((kind . section) (title . "x"))))
+    ("a" 2 () (set "a.1" title "p"))
+    ("b" 1 (("a" . 1)) (set "a.1" summary "r"))
+    ("b" 2 (("a" . 2)) (set "a.1" title "q"))))
+(define (state-of order)
+  (let ((r (reduce-empty)))
+    (for-each (lambda (i) (let ((e (list-ref the-records i)))
+                            (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))))
+              order)
+    (state-hash r)))
+(want "the same records in four arrival orders give one state"
+      (let ((h (state-of '(0 1 2 3))))
+        (list (equal? h (state-of '(3 2 1 0)))
+              (equal? h (state-of '(2 0 3 1)))
+              (equal? h (state-of '(1 3 0 2)))))
+      (list #t #t #t))
+(want "a record whose premise has not arrived is pending, not applied"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "b" 1 '(("a" . 1)) '(set "a.1" summary "r"))
+        (let ((mid (list (length (reduce-pending r)) (state-read r "a.1"))))
+          (reduce-apply! r "a" 1 '() '(put ((kind . section))))
+          (list mid (length (reduce-pending r))
+                (and (state-read r "a.1") #t))))
+      (list (list 1 #f) 0 #t))
+
+;; THE TOKEN TALKS ABOUT WHAT HAS BEEN APPLIED. A record that is waiting
+;; on a premise has not changed what anyone read, so it must not change
+;; the token -- otherwise `--if-unchanged` would refuse a write because
+;; of an event nobody has seen the effect of.
+(want "pending records do not enter the state hash"
+      (let ((a (reduce-empty)) (b (reduce-empty)))
+        (for-each (lambda (r)
+                    (reduce-apply! r "a" 1 '() '(put ((kind . section))))
+                    (reduce-apply! r "a" 2 '() '(set "a.1" title "p")))
+                  (list a b))
+        ;; b additionally holds a record whose premise never arrives
+        (reduce-apply! b "z" 1 '(("q" . 9)) '(set "a.1" title "never"))
+        (list (length (reduce-pending a)) (length (reduce-pending b))
+              (equal? (state-hash a) (state-hash b))))
+      (list 0 1 #t))
+
+(printf "== R3: the scheduler reconsiders what it has just unblocked ==\n")
+;; Applying one record can make another applicable, and that one may sort
+;; ahead of records already waiting. A pass that took the whole ready set
+;; and applied it before looking again would run them in an order no
+;; scheduler that reconsiders would produce.
+(want "a record unblocked mid-pass is taken before one that was already waiting"
+      (let ((r (reduce-empty)))
+        ;; b.1 and d.1 wait on z.1; a.1 waits on b.1. Nothing can run.
+        (reduce-apply! r "b" 1 '(("z" . 1)) '(set "z.1" title "b"))
+        (reduce-apply! r "d" 1 '(("z" . 1)) '(set "z.1" summary "d"))
+        (reduce-apply! r "a" 1 '(("b" . 1)) '(set "z.1" note "a"))
+        (let ((before (length (reduce-pending r))))
+          (reduce-apply! r "z" 1 '() '(put ((kind . section))))
+          (list before (reduce-trace r))))
+      (list 3 '(("z" . 1) ("b" . 1) ("a" . 1) ("d" . 1))))
+(want "a writer's own predecessor is a premise too, whichever arrives first"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "a" 2 '() '(set "a.1" title "second"))
+        (let ((mid (length (reduce-pending r))))
+          (reduce-apply! r "a" 1 '() '(put ((kind . section))))
+          (list mid (reduce-trace r))))
+      (list 1 '(("a" . 1) ("a" . 2))))
+(want "and a record waiting on one that is itself waiting stays waiting"
+      (let ((r (reduce-empty)))
+        (reduce-apply! r "b" 1 '(("a" . 1)) '(set "a.1" title "b"))
+        (reduce-apply! r "c" 1 '(("b" . 1)) '(set "a.1" summary "c"))
+        (list (length (reduce-pending r)) (reduce-trace r)))
+      (list 2 '()))
+
+(printf "== R2: ids are derived, and they sort as strings ==\n")
+;; base36 keeps an id short without introducing a separator that could
+;; occur in a writer id -- and the tie-break is byte order, so 36 sorts
+;; before 35 once it is written down.
+(want "the id comes from the event that created the block"
+      (list (block-id "a" 1) (block-id "a" 35) (block-id "a" 36)
+            (string<? (block-id "a" 36) (block-id "a" 35)))
+      (list "a.1" "a.z" "a.10" #t))
+;; A writer cannot start at sequence 35 -- its own predecessor is a
+;; premise and never arrives -- so the ordering of those two ids is
+;; asserted above on the derivation itself, and the bucket ordering has
+;; its own row with sequences a fixture can actually produce.
+
+(printf "== R12: what a read returns cannot be changed under it ==\n")
+;; AND THE CALLER CANNOT REACH BACK IN. Comparing two reads only shows
+;; they agree; what matters is that changing what one of them handed you
+;; does not change the state -- a stored vector returned directly is a
+;; way to move the token with no event at all.
+(want "two independent reads are equal, and mutating one changes nothing"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               (list "a" 2 '() (list 'set "a.1" 'body (vector 1 2 3))))
+        (let* ((before (block-hash r "a.1"))
+               (one (state-read r "a.1"))
+               (two (state-read r "a.1"))
+               ;; compared BEFORE the mutation: afterwards they differ
+               ;; from each other, which is itself the point -- each read
+               ;; got its own copy.
+               (agree (equal? one two))
+               (v (cdr (assq 'body (cdr (assq 'fields one))))))
+          (vector-set! v 0 99)
+          (list agree
+                (equal? before (block-hash r "a.1"))
+                (vector-ref (cdr (assq 'body (cdr (assq 'fields (state-read r "a.1"))))) 0))))
+      (list #t #t 1))
+
+(printf "== R10: the hash is computed from the shape the design pins ==\n")
+;; A HASH WHOSE INPUT SHAPE LIVED ONLY IN THIS FILE would agree with
+;; nothing. The datum is checked against section 9.2's spelling, and the
+;; digest against an independent computation over it.
+(define sample
+  (let ((r (reduce-empty)))
+    (feed! r
+           '("a" 1 () (put ((kind . section) (title . "x"))))
+           '("b" 1 () (set "a.1" title "y"))
+           '("a" 2 () (link "a.1" explains "b.1")))
+    r))
+;; Written out from section 9.2's spelling rather than from the output:
+;; a candidate is (<value> . <event-id>), a position candidate is
+;; ((<parent> . <ord>) . <event-id>), fields sort by name, candidates by
+;; event id, and edges carry no event id at all.
+(want "the datum has the pinned shape, sorted as the design says"
+      (state-datum sample)
+      (list (list 'block "a.1"
+                  (list 'fields
+                        (list (list 'kind (list (cons 'section (cons "a" 1))))
+                              (list 'title (list (cons "x" (cons "a" 1))
+                                                 (cons "y" (cons "b" 1))))))
+                  (list 'position (list (cons (cons 'root 0) (cons "a" 1))))
+                  (list 'deleted #f)
+                  (list 'edges (list (cons 'explains "b.1"))))))
+;; R10(c): THE TOKEN IS ABOUT ONE BLOCK. A change to a different block
+;; must leave it valid -- that is what makes it usable as an
+;; --if-unchanged guard on a write to this block. A digest over the whole
+;; state cannot do it, since every block is in it.
+(want "a change to an unrelated block leaves this block's token alone"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r '("a" 1 () (put ((kind . section) (title . "x"))))))
+                  (list one two))
+        (feed! two '("b" 1 () (put ((kind . section) (title . "elsewhere")))))
+        (list (equal? (block-hash one "a.1") (block-hash two "a.1"))
+              ;; CONTROL: the whole-state comparison DOES see it, which is
+              ;; why the two questions have two answers.
+              (equal? (state-hash one) (state-hash two))))
+      (list #t #f))
+(want "and a change to this block does move it"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r '("a" 1 () (put ((kind . section) (title . "x"))))))
+                  (list one two))
+        (feed! two '("b" 1 (("a" . 1)) (set "a.1" title "y")))
+        (equal? (block-hash one "a.1") (block-hash two "a.1")))
+      #f)
+(want "same values, different event ids, different hash"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (feed! one '("a" 1 () (put ((kind . section) (title . "x")))))
+        (feed! two '("b" 1 () (put ((kind . section) (title . "x")))))
+        (equal? (state-hash one) (state-hash two)))
+      #f)
+(want "the edge set is part of it: unlinking one edge changes the hash"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r
+                           '("a" 1 () (put ((kind . section))))
+                           '("a" 2 () (link "a.1" explains "b.1"))))
+                  (list one two))
+        (feed! two '("a" 3 () (unlink "a.1" explains "b.1")))
+        (equal? (state-hash one) (state-hash two)))
+      #f)
+(want "but the number of link events behind one logical edge is not"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (feed! one
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (link "a.1" explains "b.1")))
+        (feed! two
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (link "a.1" explains "b.1"))
+               '("c" 1 () (link "a.1" explains "b.1")))
+        (equal? (state-hash one) (state-hash two)))
+      #t)
+(want "and the order records arrived in is not"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (feed! one
+               '("a" 1 () (put ((kind . section))))
+               '("b" 1 () (set "a.1" title "y")))
+        (feed! two
+               '("b" 1 () (set "a.1" title "y"))
+               '("a" 1 () (put ((kind . section)))))
+        (equal? (state-hash one) (state-hash two)))
+      #t)
+
+;; AND CHECKED AGAINST AN IMPLEMENTATION THAT IS NOT THIS ONE. The
+;; script beside this file reads an UNORDERED dump of the reduction and
+;; does the sorting, the datum shape, the printer's spacing and the
+;; digest itself, in another language. Hashing the text the product
+;; already printed would only have established that sha256 is sha256;
+;; what is worth cross-checking is whether two readings of section 9.2
+;; arrive at the same bytes -- and the first attempt did not, because the
+;; writer is a string and the printer collapses nested pairs.
+(define (hex-of str)
+  (let* ((bv (string->utf8 str))
+         (n (bytevector-length bv))
+         (digits "0123456789abcdef")
+         (out (make-string (* 2 n))))
+    (let loop ((i 0))
+      (if (= i n)
+          out
+          (let ((b (bytevector-u8-ref bv i)))
+            (string-set! out (* 2 i) (string-ref digits (div b 16)))
+            (string-set! out (+ 1 (* 2 i)) (string-ref digits (mod b 16)))
+            (loop (+ i 1)))))))
+
+(define (dump-for-script r)
+  (let ((out (open-output-string)))
+    (for-each
+      (lambda (bd)
+        (let ((id (cadr bd)))
+          ;; HEX, NOT A SEPARATOR THE DATA CAN CONTAIN. A title holding a
+          ;; tab or a newline broke the transport, and a broken transport
+          ;; that still prints a digest is worse than one that stops.
+          (define (esc x) (hex-of (sexpr->string-extended x)))
+          (fprintf out "B ~a ~a\n" (esc id)
+                   (if (cadr (assq 'deleted (cddr bd))) 1 0))
+          (for-each (lambda (f)
+                      (for-each (lambda (c)
+                                  (fprintf out "F ~a ~a ~a ~a ~a\n"
+                                           (esc id) (hex-of (symbol->string (car f))) (esc (car c))
+                                           (hex-of (car (cdr c))) (cdr (cdr c))))
+                                (reverse (cadr f))))
+                    (reverse (cadr (assq 'fields (cddr bd)))))
+          (for-each (lambda (c)
+                      (fprintf out "P ~a ~a ~a ~a ~a\n"
+                               (esc id) (esc (car (car c))) (esc (cdr (car c)))
+                               (hex-of (car (cdr c))) (cdr (cdr c))))
+                    (cadr (assq 'position (cddr bd))))
+          (for-each (lambda (e)
+                      (fprintf out "E ~a ~a ~a\n" (esc id) (hex-of (symbol->string (car e))) (esc (cdr e))))
+                    (cadr (assq 'edges (cddr bd))))))
+      ;; reversed, so the script cannot inherit this file's ordering
+      (reverse (state-datum r)))
+    (get-output-string out)))
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+;; AND A VALUE THAT CONTAINS A SEPARATOR. A title holding a tab used to
+;; crash the script and one holding a newline used to produce a
+;; different record silently -- a separator the data can contain is not
+;; a separator. Every field is hex now, and this is the row that says so.
+(define awkward
+  (let ((r (reduce-empty)))
+    (feed! r
+           (list "a" 1 '() (list 'put (list (cons 'kind 'section)
+                                            (cons 'title "a\ttab and a\nnewline")))))
+    r))
+(want "a value containing a tab and a newline survives the transport"
+      (let* ((dir (test-dir "reduce1"))
+             (in (string-append dir "/awkward.tsv"))
+             (out (string-append dir "/awkward-hash.txt")))
+        (call-with-port (open-file-output-port in (file-options no-fail))
+          (lambda (p) (put-bytevector p (string->utf8 (dump-for-script awkward)))))
+        (system (string-append "python3 " script-dir "/reduce-hash-check.py < " in " > " out))
+        (let ((got (let ((b (call-with-port (open-file-input-port out) get-bytevector-all)))
+                     (if (eof-object? b) "" (utf8->string b)))))
+          (equal? (state-hash awkward)
+                  (if (> (string-length got) 0)
+                      (substring got 0 (- (string-length got) 1))
+                      ""))))
+      #t)
+
+(want "an independent implementation of section 9.2 computes the same token"
+      (let* ((dir (test-dir "reduce1"))
+             (in (string-append dir "/dump.tsv"))
+             (out (string-append dir "/hash.txt")))
+        (call-with-port (open-file-output-port in (file-options no-fail))
+          (lambda (p) (put-bytevector p (string->utf8 (dump-for-script sample)))))
+        (system (string-append "python3 " script-dir "/reduce-hash-check.py < " in " > " out))
+        (let ((got (let ((b (call-with-port (open-file-input-port out) get-bytevector-all)))
+                     (if (eof-object? b) "" (utf8->string b)))))
+          (list (equal? (state-hash sample)
+                        (substring got 0 (- (string-length got) 1)))
+                ;; and the digest is not trivially empty
+                (= 64 (string-length (state-hash sample))))))
+      (list #t #t))
+
+(printf "== R2: inserting before the first block ==\n")
+;; The mirror of appending: below 1 the simplest rational is 0, below 0
+;; it is -1. Same rule, other end.
+(want "a front insert takes ceiling(first) - 1"
+      (list (ord-between #f 1) (ord-between #f 0) (ord-between #f 5/2)
+            (ord-between #f -3))
+      (list 0 -1 2 -4))
+(want "a denominator of exactly the limit is accepted, one past it is not"
+      (let* ((limit (expt 2 128))
+             (ok (ord-between 0 (/ 1 (- limit 1))))
+             (no (ord-between 0 (/ 1 limit))))
+        (list (and (not (pair? ok)) (= (denominator ok) limit)) no))
+      (list #t '(refused too-deep)))
+
+(printf "== R6: the effective parent graph ==\n")
+;; ONLY SETTLED POSITIONS PARTICIPATE. A block whose position is in
+;; conflict has no one parent, so it is shown under root and marked
+;; rather than guessed at -- and it cannot be part of a cycle either.
+(want "two writers who move each other under the other make a cycle"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("a" 3 () (move "a.1" "a.2" 1))
+               '("b" 1 (("a" . 3)) (move "a.2" "a.1" 1)))
+        (cdr (assq 'conflicts (state-structure r))))
+      '("a.1" "a.2"))
+(want "CONTROL: without the second move there is no cycle"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("a" 3 () (move "a.1" "a.2" 1)))
+        (cdr (assq 'conflicts (state-structure r))))
+      '())
+;; THE CYCLE-FORMING CANDIDATE IS THE MOST RECENT ONE, deliberately: an
+;; implementation that reads "the position" as "the first candidate"
+;; would then find the cycle and report it. The block has TWO positions
+;; and therefore no position, so it takes part in no parent graph at all
+;; -- it is unplaced, and unplaced is not the same as cyclic.
+(want "a block whose position is in conflict is unplaced, not on a cycle"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("a" 3 () (move "a.1" root 1))
+               '("b" 1 (("a" . 3)) (move "a.2" "a.1" 1))
+               '("c" 1 (("a" . 2)) (move "a.1" "a.2" 1)))
+        (list (cdr (assq 'conflicts (state-structure r)))
+              (cdr (assq 'unplaced (state-structure r)))))
+      (list '() '("a.1")))
+
+(printf "== R4: deletion does not cascade ==\n")
+;; Three generations: deleting the middle one orphans the child, and the
+;; grandchild stays under the child -- the block is gone, its subtree is
+;; not.
+(want "deleting a parent orphans its child and leaves the grandchild in place"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section) (parent . "a.1"))))
+               '("a" 3 () (put ((kind . section) (parent . "a.2"))))
+               '("a" 4 () (del "a.1")))
+        (list (cdr (assq 'orphans (state-structure r)))
+              (map (lambda (row) (list (car row) (caddr row))) (state-outline r))))
+      (list '("a.2") '(("a.1" "a.2") ("a.2" "a.3"))))
+(want "and moving the orphan to a live parent clears the mark"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section) (parent . "a.1"))))
+               '("a" 3 () (del "a.1"))
+               '("a" 4 () (move "a.2" root 1)))
+        (cdr (assq 'orphans (state-structure r))))
+      '())
+;; A move that arrives causally after the delete is still recorded --
+;; evidence of what someone believed, even about a block that is gone.
+(want "a move after the delete is recorded as a candidate"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (del "a.1"))
+               '("a" 3 () (move "a.1" root 7)))
+        (let ((b (state-read r "a.1")))
+          (list (cdr (assq 'deleted b)) (cdr (assq 'position b)))))
+      (list #t '(root . 7)))
+
+(printf "== R5: one logical edge, however many events ==\n")
+(want "two link events for one edge are one edge, and the unlink sees both"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (link "a.1" explains "T"))
+               '("a" 3 () (link "a.1" explains "T")))
+        (let ((before (cadr (assq 'edges (cddr (car (state-datum r)))))))
+          (feed! r '("a" 4 () (unlink "a.1" explains "T")))
+          (list before (cadr (assq 'edges (cddr (car (state-datum r))))))))
+      (list '((explains . "T")) '()))
+
+;; A DUMP IS A FUNCTION OF THE STATE, not of how the records arrived.
+;; Two libraries holding the same records must print the same thing.
+(want "the dump does not depend on arrival order"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (feed! one
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("b" 1 () (put ((kind . section) (title . "y"))))
+               '("a" 2 () (tag "t" (("a" . 1))))
+               '("b" 2 () (tag "s" (("b" . 1)))))
+        (feed! two
+               '("b" 2 () (tag "s" (("b" . 1))))
+               '("b" 1 () (put ((kind . section) (title . "y"))))
+               '("a" 2 () (tag "t" (("a" . 1))))
+               '("a" 1 () (put ((kind . section) (title . "x")))))
+        (equal? (state-dump one) (state-dump two)))
+      #t)
+
+;; A BLOCK WITH NO ONE PLACE IS STILL SHOWN. Leaving it out of the
+;; outline loses it: the facts are in the candidates, and a reader who
+;; cannot see the block cannot act on them.
+(want "a block whose position is in conflict appears under root, marked"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("a" 3 () (move "a.1" root 1))
+               '("c" 1 (("a" . 2)) (move "a.1" "a.2" 1)))
+        (state-outline r))
+      ;; Sorted by parent, then ord, then id -- the mark does not change
+      ;; where the row sits, only what it says about it.
+      '((root 0 "a.1" unplaced) (root 0 "a.2")))
+(want "and blocks on a cycle appear there too, marked differently"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("a" 3 () (move "a.1" "a.2" 1))
+               '("b" 1 (("a" . 3)) (move "a.2" "a.1" 1)))
+        (state-outline r))
+      '((root 0 "a.1" conflict) (root 0 "a.2" conflict)))
+(want "CONTROL: an ordinary row carries no mark"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (put ((kind . section)))))
+        (state-outline r))
+      '((root 0 "a.1")))
+
+(printf "== R9: a cut that is not causally closed gives no state ==\n")
+(want "a cut naming a record that was never received is unusable"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (put ((kind . section)))))
+        (list (cut-usable? r '(("a" . 1)))
+              (cut-usable? r '(("b" . 5)))))
+      (list 'usable '(unusable not-received)))
+(want "a cut that omits a premise of what it contains is unusable"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (put ((kind . section))))
+               '("b" 1 (("a" . 2)) (set "a.1" title "x")))
+        (list (cut-usable? r '(("a" . 2) ("b" . 1)))
+              (cut-usable? r '(("a" . 1) ("b" . 1)))))
+      (list 'usable '(unusable not-closed)))
+(want "and a cut naming one writer twice is malformed"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (put ((kind . section)))))
+        (cut-usable? r '(("a" . 1) ("a" . 1))))
+      '(unusable duplicate-writer))
+(want "the canonical identity does not depend on the order it was written"
+      (list (equal? (cut-id '(("b" . 2) ("a" . 1))) (cut-id '(("a" . 1) ("b" . 2))))
+            (equal? (cut-id '(("a" . 1))) (cut-id '(("a" . 2))))
+            (string-length (cut-id '())))
+      (list #t #f 64))
+
+(printf "== rows round-trip ==\n")
+;; A SNAPSHOT STORES CANDIDATES, NOT RESOLUTIONS. Storing what a field
+;; resolved to would not be equivalent to replaying: the next write's
+;; supersession depends on WHICH events the candidates came from.
+;; ROUND-TRIPPING THE STATE IS THE EASY HALF. The half that matters is
+;; whether the resumed reduction can carry on: a snapshot exists to be
+;; replayed FROM, and one that forgets what has been applied leaves the
+;; next record waiting on premises it already has.
+(want "state to rows and back is the same state"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("a" 3 () (link "a.1" explains "b.1")))
+        (list (equal? (state-hash r) (state-hash (rows->state (state->rows r))))
+              (equal? (state-dump r) (state-dump (rows->state (state->rows r))))))
+      (list #t #t))
+(want "and the resumed state carries on where the original left off"
+      (let* ((r (reduce-empty))
+             (_ (feed! r
+                       '("a" 1 () (put ((kind . section) (title . "x"))))
+                       '("a" 2 () (set "a.1" title "p"))))
+             (resumed (rows->state (state->rows r))))
+        (reduce-apply! resumed "a" 3 '() '(set "a.1" title "q"))
+        (list (length (reduce-pending resumed))
+              (field-of resumed "a.1" 'title)))
+      (list 0 "q"))
+;; THREE WAYS TO THE SAME STATE: replay it all, or resume from rows and
+;; feed the rest. A snapshot that is not equivalent to replaying is a
+;; snapshot that quietly answers differently.
+(want "replaying everything and resuming from rows agree, candidates and all"
+      (let* ((whole (reduce-empty))
+             (part (reduce-empty)))
+        (feed! whole
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (set "a.1" summary "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("a" 3 (("b" . 1)) (set "a.1" title "s")))
+        (feed! part
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("a" 2 () (set "a.1" summary "p")))
+        (let ((resumed (rows->state (state->rows part))))
+          (reduce-apply! resumed "b" 1 '(("a" . 1)) '(set "a.1" title "r"))
+          (reduce-apply! resumed "a" 3 '(("b" . 1)) '(set "a.1" title "s"))
+          (list (equal? (state-datum whole) (state-datum resumed))
+                (field-of whole "a.1" 'title)
+                (field-of resumed "a.1" 'title))))
+      (list #t "s" "s"))
+
+;; A PREMISE CAN OUTLIVE EVERY CANDIDATE IT WROTE. a.1 sees z.1 and
+;; writes one field; a.2 then supersedes that one candidate, so a.1
+;; stands in the snapshot as nothing at all -- and b.1 still names it as
+;; its only dep. Whether b.1 supersedes z.1's title is decided by what
+;; a.1 had seen, which is reachable only through a.1's past. While the
+;; clocks travelled attached to candidates, a.1 had nowhere to put one:
+;; the resumed reduction kept BOTH title candidates where the full
+;; replay kept one, and every row above stayed green because in all of
+;; them the dep still had a candidate standing.
+(define vanished-dep
+  '(("z" 1 () (put ((kind . section) (title . "z-wrote"))))
+    ("a" 1 (("z" . 1)) (set "z.1" summary "a1"))
+    ("a" 2 () (set "z.1" summary "a2"))))
+(define (title-candidates r)
+  (let* ((b (let loop ((bs (state-datum r)))
+              (cond ((null? bs) #f)
+                    ((equal? (cadr (car bs)) "z.1") (car bs))
+                    (else (loop (cdr bs))))))
+         (fs (and b (cadr (assq 'fields (cddr b)))))
+         (e (and fs (assq 'title fs))))
+    (if e (length (cadr e)) 'no-such-field)))
+;; CONTROL: the premise really did leave nothing behind. Without this
+;; the row above could be green for a reduction in which a.1's own
+;; candidate is doing the superseding.
+(want "CONTROL: the dep's own candidate is gone from the snapshot"
+      (let* ((r (apply feed! (reduce-empty) vanished-dep))
+             (rows (state->rows r)))
+        (let loop ((rows rows))
+          (cond ((null? rows) 'not-found)
+                ((and (eq? (car (car rows)) 'block) (equal? (cadr (car rows)) "z.1"))
+                 (map (lambda (c) (cdr c))
+                      (cdr (assq 'summary (cdr (assq 'fields (caddr (car rows))))))))
+                (else (loop (cdr rows))))))
+      '(("a" . 2)))
+(want "a resumed reduction inherits the past of a dep that left no candidate"
+      (let ((whole (apply feed! (reduce-empty) vanished-dep))
+            (resumed (rows->state (state->rows (apply feed! (reduce-empty) vanished-dep)))))
+        (for-each (lambda (r) (reduce-apply! r "b" 1 '(("a" . 1)) '(set "z.1" title "b1")))
+                  (list whole resumed))
+        (list (title-candidates whole)
+              (title-candidates resumed)
+              (equal? (state-datum whole) (state-datum resumed))))
+      '(1 1 #t))
+
+(printf "== an event is applied once ==\n")
+;; Delivering a record twice used to regress the applied cursor and
+;; bring a superseded candidate back as a conflict.
+(want "a second delivery of an applied record is refused and changes nothing"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "old"))))
+               '("a" 2 () (set "a.1" title "new")))
+        (let ((before (block-hash r "a.1"))
+              (answer (reduce-apply! r "a" 1 '() '(put ((kind . section) (title . "old"))))))
+          (list answer
+                (equal? before (block-hash r "a.1"))
+                (field-of r "a.1" 'title)
+                (reduce-applied-cut r))))
+      (list '(refused already-applied) #t "new" '(("a" . 2))))
+(want "CONTROL: the next unseen record is accepted"
+      (let ((r (reduce-empty)))
+        (feed! r '("a" 1 () (put ((kind . section)))))
+        (reduce-apply! r "a" 2 '() '(set "a.1" title "next")))
+      'accepted)
+
+(printf "\n~a failures\n" bad)
+(printf "reduce1 complete\n")
