@@ -51,7 +51,8 @@
 ;;; states and both are legal (section 4.4).
 
 (library (theourgia log)
-  (export log-open log-replay log-integrity log-torn-tails
+  (export directory-entry-durable!
+          log-open log-replay log-integrity log-torn-tails
           log-adopted-snapshot log-quarantine-version log-writer-origin
           log-store log-writers
           snapshot-write! snapshot-read snapshot-cut-supported?
@@ -69,7 +70,8 @@
           (theourgia trace)
           (only (theourgia crc32) crc32-hex)
           (only (theourgia wire)
-                sexpr->string-extended string->sexpr-extended decode-line))
+                sexpr->string-extended string->sexpr-extended decode-line
+                escape-newlines))
 
   ;; ---- errors -------------------------------------------------------------
 
@@ -127,25 +129,101 @@
   ;; what the caller handed over. A stray file an operator can find
   ;; beats bytes nobody can. It IS removed when the write itself fails,
   ;; because then it holds nothing worth keeping.
-  (define (atomic-write! path bytes)
+  ;; THE TEMPORARY IS CREATED EXCLUSIVELY, and that is not tidiness. The
+  ;; first version created it with "open if present, create if not", so
+  ;; a temporary left behind by an earlier failure could be REUSED: the
+  ;; operating system reissues process ids, the per-process counter
+  ;; starts again at one, and the name collides. Opening it without
+  ;; truncation and writing something shorter leaves the new contents
+  ;; followed by the old tail -- and then the fsync and the rename
+  ;; succeed, installing a file that is part new and part stale. That is
+  ;; the one outcome an atomic replacement exists to prevent, and the
+  ;; policy of keeping failed temporaries for recovery is what made it
+  ;; reachable.
+  (define (create-temp! path)
+    (let loop ((tries 0))
+      (when (> tries 64)
+        (raise (make-log-error 'temp #f #f #f (list (cons 'path path)))))
+      (let ((tmp (temp-name-for path)))
+        (if (file-exists? tmp)
+            (loop (+ tries 1))
+            (let ((port (guard (e (#t #f))
+                          ;; No no-fail: this raises if the name was
+                          ;; taken between the test and here, and the
+                          ;; loop tries another.
+                          (open-file-output-port tmp))))
+              (if (not port)
+                  (loop (+ tries 1))
+                  (begin (close-port port) tmp)))))))
+
+  ;; THE STAGE IS AN ARGUMENT, NOT A DEFAULT. Fault targeting is
+  ;; <fault>@<stage>[:<path>] and a call site that declares no stage
+  ;; cannot be aimed at -- so with no stage here, every fault selecting
+  ;; `snapshot` or `publish` was silently inert and the run looked like
+  ;; the injection had not fired. Hard-coding one stage inside would be
+  ;; worse: this one sequence serves the snapshot, the manifest, the
+  ;; registry and the repair, and they are different phases.
+  (define (atomic-write! path bytes stage)
     (unless (string? path)
       (assertion-violation 'atomic-write! "path must be a string" path))
+    (unless (symbol? stage)
+      (assertion-violation 'atomic-write! "stage must be a symbol" stage))
+    ;; A trailing slash names a directory; renaming a file over one
+    ;; fails after the temporary has been written, which leaves a stray
+    ;; file and reports the failure at the wrong step.
+    (when (and (> (string-length path) 0)
+               (char=? (string-ref path (- (string-length path) 1)) #\/))
+      (assertion-violation 'atomic-write! "target must not end in a slash" path))
     (unless (bytevector? bytes)
       (assertion-violation 'atomic-write! "contents must be a bytevector" bytes))
-    (let ((tmp (temp-name-for path))
+    (parameterize ((theourgia-stage stage))
+    (let ((tmp (create-temp! path))
           (dir (parent-directory path)))
-      (let ((fd (guard (e (#t (raise e)))
-                  (fd-open tmp '(write create)))))
-        (guard (e (#t
-                   (guard (e2 (#t (void))) (fd-close fd))
-                   (guard (e2 (#t (void))) (delete-file tmp))
-                   (raise e)))
-          (write-all! fd bytes tmp)
-          (fsync! fd tmp))
-        (fd-close fd))
+      (let ((fd (fd-open tmp '(write)))
+            (open? (box #t)))
+        ;; dynamic-wind, not a guard: a guard does not run when the body
+        ;; is left through a continuation, and this descriptor must not
+        ;; outlive the call by any exit.
+        (dynamic-wind
+          void
+          (lambda ()
+            ;; ONLY THE WRITE IS GUARDED. The stated policy is that an
+            ;; incomplete temporary is removed and a complete one is
+            ;; kept -- and the first version guarded the flush as well,
+            ;; so a failed fsync DELETED a temporary whose contents were
+            ;; complete. The comment said one thing and the code did the
+            ;; other.
+            (guard (e (#t
+                       (when (unbox open?)
+                         (set-box! open? #f)
+                         (guard (e2 (#t (void))) (fd-close fd)))
+                       (guard (e2 (#t (void))) (delete-file tmp))
+                       (raise e)))
+              (write-all! fd bytes tmp))
+            (fsync! fd tmp))
+          (lambda ()
+            (when (unbox open?)
+              (set-box! open? #f)
+              (guard (e (#t (void))) (fd-close fd))))))
       (rename-file tmp path)
       (fsync-dir! dir)
-      path))
+      path)))
+
+  ;; A NEWLY CREATED DIRECTORY'S OWN ENTRY IS NOT MADE DURABLE BY
+  ;; FLUSHING WHAT IS INSIDE IT. atomic-write! flushes the target's
+  ;; immediate parent, so creating writers/U/ and then durably writing
+  ;; writers/U/owner.sexp flushes U/ and never writers/ -- and a power
+  ;; loss can then take U away while the successor and the registry
+  ;; still name it. Exposed now, before the installs that need it are
+  ;; written: adopt must confirm U's entry in writers/ before completing
+  ;; owner installation, repair must confirm damaged/'s entry before
+  ;; replacing an original, and an existence check is not enough after
+  ;; an interrupted earlier attempt.
+  (define (directory-entry-durable! path stage)
+    (unless (symbol? stage)
+      (assertion-violation 'directory-entry-durable! "stage must be a symbol" stage))
+    (parameterize ((theourgia-stage stage))
+      (fsync-dir! (parent-directory path))))
 
   ;; ---- segment names ------------------------------------------------------
 
@@ -238,8 +316,7 @@
   (define (read-manifest store writer)
     (let ((path (manifest-path store writer)))
       (and (file-exists? path)
-           (let ((text (call-with-port (open-file-input-port path)
-                         (lambda (p) (utf8->string (get-bytevector-all p))))))
+           (let ((text (utf8->string (read-whole path))))
              (let ((datum (guard (e (#t 'bad)) (string->sexpr-extended text))))
                (if (valid-manifest? datum)
                    datum
@@ -264,7 +341,8 @@
       (assertion-violation 'write-manifest!
                            "entries must be ascending (number . hash) pairs" entries))
     (atomic-write! (manifest-path store writer)
-                   (string->utf8 (string-append (sexpr->string-extended entries) "\n"))))
+                   (string->utf8 (string-append (sexpr->string-extended entries) "\n"))
+                   'publish))
 
   ;; ---- which segments participate in loading -------------------------------
 
@@ -347,6 +425,25 @@
                     ((ok)
                      (let ((seq (cadr r)))
                        (cond
+                         ;; THE ENVELOPE'S TYPES ARE CHECKED BEFORE ITS
+                         ;; VALUES ARE COMPARED. decode-line establishes
+                         ;; that a line is one datum of five elements; it
+                         ;; does not establish that the first is a
+                         ;; number. A crafted record such as
+                         ;; (oops 1 "a" () (put "x" ())) has the right
+                         ;; shape, and comparing its seq raised an
+                         ;; ordinary exception that escaped replay
+                         ;; entirely -- taking every other writer's
+                         ;; delivery with it, which is exactly what
+                         ;; per-writer scoping exists to prevent.
+                         ((not (and (integer? seq) (exact? seq) (>= seq 0)))
+                          (list 'integrity
+                                (make-log-error 'frame writer segment start
+                                                (list (cons 'reason 'seq-not-a-number)))))
+                         ((not (and (integer? (caddr r)) (exact? (caddr r))))
+                          (list 'integrity
+                                (make-log-error 'frame writer segment start
+                                                (list (cons 'reason 'ts-not-a-number)))))
                          ((and expect (not (= seq expect)))
                           (list 'integrity
                                 (make-log-error 'seq writer segment start
@@ -432,12 +529,23 @@
       (assertion-violation 'snapshot-write! "cut must be ((writer . seq) ...)" cut))
     (unless (list? rows)
       (assertion-violation 'snapshot-write! "rows must be a list" rows))
+    ;; NEWLINES INSIDE STRINGS ARE ESCAPED HERE FOR THE SAME REASON AS
+    ;; IN A RECORD, and forgetting it here was a real defect rather than
+    ;; a theoretical one: this frame is line-oriented, the codec's
+    ;; writer emits a newline inside a string RAW, and a row carrying
+    ;; (block "x" ((body . "a\nb"))) therefore wrote a file that was
+    ;; checksummed correctly and then refused as unparseable when read
+    ;; back. wire's escape is reused rather than repeated -- one supplier
+    ;; of the rule, and its inverse is already in the reader that parses
+    ;; these lines.
     (let* ((body (call-with-string-output-port
                    (lambda (p)
-                     (put-string p (sexpr->string-extended (list 'snapshot 1 cut)))
+                     (put-string p (escape-newlines
+                                     (sexpr->string-extended (list 'snapshot 1 cut))))
                      (put-char p #\newline)
                      (for-each (lambda (r)
-                                 (put-string p (sexpr->string-extended r))
+                                 (put-string p (escape-newlines
+                                                 (sexpr->string-extended r)))
                                  (put-char p #\newline))
                                rows))))
            (bytes (string->utf8 body))
@@ -445,7 +553,7 @@
                                  (sexpr->string-extended
                                    (list 'end (crc32-hex bytes)))
                                  "\n")))
-      (atomic-write! path (string->utf8 whole))))
+      (atomic-write! path (string->utf8 whole) 'snapshot)))
 
   ;; Returns (values cut rows) when the file is whole, and
   ;; (values #f reason) when it is not. The reason is returned rather
@@ -458,8 +566,7 @@
       (values #f reason))
     (if (not (file-exists? path))
         (values #f 'absent)
-        (let* ((bytes (call-with-port (open-file-input-port path) get-bytevector-all))
-               (bytes (if (eof-object? bytes) (make-bytevector 0) bytes))
+        (let* ((bytes (read-whole path))
                (n (bytevector-length bytes)))
           (cond
             ((= n 0) (reject 'empty))
@@ -588,9 +695,23 @@
         'mirrored
         'local))
 
+  ;; call-with-port CLOSES ON A NORMAL RETURN ONLY. An I/O error part way
+  ;; through a read, or a continuation escaping from the caller, leaves
+  ;; the descriptor open -- and a caller that catches the error and
+  ;; retries leaks one per attempt. dynamic-wind is what closes on every
+  ;; exit, and every read in this file goes through here.
   (define (read-whole path)
-    (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
-      (if (eof-object? b) (make-bytevector 0) b)))
+    (let ((port (open-file-input-port path))
+          (open? (box #t)))
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ((b (get-bytevector-all port)))
+            (if (eof-object? b) (make-bytevector 0) b)))
+        (lambda ()
+          (when (unbox open?)
+            (set-box! open? #f)
+            (guard (e (#t (void))) (close-port port)))))))
 
   ;; The version of a quarantine file is the checksum of its bytes: what
   ;; matters is whether it CHANGED since the version a decision was made
@@ -609,8 +730,13 @@
   (define (retired-prefix store writer)
     (let ((p (writer-file store writer "retired.sexp")))
       (and (file-exists? p)
-           (let ((d (guard (e (#t #f))
-                      (string->sexpr-extended (utf8->string (read-whole p))))))
+           ;; THE READ IS NOT GUARDED, ONLY THE PARSE. Swallowing an I/O
+           ;; failure here answered "this writer was never retired",
+           ;; which is the most dangerous possible wrong answer: it makes
+           ;; a retired writer look active and exposes the evidence bytes
+           ;; past its retirement boundary as history.
+           (let ((d (let ((text (utf8->string (read-whole p))))
+                      (guard (e (#t #f)) (string->sexpr-extended text)))))
              (and (list? d)
                   (let loop ((xs d))
                     (cond
@@ -647,6 +773,18 @@
   ;; seq its loadable segments could contain. Established WITHOUT
   ;; scanning, from the segment set alone, because a snapshot's cut has
   ;; to be judged before replay decides where to start.
+  ;; COVERAGE IS MEASURED, NOT ASSUMED. An earlier version answered
+  ;; 'unbounded for any writer that had segments at all, which
+  ;; snapshot-cut-supported? then compared against a number so large
+  ;; that every cut was supported -- the check was present, tested in
+  ;; isolation, and dead in the only place it mattered. A snapshot
+  ;; naming A.11 over a log holding ten records was adopted, and replay
+  ;; then suppressed all ten and reported nothing.
+  ;;
+  ;; Only the LAST loadable segment is scanned, which is the smallest
+  ;; amount of reading that can answer the question: the last valid seq
+  ;; of a writer is in its last segment, and earlier segments cannot
+  ;; raise it.
   (define (writer-coverage store writer origin)
     (let* ((segs (loadable-segments store writer (eq? origin 'local)))
            (retired (retired-prefix store writer)))
@@ -654,12 +792,20 @@
         (retired (caddr retired))
         ((null? segs) 0)
         (else
-         ;; The last seq is not known without reading, so coverage is
-         ;; reported as the largest seq the last segment could hold. A
-         ;; cut naming more than the log holds is caught when replay
-         ;; fails to reach it; a cut naming a writer with no segments at
-         ;; all is caught here.
-         'unbounded))))
+         (let* ((last-seg (car (reverse segs)))
+                (path (string-append (writer-directory store writer) "/"
+                                     (segment-file-name last-seg)))
+                (bytes (guard (e (#t (make-bytevector 0))) (read-whole path)))
+                (top (box 0)))
+           ;; Scanned with continuity switched off (expected seq #f):
+           ;; this is asking how far the bytes reach, not whether they
+           ;; are sound. Soundness is replay's answer and it is reported
+           ;; separately.
+           (scan-segment bytes writer last-seg #f #t
+                         (lambda (off seq ts actor deps payload)
+                           (when (and (integer? seq) (> seq (unbox top)))
+                             (set-box! top seq))))
+           (unbox top))))))
 
   (define (log-open store)
     (unless (string? store)
@@ -669,8 +815,21 @@
                      (guard (e (#t #f))
                        (string->sexpr-extended (utf8->string (read-whole meta-path))))
                      #f)))
-      (when (not meta)
-        (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
+      ;; THE VERSION IS CHECKED, NOT JUST THE PARSE (section 5.1 step 1).
+      ;; A store written by a later format would otherwise be read under
+      ;; this one's rules, which is the failure a version number exists
+      ;; to prevent.
+      (unless (and meta (list? meta)
+                   (let loop ((xs meta))
+                     (cond
+                       ((null? xs) #f)
+                       ((and (list? (car xs)) (= 2 (length (car xs)))
+                             (eq? (caar xs) 'format))
+                        (eqv? (cadr (car xs)) 1))
+                       (else (loop (cdr xs))))))
+        (raise (make-log-error 'meta #f #f #f
+                               (list (cons 'path meta-path)
+                                     (cons 'supported 1)))))
       (let* ((writers (store-writers store))
              (quarantine (map (lambda (w) (cons w (quarantine-version store w)))
                               writers))
@@ -682,19 +841,9 @@
                                             'mirrored 'local))))
                             writers)))
         (let-values (((n cut rows reason)
-                      (choose-snapshot store (unbounded->big coverage))))
+                      (choose-snapshot store coverage)))
           (make-log-handle store meta writers '() '() quarantine
                            cut rows (and (not cut) reason))))))
-
-  ;; snapshot-cut-supported? compares numbers, and 'unbounded is this
-  ;; layer saying "as far as the segments could reach". Turning it into a
-  ;; number here keeps that comparison in one place rather than teaching
-  ;; it a special value.
-  (define (unbounded->big coverage)
-    (map (lambda (e) (if (eq? (cdr e) 'unbounded)
-                         (cons (car e) 1000000000000)
-                         e))
-         coverage))
 
   ;; Delivery order is section 5.1's: per writer, segments ascending,
   ;; records in file order. `proc` is called as
@@ -738,8 +887,20 @@
                                         (lambda (off seq ts actor deps payload)
                                           (if (<= seq from)
                                               (void)
-                                              (proc writer seg off seq ts actor
-                                                    deps payload))))))
+                                              (let ((v (proc writer seg off seq ts
+                                                             actor deps payload)))
+                                                ;; STOP HAS TO REACH THE
+                                                ;; OUTER LOOP TOO. Ending
+                                                ;; the scan alone left
+                                                ;; the segment loop to
+                                                ;; continue into the next
+                                                ;; segment and report a
+                                                ;; sequence gap that the
+                                                ;; caller's own stop had
+                                                ;; created.
+                                                (if (eq? v 'stop)
+                                                    (done (void))
+                                                    v)))))))
             (case (car outcome)
               ((complete)
                (if (and retired (= seg (car retired)))
@@ -767,9 +928,12 @@
   (define (read-segment store path current?)
     (if (not current?)
         (read-whole path)
-        (with-shared-lock (string-append store "/lock")
-          (lambda (fd)
-            (let ((bytes (read-whole path)))
-              (trace-event! 'copy path (bytevector-length bytes))
-              bytes)))))
+        ;; THE TRACE IS EMITTED AFTER THE LOCK IS RELEASED. Reporting
+        ;; inside it puts a write to stderr -- which can block on a full
+        ;; pipe -- inside the region a writer is waiting on, so a slow
+        ;; reader of the trace becomes a stalled writer.
+        (let ((bytes (with-shared-lock (string-append store "/lock")
+                       (lambda (fd) (read-whole path)))))
+          (trace-event! 'copy path (bytevector-length bytes))
+          bytes)))
 )
