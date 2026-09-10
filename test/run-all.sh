@@ -34,7 +34,7 @@ export THEOURGIA_INJECT=on
 for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
          regression verify-l4 verify-guard actor-check dep-check \
          log1 log2 log3 log5 log6 log7 log8 log9 log10 log11 log12 log13 log14 \
-         crash log15 log16 log17 reduce1; do
+         crash log15 log16 log17 reduce1 reduce2; do
   printf '== %s\n' "$f"
   out=$(scheme --script "$here/$f.ss" 2>&1); rc=$?
   printf '%s\n' "$out"

@@ -47,6 +47,13 @@
   (let* ((b (state-read r id)) (fs (and b (cdr (assq 'fields b)))))
     (and fs (let ((e (assq name fs))) (and e (cdr e))))))
 
+(define (member? lst x y)
+  (let loop ((l lst) (seen-x #f))
+    (cond ((null? l) #f)
+          ((equal? (car l) y) seen-x)
+          ((equal? (car l) x) (loop (cdr l) #t))
+          (else (loop (cdr l) seen-x)))))
+
 (printf "== R1: field candidates ==\n")
 ;; (a) one writer, three events in sequence: each supersedes the last,
 ;; because a writer's own predecessors are always in its past.
@@ -127,6 +134,46 @@
                '("c" 1 () (set "a.1" title "t")))
         (field-of r "a.1" 'title))
       '(conflict (("x" "a" 1) ("t" "c" 1))))
+
+;; (e) A WRITE THAT SAW ONLY ONE OF THE TWO SETTLES ONLY THAT ONE. c
+;; names a.2 and nothing else, so a.2's candidate goes and b.1's stays.
+;; An implementation that treats any later write as a resolution -- or
+;; that resolves whenever the writer's past is non-empty -- leaves one
+;; candidate here and passes (c) above, which is why (c) is not enough.
+(want "a write settles only the candidates its own past covers"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("c" 1 (("a" . 2)) (set "a.1" title "t")))
+        (field-of r "a.1" 'title))
+      '(conflict (("r" "b" 1) ("t" "c" 1))))
+
+;; (g) A WRITER INHERITS THROUGH ITS OWN PREDECESSOR. a.3 declares no
+;; deps at all, but a.2 saw b.1, and a.2 is a.3's premise whether it
+;; says so or not -- so a.3's past contains b.1 and its title wins
+;; outright. An implementation that unions the explicit deps with the
+;; writer's own earlier event-ids, and stops there, has a.3's past as
+;; {a.1, a.2} and reports a conflict with b.1.
+(want "an empty deps list still inherits what the writer's last event saw"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("a" 2 (("b" . 1)) (set "a.1" summary "p"))
+               '("a" 3 () (set "a.1" title "s")))
+        (field-of r "a.1" 'title))
+      "s")
+(want "CONTROL: without the intervening event the same a.3 conflicts"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "x"))))
+               '("b" 1 (("a" . 1)) (set "a.1" title "r"))
+               '("a" 2 () (set "a.1" summary "p"))
+               '("a" 3 () (set "a.1" title "s")))
+        (field-of r "a.1" 'title))
+      '(conflict (("s" "a" 3) ("r" "b" 1))))
 
 (printf "== R11: the two-argument set ==\n")
 ;; ABSENT IS A VALUE. Removing the candidates instead would make the
@@ -362,6 +409,139 @@
         (list (length (reduce-pending a)) (length (reduce-pending b))
               (equal? (state-hash a) (state-hash b))))
       (list 0 1 #t))
+
+(printf "== R3: every legal order of the whole vocabulary gives one state ==\n")
+;; NINE RECORDS COVERING put/set/move/del/link/unlink/tag WITH CROSS-
+;; WRITER DEPS, fed in every order the dependency graph permits. Four
+;; hand-picked orders, which is what stood here before, sample the
+;; orderings; they cannot distinguish "order does not matter" from
+;; "these four happen to agree". The graph's edges are the declared deps
+;; PLUS each writer's own predecessor -- a writer's earlier events are
+;; in its past whether or not it names them, so a.1 before a.2 is not a
+;; choice the scheduler has.
+(define r3-records
+  '(("z" 1 () (put ((kind . section) (title . "z"))))
+    ("z" 2 () (put ((kind . section) (title . "w"))))
+    ("a" 1 (("z" . 1)) (set "z.1" title "a"))
+    ("a" 2 (("z" . 2)) (move "z.1" "z.2" 1))
+    ("b" 1 (("a" . 1)) (link "z.1" explains "z.2"))
+    ("b" 2 () (tag "t" (("z" . 1))))
+    ("c" 1 (("z" . 2)) (link "z.1" explains "z.2"))
+    ("c" 2 (("b" . 1)) (unlink "z.1" explains "z.2"))
+    ("d" 1 (("a" . 2)) (del "z.2"))))
+;; index -> the indices that must precede it
+(define r3-preds
+  '#(() (0) (0) (1 2) (2) (4) (1) (4 6) (3)))
+(define (all-topo-orders n preds)
+  (let go ((done '()))
+    (if (= (length done) n)
+        (list (reverse done))
+        (let inner ((v 0) (out '()))
+          (if (= v n)
+              out
+              (inner (+ v 1)
+                     (if (and (not (memv v done))
+                              (for-all (lambda (p) (memv p done)) (vector-ref preds v)))
+                         (append out (go (cons v done)))
+                         out)))))))
+(define r3-orders (all-topo-orders 9 r3-preds))
+(define (r3-feed order)
+  (let ((r (reduce-empty)))
+    (for-each (lambda (i)
+                (let ((e (list-ref r3-records i)))
+                  (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))))
+              order)
+    r))
+(define (r3-event-ids order)
+  (map (lambda (i) (let ((e (list-ref r3-records i))) (cons (car e) (cadr e)))) order))
+;; THE COUNT IS PART OF THE ASSERTION. It pins the graph: drop the
+;; same-writer edges and the enumeration admits orders that are not
+;; legal, and the count moves before any state comparison is reached.
+(want "the graph admits exactly this many orders" (length r3-orders) 206)
+(define r3-reference (r3-feed (car r3-orders)))
+(want "every legal order gives the same state, the same hash and no leftovers"
+      (let loop ((os (cdr r3-orders)) (bad-state 0) (bad-hash 0) (bad-pending 0))
+        (if (null? os)
+            (list bad-state bad-hash bad-pending)
+            (let ((r (r3-feed (car os))))
+              (loop (cdr os)
+                    (+ bad-state (if (equal? (state-datum r) (state-datum r3-reference)) 0 1))
+                    (+ bad-hash (if (equal? (state-hash r) (state-hash r3-reference)) 0 1))
+                    (+ bad-pending (if (null? (reduce-pending r)) 0 1))))))
+      '(0 0 0))
+;; AND THE REDUCER DOES NOT RE-SORT WHAT IT IS GIVEN. Fed a legal order,
+;; every record is applicable the moment it arrives, so the applied
+;; trace must be that order exactly. An implementation that buffered and
+;; applied by its own rule would still reach the same state -- the row
+;; above would stay green -- while reporting a history nobody fed it.
+(want "the applied trace is the order it was fed, in every legal order"
+      (let loop ((os r3-orders) (bad 0))
+        (if (null? os)
+            bad
+            (loop (cdr os)
+                  (+ bad (if (equal? (reduce-trace (r3-feed (car os)))
+                                     (r3-event-ids (car os)))
+                             0 1)))))
+      0)
+
+;; THREE INCREMENTAL BATCHINGS, one of them arriving against the
+;; dependency order. The state after the last batch is the same state;
+;; the dump between batches is where a record that cannot yet be applied
+;; has to be visible as pending rather than silently dropped.
+(define (r3-batched batches)
+  ;; NOT map: the batches share one reduction, and Chez does not specify
+  ;; the order in which map applies its procedure. Read in a scrambled
+  ;; order the readings describe batches that never happened.
+  (let ((r (reduce-empty)))
+    (let loop ((bs batches) (acc '()))
+      (if (null? bs)
+          (reverse acc)
+          (begin
+            (for-each (lambda (i)
+                        (let ((e (list-ref r3-records i)))
+                          (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))))
+                      (car bs))
+            (loop (cdr bs)
+                  (cons (list (length (reduce-pending r)) (length (reduce-trace r)))
+                        acc)))))))
+(want "batched arrival reaches the same state, three ways"
+      (let ((ends
+              (map (lambda (bs)
+                     (let ((r (reduce-empty)))
+                       (for-each
+                         (lambda (b)
+                           (for-each (lambda (i)
+                                       (let ((e (list-ref r3-records i)))
+                                         (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))))
+                                     b))
+                         bs)
+                       (state-datum r)))
+                   '(((0 1 2) (3 4 5) (6 7 8))
+                     ((0) (1 2 6) (3 4) (5 7 8))
+                     ((8 7 5 4) (3 6) (2) (1) (0))))))
+        (list (equal? (car ends) (state-datum r3-reference))
+              (equal? (cadr ends) (state-datum r3-reference))
+              (equal? (caddr ends) (state-datum r3-reference))))
+      '(#t #t #t))
+;; THE REVERSE-DEPENDENCY BATCH, read between the batches. Four records
+;; arrive before anything they depend on: all four wait, nothing is
+;; applied, and they come out in dependency order once the premises land.
+(want "records arriving before their premises wait, then apply in order"
+      (r3-batched '((8 7 5 4) (3 6) (2) (1) (0)))
+      '((4 0) (6 0) (7 0) (8 0) (0 9)))
+(want "and the reverse batch applies them in a dependency-respecting order"
+      (let ((r (reduce-empty)))
+        (for-each (lambda (i)
+                    (let ((e (list-ref r3-records i)))
+                      (reduce-apply! r (car e) (cadr e) (caddr e) (cadddr e))))
+                  '(8 7 5 4 3 6 2 1 0))
+        (let ((tr (reduce-trace r)))
+          (list (length tr)
+                (member? tr '("z" . 1) '("a" . 1))
+                (member? tr '("a" . 1) '("b" . 1))
+                (member? tr '("a" . 2) '("d" . 1))
+                (member? tr '("b" . 1) '("c" . 2)))))
+      '(9 #t #t #t #t))
 
 (printf "== R3: the scheduler reconsiders what it has just unblocked ==\n")
 ;; Applying one record can make another applicable, and that one may sort
@@ -877,6 +1057,107 @@
               (title-candidates resumed)
               (equal? (state-datum whole) (state-datum resumed))))
       '(1 1 #t))
+
+;; THE SNAPSHOT DOES NOT GROW WITH HISTORY. A clock per applied event is
+;; correct and unbounded; the stored form keeps only the events where a
+;; writer's clock jumps -- which is where it declared a dep that told it
+;; something it did not already know. Everything else is the previous
+;; clock with the writer's own slot raised, and is recomputed.
+;; WITHOUT THIS ROW "compressed" is a claim in a comment: a state->rows
+;; that stored every clock passes every correctness row above.
+(define (stored-seqs r)
+  (let loop ((rows (state->rows r)))
+    (cond ((null? rows) 'no-pasts-row)
+          ((eq? (car (car rows)) 'pasts)
+           (list-sort (lambda (x y) (string<? (car x) (car y)))
+                      (map (lambda (we) (list (car we) (map car (cadr we))))
+                           (cadr (car rows)))))
+          (else (loop (cdr rows))))))
+(want "a clock is stored only where the writer's clock jumps"
+      (stored-seqs
+        (feed! (reduce-empty)
+               '("a" 1 () (put ((kind . section))))
+               '("b" 1 () (put ((kind . section))))
+               '("a" 2 () (set "a.1" title "p"))
+               '("a" 3 (("b" . 1)) (set "a.1" title "q"))
+               '("a" 4 () (set "a.1" title "r"))))
+      '(("a" (3)) ("b" ())))
+;; A LONGER RUN OF THE SAME WRITER: twenty events, one dep, one clock.
+(want "twenty events with one dep between them store one clock"
+      (stored-seqs
+        (let ((r (reduce-empty)))
+          (feed! r '("b" 1 () (put ((kind . section)))))
+          (feed! r '("a" 1 () (put ((kind . section)))))
+          (let loop ((n 2))
+            (when (<= n 20)
+              (reduce-apply! r "a" n (if (= n 11) '(("b" . 1)) '())
+                             (list 'set "a.1" 'title (number->string n)))
+              (loop (+ n 1))))
+          r))
+      '(("a" (11)) ("b" ())))
+;; AND THE RECONSTRUCTION REACHES BACK PAST THE GAP. a's clock jumps at
+;; a.3, which is where it saw b.1; a.4 through a.9 declare nothing and
+;; are not stored. c.1 then names a.9 as its only premise, and whether
+;; it supersedes b.1's title turns on a.9's clock being rebuilt from
+;; a.3's and not from a.1's -- or from nothing. Nine events separate the
+;; stored clock from the one that is asked for.
+(define (long-gap)
+  (let ((r (reduce-empty)))
+    (feed! r
+           '("z" 1 () (put ((kind . section) (title . "x"))))
+           '("b" 1 (("z" . 1)) (set "z.1" title "b"))
+           '("a" 1 (("z" . 1)) (set "z.1" note "a1"))
+           '("a" 2 () (set "z.1" note "a2"))
+           '("a" 3 (("b" . 1)) (set "z.1" note "a3")))
+    (let loop ((n 4))
+      (when (<= n 9)
+        (reduce-apply! r "a" n '() (list 'set "z.1" 'note (number->string n)))
+        (loop (+ n 1))))
+    r))
+(want "CONTROL: the clock asked for is nine events past the stored one"
+      (stored-seqs (long-gap))
+      '(("a" (1 3)) ("b" (1)) ("z" ())))
+(want "a clock rebuilt across a long gap still carries what the jump saw"
+      (let ((whole (long-gap))
+            (resumed (rows->state (state->rows (long-gap)))))
+        (for-each (lambda (r) (reduce-apply! r "c" 1 '(("a" . 9)) '(set "z.1" title "c")))
+                  (list whole resumed))
+        (list (field-of whole "z.1" 'title) (field-of resumed "z.1" 'title)))
+      (list "c" "c"))
+
+;; AND A SNAPSHOT OF A RESUMED STATE IS NO BIGGER THAN THE FIRST ONE.
+;; The rows above measure the first snapshot only. A rebuild that gets
+;; every clock behaviourally right but stores a slightly different value
+;; in the writer's own slot is invisible to every candidate assertion in
+;; this file -- and the next compression then finds no clock matching
+;; its prediction and stores all of them, so the snapshot goes linear in
+;; history one generation later than anyone is looking.
+;; Three generations, because the first resume is where the table stops
+;; being the one replay built.
+(want "compression survives being snapshotted, resumed and snapshotted again"
+      (let* ((g1 (long-gap))
+             (g2 (rows->state (state->rows g1)))
+             (g3 (rows->state (state->rows g2))))
+        (list (stored-seqs g1) (stored-seqs g2) (stored-seqs g3)))
+      (list '(("a" (1 3)) ("b" (1)) ("z" ()))
+            '(("a" (1 3)) ("b" (1)) ("z" ()))
+            '(("a" (1 3)) ("b" (1)) ("z" ()))))
+(want "and the twenty-event run stays at one stored clock across generations"
+      (let* ((build (lambda ()
+                      (let ((r (reduce-empty)))
+                        (feed! r '("b" 1 () (put ((kind . section)))))
+                        (feed! r '("a" 1 () (put ((kind . section)))))
+                        (let loop ((n 2))
+                          (when (<= n 20)
+                            (reduce-apply! r "a" n (if (= n 11) '(("b" . 1)) '())
+                                           (list 'set "a.1" 'title (number->string n)))
+                            (loop (+ n 1))))
+                        r)))
+             (g1 (build))
+             (g2 (rows->state (state->rows g1))))
+        (list (stored-seqs g1) (stored-seqs g2)))
+      (list '(("a" (11)) ("b" ()))
+            '(("a" (11)) ("b" ()))))
 
 (printf "== an event is applied once ==\n")
 ;; Delivering a record twice used to regress the applied cursor and

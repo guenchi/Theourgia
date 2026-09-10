@@ -760,6 +760,85 @@
   ;; resolved value: a snapshot that stored resolutions would not be
   ;; equivalent to replaying, because the next write's supersession
   ;; depends on which events the candidates came from.
+  ;; THE PASTS TRAVEL COMPRESSED. A clock per applied event makes the
+  ;; snapshot grow with history. But a writer's clock only jumps where
+  ;; that writer declared a dep: with no deps, past(w,s) is just
+  ;; past(w,s-1) with w's own slot raised, because a writer's previous
+  ;; event is always a premise. So only the jumps are stored, and the
+  ;; rest are recomputed.
+  ;; THE STORED CLOCK IS EXCLUSIVE OF ITS OWN EVENT: past(w,s) carries
+  ;; (w . s-1), never (w . s), so rebuilding (w . s) from a stored
+  ;; (w . t) raises w's slot to s-1. Raising it to s instead is NOT
+  ;; observable through anything here: the one place a rebuilt clock is
+  ;; read joins the dep's own id into the result anyway, and the clock
+  ;; used for supersession is always computed fresh from the record. The
+  ;; exclusive form is chosen because it is what a full replay stores,
+  ;; so the rebuilt table equals the replayed one -- but no assertion
+  ;; can currently tell the two apart, and this is the note saying so.
+  (define (past-raise clock w s)
+    (if (< s 1) clock (past-join clock (list (cons w s)))))
+
+  ;; Only the events whose clock is not what the pure-predecessor rule
+  ;; predicts. That is exactly "the writer declared a dep that told it
+  ;; something new" -- a dep that adds nothing need not be stored, and
+  ;; deriving the condition from the clocks rather than from the deps
+  ;; keeps this independent of what the record happened to declare.
+  (define (compress-pasts r)
+    (let ((by-writer
+            (let group ((es (reduction-pasts r)) (out '()))
+              (if (null? es)
+                  out
+                  (let* ((w (car (car (car es))))
+                         (seq (cdr (car (car es))))
+                         (clock (cdr (car es)))
+                         (have (assoc w out)))
+                    (group (cdr es)
+                           (if have
+                               (cons (cons w (cons (cons seq clock) (cdr have)))
+                                     (remp (lambda (e) (string=? (car e) w)) out))
+                               (cons (list w (cons seq clock)) out))))))))
+      (map
+        (lambda (we)
+          (let ((w (car we))
+                (es (list-sort (lambda (a b) (< (car a) (car b))) (cdr we))))
+            (list w
+                  (let loop ((es es) (base '()) (out '()))
+                    (if (null? es)
+                        (reverse out)
+                        (let* ((seq (car (car es)))
+                               (clock (cdr (car es)))
+                               (predicted (past-raise base w (- seq 1))))
+                          (if (equal? (past-sorted clock) (past-sorted predicted))
+                              (loop (cdr es) predicted out)
+                              (loop (cdr es) clock (cons (cons seq clock) out)))))))))
+        by-writer)))
+
+  (define (past-lookup table w s)
+    (let* ((we (assoc w table))
+           (es (if we (cadr we) '()))
+           (best (let loop ((es es) (best #f))
+                   (cond ((null? es) best)
+                         ((and (<= (car (car es)) s)
+                               (or (not best) (> (car (car es)) (car best))))
+                          (loop (cdr es) (car es)))
+                         (else (loop (cdr es) best))))))
+      (past-raise (if best (cdr best) '()) w (- s 1))))
+
+  ;; The reducer wants a clock per applied event; the applied cut says
+  ;; how far each writer got, so the whole table comes back from the
+  ;; jumps plus that cut.
+  (define (expand-pasts table cut)
+    (let loop ((ws cut) (out '()))
+      (if (null? ws)
+          out
+          (let ((w (car (car ws))) (top (cdr (car ws))))
+            (loop (cdr ws)
+                  (let inner ((s 1) (out out))
+                    (if (> s top)
+                        out
+                        (inner (+ s 1)
+                               (cons (cons (cons w s) (past-lookup table w s)) out)))))))))
+
   ;; THE PASTS TRAVEL AS THEIR OWN ROW, NOT ATTACHED TO CANDIDATES.
   ;; Attaching each event's clock to the candidates it wrote covers only
   ;; the events that still have a candidate standing. An event whose
@@ -774,7 +853,7 @@
   (define (state->rows r)
     (append
       (list (list 'applied (reduce-applied-cut r)))
-      (list (list 'pasts (reduction-pasts r)))
+      (list (list 'pasts (compress-pasts r)))
       (map (lambda (e)
              (let ((b (cdr e)))
                (list 'block (car e)
@@ -786,7 +865,11 @@
       (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))))
 
   (define (rows->state rows)
-    (let ((r (reduce-empty)))
+    (let ((r (reduce-empty))
+          (cut (let loop ((rs rows))
+                 (cond ((null? rs) '())
+                       ((eq? (car (car rs)) 'applied) (cadr (car rs)))
+                       (else (loop (cdr rs))))))) 
       (for-each
         (lambda (row)
           (case (car row)
@@ -794,7 +877,7 @@
             ;; reduction thinks nothing has been applied, so the next
             ;; record's premises are unmet and it waits forever.
             ((applied) (reduction-applied-set! r (cadr row)))
-            ((pasts) (reduction-pasts-set! r (cadr row)))
+            ((pasts) (reduction-pasts-set! r (expand-pasts (cadr row) cut)))
             ((block)
              (let* ((id (cadr row))
                     (body (caddr row))
