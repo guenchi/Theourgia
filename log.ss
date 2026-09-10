@@ -58,7 +58,7 @@
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-clean?
           log-open log-open-in-session load-prefix load-writers load-integrity
-          load-commit! load-abort! load-outcome
+          load-commit! load-abort! load-outcome load-deliver!
           snapshot-write! snapshot-read snapshot-cut-supported?
           scan-segment
           atomic-write!
@@ -916,13 +916,26 @@
                                 (loop (cdr ss) (if last (+ last 1) expect)
                                       ranges end torn buffer))))
                          ((torn)
-                          (finish-with origin end
-                                       (cons (list seg (or expect 1) (- expect 1)) ranges)
-                                       (physical-of store writer origin retired highest)
-                                       (if current? (cons seg clipped) buffer)
-                                       (list seg (cadr outcome)
-                                             (or (caddr outcome) (- expect 1)))
-                                       errs quarantine retired versions))
+                          ;; THE RECORDS BEFORE THE RESIDUAL ARE STILL
+                          ;; HISTORY. Passing the incoming `end` through
+                          ;; unchanged threw them away: a first segment
+                          ;; holding a valid record 1 and an interrupted
+                          ;; record 2 reported an extent of 0, because
+                          ;; `end` had never been set -- the segment did
+                          ;; not complete. The torn outcome carries the
+                          ;; last valid seq precisely so the extent can
+                          ;; stop AT it rather than before the segment.
+                          (let* ((last (caddr outcome))
+                                 (end (if last (list seg (cadr outcome) last) end)))
+                            (finish-with origin end
+                                         (cons (list seg (or expect 1)
+                                                     (or last (- expect 1)))
+                                               ranges)
+                                         (physical-of store writer origin retired highest)
+                                         (if current? (cons seg clipped) buffer)
+                                         (list seg (cadr outcome)
+                                               (or last (- expect 1)))
+                                         errs quarantine retired versions)))
                          (else
                           (note-error! note! (cadr outcome))
                           (finish-with origin end ranges
@@ -1116,4 +1129,77 @@
       (when l (load-session-lock-set! ls #f) (lock-release! l))))
 
   (define (load-outcome ls) (load-session-outcome ls))
-)
+
+  ;; ---- the deliver pass -----------------------------------------------------
+
+  ;; OPENS THE SEGMENT CONTAINING THE CUT DIRECTLY. That is what the
+  ;; validate pass recorded segment-ranges for. Rescanning from the
+  ;; beginning and suppressing everything below the cut would also be
+  ;; two passes with bounded memory, but it is a different promise -- a
+  ;; whole extra traversal that would otherwise appear unnoticed.
+  ;;
+  ;; end-seq IS THE LIMIT, and it comes from the discovery result rather
+  ;; than from scanning until something fails. A verified retirement
+  ;; boundary, and a quarantined suffix, both stop well-formed bytes
+  ;; with neither a torn tail nor a record-level error: nothing in the
+  ;; byte stream marks the stop, so only the discovered extent does.
+  ;;
+  ;; EVERY CALLBACK IS PROVISIONAL. Nothing here publishes anything; the
+  ;; reducer accumulates into its own staging state and load-commit! is
+  ;; the only publication point. A delivery read failure aborts the
+  ;; WHOLE load, because a snapshot covering the failed writer must be
+  ;; rejected and the healthy writers' history below its cut was
+  ;; deliberately skipped -- removing the failed writer's rows cannot
+  ;; recover their state.
+  (define (load-deliver! ls cut on-deliver)
+    (let loop ((ws (load-session-prefixes ls)))
+      (cond
+        ((null? ws) 'delivered)
+        (else
+         (let* ((writer (caar ws))
+                (p (cdar ws))
+                (from (let ((e (assoc writer cut))) (if e (cdr e) 0)))
+                (r (deliver-writer ls writer p from on-deliver)))
+           (if (eq? r 'ok)
+               (loop (cdr ws))
+               (begin
+                 (load-abort! ls (list 'delivery-failed writer))
+                 (list 'delivery-failed writer))))))))
+
+  (define (segment-holding ranges seq)
+    (let loop ((rs ranges))
+      (cond
+        ((null? rs) #f)
+        ((and (<= (cadr (car rs)) seq) (<= seq (caddr (car rs)))) (caar rs))
+        (else (loop (cdr rs))))))
+
+  (define (deliver-writer ls writer p from on-deliver)
+    (let ((limit (discovery-end-seq p))
+          (store (load-session-store ls)))
+      (cond
+        ((eq? (discovery-origin p) 'incomplete-publication) 'ok)
+        ((>= from limit) 'ok)
+        (else
+         (let* ((ranges (discovery-segment-ranges p))
+                (start (or (segment-holding ranges (+ from 1))
+                           (and (pair? ranges) (caar ranges)))))
+           (if (not start)
+               'ok
+               (let loop ((rs (filter (lambda (r) (>= (car r) start)) ranges)))
+                 (cond
+                   ((null? rs) 'ok)
+                   (else
+                    (let* ((seg (caar rs))
+                           (buf (discovery-current-buffer p))
+                           (bytes (if (and buf (eqv? (car buf) seg))
+                                      (cdr buf)
+                                      (read-segment store writer seg))))
+                      (cond
+                        ((eq? bytes 'unreadable) 'failed)
+                        (else
+                         (scan-segment bytes writer seg (cadr (car rs)) #t
+                           (lambda (off seq ts actor deps payload)
+                             (when (and (> seq from) (<= seq limit))
+                               (on-deliver writer seg off seq ts actor deps payload))))
+                         (loop (cdr rs)))))))))))))
+))
