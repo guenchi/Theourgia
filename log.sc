@@ -1,4 +1,18 @@
 #!chezscheme
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
 ;;; (theourgia log) -- the log layer: segments, manifests, replay,
 ;;; append, publication and the snapshot frame.
 ;;;
@@ -37,7 +51,10 @@
 ;;; states and both are legal (section 4.4).
 
 (library (theourgia log)
-  (export snapshot-write! snapshot-read snapshot-cut-supported?
+  (export log-open log-replay log-integrity log-torn-tails
+          log-adopted-snapshot log-quarantine-version log-writer-origin
+          log-store log-writers
+          snapshot-write! snapshot-read snapshot-cut-supported?
           scan-segment
           atomic-write!
           segment-file-name segment-file-number
@@ -526,4 +543,233 @@
           (let* ((e (car xs))
                  (have (assoc (car e) coverage)))
             (and have (>= (cdr have) (cdr e)) (loop (cdr xs)))))))
+
+  ;; ---- opening and replaying ----------------------------------------------
+
+  ;; A READER TOUCHES NOTHING. Not a byte, not a name, not a timestamp:
+  ;; invariant 9.7.2, and L4 asserts it by comparing the whole directory
+  ;; listing and every file's hash before and after. That is why the lock
+  ;; helpers refuse to create the lock file, why nothing here calls
+  ;; atomic-write!, and why a read-only open performs NO takeover barrier
+  ;; -- delivery-implies-durability is a property of a writing session,
+  ;; and a reader has no dependencies to underwrite.
+  ;;
+  ;; WHICH WRITER MAY HAVE A TORN TAIL IS DECIDED BY THE FILE LAYOUT, not
+  ;; by identity. A mirrored writer is one with a `published.sexp`: every
+  ;; segment it offers is sealed, arrived whole, and a residual there is
+  ;; damage. A writer with no manifest is local in origin -- this store
+  ;; is where its records were written -- so its highest-numbered segment
+  ;; is the one a crash could have interrupted. The rule is checkable
+  ;; from the directory rather than inferred from an identity this layer
+  ;; does not yet establish; piece five, which reads owner.sexp and the
+  ;; instance, may narrow it and must not widen it.
+
+  (define-record-type log-handle
+    (fields store meta writers (mutable integrity) (mutable torn)
+            (mutable quarantine) snapshot-cut snapshot-rows snapshot-reason))
+
+  (define (log-store h) (log-handle-store h))
+  (define (log-writers h) (log-handle-writers h))
+  (define (log-integrity h) (reverse (log-handle-integrity h)))
+  (define (log-torn-tails h) (reverse (log-handle-torn h)))
+  (define (log-quarantine-version h writer)
+    (let ((e (assoc writer (log-handle-quarantine h)))) (and e (cdr e))))
+
+  (define (log-adopted-snapshot h)
+    (if (log-handle-snapshot-cut h)
+        (values (log-handle-snapshot-cut h) (log-handle-snapshot-rows h))
+        (values #f (log-handle-snapshot-reason h))))
+
+  (define (writer-file store writer name)
+    (string-append (writer-directory store writer) "/" name))
+
+  (define (log-writer-origin h writer)
+    (if (file-exists? (writer-file (log-handle-store h) writer "published.sexp"))
+        'mirrored
+        'local))
+
+  (define (read-whole path)
+    (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
+      (if (eof-object? b) (make-bytevector 0) b)))
+
+  ;; The version of a quarantine file is the checksum of its bytes: what
+  ;; matters is whether it CHANGED since the version a decision was made
+  ;; against (section 5.2's isolation barrier), and equality of content
+  ;; is exactly that question.
+  (define (quarantine-version store writer)
+    (let ((p (writer-file store writer "quarantine.sexp")))
+      (and (file-exists? p) (crc32-hex (read-whole p)))))
+
+  ;; THE RETIRED PREFIX IS A STOPPING POINT, not a filter. retired.sexp
+  ;; records the last valid (segment, offset, seq) of a writer that may
+  ;; no longer continue here; history past it is evidence and is not
+  ;; read (section 1.1). The shape read here is
+  ;;   ((prefix <segment> <offset> <seq>) ...)
+  ;; and the rest of the file is ignored by this layer.
+  (define (retired-prefix store writer)
+    (let ((p (writer-file store writer "retired.sexp")))
+      (and (file-exists? p)
+           (let ((d (guard (e (#t #f))
+                      (string->sexpr-extended (utf8->string (read-whole p))))))
+             (and (list? d)
+                  (let loop ((xs d))
+                    (cond
+                      ((null? xs) #f)
+                      ((and (list? (car xs)) (= 4 (length (car xs)))
+                            (eq? (caar xs) 'prefix))
+                       (cdr (car xs)))
+                      (else (loop (cdr xs))))))))))
+
+  ;; Snapshots live in snap/ under the segment naming convention and are
+  ;; tried newest first: a snapshot that is void, or whose cut the log
+  ;; cannot support, falls back to an older one rather than to nothing
+  ;; (section 4.5-prime, L7).
+  (define (choose-snapshot store coverage)
+    (let ((dir (string-append store "/snap")))
+      (if (not (file-directory? dir))
+          (values #f #f '() 'absent)
+          (let loop ((ns (reverse (sort < (filter (lambda (n) n)
+                                                  (map segment-file-number
+                                                       (directory-list dir))))))
+                     (last-reason 'absent))
+            (if (null? ns)
+                (values #f #f '() last-reason)
+                (let ((path (string-append dir "/" (segment-file-name (car ns)))))
+                  (let-values (((cut rows) (snapshot-read path)))
+                    (cond
+                      ((not cut) (loop (cdr ns) rows))
+                      ((not (snapshot-cut-supported? cut coverage))
+                       (trace-event! 'snapshot-read (cons path 'unsupported-cut) #f)
+                       (loop (cdr ns) 'unsupported-cut))
+                      (else (values (car ns) cut rows #f))))))))))
+
+  ;; Coverage is what the store can speak for: for each writer, the last
+  ;; seq its loadable segments could contain. Established WITHOUT
+  ;; scanning, from the segment set alone, because a snapshot's cut has
+  ;; to be judged before replay decides where to start.
+  (define (writer-coverage store writer origin)
+    (let* ((segs (loadable-segments store writer (eq? origin 'local)))
+           (retired (retired-prefix store writer)))
+      (cond
+        (retired (caddr retired))
+        ((null? segs) 0)
+        (else
+         ;; The last seq is not known without reading, so coverage is
+         ;; reported as the largest seq the last segment could hold. A
+         ;; cut naming more than the log holds is caught when replay
+         ;; fails to reach it; a cut naming a writer with no segments at
+         ;; all is caught here.
+         'unbounded))))
+
+  (define (log-open store)
+    (unless (string? store)
+      (assertion-violation 'log-open "store must be a path string" store))
+    (let* ((meta-path (string-append store "/meta.sexp"))
+           (meta (if (file-exists? meta-path)
+                     (guard (e (#t #f))
+                       (string->sexpr-extended (utf8->string (read-whole meta-path))))
+                     #f)))
+      (when (not meta)
+        (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
+      (let* ((writers (store-writers store))
+             (quarantine (map (lambda (w) (cons w (quarantine-version store w)))
+                              writers))
+             (coverage (map (lambda (w)
+                              (cons w (writer-coverage
+                                        store w
+                                        (if (file-exists?
+                                              (writer-file store w "published.sexp"))
+                                            'mirrored 'local))))
+                            writers)))
+        (let-values (((n cut rows reason)
+                      (choose-snapshot store (unbounded->big coverage))))
+          (make-log-handle store meta writers '() '() quarantine
+                           cut rows (and (not cut) reason))))))
+
+  ;; snapshot-cut-supported? compares numbers, and 'unbounded is this
+  ;; layer saying "as far as the segments could reach". Turning it into a
+  ;; number here keeps that comparison in one place rather than teaching
+  ;; it a special value.
+  (define (unbounded->big coverage)
+    (map (lambda (e) (if (eq? (cdr e) 'unbounded)
+                         (cons (car e) 1000000000000)
+                         e))
+         coverage))
+
+  ;; Delivery order is section 5.1's: per writer, segments ascending,
+  ;; records in file order. `proc` is called as
+  ;;   (proc writer segment offset seq ts actor deps payload)
+  ;; and may answer stop to end the replay.
+  (define (log-replay h proc)
+    (let ((store (log-handle-store h)))
+      (call/cc
+        (lambda (done)
+          (for-each
+            (lambda (writer)
+              (replay-writer h store writer proc done))
+            (log-handle-writers h))))))
+
+  (define (replay-writer h store writer proc done)
+    (let* ((cut (log-handle-snapshot-cut h))
+           (from (let ((e (and cut (assoc writer cut)))) (if e (cdr e) 0)))
+           (origin (log-writer-origin h writer))
+           (local? (eq? origin 'local))
+           (retired (retired-prefix store writer))
+           (segs (loadable-segments store writer local?))
+           (highest (and (pair? segs) (car (reverse segs)))))
+      (let loop ((ss segs) (expect 1))
+        (unless (null? ss)
+          (let* ((seg (car ss))
+                 (path (string-append (writer-directory store writer) "/"
+                                      (segment-file-name seg)))
+                 (current? (and local? (eqv? seg highest) (not retired)))
+                 (bytes (read-segment store path current?))
+                 (bytes (if (and retired (= seg (car retired)))
+                            (clip bytes (cadr retired))
+                            bytes))
+                 ;; DELIVERY STARTS AFTER THE ADOPTED SNAPSHOT'S CUT
+                 ;; (section 5.1), but SCANNING does not: the records at
+                 ;; or below the cut are still framed, checksummed and
+                 ;; counted, because the sequence continuity of what
+                 ;; follows is only established by walking through them.
+                 ;; Skipping the bytes outright would make a gap
+                 ;; straddling the cut invisible.
+                 (outcome (scan-segment bytes writer seg expect current?
+                                        (lambda (off seq ts actor deps payload)
+                                          (if (<= seq from)
+                                              (void)
+                                              (proc writer seg off seq ts actor
+                                                    deps payload))))))
+            (case (car outcome)
+              ((complete)
+               (if (and retired (= seg (car retired)))
+                   (void)
+                   (loop (cdr ss) (if (cadr outcome) (+ (cadr outcome) 1) expect))))
+              ((torn)
+               (log-handle-torn-set!
+                 h (cons (list writer seg (cadr outcome) (caddr outcome))
+                         (log-handle-torn h))))
+              ((integrity)
+               ;; PER WRITER, NOT GLOBAL (section 5.2-prime): this
+               ;; writer's history stops here and the others are
+               ;; untouched.
+               (log-handle-integrity-set!
+                 h (cons (cadr outcome) (log-handle-integrity h))))))))))
+
+  (define (clip bv end)
+    (if (>= end (bytevector-length bv)) bv (subbytes bv 0 end)))
+
+  ;; THE CURRENT SEGMENT IS COPIED UNDER A SHARED LOCK AND PARSED
+  ;; AFTERWARDS (section 5.1). The lock is held for the copy alone: long
+  ;; enough that a writer cannot append into the middle of what is being
+  ;; read, short enough that parsing does not block one. A sealed
+  ;; segment needs no lock -- nothing may write it.
+  (define (read-segment store path current?)
+    (if (not current?)
+        (read-whole path)
+        (with-shared-lock (string-append store "/lock")
+          (lambda (fd)
+            (let ((bytes (read-whole path)))
+              (trace-event! 'copy path (bytevector-length bytes))
+              bytes)))))
 )
