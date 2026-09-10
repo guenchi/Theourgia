@@ -55,6 +55,23 @@
 ;;; extra path resolution and it is the deliberate price of not passing
 ;;; a mode through a calling convention that will not carry it.
 ;;;
+;;; TWO OBLIGATIONS AROUND CLEANUP, AND THEY ARE NOT ONE. This is
+;;; written down because it has already been got wrong once and will be
+;;; reached for again:
+;;;
+;;;   a) cleanup running while an exception is already on its way out
+;;;      must not raise, or it replaces a real failure with its own and
+;;;      the caller is told the wrong thing;
+;;;   b) a failure on the NORMAL path must not be swallowed, or an
+;;;      operation reports success it did not achieve.
+;;;
+;;; Putting a close in an unwind thunk satisfies (a) and violates (b):
+;;; measured here, a descriptor closing with EIO after a successful
+;;; write and flush vanished, the rename went ahead, and the whole
+;;; replacement returned success. The shape that satisfies both is to
+;;; act on the way THROUGH and clear a flag, leaving the unwind to act
+;;; only when the flag says the way through did not happen.
+
 ;;; ERRORS USE igropyr's durable-error VECTOR, TAG AND ARITY. A caller
 ;;; of this library also calls durable-write-file!, and one guard should
 ;;; cover both, so (igropyr durable)'s exported durable-error? -- which
