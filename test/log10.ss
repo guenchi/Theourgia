@@ -49,6 +49,11 @@
   (encode-record seq (+ 1757300000000 seq) "agent:claude" deps (storable-encode payload)))
 (define (r n) (rec n '() (list 'put (string-append "a." (number->string n)) '())))
 (define R (bytevector-length (r 1)))
+;; A record of a different length, for building the file extend would
+;; have left behind if it had not preserved the prefix bytes.
+(define (long n)
+  (rec n '() (list 'put (string-append "a." (number->string n)) '("padding" "padding"))))
+(define L (bytevector-length (long 1)))
 (define (cat . bs)
   (let* ((n (apply + (map bytevector-length bs))) (o (make-bytevector n)))
     (let loop ((bs bs) (i 0))
@@ -228,6 +233,50 @@
 (want "a fork inside a published prefix segment leaves no retired tail"
       (survey)
       (list (list 1 (* 2 R) 2) '((1 1 2)) '() '(1 2) 'open (list 1 (* 2 R) 2) #f))
+
+(printf "== extension does not exempt the marker from being checked ==\n")
+;; EXTEND PRESERVES THE PREFIX BYTES, so on a correctly extended file the
+;; marker's offset still ends the record it declares. When it does not,
+;; the manifest and retired.sexp are two authorities contradicting each
+;; other about the same bytes, and discovery says so rather than picking
+;; one. The extent still follows the manifest: the disagreement is
+;; recorded, it does not lower the boundary.
+;;
+;; Built the way it would really arise -- the prefix records replaced by
+;; records of a different length, then listed -- so that the declared
+;; offset no longer falls on any record boundary at all.
+(build!)
+(seg! 1 (long 1) (long 2) (long 3))
+(retire! 1 (* 2 R) 2)
+(publish! (list 1) (list))
+(want "an extended file whose declared offset no longer ends that record is flagged"
+      (survey)
+      (list (list 1 (* 3 L) 3) (list (list 1 1 3)) '(retired-mismatch) '(1 2 3) 'open
+            (list 1 (* 2 R) 2) #f))
+
+;; The offset lands on a boundary, but on the wrong record's.
+(build!)
+(seg! 1 (r 1) (r 2) (r 3))
+(retire! 1 (* 3 R) 2)
+(publish! (list 1) (list))
+(want "an offset that ends the wrong record is flagged just the same"
+      (survey)
+      (list (list 1 (* 3 R) 3) (list (list 1 1 3)) '(retired-mismatch) '(1 2 3) 'open
+            (list 1 (* 3 R) 2) #f))
+
+;; GREEN TWIN: the ordinary extended file, where the offset still ends the
+;; declared record. This is the row above under "the manifest is what
+;; turns those same bytes into history"; repeated here because the two
+;; readings differ in exactly one field and a check that fired on every
+;; extension would pass every row in that section.
+(build!)
+(seg! 1 (r 1) (r 2) (r 3))
+(retire! 1 (* 2 R) 2)
+(publish! (list 1) (list))
+(want "CONTROL: a faithfully extended file is still checked, and agrees"
+      (survey)
+      (list (list 1 (* 3 R) 3) (list (list 1 1 3)) '() '(1 2 3) 'open
+            (list 1 (* 2 R) 2) #f))
 
 (printf "== none of this reaches a writer that has not retired ==\n")
 ;; The same files and the same manifest, with retired.sexp removed. A

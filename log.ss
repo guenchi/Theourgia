@@ -854,6 +854,22 @@
                 ;; some mirror published it, so it must be listed.
                 (rseg (and retired (not (eq? (car retired) 'malformed))
                            (car retired)))
+                (roff (and rseg (cadr retired)))
+                ;; WHERE THE MARKER'S OFFSET LANDS, observed while the
+                ;; scan goes past it rather than inferred from the
+                ;; endpoint afterwards. Slot 0 says the named segment was
+                ;; actually scanned; slot 1 is the seq of the record that
+                ;; ends exactly at the declared offset, or #f if no record
+                ;; boundary is there at all. The endpoint cannot answer
+                ;; this once extension is in play: it is then the end of
+                ;; the file, not the end of the declared prefix.
+                ;;
+                ;; The exits that skip the scan -- an unreadable segment,
+                ;; a hash the manifest disagrees with -- do not run the
+                ;; marker check at all, so there is deliberately no
+                ;; "was it scanned" slot here: a guard no reachable input
+                ;; exercises is an excuse nobody can test.
+                (probe (vector #f))
                 ;; THE MARKER STOPS THE SCAN ONLY WHILE NOTHING HAS
                 ;; PUBLISHED PAST IT. Once the prefix segment is in the
                 ;; manifest, the declared seq is a lower bound that has
@@ -908,24 +924,24 @@
                           ;; claim could be reached, so there is nothing
                           ;; to check it against and nothing wrong with it
                           ((and fork-ceiling (< eseq rseq)) (if #f #f))
-                          ;; THE CLAIM HAS BEEN SUPERSEDED. Once the
-                          ;; manifest vouches for the prefix segment the
-                          ;; scan deliberately runs past the declared
-                          ;; boundary, so the endpoint is expected to
-                          ;; disagree with it -- that disagreement is the
-                          ;; extension working, not a marker that lies.
-                          ((memv rseg listed) (if #f #f))
                           ((not (memv rseg present))
                            (note! 'retired-missing-segment rseg #f
                                   (list (cons 'declared rseq))))
                           ((noted? 'retired-beyond-file) (if #f #f))
-                          ((and end (= rseg (car end)) (= roff (cadr end))
-                                (= rseq eseq))
-                           (if #f #f))
+                          ;; EXTENSION DOES NOT EXEMPT THE MARKER. extend
+                          ;; preserves the prefix bytes, so on a faithfully
+                          ;; extended file the declared offset still ends
+                          ;; the declared record -- the file grew past it,
+                          ;; the record boundary did not move. When it does
+                          ;; not, the manifest and retired.sexp are two
+                          ;; authorities contradicting each other about the
+                          ;; same bytes; that is recorded, and the extent
+                          ;; still follows the manifest.
+                          ((eqv? (vector-ref probe 0) rseq) (if #f #f))
                           (else
                            (note! 'retired-mismatch rseg roff
                                   (list (cons 'declared rseq)
-                                        (cons 'reached eseq)))))))))
+                                        (cons 'at-offset (vector-ref probe 0))))))))))
                 (tail (and (eq? origin 'local) highest (not retired)
                            (capture-tail store writer highest lock-context))))
            ;; A ceiling below the first sequence admits nothing, and the
@@ -986,13 +1002,34 @@
                             (outcome
                               (scan-segment clipped writer seg expect current?
                                             (lambda (off seq ts actor deps payload)
+                                              ;; a record STARTING at the
+                                              ;; declared offset means the
+                                              ;; one before it ended there
+                                              (when (and roff (eqv? seg rseg)
+                                                         (= off roff))
+                                                (vector-set! probe 0 (- seq 1)))
                                               ;; the scanner stops AFTER the
                                               ;; record it is told to stop on,
                                               ;; which is what makes the
                                               ;; ceiling inclusive
                                               (if (and ceiling (>= seq ceiling))
                                                   'stop
-                                                  (if #f #f))))))
+                                                  (if #f #f)))))
+                            (probe-noted
+                              (when (and roff (eqv? seg rseg))
+                                ;; the other way the offset can be a
+                                ;; boundary: it is where this segment's
+                                ;; scan came to rest -- the file's end, or
+                                ;; wherever the ceiling stopped it
+                                (let ((endoff (case (car outcome)
+                                                ((complete) (caddr outcome))
+                                                ((torn) (cadr outcome))
+                                                (else (cadddr outcome))))
+                                      (lastseq (if (eq? (car outcome) 'complete)
+                                                   (cadr outcome)
+                                                   (caddr outcome))))
+                                  (when (and endoff lastseq (= endoff roff))
+                                    (vector-set! probe 0 lastseq))))))
                        (case (car outcome)
                          ((complete)
                           (let* ((last (cadr outcome))
