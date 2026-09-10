@@ -56,7 +56,7 @@
           discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
-          discovery-versions discovery-clean?
+          discovery-versions discovery-retired-tail discovery-clean?
           log-open log-open-in-session load-prefix load-writers load-integrity
           load-commit! load-abort! load-outcome load-deliver!
           load-snapshot-cut load-snapshot-rows load-snapshot-reason
@@ -698,7 +698,17 @@
   (define-record-type discovery
     (fields origin end-segment end-offset end-seq segment-ranges
             physical-current current-buffer torn integrity
-            quarantine retired versions))
+            quarantine retired versions retired-tail))
+
+  ;; RETIRED-TAIL IS INFORMATION, NOT A DIAGNOSTIC. It is #f, or
+  ;; (segment offset): the position at which a retired writer's file goes
+  ;; on past the boundary the manifest vouches for. Those bytes are the
+  ;; ordinary residue of retiring -- a half-written record, or records
+  ;; that were never published -- so reporting them as integrity would
+  ;; make the normal case look like corruption and would put a retired
+  ;; writer's history in doubt. It sits outside `integrity` for that
+  ;; reason: nothing decides load outcome from it, and discovery-clean?
+  ;; does not consult it.
 
   (define (discovery-clean? p) (null? (discovery-integrity p)))
 
@@ -793,13 +803,20 @@
   (define (discover-prefix store writer lock-context)
     (let ((origin (origin-of store writer)))
       (if (eq? origin 'incomplete-publication)
-          (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '())
+          (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f)
           (validate store writer origin lock-context))))
 
   (define (validate store writer origin lock-context)
     (let* ((quarantine (quarantine-of store writer))
            (retired (retired-of store writer))
-           (manifest (if (eq? origin 'local) #f (read-manifest-safely store writer)))
+           ;; A RETIRED WRITER READS ITS MANIFEST EVEN WHEN IT IS LOCAL.
+           ;; The manifest is the sole authority for extension, so a
+           ;; local writer that has retired is no longer the only voice
+           ;; about its own segments: a mirror can publish the ones it
+           ;; never got to.
+           (manifest (if (and (eq? origin 'local) (not retired))
+                         #f
+                         (read-manifest-safely store writer)))
            (versions (list (cons 'manifest (manifest-version store writer))
                            (cons 'retired (and retired (car (reverse retired))))
                            (cons 'quarantine (and quarantine (car quarantine)))))
@@ -827,20 +844,43 @@
                 ;; there is then only one place the extent is decided.
                 (fork-ceiling (and quarantine (cadr quarantine)
                                    (- (cadr quarantine) 1)))
-                (retired-seq (and retired (not (eq? (car retired) 'malformed))
+                (listed (manifest-segments manifest))
+                ;; THE PREFIX IS READ BY LOCAL RULES, THE EXTENSION IS
+                ;; NOT. Segments up to and including the one the marker
+                ;; names are this store's own history and need no
+                ;; manifest entry -- requiring one would lose the history
+                ;; of every writer that retired before anything was
+                ;; published. Everything above it exists only because
+                ;; some mirror published it, so it must be listed.
+                (rseg (and retired (not (eq? (car retired) 'malformed))
+                           (car retired)))
+                ;; THE MARKER STOPS THE SCAN ONLY WHILE NOTHING HAS
+                ;; PUBLISHED PAST IT. Once the prefix segment is in the
+                ;; manifest, the declared seq is a lower bound that has
+                ;; been superseded, and holding the scan there would
+                ;; discard exactly the history extension exists to
+                ;; recover. If that listing turns out to disagree with
+                ;; the bytes, the salvage branch below removes the whole
+                ;; segment, so no boundary is taken on trust either way.
+                (retired-seq (and rseg (not (memv rseg listed))
                                   (caddr retired)))
                 (ceiling (cond
                            ((and fork-ceiling retired-seq)
                             (min fork-ceiling retired-seq))
                            (fork-ceiling fork-ceiling)
                            (else retired-seq)))
-                (listed (manifest-segments manifest))
-                (segs (if (eq? origin 'local)
-                          present
-                          (filter (lambda (n) (memv n listed)) present)))
-                (missing (if (eq? origin 'local)
-                             '()
-                             (filter (lambda (n) (not (memv n present))) listed)))
+                (segs (cond
+                        (rseg (filter (lambda (n)
+                                        (or (<= n rseg) (memv n listed)))
+                                      present))
+                        ((eq? origin 'local) present)
+                        (else (filter (lambda (n) (memv n listed)) present))))
+                (missing (cond
+                           (rseg (filter (lambda (n)
+                                           (and (> n rseg) (not (memv n present))))
+                                         listed))
+                           ((eq? origin 'local) '())
+                           (else (filter (lambda (n) (not (memv n present))) listed))))
                 (stop-before (and (pair? missing) (car (list-sort < missing))))
                 (segs (if stop-before
                           (filter (lambda (n) (< n stop-before)) segs)
@@ -868,6 +908,13 @@
                           ;; claim could be reached, so there is nothing
                           ;; to check it against and nothing wrong with it
                           ((and fork-ceiling (< eseq rseq)) (if #f #f))
+                          ;; THE CLAIM HAS BEEN SUPERSEDED. Once the
+                          ;; manifest vouches for the prefix segment the
+                          ;; scan deliberately runs past the declared
+                          ;; boundary, so the endpoint is expected to
+                          ;; disagree with it -- that disagreement is the
+                          ;; extension working, not a marker that lies.
+                          ((memv rseg listed) (if #f #f))
                           ((not (memv rseg present))
                            (note! 'retired-missing-segment rseg #f
                                   (list (cons 'declared rseq))))
@@ -888,7 +935,7 @@
            (if (and ceiling (< ceiling 1))
              (finish-with origin #f '()
                           (physical-of store writer origin retired highest)
-                          #f #f errs quarantine retired versions)
+                          #f #f errs quarantine retired versions #f)
            ;; THE TAIL EXTENDS THE SEGMENT LIST, IT DOES NOT REPLACE IT.
            ;; Walking only the captured tail dropped every sealed segment
            ;; before it: a store whose segment 1 held records 1-2 and
@@ -909,7 +956,7 @@
                 (finish-with origin end ranges
                              (physical-of store writer origin retired
                                           (if tail (car (reverse (map car tail))) highest))
-                             buffer torn errs quarantine retired versions))
+                             buffer torn errs quarantine retired versions #f))
                (else
                 (let* ((seg (car ss))
                        (from-tail (and tail (assv seg tail)))
@@ -921,7 +968,7 @@
                      (note! 'segment-unreadable seg #f '())
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
-                                  buffer torn errs quarantine retired versions))
+                                  buffer torn errs quarantine retired versions #f))
                     ;; VERIFIED WHILE THE BYTES ARE IN HAND. Without it a
                     ;; published segment could be replaced by different
                     ;; content whose records each carry a correct CRC.
@@ -931,7 +978,7 @@
                      (note! 'manifest-hash seg 0 (list (cons 'expected want)))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
-                                  buffer torn errs quarantine retired versions))
+                                  buffer torn errs quarantine retired versions #f))
                     (else
                      (let* ((clipped (begin
                                        (check-retirement-offset! bytes seg retired note!)
@@ -949,19 +996,33 @@
                        (case (car outcome)
                          ((complete)
                           (let* ((last (cadr outcome))
-                                 (ranges (cons (list seg (or expect 1) (or last (- expect 1)))
-                                               ranges))
+                                 (ranges (add-range ranges seg (or expect 1)
+                                                    (or last (- expect 1))))
                                  (end (if last
                                           (list seg (caddr outcome) last)
                                           end))
                                  (buffer (if current? (cons seg clipped) buffer)))
-                            (if (or (retirement-ends-here? seg retired)
+                            (if (or (and retired-seq
+                                         (retirement-ends-here? seg retired))
                                     (and ceiling last (>= last ceiling)))
                                 (begin
                                   (verify-retired! end)
                                   (finish-with origin end ranges
                                              (physical-of store writer origin retired highest)
-                                             buffer torn errs quarantine retired versions))
+                                             buffer torn errs quarantine retired versions
+                                             ;; WHAT IS LEFT IN THE FILE
+                                             ;; ABOVE THE BOUNDARY. Only
+                                             ;; for a retired writer, and
+                                             ;; only when the manifest
+                                             ;; does not vouch for those
+                                             ;; bytes -- when it does they
+                                             ;; are history and the scan
+                                             ;; never stopped here.
+                                             (and retired-seq end
+                                                  (= (car end) seg)
+                                                  (> (bytevector-length clipped)
+                                                     (cadr end))
+                                                  (list seg (cadr end)))))
                                 (loop (cdr ss) (if last (+ last 1) expect)
                                       ranges end torn buffer))))
                          ((torn)
@@ -977,14 +1038,13 @@
                           (let* ((last (caddr outcome))
                                  (end (if last (list seg (cadr outcome) last) end)))
                             (finish-with origin end
-                                         (cons (list seg (or expect 1)
-                                                     (or last (- expect 1)))
-                                               ranges)
+                                         (add-range ranges seg (or expect 1)
+                                                    (or last (- expect 1)))
                                          (physical-of store writer origin retired highest)
                                          (if current? (cons seg clipped) buffer)
                                          (list seg (cadr outcome)
                                                (or last (- expect 1)))
-                                         errs quarantine retired versions)))
+                                         errs quarantine retired versions #f)))
                          (else
                           ;; THE RECORDS BEFORE THE ERROR ARE STILL
                           ;; HISTORY -- the same defect the torn branch
@@ -1008,13 +1068,23 @@
                                          (if last
                                              (list seg (cadddr outcome) last)
                                              end)
-                                         (cons (list seg (or expect 1)
-                                                     (or last (- expect 1)))
-                                               ranges)
+                                         (add-range ranges seg (or expect 1)
+                                                    (or last (- expect 1)))
                                          (physical-of store writer origin retired highest)
                                          (if current? (cons seg clipped) buffer)
                                          torn errs quarantine retired
-                                         versions)))))))))))))))))
+                                         versions #f)))))))))))))))))
+
+  ;; A SEGMENT THAT CONTRIBUTED NOTHING HAS NO RANGE. Recording one
+  ;; anyway produced entries like (2 4 3) -- "this segment holds
+  ;; sequences 4 through 3" -- for a segment whose very first record was
+  ;; rejected, or for a freshly rotated empty one. That is not a fact
+  ;; about the store, it contradicts having stopped before the segment,
+  ;; and delivery had to carry a special case to tolerate it.
+  (define (add-range ranges seg from to)
+    (if (and to from (>= to from))
+        (cons (list seg from to) ranges)
+        ranges))
 
   (define (note-error! note! e)
     (note! (log-error-kind e) (log-error-segment e) (log-error-offset e)
@@ -1022,7 +1092,7 @@
 
   (define (finish origin end-seq ranges phys buffer errs quarantine retired versions)
     (make-discovery origin #f #f end-seq ranges phys buffer #f
-                 (reverse (vector-ref errs 0)) quarantine retired versions))
+                 (reverse (vector-ref errs 0)) quarantine retired versions #f))
 
   ;; THE QUARANTINED SUFFIX IS EXCLUDED FROM THE EXTENT ITSELF, not
   ;; merely from snapshot eligibility -- otherwise ordinary replay
@@ -1035,11 +1105,11 @@
   ;; followed the ranges into segments the fork had excluded. The extent
   ;; now arrives already correct in every coordinate, and there is one
   ;; place that decided it.
-  (define (finish-with origin end ranges phys buffer torn errs quarantine retired versions)
+  (define (finish-with origin end ranges phys buffer torn errs quarantine retired versions tail)
     (make-discovery origin
                  (and end (car end)) (and end (cadr end)) (if end (caddr end) 0)
                  (reverse ranges) phys buffer torn
-                 (reverse (vector-ref errs 0)) quarantine retired versions))
+                 (reverse (vector-ref errs 0)) quarantine retired versions tail))
 
   ;; ---- the pieces validate leans on ----------------------------------------
 
@@ -1424,11 +1494,16 @@
                            ;; Stopping exactly AT the boundary is correct
                            ;; and common: the extent stops there because
                            ;; validation met the same damage.
+                           ;; Every range names at least one record, so
+                           ;; a segment that yields none has failed to
+                           ;; deliver what validation recorded. This used
+                           ;; to carry a second clause excusing ranges
+                           ;; whose end fell below their start; those are
+                           ;; no longer constructed, and excusing an
+                           ;; impossible shape only hides the day it
+                           ;; becomes possible again.
                            (cond
                              ((and reached (>= reached needed)) (loop (cdr rs)))
-                             ((and (not reached)
-                                   (< (caddr (car rs)) (cadr (car rs))))
-                              (loop (cdr rs)))
                              (else 'failed)))))))))))))
 ))
 )
