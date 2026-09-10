@@ -839,6 +839,24 @@
          (finish origin 0 '() #f #f errs quarantine retired versions))
         (else
          (let* ((present (enumerate-segment-files store writer))
+                ;; ONE CEILING, APPLIED WHILE SCANNING. Both markers name
+                ;; a boundary in the same coordinate -- a seq -- and both
+                ;; used to be applied after the fact: retirement by
+                ;; clipping bytes, quarantine by lowering end-seq alone.
+                ;; Lowering only end-seq left end-segment, end-offset and
+                ;; the ranges describing history the fork excludes, and
+                ;; delivery walked those ranges straight into it. Stopping
+                ;; the scan is what makes every coordinate agree, because
+                ;; there is then only one place the extent is decided.
+                (fork-ceiling (and quarantine (cadr quarantine)
+                                   (- (cadr quarantine) 1)))
+                (retired-seq (and retired (not (eq? (car retired) 'malformed))
+                                  (caddr retired)))
+                (ceiling (cond
+                           ((and fork-ceiling retired-seq)
+                            (min fork-ceiling retired-seq))
+                           (fork-ceiling fork-ceiling)
+                           (else retired-seq)))
                 (listed (manifest-segments manifest))
                 (segs (if (eq? origin 'local)
                           present
@@ -851,8 +869,49 @@
                           (filter (lambda (n) (< n stop-before)) segs)
                           segs))
                 (highest (and (pair? segs) (car (reverse segs))))
+                (noted? (lambda (kind)
+                          (let loop ((es (vector-ref errs 0)))
+                            (cond ((null? es) #f)
+                                  ((eq? (log-error-kind (car es)) kind) #t)
+                                  (else (loop (cdr es)))))))
+                ;; THE MARKER IS CHECKED AGAINST WHERE THE SCAN ACTUALLY
+                ;; ARRIVED. A disagreement is recorded and nothing more:
+                ;; the extent is already min(declared, verified), and a
+                ;; claim shown to be wrong about this file is no safer a
+                ;; bound than the bytes are.
+                (verify-retired!
+                  (lambda (end)
+                    (when (and retired (not (eq? (car retired) 'malformed)))
+                      (let ((rseg (car retired))
+                            (roff (cadr retired))
+                            (rseq (caddr retired))
+                            (eseq (if end (caddr end) 0)))
+                        (cond
+                          ;; a lower fork stopped the scan before the
+                          ;; claim could be reached, so there is nothing
+                          ;; to check it against and nothing wrong with it
+                          ((and fork-ceiling (< eseq rseq)) (if #f #f))
+                          ((not (memv rseg present))
+                           (note! 'retired-missing-segment rseg #f
+                                  (list (cons 'declared rseq))))
+                          ((noted? 'retired-beyond-file) (if #f #f))
+                          ((and end (= rseg (car end)) (= roff (cadr end))
+                                (= rseq eseq))
+                           (if #f #f))
+                          (else
+                           (note! 'retired-mismatch rseg roff
+                                  (list (cons 'declared rseq)
+                                        (cons 'reached eseq)))))))))
                 (tail (and (eq? origin 'local) highest (not retired)
                            (capture-tail store writer highest lock-context))))
+           ;; A ceiling below the first sequence admits nothing, and the
+           ;; scanner has no way to decline a record it has already read:
+           ;; returning 'stop stops AFTER the record, so this case has to
+           ;; be answered before any segment is opened.
+           (if (and ceiling (< ceiling 1))
+             (finish-with origin #f '()
+                          (physical-of store writer origin retired highest)
+                          #f #f errs quarantine retired versions)
            ;; THE TAIL EXTENDS THE SEGMENT LIST, IT DOES NOT REPLACE IT.
            ;; Walking only the captured tail dropped every sealed segment
            ;; before it: a store whose segment 1 held records 1-2 and
@@ -869,6 +928,7 @@
                ((null? ss)
                 (when stop-before
                   (note! 'manifest-missing-segment stop-before #f '()))
+                (verify-retired! end)
                 (finish-with origin end ranges
                              (physical-of store writer origin retired
                                           (if tail (car (reverse (map car tail))) highest))
@@ -896,11 +956,19 @@
                                   (physical-of store writer origin retired highest)
                                   buffer torn errs quarantine retired versions))
                     (else
-                     (let* ((clipped (clip-to-retirement bytes seg retired note!))
+                     (let* ((clipped (begin
+                                       (check-retirement-offset! bytes seg retired note!)
+                                       bytes))
                             (outcome
                               (scan-segment clipped writer seg expect current?
                                             (lambda (off seq ts actor deps payload)
-                                              (if #f #f)))))
+                                              ;; the scanner stops AFTER the
+                                              ;; record it is told to stop on,
+                                              ;; which is what makes the
+                                              ;; ceiling inclusive
+                                              (if (and ceiling (>= seq ceiling))
+                                                  'stop
+                                                  (if #f #f))))))
                        (case (car outcome)
                          ((complete)
                           (let* ((last (cadr outcome))
@@ -910,10 +978,13 @@
                                           (list seg (caddr outcome) last)
                                           end))
                                  (buffer (if current? (cons seg clipped) buffer)))
-                            (if (retirement-ends-here? seg retired)
-                                (finish-with origin end ranges
+                            (if (or (retirement-ends-here? seg retired)
+                                    (and ceiling last (>= last ceiling)))
+                                (begin
+                                  (verify-retired! end)
+                                  (finish-with origin end ranges
                                              (physical-of store writer origin retired highest)
-                                             buffer torn errs quarantine retired versions)
+                                             buffer torn errs quarantine retired versions))
                                 (loop (cdr ss) (if last (+ last 1) expect)
                                       ranges end torn buffer))))
                          ((torn)
@@ -966,7 +1037,7 @@
                                          (physical-of store writer origin retired highest)
                                          (if current? (cons seg clipped) buffer)
                                          torn errs quarantine retired
-                                         versions))))))))))))))))
+                                         versions)))))))))))))))))
 
   (define (note-error! note! e)
     (note! (log-error-kind e) (log-error-segment e) (log-error-offset e)
@@ -979,14 +1050,19 @@
   ;; THE QUARANTINED SUFFIX IS EXCLUDED FROM THE EXTENT ITSELF, not
   ;; merely from snapshot eligibility -- otherwise ordinary replay
   ;; delivers it.
+  ;;
+  ;; It is excluded WHILE SCANNING, and this function no longer lowers
+  ;; anything. Lowering end-seq here was the exclusion's second supplier:
+  ;; end-segment, end-offset and the ranges kept describing history above
+  ;; the fork, so the coordinates contradicted each other and delivery
+  ;; followed the ranges into segments the fork had excluded. The extent
+  ;; now arrives already correct in every coordinate, and there is one
+  ;; place that decided it.
   (define (finish-with origin end ranges phys buffer torn errs quarantine retired versions)
-    (let* ((raw (if end (caddr end) 0))
-           (fork (and quarantine (cadr quarantine)))
-           (capped (if (and fork (>= raw fork)) (- fork 1) raw)))
-      (make-discovery origin
-                   (and end (car end)) (and end (cadr end)) capped
-                   (reverse ranges) phys buffer torn
-                   (reverse (vector-ref errs 0)) quarantine retired versions)))
+    (make-discovery origin
+                 (and end (car end)) (and end (cadr end)) (if end (caddr end) 0)
+                 (reverse ranges) phys buffer torn
+                 (reverse (vector-ref errs 0)) quarantine retired versions))
 
   ;; ---- the pieces validate leans on ----------------------------------------
 
@@ -1049,19 +1125,18 @@
   (define (retirement-ends-here? seg retired)
     (and retired (not (eq? (car retired) 'malformed)) (= seg (car retired))))
 
-  ;; THE RETIREMENT BOUNDARY IS VERIFIED, NOT BELIEVED. A marker naming
-  ;; an offset past the end of its file is an integrity error rather
-  ;; than a clip that silently accepts the shorter file.
-  (define (clip-to-retirement bytes seg retired note!)
-    (if (not (retirement-ends-here? seg retired))
-        bytes
-        (let ((off (cadr retired)))
-          (cond
-            ((> off (bytevector-length bytes))
-             (note! 'retired-beyond-file seg off
-                    (list (cons 'file-length (bytevector-length bytes))))
-             bytes)
-            (else (subbytes bytes 0 off))))))
+  ;; THE MARKER'S OFFSET IS CHECKED, IT NO LONGER CUTS. The seq is the
+  ;; marker's primary coordinate and the scan ceiling is the one place
+  ;; the extent is decided; clipping the bytes here as well made the
+  ;; offset a second, disagreeing supplier of the same boundary. What is
+  ;; left is the verification: an offset past the end of its own file is
+  ;; recorded, and the extent is still whatever the sequences support.
+  (define (check-retirement-offset! bytes seg retired note!)
+    (when (retirement-ends-here? seg retired)
+      (let ((off (cadr retired)))
+        (when (> off (bytevector-length bytes))
+          (note! 'retired-beyond-file seg off
+                 (list (cons 'file-length (bytevector-length bytes))))))))
 
   ;; ---- the load transaction -------------------------------------------------
 
