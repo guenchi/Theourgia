@@ -103,6 +103,16 @@
 ;;;   fsync-fail                fsync reports EIO
 ;;;   no-log-fsync              fsync is SKIPPED and reports success
 ;;;
+;;; A FLUSH FAULT'S PATH QUALIFIER MAY SAY WHICH KIND OF FLUSH.
+;;; `dir=<substring>` matches only a directory flush, `file=<substring>`
+;;; only a file's, and a bare substring means file. Without that the two
+;;; cannot be told apart: an atomic replacement flushes a temporary
+;;; inside the target's directory and then the directory itself, so a
+;;; substring naming the directory ALSO matches the temporary's path and
+;;; the fault lands on the earlier flush, while a substring naming the
+;;; file misses the directory entirely. The directory window that L18(b)
+;;; exists to break was unreachable.
+;;;
 ;;; THE SPEC IS <fault>@<stage>[:<path substring>] AND THE STAGE IS NOT
 ;;; OPTIONAL. stage is one of deliver-barrier, commit, registry,
 ;;; publish, snapshot, repair, and the caller says which one it is in by
@@ -355,6 +365,16 @@
               (values (substring s 0 i) (substring s (+ i 1) n)))
              (else (loop (+ i 1)))))))
 
+     ;; file=/dir= prefix on the path qualifier; bare means file.
+     (define (split-kind a)
+       (cond
+         ((not (string? a)) (values 'file a))
+         ((and (> (string-length a) 5) (string=? (substring a 0 5) "file="))
+          (values 'file (substring a 5 (string-length a))))
+         ((and (> (string-length a) 4) (string=? (substring a 0 4) "dir="))
+          (values 'dir (substring a 4 (string-length a))))
+         (else (values 'file a))))
+
      (define-values (fault-name fault-stage fault-arg)
        (if fault-spec
            (let-values (((head rest) (split-at-sign fault-spec)))
@@ -380,6 +400,8 @@
 
      (define fault-stage-symbol
        (and (string? fault-stage) (string->symbol fault-stage)))
+
+     (define-values (fault-kind fault-substring) (split-kind fault-arg))
 
      (define (in-fault-stage?)
        (eq? (theourgia-stage) fault-stage-symbol))
@@ -429,7 +451,8 @@
        (let ((p (cond ((string? subject) subject)
                       ((and (pair? subject) (string? (car subject))) (car subject))
                       (else (fd-path fd)))))
-         (and (string? p) (string? fault-arg) (string-contains? p fault-arg))))
+         (and (string? p) (string? fault-substring)
+              (string-contains? p fault-substring))))
 
      (define barrier-spec (getenv "THEOURGIA_BARRIER"))
 
@@ -464,10 +487,11 @@
              (close-port p)))))
 
      ;; -> skip | fail | #f
-     (define (fsync-fault fd subject)
+     (define (fsync-fault fd subject kind)
        (cond
          ((not fault-name) #f)
          ((not (in-fault-stage?)) #f)
+         ((not (eq? kind fault-kind)) #f)
          ((and (eq? fault-name 'no-log-fsync) (fault-path-match? fd subject)) 'skip)
          ((and (eq? fault-name 'fsync-fail) (fault-path-match? fd subject)) 'fail)
          (else #f)))
@@ -516,7 +540,7 @@
      ;; form the compiler can fold away.
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
-     (define (fsync-fault fd subject) #f)
+     (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
      (define (write-once fd bv count subject) (real-write fd bv count))))
 
@@ -629,8 +653,8 @@
   ;; The platform-conditional second step is not a second event: a test
   ;; asserting an order of flushes would otherwise read differently on
   ;; the two platforms this runs on.
-  (define (flush! fd subject fsync-op fullfsync-op)
-    (case (fsync-fault fd subject)
+  (define (flush! fd subject fsync-op fullfsync-op kind)
+    (case (fsync-fault fd subject kind)
       ;; Skipped AND unreported: see the note at the top on why this one
       ;; must not print a line. In a build without injection fsync-fault
       ;; is the constant #f and this dispatch folds away.
@@ -646,7 +670,7 @@
        (void))))
 
   (define (fsync! fd . opts)
-    (flush! fd (subject-of fd opts) 'fsync 'fullfsync))
+    (flush! fd (subject-of fd opts) 'fsync 'fullfsync 'file))
 
   ;; A directory is opened read-only because opening one for writing
   ;; fails with EISDIR; fsync takes a descriptor for the file, not a
@@ -659,7 +683,7 @@
         (let ((done (box #f)))
           (dynamic-wind
             void
-            (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync))
+            (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync 'dir))
             (lambda ()
               (unless (unbox done)
                 (set-box! done #t)

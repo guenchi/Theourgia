@@ -19,6 +19,8 @@
 # No .so is loaded: CHEZSCHEMELIBEXTS below carries no object extension.
 # Every suite must end by printing '<name> complete'; a run without that
 # line is reported as not finished even when the exit status is zero.
+# The sentinel says the suite finished, not that it passed: any FAIL row
+# or a non-zero failure/mismatch count is red as well.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -35,6 +37,9 @@ for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
     status=1
   elif ! printf '%s\n' "$out" | grep -q "^$f complete\$"; then
     printf '!! %s DID NOT FINISH: no completion sentinel (a crash is a detection, not a pass)\n' "$f"
+    status=1
+  elif printf '%s\n' "$out" | grep -Eq '^FAIL|[1-9][0-9]* (failures|mismatches)'; then
+    printf '!! %s has red rows (the sentinel says it finished, not that it passed)\n' "$f"
     status=1
   fi
 done
