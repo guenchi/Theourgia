@@ -59,6 +59,7 @@
           discovery-versions discovery-retired-tail discovery-clean?
           log-clock registry-path machine-lock-path instance-install!
           session-retired? owner-install!
+          session-reset-done! session-reject! session-reset-pending
           log-open log-open-in-session load-prefix load-writers load-integrity
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
@@ -1354,10 +1355,12 @@
   ;; different writer is then indistinguishable from a caller asking for
   ;; someone else's view.
   (define-record-type session
-    (fields store lock load on-deliver writer
+    (fields store lock (mutable load) on-deliver writer
             (mutable epoch) (mutable applied) (mutable revision)
             (mutable ended) (mutable poisoned)
-            (mutable next-seq) (mutable unconfirmed)))
+            (mutable next-seq) (mutable unconfirmed)
+            (mutable versions) (mutable reset-pending) (mutable rejected)
+            (mutable delivered)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1440,7 +1443,9 @@
                        (s (make-session store lock ls on-deliver local
                                         0 '() 0 #f #f
                                         (and entry (+ 1 (discovery-end-seq (cdr entry))))
-                                        #f)))
+                                        #f
+                                        (metadata-versions store)
+                                        #f '() '())))
                   (deliver-into! s)
                   (vector-set! handed-over 0 #t)
                   s)))))
@@ -1463,27 +1468,34 @@
   ;; decide the same question again for every one of them. The scanner
   ;; has no way to skip a writer mid-stream, so the callback is
   ;; suppressed for the rest of that writer instead.
-  (define (deliver-into! s)
-    (let ((ls (session-load s))
-          (on-deliver (session-on-deliver s))
+  (define (deliver-from-cut! s cut)
+    (let ((on-deliver (session-on-deliver s))
           (stopped '()))
-      (load-deliver! ls '()
+      (load-deliver! (session-load s) cut
         (lambda (writer seg off seq ts actor deps payload)
-          (if (member writer stopped)
+          (if (or (member writer stopped) (writer-rejected? s writer))
               'suppressed
-              (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
-                (cond
-                  ;; NO `apply` EVENT HERE. Plan section 0 defines that op
-                  ;; as step 9's in-lock application, between the log
-                  ;; fsync and the unlock; emitting it for a delivery
-                  ;; confirmation as well gave one name two meanings, and
-                  ;; the delivery-time events then masked the commit-time
-                  ;; one in any row that deduplicated.
-                  ((eq? answer 'applied)
-                   (note-applied! s writer seq))
-                  ((and (pair? answer) (eq? (car answer) 'rejected))
-                   (set! stopped (cons writer stopped))))
-                answer))))))
+              (begin
+                (session-delivered-set! s (cons (cons writer seq) (session-delivered s)))
+                (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
+                  (cond
+                    ((eq? answer 'applied) (note-applied! s writer seq))
+                    ((and (pair? answer) (eq? (car answer) 'rejected))
+                     (set! stopped (cons writer stopped))))
+                  answer)))))))
+
+  ;; ONE DELIVERY LOOP, AND THIS IS THE EMPTY-CUT CASE OF IT. Keeping a
+  ;; second copy here meant the two disagreed the moment either changed:
+  ;; the reload's loop recorded what it had delivered and this one did
+  ;; not, so a rejection of a record delivered at log-begin was refused
+  ;; as "never delivered".
+  ;;
+  ;; NO `apply` EVENT IN EITHER. Plan section 0 defines that op as step
+  ;; 9's in-lock application, between the log fsync and the unlock;
+  ;; emitting it for a delivery confirmation too gave one name two
+  ;; meanings, and the delivery-time events then masked the commit-time
+  ;; one in any row that deduplicated.
+  (define (deliver-into! s) (deliver-from-cut! s '()))
 
   (define (note-applied! s writer seq)
     (let* ((applied (session-applied s))
@@ -1504,6 +1516,14 @@
   ;; been discarded.
   (define (session-applied! s epoch cut)
     (check-live! 'session-applied! s)
+    ;; NOTHING HAS BEEN DELIVERED IN THIS EPOCH YET. A report arriving
+    ;; between the reset and its acknowledgement describes state built on
+    ;; the epoch that was just discarded, or on nothing at all -- and
+    ;; accepting it left the cursor holding a value the replay never
+    ;; produced, so the reported frontier disagreed with the reducer.
+    (when (session-reset-pending s)
+      (raise (make-log-error 'reset-pending #f #f #f
+                             (list (cons 'store (session-store s))))))
     (unless (eqv? epoch (session-epoch s))
       (raise (make-log-error 'stale-epoch #f #f #f
                              (list (cons 'reported epoch)
@@ -1630,6 +1650,7 @@
     (check-live! 'session-view s)
     (let ((writer (session-writer s)))
       (and writer
+           (not (session-reset-pending s))
            (not (session-poisoned s))
            (not (session-retired? s))
            (not (session-unconfirmed s))
@@ -1668,6 +1689,149 @@
 
   (define (now-ms) ((log-clock)))
 
+
+
+  ;; ---- metadata versions, reload and the epoch ------------------------------
+
+  ;; THE THREE FILES A SESSION'S VIEW OF HISTORY RESTS ON, read cheaply
+  ;; so that a change can be noticed on every append rather than only at
+  ;; load. Quarantine moves a writer's boundary, retirement ends it, and
+  ;; the manifest says which of a mirror's segments count -- a session
+  ;; that missed any of them would go on writing against history the
+  ;; store no longer agrees it has.
+  ;; SHA-256, NOT CRC-32. These versions exist to answer "did this file
+  ;; change", and a 32-bit checksum answers it wrongly often enough to
+  ;; matter: two quarantine markers differing in their fork -- one
+  ;; excluding a record, one not -- can be padded to share a CRC, and the
+  ;; session then goes on writing against a boundary that has moved. CRC
+  ;; is right where it is: detecting damage in a record it was computed
+  ;; over, not deciding whether two files are the same file.
+  ;;
+  ;; OWNER CONTENT, NOT MERELY ITS PRESENCE. Rewriting owner.sexp with a
+  ;; different instance leaves the path in place, and comparing only
+  ;; existence let an authority change pass unnoticed.
+  (define (file-version store writer name)
+    (let ((p (writer-file store writer name)))
+      (and (file-exists? p) (bytevector->hex (sha256 (read-whole p))))))
+
+  (define (metadata-versions store)
+    (map (lambda (w)
+           (list w
+                 (file-version store w "quarantine.sexp")
+                 (file-version store w "retired.sexp")
+                 (file-version store w "published.sexp")
+                 (file-version store w "owner.sexp")))
+         (store-writers store)))
+
+  ;; RELOADED WHOLE, INSIDE THE LOCK THAT IS ALREADY HELD. An incremental
+  ;; catch-up cannot express what a quarantine does: the boundary moves
+  ;; BACKWARDS, and records the session has already delivered stop being
+  ;; history. Nothing here takes or releases a lock -- the exclusive lock
+  ;; is held throughout, and reaching for a shared one would deadlock
+  ;; against it.
+  (define (reload! s)
+    (let* ((store (session-store s))
+           (fresh (open-load store 'held-exclusive)))
+      (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
+                (load-session-prefixes fresh))
+      (session-load-set! s fresh)
+      (session-versions-set! s (metadata-versions store))
+      (session-epoch-set! s (+ 1 (session-epoch s)))
+      (session-revision-set! s (+ 1 (session-revision s)))
+      (let* ((writer (session-writer s))
+             (entry (and writer (assoc writer (load-session-prefixes fresh)))))
+        (session-next-seq-set! s (and entry (+ 1 (discovery-end-seq (cdr entry)))))
+        (session-unconfirmed-set! s #f)
+        ;; RESET IS NEEDED WHEN THE REDUCER HAS APPLIED WHAT NO LONGER
+        ;; EXISTS. Its state was built from records the new boundary
+        ;; excludes, so nothing short of discarding and replaying it can
+        ;; be correct -- and the log layer must not deliver again until
+        ;; the reducer says it has done so.
+        (if (applied-beyond? s fresh)
+            (begin
+              (session-reset-pending-set! s #t)
+              (session-applied-set! s '()))
+            ;; NEW HISTORY HAS TO REACH THE REDUCER. A reload that needs
+            ;; no reset still found records the reducer has not seen --
+            ;; a mirror's newly published segment, say -- and without
+            ;; this they were never delivered at all: not here, not on a
+            ;; later append (the versions match again), and not through
+            ;; reset-done (no reset is pending). A local record waiting
+            ;; on one of them would wait forever.
+            (deliver-from-cut! s (session-applied s)))
+        (session-epoch s))))
+
+  (define (applied-beyond? s ls)
+    (let loop ((es (session-applied s)))
+      (cond
+        ((null? es) #f)
+        (else
+         (let* ((entry (assoc (caar es) (load-session-prefixes ls)))
+                (reach (if entry (discovery-end-seq (cdr entry)) 0)))
+           (if (> (cdar es) reach) #t (loop (cdr es))))))))
+
+  (define (versions-changed? s)
+    (not (equal? (session-versions s) (metadata-versions (session-store s)))))
+
+  ;; THE HANDSHAKE, NOT A POLL. The log layer stops delivering until the
+  ;; reducer confirms it has discarded the state built on the old epoch;
+  ;; confirming a different epoch than the one in force is refused,
+  ;; because it describes a discard of something else.
+  (define (session-reset-done! s epoch)
+    (check-live! 'session-reset-done! s)
+    (unless (session-reset-pending s)
+      (assertion-violation 'session-reset-done! "no reset is pending" (session-store s)))
+    (unless (eqv? epoch (session-epoch s))
+      (raise (make-log-error 'stale-epoch #f #f #f
+                             (list (cons 'reported epoch)
+                                   (cons 'current (session-epoch s))))))
+    (session-reset-pending-set! s #f)
+    (deliver-into! s)
+    (session-epoch s))
+
+  ;; A RECORD THE REDUCER CANNOT USE, refused by the reducer rather than
+  ;; damaged on disk. It stops that writer where it stands; the history
+  ;; is untouched and nothing is written to integrity, because nothing
+  ;; about the bytes is wrong.
+  (define (session-reject! s epoch event reason)
+    (check-live! 'session-reject! s)
+    (unless (eqv? epoch (session-epoch s))
+      (raise (make-log-error 'stale-epoch #f #f #f
+                             (list (cons 'reported epoch)
+                                   (cons 'current (session-epoch s))))))
+    (unless (and (pair? event) (string? (car event))
+                 (integer? (cdr event)) (exact? (cdr event)))
+      (assertion-violation 'session-reject! "event must be (writer . seq)" event))
+    (let* ((writer (car event))
+           (seq (cdr event))
+           (applied (let ((e (assoc writer (session-applied s)))) (if e (cdr e) 0)))
+           (entry (assoc writer (load-session-prefixes (session-load s))))
+           (reach (if entry (discovery-end-seq (cdr entry)) 0)))
+      (cond
+        ;; AN APPLIED EVENT CANNOT BE TAKEN BACK QUIETLY. Undoing it is a
+        ;; causal rollback, which is what a reset and a new epoch are for.
+        ((<= seq applied) (list 'refused 'already-applied))
+        ;; NOR ONE THAT WAS NEVER DELIVERED. "Within the validated
+        ;; extent" is not the same as "handed to the reducer": a record
+        ;; discovered by a reload, or one after a writer already stopped,
+        ;; is inside the extent and was never seen. Rejecting what you
+        ;; have not been given would let a caller close a writer it has
+        ;; not read.
+        ((not (member (cons writer seq) (session-delivered s)))
+         (list 'refused 'not-delivered))
+        (else
+         (session-rejected-set! s (cons (list writer seq reason) (session-rejected s)))
+         (list 'rejected writer seq reason)))))
+
+  ;; A REJECTED WRITER IS STOPPED, and stopped is a property of the
+  ;; session rather than of one delivery pass -- recording the rejection
+  ;; and then letting the next pass deliver that writer again would make
+  ;; the rejection advice rather than a decision.
+  (define (writer-rejected? s writer)
+    (let loop ((rs (session-rejected s)))
+      (cond ((null? rs) #f)
+            ((string=? (car (car rs)) writer) #t)
+            (else (loop (cdr rs))))))
 
   ;; ---- instance identity (section 4.1) --------------------------------------
 
@@ -1987,8 +2151,19 @@
                              (list (cons 'store (session-store s))
                                    (cons 'remedy 'adopt)))))
     (barrier! 'before-append)
-    (parameterize ((current-store (session-store s)))
-      (append-under-store s frame)))
+    ;; THE VERSIONS ARE RE-READ BEFORE ANYTHING ELSE. A quarantine
+    ;; installed since this session loaded moves a boundary backwards,
+    ;; and an append computed against the old one would carry facts about
+    ;; history the store no longer has.
+    (when (and (not (session-reset-pending s)) (versions-changed? s))
+      (reload! s))
+    (if (session-reset-pending s)
+        ;; A STRUCTURED READINESS REFUSAL, naming the state. Not `unseen`
+        ;; and not `unknown`: those are answers about the request, and
+        ;; this is an answer about the session.
+        (list 'refused-before-reserve 'reset-pending)
+        (parameterize ((current-store (session-store s)))
+          (append-under-store s frame))))
 
   (define (append-under-store s frame)
     (let ((refusal (binding-refusal s frame)))
@@ -2003,6 +2178,7 @@
   (define (binding-refusal s frame)
     (let ((view (session-view s)))
       (cond
+        ((and (not view) (session-reset-pending s)) 'reset-pending)
         ((and (not view) (session-poisoned s)) 'writer-stopped)
         ((and (not view) (session-retired? s)) 'retired)
         ((and (not view) (session-unconfirmed s)) 'not-ready)
@@ -2026,6 +2202,11 @@
       (trace-event! 'catch-up writer #f)
       (let ((p (discover-prefix store writer 'held-exclusive)))
         (cond
+          ;; THE FORK IN THIS WRITER'S OWN HISTORY. Its predecessors are
+          ;; no longer history, so an append that continues from them
+          ;; would be building on a prefix the store has disavowed.
+          ((discovery-quarantine p)
+           (list 'refused-before-reserve 'quarantined))
           ((pair? (discovery-integrity p))
            (session-poisoned-set! s #t)
            (list 'refused-before-reserve 'integrity))
