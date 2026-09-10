@@ -218,7 +218,7 @@
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
           unlink! file-create-exclusive!
-          process-id)
+          process-id wall-clock-ms)
   (import (chezscheme)
           (theourgia trace)
           (only (igropyr platform)
@@ -291,6 +291,18 @@
       path))
 
   (define (process-id) (get-process-id))
+
+  ;; MILLISECONDS SINCE THE EPOCH, and it has to come from here because
+  ;; it is the one clock the record format names. Chez's `real-time` is
+  ;; milliseconds since THIS PROCESS started -- it reads 26 a moment
+  ;; after startup -- so a log written with it carries timestamps that
+  ;; are not comparable across restarts and are not the epoch
+  ;; milliseconds the format specifies. The segment age trigger reads
+  ;; the same clock, and with process time it computes a negative age
+  ;; and never rotates.
+  (define (wall-clock-ms)
+    (let ((t (current-time)))
+      (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
 
   (define libc
     (load-first-shared-object!
@@ -857,11 +869,22 @@
 
   (define short-count 7)
 
+  ;; HOW FAR IT GOT IS REPORTED, NOT INFERRED. A caller that has to
+  ;; classify "nothing written" against "partly written" was measuring
+  ;; the file before and after -- and a size probe that itself fails
+  ;; (a descriptor table that is full, say) then reads as "no progress",
+  ;; which is precisely the answer that makes a retry duplicate the
+  ;; record. The optional progress procedure is called with the running
+  ;; total before each failure can escape, so the count comes from the
+  ;; loop that did the writing.
   (define (write-all! fd bv . opts)
     (unless (bytevector? bv)
       (assertion-violation 'write-all! "not a bytevector" bv))
-    (let ((subject (subject-of fd opts))
-          (total (bytevector-length bv)))
+    (let* ((subject (subject-of fd opts))
+           (progress (if (and (pair? opts) (pair? (cdr opts)) (procedure? (cadr opts)))
+                         (cadr opts)
+                         (lambda (n) (if #f #f))))
+           (total (bytevector-length bv)))
       (let loop ((pos 0) (chunk bv))
         (if (>= pos total)
             total
@@ -875,6 +898,7 @@
                  (raise (fs-err 'write subject #f)))
                 (else
                  (trace-event! 'write subject n)
+                 (progress (+ pos n))
                  (let ((pos (+ pos n)))
                    (if (>= pos total)
                        (loop pos chunk)

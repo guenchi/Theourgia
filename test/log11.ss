@@ -43,8 +43,12 @@
 ;; Ordered so that lexical order and "which one is local" disagree: if
 ;; delivery ever ordered by anything but the writer id, the b-first
 ;; expectation below would still pass with the ids the other way round.
-(define A "aaa1x2qa")
-(define B "bbb9x2qa")
+;; The LOCAL writer is lexically LAST and the mirrored one has TWO
+;; segments, so "writer-id order, then segment order" is a different
+;; answer from "the local writer first" or "whatever order the
+;; directory listing gave".
+(define A "zzz1x2qa")
+(define B "aaa9x2qa")
 (define (rec seq deps payload)
   (encode-record seq (+ 1757300000000 seq) "agent:claude" deps (storable-encode payload)))
 (define (r tag n) (rec n '() (list 'put (string-append tag "." (number->string n)) '())))
@@ -67,11 +71,14 @@
   (put! (string-append d "/writers/" A "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
   (put! (wpath A 1) (cat (r "a" 1) (r "a" 2)))
   (put! (wpath B 1) (r "b" 1))
+  (put! (wpath B 2) (r "b" 2))
   ;; A mirrored writer without a valid manifest has its segments ignored,
   ;; and then every ordering row below would be measuring a store with
   ;; one writer in it.
   (put! (string-append d "/writers/" B "/published.sexp")
-        (string->utf8 (string-append "((1 . \"" (bytevector->hex (sha256 (slurp (wpath B 1)))) "\"))\n"))))
+        (string->utf8 (string-append "((1 . \"" (bytevector->hex (sha256 (slurp (wpath B 1))))
+                                     "\") (2 . \"" (bytevector->hex (sha256 (slurp (wpath B 2))))
+                                     "\"))\n"))))
 (define (traced thunk)
   (let ((p (open-output-string)))
     (parameterize ((current-error-port p))
@@ -117,27 +124,43 @@
   (traced
     (lambda ()
       (let ((s (log-begin d (lambda (w seg off seq ts actor deps payload)
+                              ;; A MARKER IN THE TRACE ITSELF. Without one
+                              ;; the row could only count fsyncs, and
+                              ;; moving every flush to AFTER the callbacks
+                              ;; would leave the count unchanged -- which
+                              ;; is the whole thing the barrier is for.
+                              (trace-event! 'probe-first-callback (list w seq) #f)
                               (set! seen (cons (list w seq) seen))
                               'applied))))
         (log-end! s)))))
 (want "every writer's records arrive, in writer-id order then segment order"
       (reverse seen)
-      (list (list A 1) (list A 2) (list B 1)))
+      (list (list B 1) (list B 2) (list A 1) (list A 2)))
 ;; The barrier is the only evidence: the records read back correctly
 ;; whether or not anything was flushed.
-(want "the segments to be delivered are fsynced before any of them is delivered"
+(want "every flush happens before the first record is delivered"
       (let* ((es (events g-trace))
-             (first-deliverable-fsync
-               (index-of es (lambda (l) (and (string=? (op-of l) "fsync")
-                                             (has-substring? l "000001.sexp")))))
-             (dir-fsync
-               (index-of es (lambda (l) (and (string=? (op-of l) "fsync")
-                                             (has-substring? l (string-append "writers/" A))
-                                             (not (has-substring? l ".sexp")))))))
-        (and first-deliverable-fsync dir-fsync #t))
+             (first-callback (index-of es (lambda (l) (string=? (op-of l) "probe-first-callback"))))
+             (last-fsync (let loop ((l es) (i 0) (last #f))
+                           (cond ((null? l) last)
+                                 ((string=? (op-of (car l)) "fsync") (loop (cdr l) (+ i 1) i))
+                                 (else (loop (cdr l) (+ i 1) last))))))
+        (and first-callback last-fsync (< last-fsync first-callback)))
       #t)
-(want "both writers' segment files and both directories are flushed"
-      (count-of g-trace "fsync") 4)
+;; WHICH PATHS, not how many. A count of four is satisfied by flushing
+;; one writer's file and directory twice and never touching the other.
+(want "each writer's segment, its metadata and its directory are flushed"
+      (let ((flushed (map (lambda (l)
+                            (let* ((i (+ 7 6 1))
+                                   (j (- (string-length l) 4)))
+                              (let scan ((k (- (string-length l) 1)))
+                                (cond ((< k 0) l)
+                                      ((char=? (string-ref l k) #\/) (substring l (+ k 1) j))
+                                      (else (scan (- k 1)))))))
+                          (filter (lambda (l) (string=? (op-of l) "fsync")) (events g-trace)))))
+        (list-sort string<? flushed))
+      (list-sort string<? (list "000001.sexp" A
+                                "000001.sexp" "000002.sexp" "published.sexp" B)))
 
 ;; INJECTED FAILURE AT THE BARRIER MUST DELIVER NOTHING. Half a barrier
 ;; is worse than none: the reducer would have applied records whose
@@ -189,7 +212,7 @@
         (guard (e (#t (list 'unreadable text)))
           (let ((p (open-string-input-port text)))
             (list (read p) (read p)))))
-      (list 'no-failure 3))
+      (list 'no-failure 4))
 
 ;; The child takes the switch from THEOURGIA_TRACE rather than calling
 ;; trace-enable! itself: Chez invokes a library on first REFERENCE, so
@@ -291,6 +314,52 @@
               (let ((s (log-begin d (lambda args 'applied)))) (log-end! s) 'reopened)))
       (list 'raised #f 'reopened))
 
+(printf "== a rejected record stops that writer, and only that writer ==\n")
+;; rejected means "no premise for this record can ever arrive", so the
+;; records after it in the same writer have nothing to be applied
+;; against. Delivering them anyway asks the reducer to decide the same
+;; unanswerable question once per record.
+(build!)
+(define rej-seen '())
+(let ((s (log-begin d (lambda (w seg off seq ts actor deps payload)
+                        (set! rej-seen (cons (list w seq) rej-seen))
+                        (if (and (string=? w B) (= seq 1))
+                            (list 'rejected 'unknown-verb)
+                            'applied)))))
+  (log-end! s))
+(want "the rejected writer delivers nothing further, the other is untouched"
+      (reverse rej-seen)
+      (list (list B 1) (list A 1) (list A 2)))
+(want "and the rejected writer's applied cursor never moved"
+      (let ((s (log-begin d (lambda args 'applied))))
+        (let ((out (map (lambda (f) (cons (car f) (cdr (assq 'applied (cdr f)))))
+                        (session-frontiers s))))
+          (log-end! s) out))
+      (list (cons B 2) (cons A 2)))
+
+(printf "== the store guard is keyed by identity, not by spelling ==\n")
+;; "/s" and "/s/." are two strings and one directory. With a string key
+;; the nested call slipped past the guard and then blocked on the flock
+;; the outer call was holding -- the deadlock the guard exists to
+;; prevent, reachable by writing the path differently.
+(build!)
+(define alias-seen 'never-ran)
+(let ((s (log-begin d (lambda args
+                        (when (eq? alias-seen 'never-ran)
+                          (set! alias-seen
+                                (list (store-operation-active? (string-append d "/."))
+                                      (store-operation-active? (string-append d "/../"
+                                        (let loop ((i (- (string-length d) 1)))
+                                          (if (char=? (string-ref d i) #\/)
+                                              (substring d (+ i 1) (string-length d))
+                                              (loop (- i 1)))))))))
+                        'applied))))
+  (log-end! s))
+(want "an aliased spelling of the same store is seen as the same store"
+      alias-seen (list #t #t))
+(want "CONTROL: a different store is not"
+      (store-operation-active? "/tmp") #f)
+
 (printf "== L24(a): the lock file is never replaced ==\n")
 (build!)
 (define lock-path (string-append d "/lock"))
@@ -317,36 +386,63 @@
 (set! frontiers-while-pending (session-frontiers c-session))
 (want "answering pending everywhere leaves every applied cursor at zero"
       (map (lambda (f) (cons (car f) (cdr (assq 'applied (cdr f))))) frontiers-while-pending)
-      (list (cons A 0) (cons B 0)))
+      (list (cons B 0) (cons A 0)))
 (want "CONTROL: the contiguous frontier did advance, so the records were really read"
       (map (lambda (f) (cons (car f) (cdr (assq 'contiguous (cdr f))))) frontiers-while-pending)
-      (list (cons A 2) (cons B 1)))
+      (list (cons B 2) (cons A 2)))
 (want "the reducer's out-of-band confirmation is what moves it"
       (begin (session-applied! c-session 0 (list (cons A 2)))
              (map (lambda (f) (cons (car f) (cdr (assq 'applied (cdr f)))))
                   (session-frontiers c-session)))
-      (list (cons A 2) (cons B 0)))
-(want "a report from a superseded epoch is refused"
+      (list (cons B 0) (cons A 2)))
+;; A REPORT WHOSE EPOCH DOES NOT MATCH. Named for what it actually
+;; exercises: this batch has no reset, so no epoch is ever superseded --
+;; the row reports a future epoch to an epoch-0 session. The
+;; after-a-reset case belongs with reset and is not covered here.
+(want "a report whose epoch does not match the session is refused"
       (guard (e ((log-error? e) (log-error-kind e)) (#t 'other))
         (session-applied! c-session 1 (list (cons A 2)))
         'accepted)
       'stale-epoch)
+(want "a cut naming the same writer twice is malformed, not first-entry-wins"
+      (guard (e (#t 'refused))
+        (session-applied! c-session 0 (list (cons A 3) (cons A 1)))
+        'accepted)
+      'refused)
+;; THE RETURNED CUT IS A COPY. Handing back the session's own alist made
+;; set-cdr! a third way to move the applied cursor -- no epoch check, no
+;; confirmation, no revision bump.
+(want "mutating a returned cut does not move the session's cursor"
+      (let ((reported (session-applied! c-session 0 (list (cons A 2)))))
+        (set-cdr! (car reported) 99)
+        (map (lambda (f) (cons (car f) (cdr (assq 'applied (cdr f)))))
+             (session-frontiers c-session)))
+      (list (cons B 0) (cons A 2)))
 (log-end! c-session)
 
 (printf "== L24(d): the preparation view moves only with the cursor ==\n")
 (build!)
 (define d-session (log-begin d (lambda args 'applied)))
-(define v1 (session-view d-session A))
+(define v1 (session-view d-session))
 (want "the view names the epoch, the writer and the next sequence"
       (list (view-epoch v1) (view-writer v1) (view-expect-seq v1))
       (list 0 A 3))
-(define v2 (begin (session-applied! d-session 0 (list (cons A 2))) (session-view d-session A)))
+(define v2 (begin (session-applied! d-session 0 (list (cons A 2))) (session-view d-session)))
 (want "confirming advances the revision, so a frame built on the old view is identifiable"
       (list (= (view-revision v1) (view-revision v2)) (view-revision v2))
       (list #f 1))
-(want "and the old view is still immutable, field for field"
-      (list (view-revision v1) (view-epoch v1) (view-writer v1) (view-expect-seq v1))
-      (list 0 0 A 3))
+(want "and the old view is still immutable, field for field -- the cut included"
+      (list (view-revision v1) (view-epoch v1) (view-writer v1) (view-expect-seq v1)
+            (view-applied-cut v1))
+      (list 0 0 A 3 (list (cons B 2) (cons A 2))))
+(want "and mutating a view's cut does not reach the session either"
+      (let ((v (session-view d-session)))
+        (if (pair? (view-applied-cut v))
+            (begin (set-cdr! (car (view-applied-cut v)) 77)
+                   (map (lambda (f) (cons (car f) (cdr (assq 'applied (cdr f)))))
+                        (session-frontiers d-session)))
+            'no-cut-to-mutate))
+      (list (cons B 2) (cons A 2)))
 (log-end! d-session)
 
 (printf "== L24(k): the seam vocabulary this batch emits ==\n")

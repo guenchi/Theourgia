@@ -57,8 +57,10 @@
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
+          log-clock
           log-open log-open-in-session load-prefix load-writers load-integrity
-          log-begin log-end! session? session-store session-epoch
+          log-begin log-end! session? session-store session-epoch session-writer
+          session-append!
           session-frontiers session-view session-applied! session-load
           make-frame frame? frame-view-id frame-epoch frame-writer
           frame-expect-seq frame-actor frame-deps frame-payload
@@ -83,7 +85,7 @@
           (only (igropyr crypto) sha256 bytevector->hex)
           (only (theourgia wire)
                 sexpr->string-extended string->sexpr-extended decode-line
-                escape-newlines))
+                escape-newlines encode-record storable-encode))
 
   ;; ---- errors -------------------------------------------------------------
 
@@ -1296,16 +1298,31 @@
   ;; it hangs. Publication and adopt take the same guard when they exist.
   (define active-operations (make-hashtable string-hash string=?))
 
+  ;; KEYED BY THE DIRECTORY'S IDENTITY, NOT BY THE STRING. "/s" and
+  ;; "/s/." and "/s/../s" are three keys and one directory, so a string
+  ;; key let a nested call slip past the guard and then block on the
+  ;; flock the outer call is holding -- the exact deadlock this check
+  ;; exists to prevent, reachable by writing the path differently. The
+  ;; path string is the fallback for a store whose directory cannot be
+  ;; stat'ed, where nothing can be opened anyway.
+  (define (store-key store)
+    (guard (e (#t store))
+      (call-with-values (lambda () (path-device-inode store))
+        (lambda (dev ino)
+          (string-append (number->string dev) ":" (number->string ino))))))
+
   (define (store-operation-active? store)
-    (and (hashtable-ref active-operations store #f) #t))
+    (and (hashtable-ref active-operations (store-key store) #f) #t))
 
   (define (claim-store! store who)
-    (when (hashtable-ref active-operations store #f)
-      (raise (make-log-error 'active-operation #f #f #f
-                             (list (cons 'store store) (cons 'attempted who)))))
-    (hashtable-set! active-operations store #t))
+    (let ((key (store-key store)))
+      (when (hashtable-ref active-operations key #f)
+        (raise (make-log-error 'active-operation #f #f #f
+                               (list (cons 'store store) (cons 'attempted who)))))
+      (hashtable-set! active-operations key #t)))
 
-  (define (release-store! store) (hashtable-delete! active-operations store))
+  (define (release-store! store)
+    (hashtable-delete! active-operations (store-key store)))
 
   ;; The guard as a scope, for callers that are not log-begin. Releases on
   ;; every exit, including an escape, so a failed publication does not
@@ -1329,10 +1346,17 @@
   (define-record-type frame
     (fields view-id epoch writer expect-seq actor deps payload))
 
+  ;; ONE SESSION, ONE LOCAL WRITER, resolved once at log-begin. Taking
+  ;; the writer as an argument to session-view made "which writer does
+  ;; this session write" a question with two suppliers -- the store's
+  ;; owner file and whatever the caller passed -- and a frame naming a
+  ;; different writer is then indistinguishable from a caller asking for
+  ;; someone else's view.
   (define-record-type session
-    (fields store lock load on-deliver
+    (fields store lock load on-deliver writer
             (mutable epoch) (mutable applied) (mutable revision)
-            (mutable ended)))
+            (mutable ended) (mutable poisoned)
+            (mutable next-seq) (mutable unconfirmed)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1341,6 +1365,14 @@
   ;; would leave those pointing at history that never existed. This
   ;; writer's own unflushed residue is included: it is the most likely
   ;; thing to be unflushed and the least likely to be noticed.
+  (define (flush-file! path)
+    (when (file-exists? path)
+      (let ((fd (fd-open path '(read))))
+        (dynamic-wind
+          (lambda () (if #f #f))
+          (lambda () (fsync! fd path))
+          (lambda () (close-quietly fd))))))
+
   (define (takeover-barrier! store prefixes)
     (parameterize ((theourgia-stage 'deliver-barrier))
       (takeover-flush! store prefixes)))
@@ -1353,53 +1385,101 @@
                (dir (writer-directory store writer))
                (segs (map car (discovery-segment-ranges p))))
           (unless (null? segs)
-            (for-each
-              (lambda (seg)
-                (let ((path (string-append dir "/" (segment-file-name seg))))
-                  (when (file-exists? path)
-                    (let ((fd (fd-open path '(read))))
-                      (dynamic-wind
-                        (lambda () (if #f #f))
-                        (lambda () (fsync! fd path))
-                        (lambda () (fd-close fd)))))))
-              segs)
+            (for-each (lambda (seg) (flush-file! (string-append dir "/" (segment-file-name seg))))
+                      segs)
+            ;; THE METADATA IS PART OF THE DURABLE FRONTIER, not a
+            ;; separate concern. A mirrored writer's records are history
+            ;; because published.sexp says so, so flushing its segment
+            ;; while leaving that file's contents unflushed delivers
+            ;; records whose admissibility can vanish -- the bytes
+            ;; survive the crash and the manifest that vouches for them
+            ;; does not. Directory durability is not content durability.
+            (for-each (lambda (name)
+                        (let ((path (string-append dir "/" name)))
+                          (when (file-exists? path) (flush-file! path))))
+                      '("published.sexp" "retired.sexp" "quarantine.sexp"))
             (fsync-dir! dir))))
       prefixes))
 
+  ;; THE LOCAL WRITER IS THE ONE THIS STORE OWNS. owner.sexp is written
+  ;; by init and by adopt and never by a mirror, so it is the same fact
+  ;; discovery uses to call an origin local -- asked once here rather
+  ;; than re-derived at every append.
+  (define (local-writer-of store ls)
+    (let loop ((es (load-session-prefixes ls)))
+      (cond
+        ((null? es) #f)
+        ((and (eq? (discovery-origin (cdar es)) 'local)
+              (not (discovery-retired (cdar es))))
+         (caar es))
+        (else (loop (cdr es))))))
+
+  ;; THE LOCK IS RELEASED BY THE SAME UNWIND THAT RELEASES THE GUARD.
+  ;; A guard clause only sees exceptions: a callback that escapes by
+  ;; invoking a continuation captured outside log-begin unwinds without
+  ;; raising, and the first version cleared the store flag while leaving
+  ;; the flock held -- the worst of both, since the next log-begin then
+  ;; passes the guard and blocks forever on a lock no one will release.
   (define (log-begin store on-deliver)
     (unless (procedure? on-deliver)
       (assertion-violation 'log-begin "on-deliver must be a procedure" on-deliver))
     (claim-store! store 'log-begin)
-    (let ((handed-over (vector #f)))
+    (let ((handed-over (vector #f))
+          (held (vector #f)))
       (dynamic-wind
         (lambda () (if #f #f))
         (lambda ()
           (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
-            (guard (e (#t (lock-release! lock) (raise e)))
+            (vector-set! held 0 lock)
+            (guard (e (#t (raise e)))
               (trace-event! 'enter-critical
                             (cons (string-append store "/lock") 'exclusive) #f)
               (let ((ls (open-load store 'held-exclusive)))
                 (takeover-barrier! store (load-session-prefixes ls))
-                (let ((s (make-session store lock ls on-deliver 0 '() 0 #f)))
+                (let* ((local (local-writer-of store ls))
+                       (entry (and local (assoc local (load-session-prefixes ls))))
+                       (s (make-session store lock ls on-deliver local
+                                        0 '() 0 #f #f
+                                        (and entry (+ 1 (discovery-end-seq (cdr entry))))
+                                        #f)))
                   (deliver-into! s)
                   (vector-set! handed-over 0 #t)
                   s)))))
         (lambda ()
-          (unless (vector-ref handed-over 0) (release-store! store))))))
+          (unless (vector-ref handed-over 0)
+            (let ((lock (vector-ref held 0)))
+              (when lock
+                (vector-set! held 0 #f)
+                (guard (e (#t (if #f #f))) (lock-release! lock))))
+            (release-store! store))))))
 
   ;; THE APPLIED CURSOR MOVES ONLY ON THE REDUCER'S WORD. Reading a
   ;; record, checking it, and flushing it all leave it where it was:
   ;; those establish that the bytes are there, not that anything has been
   ;; applied to the state deps and cuts are computed against.
+  ;; A REJECTED RECORD STOPS THAT WRITER, and only that writer. The
+  ;; contract calls rejected "a record with no premise that can ever
+  ;; arrive", so the records after it in the same writer have nothing to
+  ;; be applied against -- delivering them anyway asks the reducer to
+  ;; decide the same question again for every one of them. The scanner
+  ;; has no way to skip a writer mid-stream, so the callback is
+  ;; suppressed for the rest of that writer instead.
   (define (deliver-into! s)
     (let ((ls (session-load s))
-          (on-deliver (session-on-deliver s)))
+          (on-deliver (session-on-deliver s))
+          (stopped '()))
       (load-deliver! ls '()
         (lambda (writer seg off seq ts actor deps payload)
-          (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
-            (when (eq? answer 'applied)
-              (note-applied! s writer seq))
-            answer)))))
+          (if (member writer stopped)
+              'suppressed
+              (let ((answer (on-deliver writer seg off seq ts actor deps payload)))
+                (cond
+                  ((eq? answer 'applied)
+                   (trace-event! 'apply (cons writer seq) #f)
+                   (note-applied! s writer seq))
+                  ((and (pair? answer) (eq? (car answer) 'rejected))
+                   (set! stopped (cons writer stopped))))
+                answer))))))
 
   (define (note-applied! s writer seq)
     (let* ((applied (session-applied s))
@@ -1430,9 +1510,37 @@
                                  (integer? (cdr e)) (exact? (cdr e))))
                           cut))
       (assertion-violation 'session-applied! "cut must be an alist of writer to seq" cut))
-    (for-each (lambda (e) (note-applied! s (car e) (cdr e))) cut)
+    ;; A CUT NAMING A WRITER TWICE IS MALFORMED, not first-entry-wins.
+    ;; The cursor update walked every entry and the gate check used
+    ;; assoc, so ((A . 3) (A . 1)) stored 1 and cleared the gate for 3,
+    ;; and the same pair in the other order did the opposite -- two
+    ;; readers of one report disagreeing about what it said.
+    (let loop ((es cut) (seen '()))
+      (unless (null? es)
+        (when (member (caar es) seen)
+          (assertion-violation 'session-applied! "cut names a writer twice" cut))
+        (loop (cdr es) (cons (caar es) seen))))
+    ;; AND IT NEVER GOES BACKWARDS within an epoch: a delayed report of
+    ;; an earlier sequence is stale, not a retraction. Retracting applied
+    ;; state is what a reset is for.
+    (for-each (lambda (e)
+                (let ((have (assoc (car e) (session-applied s))))
+                  (when (or (not have) (> (cdr e) (cdr have)))
+                    (trace-event! 'apply (cons (car e) (cdr e)) #f)
+                    (note-applied! s (car e) (cdr e)))))
+              cut)
+    (let ((mine (and (session-writer s) (assoc (session-writer s) cut)))
+          (pending (session-unconfirmed s)))
+      (when (and pending mine (>= (cdr mine) pending))
+        (session-unconfirmed-set! s #f)))
     (session-revision-set! s (+ 1 (session-revision s)))
-    (session-applied s))
+    (copy-cut (session-applied s)))
+
+  ;; HANDED OUT AS A COPY. The applied cursor is the reducer's to move
+  ;; through the two confirmation paths, and returning the session's own
+  ;; alist made (set-cdr! (car cut) 99) a third path -- no epoch check,
+  ;; no revision bump, no confirmation.
+  (define (copy-cut cut) (map (lambda (e) (cons (car e) (cdr e))) cut))
 
   ;; FOUR FRONTIERS, PER WRITER, and they are deliberately not one
   ;; number: read, validated, applied and durable answer different
@@ -1446,7 +1554,12 @@
                     (p (cdr entry))
                     (applied (assoc writer (session-applied s))))
                (list writer
-                     (cons 'physical (discovery-end-offset p))
+                     ;; THE PHYSICAL CURSOR IS WHERE THE BYTES END, which
+                     ;; is not where the validated prefix ends: a torn
+                     ;; residue lies between them, and reporting the
+                     ;; validated offset for both made the two frontiers
+                     ;; that exist to differ report the same number.
+                     (cons 'physical (discovery-physical-current p))
                      (cons 'contiguous (discovery-end-seq p))
                      (cons 'applied (if applied (cdr applied) 0))
                      (cons 'durable (discovery-end-seq p)))))
@@ -1456,14 +1569,20 @@
   ;; a committed append and its confirmation the log layer knows the
   ;; record is on disk and does NOT know whether the state the next
   ;; record's facts would be computed from includes it.
-  (define (session-view s writer)
+  ;; NO USABLE VIEW WHILE A COMMITTED RECORD IS UNCONFIRMED. The log
+  ;; layer knows the record is on disk; it does NOT know whether the
+  ;; state the next record's facts would be computed from includes it.
+  ;; Handing out a view here would let a caller compute deps and an
+  ;; ordering against a reduction that has not seen its own predecessor.
+  (define (session-view s)
     (check-live! 'session-view s)
-    (let* ((ls (session-load s))
-           (entry (assoc writer (load-session-prefixes ls))))
-      (and entry
+    (let ((writer (session-writer s)))
+      (and writer
+           (not (session-unconfirmed s))
+           (session-next-seq s)
            (make-view (session-revision s) (session-epoch s) writer
-                      (+ 1 (discovery-end-seq (cdr entry)))
-                      (session-applied s)))))
+                      (session-next-seq s)
+                      (copy-cut (session-applied s))))))
 
   (define (check-live! who s)
     (unless (session? s)
@@ -1479,6 +1598,254 @@
     (lock-release! (session-lock s))
     (release-store! (session-store s))
     'ended)
+
+
+  ;; THE CLOCK IS A SEAM. Record timestamps and the rotation age both
+  ;; read it, and a test that cannot move time cannot reach the age
+  ;; trigger at all -- it would have to wait an hour or assert nothing.
+  (define log-clock
+    (make-parameter
+      wall-clock-ms
+      (lambda (v)
+        (unless (procedure? v)
+          (assertion-violation 'log-clock "clock must be a procedure" v))
+        v)))
+
+  (define (now-ms) ((log-clock)))
+
+  ;; ---- session-append! (section 5.2, steps 1-9) -----------------------------
+
+  ;; THE ORDER OF THE STEPS IS THE CONTRACT, not an implementation
+  ;; detail. Validation and framing come BEFORE any maintenance, so that
+  ;; input the store will refuse cannot leave a truncation or a rotation
+  ;; behind: a caller who sends a record type and then sends a legal
+  ;; value must not need adopt in between. Maintenance comes before the
+  ;; write, so the write goes to a file whose tail is already sound.
+  ;;
+  ;; FIVE OUTCOMES, and they are distinguishable because the caller has
+  ;; to do different things about them. "It failed" collapses "nothing
+  ;; happened" together with "the bytes are on disk but unflushed", and
+  ;; those differ by whether a retry can duplicate the record.
+  (define (session-append! s frame)
+    (check-live! 'session-append! s)
+    (unless (frame? frame)
+      (assertion-violation 'session-append! "not a frame" frame))
+    (when (session-poisoned s)
+      (raise (make-log-error 'writer-stopped #f #f #f
+                             (list (cons 'store (session-store s))
+                                   (cons 'remedy 'adopt)))))
+    (barrier! 'before-append)
+    (let ((refusal (binding-refusal s frame)))
+      (if refusal
+          (list 'refused-before-reserve refusal)
+          (catch-up-and-append! s frame))))
+
+  ;; EACH OF THE FOUR BINDINGS IS NAMED SEPARATELY. A frame prepared
+  ;; against a superseded view is refused for a reason the caller can act
+  ;; on: a stale revision means re-take the view and recompute, a wrong
+  ;; writer means the frame was built for another store.
+  (define (binding-refusal s frame)
+    (let ((view (session-view s)))
+      (cond
+        ((and (not view) (session-unconfirmed s)) 'not-ready)
+        ((not view) 'no-local-writer)
+        ((not (eqv? (frame-epoch frame) (session-epoch s))) 'epoch)
+        ((not (eqv? (frame-view-id frame) (view-revision view))) 'view)
+        ((not (and (string? (frame-writer frame))
+                   (string=? (frame-writer frame) (view-writer view))))
+         'writer)
+        ((not (eqv? (frame-expect-seq frame) (view-expect-seq view))) 'expect-seq)
+        (else #f))))
+
+  (define (catch-up-and-append! s frame)
+    (let* ((store (session-store s))
+           (writer (session-writer s)))
+      ;; THE CATCH-UP IS INSIDE THE LOCK AND IT IS NOT OPTIONAL. Another
+      ;; process may have appended and rotated since this session's last
+      ;; look; the sequence number and the append target both come from
+      ;; what is on disk now, not from what was there at log-begin.
+      (trace-event! 'catch-up writer #f)
+      (let ((p (discover-prefix store writer 'held-exclusive)))
+        (cond
+          ((pair? (discovery-integrity p))
+           (session-poisoned-set! s #t)
+           (list 'refused-before-reserve 'integrity))
+          ((not (eqv? (frame-expect-seq frame) (+ 1 (discovery-end-seq p))))
+           (list 'refused-before-reserve 'expect-seq))
+          (else (frame-and-write! s frame p))))))
+
+  ;; STEP 5: EVERYTHING THAT CAN REFUSE THE INPUT HAPPENS HERE, before a
+  ;; byte of the store changes. The line is built in full -- encoded,
+  ;; serialised, checksummed -- and a failure at any point returns with
+  ;; the store untouched.
+  (define (frame-and-write! s frame p)
+    (let* ((store (session-store s))
+           (writer (session-writer s))
+           (seq (frame-expect-seq frame))
+           (ts (now-ms))
+           (line (guard (e (#t 'unframable))
+                   (trace-event! 'frame writer #f)
+                   (encode-record seq ts (frame-actor frame) (frame-deps frame)
+                                  (storable-encode (frame-payload frame))))))
+      (if (eq? line 'unframable)
+          (list 'refused-before-reserve 'unframable)
+          (maintain-and-write! s frame p line seq))))
+
+  ;; STEP 6: MAINTENANCE, and it touches this writer's current segment
+  ;; and nothing else. A torn tail is the one shape a crash can leave
+  ;; that is repaired rather than refused, and the repair is a truncation
+  ;; to the last complete frame -- never a rewrite, never a sealed
+  ;; segment.
+  (define (maintain-and-write! s frame p line seq)
+    (let* ((store (session-store s))
+           (writer (session-writer s))
+           (dir (writer-directory store writer))
+           (phys (discovery-physical-current p)))
+      (if (not (pair? phys))
+          (list 'refused-before-reserve 'no-append-target)
+          (let* ((seg (car phys))
+                 (path (string-append dir "/" (segment-file-name seg)))
+                 (torn (discovery-torn p)))
+            ;; TRUNCATED THROUGH A DESCRIPTOR OPENED FOR WRITING, and
+            ;; the descriptor is closed on the way through -- a failure
+            ;; here must reach the caller rather than be swallowed by an
+            ;; unwind, because a tail that was not repaired means the
+            ;; next write lands after a partial record.
+            (when (and torn (eqv? (car torn) seg))
+              (let ((fd (fd-open path '(write))))
+                (dynamic-wind
+                  (lambda () (if #f #f))
+                  (lambda () (ftruncate! fd (cadr torn) path))
+                  (lambda () (fd-close fd)))))
+            (let* ((rotated (maybe-rotate! store writer seg path p line))
+                   (target (car rotated))
+                   (target-path (cdr rotated)))
+              (write-line! s frame line seq target target-path))))))
+
+  ;; ROTATION IS A DIRECTORY-ENTRY TRANSACTION and its order is the
+  ;; recoverable one: flush what is there, make the new entry, flush it,
+  ;; flush the directory. Both visible states -- N+1 absent, N+1 present
+  ;; and possibly empty -- are legal, which is what makes every point in
+  ;; the sequence a safe place to stop.
+  (define (maybe-rotate! store writer seg path p line)
+    (if (not (rotation-due? path p line))
+        (cons seg path)
+        (let* ((next (+ seg 1))
+               (next-path (string-append (writer-directory store writer)
+                                         "/" (segment-file-name next))))
+          (barrier! 'before-rotate-write)
+          (let ((fd (fd-open path '(write))))
+            (dynamic-wind (lambda () (if #f #f))
+                          (lambda () (fsync! fd path))
+                          (lambda () (fd-close fd))))
+          (barrier! 'after-current-fsync)
+          (file-ensure! next-path)
+          (barrier! 'after-create-next)
+          (let ((fd (fd-open next-path '(write))))
+            (dynamic-wind (lambda () (if #f #f))
+                          (lambda () (fsync! fd next-path))
+                          (lambda () (fd-close fd))))
+          (barrier! 'after-next-fsync)
+          (fsync-dir! (writer-directory store writer))
+          (barrier! 'after-dir-fsync)
+          (cons next next-path))))
+
+  ;; TWO TRIGGERS, AND AGE IS MEASURED FROM THE SEGMENT'S FIRST RECORD.
+  ;; Not from the file's mtime, which moves with every append, and not
+  ;; from its birth time, which is not portable. An empty segment has no
+  ;; age.
+  ;; A PROBE THAT CANNOT ANSWER IS NOT AN ANSWER OF "NO". Both of these
+  ;; used to fall back to a value that means "not due" -- size zero, no
+  ;; age -- so a transient failure reading the segment silently skipped a
+  ;; rotation that was due and appended to a segment past its limit. A
+  ;; failure here stops the append instead, which the caller can retry.
+  (define (rotation-due? path p line)
+    (let ((size (file-size path)))
+      (or (>= (+ size (bytevector-length line)) segment-size-limit)
+          (let ((first-ts (segment-first-ts path)))
+            (and first-ts (>= (- (now-ms) first-ts) segment-age-limit))))))
+
+  (define segment-size-limit 1048576)
+  (define segment-age-limit 3600000)
+
+  ;; ONLY THE FIRST LINE IS NEEDED, and reading the whole segment to get
+  ;; it made every age check cost the segment's size. A malformed first
+  ;; line means no age; an unreadable file is the caller's problem and
+  ;; raises.
+  (define (segment-first-ts path)
+    (let ((bytes (read-first-line path)))
+      (guard (e (#t #f))
+        (and (> (bytevector-length bytes) 0)
+             (let ((nl (find-newline bytes 0 (bytevector-length bytes))))
+               (and nl
+                    (let ((r (decode-line (subbytes bytes 0 (+ nl 1)))))
+                      (and (eq? (car r) 'ok) (caddr r)))))))))
+
+  ;; Enough bytes to hold a first line, not the whole file. A record is
+  ;; a line and the first one is all the age needs; reading the segment
+  ;; entire made every append pay for its size.
+  (define (read-first-line path)
+    (let ((port (open-file-input-port path))
+          (open? (vector #t)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda ()
+          (let ((b (get-bytevector-n port 4096)))
+            (if (eof-object? b) (make-bytevector 0) b)))
+        (lambda ()
+          (when (vector-ref open? 0)
+            (vector-set! open? 0 #f)
+            (guard (e (#t (if #f #f))) (close-port port)))))))
+
+  ;; STEP 8 AND 9: the write loop, the log flush, then the apply -- and
+  ;; the apply is INSIDE the lock. A record applied after the lock was
+  ;; released would be state derived from a store another process may
+  ;; already have changed.
+  ;; THE OUTCOME COMES FROM THE WRITE, NOT FROM MEASURING THE FILE. The
+  ;; first version compared file-size before and after and guarded both
+  ;; probes with a fallback -- so a probe that failed became evidence of
+  ;; no progress, and "nothing was written" is exactly the answer that
+  ;; makes the caller's retry duplicate a record that is already partly
+  ;; on disk. The byte count now comes from the loop that wrote them.
+  ;;
+  ;; THE STAGE IS DECLARED HERE. Fault targeting is <fault>@<stage>, and
+  ;; an append that names no stage cannot be hit by a commit-stage fault
+  ;; at all: every short-write, EINTR and fsync-failure injection aimed
+  ;; at the log would pass straight through and the case would go green
+  ;; for the wrong reason.
+  (define (write-line! s frame line seq target target-path)
+    (parameterize ((theourgia-stage 'commit))
+      (let* ((writer (session-writer s))
+             (wrote (vector 0))
+             (fd (fd-open target-path '(write append))))
+        (let ((outcome
+                (guard (e (#t 'write-failed))
+                  (write-all! fd line target-path
+                              (lambda (n) (vector-set! wrote 0 n)))
+                  'written)))
+          (cond
+            ((eq? outcome 'write-failed)
+             (close-quietly fd)
+             (if (= (vector-ref wrote 0) 0)
+                 (list 'reserved-not-written seq)
+                 (list 'partial-write seq (vector-ref wrote 0))))
+            (else
+             (let ((flushed (guard (e (#t #f)) (fsync! fd target-path) #t)))
+               ;; THE CLOSE MUST NOT REPLACE THE OUTCOME. A close that
+               ;; fails after a durable write would otherwise escape as
+               ;; an exception, losing the fact that the record IS on
+               ;; disk -- and the caller would resubmit it.
+               (close-quietly fd)
+               (if (not flushed)
+                   (list 'written-fsync-failed seq)
+                   (begin
+                     (trace-event! 'apply (cons writer seq) #f)
+                     (session-next-seq-set! s (+ 1 seq))
+                     (session-unconfirmed-set! s seq)
+                     (session-revision-set! s (+ 1 (session-revision s)))
+                     (list 'committed seq target))))))))))
+
+  (define (close-quietly fd) (guard (e (#t (if #f #f))) (fd-close fd)))
 
   ;; ---- snapshot selection ---------------------------------------------------
 
