@@ -684,6 +684,81 @@
                '("c" 1 () (link "a.1" explains "b.1")))
         (equal? (state-hash one) (state-hash two)))
       #t)
+
+;; THE POSITION CANDIDATE SET IS IN THE TOKEN, not just the resolved
+;; position. Two states where the block hangs in the same place, one
+;; because that is the only candidate and one because a concurrent move
+;; is standing beside it, are not the same state: the next move
+;; supersedes different things.
+(want "a block with two position candidates hashes differently from one with one"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r
+                           '("z" 1 () (put ((kind . section))))
+                           '("z" 2 () (put ((kind . section))))
+                           '("z" 3 () (put ((kind . section))))
+                           '("a" 1 (("z" . 3)) (move "z.1" "z.2" 1))))
+                  (list one two))
+        (feed! two '("b" 1 (("z" . 3)) (move "z.1" "z.3" 1)))
+        (list (equal? (state-hash one) (state-hash two))
+              (length (cadr (assq 'position (cddr (car (state-datum one))))))
+              (length (cadr (assq 'position (cddr (car (state-datum two))))))))
+      (list #f 1 2))
+
+;; THE TOMBSTONE IS IN THE TOKEN. A refusal that says "deleted" proves
+;; the writer looked at the tombstone, not that the token did -- the
+;; token is what a later writer compares against, and two states that
+;; differ only in whether a block is deleted must not share one.
+(want "deleting a block changes the token"
+      (let ((one (reduce-empty)) (two (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r
+                           '("z" 1 () (put ((kind . section))))
+                           '("z" 2 () (put ((kind . section))))))
+                  (list one two))
+        (feed! two '("a" 1 (("z" . 2)) (del "z.2")))
+        (list (equal? (state-hash one) (state-hash two))
+              (cadr (assq 'deleted (cddr (cadr (state-datum one)))))
+              (cadr (assq 'deleted (cddr (cadr (state-datum two)))))))
+      (list #f #f #t))
+
+;; AN EDGE TO A TOMBSTONED BLOCK IS STILL AN EDGE. It is dangling, not
+;; gone -- `links --dangling` lists it -- so keeping it and unlinking it
+;; are two different states. An implementation that drops edges whose
+;; target is deleted before hashing reports one token for both, and a
+;; writer that unlinked one would be told nothing had changed.
+(want "unlinking a dangling edge changes the token"
+      (let ((kept (reduce-empty)) (cut (reduce-empty)))
+        (for-each (lambda (r)
+                    (feed! r
+                           '("z" 1 () (put ((kind . section))))
+                           '("z" 2 () (put ((kind . section))))
+                           '("a" 1 (("z" . 2)) (link "z.1" explains "z.2"))
+                           '("a" 2 () (del "z.2"))))
+                  (list kept cut))
+        (feed! cut '("a" 3 () (unlink "z.1" explains "z.2")))
+        (list (equal? (state-hash kept) (state-hash cut))
+              (cadr (assq 'edges (cddr (car (state-datum kept)))))
+              (cadr (assq 'edges (cddr (car (state-datum cut)))))))
+      (list #f (list (cons 'explains "z.2")) '()))
+
+;; (d) THE TOKEN SURVIVES A SNAPSHOT. Resuming from rows and replaying
+;; from the start must give one token, or `--if-unchanged` means
+;; something different to a process that restarted.
+(want "a token taken after a resume equals the one taken after a full replay"
+      (let* ((build (lambda ()
+                      (feed! (reduce-empty)
+                             '("z" 1 () (put ((kind . section) (title . "x"))))
+                             '("z" 2 () (put ((kind . section))))
+                             '("a" 1 (("z" . 1)) (set "z.1" title "a"))
+                             '("b" 1 (("z" . 1)) (set "z.1" title "b"))
+                             '("a" 2 (("z" . 2)) (move "z.1" "z.2" 1))
+                             '("a" 3 () (link "z.1" explains "z.2")))))
+             (whole (build))
+             (resumed (rows->state (state->rows (build)))))
+        (list (equal? (state-hash whole) (state-hash resumed))
+              (equal? (block-hash whole "z.1") (block-hash resumed "z.1"))))
+      (list #t #t))
 (want "and the order records arrived in is not"
       (let ((one (reduce-empty)) (two (reduce-empty)))
         (feed! one
@@ -718,29 +793,47 @@
 
 (define (dump-for-script r)
   (let ((out (open-output-string)))
+    ;; A TYPED TERM, NOT A RENDERED ONE. The script used to receive each
+    ;; value already printed by this library's own writer and paste it
+    ;; into its answer -- so a defect in that writer showed up
+    ;; identically on both sides and the two agreed. What crosses now is
+    ;; the value itself, and the script does its own printing.
+    (define (term x)
+      (cond
+        ((string? x) (string-append "str:" (hex-of x)))
+        ((symbol? x) (string-append "sym:" (hex-of (symbol->string x))))
+        ((null? x) "nil:")
+        ((and (number? x) (exact? x) (integer? x))
+         (string-append "int:" (number->string x)))
+        ((and (number? x) (exact? x) (rational? x))
+         (string-append "rat:" (number->string (numerator x))
+                        "/" (number->string (denominator x))))
+        ((pair? x) (string-append "pair: " (term (car x)) " " (term (cdr x))))
+        (else (assertion-violation 'dump-for-script "no term for this value" x))))
     (for-each
       (lambda (bd)
         (let ((id (cadr bd)))
           ;; HEX, NOT A SEPARATOR THE DATA CAN CONTAIN. A title holding a
           ;; tab or a newline broke the transport, and a broken transport
           ;; that still prints a digest is worse than one that stops.
-          (define (esc x) (hex-of (sexpr->string-extended x)))
-          (fprintf out "B ~a ~a\n" (esc id)
+          ;; THE VARIABLE-LENGTH TERM GOES LAST on every line, so the
+          ;; fixed fields can be read off the front without counting.
+          (fprintf out "B ~a ~a\n" (term id)
                    (if (cadr (assq 'deleted (cddr bd))) 1 0))
           (for-each (lambda (f)
                       (for-each (lambda (c)
                                   (fprintf out "F ~a ~a ~a ~a ~a\n"
-                                           (esc id) (hex-of (symbol->string (car f))) (esc (car c))
-                                           (hex-of (car (cdr c))) (cdr (cdr c))))
+                                           (term id) (term (car (cdr c))) (cdr (cdr c))
+                                           (term (car f)) (term (car c))))
                                 (reverse (cadr f))))
                     (reverse (cadr (assq 'fields (cddr bd)))))
           (for-each (lambda (c)
-                      (fprintf out "P ~a ~a ~a ~a ~a\n"
-                               (esc id) (esc (car (car c))) (esc (cdr (car c)))
-                               (hex-of (car (cdr c))) (cdr (cdr c))))
+                      (fprintf out "P ~a ~a ~a ~a\n"
+                               (term id) (term (car (cdr c))) (cdr (cdr c))
+                               (term (car c))))
                     (cadr (assq 'position (cddr bd))))
           (for-each (lambda (e)
-                      (fprintf out "E ~a ~a ~a\n" (esc id) (hex-of (symbol->string (car e))) (esc (cdr e))))
+                      (fprintf out "E ~a ~a ~a\n" (term id) (term (car e)) (term (cdr e))))
                     (cadr (assq 'edges (cddr bd))))))
       ;; reversed, so the script cannot inherit this file's ordering
       (reverse (state-datum r)))

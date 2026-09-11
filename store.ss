@@ -19,7 +19,9 @@
 (library (theourgia store)
   (export open-and-reduce)
   (import (rnrs base) (rnrs control) (rnrs lists)
-          (only (theourgia log) log-begin log-end!)
+          (only (theourgia log)
+                log-open load-deliver! load-commit!
+                load-snapshot-cut load-snapshot-rows)
           (theourgia reduce))
 
   ;; WHAT THE REDUCER ANSWERS AND WHAT THE LOAD ASKS ARE NOT THE SAME
@@ -55,12 +57,29 @@
               ((and (pair? answer) (eq? (cadr answer) 'already-applied)) 'applied)
               (else (list 'rejected (cadr answer))))))))
 
+  ;; A READER TAKES THE SHARED LOCK, NOT THE EXCLUSIVE ONE. log-begin is
+  ;; the write session's door: it claims the store, runs the takeover
+  ;; barrier and the metadata barrier, and delivers the whole log from
+  ;; the empty cut. A reader needs none of that and must not hold the
+  ;; store against writers -- and delivering from the empty cut means
+  ;; the snapshot could never be used, which is the whole reason a
+  ;; snapshot exists.
+  ;; SEEDED FROM THE SNAPSHOT WHEN THERE IS ONE, and replay then starts
+  ;; after the snapshot's cut rather than at the beginning.
   (define (replay store cut)
-    (let ((r (reduce-empty)))
-      (let ((s (log-begin store (deliver-into r cut))))
-        (log-end! s)
+    (let ((ls (log-open store)))
+      (let* ((rows (and (not cut) (load-snapshot-rows ls)))
+             (r (if rows (rows->state rows) (reduce-empty)))
+             (from (if rows (load-snapshot-cut ls) '())))
+        (load-deliver! ls from (deliver-into r cut))
+        (load-commit! ls)
         r)))
 
+  ;; READING AT A CUT DOES NOT USE THE SNAPSHOT. The snapshot stands at
+  ;; whatever cut it was written at, which may be after the one being
+  ;; asked for; seeding from it would put records into the answer that
+  ;; the caller's cut excludes. Replaying from the beginning is the only
+  ;; answer that is right for every requested cut.
   ;; TWO PASSES WHEN A CUT IS ASKED FOR, and the first one is what
   ;; decides usability. Whether a cut is causally closed is a question
   ;; about the records that exist, not about the ones the cut selects --
