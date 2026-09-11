@@ -58,6 +58,7 @@
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
           log-clock registry-path machine-lock-path instance-install!
+          store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
           log-open log-open-in-session load-prefix load-writers load-integrity
@@ -2227,6 +2228,23 @@
                         (lambda () (path-device-inode (string-append store "/lock")))
                         (lambda (d i) (cons d i))))))
              (and a b (equal? a b))))))
+
+  ;; INIT PUTS THE STORE IN THE MACHINE REGISTRY AT WATER MARK ZERO.
+  ;; The registry is what stops two instances of one store from writing
+  ;; past each other, and a store that is not in it is invisible to that
+  ;; check until its first append -- so the window in which a second
+  ;; instance could be made without anything noticing is exactly the
+  ;; window between init and the first write.
+  (define (store-register! store)
+    (reserve! store (store-id-of store) (instance-nonce store)
+              (local-writer-name store) 0))
+
+  (define (local-writer-name store)
+    (let loop ((ws (store-writers store)))
+      (cond
+        ((null? ws) #f)
+        ((file-exists? (writer-file store (car ws) "owner.sexp")) (car ws))
+        (else (loop (cdr ws))))))
 
   (define (reserve! store store-id instance writer seq)
     (parameterize ((current-machine-home (machine-home)))

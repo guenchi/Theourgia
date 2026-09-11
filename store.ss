@@ -17,15 +17,20 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export open-and-reduce with-store-write)
+  (export open-and-reduce with-store-write store-init! nearest-ids)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
-          (rnrs exceptions)
+          (rnrs exceptions) (rnrs io ports) (rnrs files)
+          (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
           (only (theourgia log)
                 log-open load-deliver! load-commit!
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-append! session-applied!
-                session-epoch make-frame
+                session-epoch make-frame atomic-write! segment-file-name
+                instance-install! owner-install! writer-directory store-writers
+                store-register!
                 view-revision view-epoch view-writer view-expect-seq)
+          (only (theourgia ffi) mkdir-p! wall-clock-ms process-id)
+          (only (igropyr crypto) sha256 bytevector->hex)
           (theourgia reduce))
 
   ;; WHAT THE REDUCER ANSWERS AND WHAT THE LOAD ASKS ARE NOT THE SAME
@@ -122,7 +127,7 @@
   ;; renders the list; neither needs the library to behave differently
   ;; depending on how many intents it was given.
 
-  (define (nearest state id)
+  (define (nearest-ids state id)
     (define (shared a b)
       (let loop ((i 0))
         (if (or (>= i (string-length a)) (>= i (string-length b))
@@ -200,7 +205,7 @@
       (cond
         ((not want) #f)
         ((not id) (list 'error 'no-subject))
-        ((not (known? state id)) (list 'error 'unknown-id id (list 'nearest (nearest state id))))
+        ((not (known? state id)) (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
         ((deleted? state id) (list 'error 'deleted id))
         ((not (equal? want (block-hash state id)))
          (list 'error 'changed (list 'current (block-hash state id))))
@@ -212,7 +217,7 @@
   ;; explain away.
   (define (resolve state writer seq intent)
     (define (missing id)
-      (list 'error 'unknown-id id (list 'nearest (nearest state id))))
+      (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
     (let ((i (unwrap intent)))
       (case (car i)
         ((insert)
@@ -320,9 +325,26 @@
                                (frame (make-frame (view-revision v) (view-epoch v)
                                                   writer seq "agent:claude" deps payload))
                                (outcome (session-append! s frame)))
+                          ;; NOT EVERY FAILURE MEANS NOTHING HAPPENED.
+                          ;; `refused-before-reserve` is the only outcome
+                          ;; that says the log is untouched; the record
+                          ;; does not exist and the answers given so far
+                          ;; are the exact committed prefix.
+                          ;; `written-fsync-failed` and `partial-write`
+                          ;; leave bytes that a later replay may well
+                          ;; read back as a committed record. Answering
+                          ;; those as a plain error claims a prefix that
+                          ;; replay then contradicts -- the caller is
+                          ;; told intent k failed and finds it applied.
+                          ;; They get their own answer, and it says the
+                          ;; outcome is not known rather than known to
+                          ;; be nothing.
                           (if (not (eq? (car outcome) 'committed))
-                              (list 'error 'append (car outcome)
-                                    (if (pair? (cdr outcome)) (cadr outcome) '()))
+                              (if (eq? (car outcome) 'refused-before-reserve)
+                                  (list 'error 'refused
+                                        (if (pair? (cdr outcome)) (cadr outcome) '()))
+                                  (list 'error 'indeterminate (car outcome)
+                                        (list 'sequence seq)))
                               (begin
                                 (reduce-apply! state writer seq deps payload)
                                 (session-applied! s (session-epoch s)
@@ -332,4 +354,85 @@
                                       (list 'state (state-report
                                                      state (block-ids-of payload writer seq)))
                                       (list 'cursor (cons writer seq))
-                                      (list 'replay #f))))))))))))))
+                                      (list 'replay #f)))))))))))))
+
+  ;; ---- init ----------------------------------------------------------------
+
+  ;; A NAME NOBODY ELSE WILL PICK, derived rather than drawn: the store's
+  ;; own path, the process and the millisecond go through sha256 and the
+  ;; first eight base-36 digits come out. THE PATH IS IN THE SEED because
+  ;; without it one process initialising two stores inside the same
+  ;; millisecond gives both the same writer name; with it, colliding
+  ;; needs the same process to initialise the same path twice in the same
+  ;; millisecond, which the already-initialised check refuses first.
+  (define (derive-id salt store)
+    (let* ((seed (string-append salt "|" store
+                                "|" (number->string (process-id))
+                                "|" (number->string (wall-clock-ms))))
+           (hex (bytevector->hex (sha256 (string->utf8 seed))))
+           (digits "0123456789abcdefghijklmnopqrstuvwxyz"))
+      (let loop ((i 0) (acc 0))
+        (if (= i 12)
+            (let build ((n 8) (v acc) (out '()))
+              (if (= n 0)
+                  (list->string out)
+                  (build (- n 1) (div v 36)
+                         (cons (string-ref digits (mod v 36)) out))))
+            (loop (+ i 1)
+                  (+ (* acc 16)
+                     (let ((c (string-ref hex i)))
+                       (if (char<=? #\0 c #\9)
+                           (- (char->integer c) (char->integer #\0))
+                           (+ 10 (- (char->integer c) (char->integer #\a)))))))))))
+
+  ;; THE FOREIGN-WRITER CASE IS NOT "ALREADY INITIALISED". A directory
+  ;; holding a writer whose owner names another machine's instance is a
+  ;; store that travelled -- copied, restored, or mounted from elsewhere.
+  ;; Minting a second writer beside it would make two writers believe
+  ;; they own the same history, so the answer names adopt instead.
+  (define (foreign-writer store)
+    (let loop ((ws (store-writers store)))
+      (cond
+        ((null? ws) #f)
+        ((let* ((path (string-append (writer-directory store (car ws)) "/owner.sexp")))
+           (and (file-exists? path) (car ws)))
+         (car ws))
+        (else (loop (cdr ws))))))
+
+  (define (store-init! store)
+    (cond
+      ((file-exists? (string-append store "/meta.sexp"))
+       (list 'error 'already-initialised (list 'store store)))
+      ((foreign-writer store)
+       => (lambda (w)
+            (list 'error 'foreign-writer (list 'writer w) (list 'remedy 'adopt))))
+      (else
+       (let ((sid (derive-id "store" store))
+             (writer (derive-id "writer" store)))
+         (mkdir-p! (string-append store "/writers/" writer))
+         (mkdir-p! (string-append store "/snap"))
+         (mkdir-p! (string-append store "/blobs"))
+         ;; THE LOCK FILE IS NEVER DELETED AND NEVER REPLACED, so it is
+         ;; created directly rather than written atomically: an atomic
+         ;; write renames a new inode over the name, and every process
+         ;; already holding the old one would be locking a file nobody
+         ;; else can see.
+         (call-with-port (open-file-output-port (string-append store "/lock")
+                                                (file-options no-fail))
+           (lambda (p) (if #f #f)))
+         (atomic-write! (string-append store "/meta.sexp")
+                        (string->utf8 (string-append "((format 1) (store-id \"" sid "\"))\n"))
+                        'registry)
+         (let ((nonce (instance-install! store)))
+           (owner-install! store writer nonce))
+         (store-register! store)
+         ;; THE CURRENT SEGMENT EXISTS AND IS EMPTY. Without a segment
+         ;; file the writer has no append target, and the first write
+         ;; into a freshly initialised store is refused before it
+         ;; reserves -- correct about a store nobody finished making.
+         (call-with-port (open-file-output-port
+                           (string-append store "/writers/" writer "/" (segment-file-name 1))
+                           (file-options no-fail))
+           (lambda (p) (if #f #f)))
+         (list 'ok (list 'store sid) (list 'writer writer))))))
+)
