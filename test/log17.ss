@@ -55,7 +55,7 @@
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
 (define d (test-dir "log17work"))
-(define home (string-append d "/home"))
+(define home (string-append d "-home"))
 (define W "wwwg7q2a")
 (define M "mmmg7q2a")
 (define fixed-ts 1757300000003)
@@ -89,7 +89,7 @@
                    ns))
             ")\n"))))
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/writers/" M
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W " " d "/writers/" M
                          " " d "/snap " home))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"g7\"))\n"))
   (file-ensure! (string-append d "/lock"))

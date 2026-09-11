@@ -53,7 +53,7 @@
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
 (define d (test-dir "log16work"))
-(define home (string-append d "/home"))
+(define home (string-append d "-home"))
 (define W "wwwf6q2a")
 (define M "mmmf6q2a")
 (define fixed-ts 1757300000003)
@@ -89,7 +89,7 @@
 ;; The mirrored writer holds three records so that a fork can land in the
 ;; middle of its history rather than at either end.
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/writers/" M
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W " " d "/writers/" M
                          " " d "/snap " home))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"f6\"))\n"))
   (file-ensure! (string-append d "/lock"))
@@ -250,7 +250,7 @@
 ;; local writer is EMPTY -- its readiness is 0 >= 0, which passes -- so
 ;; the only thing that can withhold the view is the reset itself.
 (define (build-empty-local!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/writers/" M
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W " " d "/writers/" M
                          " " d "/snap " home))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"f6\"))\n"))
   (file-ensure! (string-append d "/lock"))

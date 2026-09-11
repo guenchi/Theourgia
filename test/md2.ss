@@ -110,7 +110,7 @@
          (src (string-append dir "/src"))
          (d (string-append dir "/store")))
     (system (string-append "rm -rf " dir "; mkdir -p " src " " d))
-    (putenv "THEOURGIA_HOME" (string-append dir "/home"))
+    (putenv "THEOURGIA_HOME" (string-append dir "-home"))
     (store-init! d)
     (for-each (lambda (f)
                 (let ((full (string-append src "/" (car f))))

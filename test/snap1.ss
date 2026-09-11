@@ -69,13 +69,13 @@
 (define (fresh! local-records mirror-records)
   (set! case-n (+ case-n 1))
   (let ((d (string-append scratch "/s" (number->string case-n))))
-    (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W
+    (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W
                            " " d "/writers/" V " " d "/snap"))
     (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
     (call-with-port (open-file-output-port (string-append d "/lock") (file-options no-fail))
       (lambda (p) (if #f #f)))
     (put! (string-append d "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
-    (putenv "THEOURGIA_HOME" (string-append d "/home"))
+    (putenv "THEOURGIA_HOME" (string-append d "-home"))
     (let ((n (instance-install! d))) (owner-install! d W n))
     (put! (string-append d "/writers/" W "/" (segment-file-name 1))
           (if (null? local-records) (make-bytevector 0) (apply cat local-records)))
@@ -269,7 +269,7 @@
 ;; else leaves every assertion about it true and empty.
 (define d5 (string-append scratch "/s-l8"))
 (system (string-append "rm -rf " d5 "; mkdir -p " d5))
-(putenv "THEOURGIA_HOME" (string-append d5 "/home"))
+(putenv "THEOURGIA_HOME" (string-append d5 "-home"))
 (store-init! d5)
 (with-store-write d5
   (lambda (st v) '((insert root #f ((kind . section) (title . "durable"))))) "t")
@@ -286,7 +286,7 @@
       (string->utf8
         (string-append
           "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi) (theourgia reduce))\n"
-          "(putenv \"THEOURGIA_HOME\" \"" d5 "/home\")\n"
+          "(putenv \"THEOURGIA_HOME\" \"" d5 "-home\")\n"
           "(define out '())\n"
           "(define (note! x) (set! out (cons x out)))\n"
           "(guard (e (#t (note! (list 'raised (format \"~s\" e)))))\n"

@@ -70,7 +70,7 @@
 (define (hash-of path)
   (bytevector->hex (sha256 (call-with-port (open-file-input-port path) get-bytevector-all))))
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" A " " d "/writers/" B " " d "/snap"))
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" A " " d "/writers/" B " " d "/snap"))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" A "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))

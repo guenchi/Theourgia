@@ -90,13 +90,13 @@
 ;; and the state comes out missing a whole writer -- which reads as a
 ;; reduction defect rather than as a fixture that never published.
 (define (build-at! dir)
-  (system (string-append "rm -rf " dir "; mkdir -p " dir "/writers/" W
+  (system (string-append "rm -rf " dir " " dir "-home; mkdir -p " dir "/writers/" W
                          " " dir "/writers/" V " " dir "/writers/" U " " dir "/snap"))
   (put! (string-append dir "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (call-with-port (open-file-output-port (string-append dir "/lock") (file-options no-fail))
     (lambda (p) (if #f #f)))
   (put! (string-append dir "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
-  (putenv "THEOURGIA_HOME" (string-append dir "/home"))
+  (putenv "THEOURGIA_HOME" (string-append dir "-home"))
   (let ((n (instance-install! dir))) (owner-install! dir W n))
   (for-each
     (lambda (w)
@@ -281,7 +281,7 @@
 ;; re-read everything, which is the case this row exists to catch.
 (define d2 (test-dir "reduce2twin"))
 (build-at! d2)
-(putenv "THEOURGIA_HOME" (string-append d "/home"))
+(putenv "THEOURGIA_HOME" (string-append d "-home"))
 (want "CONTROL: the twin store holds the same state and has no snapshot"
       (let ((twin (open-and-reduce d2)))
         (list (equal? (state-datum twin) (state-datum disk))
@@ -316,7 +316,7 @@
                                        (list 'set (id W 1) 'summary "never either")))))))
   (put! (string-append dp "/writers/" U "/" (segment-file-name 1)) seg)
   (write-manifest! dp U (list (cons 1 (bytevector->hex (sha256 seg))))))
-(putenv "THEOURGIA_HOME" (string-append d "/home"))
+(putenv "THEOURGIA_HOME" (string-append d "-home"))
 (define stuck (open-and-reduce dp))
 ;; AND IT CASCADES: W.3 names U.1 as its premise, so W.3 and W.4 are
 ;; stuck behind U's pair. Four records pending, not two -- a frontier

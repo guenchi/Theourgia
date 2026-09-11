@@ -92,7 +92,7 @@
   (let ((b (slurp path))) (if (bytevector? b) (bytevector-length b) b)))
 (define (wpath n) (string-append d "/writers/" W "/" (segment-file-name n)))
 (define (build! . segs)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/snap"))
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W " " d "/snap"))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
@@ -100,7 +100,7 @@
   ;; with every other store on the machine, so its water marks persist
   ;; across rows and across runs -- the second row would be refused as a
   ;; rollback of the first.
-  (putenv "THEOURGIA_HOME" (string-append d "/home"))
+  (putenv "THEOURGIA_HOME" (string-append d "-home"))
   ;; ONLY THE LOCAL WRITER GETS AN owner.sexp -- that file is what makes
   ;; a writer local, so stamping every directory turned the mirrored
   ;; writer into a second local one.

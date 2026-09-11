@@ -61,7 +61,7 @@
             (if ok "" (format "   want ~s" expect)))))
 (define (raises? t) (guard (e (#t #t)) (t) #f))
 (define d (test-dir "log1work"))
-(system (string-append "rm -rf " d "; mkdir -p " d "/writers/k3m9x2qa " d "/writers/c9xq01mz"))
+(system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/k3m9x2qa " d "/writers/c9xq01mz"))
 
 (printf "== segment names ==\n")
 (want "1 -> 000001.sexp" (segment-file-name 1) "000001.sexp")
