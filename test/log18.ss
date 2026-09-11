@@ -452,6 +452,70 @@
         (list (why (pub d 2 whole)) (listed? d 2)))
       (list '(published 2) #t))
 
+(printf "\n== P9: a manifest this store cannot read stops the publish ==\n")
+;; EVERY DECISION BELOW IT IS MADE FROM THE MANIFEST -- which segments
+;; exist, what range each holds, whether this candidate is already
+;; published -- so carrying on would be deciding from an absence mistaken
+;; for an emptiness. It refuses in the ANSWER rather than by raising:
+;; the caller is a sync client with a candidate in hand and needs to be
+;; told to come back, not handed an exception.
+;;
+;; Nothing is written at all, the candidate included: keeping evidence
+;; against a writer whose manifest is unreadable adds a file to a
+;; directory nobody can currently reason about.
+(define (manifest-path-of d) (string-append d "/writers/" M "/published.sexp"))
+(define (published-once!)
+  (let ((d (fresh!)))
+    (pub d 1 (recs 1 5))
+    d))
+(define (publish-with-manifest broken)
+  (let* ((d (published-once!))
+         (path (manifest-path-of d)))
+    (broken path)
+    (let* ((answer (why (pub d 2 (recs 6 9))))
+           (restored (begin (system (string-append "chmod 644 " path)) #t))
+           (bytes (slurp path)))
+      (list answer
+            (present? d 2)
+            (file-is-directory? (string-append d "/writers/" M "/incoming"))
+            (and bytes (> (bytevector-length bytes) 0))))))
+
+;; The path in the answer is a generated scratch path, so the rows
+;; assert what it must BE -- the writer's manifest -- rather than its
+;; text, and assert the reason whole.
+(define (names-manifest? answer)
+  (let ((p (cadr (assq 'path (cddr answer)))))
+    (and (string? p)
+         (let ((suffix "/published.sexp"))
+           (and (>= (string-length p) (string-length suffix))
+                (string=? (substring p (- (string-length p) (string-length suffix))
+                                     (string-length p))
+                          suffix))))))
+(define (reason-of answer) (cadr (assq 'reason (cddr answer))))
+
+(want "a truncated manifest refuses the publish, and nothing is written"
+      (let* ((d (published-once!))
+             (path (manifest-path-of d))
+             (before (slurp path)))
+        (put! path (string->utf8 "((1 \"aa\" 1"))
+        (let ((answer (pub d 2 (recs 6 9))))
+          (list (car answer) (cadr answer) (names-manifest? answer) (reason-of answer)
+                (present? d 2)
+                (file-is-directory? (string-append d "/writers/" M "/incoming")))))
+      (list 'refused 'manifest-unreadable #t "unparseable" #f #f))
+(want "and an unreadable one answers the same way, with the reason the system gave"
+      (let* ((d (published-once!))
+             (path (manifest-path-of d)))
+        (system (string-append "chmod 000 " path))
+        (let ((answer (pub d 2 (recs 6 9))))
+          (system (string-append "chmod 644 " path))
+          (list (car answer) (cadr answer) (names-manifest? answer) (reason-of answer)
+                (present? d 2))))
+      (list 'refused 'manifest-unreadable #t "Permission denied" #f))
+(want "TWIN: with the manifest readable the same candidate publishes"
+      (let ((d (published-once!))) (why (pub d 2 (recs 6 9))))
+      '(published 2))
+
 (printf "\n~a failures\n" bad)
 ;; A run that did not reach here is not a pass. The runner requires this
 ;; line AND a zero failure count: they are two propositions.

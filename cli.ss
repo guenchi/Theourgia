@@ -131,13 +131,24 @@
     (define (walk parent depth)
       (for-each
         (lambda (row)
-          (let ((id (caddr row)))
+          (let ((id (caddr row))
+                ;; THE FOURTH ELEMENT NAMES A STRUCTURAL CONFLICT, and a
+                ;; row that has one has to say so. The reduction marks
+                ;; these rows and this printer used to drop the mark, so
+                ;; a block whose position never settled rendered exactly
+                ;; like an ordinary one at the top level -- the library
+                ;; knew and the command line did not, which is the same
+                ;; failure as saying half of something.
+                (mark (and (= 4 (length row)) (cadddr row))))
             (when (or (not depth-limit) (< depth depth-limit))
             (put-string out (make-string (* 2 depth) #\space))
             (put-string out "- ")
             (put-string out id)
             (put-string out "  ")
             (put-string out (title-of state id))
+            (when mark
+              (put-string out "  ")
+              (put-string out (symbol->string mark)))
             (put-string out "\n")
             (walk id (+ depth 1)))))
         (children-of parent)))
@@ -383,6 +394,95 @@
                            (ok! (cons 'ok (list a)))
                            (fail! (cons 'error
                                         (if (eq? (car a) 'error) (cdr a) (list a))))))))))))
+        ;; WHAT THIS STORE IS HOLDING THAT IT CANNOT SHOW: blocks in a
+        ;; structural conflict, blocks whose parent is gone, and records
+        ;; still waiting for premises. A section with nothing in it
+        ;; prints nothing, so an empty answer means an empty store rather
+        ;; than a verb that declined to look.
+        ((string=? verb "conflicts")
+         (unless (null? args) (usage '(conflicts)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (for-each say (store-conflicts store))
+                    (exit 0))))
+        ;; WHAT CHANGED BETWEEN TWO CUTS. Each side is a tag name or a
+        ;; cut written out; the literal is parsed by shape and never by
+        ;; `read`, which would accept the whole numeric syntax from an
+        ;; argument. A cut this store cannot reach is refused by name --
+        ;; answering with the part it could reach would be a diff against
+        ;; a moment that never existed.
+        ((string=? verb "diff")
+         (unless (= 2 (length args)) (usage '(diff <cut> <cut>)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((a (store-diff store (car args) (cadr args))))
+                      (if (eq? (car a) 'ok)
+                          (begin (for-each say (cadr a)) (exit 0))
+                          (fail! a))))))
+        ;; A NAME FOR A CUT. With an argument it writes one, binding the
+        ;; name to the cut this store has APPLIED -- not the frontier it
+        ;; has discovered, which would name records no reader of this
+        ;; store could produce. Without one it lists what is bound.
+        ;;
+        ;; TWO TAGS OF ONE NAME WRITTEN CONCURRENTLY BOTH STAND. "Later
+        ;; wins" is a statement about cause, not about clocks, so a name
+        ;; whose candidates nobody superseded is reported as unsettled
+        ;; with every candidate rather than with a winner picked here.
+        ((string=? verb "tag")
+         (unless (or (null? args) (= 1 (length args))) (usage '(tag [<name>])))
+         (require-store! store)
+         (guarded
+           (lambda ()
+             (if (null? args)
+                 (begin
+                   (for-each
+                     (lambda (t)
+                       (if (eq? (car t) 'settled)
+                           (say (list 'tag (list 'name (cadr t))
+                                      (list 'cut (caddr t))))
+                           (for-each
+                             (lambda (c)
+                               (say (list 'tag (list 'name (cadr t))
+                                          (list 'cut (car c))
+                                          (list 'event (cadr c) (caddr c))
+                                          (list 'unsettled #t))))
+                             (caddr t))))
+                     (store-tags store))
+                   (exit 0))
+                 (let ((answers (with-store-write store
+                                                  (lambda (state view)
+                                                    (list (list 'tag (car args))))
+                                                  actor)))
+                   (let ((a (car answers)))
+                     (if (eq? (car a) 'ok) (ok! a) (fail! a))))))))
+        ;; WHAT THIS STORE HAS APPLIED, oldest first. This verb replays
+        ;; the whole log rather than reading from the snapshot: the
+        ;; timestamp and the actor exist only as a record is delivered,
+        ;; and a snapshot-seeded read never delivers what the snapshot
+        ;; already covers. It is therefore the slow one, and says so
+        ;; here rather than surprising a caller who timed it.
+        ;;
+        ;; GIVEN AN ID, only the records that touched that block: what
+        ;; the intent names, not what its premises name and not what its
+        ;; text mentions.
+        ((string=? verb "log")
+         (unless (or (null? args) (= 1 (length args))) (usage '(log [<id>])))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((a (store-log store (if (null? args) #f (car args)))))
+                      (if (eq? (car a) 'ok)
+                          (begin
+                            (for-each
+                              (lambda (e)
+                                (say (list 'entry
+                                           (list 'event (car e) (cadr e))
+                                           (list 'ts (caddr e))
+                                           (list 'actor (cadddr e))
+                                           (list 'verb (let ((p (car (cddddr e))))
+                                                         (if (pair? p) (car p) 'unknown))))))
+                              (cadr a))
+                            (exit 0))
+                          (fail! a))))))
         ;; WHAT REFERS TO THIS BLOCK, from link records and from the
         ;; text, each line saying which. A block with nothing pointing at
         ;; it prints nothing and exits zero: that is an answer, not a

@@ -67,7 +67,7 @@
           log-open log-open-in-session load-prefix load-writers load-integrity
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
-          session-frontiers session-view session-applied! session-load
+          session-frontiers session-view session-view-refusal session-applied! session-load
           make-frame frame? frame-view-id frame-epoch frame-writer
           frame-expect-seq frame-actor frame-deps frame-payload
           view? view-revision view-epoch view-writer view-expect-seq
@@ -376,15 +376,17 @@
   (define (read-manifest store writer)
     (let ((path (manifest-path store writer)))
       (and (file-exists? path)
-           (let* ((text (guard (e (#t 'unreadable))
+           (let* ((text (guard (e (#t (list 'unreadable (unreadable-reason e))))
                           (utf8->string (read-whole path))))
-                  (datum (if (eq? text 'unreadable)
+                  (why (if (pair? text) (cadr text) "unparseable"))
+                  (datum (if (pair? text)
                              'bad
                              (guard (e (#t 'bad)) (string->sexpr-extended text)))))
              (if (valid-manifest? datum)
                  datum
                  (raise (make-log-error 'manifest writer #f #f
-                                        (list (cons 'path path)))))))))
+                                        (list (cons 'path path)
+                                              (cons 'reason why)))))))))
 
   (define (whole-number? v) (and (integer? v) (exact? v)))
 
@@ -1662,12 +1664,31 @@
     ;; bound includes this session's own commits, because confirming a
     ;; record this session just wrote is legitimate even though the
     ;; discovery it was opened with ends earlier.
+    ;; A BASELINE THIS STORE CAN NO LONGER READ IS NOT A CALLER'S
+    ;; MISTAKE. A session inherits the cut a previous one left -- from a
+    ;; snapshot, or from a consumer that remembered it -- and between the
+    ;; two the records it names may have become unreadable. Raising here
+    ;; would hand that back as a broken tool and abort a session that has
+    ;; done nothing wrong; the store instead goes to reset-pending
+    ;; carrying WHY, and the next append refuses with it. Nothing claims
+    ;; to have replayed what it could not read.
+    ;;
+    ;; A cut naming a sequence that never existed, with nothing wrong
+    ;; with that writer, is still the caller's mistake and still raises.
     (for-each (lambda (e)
                 (let ((limit (available-through s (car e))))
                   (when (and limit (> (cdr e) limit))
-                    (assertion-violation 'session-applied!
-                      "confirmed past the end of that writer's history"
-                      (list (car e) (cdr e) limit)))))
+                    (let ((why (writer-integrity s (car e))))
+                      (if why
+                          (session-reset-pending-set!
+                            s (list 'baseline-unreadable
+                                    (list 'writer (car e))
+                                    (list 'baseline (cdr e))
+                                    (list 'readable limit)
+                                    (list 'reason why)))
+                          (assertion-violation 'session-applied!
+                            "confirmed past the end of that writer's history"
+                            (list (car e) (cdr e) limit)))))))
               cut)
     (for-each (lambda (e)
                 (let ((have (assoc (car e) (session-applied s))))
@@ -1690,6 +1711,19 @@
   ;; How far that writer's history reaches as far as this session knows:
   ;; what discovery found, extended by anything this session has since
   ;; committed for its own writer.
+;; WHY THAT WRITER STOPS WHERE IT DOES. A baseline naming a sequence
+  ;; beyond what this store can read is two different situations wearing
+  ;; one shape: a caller reporting a sequence that never existed, which
+  ;; is a bug in the caller, and history this store held yesterday and
+  ;; cannot read today, which is a fact about the store. They are told
+  ;; apart by asking whether that writer has integrity notes -- the
+  ;; store's own record of having found something unreadable.
+  (define (writer-integrity s writer)
+    (let ((entry (assoc writer (load-session-prefixes (session-load s)))))
+      (and entry
+           (let ((notes (discovery-integrity (cdr entry))))
+             (and (pair? notes) (log-error-kind (car notes)))))))
+
   (define (available-through s writer)
     (let* ((entry (assoc writer (load-session-prefixes (session-load s))))
            (found (and entry (discovery-end-seq (cdr entry))))
@@ -2892,6 +2926,18 @@
         (mkdir-p! dir)
         (directory-entry-durable! dir 'publish))))
 
+  ;; #f when the manifest reads, or the detail of why it does not.
+  (define (manifest-unreadable store writer)
+    (guard (e ((log-error? e)
+               (let ((detail (log-error-detail e)))
+                 (list (list 'path (cdr (assq 'path detail)))
+                       (list 'reason (let ((r (assq 'reason detail)))
+                                       (if r (cdr r) "unreadable"))))))
+              (#t (list (list 'path (manifest-path store writer))
+                        (list 'reason "unreadable"))))
+      (read-manifest store writer)
+      #f))
+
   (define (publish-locked! store writer segment bytes sha)
     (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
@@ -2901,6 +2947,21 @@
            (cand-rs (segment-records bytes))
            (history (writer-history store writer)))
       (cond
+        ;; A MANIFEST THIS STORE CANNOT READ STOPS THE PUBLISH BEFORE IT
+        ;; BEGINS. Every decision below is made from the manifest -- which
+        ;; segments exist, what range each holds, whether this candidate
+        ;; is already published -- so a publish that could not read it
+        ;; would be deciding from an absence it mistook for an emptiness.
+        ;; It refuses in the answer rather than by raising, because the
+        ;; caller is a sync client with a candidate in hand and needs to
+        ;; be told to come back, not handed an exception.
+        ;;
+        ;; Nothing is written: the candidate does not go to incoming/
+        ;; either, because keeping evidence against a writer whose
+        ;; manifest is unreadable adds a file to a directory nobody can
+        ;; currently reason about.
+        ((manifest-unreadable store writer)
+         => (lambda (why) (cons 'refused (cons 'manifest-unreadable why))))
         ;; STEP 0, ABOVE EVERY OTHER RULE. An active local writer's
         ;; current segment is never replaced by sync.
         ((active-current-segment? store writer segment)
@@ -3554,7 +3615,15 @@
         ;; A STRUCTURED READINESS REFUSAL, naming the state. Not `unseen`
         ;; and not `unknown`: those are answers about the request, and
         ;; this is an answer about the session.
-        (list 'refused-before-reserve 'reset-pending)
+        ;;
+        ;; WHERE THE RESET CARRIES A REASON, the reason is the answer: a
+        ;; session held back because its inherited baseline names records
+        ;; this store can no longer read is in a different situation from
+        ;; one waiting for a reducer to acknowledge a reset, and an
+        ;; operator told only `reset-pending` cannot tell which.
+        (if (pair? (session-reset-pending s))
+            (cons 'refused-before-reserve (session-reset-pending s))
+            (list 'refused-before-reserve 'reset-pending))
         (parameterize ((current-store (session-store s)))
           (append-under-store s frame))))
 
@@ -3572,14 +3641,27 @@
   ;; missing view asks this -- a second copy of the cascade would answer
   ;; "no local writer" for a session that has one and is merely waiting
   ;; to be confirmed, which is a different thing to do about it.
+  ;; THE REASON TRAVELS AS FAR AS THE REFUSAL DOES. A session held back
+  ;; because its inherited baseline names records this store can no
+  ;; longer read carries why, and flattening that to the bare word
+  ;; `reset-pending` here would lose it at the last step -- the caller
+  ;; asks for a view, is told no, and cannot tell this from a reducer
+  ;; that has yet to acknowledge a reset.
   (define (no-view-reason s)
     (cond
-      ((session-reset-pending s) 'reset-pending)
+      ((session-reset-pending s)
+       (let ((why (session-reset-pending s)))
+         (if (pair? why) why 'reset-pending)))
       ((session-poisoned s) 'writer-stopped)
       ((session-retired? s) 'retired)
       ((session-unconfirmed s) 'not-ready)
       ((not (predecessor-applied? s)) 'predecessor-not-applied)
       (else 'no-local-writer)))
+
+  ;; The same answer a refused append would give, asked before there is
+  ;; a frame to refuse.
+  (define (session-view-refusal s)
+    (and (not (session-view s)) (no-view-reason s)))
 
   (define (binding-refusal s frame)
     (let ((view (session-view s)))

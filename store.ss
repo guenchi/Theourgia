@@ -18,7 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
-          store-check store-adopt! store-search store-refs)
+          store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
@@ -26,7 +26,7 @@
           (only (theourgia log)
                 log-open load-deliver! load-commit!
                 load-snapshot-cut load-snapshot-rows
-                log-begin log-end! session-view session-append! session-applied!
+                log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
                 session-snapshot! log-open load-writers load-prefix load-commit!
                 discovery-end-seq discovery-integrity discovery-torn
@@ -338,6 +338,334 @@
                        hits)))))
 
   (define (known? state id) (and (state-read state id) #t))
+  ;; ---- conflicts ------------------------------------------------------------
+
+  ;; THE THREE WAYS A STORE CAN BE HOLDING SOMETHING IT CANNOT SHOW.
+  ;;
+  ;; A STRUCTURAL CONFLICT is read from the same place the outline reads
+  ;; it, so the two can never disagree about which blocks are in one: a
+  ;; second opinion here would be a second answer to "what does this
+  ;; store look like". `cycle` is a parent chain that closes on itself;
+  ;; `unplaced` is a block whose position never settled, which is what
+  ;; two concurrent moves leave behind.
+  ;;
+  ;; AN ORPHAN has a parent it cannot hang under -- deleted, or never
+  ;; received. Its records are applied and readable; what it has lost is
+  ;; a place in the tree.
+  ;;
+  ;; A PENDING RECORD is waiting for premises. EVERY missing premise is
+  ;; listed, not the first one: an implementation that stopped at the
+  ;; first would send an operator to fetch one record and leave them
+  ;; exactly where they started.
+  (define (missing-deps state deps)
+    (let loop ((ds deps) (out (quote ())))
+      (cond
+        ((null? ds) (reverse out))
+        (else
+         (let* ((writer (car (car ds)))
+                (need (cdr (car ds)))
+                (have (assoc writer (reduce-applied-cut state))))
+           (loop (cdr ds)
+                 (if (and have (>= (cdr have) need))
+                     out
+                     (cons (car ds) out))))))))
+
+  (define (store-conflicts store)
+    (let* ((state (open-and-reduce store))
+           (structure (state-structure state))
+           (cyclic (cdr (assq (quote conflicts) structure)))
+           (unplaced (cdr (assq (quote unplaced) structure)))
+           (orphans (cdr (assq (quote orphans) structure)))
+           (pending (reduce-pending state)))
+      (append
+        (map (lambda (id) (list (quote conflict) id (quote cycle))) cyclic)
+        (map (lambda (id) (list (quote conflict) id (quote unplaced))) unplaced)
+        (map (lambda (id) (list (quote orphan) id)) orphans)
+        (apply append
+               (map (lambda (rec)
+                      (let ((writer (car rec)) (seq (cadr rec)) (deps (caddr rec)))
+                        (map (lambda (d)
+                               (list (quote pending)
+                                     (list (quote event) writer seq)
+                                     (list (quote missing) (car d) (cdr d))))
+                             (missing-deps state deps))))
+                    pending)))))
+
+
+  ;; ---- diff -----------------------------------------------------------------
+
+  ;; TWO STATES, EACH BUILT BY READING TO ITS OWN CUT. Not the current
+  ;; state with something subtracted: a cut names what had been applied
+  ;; at a moment, and the only way to know what the store said then is to
+  ;; read it then.
+  ;;
+  ;; THE PROJECTION IS STATED, because "changed" is only meaningful
+  ;; against a list of what counts. A block is title, src and level; where
+  ;; it sits, which is parent and ord; and what it points at, which is the
+  ;; edge set. Comparing only the scalars would call two states identical
+  ;; when an edge had been added, which is a change anybody looking at the
+  ;; outline would see.
+  (define (field-datum block name)
+    (let ((e (assq name (cdr (assq (quote fields) block)))))
+      (and e (cdr e))))
+
+  (define (position-of block)
+    (let ((p (cdr (assq (quote position) block))))
+      (if (and (pair? p) (eq? (car p) (quote conflict)))
+          (cons (quote conflict) (quote conflict))
+          p)))
+
+  (define (projection state id)
+    (let ((b (state-read state id)))
+      (and b
+           (not (cdr (assq (quote deleted) b)))
+           (list (cons (quote title) (field-datum b (quote title)))
+                 (cons (quote src) (field-datum b (quote src)))
+                 (cons (quote level) (field-datum b (quote level)))
+                 (cons (quote parent) (car (position-of b)))
+                 (cons (quote ord) (cdr (position-of b)))
+                 (cons (quote links) (cdr (assq (quote edges) b)))))))
+
+  (define projected-fields (quote (title src level parent ord links)))
+
+  (define (ids-of state) (map cadr (state-datum state)))
+
+  (define (union-ids a b)
+    (list-sort string<?
+               (let loop ((xs (append (ids-of a) (ids-of b))) (out (quote ())))
+                 (cond ((null? xs) out)
+                       ((member (car xs) out) (loop (cdr xs) out))
+                       (else (loop (cdr xs) (cons (car xs) out)))))))
+
+  (define (diff-states from to)
+    (let loop ((ids (union-ids from to)) (out (quote ())))
+      (if (null? ids)
+          (reverse out)
+          (let* ((id (car ids))
+                 (a (projection from id))
+                 (b (projection to id)))
+            (loop (cdr ids)
+                  (cond
+                    ((and (not a) b) (cons (list (quote added) id) out))
+                    ((and a (not b)) (cons (list (quote removed) id) out))
+                    ((not a) out)
+                    (else
+                     (let inner ((fs projected-fields) (acc out))
+                       (if (null? fs)
+                           acc
+                           (inner (cdr fs)
+                                  (if (equal? (cdr (assq (car fs) a))
+                                              (cdr (assq (car fs) b)))
+                                      acc
+                                      (cons (list (quote changed) id (car fs)) acc)))))))))))) 
+
+  ;; A CUT ARGUMENT IS EITHER A LITERAL OR A NAME. The literal is parsed
+  ;; by shape; a name is looked up among the tags, and an unsettled name
+  ;; is refused rather than resolved to one of its candidates -- picking
+  ;; one here would answer a question about history with a guess.
+  (define (resolve-cut store which text)
+    (let ((literal (parse-cut text)))
+      (if literal
+          (list (quote ok) literal)
+          (let ((found (filter (lambda (t) (equal? (cadr t) text)) (store-tags store))))
+            (cond
+              ((null? found)
+               (list (quote error) (quote unknown-tag) text (list (quote cut) which)))
+              ((eq? (car (car found)) (quote unsettled))
+               (list (quote error) (quote tag-unsettled) text (list (quote cut) which)))
+              (else (list (quote ok) (caddr (car found)))))))))
+
+  (define (store-diff store from-text to-text)
+    (let ((from (resolve-cut store (quote from) from-text))
+          (to (resolve-cut store (quote to) to-text)))
+      (cond
+        ((eq? (car from) (quote error)) from)
+        ((eq? (car to) (quote error)) to)
+        (else
+         (let* ((state (open-and-reduce store))
+                (bad (let loop ((cs (list (cons (quote from) (cadr from))
+                                          (cons (quote to) (cadr to)))))
+                       (cond
+                         ((null? cs) #f)
+                         ((let ((u (cut-usable? state (cdr (car cs)))))
+                            (and (not (eq? u (quote usable)))
+                                 (list (quote error) (quote cut-unavailable)
+                                       (list (quote cut) (car (car cs)))
+                                       (list (quote reason)
+                                             (if (pair? u) (cadr u) u)))))
+                          => (lambda (answer) answer))
+                         (else (loop (cdr cs))))))) 
+           (if bad
+               bad
+               (cons (quote ok)
+                     (list (diff-states (replay store (cadr from))
+                                        (replay store (cadr to)))))))))))
+
+
+  ;; ---- cuts on the command line ---------------------------------------------
+
+  ;; A CUT LITERAL IS PARSED BY HAND, NEVER BY `read`. The reader
+  ;; implements the whole of Scheme's numeric syntax, and `#e` with an
+  ;; exponent asks it to build an exact integer of any size at all: eleven
+  ;; characters of argument can ask for hours of allocation, and nothing
+  ;; placed after the call ever runs because the call does not return.
+  ;; Measured on this implementation: `#e1e100000` 3 ms, `#e1e1000000`
+  ;; 74 ms, `#e1e4000000` 541 ms, with the text the same length
+  ;; throughout. The same hazard was closed in the numeric arguments; a
+  ;; cut literal is the other door into it.
+  ;;
+  ;; So the shape is checked as it is read: parentheses, a quoted writer
+  ;; name of the characters a writer name may hold, a dot, ASCII digits of
+  ;; bounded length. Nothing else is accepted and nothing is converted
+  ;; before it has been.
+  (define cut-digit-limit 18)
+
+  (define (writer-char? c)
+    (or (char<=? #\a c #\z) (char<=? #\A c #\Z) (char<=? #\0 c #\9)
+        (char=? c #\-) (char=? c #\_)))
+
+  (define (skip-blank text i)
+    (let loop ((i i))
+      (if (and (< i (string-length text)) (whitespace? (string-ref text i)))
+          (loop (+ i 1))
+          i)))
+
+  (define (expect text i ch)
+    (let ((i (skip-blank text i)))
+      (and (< i (string-length text)) (char=? (string-ref text i) ch) (+ i 1))))
+
+  (define (parse-writer text i)
+    (let ((i (skip-blank text i)))
+      (and (< i (string-length text))
+           (char=? (string-ref text i) #\")
+           (let loop ((j (+ i 1)) (out (quote ())))
+             (cond
+               ((>= j (string-length text)) #f)
+               ((char=? (string-ref text j) #\")
+                (and (pair? out)
+                     (cons (list->string (reverse out)) (+ j 1))))
+               ((writer-char? (string-ref text j))
+                (loop (+ j 1) (cons (string-ref text j) out)))
+               (else #f))))))
+
+  (define (parse-seq text i)
+    (let ((i (skip-blank text i)))
+      (let loop ((j i) (n 0))
+        (cond
+          ((and (< j (string-length text)) (char<=? #\0 (string-ref text j) #\9))
+           (if (> n cut-digit-limit) #f (loop (+ j 1) (+ n 1))))
+          ((= n 0) #f)
+          (else (cons (string->number (substring text i j) 10) j))))))
+
+  ;; ONE ENTRY AT A TIME, so the shape is obvious rather than counted:
+  ;; ("writer" . 12) with every piece checked as it is taken.
+  (define (parse-entry text i)
+    (let* ((open (expect text i #\())
+           (w (and open (parse-writer text open)))
+           (dot (and w (expect text (cdr w) #\.)))
+           (sq (and dot (parse-seq text dot)))
+           (shut (and sq (expect text (cdr sq) #\)))))
+      (and shut (cons (cons (car w) (car sq)) shut))))
+
+  ;; (("writer" . 12) ("other" . 3))
+  (define (parse-cut text)
+    (let ((i (expect text 0 #\()))
+      (and i
+           (let loop ((i i) (out (quote ())))
+             (let ((close (expect text i #\))))
+               (if close
+                   (and (= (skip-blank text close) (string-length text))
+                        (reverse out))
+                   (let ((e (parse-entry text i)))
+                     (and e (loop (cdr e) (cons (car e) out))))))))))
+
+  (define (store-tags store)
+    (let ((state (open-and-reduce store)))
+      (map (lambda (t)
+             (let ((name (car t)) (candidates (cadr t)))
+               (if (= 1 (length candidates))
+                   (list (quote settled) name (car (car candidates)))
+                   (list (quote unsettled) name candidates))))
+           (state-tags state))))
+
+
+  ;; ---- log ------------------------------------------------------------------
+
+  ;; WHAT THIS STORE HAS APPLIED, IN THE ORDER IT WAS DELIVERED.
+  ;;
+  ;; THIS ONE REPLAYS EVERYTHING, and it is the only read here that does.
+  ;; Two facts force it. The delivery callback is the only place `ts` and
+  ;; `actor` exist -- the reducer never sees them, because nothing it
+  ;; decides depends on them -- and a read seeded from the snapshot never
+  ;; replays the records the snapshot covers at all. Seeding would give a
+  ;; log that silently began in the middle, which is the failure this
+  ;; store treats as the worst kind: an answer that looks complete. The
+  ;; cost is real and belongs in the verb's documentation, not in a
+  ;; surprise.
+  ;;
+  ;; ONLY WHAT WAS APPLIED IS LISTED. A record can arrive, wait for its
+  ;; premises and be applied later, so the question is not what the
+  ;; delivery said at the time but what the finished reduction holds --
+  ;; while the ORDER is the order of delivery, which is what `outline`
+  ;; and every other reader also walked.
+  (define (collect-into r collected)
+    (let ((inner (deliver-into r #f)))
+      (lambda (writer seg off seq ts actor deps payload)
+        (let ((answer (inner writer seg off seq ts actor deps payload)))
+          (vector-set! collected 0
+                       (cons (list writer seq ts actor payload)
+                             (vector-ref collected 0)))
+          answer))))
+
+  (define (entry-writer e) (car e))
+  (define (entry-seq e) (cadr e))
+  (define (entry-ts e) (caddr e))
+  (define (entry-actor e) (cadddr e))
+  (define (entry-payload e) (car (cddddr e)))
+
+  (define (entry-verb e)
+    (let ((payload (entry-payload e)))
+      (if (pair? payload) (car payload) (quote unknown))))
+
+  ;; WHICH BLOCK A RECORD TOUCHED, by what the intent says rather than by
+  ;; where the id happens to appear. A record whose deps name a block has
+  ;; not touched it, and neither has one whose text merely mentions it:
+  ;; both would make `log <id>` list records that never changed it.
+  (define (touches? e id)
+    (let* ((payload (entry-payload e))
+           (verb (entry-verb e))
+           (args (if (pair? payload) (cdr payload) (quote ()))))
+      (case verb
+        ((put) (equal? id (block-id (entry-writer e) (entry-seq e))))
+        ((set move) (and (pair? args) (equal? id (car args))))
+        ((del) (and (pair? args) (equal? id (car args))))
+        ((link unlink)
+         (and (pair? args) (pair? (cdr args)) (pair? (cddr args))
+              (or (equal? id (car args)) (equal? id (caddr args)))))
+        (else #f))))
+
+  (define (store-log store id)
+    (let* ((r (reduce-empty))
+           (collected (vector (quote ())))
+           (ls (log-open store)))
+      (load-deliver! ls (quote ()) (collect-into r collected))
+      (load-commit! ls)
+      (let ((applied (reduce-trace r)))
+        (if (and id (not (known? r id)))
+            (list (quote error) (quote unknown-id) id
+                  (list (quote nearest) (nearest-ids r id)))
+            (cons (quote ok)
+                  (list
+                    (let loop ((es (reverse (vector-ref collected 0))) (out (quote ())))
+                      (cond
+                        ((null? es) (reverse out))
+                        ((and (member (cons (entry-writer (car es)) (entry-seq (car es)))
+                                      applied)
+                              (or (not id) (touches? (car es) id)))
+                         (loop (cdr es) (cons (car es) out)))
+                        (else (loop (cdr es) out))))))))))
+
+
 
   ;; ---- refs -----------------------------------------------------------------
 
@@ -396,6 +724,17 @@
   ;; is named or not, so naming it would be the one entry that says
   ;; nothing. With only a local writer this is the empty list; with a
   ;; mirrored writer it carries that writer's last applied sequence.
+  ;; A TAG'S PREMISES ARE WHAT IT BINDS. Every other record names the
+  ;; applied cut without its own writer, because a writer's own previous
+  ;; event is a premise whether it is named or not. A tag is the
+  ;; exception on purpose: the cut is not context for this record, it is
+  ;; the record's content, and a reader trusting the name would otherwise
+  ;; be trusting a list the log never required to be present.
+  (define (deps-for-payload state writer payload)
+    (if (and (pair? payload) (eq? (car payload) 'tag))
+        (caddr payload)
+        (deps-for state writer)))
+
   (define (deps-for state writer)
     (list-sort (lambda (a b) (string<? (car a) (car b)))
                (remp (lambda (e) (string=? (car e) writer))
@@ -472,6 +811,13 @@
                     (if (eq? (car ord) 'error) ord (cons 'error (cdr ord)))
                     (list 'put (append fields (list (cons 'parent parent)
                                                     (cons 'ord ord))))))))))
+        ;; A TAG BINDS THE CUT THIS STORE HAS APPLIED, which is not the
+        ;; frontier it has discovered: a name that pointed at records
+        ;; the reducer had not applied would name a state no reader of
+        ;; this store could produce. The cut is taken here, before the
+        ;; record exists, so a tag is never inside the cut it binds.
+        ((tag)
+         (list 'tag (cadr i) (reduce-applied-cut state)))
         ((set)
          (let ((id (cadr i)))
            (cond
@@ -623,7 +969,11 @@
   (define (one-intent! s state actor intent)
     (let ((v (session-view s)))
       (if (not v)
-          (list 'error 'no-view)
+          ;; WHY THERE IS NO VIEW IS PART OF THE ANSWER. "No view" alone
+          ;; sends a caller to look for a bug in its own sequencing when
+          ;; the store is telling it something about its history.
+          (let ((why (session-view-refusal s)))
+            (if why (list 'error 'no-view why) (list 'error 'no-view)))
           (let ((writer (view-writer v))
                 (seq (view-expect-seq v)))
             (let ((bad (check-expectation state intent)))
@@ -632,7 +982,7 @@
                   (let ((payload (resolve state writer seq intent)))
                     (if (eq? (car payload) 'error)
                         payload
-                        (let* ((deps (deps-for state writer))
+                        (let* ((deps (deps-for-payload state writer payload))
                                (frame (make-frame (view-revision v) (view-epoch v)
                                                   writer seq actor deps payload))
                                (outcome (session-append! s frame)))

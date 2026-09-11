@@ -549,5 +549,63 @@
       (append-once)
       '(committed 2))
 
+(printf "\n== Q13: a baseline naming records this store can no longer read ==\n")
+;; A SESSION INHERITS THE CUT A PREVIOUS ONE LEFT -- from a snapshot, or
+;; from a consumer that remembered it -- and between the two the records
+;; it names may have become unreadable. That is not the caller reporting
+;; nonsense, and raising at it hands back a broken tool while aborting a
+;; session that has done nothing wrong. The store goes to reset-pending
+;; carrying WHY, and nothing claims to have replayed what it could not
+;; read.
+;;
+;; The two are told apart by whether that writer has integrity notes: a
+;; cut naming a sequence that never existed, with nothing wrong, is still
+;; the caller's mistake and still raises.
+;; The same damage the repair rows use: one byte inside a record, so the
+;; segment no longer hashes to what the manifest declares.
+(define (damage bytes at)
+  (let ((o (bytevector-copy bytes)))
+    (bytevector-u8-set! o at (if (= 97 (bytevector-u8-ref o at)) 98 97))
+    o))
+
+(define (report-baseline writer n)
+  (guard (e ((log-error? e) (list 'log-error (log-error-kind e)))
+            (#t (list 'raised)))
+    (let ((s (log-begin d (lambda args 'applied))))
+      (let ((r (guard (e (#t (log-end! s) (raise e)))
+                 (session-applied! s (session-epoch s) (list (cons writer n)))
+                 (let ((v (session-view s)))
+                   (if v 'view (list 'no-view (session-view-refusal s)))))))
+        (log-end! s)
+        r))))
+(define (local-size)
+  (let ((p (string-append d "/writers/" W "/" (segment-file-name 1))))
+    (if (file-exists? p) (file-size p) 0)))
+
+(define (mirror-published!)
+  (build!)
+  (child-says #f 1 (recs 1 3))
+  (void))
+
+(want "CONTROL: with everything readable the baseline is accepted"
+      (begin (mirror-published!) (report-baseline M 3))
+      'view)
+(want "a baseline naming an unreadable record refuses, naming writer and reason"
+      (begin (mirror-published!)
+             (put! (mpath 1) (damage (recs 1 3) 80))
+             (let ((before (local-size))
+                   (answer (report-baseline M 3)))
+               (list answer (= before (local-size)))))
+      (list (list 'no-view
+                  (list 'baseline-unreadable
+                        (list 'writer M) (list 'baseline 3) (list 'readable 0)
+                        (list 'reason 'manifest-hash)))
+            #t))
+;; THE OTHER SIDE OF THE SAME TEST: nothing wrong with the writer, so a
+;; cut past the end is the caller's mistake and still raises.
+(want "a baseline past the end of a healthy writer is still the caller's bug"
+      (begin (mirror-published!) (report-baseline M 99))
+      '(raised))
+
 (printf "\n~a failures\n" bad)
 (printf "log19 complete\n")

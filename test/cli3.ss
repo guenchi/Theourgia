@@ -357,5 +357,331 @@
       (run d2 "search" "zzzzzzzz")
       (list 0 '()))
 
+
+(printf "\n== N3: log lists what was applied, in delivery order ==\n")
+;; ONLY THE RECORDS THE INTENT NAMES. Two near misses are the point of
+;; this section: a record whose DEPS name a block has not touched it, and
+;; neither has one whose TEXT mentions it. Both would make `log <id>`
+;; list records that never changed the block, and both are easy to write
+;; by accident -- the first by walking deps, the second by grepping src.
+(define d3 (fresh-store!))
+(init! d3)
+(define g1 (insert! d3 "--title" "first"))
+(define g2 (insert! d3 "--title" "second"))
+(define (verb-of line) (cadr (assq 'verb (cdr line))))
+(define (event-of line) (cdr (assq 'event (cdr line))))
+(run d3 "set" g1 "title" "first renamed")
+(run d3 "link" g1 "mentions" g2)
+;; A SET ON g2 WHOSE TEXT NAMES g1. It touches g2 and not g1.
+(run d3 "set" g2 "src" (string-append "a mention of " g1 " in text only"))
+
+(want "every applied record is listed once, oldest first"
+      (map verb-of (lines-of (run d3 "log")))
+      '(put put set link set))
+(want "with an id, only the records that named that block"
+      (map verb-of (lines-of (run d3 "log" g1)))
+      '(put set link))
+;; THE EXCLUSION, STATED AS ITS OWN ROW: the last record mentions g1 in
+;; its text and is not listed for g1, while it IS listed for g2.
+(want "a record whose text merely mentions the id is not a record about it"
+      (list (length (lines-of (run d3 "log" g1)))
+            (map verb-of (lines-of (run d3 "log" g2))))
+      (list 3 '(put link set)))
+(want "an unknown id is refused, not answered with an empty log"
+      (code-of (run d3 "log" missing))
+      1)
+;; TWIN: the answer is the same on a second run, so nothing here depends
+;; on a traversal order that could differ between processes.
+(want "TWIN: two runs of the same store give the same log"
+      (lines-of (run d3 "log"))
+      (lines-of (run d3 "log")))
+
+;; THE OTHER NEAR MISS NEEDS A SECOND WRITER. A lone local writer's
+;; records carry no deps -- the deps are the applied cut without itself --
+;; so the "deps name it but the intent does not" case cannot arise in the
+;; store above. A published mirror segment supplies one: every local
+;; record written afterwards names the mirror's sequence as a premise,
+;; while touching only its own block.
+(define d4 (fresh-store!))
+(init! d4)
+(define mirror "mirrorz9")
+(define (rec seq payload)
+  (encode-record seq (+ 1757300000000 seq) "agent:claude" '() (storable-encode payload)))
+(define mirror-bytes (rec 1 '(put ((kind . section) (title . "from the mirror")))))
+(define mirror-block (string-append mirror ".1"))
+(define cand (string-append scratch "/mirror.bin"))
+(put! cand mirror-bytes)
+(want "CONTROL: the mirror's segment publishes"
+      (car (lines-of (run d4 "publish" mirror "1" cand)))
+      '(ok (published 1)))
+(define h1 (insert! d4 "--title" "local block"))
+(run d4 "set" h1 "title" "renamed after the mirror arrived")
+(want "CONTROL: the local record really does name the mirror as a premise"
+      (let* ((ls (log-open d4))
+             (deps (let ((found (vector '())))
+                     (load-deliver! ls '()
+                       (lambda (w seg off seq ts actor deps payload)
+                         (when (and (not (string=? w mirror)) (pair? deps))
+                           (vector-set! found 0 (cons deps (vector-ref found 0))))
+                         'applied))
+                     (load-commit! ls)
+                     (vector-ref found 0))))
+        (and (pair? deps) (equal? (car (car (car deps))) mirror)))
+      #t)
+(want "a record whose deps name the block is not a record about it"
+      (map verb-of (lines-of (run d4 "log" mirror-block)))
+      '(put))
+
+(printf "\n== N4: a tag names the cut this store has applied ==\n")
+;; THE APPLIED CUT, NOT THE DISCOVERED FRONTIER. A name pointing at
+;; records the reducer has not applied would name a state no reader of
+;; this store could produce.
+;;
+;; AND THE BINDING IS HISTORY. The cut is taken before the tag record
+;; exists, so a tag is never inside the cut it binds, and an edit written
+;; afterwards does not move it -- an implementation that recomputed the
+;; cut when listing would pass every other row and fail these two.
+(define d5 (fresh-store!))
+(init! d5)
+(define k1 (insert! d5 "--title" "before the tag"))
+(define (cut-of line) (cadr (assq 'cut (cdr line))))
+(define (name-of line) (cadr (assq 'name (cdr line))))
+(define (writer-of-id id)
+  (let loop ((i 0))
+    (cond ((>= i (string-length id)) id)
+          ((char=? (string-ref id i) #\.) (substring id 0 i))
+          (else (loop (+ i 1))))))
+(run d5 "tag" "v1")
+(define cut-at-tag (cut-of (car (lines-of (run d5 "tag")))))
+(want "the tag names the sequence written before it, not its own"
+      (equal? cut-at-tag (list (cons (writer-of-id k1) 1)))
+      #t)
+(want "an edit written afterwards does not move the tag"
+      (begin (insert! d5 "--title" "after the tag")
+             (cut-of (car (lines-of (run d5 "tag")))))
+      cut-at-tag)
+;; LATER WINS, CAUSALLY. The second tag was written by a session that had
+;; seen the first, so it supersedes it -- and both records stay in the
+;; log, because a tag is not a uniqueness constraint.
+(want "the same name written again, having seen the first, supersedes it"
+      (begin (run d5 "tag" "v1")
+             (let ((ls (lines-of (run d5 "tag"))))
+               (list (length ls) (equal? (cut-of (car ls)) cut-at-tag))))
+      (list 1 #f))
+(want "and both tag records are still in the log"
+      (length (filter (lambda (l) (eq? 'tag (verb-of l))) (lines-of (run d5 "log"))))
+      2)
+(want "names are listed in name order"
+      (begin (run d5 "tag" "a-first")
+             (map name-of (lines-of (run d5 "tag"))))
+      (list "a-first" "v1"))
+
+(printf "\n== N5: diff compares two states, each read to its own cut ==\n")
+;; NOT THE CURRENT STATE WITH SOMETHING SUBTRACTED. A cut names what had
+;; been applied at a moment, and the only way to know what the store said
+;; then is to read it then -- the edit made after t1 below is the row
+;; that catches an implementation which diffs against now.
+;;
+;; THE ENDPOINTS ARE NOT SYMMETRIC, and the reverse direction swaps added
+;; for removed while leaving `changed` alone.
+(define d6 (fresh-store!))
+(init! d6)
+(define p1 (insert! d6 "--title" "A"))
+(define p2 (insert! d6 "--title" "B"))
+(run d6 "tag" "t0")
+(run d6 "set" p1 "title" "A renamed")
+(run d6 "del" p2)
+(define p3 (insert! d6 "--title" "C"))
+(run d6 "tag" "t1")
+;; written after t1, and so outside both cuts
+(run d6 "set" p1 "src" "changed after t1")
+
+(want "a retitle, a delete and an insert, and nothing from after the cut"
+      (lines-of (run d6 "diff" "t0" "t1"))
+      (list (list 'changed p1 'title) (list 'removed p2) (list 'added p3)))
+(want "the reverse direction swaps added and removed"
+      (lines-of (run d6 "diff" "t1" "t0"))
+      (list (list 'changed p1 'title) (list 'added p2) (list 'removed p3)))
+(want "TWIN: a cut against itself has no differences, and succeeds"
+      (run d6 "diff" "t0" "t0")
+      (list 0 '()))
+;; AN EDGE IS A CHANGE. An implementation comparing only the scalar
+;; fields calls these two states identical.
+(want "adding one edge and nothing else is a change to that block"
+      (begin (run d6 "tag" "t2")
+             (run d6 "link" p1 "mentions" p3)
+             (run d6 "tag" "t3")
+             (lines-of (run d6 "diff" "t2" "t3")))
+      (list (list 'changed p1 'links)))
+(want "a move shows as both of the coordinates it moves"
+      (begin (run d6 "tag" "t4")
+             (run d6 "move" p3 p1)
+             (run d6 "tag" "t5")
+             (lines-of (run d6 "diff" "t4" "t5")))
+      (list (list 'changed p3 'parent) (list 'changed p3 'ord)))
+;; A CUT THIS STORE CANNOT REACH IS REFUSED BY NAME. Answering with the
+;; part it could reach would be a diff against a moment that never was.
+(want "an unreachable cut is refused, not silently truncated"
+      (run d6 "diff" "t0" "((\"nobody\" . 99))")
+      (list 1 (list (list 'error 'cut-unavailable (list 'cut 'to)
+                          (list 'reason 'not-received)))))
+(want "an unknown tag says which side it was on"
+      (lines-of (run d6 "diff" "nosuch" "t0"))
+      (list (list 'error 'unknown-tag "nosuch" (list 'cut 'from))))
+;; THE LITERAL IS PARSED BY SHAPE. Handed to `read` this argument would
+;; ask for an exact integer of ten billion digits and the row would not
+;; return at all.
+(want "a cut literal that asks for an enormous number is refused at once"
+      (let* ((t0 (current-time 'time-monotonic))
+             (r (run d6 "diff" "t0" "((\"w\" . #e1e99999999))"))
+             (t1 (current-time 'time-monotonic)))
+        (list (car r) (< (- (time-second t1) (time-second t0)) 20)))
+      (list 1 #t))
+(want "TWIN: a well-formed cut literal is accepted"
+      (code-of (run d6 "diff" "t0" (string-append "((\"" (writer-of-id p1) "\" . 2))")))
+      0)
+
+(printf "\n== N6: what the store holds and cannot show ==\n")
+;; THREE SECTIONS, AND A SECTION WITH NOTHING IN IT PRINTS NOTHING. An
+;; empty answer therefore means an empty store rather than a verb that
+;; declined to look, which is why the first row is a clean store.
+(define d7 (fresh-store!))
+(init! d7)
+(define q1 (insert! d7 "--title" "parent"))
+(define q2 (begin (run d7 "insert" "--under" q1 "--title" "child")
+                  (let* ((datum (read (open-string-input-port (text-of out-path))))
+                         (state (cadr (assq 'state (cdr datum)))))
+                    (car (car state)))))
+(want "TWIN: a store with nothing wrong answers with nothing, and succeeds"
+      (run d7 "conflicts")
+      (list 0 '()))
+;; A DELETE DOES NOT CASCADE: the child is still readable, it has just
+;; lost a place to be shown.
+(want "a block whose parent was deleted is an orphan"
+      (begin (run d7 "del" q1) (lines-of (run d7 "conflicts")))
+      (list (list 'orphan q2)))
+
+;; EVERY MISSING PREMISE, NOT THE FIRST. An implementation that stopped
+;; at the first would send an operator to fetch one record and leave them
+;; where they started.
+(define d8 (fresh-store!))
+(init! d8)
+(define waiting
+  (encode-record 1 1757300001000 "agent:claude"
+                 '(("aaaaaaaa" . 2) ("bbbbbbbb" . 3))
+                 (storable-encode '(put ((kind . section) (title . "waiting"))))))
+(define waiting-file (string-append scratch "/waiting.bin"))
+(put! waiting-file waiting)
+(want "CONTROL: the record publishes, so what follows is about applying it"
+      (car (lines-of (run d8 "publish" "mirrorzz" "1" waiting-file)))
+      '(ok (published 1)))
+(want "a record waiting on two premises is listed once for each"
+      (lines-of (run d8 "conflicts"))
+      (list (list 'pending (list 'event "mirrorzz" 1) (list 'missing "aaaaaaaa" 2))
+            (list 'pending (list 'event "mirrorzz" 1) (list 'missing "bbbbbbbb" 3))))
+
+;; A POSITION THAT NEVER SETTLED, built by hand rather than read back
+;; from the outline: two moves of one block that neither saw the other
+;; leave two candidates, and the block cannot be placed under either.
+(define d9 (fresh-store!))
+(init! d9)
+(define r1 (insert! d9 "--title" "root block"))
+(define r2 (insert! d9 "--title" "moved by two"))
+(define w9 (writer-of-id r1))
+;; a mirrored move that names only the creation as its premise, so it is
+;; concurrent with the local move written next
+(define rival
+  (encode-record 1 1757300002000 "agent:claude"
+                 (list (cons w9 2))
+                 (storable-encode (list 'move r2 r1 5))))
+(define rival-file (string-append scratch "/rival.bin"))
+(put! rival-file rival)
+;; THE LOCAL MOVE IS WRITTEN FIRST and the rival published after it:
+;; written the other way round the local move would have the rival in its
+;; past and would supersede it, leaving one candidate and no conflict --
+;; which is correct behaviour and the wrong construction for this row.
+(want "CONTROL: the local move commits and the rival publishes after it"
+      (list (code-of (run d9 "move" r2 r1))
+            (car (lines-of (run d9 "publish" "mirrorzz" "1" rival-file))))
+      (list 0 '(ok (published 1))))
+(want "a block moved concurrently by two writers is reported unplaced"
+      (filter (lambda (l) (eq? 'conflict (car l))) (lines-of (run d9 "conflicts")))
+      (list (list 'conflict r2 'unplaced)))
+;; AND THE OUTLINE AGREES. The verb reads the structure from the same
+;; place the outline does, so the two cannot come to different answers
+;; about which blocks are in a conflict.
+(want "and the outline marks the same block"
+      (let* ((state (open-and-reduce d9))
+             (row (let loop ((rows (state-outline state)))
+                    (cond ((null? rows) #f)
+                          ((equal? (caddr (car rows)) r2) (car rows))
+                          (else (loop (cdr rows)))))))
+        (and row (= 4 (length row)) (cadddr row)))
+      'unplaced)
+
+(printf "\n== N7: the outline says which blocks are in a conflict ==\n")
+;; THE REDUCTION MARKS THESE ROWS AND THE PRINTER USED TO DROP THE MARK,
+;; so a block whose position never settled rendered exactly like an
+;; ordinary top-level one: the library knew and the command line did not.
+;; An ordinary row still has three columns, which is what keeps this from
+;; being a mark nobody can distinguish.
+(define (outline-lines d)
+  (let ((text (begin (run d "outline") (text-of out-path))))
+    (let loop ((i 0) (start 0) (out '()))
+      (cond
+        ((>= i (string-length text)) (reverse out))
+        ((char=? (string-ref text i) #\newline)
+         (loop (+ i 1) (+ i 1)
+               (if (= start i) out (cons (substring text start i) out))))
+        (else (loop (+ i 1) start out))))))
+(define (ends-with? line suffix)
+  (let ((n (string-length line)) (m (string-length suffix)))
+    (and (>= n m) (string=? (substring line (- n m) n) suffix))))
+(want "the block moved by two writers is marked, and the ordinary one is not"
+      (let ((ls (outline-lines d9)))
+        (list (length (filter (lambda (l) (ends-with? l "unplaced")) ls))
+              (length ls)))
+      (list 1 2))
+
+(printf "\n== N8: a snapshot standing ahead of what can be read ==\n")
+;; The other half of the inherited-baseline question, and it needs no new
+;; code: a snapshot whose cut names records this store can no longer read
+;; is refused as unusable, so its baseline is never inherited at all, and
+;; the write is refused for integrity rather than proceeding from a
+;; state nothing can rebuild.
+(define d10 (fresh-store!))
+(init! d10)
+(define s1 (insert! d10 "--title" "one"))
+(insert! d10 "--title" "two")
+(insert! d10 "--title" "three")
+;; THE SNAPSHOT IS TAKEN OVER ALL THREE, so its cut names the last
+;; record -- and the damage below lands INSIDE that cut. Damaging a
+;; record written after the snapshot would leave the snapshot perfectly
+;; usable, which is correct behaviour and the wrong setup for this row.
+(want "CONTROL: the snapshot covers every record written so far"
+      (let ((line (car (lines-of (run d10 "snapshot")))))
+        (equal? (cadr (assq 'cut (cdr line))) (list (cons (writer-of-id s1) 3))))
+      #t)
+(define (damage-last! d w)
+  (let* ((seg (string-append d "/writers/" w "/" (segment-file-name 1)))
+         (bytes (slurp seg))
+         (at (- (bytevector-length bytes) 20))
+         (o (bytevector-copy bytes)))
+    (bytevector-u8-set! o at (if (= 98 (bytevector-u8-ref o at)) 99 98))
+    (put! seg o)))
+(want "CONTROL: the damage puts the readable end behind the snapshot's cut"
+      (begin (damage-last! d10 (writer-of-id s1))
+             (let* ((report (text-of (begin (run d10 "check") out-path)))
+                    (has (lambda (needle)
+                           (let loop ((i 0))
+                             (cond ((> (+ i (string-length needle)) (string-length report)) #f)
+                                   ((string=? (substring report i (+ i (string-length needle))) needle) #t)
+                                   (else (loop (+ i 1))))))))
+               (list (has "(end 2)") (has "(unusable "))))
+      (list #t #t))
+(want "and writing is refused rather than proceeding from a state nothing can rebuild"
+      (car (lines-of (run d10 "insert" "--under" "root" "--title" "four")))
+      '(error refused integrity (remedy adopt)))
+
 (printf "\n~a failures\n" bad)
 (printf "cli3 complete\n")

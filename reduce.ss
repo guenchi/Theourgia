@@ -42,7 +42,7 @@
 (library (theourgia reduce)
   (export reduce-empty reduce-apply! reduce-pending reduce-applied-cut reduce-trace
           state-read state-outline state-dump state-hash state-datum block-hash
-          state-structure state-refs cut-usable? cut-id
+          state-structure state-refs state-tags cut-usable? cut-id
           state->rows rows->state
           ord-between block-id
           reduction? reduction-state)
@@ -494,6 +494,23 @@
   ;; this filters on `to`. A reader that confused them would list a
   ;; block's own out-edges as references to it, which is why they are two
   ;; procedures and not one with a flag.
+  ;; THE NAMES THIS STATE BINDS, and what each one binds to. A name is
+  ;; SETTLED when exactly one candidate survives -- the same rule a field
+  ;; uses, deliberately, because a tag written later by someone who had
+  ;; seen the earlier one supersedes it while two written concurrently do
+  ;; not. Reporting only a winner would hide a disagreement behind a
+  ;; choice this layer has no grounds to make, so every candidate comes
+  ;; back and the caller is told which case it is in.
+  (define (state-tags r)
+    (list-sort
+      (lambda (x y) (string<? (car x) (car y)))
+      (map (lambda (e)
+             (list (car e)
+                   (map (lambda (c)
+                          (list (copy-datum (car c)) (car (cdr c)) (cdr (cdr c))))
+                        (cdr e))))
+           (reduction-tags r))))
+
   (define (state-refs r id)
     (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
                       (filter (lambda (l) (equal? (caddr l) id)) (reduction-links r)))))
@@ -712,11 +729,19 @@
                                           alive))))
         ;; A DELETE DOES NOT CASCADE. The child is still there and still
         ;; readable; what it has lost is a place to be shown.
+        ;;
+        ;; A PARENT THAT IS NOT HERE AT ALL LEAVES THE CHILD IN THE SAME
+        ;; position as one that was deleted: nothing to hang it under.
+        ;; The local verbs refuse an unknown parent, so this arrives from
+        ;; a writer whose record named a block this store has not
+        ;; received -- which is exactly when a reader most needs telling.
         (cons 'orphans
               (list-sort string<?
                          (map car (filter (lambda (e)
                                             (let ((p (settled-parent (cdr e))))
-                                              (and p (string? p) (tombed? p))))
+                                              (and p (string? p)
+                                                   (or (tombed? p)
+                                                       (not (assoc p blocks))))))
                                           alive))))
         (cons 'unplaced
               (list-sort string<?
