@@ -80,7 +80,9 @@
           scan-segment
           atomic-write!
           segment-file-name segment-file-number
-          store-writers writer-directory
+          store-writers writer-directory retired-successor retired-of
+          barrier-artefacts barrier-required run-barrier! publish-durable?
+          uncertain-path uncertain-derived uncertain-load uncertain-write!
           enumerate-segment-files
           read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment
@@ -1464,11 +1466,21 @@
   ;; thing to be unflushed and the least likely to be noticed.
   (define (flush-file! path stage)
     (when (file-exists? path)
-      (let ((fd (fd-open path '(read))))
-        (dynamic-wind
-          (lambda () (if #f #f))
-          (lambda () (fsync! fd path stage))
-          (lambda () (close-quietly fd))))))
+      (flush-existing! path stage)))
+
+  ;; THE SAME FLUSH WITH THE QUESTION LEFT OUT. A caller that already
+  ;; knows the file must be there does not want to ask again: between the
+  ;; asking and the opening the answer can change, and `file-exists?`
+  ;; returning #f then produces silence that is indistinguishable from a
+  ;; flush that worked. Opening it asks the question at the only moment
+  ;; the answer cannot go stale -- if the file is gone, the open fails
+  ;; and the caller fails with it.
+  (define (flush-existing! path stage)
+    (let ((fd (fd-open path '(read))))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda () (fsync! fd path stage))
+        (lambda () (close-quietly fd)))))
 
   (define (takeover-barrier! store prefixes)
     (parameterize ((theourgia-stage 'deliver-barrier))
@@ -2917,6 +2929,237 @@
         (atomic-write! marker (make-bytevector 0) 'publish))
       (list why (list 'kept kept) (list 'writer writer) (list 'segment segment))))
 
+  ;; ---- uncertain intervals (section 7.3) ------------------------------------
+
+  ;; A STRETCH OF A WRITER'S HISTORY THE STORE CANNOT VOUCH FOR, written
+  ;; as `(writer low high)` with high = #f meaning it runs on without a
+  ;; bound. `low` is the last position the store is still sure about, so
+  ;; the stretch is the positions ABOVE it.
+  ;;
+  ;; `uncertain.sexp` IS A CACHE AND THE RECORDS ARE THE AUTHORITY. It is
+  ;; written so that a reader need not re-derive the set on every call,
+  ;; and it is read for nothing that is not also derivable -- which is
+  ;; exactly what makes deleting it a recoverable event rather than a
+  ;; loss of history.
+  ;;
+  ;; THE RECONCILIATION IS A UNION, AND IT IS NOT SYMMETRIC. An entry the
+  ;; records imply and the cache lacks is the cache being wrong, and the
+  ;; records win. An entry the cache holds and the records no longer
+  ;; imply is the ordinary result of a repair: the torn tail was mended,
+  ;; the divergence was verified, and the records are clean again --
+  ;; while the fact that the store was once unsure THERE is exactly what
+  ;; must not be forgotten, because a request whose possible positions
+  ;; touch that stretch still cannot be told apart from one that ran. So
+  ;; entries are added and never removed, and a cache that is a strict
+  ;; superset of the derivation is not a disagreement at all.
+  (define (uncertain-path store writer)
+    (writer-file store writer "uncertain.sexp"))
+
+  ;; WHAT THE RECORDS THEMSELVES SAY. Three sources are visible from a
+  ;; writer's own files: a divergence, whose fork disowns everything from
+  ;; that sequence up; a torn tail, above the last sequence that reads;
+  ;; and a writer this store cannot read the beginning of at all, whose
+  ;; whole domain is in doubt.
+  ;;
+  ;; The two adopt-time kinds -- the rollback interval and the
+  ;; identity-mismatch interval -- are NOT derived here. They are
+  ;; persisted by adopt before the successor's owner is installed, which
+  ;; is the only moment their coordinates exist; they arrive in the cache
+  ;; and stay there by the union rule above. This function deriving them
+  ;; would be a second supplier of coordinates only one place can compute.
+  (define (uncertain-derived store writer)
+    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+      (cond
+        ((not p) (list (list writer 0 #f)))
+        ((eq? (discovery-origin p) 'incomplete-publication)
+         (list (list writer 0 #f)))
+        (else
+         (append
+           (let ((q (discovery-quarantine p)))
+             (if (and q (pair? (cdr q)) (integer? (cadr q)) (exact? (cadr q)))
+                 (list (list writer (- (cadr q) 1) #f))
+                 '()))
+           (if (discovery-torn p)
+               (list (list writer (discovery-end-seq p) #f))
+               '()))))))
+
+  (define (uncertain-interval? x)
+    (and (list? x) (= 3 (length x))
+         (string? (car x))
+         (integer? (cadr x)) (exact? (cadr x)) (>= (cadr x) 0)
+         (or (not (caddr x))
+             (and (integer? (caddr x)) (exact? (caddr x)) (>= (caddr x) (cadr x))))))
+
+  ;; #f when there is no cache, `unreadable` when there is one and it is
+  ;; not a list of intervals, otherwise the list. A file that parses into
+  ;; something of the wrong shape is unreadable and not empty: an empty
+  ;; list is a positive claim that nothing is uncertain.
+  (define (uncertain-cached store writer)
+    (let ((path (uncertain-path store writer)))
+      (and (file-exists? path)
+           (let ((d (guard (e (#t 'unreadable))
+                      (string->sexpr-extended (utf8->string (read-whole path))))))
+             (if (and (list? d) (for-all uncertain-interval? d)) d 'unreadable)))))
+
+  ;; `(<intervals> <integrity or #f>)`. The intervals are what a caller
+  ;; must test against; the integrity is what the store must report.
+  ;;
+  ;; AN ABSENT CACHE IS ONLY A PROBLEM WHEN THERE IS SOMETHING TO CACHE.
+  ;; A writer with nothing uncertain about it has no file and needs
+  ;; none, and reporting that as an integrity kind would make the
+  ;; ordinary state of every healthy writer look like damage.
+  (define (uncertain-load store writer)
+    (let ((derived (uncertain-derived store writer))
+          (cached (uncertain-cached store writer)))
+      (cond
+        ((not cached)
+         (if (null? derived)
+             (list '() #f)
+             (list derived (list 'uncertain-cache 'absent))))
+        ((eq? cached 'unreadable)
+         (list derived (list 'uncertain-cache 'unreadable)))
+        (else
+         (let ((missing (filter (lambda (i) (not (member i cached))) derived)))
+           (if (null? missing)
+               (list cached #f)
+               (list (append cached missing)
+                     (list 'uncertain-cache 'stale missing))))))))
+
+  (define (uncertain-write! store writer intervals stage)
+    (unless (for-all uncertain-interval? intervals)
+      (assertion-violation 'uncertain-write!
+                           "every entry must be (writer low high)" intervals))
+    (atomic-write! (uncertain-path store writer)
+                   (string->utf8
+                     (string-append (sexpr->string-extended intervals) "\n"))
+                   stage))
+
+  ;; ---- the recovery barrier (section 7.3) ----------------------------------
+
+  ;; ONE TABLE, TWO CALLERS. Confirming a first execution and answering a
+  ;; replay make the same promise -- that what the answer describes will
+  ;; still be there after a power cut -- so they flush the same things in
+  ;; the same order. Two tables would drift, and the drift would show up
+  ;; only as a replay that promised more than the original execution had.
+  ;;
+  ;; THE ORDER IS THE RECOVERY DEPENDENCY CLOSURE, read outwards from the
+  ;; record: the file holding it, the directory that names that file, the
+  ;; manifest that admits the file to the writer's history, the identity
+  ;; files of every generation on the path to it, the uncertain intervals
+  ;; that say which parts of that path can be trusted, and the registry
+  ;; that says this machine holds the store at all. Each is a premise of
+  ;; the one before it: a record whose file is durable but whose
+  ;; directory entry is not is a record no reader will find.
+  ;;
+  ;; THE ORDER IS DOCUMENTATION, NOT A PROTOCOL. It records which row is
+  ;; a premise of which, and that is all: fsync establishes that an
+  ;; operation has completed, it does not hold other writes back, so the
+  ;; names here reach the disk in whatever order the filesystem chooses
+  ;; and two of these rows share a directory anyway. Recovery ordering is
+  ;; established where the mutations happen -- the candidate is durable
+  ;; before it is linked, its entry before the manifest names it. This
+  ;; barrier is the completion point that reasserts those obligations
+  ;; before the answer is given, not a second attempt to sequence them.
+  ;;
+  ;; IT IS A LIST BEFORE IT IS AN ACTION. A caller can ask what the
+  ;; barrier covers without performing it, which is how a case checks
+  ;; that the table names what it should rather than that something was
+  ;; flushed.
+  (define (barrier-artefacts store writer segment)
+    (let* ((dir (writer-directory store writer))
+           (candidates
+             (append
+               (list (cons 'log-file
+                           (string-append dir "/" (segment-file-name segment)))
+                     (cons 'writer-directory dir)
+                     (cons 'manifest (manifest-path store writer)))
+               (apply append
+                      (map (lambda (w)
+                             (list (cons 'owner (writer-file store w "owner.sexp"))
+                                   (cons 'retired (writer-file store w "retired.sexp"))))
+                           (store-writers store)))
+               (list (cons 'instance (string-append store "/instance.sexp"))
+                     (cons 'uncertain (writer-file store writer "uncertain.sexp"))
+                     (cons 'registry (registry-path))))))
+      ;; THE TABLE IS WHAT IS THERE. A store with no retirement record
+      ;; has nothing to promise about one, and listing the path anyway
+      ;; would put a row in the table that no fault can be armed at.
+      (filter (lambda (entry) (file-exists? (cdr entry))) candidates)))
+
+  ;; THE ROWS THE ANSWER DEPENDS ON, named rather than assumed. Absence
+  ;; and success are the same silence: flush-file! does nothing to a path
+  ;; that is not there, which is right for every optional row -- a store
+  ;; with no retirement record has nothing to promise about one -- and
+  ;; wrong for these two. If the segment's own file or the directory
+  ;; naming it is gone the barrier promises nothing, a fault armed at it
+  ;; never fires, and the case reads green because nothing happened.
+  ;;
+  ;; The rest are premises of the answer where they exist and silent
+  ;; where they do not; a store that has never had a local writer has no
+  ;; instance file, and requiring one would refuse publishes to exactly
+  ;; the stores that only ever receive.
+  ;; WHICH ROWS ARE REQUIRED DEPENDS ON WHAT THE ANSWER CLAIMS, and the
+  ;; two claims are not the same. A publish answer says the segment is
+  ;; listed in the manifest, so an absent manifest is the violation of
+  ;; the very invariant that gives the word its meaning. A commit answer
+  ;; says a record is in this writer's own directory, where nothing
+  ;; lists anything -- a local writer HAS no manifest, and requiring one
+  ;; would refuse every write this store makes on its own behalf.
+  ;;
+  ;; ONE TABLE, KEYED BY THE CLAIM. Two constants would drift the first
+  ;; time a row moved between them.
+  (define barrier-required-table
+    '((publish . (log-file writer-directory manifest))
+      (commit . (log-file writer-directory))))
+
+  (define (barrier-required claim)
+    (let ((e (assq claim barrier-required-table)))
+      (unless e
+        (assertion-violation 'barrier-required "no such claim" claim))
+      (cdr e)))
+
+  ;; PERFORMED IN ORDER, UNDER THE STORE LOCK, and it answers with the
+  ;; table it performed, so a caller reporting a replay can say what it
+  ;; made durable rather than assert that it did.
+  (define (run-barrier! store writer segment stage claim)
+    (let ((table (barrier-artefacts store writer segment))
+          (required (barrier-required claim)))
+      (for-each
+        (lambda (kind)
+          (unless (assq kind table)
+            (assertion-violation 'run-barrier! "required artefact absent" kind)))
+        required)
+      (for-each
+        (lambda (entry)
+          (let ((kind (car entry)) (path (cdr entry)))
+            (if (eq? kind 'writer-directory)
+                (begin
+                  (fsync-dir! path stage)
+                  ;; AND THE DIRECTORY'S OWN NAME. `writers/<w>` is
+                  ;; created once, by `ensure-writer-directory!`, which
+                  ;; flushes `writers/` only on the call that creates it
+                  ;; -- so a first publish whose mkdir succeeded and
+                  ;; whose flush did not leaves the directory present,
+                  ;; its name not durable, and every retry skipping the
+                  ;; flush because the directory is already there.
+                  ;; Nothing else would ever repair it.
+                  (directory-entry-durable! path stage))
+                (begin
+                  ;; THE REQUIRED ROWS ARE OPENED, NOT ASKED ABOUT. The
+                  ;; table was filtered by existence a moment ago, and
+                  ;; for a row the answer depends on, "it went away in
+                  ;; between" must not read as "there was nothing to
+                  ;; do".
+                  (if (memq kind required)
+                      (flush-existing! path stage)
+                      (flush-file! path stage))
+                  ;; the name as well as the contents: a file durable
+                  ;; under a directory entry that is not is a file that
+                  ;; can vanish whole.
+                  (directory-entry-durable! path stage)))))
+        table)
+      table))
+
 ;; ---- log-publish! (section 9.6) --------------------------------------------
 
   (define (log-publish! store writer segment bytes sha)
@@ -2954,7 +3197,49 @@
       (read-manifest store writer)
       #f))
 
+  ;; A NAME NO READER WILL EVER LOOK AT IS NOT A WRITER. Writer ids are
+  ;; eight characters of [0-9a-z] and `store-writers` filters the
+  ;; directory by exactly that, so a segment published under any other
+  ;; name is durable, listed in a manifest, and delivered to nothing --
+  ;; while the sender is told `published` and deletes its own copy on the
+  ;; strength of it. That is the inverse of "answering implies durable":
+  ;; durable, and unreachable.
+  ;;
+  ;; It is asked before anything exists: no directory, no segment, no
+  ;; manifest entry. And it asks the same predicate the reader uses,
+  ;; because a second opinion about what a writer id is would put the two
+  ;; back where they started.
+  ;; THE FOUR OUTCOMES THAT LEAVE THE SEGMENT PUBLISHED, in one place.
+  ;; The sender deletes its own copy on the strength of any of them, so
+  ;; the set that means "durable" and the set that exits zero have to be
+  ;; the same set; two lists of four symbols would agree until one of
+  ;; them gained a fifth.
+  (define (publish-durable? answer)
+    (and (pair? answer)
+         (memq (car answer) '(published idempotent repaired extended))
+         #t))
+
+  ;; THE BARRIER IS THE LAST THING BEFORE THE WORD. Every durable answer
+  ;; passes it, the first execution and the replay alike: `idempotent` is
+  ;; the replay of a publish, and it promises exactly what `published`
+  ;; promised. Putting it here rather than in each branch is what makes
+  ;; that true by construction -- a branch added later gets the barrier
+  ;; because it returns one of the four, not because whoever wrote it
+  ;; remembered.
+  ;;
+  ;; A refusal does not pass it. Nothing it describes is claimed to
+  ;; survive a crash, and flushing on the way out of a refusal would put
+  ;; the store's whole recovery closure on the path of every rejected
+  ;; candidate.
   (define (publish-locked! store writer segment bytes sha)
+    (if (not (writer-id? writer))
+        (list 'refused 'invalid-writer (list 'writer writer))
+        (let ((answer (publish-validated! store writer segment bytes sha)))
+          (when (publish-durable? answer)
+            (run-barrier! store writer segment 'publish 'publish))
+          answer)))
+
+  (define (publish-validated! store writer segment bytes sha)
     (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
            (target (string-append dir "/" (segment-file-name segment)))
@@ -3027,16 +3312,17 @@
            ;; the manifest with this hash. A killed install leaves bytes
            ;; that match and no manifest entry; answering idempotent
            ;; there would make "done" mean two different things.
+           ;; IDEMPOTENT IS A PROMISE THE CALLER ACTS ON. A sync client
+           ;; that is told the segment is already published deletes its
+           ;; own copy on the strength of it, so "listed" has to mean
+           ;; "listed durably" -- and the entry may have been written by
+           ;; a process that died before flushing it. That is not done
+           ;; here: this branch returns one of the four durable answers,
+           ;; and `publish-locked!` runs the barrier over the manifest,
+           ;; the segment and the entries naming them before the word
+           ;; leaves the store.
            ((and (equal? lr cr) (published-with? store writer segment sha))
-            ;; IDEMPOTENT IS A PROMISE THE CALLER ACTS ON. A sync client
-            ;; that is told the segment is already published deletes its
-            ;; own copy on the strength of it, so "listed" has to mean
-            ;; "listed durably" -- and the entry may have been written by
-            ;; a process that died before flushing it. The manifest and
-            ;; the directory entry naming it are made durable before the
-            ;; word is said, not after.
-            (begin (manifest-durable! store writer)
-                   (list 'idempotent segment)))
+            (list 'idempotent segment))
            ((equal? lr cr) (do-install-over store writer segment bytes sha 'published))
            ((< (cdr cr) (cdr lr)) (list 'incomplete segment))
            ((retired-prefix-segment? store writer segment)
@@ -3060,10 +3346,6 @@
         ((null? xs) #f)
         ((not (find-record cand-rs (rec-seq (car xs)))) (rec-seq (car xs)))
         (else (loop (cdr xs))))))
-
-  (define (manifest-durable! store writer)
-    (flush-file! (manifest-path store writer) 'publish)
-    (fsync-dir! (writer-directory store writer) 'publish))
 
   (define (published-with? store writer segment sha)
     (let ((m (read-manifest store writer)))
@@ -3239,6 +3521,42 @@
                    'registry)
     tx)
 
+  ;; THE PREDECESSOR'S UNCERTAIN STRETCH, PERSISTED BEFORE THE SUCCESSOR
+  ;; EXISTS. Two of the adopt reasons leave a stretch of the old writer
+  ;; that nobody can ever verify again, and this is the only moment their
+  ;; coordinates are all in hand:
+  ;;
+  ;;   registry-ahead  the registry's water mark stands above the last
+  ;;                   record the log holds, so records between the two
+  ;;                   were authorised and then lost. `(end, mark]` --
+  ;;                   closed, because the mark is a real top.
+  ;;   identity        this store's identity does not match what its
+  ;;                   owners say, so nothing above the prefix can be
+  ;;                   attributed to it at all. `(end, +inf)` -- open,
+  ;;                   because there is no top to name.
+  ;;
+  ;; IT IS WRITTEN BEFORE THE SUCCESSOR'S OWNER. A crash between the two
+  ;; leaves an entry for a generation that never finished, which costs a
+  ;; caller some `unknown` answers it did not need; a crash the other way
+  ;; round would leave a finished adopt whose predecessor's lost stretch
+  ;; nothing records, and a request that fell in it would be told to run
+  ;; again.
+  ;;
+  ;; IT ADDS, NEVER REPLACES: an earlier adopt's entry is still true.
+  (define (step-uncertain-prepared! store old reason seq mark)
+    (let ((interval
+            (cond
+              ((eq? reason 'registry-ahead) (and mark (> mark seq) (list old seq mark)))
+              ((eq? reason 'identity) (list old seq #f))
+              (else #f))))
+      (when interval
+        (let ((current (car (uncertain-load store old))))
+          (uncertain-write! store old
+                            (if (member interval current)
+                                current
+                                (append current (list interval)))
+                            'registry)))))
+
   (define (step-generation-reserved! store store-id instance tx old new)
     (with-machine-lock
       (lambda ()
@@ -3355,15 +3673,20 @@
            (cond
              ((not (generation-chain-ok? store reg store-id instance))
               (list 'missing-generation))
-             ((registry-ahead-of-log? store reg store-id instance writer)
-              (list 'registry-ahead))
+             ((registry-ahead-of-log store reg store-id instance writer)
+              => (lambda (mark) (list 'registry-ahead mark)))
              ((writer-damaged? store writer) (list 'damage))
              (else #f)))))))
 
-  (define (registry-ahead-of-log? store reg store-id instance writer)
+  ;; IT ANSWERS WITH THE MARK, NOT WITH A YES. The water mark is the top
+  ;; of the stretch a rollback adopt has to record as uncertain, and this
+  ;; is the one place that reads it -- so answering `#t` here and reading
+  ;; the registry a second time in adopt would be two suppliers of one
+  ;; number, differing the first time anything raised a mark in between.
+  (define (registry-ahead-of-log store reg store-id instance writer)
     (let ((mark (registry-mark reg store-id instance writer))
           (p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
-      (and mark p (> mark (discovery-end-seq p)))))
+      (and mark p (> mark (discovery-end-seq p)) mark)))
 
   (define (writer-damaged? store writer)
     (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
@@ -3399,6 +3722,7 @@
         ((orphan-marker store reg store-id old)
          => (lambda (tx)
               (let ((new (derive-writer-id store tx)))
+                (resume-uncertain! store reg store-id instance old)
                 (step-generation-reserved! store store-id instance tx old new)
                 (step-owner-installed! store new instance tx old)
                 (step-successor-backfilled! store old tx new)
@@ -3424,6 +3748,7 @@
                          (cancel-generation! store-id instance tx g)
                          (loop (cdr gs) 'cancelled))
                         ((not (cdr (assq 'owner s)))
+                         (resume-uncertain! store reg store-id instance (gen-old g))
                          (step-owner-installed! store (gen-new g) instance tx (gen-old g))
                          (step-successor-backfilled! store (gen-old g) tx (gen-new g))
                          (step-transition-complete! store-id instance tx)
@@ -3436,6 +3761,24 @@
                          (step-transition-complete! store-id instance tx)
                          (loop (cdr gs) 'resumed)))))
                    (else (loop (cdr gs) did))))))))))
+
+  ;; RESUMING AN ADOPT MUST NOT SKIP THE ENTRY. A crash can land between
+  ;; the retirement marker and the uncertain entry, so recovery cannot
+  ;; assume the entry is there -- and it cannot read the reason either,
+  ;; because nothing records one. What it can do is ask the same question
+  ;; again: the registry's mark and the retired prefix are both still on
+  ;; disk, so a rollback is still recognisable as such. The identity kind
+  ;; never reaches here; that case leaves adopt before any of this.
+  ;;
+  ;; Writing an entry that is already there is harmless -- the write is
+  ;; the union -- and that is the property that makes a resume safe to
+  ;; run however many times a crash demands.
+  (define (resume-uncertain! store reg store-id instance old)
+    (let* ((r (retired-of store old))
+           (seq (and r (not (eq? (car r) 'malformed)) (caddr r)))
+           (mark (registry-mark reg store-id instance old)))
+      (when (and seq mark (> mark seq))
+        (step-uncertain-prepared! store old 'registry-ahead seq mark))))
 
   ;; A retirement marker bearing a transaction the registry has never
   ;; recorded. Only for the local writer: another writer's marker is
@@ -3509,6 +3852,8 @@
                  (tx (new-transaction-id))
                  (new (derive-writer-id store tx)))
             (step-retirement-prepared! store old tx seg off seq)
+            (step-uncertain-prepared! store old (car why) seq
+                                      (and (pair? (cdr why)) (cadr why)))
             (step-generation-reserved! store store-id instance tx old new)
             (step-owner-installed! store new instance tx old)
             (step-successor-backfilled! store old tx new)

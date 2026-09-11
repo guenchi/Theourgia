@@ -129,10 +129,15 @@
        (length (filter (lambda (b) (= b 10)) (bytes->list nl-line))) 1)
 (check 'nl-roundtrip (decode-line nl-line) '(ok 1 2 "who" () (set "id" title "a\nb")))
 
-(printf "== actor as the five element list ==\n")
-(define al (encode-record 5 6 (list "agent:claude" "req-1" 0 "fp" '("w" . 3)) '() '(del "x")))
+(printf "== actor as the six element request actor ==\n")
+;; THE EXPECTATION MOVED WITH THE ACTOR, which is the half that was left
+;; behind when the shape changed: the encoder call was updated to six
+;; elements and this line was not, so the row has been red ever since --
+;; and red where nobody was looking, because this file counts
+;; `mismatches` and the suite runner was grepping for `failures`.
+(define al (encode-record 5 6 (list "agent:claude" (cons "w" "req-1") 0 "fp" '("w" . 2) '("w" . 3)) '() '(del "x")))
 (check 'actor-list (decode-line al)
-       '(ok 5 6 ("agent:claude" "req-1" 0 "fp" ("w" . 3)) () (del "x")))
+       '(ok 5 6 ("agent:claude" ("w" . "req-1") 0 "fp" ("w" . 2) ("w" . 3)) () (del "x")))
 
 (printf "== payload with an encoded character survives the line ==\n")
 (define enc (storable-encode (list 'set "id" 'ch #\x1F600)))

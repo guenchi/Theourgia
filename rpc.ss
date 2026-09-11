@@ -382,7 +382,7 @@
                                                     (cadddr args)
                                                     (segment-sha bytes)))
                                            (a (log-publish! store (car args) segment bytes sha)))
-                                      (if (memq (car a) '(published idempotent repaired extended))
+                                      (if (publish-durable? a)
                                           (cons 'ok (list a))
                                           (cons 'error
                                                 (if (eq? (car a) 'error) (cdr a) (list a)))))))))))))))

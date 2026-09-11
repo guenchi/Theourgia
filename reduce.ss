@@ -40,7 +40,8 @@
 ;;; the two apart is what lets the same records be reduced from a
 ;;; snapshot and from empty and be checked against each other.
 (library (theourgia reduce)
-  (export reduce-empty reduce-apply! reduce-pending reduce-applied-cut reduce-trace
+  (export reduce-empty reduce-apply! reduce-pending reduce-noted
+          reduce-applied-cut reduce-trace
           state-read state-outline state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags cut-usable? cut-id
           state->rows rows->state
@@ -107,6 +108,7 @@
   ;; applied  -- alist of writer to the highest sequence applied
   ;; pending  -- records whose premises have not all arrived
   ;; trace    -- event-ids in the order they were applied
+  ;; noted    -- integrity observations this layer made while applying
   (define-record-type reduction
     (fields (mutable blocks)
             (mutable links)
@@ -114,7 +116,8 @@
             (mutable pasts)
             (mutable applied)
             (mutable pending)
-            (mutable trace)))
+            (mutable trace)
+            (mutable noted)))
 
   ;; Named blk rather than block so that the record's own accessors do
   ;; not collide with block-id, which is the derivation rule and part of
@@ -128,10 +131,11 @@
             (mutable position)
             (mutable tomb)))
 
-  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '()))
+  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '()))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
+  (define (reduce-noted r) (reduction-noted r))
   (define (reduce-trace r) (reverse (reduction-trace r)))
   (define (reduce-applied-cut r)
     (list-sort (lambda (x y) (string<? (car x) (car y)))
@@ -259,9 +263,29 @@
 
   (define (absent? x) (equal? x absent))
 
+;; THE VERB TABLE IS THE WHOLE OF WHAT THIS LAYER UNDERSTANDS, and a
+  ;; record it does not understand is an observation, not a no-op. Until
+  ;; now the last arm silently did nothing: a record carrying a verb from
+  ;; a later version was applied, counted as applied, and changed
+  ;; nothing -- so an older build reading a newer store dropped those
+  ;; records in silence and reported a state that was missing them
+  ;; without saying so. Refusing to understand is the honest answer.
+  ;;
+  ;; THE BOOKKEEPING VERBS ARE UNDERSTOOD AND FOLD TO NOTHING. `plan`,
+  ;; `batch` and `resolve` record what a request did; they advance the
+  ;; cursor, they carry deps, they take part in integrity, and they
+  ;; change no block. Leaving them to the last arm would report every one
+  ;; of them as a verb this build does not know.
+  (define (note-verb! r event-id verb)
+    (reduction-noted-set!
+      r (append (reduction-noted r)
+                (list (list 'unknown-verb
+                            (list 'event (car event-id) (cdr event-id))
+                            (list 'verb verb))))))
+
   (define (interpret! r event-id past payload)
     (cond
-      ((not (pair? payload)) (if #f #f))
+      ((not (pair? payload)) (note-verb! r event-id 'malformed))
       (else
        (case (car payload)
          ((put) (do-put! r event-id past (cadr payload)))
@@ -271,7 +295,9 @@
          ((link) (do-link! r event-id (cdr payload)))
          ((unlink) (do-unlink! r event-id past (cdr payload)))
          ((tag) (do-tag! r event-id past (cdr payload)))
-         (else (if #f #f))))))
+         ;; bookkeeping: understood, and deliberately without effect
+         ((plan batch resolve) (if #f #f))
+         (else (note-verb! r event-id (car payload)))))))
 
   (define (do-put! r event-id past alist)
     (let* ((id (block-id (car event-id) (cdr event-id)))

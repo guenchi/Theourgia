@@ -377,9 +377,15 @@
 ;; writer was an open with `create` -- which creates a file and not the
 ;; directory above it, so the first publish for a new writer failed on an
 ;; open instead of answering.
+;;
+;; THE NAME IS A REAL WRITER ID: eight characters of [0-9a-z]. This row
+;; used to use a nine-character one, which publish accepted and no reader
+;; would ever have listed -- so it asserted that a first publish works
+;; while publishing somewhere nothing could read. The refusal added since
+;; is what turned that into a failure instead of a quiet pass.
 (define (publish-to-new-writer fault)
   (build!)
-  (system (string-append "rm -rf " d "/writers/neverseen"))
+  (system (string-append "rm -rf " d "/writers/unseenwr"))
   (put! (string-append scratch "/cand.bin") (recs 1 2))
   (put! child
         (string->utf8
@@ -391,7 +397,7 @@
             "            get-bytevector-all))\n"
             "(printf \"~s\\n\"\n"
             "  (guard (e (#t (list 'raised)))\n"
-            "    (log-publish! \"" d "\" \"neverseen\" 1 b\n"
+            "    (log-publish! \"" d "\" \"unseenwr\" 1 b\n"
             "                  (bytevector->hex (sha256 b)))))\n")))
   (system (string-append
             (if fault (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 ") "")

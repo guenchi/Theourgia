@@ -416,6 +416,11 @@
                       reg)))
     (call-with-port (open-file-output-port path (file-options no-fail))
       (lambda (o) (put-bytevector o (string->utf8 (format "~s\n" bumped)))))))
+;; THE END OF THE VALID PREFIX, READ BEFORE ANY OF THIS HAPPENS. It is
+;; the left end of the stretch the rollback loses, and taking it from the
+;; adopt's own answer afterwards would be asking the thing under test to
+;; supply the expectation.
+(define end6 (discovery-end-seq (discover-prefix d6 old6 'held-exclusive)))
 (raise-mark! d6 old6 9)
 (want "the store is refused, and the reason is that the registry is ahead"
       (let ((a (car (with-store-write d6
@@ -433,6 +438,70 @@
 (want "and the old prefix survived the adopt"
       (titles-of (open-and-reduce d6))
       '("One" "Three" "Two"))
+;; THE STRETCH THE ROLLBACK LOST IS RECORDED BEFORE THE SUCCESSOR EXISTS.
+;; The registry authorised records up to 9 and the log holds fewer, so
+;; everything between the log's end and the mark was written, promised,
+;; and is now unrecoverable -- and a request whose positions fall in
+;; there cannot be told apart from one that ran. The entry is closed,
+;; because the mark is a real top.
+;;
+;; The left end is measured from the store BEFORE the adopt, which is
+;; what "the end of the valid prefix" means; the right end is 9, which
+;; this fixture set. Neither is read out of the adopt's own answer.
+(want "a rollback adopt leaves the lost stretch behind it"
+      (uncertain-load d6 old6)
+      (list (list (list old6 end6 9)) #f))
+;; TWIN: and an adopt that lost nothing leaves nothing. Without this the
+;; row above would pass for an implementation that recorded a stretch
+;; after every adopt.
+(want "TWIN: the earlier adopt, which was not a rollback, recorded no stretch"
+      (uncertain-load d2 old2)
+      '(() #f))
+;; RESUMING MUST NOT SKIP THE ENTRY. A crash can land on either side of
+;; it, so recovery asks the same question again rather than assuming.
+;; Here the entry and the successor's owner are both taken away and the
+;; generation is put back to pending -- the state a crash between step 1
+;; and step 3 leaves -- and recovery has to produce the entry again.
+(define new6 (car (list-sort string<? (remp (lambda (w) (string=? w old6)) (store-writers d6)))))
+(define (set-gen-pending!)
+  (let ((reg (map (lambda (e)
+                    (if (and (list? e) (eq? (car e) 'gen))
+                        (append (list-head e 8) (list 'pending))
+                        e))
+                  (read (open-string-input-port (slurp (registry-path)))))))
+    (call-with-port (open-file-output-port (registry-path) (file-options no-fail))
+      (lambda (o) (put-bytevector o (string->utf8 (format "~s\n" reg)))))))
+(want "recovery writes the entry when the crash came before it"
+      (begin
+        (delete-file (string-append d6 "/writers/" old6 "/uncertain.sexp"))
+        (delete-file (string-append d6 "/writers/" new6 "/owner.sexp"))
+        (set-gen-pending!)
+        (continue-adopt! d6)
+        (uncertain-load d6 old6))
+      (list (list (list old6 end6 9)) #f))
+;; AND WRITING ONE THAT IS ALREADY THERE IS HARMLESS, which is the
+;; property that makes a resume safe to run as often as a crash demands.
+(want "and running it again does not write the entry twice"
+      (begin
+        (delete-file (string-append d6 "/writers/" new6 "/owner.sexp"))
+        (set-gen-pending!)
+        (continue-adopt! d6)
+        (uncertain-load d6 old6))
+      (list (list (list old6 end6 9)) #f))
+;; AND IT ADDS RATHER THAN REPLACES. An earlier adopt's entry is still
+;; true -- the records it covers are still unrecoverable -- so a second
+;; adopt writing only its own would take away a stretch nothing else
+;; would ever put back. Note what makes this row discriminate and the one
+;; above not: with one entry in the file, "added" and "replaced" produce
+;; the same file.
+(want "a second adopt keeps the entries that were already there"
+      (begin
+        (uncertain-write! d6 old6 (list (list old6 100 200) (list old6 end6 9)) 'commit)
+        (delete-file (string-append d6 "/writers/" new6 "/owner.sexp"))
+        (set-gen-pending!)
+        (continue-adopt! d6)
+        (uncertain-load d6 old6))
+      (list (list (list old6 100 200) (list old6 end6 9)) #f))
 
 (printf "== a terminal transaction is never resumed ==\n")
 ;; THE SIX STEPS THE REVIEW ASKED FOR. Back up; write the retirement
@@ -537,12 +606,24 @@
       (list 'mismatch 'identity-mismatch))
 ;; ONCE IT ADOPTS, IT MINTS A NONCE -- and from then on the chain it
 ;; inherited names somebody else, which is what the gate is for.
+;; MEASURED BEFORE THE ADOPT, for the same reason as the rollback row.
+(define end8 (discovery-end-seq (discover-prefix copy8 new8 'held-exclusive)))
 (want "adopting the copy mints a nonce and branches from the head, not the retired writer"
       (let ((a (store-adopt! copy8)))
         (list (car a)
               (cadr (assq 'from (cdr a)))
               (cadr (assq 'reason (cdr a)))))
       (list 'adopted new8 'identity))
+;; AN IDENTITY MISMATCH LEAVES AN OPEN STRETCH, and the openness is the
+;; point. A rollback knows where the lost records stop -- the water mark
+;; is a real top. Here the store has found that it is not who its own
+;; records say it is, so nothing above the prefix can be attributed to
+;; it at all and there is no top to name. That is also why no operator
+;; may later write a `not-executed` over it: only a closed interval is
+;; an observation, and this one is not.
+(want "an identity-mismatch adopt leaves an open stretch behind it"
+      (uncertain-load copy8 new8)
+      (list (list (list new8 end8 #f)) #f))
 (want "and afterwards the inherited chain is recognised as imported"
       (begin (putenv "THEOURGIA_HOME" (string-append scratch "/home-copy8"))
              (continue-adopt! copy8))

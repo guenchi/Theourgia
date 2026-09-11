@@ -18,10 +18,14 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
-          store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts)
+          store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
+          make-write-request write-request? store-successors store-intervals
+          request-verdict)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
+          (theourgia request)
+          (only (theourgia wire) decode-line)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
           (only (theourgia log)
                 log-open load-deliver! load-commit!
@@ -30,13 +34,18 @@
                 session-epoch make-frame atomic-write! segment-file-name
                 session-snapshot! log-open load-writers load-prefix load-commit!
                 discovery-end-seq discovery-integrity discovery-torn
+                enumerate-segment-files discovery-quarantine discover-prefix
+                manifest-segments read-manifest
                 snapshot-read snapshot-cut-supported? segment-file-number
                 log-error-kind log-error-segment log-error-offset log-error-detail
                 store-id-of adopt! registry-inside-store?
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
+                uncertain-load run-barrier! retired-successor retired-of
+                session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
-          (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries)
+          (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
+                file-is-directory?)
           (only (igropyr crypto) sha256 bytevector->hex)
           (theourgia reduce))
 
@@ -338,6 +347,164 @@
                        hits)))))
 
   (define (known? state id) (and (state-read state id) #t))
+  ;; ---- evidence for a request ----------------------------------------------
+
+  ;; EVERY READABLE RECORD THAT NAMES THE IDENTITY, wherever it is.
+  ;;
+  ;; The question a request asks is "did this run", and a record that ran
+  ;; is evidence whether or not this store can currently deliver it: in
+  ;; the valid history, waiting in quarantine, on a torn tail, copied
+  ;; aside into damaged/, still sitting in incoming/, or in a segment the
+  ;; manifest does not list. Looking only where delivery looks would
+  ;; answer "no" for a request whose record is lying in plain sight a
+  ;; directory away -- and "no" means run it again.
+  ;;
+  ;; WHERE IT WAS FOUND TRAVELS WITH IT, because two of the three
+  ;; evidence sets are defined by where, and because `unknown` has to be
+  ;; able to say which place it could not verify.
+  ;;
+  ;; THE CHAIN, NOT THE WRITER. After an adopt the records are carried by
+  ;; a successor, and the identity in them still names the origin -- so
+  ;; the scan follows every writer this store holds and the retirement
+  ;; records that link them, rather than asking one writer.
+  (define (lines-of-segment bytes)
+    (let ((n (bytevector-length bytes)))
+      (let loop ((start 0) (out (quote ())))
+        (if (>= start n)
+            (reverse out)
+            (let ((nl (let scan ((i start))
+                        (cond ((>= i n) #f)
+                              ((= 10 (bytevector-u8-ref bytes i)) i)
+                              (else (scan (+ i 1)))))))
+              (if (not nl)
+                  ;; a final line with no newline is a torn tail
+                  (reverse (cons (cons (subbytes bytes start n) (quote torn)) out))
+                  (loop (+ nl 1)
+                        (cons (cons (subbytes bytes start (+ nl 1)) (quote whole)) out))))))))
+
+  (define (subbytes bv from to)
+    (let ((o (make-bytevector (- to from))))
+      (bytevector-copy! bv from o 0 (- to from))
+      o))
+
+  (define (read-file-bytes path)
+    (and (file-exists? path)
+         (guard (e (#t #f))
+           (call-with-port (open-file-input-port path)
+             (lambda (in)
+               (let ((b (get-bytevector-all in)))
+                 (if (eof-object? b) (make-bytevector 0) b)))))))
+
+  (define (records-of-file path writer placement fork)
+    (let ((bytes (read-file-bytes path)))
+      (if (not bytes)
+          (quote ())
+          (let loop ((ls (lines-of-segment bytes)) (out (quote ())))
+            (cond
+              ((null? ls) (reverse out))
+              (else
+               (let* ((line (car (car ls)))
+                      (whole? (eq? (cdr (car ls)) (quote whole)))
+                      (r (and whole? (decode-line line))))
+                 (loop (cdr ls)
+                       (if (and (pair? r) (eq? (car r) (quote ok)))
+                           (let* ((seq (cadr r))
+                                  (actor (cadddr r))
+                                  (where (cond
+                                           ((not whole?) (quote torn))
+                                           ((and fork (>= seq fork)) (quote quarantined))
+                                           (else placement))))
+                             (cons (list (cons writer seq) actor
+                                         (list-ref r 4) (list-ref r 5) where)
+                                   out))
+                           out)))))))))
+
+  (define (directory-files dir)
+    (if (not (file-is-directory? dir))
+        (quote ())
+        (map (lambda (name) (string-append dir "/" name)) (directory-entries dir))))
+
+  (define (writer-evidence store writer)
+    (let* ((dir (writer-directory store writer))
+           (manifest (guard (e (#t #f)) (read-manifest store writer)))
+           (listed (manifest-segments manifest))
+           ;; THE FORK, READ FROM THE DISCOVERY RATHER THAN THE FILE. A
+           ;; second reader of quarantine.sexp would be a second opinion
+           ;; about where a writer's history stops being deliverable.
+           (fork (let ((p (guard (e (#t #f)) (discover-prefix store writer 'shared))))
+                   (and p (let ((q (discovery-quarantine p)))
+                            (and (pair? q) (cadr q)))))))
+      (append
+        ;; the segments themselves, listed or not
+        (apply append
+               (map (lambda (n)
+                      (records-of-file
+                        (string-append dir "/" (segment-file-name n))
+                        writer
+                        (if (or (not manifest) (memv n listed))
+                            (quote valid-history)
+                            (quote unlisted))
+                        fork))
+                    (enumerate-segment-files store writer)))
+        ;; and the two places a record can sit without being a segment
+        (apply append (map (lambda (p) (records-of-file p writer (quote damaged) #f))
+                           (directory-files (string-append dir "/damaged"))))
+        (apply append (map (lambda (p) (records-of-file p writer (quote incoming) #f))
+                           (directory-files (string-append dir "/incoming")))))))
+
+  ;; THE DELIVERED CUT IS AN ARGUMENT, NOT SOMETHING THIS COMPUTES. Its
+  ;; one caller from outside a session reads the store to get it; its
+  ;; caller from INSIDE one already has it, and re-reading the store
+  ;; there would take the store's shared lock while the session holds it
+  ;; exclusively -- against yourself a lock does not fail, it hangs, and
+  ;; a hang is the failure a suite reports worst. It hung the first time
+  ;; this was wired up.
+  (define (store-evidence store identity)
+    (evidence-for store identity (reduce-applied-cut (open-and-reduce store))))
+
+  (define (resolves? payload identity)
+    (and (resolution? payload)
+         (identity=? (resolution-target payload) identity)))
+
+  (define (evidence-for store identity delivered)
+    (let ()
+      (let loop ((ws (store-writers store)) (out (quote ())))
+        (if (null? ws)
+            (reverse out)
+            (loop (cdr ws)
+                  (append
+                    (reverse
+                      (filter
+                        (lambda (e) e)
+                        (map (lambda (rec)
+                               (let ((actor (cadr rec)))
+                                 (and (request-actor? actor)
+                                      ;; TWO WAYS A RECORD BEARS ON AN
+                                      ;; IDENTITY. It can BE one of its
+                                      ;; records, which its actor says;
+                                      ;; or it can be a resolution ABOUT
+                                      ;; it, which its payload says --
+                                      ;; written by an operator, under
+                                      ;; the operator's own actor and
+                                      ;; cursor. Matching only on the
+                                      ;; actor leaves every resolution
+                                      ;; unreachable from the request it
+                                      ;; resolves, so an operator's
+                                      ;; determination that something ran
+                                      ;; would be ignored and the store
+                                      ;; would run it again.
+                                      (or (identity=? (actor-identity actor) identity)
+                                          (resolves? (cadddr rec) identity))
+                                      (make-evidence (car rec) actor (caddr rec) (cadddr rec)
+                                                     (list-ref rec 4)
+                                                     (and (eq? (list-ref rec 4) (quote valid-history))
+                                                          (let ((have (assoc (car (car rec)) delivered)))
+                                                            (and have (<= (cdr (car rec)) (cdr have)))))
+                                                     (quote ())))))
+                             (writer-evidence store (car ws)))))
+                    out))))))
+
+
   ;; ---- conflicts ------------------------------------------------------------
 
   ;; THE THREE WAYS A STORE CAN BE HOLDING SOMETHING IT CANNOT SHOW.
@@ -389,7 +556,13 @@
                                      (list (quote event) writer seq)
                                      (list (quote missing) (car d) (cdr d))))
                              (missing-deps state deps))))
-                    pending)))))
+                    pending))
+        ;; A RECORD THIS BUILD DOES NOT UNDERSTAND IS SOMETHING THE STORE
+        ;; HOLDS AND CANNOT SHOW, which is what this verb is for. It used
+        ;; to be applied silently and change nothing, so an older build
+        ;; reading a newer store reported a state missing those records
+        ;; without saying anything was missing.
+        (reduce-noted state))))
 
 
   ;; ---- diff -----------------------------------------------------------------
@@ -878,8 +1051,130 @@
   ;; every record every user ever writes. "unknown" is what a caller who
   ;; declines to say gets -- it is not a person, and it is visibly not
   ;; one.
+  ;; A REQUEST THE CALLER CAN REPEAT. `who` and `after` are the client's,
+  ;; `verb` and `args` are the whole of what it asked for, and `req-id`
+  ;; is the name it will use again if it never hears an answer. Together
+  ;; they are the identity and the fingerprint -- derived here and
+  ;; nowhere else, so a retry that computes them from the same five
+  ;; values gets the same two.
+  ;; A LIST, LIKE EVERY OTHER SMALL RECORD IN THIS TREE, so that it can
+  ;; be written into a trace or a fixture without a constructor.
+  ;; THERE IS NO PLAN SIZE HERE, and that is a statement rather than an
+  ;; omission. What this path writes is one sub-operation belonging to no
+  ;; plan, which is what the actor's `single` says; a request of several
+  ;; needs a plan record and a receipt before the first of them, and
+  ;; those carry their own count. A field standing for a plan that does
+  ;; not exist could only ever be wrong: set to 1 it makes the decision
+  ;; look for sub-operation 0 and find a record that calls itself
+  ;; `single`, which reads as a plan with a hole in it.
+  (define (make-write-request who verb args req-id after)
+    (unless (req-id-ok? req-id)
+      (assertion-violation 'make-write-request "not a request id" req-id))
+    (unless (and (pair? after) (string? (car after))
+                 (integer? (cdr after)) (exact? (cdr after)))
+      (assertion-violation 'make-write-request "not a cursor" after))
+    (list 'write-request who verb args req-id after))
+
+  (define (write-request? x)
+    (and (list? x) (= 6 (length x)) (eq? (car x) 'write-request)))
+
+  (define (write-request-who r) (list-ref r 1))
+  (define (write-request-verb r) (list-ref r 2))
+  (define (write-request-args r) (list-ref r 3))
+  (define (write-request-req-id r) (list-ref r 4))
+  (define (write-request-after r) (list-ref r 5))
+
+  ;; EVERY WRITER'S UNCERTAIN STRETCHES, AND THE REPORT THAT GOES WITH
+  ;; THEM. A stretch on any writer can stand between this request and an
+  ;; answer, so the test is over all of them and not over the local one.
+  (define (store-intervals store)
+    (let loop ((ws (store-writers store)) (out '()) (bad '()))
+      (if (null? ws)
+          (list (apply append (reverse out)) (reverse bad))
+          (let ((loaded (uncertain-load store (car ws))))
+            (loop (cdr ws) (cons (car loaded) out)
+                  (if (cadr loaded) (cons (cadr loaded) bad) bad))))))
+
+  ;; THE WRITERS THIS ONE WAS RETIRED IN FAVOUR OF, followed to the end
+  ;; of the chain. A request's possible positions include every position
+  ;; on every one of them, so a chain cut short here is a stretch nobody
+  ;; tests against.
+  ;; `(<writers> <problem or #f>)`. THE PROBLEM IS NOT A DIAGNOSTIC. A
+  ;; retirement record that cannot be read is indistinguishable, to
+  ;; `retired-successor`, from a writer that was never retired -- and the
+  ;; two lead to opposite answers: a chain that stops early leaves a
+  ;; generation's uncertain stretches out of the test, so a request that
+  ;; could have landed there is told to run.
+  ;;
+  ;; A CYCLE IS NOT AN ORDER EITHER. One successor per writer means the
+  ;; walk has already seen every distinct writer by the time it repeats
+  ;; one, so nothing is missing from the list -- but a cycle is a
+  ;; generation model that cannot be true, and certifying ancestry from
+  ;; it would be reading a shape the store should not have produced.
+  (define (store-successors store writer)
+    (let loop ((w writer) (out '()) (seen (list writer)))
+      (cond
+        ((retirement-unreadable? store w)
+         (list (reverse out) (list 'retirement-unreadable w)))
+        (else
+         (let ((next (retired-successor store w)))
+           (cond
+             ((not next) (list (reverse out) #f))
+             ((member next seen)
+              (list (reverse out) (list 'retirement-cycle next)))
+             (else (loop next (cons next out) (cons next seen)))))))))
+
+  (define (retirement-unreadable? store w)
+    (let ((r (retired-of store w)))
+      (and (pair? r) (eq? (car r) 'malformed))))
+
+  ;; WHAT THE STORE SAYS ABOUT A REQUEST IT MAY HAVE ALREADY RUN. It is
+  ;; asked under the store's exclusive lock, after the session has caught
+  ;; up -- before that, "no evidence" means "no evidence has been
+  ;; delivered yet", which is a fact about the reader.
+  ;; A CACHE THIS STORE CANNOT READ IS NOT A CACHE MISS. Two of the five
+  ;; kinds of uncertain stretch -- the rollback interval and the
+  ;; identity-mismatch interval -- exist only in `uncertain.sexp`; no
+  ;; derivation can rebuild them, because their coordinates existed only
+  ;; at the moment an adopt computed them. So a file that cannot be read
+  ;; takes those away, and a retried request that fell in one would be
+  ;; told to run again. The report cannot be a warning that execution
+  ;; proceeds past.
+  ;;
+  ;; A stale cache is different and is not an obstacle: the union has
+  ;; already repaired it, and every interval the records still imply is
+  ;; in the list.
+  (define (blocking-uncertainty store)
+    (let loop ((rs (cadr (store-intervals store))))
+      (cond
+        ((null? rs) #f)
+        ((eq? (cadr (car rs)) 'unreadable) (car rs))
+        (else (loop (cdr rs))))))
+
+  (define (request-verdict store req delivered)
+    (let* ((after (write-request-after req))
+           (identity (request-identity after (write-request-req-id req)))
+           (fingerprint (request-fingerprint (write-request-who req)
+                                             (write-request-verb req)
+                                             (write-request-args req)
+                                             after))
+           (loaded (store-intervals store))
+           (successors (store-successors store (car after))))
+      (cond
+        ((blocking-uncertainty store)
+         => (lambda (why) (list 'unknown why)))
+        ((cadr successors)
+         => (lambda (why) (list 'unknown why)))
+        (else
+         (request-decision identity fingerprint (write-request-who req) after
+                           (evidence-for store identity delivered)
+                           (car loaded)
+                           #f
+                           (car successors))))))
+
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
+          (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
           (state (reduce-empty)))
       (let ((s (log-begin store (deliver-into state #f))))
         ;; THE FRONTIER IS REPORTED ONCE DELIVERY IS OVER, not inferred
@@ -895,11 +1190,149 @@
         ;; AFTER it, which is decided by nothing more than the two
         ;; writers' names.
         (session-applied! s (session-epoch s) (reduce-applied-cut state))
-        (let ((answers
-                (guard (e (#t (log-end! s) (raise e)))
-                  (run-intents! s state actor (proc state (session-view s))))))
-          (log-end! s)
-          answers))))
+        ;; THE QUESTION IS ASKED HERE AND NOT BEFORE. Delivery has just
+        ;; finished, so "there is no evidence of this request" is a
+        ;; statement about the store rather than about how far the reader
+        ;; had got -- and the lock has been held throughout, so nothing
+        ;; can arrive between the answer and the act.
+        (let ((verdict (and req (request-verdict store req
+                                                 (reduce-applied-cut state)))))
+          (if (and verdict (not (eq? (car verdict) 'execute)))
+              ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. `log-end!`
+              ;; releases the store's exclusive lock, and the answer to a
+              ;; replay performs a barrier -- so computing it afterwards
+              ;; would certify, outside the lock, a state another session
+              ;; was free to change in between. The guard is what makes
+              ;; that true on the failing path too: a barrier that raises
+              ;; must still end the session.
+              (let ((answer (guard (e (#t (log-end! s) (raise e)))
+                              (request-answer s store verdict))))
+                (log-end! s)
+                (list answer))
+              (let ((answers
+                      (guard (e (#t (log-end! s) (raise e)))
+                        (let ((intents (proc state (session-view s))))
+                          (if (and req (not (= 1 (length intents))))
+                              ;; A REQUEST OF SEVERAL SUB-OPERATIONS NEEDS
+                              ;; A PLAN RECORD AND A RECEIPT BEFORE THE
+                              ;; FIRST OF THEM, and neither is written from
+                              ;; here yet. Writing the records anyway would
+                              ;; give each an actor whose plan-event is #f
+                              ;; -- a sub-operation belonging to no plan --
+                              ;; and a retry would then read a set of
+                              ;; unrelated single requests that happen to
+                              ;; share an id. Refusing names what is
+                              ;; missing; the wrong actor would not.
+                              (list (list 'error 'request-not-single
+                                          (list 'intents (length intents))))
+                              (let ((bad (and req (cursor-unreachable store s req))))
+                                (if bad
+                                    (list bad)
+                                    (run-intents! s state
+                                                  (or (request-actor req actor) actor)
+                                                  intents))))))))
+                (log-end! s)
+                answers))))))
+
+  ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a
+  ;; name, `store-evidence` finds nothing when the request comes back,
+  ;; and the store executes it a second time -- so the identity that
+  ;; makes the decision possible has to be IN the record, not beside it.
+  ;; A single sub-operation belongs to no plan, which is what `single`
+  ;; and the absent plan event say.
+  ;; A CURSOR THE RECORD COULD NOT HAVE BEEN WRITTEN AT IS REFUSED BEFORE
+  ;; ANYTHING IS WRITTEN. The cursor is the client's: it says where its
+  ;; earlier attempt would have landed, and every later decision measures
+  ;; from it. A client that declares `(W . 100)` on a writer standing at
+  ;; 1 gets its record at W:2 -- and when that record is later lost to a
+  ;; rollback, the interval the adopt records ends far below 100, so the
+  ;; retry's range test finds nothing in its way and the store runs the
+  ;; work a second time. The cursor is not decoration; it is the bottom
+  ;; of the stretch that protects the request.
+  ;;
+  ;; What must be true: the position about to be written is strictly
+  ;; above the cursor on the cursor's own writer, or it is on a writer
+  ;; that succeeded it -- where there is no cursor to compare and every
+  ;; position is reachable. Sequence numbers are never compared across
+  ;; writers.
+  (define (cursor-unreachable store s req)
+    (let* ((v (session-view s))
+           (after (write-request-after req))
+           (writer (and v (view-writer v)))
+           (seq (and v (view-expect-seq v)))
+           (chain (store-successors store (car after))))
+      (cond
+        ((not v) #f)
+        ((cadr chain) (list 'error 'unknown (cadr chain)))
+        ((and (string=? writer (car after)) (> seq (cdr after))) #f)
+        ((member writer (car chain)) #f)
+        (else
+         (list 'error 'cursor-unreachable
+               (list 'after after) (list 'writing (cons writer seq)))))))
+
+  (define (request-actor req actor)
+    (and req
+         (list (write-request-who req)
+               (request-identity (write-request-after req)
+                                 (write-request-req-id req))
+               'single
+               (request-fingerprint (write-request-who req)
+                                    (write-request-verb req)
+                                    (write-request-args req)
+                                    (write-request-after req))
+               #f
+               (write-request-after req))))
+
+  ;; A VERDICT THAT IS NOT `execute` IS THE ANSWER, and each kind says a
+  ;; different thing to a client holding a request it may have sent once
+  ;; already.
+  ;;
+  ;; `replay` IS THE ONE THAT PROMISES SOMETHING. It tells the client the
+  ;; work is done and durable, so it passes the barrier before the word
+  ;; is said -- the same table a publish goes through, because it is the
+  ;; same promise. Nothing else here claims anything survives a crash:
+  ;; the refusals describe a store that will not act, and flushing on the
+  ;; way out of them would put the whole recovery closure on the path of
+  ;; every request the store declines.
+  (define (request-answer s store verdict)
+    (case (car verdict)
+      ((replay)
+       (barrier-for store (cadr verdict))
+       (list 'ok (list 'replay #t) (list 'event (cadr verdict))))
+      ((complete) (cons 'error (cons 'incomplete-request (cdr verdict))))
+      ((unknown) (cons 'error (cons 'unknown (cdr verdict))))
+      ((req-mismatch) (cons 'error (cons 'req-mismatch (cdr verdict))))
+      ((resolved-executed) (cons 'error (cons 'resolved-executed (cdr verdict))))
+      (else (cons 'error (cons 'unknown (cdr verdict))))))
+
+  ;; THE BARRIER GOES WHERE THE RECORD IS, not where the writer happens
+  ;; to be now. The record a replay promises may sit in an earlier
+  ;; segment, or on a generation this store has since retired -- and
+  ;; flushing the current writer's current segment says nothing about
+  ;; either. The supporting record is the one the decision found, so the
+  ;; answer carries it and the barrier follows it.
+  ;;
+  ;; AND IT FAILS CLOSED. A segment that cannot be located is not a
+  ;; barrier with nothing to do: the promise cannot be made, so the word
+  ;; is not said. Answering `replay` after a silent no-op would be the
+  ;; exact inverse of what the barrier is for.
+  (define (barrier-for store event)
+    (let* ((writer (car event))
+           (p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive)))
+           (segment (and p (segment-holding p (cdr event)))))
+      (unless segment
+        (assertion-violation 'barrier-for
+                             "cannot locate the record a replay would promise"
+                             event))
+      (run-barrier! store writer segment 'commit 'commit)))
+
+  ;; `discovery-segment-ranges` is `((segment first last) ...)`.
+  (define (segment-holding p seq)
+    (let loop ((rs (discovery-segment-ranges p)))
+      (cond
+        ((null? rs) #f)
+        ((and (<= (cadr (car rs)) seq) (<= seq (caddr (car rs)))) (car (car rs)))
+        (else (loop (cdr rs))))))
 
 ;; A BATCH CAN BUILD A TREE, so an intent must be able to name a block
   ;; an earlier intent in the same batch created. The id of a new block

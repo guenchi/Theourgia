@@ -222,6 +222,74 @@ divergence check and the publish decision are redone on every call, against the
 history as it is at that moment. A gap refused today becomes publishable once the
 missing middle arrives, and the kept bytes are then accepted unchanged.
 
+### The recovery barrier
+
+Four answers leave the segment published, and a sender deletes its own copy on the
+strength of any of them. So all four have to promise the same thing, and they promise
+it by going through one table:
+
+| row | the file |
+|---|---|
+| `log-file` | the segment itself |
+| `writer-directory` | the entry naming it |
+| `manifest` | `published.sexp`, which admits the segment to the writer's history |
+| `owner` | each generation's `owner.sexp` |
+| `retired` | each generation's `retired.sexp` |
+| `instance` | the store's `instance.sexp` |
+| `uncertain` | the writer's `uncertain.sexp` |
+| `registry` | `instances.sexp`, outside the store |
+
+The order is documentation, not a protocol. An fsync establishes that an operation has
+completed; it does not hold other writes back, so these names reach the disk in
+whatever order the filesystem chooses, and two of the rows share a directory in any
+case. Recovery ordering is established where the mutations happen — the candidate is
+durable before it is linked, and its directory entry before the manifest names it. The
+barrier is the completion point that reasserts those obligations before the answer is
+given, not a second attempt to sequence them.
+
+Read outwards from the record, each row is a premise of the one before it: a record
+whose file is durable but whose directory entry is not is a record no reader will
+find, and a segment whose manifest entry is lost is a file this store will treat as an
+orphan. Every file row is flushed and then has the directory entry naming it made
+durable; the directory row is fsynced as a directory.
+
+`idempotent` is the **replay** of a publish, and it is the reason the table is one
+table. A replay writes nothing — the bytes and the manifest entry are already exactly
+right — so if it made its promise from a second list, the two would agree until one of
+them changed, and the disagreement would surface only as a replay that promised more
+than the original execution had. The barrier runs in one place, on any of the four
+answers, so a branch added later is covered because it returns one of the four and not
+because whoever wrote it remembered.
+
+A refusal does not pass the barrier. Nothing it describes is claimed to survive a
+crash, and flushing the store's whole recovery closure on the way out of every
+rejected candidate would charge refusals for a promise they do not make.
+
+The table holds what is there: a store with no retirement record has nothing to
+promise about one, and listing the path anyway would put a row in it that no test can
+arm a fault at. Three rows are not optional in that way — the segment file, the
+directory naming it, and the manifest listing it — because every one of the four
+answers asserts all three. Their absence stops the barrier rather than passing through
+it silently, since absence and success are the same silence: a flush asked to make a
+file durable that is not there does nothing, and says nothing about it. For the same
+reason those three are opened rather than asked about, so that a file removed between
+the moment the table was built and the moment it is flushed fails the open instead of
+being skipped quietly.
+
+`writers/<writer>` is created once, and the call that creates it is the only one that
+makes its name durable — a retry finds the directory already there and skips the flush.
+So the directory row makes its own entry durable as well as flushing the directory:
+a mkdir that succeeded and a flush that did not would otherwise leave a name nothing
+ever repairs. The remaining ancestors need no row, because every file row flushes the
+directory naming that file, which covers `writers/<writer>` from the segment, the store
+from `instance.sexp`, and the registry's own directory from `instances.sexp`.
+
+The owner and retirement rows are taken for **every** generation, not only the one
+being published to, so the cost of a durable answer grows with the number of writers a
+store holds and is paid under the exclusive lock. That is a measured cost and not a
+defect: narrowing it to the generations on the path to this writer is sound only once
+the metadata a recovery actually reads has been written down, and it has not been.
+
 ### Durability stages
 
 Every call that makes something durable names the stage it belongs to —

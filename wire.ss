@@ -373,14 +373,58 @@
              (hashtable-set! done x #t)))
           (else (void))))))
 
+  ;; AN ACTOR IS EITHER A NAME OR A WHOLE REQUEST IDENTITY. The second
+  ;; form carries who asked, which request it was, which sub-operation of
+  ;; that request this record is, the fingerprint of what was asked, the
+  ;; plan this record belongs to, and the cursor the request was written
+  ;; against:
+  ;;
+  ;;     (who (origin . req-id) sub fingerprint plan-event-id after)
+  ;;
+  ;; THE SHAPE IS CHECKED, NOT THE LENGTH. Two of the six slots changed
+  ;; meaning when this grew from five -- what was a bare req-id became
+  ;; the pair `(origin . req-id)`, and `plan-event-id` was inserted
+  ;; before `after` -- so a length test would accept an actor of the
+  ;; right size whose fields had all shifted by one, which is the hardest
+  ;; kind of wrong to see. It would also accept every five element actor
+  ;; a mistake in new code still produced.
+  ;;
+  ;; The identity has to be readable from any one record: a reader that
+  ;; inferred the origin from the physical writer would be wrong for
+  ;; every record a successor writer carries after an adopt.
+  (define (event-id? x)
+    (and (pair? x) (string? (car x)) (integer? (cdr x)) (exact? (cdr x)) (>= (cdr x) 0)))
+
+  (define (req-id? x)
+    (or (string? x)
+        ;; a batch item names the batch and its index within it
+        (and (list? x) (= 3 (length x)) (eq? (car x) 'batch)
+             (string? (cadr x)) (integer? (caddr x)) (exact? (caddr x)) (>= (caddr x) 0))))
+
+  (define (request-actor? x)
+    (and (list? x) (= 6 (length x))
+         (let ((who (list-ref x 0))
+               (identity (list-ref x 1))
+               (sub (list-ref x 2))
+               (fingerprint (list-ref x 3))
+               (plan-event (list-ref x 4))
+               (after (list-ref x 5)))
+           (and (string? who)
+                (pair? identity) (string? (car identity)) (req-id? (cdr identity))
+                (or (memq sub '(single plan))
+                    (and (integer? sub) (exact? sub) (>= sub 0)))
+                (string? fingerprint)
+                (or (not plan-event) (event-id? plan-event))
+                (event-id? after)))))
+
   (define (check-record! who seq ts actor deps)
     (unless (and (integer? seq) (exact? seq) (>= seq 0))
       (assertion-violation who "seq must be a non-negative exact integer" seq))
     (unless (and (integer? ts) (exact? ts) (>= ts 0))
       (assertion-violation who "ts must be a non-negative exact integer" ts))
-    (unless (or (string? actor)
-                (and (list? actor) (= 5 (length actor))))
-      (assertion-violation who "actor must be a string or a five element list" actor))
+    (unless (or (string? actor) (request-actor? actor))
+      (assertion-violation who
+        "actor must be a string or a six element request actor" actor))
     ;; THE ACTOR IS THIS FUNCTION'S RESPONSIBILITY IN A WAY THE PAYLOAD
     ;; IS NOT: the format defines its shape, so it must also be storable
     ;; here rather than by arrangement with the caller. An uninterned

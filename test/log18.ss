@@ -571,6 +571,40 @@
         (why (pub d 7 (recs 4 4))))
       '(segment-layout-conflict (gap-before-candidate (history-ends 2) (candidate-starts 4))))
 
+(printf "\n== P11: a name no reader will ever look at is not a writer ==\n")
+;; Writer ids are eight characters of [0-9a-z] and the reader filters the
+;; directory by exactly that. A segment published under any other name is
+;; durable, listed in a manifest, and delivered to nothing -- while the
+;; sender is told `published` and deletes its own copy on the strength of
+;; it. Durable and unreachable is the inverse of what an answer promises.
+;;
+;; The check asks the SAME predicate the reader uses; a second opinion
+;; about what a writer id is would put the two back where they started.
+(define (publish-as name)
+  (let ((d (fresh!)))
+    (list (why (log-publish! d name 1 (recs 1 2) (sha-of (recs 1 2))))
+          (file-is-directory? (string-append d "/writers/" name)))))
+(want "a name that is too short is refused, and nothing is created"
+      (publish-as "mirrora")
+      (list '(refused invalid-writer (writer "mirrora")) #f))
+(want "too long, and out of the character set, likewise"
+      (list (car (publish-as "mirrorabcd")) (car (publish-as "MIRRORZZ")))
+      (list '(refused invalid-writer (writer "mirrorabcd"))
+            '(refused invalid-writer (writer "MIRRORZZ"))))
+(want "TWIN: eight characters of the right kind publish"
+      (publish-as "mirrorzz")
+      (list '(published 1) #t))
+;; AND THE READER AGREES, which is the property the refusal exists to
+;; keep: a name this store would publish is a name it will also read.
+(want "the published writer is one the reader lists"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 2))
+        (let ((ls (log-open d)))
+          (let ((names (load-writers ls)))
+            (load-abort! ls 'probe)
+            (and (member M names) #t))))
+      #t)
+
 (printf "\n~a failures\n" bad)
 ;; A run that did not reach here is not a pass. The runner requires this
 ;; line AND a zero failure count: they are two propositions.
