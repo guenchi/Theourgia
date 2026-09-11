@@ -486,6 +486,20 @@
 
      (define fault-spec (getenv "THEOURGIA_FAULT"))
 
+     ;; NOFLOCK: THE PRODUCT'S LOCK IS REMOVED AND THE BARRIER IS KEPT.
+     ;; It exists so that the rows asserting mutual exclusion can be
+     ;; shown to fail when there is no mutual exclusion -- a lock is
+     ;; invisible to every assertion about the answers that come back,
+     ;; so without a way to take it away those rows are green for a
+     ;; build that never locks at all.
+     ;; IT SKIPS THE SYSCALL AND THE TWO EVENTS THAT DESCRIBE IT. The
+     ;; log layer still announces `enter-critical` on its own, which is
+     ;; what makes that event the discriminator: under NOFLOCK a second
+     ;; process reaches enter-critical while the first is still inside.
+     (define no-flock?
+       (let ((v (getenv "THEOURGIA_NOFLOCK")))
+         (and v (string=? v "1"))))
+
      ;; The stage a caller is currently in. #f means "no stage
      ;; declared", and a staged fault never matches that -- an
      ;; unlabelled call site cannot be the one a case is aiming at.
@@ -717,6 +731,7 @@
      (define (stat-fault? path) #f)
      (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
+     (define no-flock? #f)
      (define (write-once fd bv count subject) (real-write fd bv count))))
 
   ;; ---- opening ----------------------------------------------------------
@@ -1117,17 +1132,18 @@
       (let ((fd (c-open path O_RDONLY)))
         (when (< fd 0) (fail! 'open path))
         (hashtable-set! fd-paths fd path)
-        (guard (e (#t (close-quietly fd) (raise e)))
-          (let ((rc (c-flock fd (+ m LOCK_NB))))
-            (when (< rc 0)
-              (trace-event! 'lock-wait subject #f)
-              (let retry ()
-                (let ((rc (c-flock fd m)))
-                  (when (< rc 0)
-                    (if (= (errno) EINTR)
-                        (retry)
-                        (fail! 'flock path))))))))
-        (trace-event! 'flock subject #f)
+        (unless no-flock?
+          (guard (e (#t (close-quietly fd) (raise e)))
+            (let ((rc (c-flock fd (+ m LOCK_NB))))
+              (when (< rc 0)
+                (trace-event! 'lock-wait subject #f)
+                (let retry ()
+                  (let ((rc (c-flock fd m)))
+                    (when (< rc 0)
+                      (if (= (errno) EINTR)
+                          (retry)
+                          (fail! 'flock path))))))))
+          (trace-event! 'flock subject #f))
         (make-lock-handle path mode fd #t))))
 
   ;; Idempotent, because the caller owning the release will sometimes

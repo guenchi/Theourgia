@@ -1,0 +1,722 @@
+#!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; P1, P3's rendering, P6, P7 and P8 through real processes. Every row
+;; here runs `scheme --script cli.ss ...` and judges stdout, stderr and
+;; the exit code -- the three things an agent or a shell actually sees.
+;; The library-level half of the same criteria is store1.ss.
+(import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log)
+        (theourgia ffi) (theourgia wire)
+        (only (igropyr crypto) sha256 bytevector->hex))
+
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    (system (string-append "mkdir -p " path))
+    path))
+
+(define bad 0)
+(define (want label got expect)
+  (let ((ok (equal? got expect)))
+    (unless ok (set! bad (+ bad 1)))
+    (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
+            (if ok "" (format "   WANT ~s" expect)))))
+
+(define cli
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (string-append (if cut (substring self 0 cut) ".") "/cli.ss")))
+
+(define (write-file! path text)
+  (call-with-port (open-file-output-port path (file-options no-fail))
+    (lambda (p) (put-bytevector p (string->utf8 text)))))
+
+(define (slurp path)
+  (guard (e (#t ""))
+    (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
+      (if (eof-object? b) "" (utf8->string b)))))
+
+;; STDOUT, STDERR AND THE EXIT CODE ARE THREE SEPARATE READINGS. Folding
+;; them together is how a diagnostic on stderr comes to be read as the
+;; answer, and how a non-zero code goes unnoticed because the text
+;; looked right.
+;;
+;; THE CHILD INHERITS THE WHOLE SUITE'S ENVIRONMENT, not the one this
+;; file set up. The suite runner exports THEOURGIA_INJECT=on for the
+;; fault cases, every `scheme --script cli.ss` started here inherits it,
+;; and the expansion-time banner then puts a SECOND line on stderr --
+;; so the stderr rows below passed when run by hand and failed under
+;; run-all. `env -u` removes it for the ordinary runs; a row that wants
+;; injection sets it on its own command line, which is where wanting it
+;; should be visible. Every child started from this file has to think
+;; about this: the environment it gets is the suite's, not this file's.
+(define scratch (test-dir "cli1"))
+(define (run store args . stdin)
+  (let ((out (string-append scratch "/out.txt"))
+        (err (string-append scratch "/err.txt")))
+    (let* ((cmd (string-append
+                  (if (null? stdin)
+                      ""
+                      (string-append "printf '%s' " (car stdin) " | "))
+                  "env -u THEOURGIA_INJECT -u THEOURGIA_FAULT -u THEOURGIA_BARRIER "
+                  "scheme --script " cli " " args
+                  (if store (string-append " --store " store) "")
+                  " > " out " 2> " err))
+           (code (system cmd)))
+      (list code (slurp out) (slurp err)))))
+
+(define (code-of r) (car r))
+(define (out-of r) (cadr r))
+(define (err-of r) (caddr r))
+(define (datum-of r)
+  (guard (e (#t 'unreadable))
+    (let ((p (open-string-input-port (out-of r)))) (read p))))
+;; THE DIAGNOSTIC LINE THE FFI PRINTS ON EVERY RUN IS NOT AN ERROR. P6
+;; allows stderr to hold one line; what it must not hold is a second
+;; one, and what stdout must never hold is a diagnostic.
+(define (err-lines r)
+  (let loop ((i 0) (n 0))
+    (cond ((>= i (string-length (err-of r))) n)
+          ((char=? (string-ref (err-of r) i) #\newline) (loop (+ i 1) (+ n 1)))
+          (else (loop (+ i 1) n)))))
+
+;; THE WRITER'S NAME IS READ OFF THE STORE, not remembered from the init
+;; answer: every row that builds a block id needs it, and taking it from
+;; the directory is the same thing a second process would have to do.
+(define (writer-of dir)
+  (let ((ws (store-writers dir)))
+    (if (null? ws) 'no-writer (car ws))))
+
+(define (files-under dir)
+  (let ((listing (string-append scratch "/files.txt")))
+    (system (string-append "cd " dir " && find . -type f | sort > " listing))
+    (slurp listing)))
+(define (tree-digest dir)
+  (let ((listing (string-append scratch "/digest.txt")))
+    (system (string-append "cd " dir " && find . -type f | sort | xargs md5 -q 2>/dev/null | sort > "
+                           listing))
+    (string-append (files-under dir) "|" (slurp listing))))
+
+(printf "== P1: init ==\n")
+(define d1 (test-dir "cli1init"))
+;; THE MACHINE REGISTRY LIVES OUTSIDE THE STORE. Pointing
+;; THEOURGIA_HOME inside it puts the registry's own files into the
+;; store's listing, and the layout row then fails for a layout that
+;; is correct.
+(define home1 (string-append scratch "/home1"))
+(putenv "THEOURGIA_HOME" home1)
+(define init-run (run d1 "init"))
+(want "init answers with the store and the writer, and exits 0"
+      (list (code-of init-run)
+            (car (datum-of init-run))
+            (car (cadr (datum-of init-run)))
+            (car (caddr (datum-of init-run))))
+      (list 0 'ok 'store 'writer))
+(define the-writer (cadr (caddr (datum-of init-run))))
+;; THE LAYOUT IS SECTION 4.1 EXACTLY, named file by file. A row that
+;; only checked "the directory is not empty" would pass for a store
+;; missing the lock, which is the one file that must never be replaced.
+(want "the directory holds exactly the files section 4.1 names"
+      (files-under d1)
+      (string-append "./instance.sexp\n./lock\n./meta.sexp\n"
+                     "./writers/" the-writer "/000001.sexp\n"
+                     "./writers/" the-writer "/owner.sexp\n"))
+(want "and the current segment is empty, not absent"
+      (string-length (slurp (string-append d1 "/writers/" the-writer "/000001.sexp")))
+      0)
+;; THE REGISTRY FILE IS NAMED DIRECTLY, not asked of registry-path.
+;; That procedure resolves the home when the library is first invoked,
+;; and this fixture changes THEOURGIA_HOME per store -- so it answers
+;; for whichever home happened to be current at load time, which is a
+;; reading about this process rather than about the store just made.
+;; THE ENTRY IS KEYED BY STORE ID, NOT BY PATH -- a store that is moved
+;; or mounted somewhere else is still the same store to the registry.
+;; The water mark starts at zero: init has reserved nothing.
+(want "the machine registry carries this store's id, writer and a zero water mark"
+      (let* ((text (slurp (string-append home1 "/instances.sexp")))
+             (data (guard (e (#t 'unreadable))
+                     (read (open-string-input-port text))))
+             (sid (cadr (cadr (datum-of init-run)))))
+        (if (not (list? data))
+            (list 'unreadable text)
+            (let ((e (assoc sid data)))
+              (if (not e)
+                  (list 'no-entry-for sid data)
+                  (list (car e) (caddr e) (cadddr e) (car (cddddr e)))))))
+      (list (cadr (cadr (datum-of init-run))) the-writer 0 'active))
+(define before-second (tree-digest d1))
+(define second-init (run d1 "init"))
+(want "a second init is refused, with a non-zero code"
+      (list (> (code-of second-init) 0) (car (datum-of second-init)) (cadr (datum-of second-init)))
+      (list #t 'error 'already-initialised))
+(want "and it changed nothing on disk"
+      (equal? before-second (tree-digest d1))
+      #t)
+;; A DIRECTORY CARRYING SOMEONE ELSE'S WRITER IS NOT "ALREADY
+;; INITIALISED" -- it is a store that arrived from elsewhere, and
+;; minting a second writer beside the first would give two writers the
+;; same history to own.
+(define d1f (test-dir "cli1foreign"))
+(system (string-append "mkdir -p " d1f "/writers/aaaaaaaa"))
+(system (string-append "printf '((machine \"elsewhere\") (instance \"n-1-1\"))\\n' > "
+                       d1f "/writers/aaaaaaaa/owner.sexp"))
+(define foreign-init (run d1f "init"))
+(want "init on a store carrying a foreign writer points at adopt"
+      (list (> (code-of foreign-init) 0)
+            (car (datum-of foreign-init))
+            (cadr (datum-of foreign-init))
+            (cadddr (datum-of foreign-init)))
+      (list #t 'error 'foreign-writer (list 'remedy 'adopt)))
+
+(printf "== P3: what outline prints ==\n")
+(define d3 (test-dir "cli1outline"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home3"))
+(run d3 "init")
+(run d3 "insert --under root --title Alpha")
+(run d3 "insert --under root --title Beta")
+(define A (string-append (writer-of d3) ".1"))
+(define Bb (string-append (writer-of d3) ".2"))
+(run d3 (string-append "insert --under " A " --title Child"))
+(define C (string-append (writer-of d3) ".3"))
+;; THE EXPECTED TEXT IS WRITTEN OUT HERE, not derived from the same code
+;; that produces it. A render compared against its own generator agrees
+;; with itself however wrong it is.
+(want "the outline is a tree, indented by depth"
+      (out-of (run d3 "outline"))
+      (string-append "- " A "  Alpha\n"
+                     "  - " C "  Child\n"
+                     "- " Bb "  Beta\n"))
+(want "a deleted block leaves the outline and its child is an orphan"
+      (begin (run d3 (string-append "del " A))
+             (out-of (run d3 "outline")))
+      (string-append "- " Bb "  Beta\n"
+                     "orphans:\n"
+                     "- " C "  Child\n"))
+
+(printf "== P6: errors an agent can act on ==\n")
+(define d6 (test-dir "cli1errors"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home6"))
+(run d6 "init")
+(run d6 "insert --under root --title Only")
+(define only-id (string-append (writer-of d6) ".1"))
+(define short-set (run d6 "set"))
+(want "a verb given the wrong shape prints the right shape"
+      (list (> (code-of short-set) 0) (datum-of short-set) (out-of short-set))
+      (list #t '(usage (set <id> <field> <value>))
+            "(usage (set <id> <field> <value>))\n"))
+(define unknown (run d6 "set nosuch.9 title x"))
+(want "an unknown id names the ids that do exist"
+      (list (> (code-of unknown) 0)
+            (car (datum-of unknown)) (cadr (datum-of unknown)) (caddr (datum-of unknown))
+            (cadddr (datum-of unknown)))
+      (list #t 'error 'unknown-id "nosuch.9" (list 'nearest (list only-id))))
+(want "and neither of them wrote more than one line to stderr"
+      (list (err-lines short-set) (err-lines unknown))
+      (list 1 1))
+
+(printf "== P6: a store that cannot be opened is still an answer ==\n")
+;; AN UNCAUGHT EXCEPTION IS NOT AN ANSWER. The agent reading stdout gets
+;; nothing, the backtrace goes somewhere it is not looking, and "the
+;; store is not there" is indistinguishable from "the tool broke". Every
+;; one of these used to print a Chez condition and leave stdout empty.
+(define missing (run "/nonexistent/nowhere" "outline"))
+(want "outline on a path with no store answers, and says which path"
+      (list (> (code-of missing) 0) (datum-of missing) (err-lines missing))
+      (list #t '(error no-store "/nonexistent/nowhere") 1))
+(define d6b (test-dir "cli1nostore"))
+(want "so does a directory that exists but was never initialised"
+      (let ((r (run d6b "insert --under root --title x")))
+        (list (> (code-of r) 0) (datum-of r)))
+      (list #t (list 'error 'no-store d6b)))
+;; A STORE WHOSE meta.sexp IS THERE BUT UNREADABLE IS A DIFFERENT ANSWER
+;; from one that is absent: the caller can create the second and must
+;; not create over the first.
+(define d6c (test-dir "cli1badmeta"))
+(system (string-append "printf '(oops' > " d6c "/meta.sexp"))
+(define bad-meta (run d6c "outline"))
+(want "a corrupt meta is named as a meta problem, not as a missing store"
+      (list (> (code-of bad-meta) 0)
+            (car (datum-of bad-meta))
+            (cadr (datum-of bad-meta))
+            (err-lines bad-meta))
+      (list #t 'error 'meta 1))
+(define d6d (test-dir "cli1oldformat"))
+(system (string-append "printf '((format 9))\\n' > " d6d "/meta.sexp"))
+(want "and so is a format this build does not support"
+      (let ((r (run d6d "outline")))
+        (list (> (code-of r) 0) (car (datum-of r)) (cadr (datum-of r))
+              (assq 'supported (cddr (datum-of r)))))
+      (list #t 'error 'meta '(supported 1)))
+;; CONTROL: THE SAME VERB ON A GOOD STORE STILL WORKS. A translation
+;; layer that turned every outcome into an error would pass every row
+;; above.
+(want "CONTROL: outline on a real store still answers normally"
+      (let ((r (run d3 "outline")))
+        (list (code-of r) (> (string-length (out-of r)) 0)))
+      (list 0 #t))
+
+(printf "== P7: a batch is one lock and one answer per item ==\n")
+(define d7 (test-dir "cli1batch"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home7"))
+(run d7 "init")
+(run d7 "insert --under root --title Head")
+(define head (string-append (writer-of d7) ".1"))
+(define good-batch
+  (run d7 "batch"
+       (string-append "'((insert root #f ((kind . section) (title . \"from-batch\")))"
+                      " (set \"" head "\" note \"n\")"
+                      " (link \"" head "\" explains \"" head "\"))'")))
+(want "three items, three answers, exit 0"
+      (list (code-of good-batch)
+            (car (datum-of good-batch))
+            (map car (cadr (datum-of good-batch))))
+      (list 0 'batch '(ok ok ok)))
+(define mixed-batch
+  (run d7 "batch"
+       (string-append "'((set \"" head "\" a \"1\")"
+                      " (set \"nosuch.9\" b \"2\")"
+                      " (set \"" head "\" c \"3\"))'")))
+;; THE ITEM AFTER THE FAILURE IS NOT ATTEMPTED, and the ones before it
+;; stay committed. Two answers for three items is the shape that says so.
+(want "a failing item stops the rest and the answer is shorter than the input"
+      (list (> (code-of mixed-batch) 0)
+            (map car (cadr (datum-of mixed-batch))))
+      (list #t '(ok error)))
+(want "what came before the failure is on disk, what came after is not"
+      (let* ((state (open-and-reduce d7))
+             (b (state-read state head))
+             (fs (cdr (assq 'fields b))))
+        (list (and (assq 'a fs) #t) (and (assq 'c fs) #t)))
+      (list #t #f))
+
+(printf "== P4: two processes writing the same store ==\n")
+;; ONE WRITER, TWO PROCESSES. Both open sessions against the same store
+;; and the same local writer, so the sequence numbers they take have to
+;; form one run with no gap and no repeat -- the exclusive lock is the
+;; only thing making that true, and nothing about the answers each
+;; process gets would look different if it were missing.
+;; THE WHOLE LIST IS REDIRECTED, NOT ITS LAST COMMAND. A shell binds
+;; `> file` to the simple command it follows, so `a; b; echo x > f`
+;; captures only the echo -- and every line before it goes to the
+;; terminal, where it reads as the fixture printing progress rather than
+;; as a report that was supposed to be parsed.
+(define (sh cmd)
+  (let ((out (string-append scratch "/sh.txt")))
+    (system (string-append "{ " cmd "; } > " out " 2>&1"))
+    (slurp out)))
+
+(define d4 (test-dir "cli1race"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home4"))
+(run d4 "init")
+(define many-path (string-append scratch "/many.ss"))
+(write-file! many-path
+  (string-append
+    "#!r6rs\n(import (chezscheme) (theourgia store))\n"
+    "(define a (cdr (command-line)))\n"
+    "(let loop ((i 1))\n"
+    "  (when (<= i (string->number (caddr a)))\n"
+    "    (with-store-write (car a)\n"
+    "      (lambda (st v)\n"
+    "        (list (list 'insert 'root #f\n"
+    "                    (list (cons 'kind 'section)\n"
+    "                          (cons 'title (string-append (cadr a) \"-\"\n"
+    "                                        (number->string i))))))))\n"
+    "    (loop (+ i 1))))\n"))
+(sh (string-append
+      "cd " scratch " && ( env -u THEOURGIA_INJECT scheme --script " many-path
+      " " d4 " P 50 & env -u THEOURGIA_INJECT scheme --script " many-path
+      " " d4 " Q 50 & wait )"))
+
+;; EVERY RECORD IS DECODED, not counted by lines: a torn or duplicated
+;; record still occupies a line, and the property being asserted is
+;; about the sequence numbers inside them.
+(define (seqs-of dir)
+  (let* ((w (writer-of dir))
+         (text (slurp (string-append dir "/writers/" w "/000001.sexp")))
+         (n (string-length text)))
+    (let loop ((i 0) (start 0) (acc '()))
+      (cond
+        ((>= i n) (reverse acc))
+        ((char=? (string-ref text i) #\newline)
+         (let ((r (decode-line (string->utf8 (substring text start (+ i 1))))))
+           (loop (+ i 1) (+ i 1)
+                 (cons (if (and (pair? r) (eq? (car r) 'ok)) (cadr r) r) acc))))
+        (else (loop (+ i 1) start acc))))))
+
+(want "a hundred records, numbered one to a hundred with no gap and no repeat"
+      (let ((seqs (seqs-of d4)))
+        (list (length seqs)
+              (equal? seqs (let build ((k 100) (out '()))
+                             (if (= k 0) out (build (- k 1) (cons k out)))))))
+      (list 100 #t))
+(want "and the outline lists all hundred, in the order they were committed"
+      (let* ((text (out-of (run d4 "outline")))
+             (w (writer-of d4))
+             (ids (let loop ((i 0) (start 0) (acc '()))
+                    (cond
+                      ((>= i (string-length text)) (reverse acc))
+                      ((char=? (string-ref text i) #\newline)
+                       (let ((line (substring text start i)))
+                         (loop (+ i 1) (+ i 1)
+                               (cons (substring line 2
+                                                (let scan ((j 2))
+                                                  (if (or (>= j (string-length line))
+                                                          (char=? (string-ref line j) #\space))
+                                                      j (scan (+ j 1)))))
+                                     acc))))
+                      (else (loop (+ i 1) start acc))))))
+        (let ((expected (let build ((k 1) (out '()))
+                          (if (> k 100)
+                              (reverse out)
+                              (build (+ k 1)
+;; CHEZ'S number->string GIVES UPPERCASE DIGITS ABOVE
+                                     ;; NINE -- 10 comes out "A". The product
+                                     ;; spells its ids with its own lowercase
+                                     ;; table, so an expectation built from
+                                     ;; number->string disagrees from the tenth
+                                     ;; id onward and says nothing about order.
+                                     (cons (string-append
+                                             w "." (string-downcase (number->string k 36)))
+                                           out))))))
+          (list (length ids)
+                (if (equal? ids expected)
+                    #t
+                    ;; A BARE #f SAYS NOTHING ABOUT WHERE. The first
+                    ;; disagreeing pair is what tells "the order is
+                    ;; wrong" apart from "the ids are built wrong".
+                    (let find ((a ids) (b expected) (k 0))
+                      (cond ((or (null? a) (null? b)) (list 'length k))
+                            ((equal? (car a) (car b)) (find (cdr a) (cdr b) (+ k 1)))
+                            (else (list 'row k 'got (car a) 'want (car b)))))))))
+      (list 100 #t))
+
+(printf "== P4: a reader waits for the writer's lock ==\n")
+;; THE WRITER PARKS INSIDE THE CRITICAL SECTION and the reader is caught
+;; waiting. What the reader must NOT do is read the half-written record
+;; the writer is in the middle of appending -- so the assertion is both
+;; that it waited and that what it finally read is whole.
+;; THE CONTROLLER RELEASES ON EITHER SIGNAL. Waiting only for lock-wait
+;; would hang for any build that does not take the lock at all, which is
+;; precisely the build this is meant to catch.
+(define d4b (test-dir "cli1barrier"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home4b"))
+(run d4b "init")
+(run d4b "insert --under root --title Seed")
+(define hold-path (string-append scratch "/holder.ss"))
+(write-file! hold-path
+  (string-append
+    "#!r6rs\n(import (chezscheme) (theourgia store))\n"
+    "(with-store-write (cadr (command-line))\n"
+    "  (lambda (st v)\n"
+    "    '((insert root #f ((kind . section) (title . \"held\"))))))\n"))
+(define barrier-report
+  (let ((gate (string-append scratch "/gate"))
+        (ht (string-append scratch "/holder.trace"))
+        (qt (string-append scratch "/reader.trace"))
+        (qo (string-append scratch "/reader.out")))
+    (sh (string-append
+          "rm -f " gate " " ht " " qt " " qo "; mkfifo " gate "; "
+;; NOT WRAPPED IN A SUBSHELL. `( cmd & )` puts the job in a
+          ;; child shell's table, so the outer `wait` has nothing to
+          ;; wait for and the report is read while the processes are
+          ;; still running -- which is how the reader's output came out
+          ;; empty.
+          "THEOURGIA_INJECT=on THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
+          "  scheme --script " hold-path " " d4b " > /dev/null 2> " ht " & "
+          "i=0; while [ $i -lt 4000 ] && ! grep -q barrier " ht " 2>/dev/null; do i=$((i+1)); done; "
+          "env -u THEOURGIA_INJECT THEOURGIA_TRACE=1 scheme --script " cli
+          "  outline --store " d4b " > " qo " 2> " qt " & "
+          "j=0; while [ $j -lt 4000 ] && ! grep -qE 'lock-wait|enter-critical' " qt
+          "  2>/dev/null; do j=$((j+1)); done; "
+          "printf x > " gate "; wait; "
+          "echo READER-WAITED $(grep -c lock-wait " qt "); "
+          "echo READER-ENTERED-EARLY $(grep -c enter-critical " qt "); "
+          "echo LINES $(wc -l < " qo ")"))))
+(define (report-field name)
+  (let loop ((i 0) (start 0))
+    (cond
+      ((>= i (string-length barrier-report)) 'not-found)
+      ((char=? (string-ref barrier-report i) #\newline)
+       (let ((line (substring barrier-report start i)))
+         (if (and (>= (string-length line) (string-length name))
+                  (string=? (substring line 0 (string-length name)) name))
+             (string->number (substring line (+ 1 (string-length name))
+                                        (string-length line)))
+             (loop (+ i 1) (+ i 1)))))
+      (else (loop (+ i 1) start)))))
+(want "the reader was observed waiting for the lock, and never entered early"
+      (list (report-field "READER-WAITED") (report-field "READER-ENTERED-EARLY"))
+      (list 1 0))
+(want "and what it read once released is two whole records"
+      (report-field "LINES")
+      2)
+;; TWO WRITERS, AND THE SECOND IS CAUGHT AT THE DOOR. `enter-critical`
+;; is announced by the log layer INSIDE the critical section, so it is
+;; the event that says "this process got in" -- and a reader never
+;; reaches it, which is why this pair uses a second writer rather than
+;; the reader above.
+;; THE COUNTS ARE READ BEFORE THE BARRIER IS RELEASED. Afterwards the
+;; second writer gets in legitimately and its enter-critical appears; a
+;; reading taken then cannot tell a lock from no lock.
+(define d4c (test-dir "cli1twowriters"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home4c"))
+(run d4c "init")
+(run d4c "insert --under root --title Seed")
+(define (two-writers extra)
+  (let ((gate (string-append scratch "/gate-" extra))
+        (ht (string-append scratch "/p-" extra ".trace"))
+        (qt (string-append scratch "/q-" extra ".trace"))
+        (env (if (string=? extra "noflock") "THEOURGIA_NOFLOCK=1 " "")))
+    (sh (string-append
+          "rm -f " gate " " ht " " qt "; mkfifo " gate "; "
+          "THEOURGIA_INJECT=on " env
+          "THEOURGIA_BARRIER=before-append:" gate " THEOURGIA_TRACE=1 "
+          "  scheme --script " hold-path " " d4c " > /dev/null 2> " ht " & "
+          "i=0; while [ $i -lt 4000 ] && ! grep -q barrier " ht " 2>/dev/null; do i=$((i+1)); done; "
+          "THEOURGIA_INJECT=on " env "THEOURGIA_TRACE=1 scheme --script " hold-path
+          "  " d4c " > /dev/null 2> " qt " & "
+          "j=0; while [ $j -lt 4000 ] && ! grep -qE 'lock-wait|enter-critical' " qt
+          "  2>/dev/null; do j=$((j+1)); done; "
+          "echo EARLY $(grep -c enter-critical " qt "); "
+          "echo WAITED $(grep -c lock-wait " qt "); "
+          "printf x > " gate "; wait"))))
+(define (field-in report name)
+  (let loop ((i 0) (start 0))
+    (cond
+      ((>= i (string-length report)) 'not-found)
+      ((char=? (string-ref report i) #\newline)
+       (let ((line (substring report start i)))
+         (if (and (>= (string-length line) (string-length name))
+                  (string=? (substring line 0 (string-length name)) name))
+             (string->number (substring line (+ 1 (string-length name)) (string-length line)))
+             (loop (+ i 1) (+ i 1)))))
+      (else (loop (+ i 1) start)))))
+(define locked-report (two-writers "locked"))
+(want "the second writer waits at the door while the first is inside"
+      (list (field-in locked-report "WAITED") (field-in locked-report "EARLY"))
+      (list 1 0))
+;; THE REVERSE. A lock leaves no trace in any answer, so the row above
+;; is green for a build that never takes one. This is the run that says
+;; it is not: with the product's lock removed and the barrier kept, the
+;; second writer walks in while the first is still parked inside.
+(define noflock-report (two-writers "noflock"))
+(want "with the lock removed the second writer gets in early and never waits"
+      (list (field-in noflock-report "EARLY") (field-in noflock-report "WAITED"))
+      (list 1 0))
+
+(printf "== P8: a mirrored writer, through the command line ==\n")
+;; THE fx2w LAYOUT: the local writer plus a second writer's segment with
+;; a published manifest beside it. The mirror is read-only here -- this
+;; machine never appends to it -- and the point is that its blocks are
+;; ordinary blocks to every reading verb.
+(define d8 (test-dir "cli1mirror"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home8"))
+(run d8 "init")
+(run d8 "insert --under root --title Local")
+(define w8 (writer-of d8))
+(define M "mirrorz9")
+(define (mirror-bytes records)
+  (let* ((bs (map (lambda (e)
+                    (encode-record (car e) (+ 1757300000000 (car e))
+                                   "agent:claude" (cadr e) (storable-encode (caddr e))))
+                  records))
+         (n (apply + (map bytevector-length bs)))
+         (o (make-bytevector n)))
+    (let loop ((bs bs) (i 0))
+      (if (null? bs)
+          o
+          (begin (bytevector-copy! (car bs) 0 o i (bytevector-length (car bs)))
+                 (loop (cdr bs) (+ i (bytevector-length (car bs)))))))))
+(system (string-append "mkdir -p " d8 "/writers/" M))
+(define seg1
+  (mirror-bytes (list (list 1 '() (list 'put (list (cons 'kind 'section)
+                                                   (cons 'title "FromMirror"))))
+                      (list 2 '() (list 'set (string-append M ".1") 'note "m2")))))
+(call-with-port (open-file-output-port (string-append d8 "/writers/" M "/000001.sexp")
+                                       (file-options no-fail))
+  (lambda (p) (put-bytevector p seg1)))
+(write-manifest! d8 M (list (cons 1 (bytevector->hex (sha256 seg1)))))
+;; BOTH BLOCKS SIT AT ROOT WITH ORD 0 -- the local insert took the
+;; first place in an empty list, and the mirror's put declared no
+;; position at all -- so the tie is broken by block id, and the local
+;; writer's id is GENERATED AT INIT. Writing the order out by hand makes
+;; this row a coin flip that passes on about half the runs: it did pass,
+;; then failed on the next run for a store whose writer happened to sort
+;; the other way. The order is derived from the same rule the product
+;; uses instead.
+(want "the outline lists the mirror's block beside the local one, tie broken by id"
+      (out-of (run d8 "outline"))
+      (let* ((local (string-append w8 ".1"))
+             (mirror (string-append M ".1"))
+             (first (if (string<? local mirror) local mirror))
+             (second (if (string<? local mirror) mirror local))
+             (label (lambda (id) (if (string=? id local) "Local" "FromMirror"))))
+        (string-append "- " first "  " (label first) "\n"
+                       "- " second "  " (label second) "\n")))
+(want "and read answers for a mirrored block like any other"
+      (let ((r (run d8 (string-append "read " M ".1"))))
+        (list (code-of r)
+              (cdr (assq 'title (cdr (assq 'fields (cadr (datum-of r))))))
+              (cdr (assq 'note (cdr (assq 'fields (cadr (datum-of r))))))))
+      (list 0 "FromMirror" "m2"))
+;; A SEGMENT THE MANIFEST DOES NOT LIST IS NOT PART OF THE HISTORY. It
+;; is on disk and readable, and it is ignored -- publication is what
+;; makes a mirrored segment count, not the file being there.
+(define seg2
+  (mirror-bytes (list (list 3 '() (list 'set (string-append M ".1") 'title "Unpublished")))))
+(call-with-port (open-file-output-port (string-append d8 "/writers/" M "/000002.sexp")
+                                       (file-options no-fail))
+  (lambda (p) (put-bytevector p seg2)))
+(want "an unlisted segment is ignored, and the title is still the published one"
+      (let ((r (run d8 (string-append "read " M ".1"))))
+        (list (code-of r)
+              (cdr (assq 'title (cdr (assq 'fields (cadr (datum-of r))))))))
+      (list 0 "FromMirror"))
+(want "CONTROL: listing it makes it count"
+      (begin
+        (write-manifest! d8 M (list (cons 1 (bytevector->hex (sha256 seg1)))
+                                    (cons 2 (bytevector->hex (sha256 seg2)))))
+        (let ((r (run d8 (string-append "read " M ".1"))))
+          (list (code-of r)
+                (cdr (assq 'title (cdr (assq 'fields (cadr (datum-of r)))))))))
+      (list 0 "Unpublished"))
+;; AND A LOCAL WRITE UNDER A MIRRORED BLOCK DECLARES WHAT IT HAD SEEN OF
+;; THAT WRITER. Without the dep a reader cannot tell whether this block
+;; was placed knowing the mirror's history or in ignorance of it.
+(want "an insert under a mirrored block succeeds and names the mirror's last sequence"
+      (let ((r (run d8 (string-append "insert --under " M ".1 --title Under"))))
+        (list (code-of r) (car (datum-of r))))
+      (list 0 'ok))
+(want "and the record on disk carries that dependency"
+      (let* ((text (slurp (string-append d8 "/writers/" w8 "/000001.sexp")))
+             (n (string-length text))
+             (second (let loop ((i 0) (start 0) (k 0))
+                       (cond ((>= i n) 'no-record)
+                             ((char=? (string-ref text i) #\newline)
+                              (if (= k 1)
+                                  (decode-line (string->utf8 (substring text start (+ i 1))))
+                                  (loop (+ i 1) (+ i 1) (+ k 1))))
+                             (else (loop (+ i 1) start k))))))
+        (if (and (pair? second) (eq? (car second) 'ok)) (list-ref second 4) second))
+      (list (cons M 3)))
+
+(printf "== P9: the lock is released on the failing path too ==\n")
+;; A WRITE THAT FAILS STILL HELD THE LOCK WHILE IT RAN. If the failure
+;; path returns without releasing, the store stays locked for as long as
+;; that process lives -- and a process that exits immediately after
+;; hides it, because closing the file descriptor releases the lock
+;; anyway. So the child fails a write and then STAYS ALIVE, parked on a
+;; fifo, while a second process tries to write.
+(define d9 (test-dir "cli1lockrelease"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home9"))
+(run d9 "init")
+(run d9 "insert --under root --title Seed")
+(define fail-path (string-append scratch "/failer.ss"))
+(write-file! fail-path
+  (string-append
+    "#!r6rs\n(import (chezscheme) (theourgia store))\n"
+    "(define a (cdr (command-line)))\n"
+    "(define answer\n"
+    "  (with-store-write (car a)\n"
+    "    (lambda (st v) '((insert \"nosuch.9\" #f ((kind . section) (title . \"x\")))))))\n"
+    "(display (car (car answer))) (newline)\n"
+    ";; still alive, and still holding whatever it did not release\n"
+    "(let ((p (open-file-input-port (cadr a)))) (get-u8 p) (close-port p))\n"))
+(define release-report
+  (let ((gate (string-append scratch "/gate9"))
+        (fo (string-append scratch "/failer.out"))
+        (so (string-append scratch "/second.out")))
+    (sh (string-append
+          "rm -f " gate " " fo " " so "; mkfifo " gate "; "
+          "env -u THEOURGIA_INJECT scheme --script " fail-path " " d9 " " gate " > " fo " 2>/dev/null & "
+          "i=0; while [ $i -lt 8000 ] && [ ! -s " fo " ]; do i=$((i+1)); done; "
+          "env -u THEOURGIA_INJECT scheme --script " cli
+          "  insert --under root --title Second --store " d9 " > " so " 2>/dev/null; "
+          "echo SECOND $?; "
+          "echo FAILER $(head -1 " fo "); "
+          "printf x > " gate "; wait"))))
+(define (release-field name)
+  (let loop ((i 0) (start 0))
+    (cond
+      ((>= i (string-length release-report)) 'not-found)
+      ((char=? (string-ref release-report i) #\newline)
+       (let ((line (substring release-report start i)))
+         (if (and (>= (string-length line) (string-length name))
+                  (string=? (substring line 0 (string-length name)) name))
+             (substring line (+ 1 (string-length name)) (string-length line))
+             (loop (+ i 1) (+ i 1)))))
+      (else (loop (+ i 1) start)))))
+(want "CONTROL: the first process really did fail its write and is still running"
+      (release-field "FAILER")
+      "error")
+(want "a second process can write while the failed one is still alive"
+      (release-field "SECOND")
+      "0")
+(want "and the second write is on disk"
+      (let ((r (run d9 "outline")))
+        (list (code-of r)
+              (let count ((i 0) (n 0))
+                (cond ((>= i (string-length (out-of r))) n)
+                      ((char=? (string-ref (out-of r) i) #\newline) (count (+ i 1) (+ n 1)))
+                      (else (count (+ i 1) n))))))
+      (list 0 2))
+
+(printf "== P9: a damaged local writer refuses to be written to ==\n")
+;; A BAD LINE FOLLOWED BY A GOOD ONE. A torn tail at the very end is an
+;; ordinary crash and is truncated; damage with valid records AFTER it
+;; is not something this writer can reason about, so it stops writing
+;; and says what the remedy is rather than appending past a hole.
+(define d9b (test-dir "cli1damaged"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home9b"))
+(run d9b "init")
+(run d9b "insert --under root --title One")
+(run d9b "insert --under root --title Two")
+(define w9 (writer-of d9b))
+(define seg-path (string-append d9b "/writers/" w9 "/000001.sexp"))
+(define before-damage-registry (slurp (string-append scratch "/home9b/instances.sexp")))
+(system (string-append "printf 'deadbeef (9 1 \"a\" () (put ()))\\n' >> " seg-path))
+(define good-tail
+  (mirror-bytes (list (list 3 '() (list 'set (string-append w9 ".1") 'title "after-hole")))))
+(system (string-append "cat >> " seg-path " <<'EOF'\n" (utf8->string good-tail) "EOF\n"))
+(define damaged-bytes (slurp seg-path))
+(define damaged-write (run d9b "insert --under root --title Three"))
+(want "a write into a damaged writer is refused and names adopt as the remedy"
+      (list (> (code-of damaged-write) 0)
+            (car (datum-of damaged-write))
+            (cadr (datum-of damaged-write))
+            (caddr (datum-of damaged-write))
+            (cadddr (datum-of damaged-write)))
+      (list #t 'error 'refused 'integrity '(remedy adopt)))
+(want "and neither the log nor the registry moved"
+      (list (equal? damaged-bytes (slurp seg-path))
+            (equal? before-damage-registry
+                    (slurp (string-append scratch "/home9b/instances.sexp"))))
+      (list #t #t))
+
+(printf "\n~a failures\n" bad)
+(printf "cli1 complete\n")

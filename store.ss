@@ -260,6 +260,17 @@
              (else (list (car i) from (caddr i) to)))))
         (else (list 'error 'unknown-verb (car i))))))
 
+  ;; A REFUSAL AN OPERATOR CANNOT ACT ON IS HALF AN ANSWER. These are
+  ;; the reasons where there is one thing to do about it, and saying so
+  ;; is the difference between "this failed" and "run adopt".
+  ;; THE TABLE IS HERE BECAUSE THE ANSWER IS THIS LAYER'S CONTRACT. The
+  ;; log reports what it found; what a caller should do about it is part
+  ;; of the shape this library promises.
+  (define (remedy-for why)
+    (case why
+      ((integrity registry-ahead) 'adopt)
+      (else #f)))
+
   (define (block-ids-of payload writer seq)
     (case (car payload)
       ((put) (list (block-id writer seq)))
@@ -341,8 +352,10 @@
                           ;; be nothing.
                           (if (not (eq? (car outcome) 'committed))
                               (if (eq? (car outcome) 'refused-before-reserve)
-                                  (list 'error 'refused
-                                        (if (pair? (cdr outcome)) (cadr outcome) '()))
+                                  (let ((why (if (pair? (cdr outcome)) (cadr outcome) '())))
+                                    (append (list 'error 'refused why)
+                                            (let ((r (remedy-for why)))
+                                              (if r (list (list 'remedy r)) '()))))
                                   (list 'error 'indeterminate (car outcome)
                                         (list 'sequence seq)))
                               (begin
