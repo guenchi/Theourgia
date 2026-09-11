@@ -69,6 +69,34 @@
           ((not (pair? x)) (loop '() (- k 1) (cons 'missing out)))
           (else (loop (cdr x) (- k 1) (cons (car x) out))))))
 
+;; IDS ARE RELABELLED BY CREATION ORDER, NEVER SPELLED OUT. The writer
+;; name is generated at init, so an expectation carrying a literal
+;; prefix says nothing about the rule it claims to check -- it is a coin
+;; flip, and one that came up heads would be worse than one that did
+;; not. `b1` is the first block this store made, `b2` the second: the
+;; order is the property, and it reads.
+(define (labeller d)
+  (let ((ids (ids-of d)))
+    (lambda (x)
+      (if (not (string? x))
+          x
+          (let loop ((xs ids) (n 1))
+            (cond ((null? xs) x)
+                  ((string=? (car xs) x) (string->symbol (string-append "b" (number->string n))))
+                  (else (loop (cdr xs) (+ n 1)))))))))
+
+;; AND THE ROWS ARE SORTED HERE. state-outline orders by the parent's
+;; printed form, so whether the `root` row comes first or last depends
+;; on how this store's generated writer name happens to sort against
+;; the word "root" -- the same expectation passed for one store and
+;; failed for the next. Sorting on the labels makes the reading about
+;; the tree rather than about the name.
+(define (label-rows d rows)
+  (let ((f (labeller d)))
+    (list-sort (lambda (x y)
+                 (string<? (format "~s" x) (format "~s" y)))
+               (map (lambda (row) (list (f (car row)) (f (caddr row)))) rows))))
+
 (define (records d) (length (reduce-trace (open-and-reduce d))))
 (define (ids-of d) (map cadr (state-datum (open-and-reduce d))))
 
@@ -218,6 +246,137 @@
                (list (map car a) (- (records (cdr t7)) before7)
                      (length (ids-of (cdr t7))))))
       (list '(ok) 1 3))
+
+(printf "== a new section goes where its heading says ==\n")
+;; SECTION 2.1 REQUIRES THE PARENT GRAPH TO BE RE-DERIVABLE FROM THE
+;; HEADING LEVELS. Hanging every new section off the document broke
+;; that: `# A` then a new `## B` came back with B as A's SIBLING, so
+;; re-parsing the exported file gave a different tree from the one that
+;; was imported.
+;; THE PARENT MAY NOT EXIST YET when the intent is built, which is what
+;; the batch back-reference is for.
+(define (grow! initial then)
+  (let* ((t (fresh-case! (list (cons "f.md" initial))))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (put! (string-append src "/f.md") then)
+    (let ((answers (import-md d src "t"))
+          (out (string-append src "/../out")))
+      (system (string-append "rm -rf " out "; mkdir -p " out))
+      (export-md d out)
+      (list (map car answers)
+            (state-outline (open-and-reduce d))
+            (string=? (slurp (string-append out "/f.md")) then)
+            d))))
+(want "a child heading becomes a child, and the export is the source"
+      (let* ((r (grow! "# A\nbody\n" "# A\nbody\n## B\nchild\n"))
+             (d (cadddr r)))
+        (list (car r) (label-rows d (cadr r)) (caddr r)))
+      (list '(ok) '((b1 b2) (b2 b3) (root b1)) #t))
+(want "a sibling inserted between two others lands between them"
+      (let* ((r (grow! "# A\na\n# C\nc\n" "# A\na\n# B\nb\n# C\nc\n"))
+             (d (cadddr r))
+             (f (labeller d))
+             (doc (car (ids-of d))))
+        (list (car r)
+              (map (lambda (row) (f (caddr row)))
+                   (list-sort (lambda (x y) (< (cadr x) (cadr y)))
+                              (filter (lambda (row) (equal? (car row) doc)) (cadr r))))
+              (caddr r)))
+      (list '(ok) '(b2 b4 b3) #t))
+(want "a grandchild becomes a grandchild"
+      (let* ((r (grow! "# A\na\n## B\nb\n" "# A\na\n## B\nb\n### C\nc\n"))
+             (d (cadddr r)))
+        (list (car r) (label-rows d (cadr r)) (caddr r)))
+      (list '(ok) '((b1 b2) (b2 b3) (b3 b4) (root b1)) #t))
+
+(printf "== section 2.4: a stored heading line stops being valid ==\n")
+;; `set title` LANDED AND EXPORT IGNORED IT. The stored bytes were
+;; replayed, so the file came back with the OLD heading -- and importing
+;; that file wrote a second record putting the title back. The change
+;; could not be made to stick, and the store and the tree disagreed
+;; forever without either of them looking wrong on its own.
+(define t8 (fresh-case! (list (cons "f.md" "# One\nlead\n\n## Two\nbody two\n"))))
+(define d8 (cdr t8))
+(define src8 (car t8))
+(import-md d8 src8 "t")
+(define sec8 (caddr (ids-of d8)))
+(define out8 (string-append root "/c" (number->string case-n) "/out"))
+(want "CONTROL: the section is the one with the second heading"
+      (let* ((b (state-read (open-and-reduce d8) sec8))
+             (fs (cdr (assq 'fields b))))
+        (list (cdr (assq 'title fs)) (cdr (assq 'level fs))))
+      (list "Two" 2))
+(want "after set title the export carries the new heading and nothing else moves"
+      (begin
+        (with-store-write d8 (lambda (st v) (list (list 'set sec8 'title "Two Renamed"))) "t")
+        (system (string-append "mkdir -p " out8))
+        (export-md d8 out8)
+        (slurp (string-append out8 "/f.md")))
+      "# One\nlead\n\n## Two Renamed\nbody two\n")
+;; AND RE-IMPORTING THAT EXPORT COSTS NOTHING. Comparing the file
+;; against the stale stored bytes said "the heading changed" and wrote a
+;; record for a file nobody had touched.
+(want "re-importing the export writes no record"
+      (begin
+        (system (string-append "cp " out8 "/f.md " src8 "/f.md"))
+        (let ((before (records d8)))
+          (let ((a (import-md d8 src8 "t")))
+            (list (length a) (- (records d8) before)))))
+      (list 0 0))
+;; THE SAME RULE FOR LEVEL. A heading line is only good while BOTH the
+;; level and the title it parses to still match the block.
+(want "after set level the export renumbers the hashes"
+      (begin
+        (with-store-write d8 (lambda (st v) (list (list 'set sec8 'level 3))) "t")
+        (system (string-append "rm -rf " out8 "; mkdir -p " out8))
+        (export-md d8 out8)
+        (slurp (string-append out8 "/f.md")))
+      "# One\nlead\n\n### Two Renamed\nbody two\n")
+(want "and re-importing that costs nothing either, with the tree unchanged"
+      (begin
+        (system (string-append "cp " out8 "/f.md " src8 "/f.md"))
+        (let ((before (records d8)))
+          (let ((a (import-md d8 src8 "t")))
+            (list (length a) (- (records d8) before)
+                  (label-rows d8 (state-outline (open-and-reduce d8)))))))
+      (list 0 0 '((b1 b2) (b2 b3) (root b1))))
+
+(printf "== what is missing from the tree is not deleted on a guess ==\n")
+;; A TOMBSTONE IS PERMANENT AND ABSENCE IS AMBIGUOUS: the file may have
+;; been deleted, or the directory may be a partial copy, or a sync may
+;; have been interrupted. So absence is reported, and acted on only when
+;; the caller says to.
+(define (gone! setup-files remove)
+  (let* ((t (fresh-case! setup-files))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (remove src)
+    (let* ((refused (import-md d src "t"))
+           (before (records d))
+           (allowed (import-md d src "t" #t)))
+      (let ((f (labeller d)))
+        (list (let ((p (parts refused 4)))
+                (if (and (pair? (caddr p)) (eq? (car (caddr p)) 'blocks))
+                    (list (car p) (cadr p) (list 'blocks (map f (cadr (caddr p)))) (cadddr p))
+                    p))
+              (- (records d) before)
+              (map (lambda (b) (f (cadr b)))
+                   (filter (lambda (b) (not (cadr (assq 'deleted (cddr b)))))
+                           (state-datum (open-and-reduce d)))))))))
+(want "a file that disappeared is named, not tombstoned, until it is allowed"
+      (gone! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n")
+                   (cons "b.md" "# B\nbody b\n"))
+             (lambda (src) (system (string-append "rm " src "/b.md"))))
+      (list (list 'error 'would-delete '(blocks (b5 b4)) '(remedy allow-delete))
+            2
+            '(b1 b2 b3)))
+(want "a section that disappeared is named the same way"
+      (gone! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n"))
+             (lambda (src) (put! (string-append src "/a.md") "# A\nbody a\n")))
+      (list (list 'error 'would-delete '(blocks (b3)) '(remedy allow-delete))
+            1
+            '(b1 b2)))
 
 (printf "\n~a failures\n" bad)
 (printf "md2 complete\n")

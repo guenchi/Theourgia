@@ -806,5 +806,60 @@
       (filter (lambda (a) (and (string? a) (holds? a "agent:"))) (actors-on-disk))
       '())
 
+(printf "== A4: the outline is exact, and A5: a section reads back whole ==\n")
+;; FULL TITLES, NOT ABBREVIATED ONES. An outline that truncated would
+;; still list the right blocks in the right order -- so the titles are
+;; compared in full, and they are CJK because a width-based truncation
+;; would cut them at a different place than an ASCII one.
+(define d10 (test-dir "cli1outline2"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home10"))
+(run d10 "init")
+(write-file! (string-append scratch "/corpus.md")
+  (string-append
+    "# \x7B2C;\x4E00;\x7AE0; \x5E8F;\x8BBA;\nlead paragraph\n"
+    "## 1.1 \x80CC;\x666F;\nbackground body\n"
+    "### 1.1.1 \x7EC6;\x8282;\ndetail body\n"
+    "# \x7B2C;\x4E8C;\x7AE0;\nsecond chapter body\n"))
+(system (string-append "mkdir -p " scratch "/corpus && cp " scratch "/corpus.md "
+                       scratch "/corpus/a.md"))
+(run d10 (string-append "import-md " scratch "/corpus"))
+(define w10 (writer-of d10))
+(want "the full outline lists every block, indented, with whole titles"
+      (out-of (run d10 "outline"))
+      (string-append
+        "- " w10 ".1  a.md\n"
+        "  - " w10 ".2  \x7B2C;\x4E00;\x7AE0; \x5E8F;\x8BBA;\n"
+        "    - " w10 ".3  1.1 \x80CC;\x666F;\n"
+        "      - " w10 ".4  1.1.1 \x7EC6;\x8282;\n"
+        "  - " w10 ".5  \x7B2C;\x4E8C;\x7AE0;\n"))
+;; A DEPTH LIMIT STOPS THE WALK. The deeper blocks are still there; the
+;; listing simply does not go down to them.
+(want "depth two stops before the grandchildren"
+      (out-of (run d10 "outline --depth 2"))
+      (string-append
+        "- " w10 ".1  a.md\n"
+        "  - " w10 ".2  \x7B2C;\x4E00;\x7AE0; \x5E8F;\x8BBA;\n"
+        "  - " w10 ".5  \x7B2C;\x4E8C;\x7AE0;\n"))
+(want "CONTROL: the blocks the limit hid are still in the store"
+      (list (code-of (run d10 (string-append "read " w10 ".4")))
+            (code-of (run d10 (string-append "read " w10 ".3"))))
+      (list 0 0))
+;; A5: EACH SECTION READS BACK AS ITS OWN BYTES, and the neighbour's do
+;; not bleed in. A reader that returned the whole file, or a summary,
+;; would pass a test that only checked the section was found.
+(want "each section reads back exactly, with nothing of its neighbour"
+      (list (out-of (run d10 (string-append "read " w10 ".3 --md")))
+            (out-of (run d10 (string-append "read " w10 ".4 --md")))
+            (out-of (run d10 (string-append "read " w10 ".5 --md"))))
+      (list "## 1.1 \x80CC;\x666F;\nbackground body\n"
+            "### 1.1.1 \x7EC6;\x8282;\ndetail body\n"
+            "# \x7B2C;\x4E8C;\x7AE0;\nsecond chapter body\n"))
+(want "and the S-expression read gives the fields, not a summary"
+      (let* ((r (run d10 (string-append "read " w10 ".5")))
+             (b (cadr (datum-of r)))
+             (fs (cdr (assq 'fields b))))
+        (list (code-of r) (cdr (assq 'title fs)) (cdr (assq 'kind fs))))
+      (list 0 "\x7B2C;\x4E8C;\x7AE0;" 'section))
+
 (printf "\n~a failures\n" bad)
 (printf "cli1 complete\n")

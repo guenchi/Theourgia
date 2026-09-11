@@ -71,6 +71,32 @@
 
   (define (recovery-comment id) (string-append "<!-- theourgia: " id " -->\n"))
 
+;; SECTION 2.4: A STORED HEADING LINE IS ONLY GOOD WHILE IT STILL SAYS
+  ;; WHAT THE BLOCK SAYS. Its level and title are both derivable from
+  ;; it, so if either has since been changed the line is stale and the
+  ;; heading is written afresh from the fields.
+  ;; WITHOUT THIS, `set title` LANDED AND EXPORT IGNORED IT: the stored
+  ;; bytes were replayed, the file came back with the OLD heading, and
+  ;; re-importing that file wrote a second record putting the title back
+  ;; to what the file said. The change could not be made to stick.
+  (define (effective-heading state id)
+    (let* ((b (state-read state id))
+           (stored (text-field b 'heading-src))
+           (level (or (field b 'level) 1))
+           (title (text-field b 'title))
+           (parsed (parse-heading stored)))
+      (if (and parsed (= (car parsed) level) (string=? (cdr parsed) title))
+          stored
+          (string-append (make-string level #\#) " " title "
+"))))
+
+  ;; Asked of one stored line: the splitter is the only thing that
+  ;; decides what a heading line means, so it decides here too.
+  (define (parse-heading line)
+    (let ((ss (doc-sections (md-split line))))
+      (and (= 1 (length ss))
+           (cons (section-level (car ss)) (section-title (car ss))))))
+
   (define (export-md store dir . opts)
     (let* ((recover? (and (pair? opts) (car opts)))
            (state (open-and-reduce store))
@@ -91,10 +117,10 @@
                                 (make-section
                                   (or (field sb 'level) 1)
                                   (text-field sb 'title)
-                                  (if recover?
-                                      (string-append (recovery-comment sid)
-                                                     (text-field sb 'heading-src))
-                                      (text-field sb 'heading-src))
+                                  (let ((h (effective-heading state sid)))
+                                    (if recover?
+                                        (string-append (recovery-comment sid) h)
+                                        h))
                                   (text-field sb 'src))))
                             ids)))))
         docs)
@@ -183,8 +209,14 @@
     (let ((n (string-length name)))
       (and (> n 3) (string=? (substring name (- n 3) n) ".md"))))
 
+;; DELETION IS NOT INFERRED FROM ABSENCE WITHOUT BEING ASKED. A file
+  ;; that is missing from the directory may have been deleted, or the
+  ;; directory may be a partial copy, or a sync may be half finished --
+  ;; and a tombstone is permanent. So absence is reported by default and
+  ;; acted on only when the caller says to.
   (define (import-md store dir . opts)
     (let* ((actor (if (pair? opts) (car opts) "unknown"))
+           (allow-delete? (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
            (files (md-files dir)))
 ;; THE OFFSET IS THREADED BECAUSE `from` COUNTS THE WHOLE BATCH. Each
       ;; file's intents are built on their own, so a file's doc is its
@@ -194,12 +226,51 @@
       ;; document, and the export put them all in one file.
       (with-store-write store
         (lambda (state view)
-          (let loop ((fs files) (base 0) (out '()))
-            (if (null? fs)
-                (apply append (reverse out))
-                (let ((is (file-intents state dir (car fs) base)))
-                  (loop (cdr fs) (+ base (length is)) (cons is out))))))
+          (let ((gone (missing-blocks state dir files)))
+            (cond
+              ((and (pair? gone) (not allow-delete?))
+               (list (list 'error 'would-delete
+                           (list 'blocks gone)
+                           (list 'remedy 'allow-delete))))
+              (else
+               (let loop ((fs files) (base 0) (out '()))
+                 (if (null? fs)
+                     (append (apply append (reverse out))
+                             (map (lambda (id) (list 'del id)) gone))
+                     (let ((is (file-intents state dir (car fs) base)))
+                       (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
         actor)))
+
+  ;; Every document whose file is gone, and every section of a surviving
+  ;; document that nothing in the file matches. Sections come first so a
+  ;; document is never tombstoned before its children.
+  (define (missing-blocks state dir files)
+    (let loop ((bs (state-datum state)) (docs '()) (sections '()))
+      (cond
+        ((null? bs) (append (reverse sections) (reverse docs)))
+        (else
+         (let* ((id (cadr (car bs)))
+                (b (state-read state id)))
+           (cond
+             ((not (eq? 'doc (kind-of b))) (loop (cdr bs) docs sections))
+             ((not (member (text-field b 'path) files))
+              (loop (cdr bs) (cons id docs)
+                    (append (reverse (doc-sections-of state id)) sections)))
+             (else
+              (loop (cdr bs) docs
+                    (append (reverse (unmatched-sections state dir id b)) sections)))))))))
+
+  (define (unmatched-sections state dir doc-id b)
+    (let* ((rel (text-field b 'path))
+           (raw (read-file (string-append dir "/" rel)))
+           (sections (file-sections raw))
+           (old (doc-sections-of state doc-id))
+           (matched (match-sections state old sections)))
+      (if (and (pair? matched) (eq? (car matched) 'error))
+          '()
+          (filter (lambda (id)
+                    (not (exists (lambda (p) (equal? (car p) id)) matched)))
+                  old))))
 
   ;; The section list of a file, each entry
   ;;   (declared-id level title heading-src src)
@@ -249,7 +320,7 @@
            (existing (doc-with-path state rel)))
       (if (not existing)
           (new-file-intents rel split sections base)
-          (changed-intents state existing rel split sections))))
+          (changed-intents state existing rel split sections base))))
 
   (define (doc-with-path state rel)
     (let loop ((bs (state-datum state)))
@@ -284,11 +355,7 @@
                                         (list 'from base)
                                         (list 'from (+ base 1 (car ps))))
                                     #f
-                                    (list (cons 'kind 'section)
-                                          (cons 'level (sec-level (car ss)))
-                                          (cons 'title (sec-title (car ss)))
-                                          (cons 'heading-src (sec-heading (car ss)))
-                                          (cons 'src (sec-src (car ss)))))
+                                    (section-fields (car ss)))
                               out)))))))
 
   ;; A FILE THAT IS ALREADY IN THE STORE. Identity is decided in the
@@ -299,37 +366,66 @@
   ;; candidate. Two refusals come out of this and they are different
   ;; things: the file moved something (position), or the file cannot say
   ;; which of several identical sections it means (ambiguous).
-  (define (changed-intents state doc-id rel split sections)
+  (define (changed-intents state doc-id rel split sections base)
     (let* ((old (doc-sections-of state doc-id))
            (matched (match-sections state old sections)))
       (cond
         ((and (pair? matched) (eq? (car matched) 'error)) (list matched))
         (else
-         (append
-           (doc-field-intents state doc-id split)
-           ;; A PAIR WITH NO STORED SIDE IS A SECTION THE FILE GREW, and
-           ;; it becomes one. Skipping it read as "nothing to do": the
-           ;; import answered with no intents at all and the new section
-           ;; was silently dropped, so the next export wrote the file
-           ;; back WITHOUT the text somebody had just added.
-           ;; IT GOES UNDER THE DOCUMENT. Putting it at the level its
-           ;; heading implies is what a later batch owes; losing it is
-           ;; not a lesser version of that.
-           (apply append
-                  (map (lambda (pair)
-                         (if (car pair)
-                             (section-field-intents state (car pair) (cdr pair))
-                             (list (new-section-intent doc-id (cdr pair)))))
-                       matched)))))))
+         (let ((doc-intents (doc-field-intents state doc-id split)))
+           (append
+             doc-intents
+             (section-intents state doc-id sections matched
+                              (+ base (length doc-intents)))))))))
 
-  (define (new-section-intent parent s)
-    (list 'insert parent #f
-          (list (cons 'kind 'section)
-                (cons 'level (sec-level s))
-                (cons 'title (sec-title s))
-                (cons 'heading-src (sec-heading s))
-                (cons 'src (sec-src s)))))
+  ;; A NEW SECTION GOES WHERE ITS HEADING SAYS, not under the document.
+  ;; Hanging every new section off the doc made `# A / ## B` come back
+  ;; with B as A's SIBLING -- so re-parsing the exported file gave a
+  ;; different parent graph from the one that was imported, which is the
+  ;; one thing section 2.1 says must always re-derive.
+  ;;
+  ;; THE PARENT MAY NOT EXIST YET. If B's parent A is also new, A's id
+  ;; is only known once its own insert commits, so B names it with the
+  ;; batch back-reference -- which is what that mechanism is for.
+  (define (section-intents state doc-id sections matched base)
+    (let ((parents (parents-of sections))
+          (refs (make-vector (length sections) #f)))
+      (let loop ((i 0) (ms matched) (ps parents) (n base) (out '()))
+        (if (null? ms)
+            (reverse out)
+            (let* ((stored (car (car ms)))
+                   (incoming (cdr (car ms)))
+                   (parent-ix (car ps)))
+              (if stored
+                  (let ((is (section-field-intents state stored incoming)))
+                    (vector-set! refs i stored)
+                    (loop (+ i 1) (cdr ms) (cdr ps) (+ n (length is))
+                          (append (reverse is) out)))
+                  (let* ((parent (if (eq? parent-ix 'doc)
+                                     doc-id
+                                     (vector-ref refs parent-ix)))
+                         (after (previous-sibling refs parents i parent-ix))
+                         (intent (list 'insert parent after
+                                       (section-fields incoming))))
+                    (vector-set! refs i (list 'from n))
+                    (loop (+ i 1) (cdr ms) (cdr ps) (+ n 1)
+                          (cons intent out)))))))))
 
+  ;; The nearest earlier section with the same parent, so a new one lands
+  ;; after the sibling it follows in the file rather than at the end.
+  (define (previous-sibling refs parents i parent-ix)
+    (let loop ((j (- i 1)))
+      (cond
+        ((< j 0) #f)
+        ((equal? (list-ref parents j) parent-ix) (vector-ref refs j))
+        (else (loop (- j 1))))))
+
+  (define (section-fields s)
+    (list (cons 'kind 'section)
+          (cons 'level (sec-level s))
+          (cons 'title (sec-title s))
+          (cons 'heading-src (sec-heading s))
+          (cons 'src (sec-src s))))
   (define (doc-sections-of state doc-id)
     (let ((rows (state-outline state)))
       (let walk ((id doc-id))
@@ -409,18 +505,30 @@
   ;; ONLY THE FIELDS THAT DIFFER. This is what makes a local edit produce
   ;; one record: every other section compares equal and contributes
   ;; nothing at all.
+  ;; THE COMPARISON IS AGAINST WHAT EXPORT WOULD WRITE, not against the
+  ;; stored bytes. After a `set title` the stored heading line is stale;
+  ;; the file on disk carries the regenerated one, and comparing it to
+  ;; the stale bytes said "the file changed the heading" and wrote a
+  ;; record for a file nobody had touched -- which put the old title
+  ;; back. Comparing against the effective heading makes re-importing an
+  ;; untouched export cost nothing, which is the property that makes a
+  ;; projection a projection.
   (define (section-field-intents state id incoming)
     (let ((b (state-read state id)))
-      (append
-        (if (equal? (field b 'level) (sec-level incoming))
-            '()
-            (list (list 'set id 'level (sec-level incoming))))
-        (if (string=? (text-field b 'title) (sec-title incoming))
-            '()
-            (list (list 'set id 'title (sec-title incoming))))
-        (if (string=? (text-field b 'heading-src) (sec-heading incoming))
-            '()
-            (list (list 'set id 'heading-src (sec-heading incoming))))
-        (if (string=? (text-field b 'src) (sec-src incoming))
-            '()
-            (list (list 'set id 'src (sec-src incoming))))))))
+      (if (string=? (effective-heading state id) (sec-heading incoming))
+          ;; the heading is already what the file says; only the body
+          ;; can differ
+          (if (string=? (text-field b 'src) (sec-src incoming))
+              '()
+              (list (list 'set id 'src (sec-src incoming))))
+          (append
+            (if (equal? (field b 'level) (sec-level incoming))
+                '()
+                (list (list 'set id 'level (sec-level incoming))))
+            (if (string=? (text-field b 'title) (sec-title incoming))
+                '()
+                (list (list 'set id 'title (sec-title incoming))))
+            (list (list 'set id 'heading-src (sec-heading incoming)))
+            (if (string=? (text-field b 'src) (sec-src incoming))
+                '()
+                (list (list 'set id 'src (sec-src incoming)))))))))

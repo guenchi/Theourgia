@@ -329,32 +329,40 @@
           (if e (cdr e) (list 'error 'no-such-intent (cadr x))))
         x))
 
-  (define (intent-with-parent intent parent)
+;; BOTH THE PARENT AND THE SIBLING CAN BE A BACK-REFERENCE. A batch that
+  ;; builds a tree also orders it: the section a new one follows may
+  ;; itself have been created two intents ago, and `after` is how the
+  ;; caller says so. Resolving only the parent put every new section at
+  ;; the end of its parent's children whatever the file said.
+  (define (intent-refs intent)
     (let ((i (unwrap intent)))
       (case (car i)
-        ((insert) (list 'insert parent (caddr i) (cadddr i)))
-        ((move) (list 'move (cadr i) parent (cadddr i)))
-        (else i))))
+        ((insert) (list (cadr i) (caddr i)))
+        ((move) (list (caddr i) (cadddr i)))
+        (else '()))))
 
-  (define (intent-parent intent)
+  (define (intent-with-refs intent parent after)
     (let ((i (unwrap intent)))
       (case (car i)
-        ((insert) (cadr i))
-        ((move) (caddr i))
-        (else #f))))
+        ((insert) (list 'insert parent after (cadddr i)))
+        ((move) (list 'move (cadr i) parent after))
+        (else i))))
 
   (define (run-intents! s state actor intents)
     (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
           (let* ((raw (car is))
-                 (p (intent-parent raw))
-                 (fixed (if (and (pair? p) (eq? (car p) 'from))
-                            (let ((r (resolve-from made p)))
-                              (if (and (pair? r) (eq? (car r) 'error))
-                                  r
-                                  (intent-with-parent raw r)))
-                            raw))
+                 (rs (intent-refs raw))
+                 (fixed
+                   (if (null? rs)
+                       raw
+                       (let ((p (resolve-from made (car rs)))
+                             (a (resolve-from made (cadr rs))))
+                         (cond
+                           ((and (pair? p) (eq? (car p) 'error)) p)
+                           ((and (pair? a) (eq? (car a) 'error)) a)
+                           (else (intent-with-refs raw p a))))))
                  (answer (if (and (pair? fixed) (eq? (car fixed) 'error))
                              fixed
                              (one-intent! s state actor fixed))))

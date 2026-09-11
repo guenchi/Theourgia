@@ -117,24 +117,29 @@
                             (and e (string? (cdr e)) (cdr e))))))
     (or (get 'title) (get 'path) "")))
 
-(define (outline-text state)
-  (let* ((rows (state-outline state))
+(define (outline-text state . limit)
+  (let* ((depth-limit (if (pair? limit) (car limit) #f))
+         (rows (state-outline state))
          (structure (state-structure state))
          (orphans (cdr (assq 'orphans structure)))
          (out (open-output-string)))
     (define (children-of parent)
       (filter (lambda (row) (equal? (car row) parent)) rows))
+;; A DEPTH LIMIT STOPS THE WALK, it does not filter the output: a
+    ;; filtered listing still pays to render everything, and on a corpus
+    ;; that is the difference between an outline and a dump.
     (define (walk parent depth)
       (for-each
         (lambda (row)
           (let ((id (caddr row)))
+            (when (or (not depth-limit) (< depth depth-limit))
             (put-string out (make-string (* 2 depth) #\space))
             (put-string out "- ")
             (put-string out id)
             (put-string out "  ")
             (put-string out (title-of state id))
             (put-string out "\n")
-            (walk id (+ depth 1))))
+            (walk id (+ depth 1)))))
         (children-of parent)))
     (walk 'root 0)
     (unless (null? orphans)
@@ -266,10 +271,13 @@
         ;; with one entry per intent, exactly as batch does -- a refusal
         ;; about identity is an ordinary refusal and reads like one.
         ((string=? verb "import-md")
-         (unless (= 1 (length args)) (usage '(import-md <dir>)))
+         (unless (or (= 1 (length args))
+                     (and (= 2 (length args)) (string=? (cadr args) "--allow-delete")))
+           (usage '(import-md <dir> ["--allow-delete"])))
          (require-store! store)
          (guarded (lambda ()
-                    (let ((answers (import-md store (car args) actor)))
+                    (let ((answers (import-md store (car args) actor
+                                              (= 2 (length args)))))
                       (say (cons 'import (list answers)))
                       (exit (if (for-all (lambda (a) (eq? (car a) 'ok)) answers) 0 1))))))
         ((string=? verb "export-md")
@@ -282,11 +290,16 @@
         ((string=? verb "batch")
          (require-store! store) (guarded (lambda () (parse-batch store actor args))))
         ((string=? verb "outline")
-         (unless (null? args) (usage '(outline)))
-         (require-store! store)
-         (guarded (lambda ()
-                    (put-string (current-output-port) (outline-text (open-and-reduce store)))
-                    (exit 0))))
+         (let-values (((depth rest) (take-option args "--depth")))
+           (unless (null? rest) (usage '(outline ["--depth" <n>])))
+           (require-store! store)
+           (guarded (lambda ()
+                      (put-string (current-output-port)
+                                  (if depth
+                                      (outline-text (open-and-reduce store)
+                                                    (string->number depth))
+                                      (outline-text (open-and-reduce store))))
+                      (exit 0)))))
 ;; `read --md` GIVES BACK THE SECTION AS IT IS ON DISK, heading and
         ;; all, rather than the block datum. That is what a person or an
         ;; editor wants; the S-expression is what a program wants, and
