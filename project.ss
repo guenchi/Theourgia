@@ -475,21 +475,64 @@
                (loop (cdr o) (cdr i) (cons (cons (car o) (car i)) out)))))
         (else (match-by-signature state old incoming)))))
 
+  ;; THE HEADING IS THE KEY; THE BODY ONLY BREAKS TIES.
+  ;;
+  ;; Matching on the whole (heading, body) signature cannot tell an
+  ;; EDITED section from a DELETED one. Deleting the last section of a
+  ;; file changes the previous section's byte range -- its body now runs
+  ;; to the end of the file instead of to the next heading, so a blank
+  ;; line that used to belong to it is gone. Its signature therefore
+  ;; changed too, it matched nothing, and it was reported as about to be
+  ;; tombstoned alongside the section that really had been deleted --
+  ;; and with --allow-delete it was tombstoned and rebuilt under a new
+  ;; id. One deletion cost two blocks and moved an id that nobody
+  ;; touched.
+  ;;
+  ;; A heading is what a person means by "this section"; its body is
+  ;; what they edit. So sections are aligned by level and title, and the
+  ;; body is consulted only where several stored sections carry the same
+  ;; heading -- which is exactly the case A6 is about.
+  (define (heading-key s) (cons (sec-level s) (sec-title s)))
+
+  (define (stored-heading-key state id)
+    (let ((b (state-read state id)))
+      (cons (or (field b 'level) 1) (text-field b 'title))))
+
   (define (match-by-signature state old incoming)
-    (let ((sigs (map (lambda (id) (cons id (signature-of-stored state id))) old)))
-      (let loop ((is incoming) (out '()))
-        (if (null? is)
-            (reverse out)
-            (let* ((want (signature-of-incoming (car is)))
-                   (hits (filter (lambda (e) (equal? (cdr e) want)) sigs)))
-              (cond
-                ((> (length hits) 1)
-                 (list 'error 'ambiguous-identity
-                       (list 'candidates (map car hits))
-                       (list 'remedy 'marker)))
-                ;; no stored section looks like this one: it is new
-                ((null? hits) (loop (cdr is) (cons (cons #f (car is)) out)))
-                (else (loop (cdr is) (cons (cons (car (car hits)) (car is)) out)))))))))
+    (let loop ((is incoming) (free old) (out '()))
+      (if (null? is)
+          (reverse out)
+          (let* ((want (heading-key (car is)))
+                 (hits (filter (lambda (id) (equal? (stored-heading-key state id) want))
+                               free)))
+            (cond
+              ((null? hits) (loop (cdr is) free (cons (cons #f (car is)) out)))
+              ((null? (cdr hits))
+               (loop (cdr is) (remp (lambda (id) (equal? id (car hits))) free)
+                     (cons (cons (car hits) (car is)) out)))
+              (else
+               ;; SEVERAL SECTIONS SHARE THIS HEADING. The body decides,
+               ;; and only an exact body match decides: if one of them is
+               ;; this section's body, that is the one. If none is, the
+               ;; body was edited and the earliest unused candidate is
+               ;; taken -- document order is the only thing left to go
+               ;; on. If several have the SAME body too, nothing in the
+               ;; file says which, and that is the refusal A6(iii) wants.
+               (let ((exact (filter (lambda (id)
+                                      (string=? (text-field (state-read state id) 'src)
+                                                (sec-src (car is))))
+                                    hits)))
+                 (cond
+                   ((and (pair? exact) (null? (cdr exact)))
+                    (loop (cdr is) (remp (lambda (id) (equal? id (car exact))) free)
+                          (cons (cons (car exact) (car is)) out)))
+                   ((> (length exact) 1)
+                    (list 'error 'ambiguous-identity
+                          (list 'candidates exact)
+                          (list 'remedy 'marker)))
+                   (else
+                    (loop (cdr is) (remp (lambda (id) (equal? id (car hits))) free)
+                          (cons (cons (car hits) (car is)) out)))))))))))
 
   (define (doc-field-intents state doc-id split)
     (let ((b (state-read state doc-id)))

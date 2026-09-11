@@ -377,5 +377,60 @@
             1
             '(b1 b2)))
 
+(printf "== deleting one section costs exactly one block ==\n")
+;; DELETING A SECTION CHANGES ITS NEIGHBOUR'S BYTES. A section's body
+;; runs to the start of the next heading, so removing the last section
+;; hands the blank line that separated them back to the one before it.
+;; Matching on the whole (heading, body) signature therefore could not
+;; tell an EDITED section from a DELETED one: the neighbour matched
+;; nothing, was reported as about to be tombstoned, and with
+;; --allow-delete was tombstoned and rebuilt under a NEW id. One
+;; deletion cost two blocks and moved an id nobody had touched.
+;; THE BLANK LINES ARE WHAT MAKE THIS BITE. Without them the neighbour's
+;; bytes happen not to change and every one of these rows is green for
+;; the broken matcher -- which is why the corpus has them.
+(define three-sections "# C\nlead\n\n## S1\none\n\n## S2\ntwo\n\n## S3\nthree\n")
+(define (delete-one! name then)
+  (let* ((t (fresh-case! (list (cons "f.md" three-sections))))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (let ((before (ids-of d))
+          (f (labeller d)))
+      (put! (string-append src "/f.md") then)
+      (let* ((refused (import-md d src "t"))
+             (named (if (and (pair? refused) (eq? (car (car refused)) 'error))
+                        (map f (cadr (assq 'blocks (cddr (car refused)))))
+                        refused)))
+        (import-md d src "t" #t)
+        (let ((live (map cadr (filter (lambda (b) (not (cadr (assq 'deleted (cddr b)))))
+                                      (state-datum (open-and-reduce d))))))
+          (list named
+                (map f live)
+                ;; every surviving block kept the id it had
+                (equal? live (filter (lambda (id) (member id live)) before))))))))
+(want "deleting the last section names and tombstones only it"
+      (delete-one! "last" "# C\nlead\n\n## S1\none\n\n## S2\ntwo\n")
+      (list '(b5) '(b1 b2 b3 b4) #t))
+(want "deleting the middle section names and tombstones only it"
+      (delete-one! "middle" "# C\nlead\n\n## S1\none\n\n## S3\nthree\n")
+      (list '(b4) '(b1 b2 b3 b5) #t))
+(want "deleting the first section names and tombstones only it"
+      (delete-one! "first" "# C\nlead\n\n## S2\ntwo\n\n## S3\nthree\n")
+      (list '(b3) '(b1 b2 b4 b5) #t))
+;; AND THE NEIGHBOUR'S CHANGED BODY IS STILL WRITTEN. It is an edit, and
+;; treating it as one is the whole point -- but it is a real edit and
+;; must reach the log.
+(want "the neighbour whose bytes moved is updated, not recreated"
+      (let* ((t (fresh-case! (list (cons "f.md" three-sections))))
+             (src (car t)) (d (cdr t)))
+        (import-md d src "t")
+        (let ((s2 (list-ref (ids-of d) 3)))
+          (put! (string-append src "/f.md") "# C\nlead\n\n## S1\none\n\n## S2\ntwo\n")
+          (import-md d src "t" #t)
+          (let ((b (state-read (open-and-reduce d) s2)))
+            (list (cdr (assq 'title (cdr (assq 'fields b))))
+                  (cdr (assq 'src (cdr (assq 'fields b))))))))
+      (list "S2" "two\n"))
+
 (printf "\n~a failures\n" bad)
 (printf "md2 complete\n")
