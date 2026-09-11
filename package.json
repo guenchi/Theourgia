@@ -1,0 +1,135 @@
+{
+  "name": "theourgia",
+  "displayName": "theourgia",
+  "description": "Browse and edit a theourgia block store from VS Code.",
+  "publisher": "theourgia",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/src/extension.js",
+  "activationEvents": [
+    "onView:theourgiaOutline"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "theourgia",
+          "title": "theourgia",
+          "icon": "media/outline.svg"
+        }
+      ]
+    },
+    "views": {
+      "theourgia": [
+        {
+          "id": "theourgiaOutline",
+          "name": "Outline"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "theourgia.refreshOutline",
+        "title": "theourgia: Refresh Outline",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "theourgia.openBlock",
+        "title": "theourgia: Open Block"
+      },
+      {
+        "command": "theourgia.retryOutbox",
+        "title": "theourgia: Retry Pending Saves"
+      },
+      {
+        "command": "theourgia.showStatus",
+        "title": "theourgia: Show Store Status"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "theourgia.refreshOutline",
+          "when": "view == theourgiaOutline",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "theourgia.openBlock",
+          "when": "false"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "theourgia",
+      "properties": {
+        "theourgia.corePath": {
+          "type": "string",
+          "default": "",
+          "description": "Directory holding cli.ss and the theourgia libraries."
+        },
+        "theourgia.libDirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra directories to place on CHEZSCHEMELIBDIRS after corePath. The core imports (igropyr crypto), (igropyr platform) and (igropyr sexpr), so the directory holding igropyr belongs here."
+        },
+        "theourgia.store": {
+          "type": "string",
+          "default": "",
+          "description": "Store directory. Passed as --store."
+        },
+        "theourgia.actor": {
+          "type": "string",
+          "default": "",
+          "description": "Actor name recorded with every write. Defaults to the OS user name."
+        },
+        "theourgia.scheme": {
+          "type": "string",
+          "default": "scheme",
+          "description": "Chez Scheme executable."
+        },
+        "theourgia.timeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "description": "How long to wait for one request before killing the child process."
+        },
+        "theourgia.transport": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "socket"
+          ],
+          "default": "cli",
+          "description": "How requests reach the core. The socket transport is not implemented yet."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./ && node scripts/copy-vendor.js",
+    "watch": "tsc -watch -p ./",
+    "test:unit": "npm run compile && mocha --reporter spec 'out/test/unit/**/*.test.js'",
+    "test:integration": "npm run compile && node out/test/integration/run.js",
+    "test": "npm run test:unit && npm run test:integration"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.9",
+    "glob": "^10.3.10",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.0"
+  }
+}
