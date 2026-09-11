@@ -476,7 +476,14 @@
                        (let ((cs (blk-position b)))
                          (if (= 1 (length cs))
                              (car (car cs))
-                             (list 'conflict (length cs)))))))))
+                             (list 'conflict (length cs)))))
+                 ;; THE EDGES BELONG TO A READ. What a block says about
+                 ;; itself includes what it points at: a reader that has
+                 ;; to call a second interface to find out whether a link
+                 ;; exists cannot answer "what does this block say" in
+                 ;; one question, and the edge set is as much a part of
+                 ;; the block as any field.
+                 (cons 'edges (block-edges r id))))))
 
   (define (candidate<? a b)
     (if (string=? (cadr a) (cadr b))

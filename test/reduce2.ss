@@ -294,5 +294,52 @@
         (list (< resume cold) resume cold))
       (list #t 16 18))
 
+(printf "== the applied frontier of a read stops before what is pending ==\n")
+;; RULING: THE READ PATH'S APPLIED FRONTIER IS THE REDUCTION'S OWN CUT.
+;; A store holding a record whose premise is not in it -- here U names a
+;; writer the store has never had -- must come back with that record
+;; pending and the frontier stopping short of it, not with a frontier
+;; that counts records nobody could apply.
+;; THE CALLBACK'S ANSWER CANNOT DISAGREE WITH THE FRONTIER because both
+;; are read from `reduce-applied-cut`: the answer is "is this record in
+;; the cut yet", and the frontier is the cut. That is the reason to
+;; prefer it to a second cursor kept alongside -- there is no second
+;; cursor to drift.
+(define dp (test-dir "reduce2pending"))
+(build-at! dp)
+;; U's segment is replaced: two records whose premise is a writer that
+;; does not exist in this store at all.
+(let ((seg (apply cat (map bytes-of
+                           (list (list U 1 (list (cons "qqqqqqqq" 4))
+                                       (list 'set (id W 1) 'title "never"))
+                                 (list U 2 '()
+                                       (list 'set (id W 1) 'summary "never either")))))))
+  (put! (string-append dp "/writers/" U "/" (segment-file-name 1)) seg)
+  (write-manifest! dp U (list (cons 1 (bytevector->hex (sha256 seg))))))
+(putenv "THEOURGIA_HOME" (string-append d "/home"))
+(define stuck (open-and-reduce dp))
+;; AND IT CASCADES: W.3 names U.1 as its premise, so W.3 and W.4 are
+;; stuck behind U's pair. Four records pending, not two -- a frontier
+;; that stopped only at the record with the missing premise, and carried
+;; on past the ones waiting on IT, would report having applied a record
+;; built on a state it never reached.
+(want "the unapplicable records are pending, and so is everything behind them"
+      (list (length (reduce-pending stuck))
+            (assoc U (reduce-applied-cut stuck)))
+      (list 4 #f))
+(want "CONTROL: the frontier stops at the last record that could be applied"
+      (list-sort (lambda (a b) (string<? (car a) (car b))) (reduce-applied-cut stuck))
+      (list (cons V 3) (cons W 2)))
+;; AND THE EFFECT OF THE PENDING RECORDS IS NOT IN THE STATE. A frontier
+;; that stopped correctly while the write had already been applied would
+;; be a frontier that describes a state nobody can reproduce.
+(want "and nothing they would have written is visible"
+      (let* ((b (car (state-datum stuck)))
+             (fs (cadr (assq 'fields (cddr b)))))
+        (list (and (assq 'title fs) #t)
+              (map (lambda (c) (car c)) (cadr (assq 'title fs)))
+              (and (assq 'summary fs) #t)))
+      (list #t (list "v-said") #f))
+
 (printf "\n~a failures\n" bad)
 (printf "reduce2 complete\n")
