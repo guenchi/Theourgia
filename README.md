@@ -22,9 +22,17 @@ bytes — the heading line it was written with, then its body.
 A file-level block holds almost nothing of its own: its body is the front matter
 and whatever sits above the first heading, which in most documents is nothing at all.
 `--recursive` asks for the subtree instead — the block and every block under it, in
-document order. With `--md` as well, that is the document: the same text `export-md`
-writes to the file, from the same renderer, so a read and a round trip cannot
-disagree.
+document order. With `--md` as well, that is the document: for a **top-level**
+document, the same text `export-md` writes to the file, from the same renderer, so a
+read and a round trip cannot disagree.
+
+The qualifier is real. A document nested under another document is a shape import
+never produces and export has no file for — `export-md` writes one file per
+top-level document, and a nested one is rendered into its ancestor's file as a
+section, losing its front matter and taking an empty heading. Read recursively it is
+still a document and keeps its front matter. The two disagree, and the disagreement
+is about what a nested document *means*, not about the renderer: until that is
+settled, only top-level documents round-trip.
 
 A section asked for on its own does not carry the document's front matter, which
 belongs to the document. Its body carries the blank line that separated it from

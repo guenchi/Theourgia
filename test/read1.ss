@@ -293,6 +293,46 @@
       (text-of (answer (id-titled "Beta") "--md"))
       "## Beta\nbody of beta\n\n")
 
+(printf "\n== where the equivalence stops ==\n")
+;; A DOCUMENT NESTED UNDER ANOTHER DOCUMENT is a shape import never
+;; produces and export has no file for: `export-md` writes one file per
+;; TOP-LEVEL document, so a nested one is rendered into its ancestor's
+;; file as a section -- losing its front matter and taking an empty
+;; heading, because a document has no title to make one from. Read
+;; recursively it is still a document and keeps its front matter.
+;;
+;; The two therefore disagree, and the row below PINS that disagreement
+;; rather than asserting the equivalence I claimed a few rows up. The
+;; claim is true of top-level documents and I wrote it without the
+;; qualifier; this is the qualifier, written so that a change to either
+;; side shows up here instead of quietly widening or narrowing it. What
+;; a nested document should MEAN is not a renderer question.
+(define t2 (fresh-case! (list (cons "outer.md" "# Outer\nouter body\n"))))
+(define d2 (cdr t2))
+(import-md d2 (car t2) "tester")
+(define outer (let loop ((ids (map cadr (state-datum (open-and-reduce d2)))))
+                (cond ((null? ids) (assertion-violation 'outer "no document" d2))
+                      ((eq? 'doc (cdr (assq 'kind (cdr (assq 'fields
+                            (state-read (open-and-reduce d2) (car ids)))))))
+                       (car ids))
+                      (else (loop (cdr ids))))))
+(define nested
+  (let ((a (car (with-store-write d2
+                  (lambda (st v)
+                    (list (list 'insert outer #f
+                                (list (cons 'kind 'doc)
+                                      (cons 'path "inner.md")
+                                      (cons 'front "---\nx: y\n---\n")
+                                      (cons 'src "intro\n")))))
+                  "tester"))))
+    (car (map car (cadr (assq 'state (cdr a)))))))
+(want "read of the nested document keeps its front matter"
+      (text-of (rpc-dispatch d2 (list 'read nested "--md" "--recursive") "tester"))
+      "---\nx: y\n---\nintro\n")
+(want "and its ancestor's export renders it as an empty-titled section instead"
+      (text-of (rpc-dispatch d2 (list 'read outer "--md" "--recursive") "tester"))
+      "# Outer\nouter body\n# \nintro\n")
+
 (printf "\n== the options ==\n")
 ;; NEITHER OPTION TAKES A VALUE, and both are stripped before the id is
 ;; looked at -- so the two orders are the same request. An option list
