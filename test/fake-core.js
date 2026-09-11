@@ -40,6 +40,14 @@
  *   delayMs             wait this long before answering
  *   exitWithoutAnswer   exit 0 having printed nothing
  *   once                use this entry at most once
+ *   chunkAt             byte offsets to break stdout at, so that a
+ *                       reader sees it arrive in pieces
+ *
+ * CHUNKS ARE BYTES, NOT CHARACTERS. The point of breaking the output is
+ * to land a break in the middle of something -- an escape sequence, or a
+ * multi-byte character -- and a break measured in JavaScript characters
+ * can never fall inside a UTF-8 sequence, which is the case a client
+ * decoding per chunk gets wrong.
  */
 
 const fs = require('fs');
@@ -75,6 +83,24 @@ function coreArgvOf(all) {
 const coreArgv = coreArgvOf(argv);
 const started = Date.now();
 
+/*
+ * WHAT A WATCHED FILE HELD AT THE MOMENT THE REQUEST ARRIVED. The outbox
+ * has to be on disk BEFORE the request goes out, and the only witness to
+ * that order is the side receiving the request: a check made by the
+ * sender afterwards cannot tell which of its own two steps ran first.
+ */
+function watched() {
+  const file = process.env.FAKE_CORE_WATCH;
+  if (!file) {
+    return null;
+  }
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    return null;
+  }
+}
+
 const base = {
   argv,
   coreArgv,
@@ -83,6 +109,7 @@ const base = {
     CHEZSCHEMELIBDIRS: process.env.CHEZSCHEMELIBDIRS || null,
     CHEZSCHEMELIBEXTS: process.env.CHEZSCHEMELIBEXTS || null
   },
+  watched: watched(),
   started
 };
 
@@ -91,9 +118,20 @@ const base = {
  * client actually stopped the child rather than merely stopped waiting
  * for it, and the only witness to that is the child.
  */
+/*
+ * `ignoreSignals` MAKES A CHILD THAT WILL NOT GO. A stand-in that always
+ * exits on the first signal can only ever show a cooperative core, and
+ * the case worth checking is the other one: a client that asks a process
+ * to stop and then waits for it to has not stopped it.
+ */
+const IGNORES_SIGNALS = process.env.FAKE_CORE_IGNORE_SIGNALS === '1';
+
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
   process.on(signal, () => {
     append({ ...base, event: 'signal', signal, at: Date.now() });
+    if (IGNORES_SIGNALS) {
+      return;
+    }
     process.exit(128);
   });
 }
@@ -154,7 +192,6 @@ function answer(entry) {
       process.stderr.write(entry.stderr);
     }
     const stdout = entry.stdout === undefined ? '' : entry.stdout;
-    process.stdout.write(stdout);
     append({
       ...base,
       event: 'answer',
@@ -163,13 +200,43 @@ function answer(entry) {
       wrote: stdout,
       at: Date.now()
     });
-    process.exit(entry.rc || 0);
+    writeThenExit(Buffer.from(stdout, 'utf8'), entry.chunkAt || [], entry.rc || 0);
   };
   if (entry.delayMs) {
     setTimeout(finish, entry.delayMs);
     return;
   }
   finish();
+}
+
+/*
+ * THE LAST PIECE IS HANDED OVER AND THE PROCESS ENDS IMMEDIATELY, so
+ * that it is flushed by the exit rather than before it: a client that
+ * stopped reading when it saw a complete-looking answer would lose it.
+ */
+function writeThenExit(bytes, offsets, rc) {
+  const cuts = offsets.filter((n) => n > 0 && n < bytes.length).sort((a, b) => a - b);
+  const pieces = [];
+  let at = 0;
+  for (const cut of cuts) {
+    pieces.push(bytes.subarray(at, cut));
+    at = cut;
+  }
+  pieces.push(bytes.subarray(at));
+
+  const step = (i) => {
+    if (i >= pieces.length) {
+      process.exit(rc);
+      return;
+    }
+    process.stdout.write(pieces[i]);
+    if (i === pieces.length - 1) {
+      process.exit(rc);
+      return;
+    }
+    setTimeout(() => step(i + 1), 20);
+  };
+  step(0);
 }
 
 const script = loadScript();

@@ -23,6 +23,8 @@ import * as assert from 'assert';
 import { Block, documentFor, hasFieldConflict, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { initWire, wire } from '../../src/wire';
 
+const STORE = '/tmp/a-store';
+
 function block(text: string): Block {
   const value = wire().read(text);
   const found = readBlock(value);
@@ -43,7 +45,7 @@ describe('a block read from the core', () => {
     assert.strictEqual(b.parent, 'a.1');
     assert.strictEqual(b.ord, 0);
     assert.strictEqual(titleOf(b), 'Two');
-    const document = documentFor(b);
+    const document = documentFor(b, STORE);
     assert.strictEqual(document.headingSrc, '## Two\n');
     assert.strictEqual(document.src, 'body\n\n');
     assert.strictEqual(document.text, '## Two\nbody\n\n');
@@ -53,7 +55,7 @@ describe('a block read from the core', () => {
     const b = block(
       '((id . "a.2") (deleted . #f) (fields (kind . section) (src . "body") (title . "Two")) (position "a.1" . 0) (edges))'
     );
-    const document = documentFor(b);
+    const document = documentFor(b, STORE);
     assert.strictEqual(document.headingSrc, '');
     assert.strictEqual(document.text, 'body');
   });
@@ -89,8 +91,8 @@ describe('S1 and S2 the heading decides whether a save is sent', () => {
     await initWire();
   });
 
-  const withHeading = { id: 'a.2', headingSrc: '## Two\n', src: 'body\n', text: '## Two\nbody\n' };
-  const withoutHeading = { id: 'a.2', headingSrc: '', src: 'body\n', text: 'body\n' };
+  const withHeading = { id: 'a.2', store: STORE, headingSrc: '## Two\n', src: 'body\n', text: '## Two\nbody\n' };
+  const withoutHeading = { id: 'a.2', store: STORE, headingSrc: '', src: 'body\n', text: 'body\n' };
 
   it('sends the body alone when only the body changed', () => {
     const result = splitDocument(withHeading, '## Two\nbody2\n');
@@ -133,7 +135,7 @@ describe('S1 and S2 the heading decides whether a save is sent', () => {
   });
 
   it('leaves carriage returns alone when the block itself had one', () => {
-    const crlf = { id: 'a.2', headingSrc: '## Two\r\n', src: 'body\r\n', text: '## Two\r\nbody\r\n' };
+    const crlf = { id: 'a.2', store: STORE, headingSrc: '## Two\r\n', src: 'body\r\n', text: '## Two\r\nbody\r\n' };
     const result = splitDocument(crlf, '## Two\r\nbody2\r\n');
     assert.deepStrictEqual(result, { ok: true, src: 'body2\r\n', normalised: false });
   });

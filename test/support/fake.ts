@@ -40,6 +40,7 @@ export interface ScriptedCall {
   delayMs?: number;
   exitWithoutAnswer?: boolean;
   once?: boolean;
+  chunkAt?: number[];
 }
 
 export interface LoggedCall {
@@ -48,6 +49,7 @@ export interface LoggedCall {
   env: { CHEZSCHEMELIBDIRS: string | null; CHEZSCHEMELIBEXTS: string | null };
   event: string;
   name: string | null;
+  watched: string | null;
   signal?: string;
   rc?: number;
   wrote?: string;
@@ -93,12 +95,26 @@ export class FakeCore {
     };
   }
 
-  public env(): NodeJS.ProcessEnv {
+  /*
+   * `watch` names a file the stand-in reads at the moment a request
+   * arrives, and records what it held. That is the only vantage point
+   * from which "written down before it was sent" is observable.
+   */
+  public env(watch?: string): NodeJS.ProcessEnv {
     return {
       ...process.env,
       FAKE_CORE_SCRIPT: this.scriptFile,
-      FAKE_CORE_LOG: this.logFile
+      FAKE_CORE_LOG: this.logFile,
+      ...(watch === undefined ? {} : { FAKE_CORE_WATCH: watch })
     };
+  }
+
+  /*
+   * A stand-in that records the signal and stays. The client has to stop
+   * it some other way or answer without it.
+   */
+  public stubbornEnv(): NodeJS.ProcessEnv {
+    return { ...this.env(), FAKE_CORE_IGNORE_SIGNALS: '1' };
   }
 
   public calls(): LoggedCall[] {

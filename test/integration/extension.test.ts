@@ -182,4 +182,103 @@ describe('the extension inside an editor', function () {
       'the refused save rolled the buffer back instead of leaving it alone'
     );
   });
+
+  it('O5 does not overwrite a buffer that has unsaved changes', async () => {
+    const id = await idOfTitle(store, 'Two');
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle();
+    const editor = vscode.window.activeTextEditor as vscode.TextEditor;
+    const document = editor.document;
+    const opened = document.getText();
+
+    await editor.edit((builder) => {
+      builder.insert(document.positionAt(document.getText().length), 'typed but not saved\n');
+    });
+    assert.ok(document.isDirty, 'the edit did not leave the buffer dirty');
+    const typed = document.getText();
+
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle();
+    assert.strictEqual(
+      document.getText(),
+      typed,
+      'opening the block again threw away work that had not been saved'
+    );
+    assert.notStrictEqual(typed, opened);
+
+    /*
+     * And the baseline did not move either: saving now must still be
+     * measured against the heading the buffer was given, so the body --
+     * not the whole buffer -- is what reaches the store.
+     */
+    const logBefore = await store.client.request('log', [id]);
+    await document.save();
+    await settle(1500);
+    const readBack = await store.client.request('read', [id, '--md']);
+    assert.strictEqual(readBack.text, typed);
+    const logAfter = await store.client.request('log', [id]);
+    assert.strictEqual(logAfter.answers.length, logBefore.answers.length + 1);
+  });
+
+  it('S8 sends LF when the editor is writing CRLF and the block holds none', async () => {
+    const id = await idOfTitle(store, 'Three  spaced');
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle();
+    const editor = vscode.window.activeTextEditor as vscode.TextEditor;
+    const document = editor.document;
+
+    await editor.edit((builder) => {
+      builder.setEndOfLine(vscode.EndOfLine.CRLF);
+    });
+    await editor.edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Three  spaced\nline one\nline two\n'
+      );
+    });
+    assert.ok(document.getText().includes('\r\n'), 'the buffer is not holding CRLF');
+
+    await document.save();
+    await settle(1500);
+
+    const readBack = await store.client.request('read', [id, '--md']);
+    assert.strictEqual(
+      readBack.text,
+      '## Three  spaced\nline one\nline two\n',
+      'the carriage returns the editor added reached the store'
+    );
+  });
+
+  it('does not overwrite a file holding a save the core refused', async () => {
+    const id = await idOfTitle(store, 'Two');
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle();
+    const editor = vscode.window.activeTextEditor as vscode.TextEditor;
+    const document = editor.document;
+
+    /*
+     * A heading edit is refused, and the file has ALREADY been written
+     * by the time the refusal is heard -- so the buffer is clean and
+     * holds work the store has not got. That is the state the dirty flag
+     * cannot see.
+     */
+    await editor.edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Renamed by hand\nand a body change too\n'
+      );
+    });
+    await document.save();
+    await settle(1500);
+    assert.ok(!document.isDirty, 'the buffer is dirty, so this cell is not testing what it says');
+    const refused = document.getText();
+
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle(800);
+    assert.strictEqual(
+      document.getText(),
+      refused,
+      'reopening the block threw away a save the core had refused'
+    );
+  });
 });

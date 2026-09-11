@@ -20,9 +20,10 @@
 
 import * as assert from 'assert';
 import * as path from 'path';
-import { Client } from '../../src/client';
+import { Client, appendsARecord } from '../../src/client';
 import { LIBRARY_EXTENSIONS } from '../../src/config';
-import { CliTransport, SocketTransport, TransportError } from '../../src/transport';
+import { CliTransport, GRACE_MS, SocketTransport, TransportError } from '../../src/transport';
+import { readBlock, stringField } from '../../src/blocks';
 import { clause, headName, initWire, isSym } from '../../src/wire';
 import { FakeCore } from '../support/fake';
 
@@ -117,6 +118,26 @@ describe('T3 a core that does not answer is stopped, and noise is not an answer'
     const signals = core.calls().filter((c) => c.event === 'signal');
     assert.strictEqual(signals.length, 1, 'the child was not stopped, only stopped being waited for');
     assert.strictEqual(signals[0].signal, 'SIGTERM');
+  });
+
+  it('answers, and insists, when the child does not stop when asked', async function () {
+    this.timeout(30000);
+    core = new FakeCore([{ match: ['outline'], stdout: '- a.1  One\n', rc: 0, delayMs: 60000 }]);
+    const client = new Client(new CliTransport(core.config({ timeoutMs: 300 }), core.stubbornEnv()));
+    const started = Date.now();
+    await assert.rejects(
+      () => client.request('outline', []),
+      (e: unknown) => e instanceof TransportError && e.failure === 'timeout',
+      'the caller was left waiting on a child that ignored the signal'
+    );
+    const waited = Date.now() - started;
+    assert.ok(
+      waited < 300 + GRACE_MS + 5000,
+      `the caller waited ${waited} ms, well past the timeout and the grace it allows`
+    );
+    const signals = core.calls().filter((c) => c.event === 'signal');
+    assert.ok(signals.length >= 1, 'the child was never asked to stop');
+    assert.strictEqual(signals[0].signal, 'SIGTERM', 'the first signal was not the polite one');
   });
 
   it('reads stdout with noise on the other stream', async () => {
@@ -215,5 +236,100 @@ describe('T4 the argument vector and the environment are what the core expects',
       (e: unknown) => e instanceof TransportError && e.failure === 'unsupported'
     );
     assert.deepStrictEqual(core.requests(), []);
+  });
+});
+
+describe('T5 stdout arriving in pieces is one answer', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THE BREAKS ARE PLACED WHERE THEY DO DAMAGE. A break between two
+   * whole characters proves nothing: any implementation survives it. The
+   * two that catch a client decoding per chunk are a break inside a
+   * multi-byte character -- which becomes two replacement characters,
+   * silently, in a body that is then saved back -- and a break inside an
+   * escape sequence, which turns one character into two.
+   */
+  function breaksInside(stdout: string): number[] {
+    const bytes = Buffer.from(stdout, 'utf8');
+    const escapeAt = bytes.indexOf(Buffer.from('\\n', 'utf8'));
+    const wideAt = bytes.indexOf(Buffer.from('中', 'utf8'));
+    assert.ok(escapeAt > 0, 'the fixture has no escape to break inside');
+    assert.ok(wideAt > 0, 'the fixture has no multi-byte character to break inside');
+    return [escapeAt + 1, wideAt + 1];
+  }
+
+  it('reads a text answer broken inside an escape and inside a character', async () => {
+    const stdout = '- a.1  One中\n  - a.2  Two\n';
+    core = new FakeCore([
+      { match: ['outline'], stdout, rc: 0, chunkAt: [Buffer.from(stdout, 'utf8').indexOf(Buffer.from('中', 'utf8')) + 1] }
+    ]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const answer = await client.request('outline', []);
+    assert.strictEqual(answer.text, stdout, 'the text came back changed');
+    assert.ok(!answer.text.includes('�'), 'a character was split and replaced');
+  });
+
+  it('reads a datum answer broken in both places', async () => {
+    const stdout = '(ok ((id . "a.2") (fields (src . "line\\nmore 中文"))))\n';
+    core = new FakeCore([{ match: ['read'], stdout, rc: 0, chunkAt: breaksInside(stdout) }]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const answer = await client.request('read', ['a.2']);
+    assert.strictEqual(answer.answers.length, 1);
+    const block = readBlock((answer.answers[0] as unknown[])[1]);
+    assert.ok(block !== null);
+    assert.strictEqual(stringField(block as NonNullable<typeof block>, 'src'), 'line\nmore 中文');
+  });
+
+  it('reads an items answer whose last piece is flushed by the exit', async () => {
+    const stdout = '(orphan "a.1")\n(orphan "a.2")\n(orphan "a.3")\n';
+    const bytes = Buffer.from(stdout, 'utf8');
+    core = new FakeCore([
+      { match: ['conflicts'], stdout, rc: 0, chunkAt: [10, bytes.length - 6] }
+    ]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const answer = await client.request('conflicts', []);
+    assert.strictEqual(answer.answers.length, 3, 'a piece written at exit was lost');
+    assert.strictEqual((answer.answers[2] as unknown[])[1], 'a.3');
+  });
+});
+
+describe('a verb that appends a record is known by what it does, not by its name', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('treats an empty answer to `tag <name>` as a save whose outcome is unknown', async () => {
+    core = new FakeCore([{ match: ['tag', 'release'], exitWithoutAnswer: true }]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    await assert.rejects(
+      () => client.request('tag', ['release']),
+      (e: unknown) => e instanceof TransportError && e.failure === 'no-answer',
+      'a tag that writes a record was allowed to answer nothing'
+    );
+  });
+
+  it('treats an empty answer to `tag` with no argument as a store with no tags', async () => {
+    core = new FakeCore([{ match: ['tag'], exitWithoutAnswer: true }]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const answer = await client.request('tag', []);
+    assert.strictEqual(answer.ok, true);
+    assert.deepStrictEqual(answer.answers, []);
+  });
+
+  it('agrees with the core about which verbs take a request id', () => {
+    assert.strictEqual(appendsARecord('set', ['a.2', 'src', 'x']), true);
+    assert.strictEqual(appendsARecord('tag', ['release']), true);
+    assert.strictEqual(appendsARecord('tag', []), false);
+    assert.strictEqual(appendsARecord('read', ['a.2']), false);
+    assert.strictEqual(appendsARecord('outline', []), false);
+    assert.strictEqual(appendsARecord('conflicts', []), false);
+    assert.strictEqual(appendsARecord('check', []), false);
   });
 });

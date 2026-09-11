@@ -41,6 +41,15 @@ export interface CoreConfig {
 export const DEFAULT_TIMEOUT_MS = 30000;
 
 /*
+ * NODE'S TIMER TAKES A 32-BIT DELAY AND SILENTLY CLAMPS ANYTHING LARGER
+ * TO ONE MILLISECOND. A timeout of a month is therefore a timeout of an
+ * instant, and the message the caller is then shown names the month. A
+ * setting this client cannot honour is refused where it is read, rather
+ * than accepted and turned into its opposite.
+ */
+export const MAX_TIMEOUT_MS = 2147483647;
+
+/*
  * THE LIBRARY EXTENSIONS CHEZ IS GIVEN LIST `.no-obj` AFTER EVERY SOURCE
  * EXTENSION AND NEVER `.so`. A compiled object beside the source is
  * loaded in preference to the source, and the working tree of a library
@@ -118,6 +127,13 @@ export function problemsWith(config: CoreConfig): ConfigProblem[] {
   }
   if (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0) {
     out.push({ setting: 'theourgia.timeoutMs', message: 'the timeout must be a positive number of milliseconds' });
+  } else if (config.timeoutMs > MAX_TIMEOUT_MS) {
+    out.push({
+      setting: 'theourgia.timeoutMs',
+      message:
+        `the timeout must be at most ${MAX_TIMEOUT_MS} ms; a larger one is clamped by the ` +
+        'timer to a single millisecond, which would stop every request almost at once'
+    });
   }
   return out;
 }

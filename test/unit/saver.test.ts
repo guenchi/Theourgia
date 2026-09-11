@@ -22,6 +22,7 @@
 
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
 import { Outbox } from '../../src/outbox';
@@ -350,5 +351,333 @@ describe('S6 an answer is sorted by what it says about the store', () => {
     assert.strictEqual(outcome.status, 'saved');
     assert.strictEqual(outbox.pendingCount, 0);
     assert.strictEqual(outbox.cursor, 'w:9');
+  });
+});
+
+describe('S9 the cursor survives a restart and is not asked for twice', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('sends the next save against the cursor the last answer established, without asking check again', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s9-')), 'outbox.json');
+    const r = rig(
+      [
+        { match: ['set'], stdout: wrote(9), rc: 0, once: true },
+        { match: ['set'], stdout: wrote(10), rc: 0, once: true }
+      ],
+      file
+    );
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'one\n');
+    assert.strictEqual(core.requests().filter((c) => c[0] === 'check').length, 1);
+
+    const restarted = new Outbox(file);
+    restarted.load();
+    assert.strictEqual(restarted.cursor, 'w:9');
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted);
+    const outcome = await saver.save('a.2', 'src', 'two\n');
+    assert.strictEqual(outcome.status, 'saved', outcome.message);
+
+    const sent = setCalls(core);
+    assert.strictEqual(sent[1][7], 'w:9', 'the save after a restart used the wrong cursor');
+    assert.strictEqual(
+      core.requests().filter((c) => c[0] === 'check').length,
+      1,
+      'check was asked again although the cursor was on disk'
+    );
+  });
+});
+
+describe('S10 the entry is on disk at the moment the core sees the request', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THE WITNESS IS THE CORE, NOT THE CLIENT. Asking the client whether
+   * it wrote before it sent is asking the suspect; the stand-in reads
+   * the outbox file the instant the request arrives, which is a moment
+   * only the receiving side has.
+   */
+  it('the core finds the entry already written when the request arrives', async () => {
+    const core0 = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: wrote(9), rc: 0 }
+    ]);
+    core = core0;
+    const outboxFile = core0.outboxFile();
+    const outbox = new Outbox(outboxFile);
+    outbox.load();
+    const saver = new Saver(
+      new Client(new CliTransport(core0.config(), core0.env(outboxFile))),
+      outbox
+    );
+    const outcome = await saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'saved');
+
+    const atSet = core0.calls().find((c) => c.event === 'answer' && c.coreArgv[0] === 'set');
+    assert.ok(atSet !== undefined, 'the set never reached the core');
+    assert.ok(
+      atSet?.watched !== null && atSet?.watched !== undefined,
+      'the outbox file did not exist when the request arrived'
+    );
+    const onDisk = JSON.parse(atSet?.watched as string) as {
+      entries: { req: string; payload: string; cursor: string; state: string }[];
+    };
+    assert.strictEqual(onDisk.entries.length, 1);
+    assert.strictEqual(onDisk.entries[0].req, outcome.req);
+    assert.strictEqual(onDisk.entries[0].payload, 'body2\n');
+    assert.strictEqual(onDisk.entries[0].cursor, 'w:7');
+    assert.strictEqual(
+      onDisk.entries[0].state,
+      'sent',
+      'the entry did not record that the request was going out'
+    );
+  });
+});
+
+describe('S11 a host interrupted between the send and the answer', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * WHAT IS ON DISK AFTER AN INTERRUPTION is a cursor that a previous
+   * save moved and an entry that nothing has resolved. The entry's own
+   * cursor is older than the outbox's, and that is not a mistake to be
+   * corrected: the request went out with it.
+   */
+  it('keeps the entry and does not move its cursor to the one the outbox now holds', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s11-')), 'outbox.json');
+    const r = rig(
+      [
+        { match: ['set'], contains: ['first\n'], stdout: wrote(9), rc: 0 },
+        { match: ['set'], contains: ['second\n'], stdout: wrote(10), rc: 0 }
+      ],
+      file
+    );
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'first\n');
+    assert.strictEqual(r.outbox.cursor, 'w:9');
+
+    const interrupted = new Outbox(file);
+    interrupted.load();
+    interrupted.enqueue({
+      req: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      cursor: 'w:9',
+      id: 'a.2',
+      field: 'src',
+      payload: 'second\n',
+      state: 'sent',
+      createdAt: 0,
+      lastError: null
+    });
+    interrupted.setCursor('w:9');
+
+    const reloaded = new Outbox(file);
+    reloaded.load();
+    assert.strictEqual(reloaded.pendingCount, 1, 'the interrupted entry was not kept');
+    assert.strictEqual(reloaded.entries[0].state, 'sent');
+    assert.strictEqual(reloaded.cursor, 'w:9', 'the cursor was not persisted');
+
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const outcomes = await saver.retry();
+    assert.strictEqual(outcomes[0].status, 'saved', outcomes[0].message);
+    const sent = setCalls(core);
+    assert.strictEqual(sent[1][5], 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'the retry changed the request id');
+    assert.strictEqual(sent[1][7], 'w:9', 'the retry changed the cursor of a request already sent');
+  });
+
+  it('does not move the cursor of a sent entry even when the outbox has moved on', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s11b-')), 'outbox.json');
+    const outbox = new Outbox(file);
+    outbox.load();
+    outbox.setCursor('w:3');
+    outbox.enqueue({
+      req: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      cursor: 'w:3',
+      id: 'a.2',
+      field: 'src',
+      payload: 'x\n',
+      state: 'sent',
+      createdAt: 0,
+      lastError: null
+    });
+    outbox.setCursor('w:40');
+    outbox.aboutToSend('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'w:40');
+    assert.strictEqual(outbox.entries[0].cursor, 'w:3', 'a sent request had its identity rewritten');
+  });
+
+  it('does correct the cursor of an entry that has not been sent', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s11c-')), 'outbox.json');
+    const outbox = new Outbox(file);
+    outbox.load();
+    outbox.enqueue({
+      req: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      cursor: 'w:3',
+      id: 'a.2',
+      field: 'src',
+      payload: 'x\n',
+      state: 'queued',
+      createdAt: 0,
+      lastError: null
+    });
+    outbox.aboutToSend('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'w:40');
+    assert.strictEqual(outbox.entries[0].cursor, 'w:40');
+    assert.strictEqual(outbox.entries[0].state, 'sent');
+  });
+});
+
+describe('S12 two entries found on disk after a restart', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  function twoEntries(file: string): Outbox {
+    const outbox = new Outbox(file);
+    outbox.load();
+    outbox.setCursor('w:7');
+    for (const [req, payload] of [
+      ['11111111-1111-1111-1111-111111111111', 'first\n'],
+      ['22222222-2222-2222-2222-222222222222', 'second\n']
+    ]) {
+      outbox.enqueue({
+        req,
+        cursor: 'w:7',
+        id: 'a.2',
+        field: 'src',
+        payload,
+        state: 'sent',
+        createdAt: 0,
+        lastError: null
+      });
+    }
+    return outbox;
+  }
+
+  it('sends them in the order they were written down', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s12-')), 'outbox.json');
+    twoEntries(file);
+    const r = rig(
+      [
+        { match: ['set'], contains: ['first\n'], stdout: wrote(9), rc: 0 },
+        { match: ['set'], contains: ['second\n'], stdout: wrote(10), rc: 0 }
+      ],
+      file
+    );
+    core = r.core;
+    const reloaded = new Outbox(file);
+    reloaded.load();
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const outcomes = await saver.retry();
+    assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved']);
+    const bodies = setCalls(core).map((c) => c[3]);
+    assert.deepStrictEqual(bodies, ['first\n', 'second\n'], 'the restart sent them out of order');
+    assert.strictEqual(reloaded.pendingCount, 0);
+  });
+
+  it('holds the second back when the first cannot be resolved', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s12b-')), 'outbox.json');
+    twoEntries(file);
+    const r = rig(
+      [
+        { match: ['set'], contains: ['first\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 },
+        { match: ['set'], contains: ['second\n'], stdout: wrote(10), rc: 0 }
+      ],
+      file
+    );
+    core = r.core;
+    const reloaded = new Outbox(file);
+    reloaded.load();
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const outcomes = await saver.retry();
+    assert.deepStrictEqual(outcomes.map((o) => o.status), ['pending']);
+    assert.deepStrictEqual(
+      setCalls(core).map((c) => c[3]),
+      ['first\n'],
+      'the second went out past an unresolved first'
+    );
+    assert.strictEqual(reloaded.pendingCount, 2);
+  });
+});
+
+describe('an ok that names no record is not a save this client can act on', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('keeps the entry when the answer carries neither a cursor nor an event', async () => {
+    const r = rig([{ match: ['set'], stdout: '(ok)\n', rc: 0 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'pending', 'an ok with no record in it was called a save');
+    assert.strictEqual(r.outbox.pendingCount, 1);
+    assert.strictEqual(r.outbox.cursor, 'w:7', 'the cursor moved on an answer that named no record');
+  });
+
+  it('keeps the entry when the answer names a record it cannot spell a cursor for', async () => {
+    const r = rig([{ match: ['set'], stdout: '(ok (cursor ("w:x" . 9)))\n', rc: 0 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'pending');
+    assert.strictEqual(r.outbox.cursor, 'w:7');
+  });
+});
+
+describe('two savers over one queue are still one request at a time', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THE EXTENSION BUILDS A NEW SAVER EVERY TIME A SETTING CHANGES, over
+   * the same outbox file, without waiting for the old one. If the
+   * serialisation lived in the object, the second Saver would start with
+   * an empty chain and send while the first was still in flight -- two
+   * requests on the wire, the second carrying a cursor the first is
+   * about to move.
+   */
+  it('holds the second saver behind the first saver\'s request', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-two-savers-')), 'outbox.json');
+    const r = rig(
+      [
+        { name: 'slow', match: ['set'], contains: ['one\n'], stdout: wrote(9), rc: 0, delayMs: 700 },
+        { name: 'fast', match: ['set'], contains: ['two\n'], stdout: wrote(10), rc: 0 }
+      ],
+      file
+    );
+    core = r.core;
+
+    const second = new Outbox(file);
+    second.load();
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+
+    const first = r.saver.save('a.2', 'src', 'one\n');
+    const later = other.save('a.2', 'src', 'two\n');
+    const outcomes = await Promise.all([first, later]);
+    assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved']);
+
+    const answers = core.calls().filter((c) => c.event === 'answer' && c.coreArgv[0] === 'set');
+    assert.strictEqual(answers.length, 2);
+    const slow = answers.find((a) => a.name === 'slow');
+    const fast = answers.find((a) => a.name === 'fast');
+    assert.ok(slow !== undefined && fast !== undefined);
+    assert.ok(
+      (fast?.started as number) >= (slow?.at as number),
+      `the second saver started at ${fast?.started} while the first answered at ${slow?.at}`
+    );
   });
 });

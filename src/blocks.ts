@@ -27,6 +27,7 @@
  * here from `heading-src` and `src` and taken apart by the same rule.
  */
 
+import { TransportError } from './transport';
 import { Datum, asInteger, assocTail, cdrOf, clauseRest, isDotted, isList, isSym } from './wire';
 
 export interface Block {
@@ -43,6 +44,16 @@ export interface FieldConflict {
 
 export function isBlockDatum(value: Datum): boolean {
   return isList(value) && readBlock(value) !== null;
+}
+
+/*
+ * ENOUGH OF AN UNREADABLE DATUM TO RECOGNISE IT, and no more: the value
+ * may be a whole document body, and an error message is not the place
+ * for one.
+ */
+function describe(value: Datum): string {
+  const text = String(value);
+  return text.length > 200 ? `${text.slice(0, 200)}...` : text;
 }
 
 /*
@@ -73,9 +84,25 @@ export function readBlock(value: Datum): Block | null {
        */
       if (isDotted(entry) && entry.items.length >= 1 && isSym(entry.items[0])) {
         fields.set((entry.items[0] as { name: string }).name, cdrOf(entry));
-      } else if (isList(entry) && entry.length >= 1 && isSym(entry[0])) {
-        fields.set((entry[0] as { name: string }).name, entry.slice(1));
+        continue;
       }
+      if (isList(entry) && entry.length >= 1 && isSym(entry[0])) {
+        fields.set((entry[0] as { name: string }).name, entry.slice(1));
+        continue;
+      }
+      /*
+       * A FIELD THIS CANNOT READ STOPS THE WHOLE BLOCK. Skipping it
+       * would produce a block that is missing a field, which is
+       * indistinguishable from a block that never had one -- so a title
+       * in a shape this client has not met would show as an untitled
+       * block rather than as something to look at. The same refusal the
+       * client makes for an unregistered verb.
+       */
+      throw new TransportError(
+        'unreadable',
+        `the core answered with a field this client cannot read, in block ${id}`,
+        describe(entry)
+      );
     }
   }
   const position = assocTail(value, 'position');
@@ -161,8 +188,17 @@ export function hasFieldConflict(block: Block): boolean {
   return false;
 }
 
+/*
+ * A BUFFER REMEMBERS WHICH STORE IT CAME OUT OF. The file it lives in is
+ * named under that store, but the client that would save it is whichever
+ * one the settings name NOW -- so a buffer still open from a store the
+ * user has since switched away from would be written into the new one,
+ * under an id that means something else there, or nothing. Carrying the
+ * store here makes that a question the save path can ask.
+ */
 export interface BlockDocument {
   id: string;
+  store: string;
   headingSrc: string;
   src: string;
   text: string;
@@ -175,10 +211,10 @@ export interface BlockDocument {
  * and it is that separation -- not a line count -- that decides whether
  * the title was edited.
  */
-export function documentFor(block: Block): BlockDocument {
+export function documentFor(block: Block, store: string): BlockDocument {
   const headingSrc = stringField(block, 'heading-src');
   const src = stringField(block, 'src');
-  return { id: block.id, headingSrc, src, text: headingSrc + src };
+  return { id: block.id, store, headingSrc, src, text: headingSrc + src };
 }
 
 export type SplitResult =

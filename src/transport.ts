@@ -94,6 +94,14 @@ export function buildArgv(config: CoreConfig, verb: string, args: string[]): str
 const MISSING_LIBRARY = /library \(([^)]*)\) not found/;
 
 /*
+ * HOW LONG A CHILD IS GIVEN TO STOP AFTER BEING ASKED. Long enough for
+ * one to flush and exit, short enough that a caller who has already
+ * waited out the whole timeout is not waiting again.
+ */
+export const GRACE_MS = 2000;
+
+
+/*
  * A MISSING LIBRARY IS A SETTING, NOT A BACKTRACE. Chez reports
  * `Exception: library (igropyr sexpr) not found` and stops; forwarding
  * that text tells a user which library and nothing about what to do,
@@ -156,9 +164,30 @@ export class CliTransport implements Transport {
       child.stdout?.on('data', (chunk: Buffer) => out.push(chunk));
       child.stderr?.on('data', (chunk: Buffer) => err.push(chunk));
 
+      /*
+       * A CHILD ASKED TO STOP IS NOT A CHILD THAT HAS STOPPED, and the
+       * only proof this transport had was `close` -- so a core that
+       * ignores the signal, or one that has been suspended, left the
+       * caller waiting for ever on a request it had already given up on.
+       * The ask is followed by an insistence, and the caller is answered
+       * when the second one is due whether or not the child has gone.
+       */
+      let hardStop: NodeJS.Timeout | null = null;
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
+        hardStop = setTimeout(() => {
+          child.kill('SIGKILL');
+          finish(() => {
+            reject(
+              new TransportError(
+                'timeout',
+                `the core did not answer within ${this.config.timeoutMs} ms and did not stop when asked`,
+                Buffer.concat(err).toString('utf8')
+              )
+            );
+          });
+        }, GRACE_MS);
       }, this.config.timeoutMs);
 
       const finish = (fn: () => void): void => {
@@ -167,6 +196,9 @@ export class CliTransport implements Transport {
         }
         settled = true;
         clearTimeout(timer);
+        if (hardStop !== null) {
+          clearTimeout(hardStop);
+        }
         fn();
       };
 

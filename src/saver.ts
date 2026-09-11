@@ -45,10 +45,11 @@
  */
 
 import { randomUUID } from 'crypto';
+import * as path from 'path';
 import { Client } from './client';
 import { Outbox, OutboxEntry } from './outbox';
 import { TransportError } from './transport';
-import { eventFromWrite, firstCursorFromCheck, isReplay } from './cursor';
+import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
 import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
 
 export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked';
@@ -96,12 +97,17 @@ function describeRefusal(datum: Datum): string {
   return `the core refused the write: ${name}`;
 }
 
+/*
+ * One chain per outbox file, for the whole process. Keyed by the
+ * resolved path so that two spellings of one file do not get two chains.
+ */
+const queues = new Map<string, Promise<void>>();
+
 export class Saver {
   private readonly client: Client;
   private readonly outbox: Outbox;
   private readonly newRequestId: () => string;
   private readonly now: () => number;
-  private running: Promise<void> = Promise.resolve();
   private bootstrapProblem: string | null = null;
 
   constructor(client: Client, outbox: Outbox, options: SaverOptions = {}) {
@@ -170,17 +176,27 @@ export class Saver {
   }
 
   /*
-   * ONE PROMISE CHAIN IS THE WHOLE SERIALISATION. A boolean flag plus a
-   * queue of callbacks is the same thing with more places to get the
-   * bookkeeping wrong, and the failure mode -- two `set` requests in
-   * flight -- is one the store answers with a refusal that looks like a
-   * bug in the store.
+   * THE SERIALISATION BELONGS TO THE QUEUE, NOT TO THIS OBJECT. A chain
+   * held in an instance field serialises that instance and nothing else,
+   * and this instance is not the only one: the extension builds a new
+   * Saver over the SAME outbox file every time a setting changes, and
+   * the old one may still have a request in flight. Two Savers, one
+   * file, two requests on the wire -- and the second carries a cursor
+   * the first is about to move.
+   *
+   * So the chain is looked up by the outbox's path. Every Saver over one
+   * file waits behind the same promise, whatever object made it.
    */
   private serialise<T>(work: () => Promise<T>): Promise<T> {
-    const next = this.running.then(work, work);
-    this.running = next.then(
-      () => undefined,
-      () => undefined
+    const key = path.resolve(this.outbox.path);
+    const before = queues.get(key) ?? Promise.resolve();
+    const next = before.then(work, work);
+    queues.set(
+      key,
+      next.then(
+        () => undefined,
+        () => undefined
+      )
     );
     return next;
   }
@@ -204,6 +220,16 @@ export class Saver {
           : 'this store reports no writer, so there is nothing to write against';
       return null;
     }
+    /*
+     * A CURSOR THE CORE WOULD NOT PARSE IS NOT SENT. `--cursor` is
+     * parsed by shape and anything else is `malformed-cursor`; composing
+     * one out of a writer name with a colon in it would produce a save
+     * refused for a reason that has nothing to do with the save.
+     */
+    if (!isWellFormedCursor(first.cursor)) {
+      this.bootstrapProblem = `this store reports a writer this client cannot spell a cursor for: ${first.cursor}`;
+      return null;
+    }
     this.bootstrapProblem = null;
     this.outbox.setCursor(first.cursor);
     return first.cursor;
@@ -222,10 +248,13 @@ export class Saver {
         return outcomes;
       }
       const entry = entries[0];
-      const cursor = this.outbox.cursor;
-      if (cursor !== null) {
-        this.outbox.retarget(entry.req, cursor);
-      }
+      /*
+       * THE ENTRY IS MARKED AS GOING OUT BEFORE IT GOES OUT, for the
+       * same reason it was written down before it was sent: after this
+       * line the store may have seen it, and nothing may change what it
+       * says.
+       */
+      this.outbox.aboutToSend(entry.req, this.outbox.cursor);
       const current = this.outbox.find(entry.req) ?? entry;
       const outcome = await this.send(current);
       outcomes.push(outcome);
@@ -266,7 +295,41 @@ export class Saver {
 
     if (answer.ok) {
       const event = eventFromWrite(answer);
-      this.outbox.resolve(entry.req, event === null ? null : formatCursor(event));
+      /*
+       * AN `ok` THAT NAMES NO RECORD IS NOT A SAVE THIS CLIENT CAN ACT
+       * ON. Every write the core accepts answers with the event it
+       * appended -- `(cursor ("w" . 6))` fresh, `(event ("w" . 6))` on a
+       * replay -- and an answer with neither leaves the next request
+       * with no cursor to be composed against. Dropping the entry would
+       * be calling it saved on the strength of the word `ok`, and the
+       * next save would then go out against a cursor from before this
+       * one, which the store refuses. So the entry stays and this is
+       * reported as the defect it is.
+       */
+      if (event === null) {
+        this.outbox.markPending(entry.req, 'the core answered ok without naming a record');
+        return {
+          status: 'pending',
+          req: entry.req,
+          id: entry.id,
+          message:
+            'the core accepted the save but did not say which record it wrote, so this client ' +
+            'cannot carry the cursor forward; the save is kept and can be retried',
+          answer: datum
+        };
+      }
+      const moved = formatCursor(event);
+      if (!isWellFormedCursor(moved)) {
+        this.outbox.markPending(entry.req, `the core named a record this client cannot spell: ${moved}`);
+        return {
+          status: 'pending',
+          req: entry.req,
+          id: entry.id,
+          message: `the core named the record ${moved}, which is not a cursor the core itself would parse`,
+          answer: datum
+        };
+      }
+      this.outbox.resolve(entry.req, moved);
       return {
         status: isReplay(answer) ? 'replayed' : 'saved',
         req: entry.req,

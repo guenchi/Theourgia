@@ -30,6 +30,7 @@
  * with the store it is editing.
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { BlockDocument } from './blocks';
@@ -57,7 +58,71 @@ export function documentPathFor(storageDirectory: string, store: string, id: str
   return path.join(storageDirectory, namespaceFor(store), 'blocks', fileNameFor(id));
 }
 
+/*
+ * A NOTE BESIDE THE FILE SAYING WHAT THE STORE LAST AGREED IT HELD.
+ *
+ * THE EDITOR'S DIRTY FLAG IS NOT THIS QUESTION. A save that the core
+ * refused has already written the file to disk -- the handler runs on
+ * `onDidSaveTextDocument`, after the bytes have landed -- so the buffer
+ * is CLEAN while holding work the store does not have. Opening the
+ * block again would then find nothing dirty and rewrite the file from
+ * the store, and the sentence the user was shown, that the file still
+ * holds what they wrote, would stop being true.
+ *
+ * IT IS A FILE AND NOT A FIELD because the other reader is another
+ * process. Two editor windows on one store compute the same path for a
+ * block, and a map held inside one host knows nothing about the other's
+ * unsaved work.
+ */
+function markerFor(file: string): string {
+  return `${file}.committed`;
+}
+
+function digestOf(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 export function writeDocument(file: string, document: BlockDocument): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, document.text, 'utf8');
+  markCommitted(file);
+}
+
+/*
+ * Called when the file as it stands is known to be in the store: after
+ * it has just been written from the store, and after a save the core
+ * confirmed. Never after one it refused.
+ */
+export function markCommitted(file: string): void {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(markerFor(file), `${digestOf(text)}\n`, 'utf8');
+  } catch (e) {
+    /*
+     * The marker is an optimisation in one direction only: without it
+     * the file is treated as holding work, which refuses to overwrite.
+     * Failing to write it is therefore safe, and reporting it here would
+     * turn a successful save into an error message.
+     */
+  }
+}
+
+export function hasUncommittedWork(file: string): boolean {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    return false;
+  }
+  let marker: string;
+  try {
+    marker = fs.readFileSync(markerFor(file), 'utf8').trim();
+  } catch (e) {
+    /*
+     * A file with no marker was written by something this version does
+     * not know about. It may hold work; it is not overwritten.
+     */
+    return true;
+  }
+  return marker !== digestOf(text);
 }

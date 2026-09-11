@@ -30,7 +30,10 @@ import { documentFor, readBlock, splitDocument } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
+import { Client } from '../../src/client';
+import { CliTransport } from '../../src/transport';
 import { Saver } from '../../src/saver';
+import { LosesTheAnswer } from '../support/lossy';
 import { initWire } from '../../src/wire';
 import { RealStore } from '../support/real-core';
 
@@ -117,7 +120,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
     const model = new StoreModel(store.client);
     const before = await model.blockOf(id);
     assert.ok(before !== null);
-    const document = documentFor(before as NonNullable<typeof before>);
+    const document = documentFor(before as NonNullable<typeof before>, store.store);
     assert.strictEqual(document.headingSrc, '## Two\n', 'an imported block carries its heading');
 
     const logBefore = await store.client.request('log', [id]);
@@ -225,6 +228,73 @@ describe('S14 the bytes a store accepts are the bytes this client can read back'
     assert.strictEqual(answer.ok, true);
     const block = readBlock((answer.answers[0] as unknown[])[1]);
     assert.ok(block !== null);
-    assert.strictEqual(documentFor(block as NonNullable<typeof block>).src, body);
+    assert.strictEqual(documentFor(block as NonNullable<typeof block>, store.store).src, body);
+  });
+});
+
+describe('S13 a save whose answer is lost, retried against the real store', function () {
+  this.timeout(120000);
+  let store: RealStore;
+
+  before(async () => {
+    store = await RealStore.make('vscode-lossy');
+    await store.importMarkdown('doc.md', DOC);
+  });
+
+  after(() => store?.dispose());
+
+  /*
+   * THE RECORD REACHES THE STORE AND THE ANSWER DOES NOT. Refusing to
+   * send would prove nothing: the retry would find nothing to replay and
+   * would land as a first write, which is the case that already works.
+   * What has to be shown is that the store recognises the request it has
+   * already applied, and that the second attempt leaves the log the
+   * length it was.
+   */
+  it('the retry is answered as a replay and appends no second record', async () => {
+    const id = await idOfSection(store, 'Two');
+    const outbox = new Outbox(path.join(store.root, 'outbox-lossy.json'));
+    outbox.load();
+
+    const losing = new LosesTheAnswer(
+      new CliTransport(store.config),
+      (verb) => verb === 'set'
+    );
+    const blind = new Saver(new Client(losing), outbox);
+    const lost = await blind.save(id, 'src', 'written but unheard\n');
+    assert.strictEqual(lost.status, 'pending', lost.message);
+    assert.strictEqual(outbox.pendingCount, 1, 'the unheard save was dropped');
+    assert.deepStrictEqual(losing.delivered[0].slice(0, 3), ['set', id, 'src']);
+
+    /*
+     * The store has the record even though this client was not told so.
+     */
+    const readBack = await store.client.request('read', [id, '--md']);
+    assert.strictEqual(readBack.text, '## Two\nwritten but unheard\n');
+    const logBefore = await store.client.request('log', [id]);
+
+    const reloaded = new Outbox(outbox.path);
+    reloaded.load();
+    assert.strictEqual(reloaded.pendingCount, 1);
+    assert.strictEqual(reloaded.entries[0].payload, 'written but unheard\n');
+
+    const saver = new Saver(store.client, reloaded);
+    const outcomes = await saver.retry();
+    assert.strictEqual(outcomes.length, 1);
+    assert.strictEqual(
+      outcomes[0].status,
+      'replayed',
+      `the store did not recognise the request it had applied: ${outcomes[0].message}`
+    );
+    assert.strictEqual(reloaded.pendingCount, 0);
+
+    const logAfter = await store.client.request('log', [id]);
+    assert.strictEqual(
+      logAfter.answers.length,
+      logBefore.answers.length,
+      'the retry appended a second record'
+    );
+    const stillThere = await store.client.request('read', [id, '--md']);
+    assert.strictEqual(stillThere.text, '## Two\nwritten but unheard\n');
   });
 });

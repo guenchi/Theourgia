@@ -36,6 +36,8 @@
  * and are still worth showing, but they are not children of anything.
  */
 
+import { TransportError } from './transport';
+
 export type OutlineMark = 'conflict' | 'unplaced';
 
 export const OUTLINE_MARKS: OutlineMark[] = ['conflict', 'unplaced'];
@@ -53,7 +55,9 @@ const ROW = /^( *)- (\S+)( {2})?(.*)$/;
 export function parseOutline(text: string): OutlineRow[] {
   const rows: OutlineRow[] = [];
   let inOrphans = false;
-  for (const line of text.split('\n')) {
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
     if (line.length === 0) {
       continue;
     }
@@ -63,7 +67,27 @@ export function parseOutline(text: string): OutlineRow[] {
     }
     const found = ROW.exec(line);
     if (found === null) {
-      continue;
+      /*
+       * A LINE THIS CANNOT READ STOPS THE WHOLE OUTLINE. Skipping it
+       * would hide a block -- and the rows hardest to draw are exactly
+       * the ones in a structural conflict, which is to say the rows a
+       * reader most needs to see. A shorter outline reads like a smaller
+       * store.
+       */
+      /*
+       * THE LINE NUMBER AND THE LINE ITSELF, because the block this
+       * belongs to has to be findable. A title carrying a newline is
+       * what produces this, and the row above the reported line is the
+       * one to go and look at.
+       */
+      throw new TransportError(
+        'unreadable',
+        `the outline could not be read at line ${i + 1}: ${JSON.stringify(line)}. ` +
+          (rows.length > 0
+            ? `The row before it is ${rows[rows.length - 1].id}, whose title may carry a newline.`
+            : 'No row was read before it.'),
+        text
+      );
     }
     const indent = found[1].length;
     const id = found[2];

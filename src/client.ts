@@ -59,12 +59,42 @@ export interface Answer {
 const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff']);
 
 /*
- * The verbs that append a record. For these -- and only these -- an
- * empty answer is a fault rather than a fact, because the store may or
- * may not have changed and the answer was the only thing that would have
- * said which.
+ * THE CRITERION IS "APPENDS A RECORD", not "is a verb I thought of".
+ * Every verb here writes into the log, so for every one of them an
+ * empty answer leaves the same question open -- whether the store
+ * changed -- and that question is what this set exists to refuse to
+ * guess at. A verb that only reads is not here however slow or
+ * important it is.
  */
-export const WRITE_VERBS = new Set(['insert', 'set', 'move', 'del', 'link', 'unlink', 'batch']);
+const ALWAYS_WRITE_VERBS = new Set([
+  'insert',
+  'set',
+  'move',
+  'del',
+  'link',
+  'unlink',
+  'batch',
+  'init',
+  'import-md',
+  'adopt',
+  'snapshot',
+  'publish'
+]);
+
+/*
+ * WHETHER A VERB APPENDS A RECORD IS NOT ALWAYS DECIDED BY ITS NAME.
+ * `tag` with a name writes one and `tag` with no argument lists what is
+ * there, and the core says so itself: trackability is a property of the
+ * request, not of the verb's name. For a verb that writes, an empty
+ * answer is a fault rather than a fact -- the store may or may not have
+ * changed, and the answer was the only thing that would have said which.
+ */
+export function appendsARecord(verb: string, args: string[]): boolean {
+  if (verb === 'tag') {
+    return args.length > 0;
+  }
+  return ALWAYS_WRITE_VERBS.has(verb);
+}
 
 const KNOWN_VERBS = new Set([
   'init',
@@ -136,7 +166,7 @@ export class Client {
   public async request(verb: string, args: string[] = []): Promise<Answer> {
     const kind = answerKind(verb, args);
     const raw: RawResult = await this.transport.send(verb, args);
-    return interpret(raw, verb, kind);
+    return interpret(raw, verb, kind, args);
   }
 }
 
@@ -149,7 +179,7 @@ export class Client {
  * message it could not tell from a store whose first line happens to
  * start with a parenthesis.
  */
-export function interpret(raw: RawResult, verb: string, kind: AnswerKind): Answer {
+export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: string[] = []): Answer {
   const ok = raw.rc === 0;
   if (!ok) {
     return {
@@ -166,7 +196,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind): Answe
     return { argv: raw.argv, rc: raw.rc, ok, kind, text: raw.stdout, answers: [], stderr: raw.stderr };
   }
   const answers = readData(raw, verb);
-  if (answers.length === 0 && WRITE_VERBS.has(verb)) {
+  if (answers.length === 0 && appendsARecord(verb, args)) {
     throw new TransportError(
       'no-answer',
       `the core exited ${raw.rc} without answering the ${verb}; ` +

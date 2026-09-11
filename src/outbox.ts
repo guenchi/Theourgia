@@ -41,7 +41,19 @@ import * as path from 'path';
 
 export const OUTBOX_VERSION = 1;
 
-export type EntryState = 'queued' | 'pending';
+/*
+ * THREE STATES, AND THE MIDDLE ONE IS WHY THERE ARE THREE. `queued` is
+ * written down and not yet sent; `pending` is sent and answered with
+ * something nobody can act on. Between them is `sent`: the request is
+ * out and no answer has arrived, which on disk is indistinguishable from
+ * `queued` unless it is recorded -- and the difference matters, because
+ * a queued entry may still have its cursor corrected and a sent one may
+ * not. A host killed between the send and the answer leaves exactly this
+ * state behind, and a restart that read it as `queued` would move the
+ * cursor of a request the store has already seen, turning a retry into a
+ * different request wearing the first one's id.
+ */
+export type EntryState = 'queued' | 'sent' | 'pending';
 
 export interface OutboxEntry {
   req: string;
@@ -60,6 +72,30 @@ interface OutboxFile {
   entries: OutboxEntry[];
 }
 
+/*
+ * A DIRECTORY THAT CANNOT BE SYNCED IS NOT A FAILED WRITE. Some file
+ * systems refuse to open a directory for this, and the bytes are already
+ * down; failing the save at that point would report an error about a
+ * record that had in fact been written.
+ */
+function syncDirectory(directory: string): void {
+  let handle: number | null = null;
+  try {
+    handle = fs.openSync(directory, 'r');
+    fs.fsyncSync(handle);
+  } catch (e) {
+    return;
+  } finally {
+    if (handle !== null) {
+      try {
+        fs.closeSync(handle);
+      } catch (ignored) {
+        return;
+      }
+    }
+  }
+}
+
 function emptyFile(): OutboxFile {
   return { version: OUTBOX_VERSION, cursor: null, entries: [] };
 }
@@ -74,10 +110,17 @@ export class OutboxWriteError extends Error {
 export class Outbox {
   private readonly file: string;
   private data: OutboxFile;
+  private readable: boolean;
 
   constructor(file: string) {
     this.file = file;
     this.data = emptyFile();
+    /*
+     * NOT READABLE UNTIL IT HAS BEEN READ. A queue that was never loaded
+     * is not known to be empty, and writing to it would replace whatever
+     * is there.
+     */
+    this.readable = false;
   }
 
   public get path(): string {
@@ -85,28 +128,45 @@ export class Outbox {
   }
 
   /*
-   * A FILE THAT WILL NOT PARSE IS KEPT, NOT REPLACED. It holds the only
-   * record of work whose outcome is unknown; overwriting it with an
-   * empty queue would turn a problem that can be looked at into one that
-   * cannot.
+   * ONLY A FILE THAT IS NOT THERE IS AN EMPTY QUEUE. Every other reason
+   * a read can fail -- a permission that changed, a device error, a
+   * directory in the way -- means there may be work recorded that could
+   * not be seen, and answering "no work" to that question is how it gets
+   * destroyed: the next save persists the empty queue over the file that
+   * could not be read. So anything but a missing file is a throw, and a
+   * throw stops this outbox being written to at all.
+   *
+   * A FILE THAT WILL NOT PARSE IS KEPT, NOT REPLACED, for the same
+   * reason: it holds the only record of work whose outcome is unknown,
+   * and overwriting it turns a problem that can be looked at into one
+   * that cannot.
    */
   public load(): void {
     let text: string;
     try {
       text = fs.readFileSync(this.file, 'utf8');
     } catch (e) {
-      this.data = emptyFile();
-      return;
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.data = emptyFile();
+        this.readable = true;
+        return;
+      }
+      this.readable = false;
+      throw new OutboxWriteError(
+        `the outbox at ${this.file} could not be read and was left alone: ${String(e)}`
+      );
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);
     } catch (e) {
+      this.readable = false;
       throw new OutboxWriteError(
         `the outbox at ${this.file} could not be read as JSON and was left alone: ${String(e)}`
       );
     }
     this.data = normalise(parsed);
+    this.readable = true;
   }
 
   public get cursor(): string | null {
@@ -126,75 +186,132 @@ export class Outbox {
   }
 
   /*
+   * NOTHING CHANGES HERE UNTIL THE DISK HAS CHANGED. Every mutator
+   * builds the state it wants, writes THAT, and adopts it only if the
+   * write succeeded -- because a queue that changed in memory and not on
+   * disk is worse than one that changed in neither: the next call sees
+   * the new state, believes it was recorded, and acts on it. An entry
+   * removed that way is an edit nobody can find again, and an entry
+   * added that way is a request sent with nothing written down.
+   */
+  private commit(next: OutboxFile): void {
+    if (!this.readable) {
+      throw new OutboxWriteError(
+        `the outbox at ${this.file} has not been read successfully, so it will not be written`
+      );
+    }
+    this.write(next);
+    this.data = next;
+  }
+
+  private copy(): OutboxFile {
+    return {
+      version: this.data.version,
+      cursor: this.data.cursor,
+      entries: this.data.entries.map((e) => ({ ...e }))
+    };
+  }
+
+  /*
    * THE ENTRY IS ON DISK BEFORE THIS RETURNS. Every caller treats the
    * return as permission to send, so a failure here has to be a throw
    * and not a logged warning.
    */
   public enqueue(entry: OutboxEntry): void {
-    this.data.entries.push(entry);
-    this.persist();
+    const next = this.copy();
+    next.entries.push({ ...entry });
+    this.commit(next);
   }
 
   public setCursor(cursor: string): void {
-    this.data.cursor = cursor;
-    this.persist();
+    const next = this.copy();
+    next.cursor = cursor;
+    this.commit(next);
   }
 
   public resolve(req: string, cursor: string | null): void {
-    this.data.entries = this.data.entries.filter((e) => e.req !== req);
+    const next = this.copy();
+    next.entries = next.entries.filter((e) => e.req !== req);
     if (cursor !== null) {
-      this.data.cursor = cursor;
+      next.cursor = cursor;
     }
-    this.persist();
+    this.commit(next);
   }
 
   /*
-   * A CURSOR MAY BE CORRECTED ONLY BEFORE THE FIRST SEND. While an
-   * entry is still queued no store has seen it, so moving it forward to
-   * the position the previous answer established is a correction rather
-   * than a change of request. Once it has been sent the cursor is part
-   * of the request's identity and is never touched again -- that is what
-   * makes a retry a retry.
+   * A CURSOR MAY BE CORRECTED ONLY BEFORE THE FIRST SEND, and this is
+   * the only moment that is known to be before one. While an entry is
+   * still queued no store has seen it, so moving it forward to the
+   * position the previous answer established is a correction rather than
+   * a change of request. Once it has been sent the cursor is part of the
+   * request's identity and is never touched again -- that is what makes
+   * a retry a retry.
+   *
+   * THE CORRECTION AND THE RECORD THAT IT IS GOING OUT ARE ONE WRITE.
+   * Two writes could be interrupted between, leaving an entry whose
+   * cursor had been moved and whose state still said it had never been
+   * sent.
    */
-  public retarget(req: string, cursor: string): void {
+  public aboutToSend(req: string, cursor: string | null): void {
+    const next = this.copy();
     let changed = false;
-    for (const entry of this.data.entries) {
-      if (entry.req === req && entry.state === 'queued' && entry.cursor !== cursor) {
-        entry.cursor = cursor;
-        changed = true;
+    for (const entry of next.entries) {
+      if (entry.req !== req || entry.state !== 'queued') {
+        continue;
       }
+      if (cursor !== null && entry.cursor !== cursor) {
+        entry.cursor = cursor;
+      }
+      entry.state = 'sent';
+      changed = true;
     }
     if (changed) {
-      this.persist();
+      this.commit(next);
     }
   }
 
   public markPending(req: string, why: string): void {
-    for (const entry of this.data.entries) {
+    const next = this.copy();
+    for (const entry of next.entries) {
       if (entry.req === req) {
         entry.state = 'pending';
         entry.lastError = why;
       }
     }
-    this.persist();
+    this.commit(next);
   }
 
-  private persist(): void {
+  /*
+   * RENAMED INTO PLACE, AND THE BYTES ARE ON THE DEVICE FIRST. A writer
+   * that truncates the real file and then fails has destroyed the queue
+   * it was recording; a rename either happens or does not.
+   *
+   * BUT AN ATOMIC RENAME IS NOT A DURABLE ONE. Rename decides what a
+   * reader sees; it says nothing about what survives a machine losing
+   * power, and the whole reason this file exists is to be there after
+   * the process that wrote it is gone. So the contents are flushed
+   * before the rename and the directory entry after it -- two syncs,
+   * because the file's bytes and the name that reaches them are two
+   * different things to lose.
+   */
+  private write(next: OutboxFile): void {
     const directory = path.dirname(this.file);
     try {
       fs.mkdirSync(directory, { recursive: true });
     } catch (e) {
       throw new OutboxWriteError(`the outbox directory ${directory} could not be made: ${String(e)}`);
     }
-    /*
-     * RENAMED INTO PLACE. A writer that truncates the real file and then
-     * fails has destroyed the queue it was recording; a rename either
-     * happens or does not.
-     */
     const temporary = `${this.file}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(temporary, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+      const handle = fs.openSync(temporary, 'w');
+      try {
+        fs.writeFileSync(handle, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+        fs.fsyncSync(handle);
+      } finally {
+        fs.closeSync(handle);
+      }
       fs.renameSync(temporary, this.file);
+      syncDirectory(directory);
     } catch (e) {
       try {
         fs.unlinkSync(temporary);
@@ -256,7 +373,7 @@ function normaliseEntry(item: unknown): OutboxEntry | null {
     id: raw.id,
     field: raw.field,
     payload: raw.payload,
-    state: raw.state === 'pending' ? 'pending' : 'queued',
+    state: raw.state === 'pending' ? 'pending' : raw.state === 'sent' ? 'sent' : 'queued',
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null
   };
