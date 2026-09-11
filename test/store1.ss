@@ -20,10 +20,45 @@
         (theourgia reduce) (theourgia store) (theourgia wire)
         (only (igropyr crypto) sha256 bytevector->hex))
 
+;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
+;; declares first and last sequence beside the hash. A fixture that
+;; declared them from memory would be asserting its own arithmetic
+;; rather than what it actually wrote, and the product's own check for a
+;; manifest that contradicts its bytes would then be measuring the
+;; fixture.
+(define (segment-seqs bytes)
+  (let ((text (utf8->string bytes)))
+    (let loop ((i 0) (start 0) (seqs '()))
+      (cond
+        ((>= i (string-length text)) (reverse seqs))
+        ((char=? (string-ref text i) #\newline)
+         (let ((r (decode-line (string->utf8 (substring text start (+ i 1))))))
+           (loop (+ i 1) (+ i 1)
+                 (if (and (pair? r) (eq? (car r) 'ok)) (cons (cadr r) seqs) seqs))))
+        (else (loop (+ i 1) start seqs))))))
+
+(define (manifest-entry n hash bytes)
+  (let ((seqs (segment-seqs bytes)))
+    (if (null? seqs)
+        (list n hash 1 1)
+        (list n hash (apply min seqs) (apply max seqs)))))
+
+(define (manifest-entry-text n hash bytes)
+  (let ((e (manifest-entry n hash bytes)))
+    (string-append "(" (number->string n) " \"" hash "\" "
+                   (number->string (caddr e)) " " (number->string (cadddr e)) ")")))
+
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
                  (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
          (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
     (let loop ((i 0))
       (when (< i (string-length path))
         (let ((c (string-ref path i)))
@@ -33,7 +68,54 @@
               "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
               root)))
         (loop (+ i 1))))
-    (system (string-append "mkdir -p " path))
+    ;; THE SAME CHECK NOW GUARDS A REMOVAL, so it asks for two more
+    ;; things a creation did not need: an absolute path, and no `..`
+    ;; anywhere in it.
+    (unless (and (> (string-length path) 0) (char=? #\/ (string-ref path 0)))
+      (assertion-violation 'test-dir
+        "THEOURGIA_TEST_ROOT must be an absolute path" root))
+    (let loop ((i 0))
+      (when (< (+ i 1) (string-length path))
+        (when (and (char=? #\. (string-ref path i))
+                   (char=? #\. (string-ref path (+ i 1))))
+          (assertion-violation 'test-dir
+            "THEOURGIA_TEST_ROOT may not contain .." root))
+        (loop (+ i 1))))
+    ;; AND THE DIRECTORY IS MADE FRESH, NOT ASSUMED FRESH. The name
+    ;; carries the process id, which reads like a unique name and is not
+    ;; one: the pid space wraps, the scratch root outlives the run, and a
+    ;; directory left by an earlier run holding the same pid is handed to
+    ;; this one already populated. Counted in the default root on
+    ;; 2026-09-11: 4260 leftover directories over 1686 distinct pids, so
+    ;; about one run in twenty inherited an older run's store. It showed
+    ;; up once as a crash -- an init answering already-initialised to a
+    ;; fixture that expected a store id -- and the crash is the harmless
+    ;; form. The form that matters is an assertion passing against data
+    ;; the run did not write. The sibling `-home` goes with it, because
+    ;; the machine registry is keyed by store identity and a stale one
+    ;; makes a fresh store look like a rollback.
+    ;; AND THE LEAF IS NEVER THE ROOT. Removal only ever names
+    ;; <root>/<name>-<pid>; a name that collapsed to nothing would aim it
+    ;; at the scratch root itself, which holds every other run.
+    (unless (and (> (string-length path) (+ 1 (string-length root)))
+                 (string=? root (substring path 0 (string-length root)))
+                 (char=? #\/ (string-ref path (string-length root))))
+      (assertion-violation 'test-dir
+        "the directory must lie strictly inside the root" (list root path)))
+    ;; A CLEAN THAT FAILED MUST NOT READ AS A CLEAN THAT WORKED. If the
+    ;; removal fails -- contents that cannot be unlinked, a busy mount --
+    ;; `mkdir -p` then succeeds on the directory that is already there and
+    ;; hands back exactly the populated directory this is here to
+    ;; prevent. Both commands are checked, and a failure stops the run
+    ;; rather than quietly weakening it.
+    (let ((must! (lambda (command)
+                   (let ((status (system command)))
+                     (unless (eqv? 0 status)
+                       (assertion-violation 'test-dir
+                         "could not prepare the scratch directory"
+                         (list command status)))))))
+      (must! (string-append "rm -rf " path " " path "-home"))
+      (must! (string-append "mkdir -p " path)))
     path))
 
 (define bad 0)
@@ -92,7 +174,7 @@
                        (begin (bytevector-copy! (car bs) 0 o i (bytevector-length (car bs)))
                               (loop (cdr bs) (+ i (bytevector-length (car bs))))))))))
       (put! (wpath dir V 1) seg)
-      (write-manifest! dir V (list (cons 1 (bytevector->hex (sha256 seg)))))))
+      (write-manifest! dir V (list (manifest-entry 1 (bytevector->hex (sha256 seg)) seg)))))
   dir))
 
 ;; THE DEPS AS THEY WENT TO DISK, not as the answer reported them. A

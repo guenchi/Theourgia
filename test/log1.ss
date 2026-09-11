@@ -46,7 +46,54 @@
               "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
               root)))
         (loop (+ i 1))))
-    (system (string-append "mkdir -p " path))
+    ;; THE SAME CHECK NOW GUARDS A REMOVAL, so it asks for two more
+    ;; things a creation did not need: an absolute path, and no `..`
+    ;; anywhere in it.
+    (unless (and (> (string-length path) 0) (char=? #\/ (string-ref path 0)))
+      (assertion-violation 'test-dir
+        "THEOURGIA_TEST_ROOT must be an absolute path" root))
+    (let loop ((i 0))
+      (when (< (+ i 1) (string-length path))
+        (when (and (char=? #\. (string-ref path i))
+                   (char=? #\. (string-ref path (+ i 1))))
+          (assertion-violation 'test-dir
+            "THEOURGIA_TEST_ROOT may not contain .." root))
+        (loop (+ i 1))))
+    ;; AND THE DIRECTORY IS MADE FRESH, NOT ASSUMED FRESH. The name
+    ;; carries the process id, which reads like a unique name and is not
+    ;; one: the pid space wraps, the scratch root outlives the run, and a
+    ;; directory left by an earlier run holding the same pid is handed to
+    ;; this one already populated. Counted in the default root on
+    ;; 2026-09-11: 4260 leftover directories over 1686 distinct pids, so
+    ;; about one run in twenty inherited an older run's store. It showed
+    ;; up once as a crash -- an init answering already-initialised to a
+    ;; fixture that expected a store id -- and the crash is the harmless
+    ;; form. The form that matters is an assertion passing against data
+    ;; the run did not write. The sibling `-home` goes with it, because
+    ;; the machine registry is keyed by store identity and a stale one
+    ;; makes a fresh store look like a rollback.
+    ;; AND THE LEAF IS NEVER THE ROOT. Removal only ever names
+    ;; <root>/<name>-<pid>; a name that collapsed to nothing would aim it
+    ;; at the scratch root itself, which holds every other run.
+    (unless (and (> (string-length path) (+ 1 (string-length root)))
+                 (string=? root (substring path 0 (string-length root)))
+                 (char=? #\/ (string-ref path (string-length root))))
+      (assertion-violation 'test-dir
+        "the directory must lie strictly inside the root" (list root path)))
+    ;; A CLEAN THAT FAILED MUST NOT READ AS A CLEAN THAT WORKED. If the
+    ;; removal fails -- contents that cannot be unlinked, a busy mount --
+    ;; `mkdir -p` then succeeds on the directory that is already there and
+    ;; hands back exactly the populated directory this is here to
+    ;; prevent. Both commands are checked, and a failure stops the run
+    ;; rather than quietly weakening it.
+    (let ((must! (lambda (command)
+                   (let ((status (system command)))
+                     (unless (eqv? 0 status)
+                       (assertion-violation 'test-dir
+                         "could not prepare the scratch directory"
+                         (list command status)))))))
+      (must! (string-append "rm -rf " path " " path "-home"))
+      (must! (string-append "mkdir -p " path)))
     path))
 
 ;; The trace switch is injected now, not a parameter: (theourgia trace)
@@ -173,16 +220,39 @@
 
 (printf "== manifest ==\n")
 (want "missing manifest is #f, not ()" (read-manifest d "k3m9x2qa") #f)
-(write-manifest! d "c9xq01mz" '((1 . "aa") (2 . "bb")))
-(want "round trip" (read-manifest d "c9xq01mz") '((1 . "aa") (2 . "bb")))
+(write-manifest! d "c9xq01mz" '((1 "aa" 1 2) (2 "bb" 3 4)))
+(want "round trip" (read-manifest d "c9xq01mz") '((1 "aa" 1 2) (2 "bb" 3 4)))
 (want "segments of it" (manifest-segments (read-manifest d "c9xq01mz")) '(1 2))
 (want "empty manifest is () and not #f"
       (begin (write-manifest! d "c9xq01mz" '()) (read-manifest d "c9xq01mz")) '())
 (want "descending or duplicate entries refused"
-      (list (raises? (lambda () (write-manifest! d "c9xq01mz" '((2 . "b") (1 . "a")))))
-            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 . "a") (1 . "b")))))
-            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 . 5))))))
+      (list (raises? (lambda () (write-manifest! d "c9xq01mz" '((2 "b" 3 4) (1 "a" 1 2)))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a" 1 2) (1 "b" 3 4)))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 5 1 2))))))
       '(#t #t #t))
+;; ONE SHAPE, AND THE OLD ONE IS NOT A DIALECT OF IT. An entry of two
+;; elements carries no range, so every layout decision made from it would
+;; be made from a number nobody wrote down. It is refused rather than
+;; read leniently, because a second accepted shape is a second format
+;; with nobody to keep the two agreeing.
+;; BOTH TWO-ELEMENT SHAPES. The dotted pair is what the old format
+;; wrote; the two-element list is what a hand-edit produces, and a length
+;; check that admits it would be caught by neither the dotted-pair row
+;; nor the three-element one.
+(want "a two-element entry is refused, and so is a range that runs backwards"
+      (list (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a")))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 . "a")))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a" 1)))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a" 4 2)))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a" 0 2)))))
+            (raises? (lambda () (write-manifest! d "c9xq01mz" '((1 "a" 1 "x"))))))
+      '(#t #t #t #t #t #t))
+;; AND THE TWIN THAT MUST PASS, so the row above is refusing the shape
+;; rather than everything handed to it.
+(want "CONTROL: a well-formed entry is accepted"
+      (begin (write-manifest! d "c9xq01mz" '((1 "a" 1 2)))
+             (read-manifest d "c9xq01mz"))
+      '((1 "a" 1 2)))
 
 (printf "== which segments participate ==\n")
 ;; THE SELECTION RULE IS NOT TESTED HERE ANY MORE. loadable-segments and
@@ -199,7 +269,7 @@
 ;;   "current is the highest"               -> log9 C7-1, which asserts
 ;;      physical-current, the field that actually names the append target
 ;;   listed-but-missing                     -> log9 C8-1
-(write-manifest! d "c9xq01mz" '((1 . "aa")))
+(write-manifest! d "c9xq01mz" '((1 "aa" 1 2)))
 (for-each (lambda (n)
             (call-with-port (open-file-output-port
                               (string-append d "/writers/c9xq01mz/" (segment-file-name n))
@@ -208,6 +278,23 @@
           '(1 2))
 (want "CONTROL: both files really exist"
       (enumerate-segment-files d "c9xq01mz") '(1 2))
+;; A SHAPE THIS BUILD DOES NOT UNDERSTAND IS AN INTEGRITY ERROR, NOT A
+;; CRASH. A two-element entry is refused by write-manifest! -- but a file
+;; already holding one arrives through read-manifest, and there the
+;; length check has to answer before any accessor reaches past the end of
+;; the entry. Widening the check so a two-element entry passes it turns
+;; that answer into a raw `caddr' error, which reaches the caller as a
+;; broken tool rather than as a broken manifest.
+(want "a manifest file carrying the old two-element entry is an integrity error"
+      (begin
+        (call-with-port (open-file-output-port
+                          (string-append d "/writers/c9xq01mz/published.sexp")
+                          (file-options no-fail))
+          (lambda (p) (put-bytevector p (string->utf8 "((1 \"aa\"))\n"))))
+        (guard (e ((log-error? e) (list 'log-error (log-error-kind e) (log-error-writer e)))
+                  (#t (list 'raw-error)))
+          (read-manifest d "c9xq01mz") 'no-error))
+      '(log-error manifest "c9xq01mz"))
 (want "a corrupt manifest raises a log-error, not a parse error"
       (begin
         (call-with-port (open-file-output-port (string-append d "/writers/c9xq01mz/published.sexp")

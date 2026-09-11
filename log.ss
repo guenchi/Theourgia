@@ -59,6 +59,7 @@
           discovery-versions discovery-retired-tail discovery-clean?
           log-clock registry-path machine-lock-path instance-install!
           store-id-of adopt! continue-adopt! generation-chain-ok? adopt-needed? verify-instance
+          log-publish! segment-sha
           registry-inside-store?
           store-register!
           session-retired? owner-install!
@@ -81,7 +82,7 @@
           segment-file-name segment-file-number
           store-writers writer-directory
           enumerate-segment-files
-          read-manifest write-manifest! manifest-segments
+          read-manifest write-manifest! manifest-segments manifest-range
           log-error? log-error-kind log-error-writer log-error-segment
           log-error-offset log-error-detail make-log-error)
   (import (chezscheme)
@@ -201,7 +202,7 @@
     (parameterize ((theourgia-stage stage))
     (let ((tmp (create-temp! path))
           (dir (parent-directory path)))
-      (let ((fd (fd-open tmp '(write)))
+      (let ((fd (fd-open tmp '(write create)))
             (open? (box #t)))
         ;; dynamic-wind, not a guard: a guard does not run when the body
         ;; is left through a continuation, and this descriptor must not
@@ -222,7 +223,7 @@
                        (guard (e2 (#t (void))) (unlink! tmp))
                        (raise e)))
               (write-all! fd bytes tmp))
-            (fsync! fd tmp)
+            (fsync! fd tmp stage)
             ;; CLOSED HERE, WHERE ITS FAILURE CAN STILL STOP THE INSTALL.
             ;; Leaving the close to the unwind alone was a regression:
             ;; that path swallows errors so that it cannot replace an
@@ -238,7 +239,7 @@
               (set-box! open? #f)
               (guard (e (#t (void))) (fd-close fd))))))
       (rename-over! tmp path)
-      (fsync-dir! dir)
+      (fsync-dir! dir stage)
       path)))
 
   ;; A NEWLY CREATED DIRECTORY'S OWN ENTRY IS NOT MADE DURABLE BY
@@ -255,7 +256,7 @@
     (unless (symbol? stage)
       (assertion-violation 'directory-entry-durable! "stage must be a symbol" stage))
     (parameterize ((theourgia-stage stage))
-      (fsync-dir! (parent-directory path))))
+      (fsync-dir! (parent-directory path) stage)))
 
   ;; ---- segment names ------------------------------------------------------
 
@@ -337,9 +338,24 @@
 
   ;; ---- the manifest -------------------------------------------------------
 
-  ;; ((<segment number> . "<hex sha256>") ...), ascending, written whole
-  ;; through atomic-write!. Section 9.6 fixes the content -- segment
-  ;; numbers and hashes -- and this fixes the shape.
+  ;; ((<segment number> "<hex sha256>" <first seq> <last seq>) ...),
+  ;; ascending, written whole through atomic-write!. Section 9.6 fixes
+  ;; the content and this fixes the shape.
+  ;;
+  ;; THE ENTRY CARRIES THE RANGE BECAUSE LAYOUT COORDINATES COME FROM
+  ;; DECLARATIONS. Where a writer's history ends is a question about what
+  ;; this store has said, not about which files happen to be readable at
+  ;; the moment it is asked: a listed segment whose bytes are damaged is
+  ;; history of a known extent awaiting repair. Reading the extent out of
+  ;; the bytes instead left it unknowable exactly when it was needed, and
+  ;; an incoming segment's fate then depended on damage somewhere else --
+  ;; so the same bytes were accepted or refused according to what had
+  ;; been damaged and in what order they arrived.
+  ;;
+  ;; THERE IS ONE SHAPE. A two-element entry is not an older manifest to
+  ;; be read leniently; it is a manifest this build does not understand,
+  ;; and accepting it would put a second format in the tree with nobody
+  ;; to keep the two agreeing.
   ;;
   ;; A MISSING MANIFEST IS NOT AN EMPTY ONE. #f means this writer has no
   ;; manifest at all, which is the ordinary state of the local writer and
@@ -360,26 +376,35 @@
                    (raise (make-log-error 'manifest writer #f #f
                                           (list (cons 'path path))))))))))
 
+  (define (whole-number? v) (and (integer? v) (exact? v)))
+
   (define (valid-manifest? d)
     (and (list? d)
          (let loop ((xs d) (last 0))
            (or (null? xs)
                (let ((e (car xs)))
-                 (and (pair? e)
-                      (integer? (car e)) (exact? (car e)) (> (car e) last)
-                      (string? (cdr e))
+                 (and (list? e) (= 4 (length e))
+                      (whole-number? (car e)) (> (car e) last)
+                      (string? (cadr e))
+                      (whole-number? (caddr e)) (whole-number? (cadddr e))
+                      (> (caddr e) 0) (<= (caddr e) (cadddr e))
                       (loop (cdr xs) (car e))))))))
 
   (define (manifest-segments manifest)
     (if manifest (map car manifest) '()))
 
   (define (manifest-hash manifest n)
-    (let ((e (and manifest (assv n manifest)))) (and e (cdr e))))
+    (let ((e (and manifest (assv n manifest)))) (and e (cadr e))))
+
+  (define (manifest-range manifest n)
+    (let ((e (and manifest (assv n manifest))))
+      (and e (cons (caddr e) (cadddr e)))))
 
   (define (write-manifest! store writer entries)
     (unless (valid-manifest? entries)
       (assertion-violation 'write-manifest!
-                           "entries must be ascending (number . hash) pairs" entries))
+                           "entries must be ascending (number hash first last) lists"
+                           entries))
     (atomic-write! (manifest-path store writer)
                    (string->utf8 (string-append (sexpr->string-extended entries) "\n"))
                    'publish))
@@ -1002,8 +1027,25 @@
                     ;; content whose records each carry a correct CRC.
                     ;; Records inside a hash-mismatched file are repair
                     ;; EVIDENCE only: not in end-*, never delivered.
-                    ((and want (not (string=? want (bytevector->hex (sha256 bytes)))))
+                    ((and want (not (string=? want (segment-sha bytes))))
                      (note! 'manifest-hash seg 0 (list (cons 'expected want)))
+                     (finish-with origin end ranges
+                                  (physical-of store writer origin retired highest)
+                                  buffer torn errs quarantine retired versions #f))
+                    ;; AND THE RANGE IT DECLARES HAS TO BE THE RANGE IT
+                    ;; HOLDS. With the hash matching, these bytes are the
+                    ;; ones the manifest names, so a range that disagrees
+                    ;; is the manifest contradicting itself -- and the
+                    ;; declaration is what every layout decision is made
+                    ;; from. It is excluded exactly as a hash mismatch is,
+                    ;; because in both cases the store cannot say what
+                    ;; this segment is.
+                    ((and want
+                          (let ((declared (manifest-range manifest seg))
+                                (held (segment-edge-seqs bytes)))
+                            (not (and declared held (equal? declared held)))))
+                     (note! 'manifest-range seg 0
+                            (list (cons 'declared (manifest-range manifest seg))))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
                                   buffer torn errs quarantine retired versions #f))
@@ -1373,19 +1415,19 @@
   ;; would leave those pointing at history that never existed. This
   ;; writer's own unflushed residue is included: it is the most likely
   ;; thing to be unflushed and the least likely to be noticed.
-  (define (flush-file! path)
+  (define (flush-file! path stage)
     (when (file-exists? path)
       (let ((fd (fd-open path '(read))))
         (dynamic-wind
           (lambda () (if #f #f))
-          (lambda () (fsync! fd path))
+          (lambda () (fsync! fd path stage))
           (lambda () (close-quietly fd))))))
 
   (define (takeover-barrier! store prefixes)
     (parameterize ((theourgia-stage 'deliver-barrier))
-      (takeover-flush! store prefixes)))
+      (takeover-flush! store prefixes 'deliver-barrier)))
 
-  (define (takeover-flush! store prefixes)
+  (define (takeover-flush! store prefixes stage)
     (for-each
       (lambda (entry)
         (let* ((writer (car entry))
@@ -1393,7 +1435,8 @@
                (dir (writer-directory store writer))
                (segs (map car (discovery-segment-ranges p))))
           (unless (null? segs)
-            (for-each (lambda (seg) (flush-file! (string-append dir "/" (segment-file-name seg))))
+            (for-each (lambda (seg)
+                        (flush-file! (string-append dir "/" (segment-file-name seg)) stage))
                       segs)
             ;; THE METADATA IS FLUSHED BY THE VERSION BARRIER, not here.
             ;; It is part of the durable frontier for the same reason --
@@ -1402,7 +1445,7 @@
             ;; rather than to a segment being delivered, and a fork at a
             ;; writer's first event would otherwise leave a directory
             ;; this loop never visits.
-            (fsync-dir! dir))))
+            (fsync-dir! dir stage))))
       prefixes))
 
   ;; THE LOCAL WRITER IS THE ONE THIS STORE OWNS. owner.sexp is written
@@ -1740,7 +1783,7 @@
   ;; would pass without the failure ever happening.
   (define (metadata-barrier! s)
     (parameterize ((theourgia-stage 'deliver-barrier))
-      (metadata-barrier-staged! s)))
+      (metadata-barrier-staged! s 'deliver-barrier)))
 
   ;; WHAT WAS LAST FLUSHED FOR THIS FILE, not the set of everything ever
   ;; flushed for it. Remembering every version certified A, then B, then
@@ -1762,7 +1805,7 @@
             (remp (lambda (e) (and (equal? (car e) w) (equal? (cadr e) name)))
                   (session-barriered s)))))
 
-  (define (metadata-barrier-staged! s)
+  (define (metadata-barrier-staged! s stage)
     (let* ((store (session-store s))
            (any (vector #f)))
       (for-each
@@ -1773,7 +1816,7 @@
               (lambda (name)
                 (let ((version (file-version store w name)))
                   (when (and version (not (equal? version (last-flushed s w name))))
-                    (flush-file! (writer-file store w name))
+                    (flush-file! (writer-file store w name) stage)
                     (note-flushed! s w name version)
                     (vector-set! touched 0 #t))))
               metadata-files)
@@ -1781,7 +1824,7 @@
             ;; whose file is flushed but whose name is not is a version
             ;; that can vanish whole.
             (when (vector-ref touched 0)
-              (fsync-dir! dir)
+              (fsync-dir! dir stage)
               (vector-set! any 0 #t))))
         (store-writers store))
       ;; P1: THE WRITERS DIRECTORY ITSELF. A writer directory that
@@ -1790,18 +1833,18 @@
       ;; directory is still there after a crash -- a record whose deps
       ;; name that writer would then point at nothing.
       (when (vector-ref any 0)
-        (fsync-dir! (string-append store "/writers")))
+        (fsync-dir! (string-append store "/writers") stage))
       ;; The store's own identity files are depended on by every append
       ;; and are not any writer's.
       (for-each
         (lambda (name)
           (let* ((path (string-append store "/" name))
                  (version (and (file-exists? path)
-                               (bytevector->hex (sha256 (read-whole path))))))
+                               (segment-sha (read-whole path)))))
             (when (and version (not (equal? version (last-flushed s "" name))))
-              (flush-file! path)
+              (flush-file! path stage)
               (note-flushed! s "" name version)
-              (fsync-dir! store))))
+              (fsync-dir! store stage))))
         '("meta.sexp" "instance.sexp"))
       'barriered))
 
@@ -1826,7 +1869,7 @@
   ;; existence let an authority change pass unnoticed.
   (define (file-version store writer name)
     (let ((p (writer-file store writer name)))
-      (and (file-exists? p) (bytevector->hex (sha256 (read-whole p))))))
+      (and (file-exists? p) (segment-sha (read-whole p)))))
 
   (define (metadata-versions store)
     (map (lambda (w)
@@ -2046,7 +2089,7 @@
           ;; both mint, and the loser's freshly initialised store fails
           ;; its own identity check on the very next append.
           (begin
-            (ensure-machine-home!)
+            (ensure-machine-home! 'registry)
             (with-machine-lock
               (lambda ()
                 (if (file-exists? path)
@@ -2135,11 +2178,11 @@
   ;; registry removable by the crash model while the log record it
   ;; vouches for survives -- a record with no mark, which is the one
   ;; state the registry exists to make impossible.
-  (define (ensure-machine-home!)
+  (define (ensure-machine-home! stage)
     (let ((home (machine-home)))
       (unless (file-is-directory? home)
         (mkdir-p! home)
-        (fsync-dir! (parent-of home)))
+        (fsync-dir! (parent-of home) stage))
       (file-ensure! (machine-lock-path))
       home))
 
@@ -2209,7 +2252,7 @@
   ;; fixed so that two processes touching two stores cannot each hold one
   ;; of the pair and wait for the other.
   (define (with-machine-lock thunk)
-    (ensure-machine-home!)
+    (ensure-machine-home! 'registry)
     ;; THE MACHINE HOME MAY NOT BE THE STORE. The store lock is already
     ;; held when this runs, so a home inside the store would make this
     ;; acquire the same file through a second descriptor and wait for a
@@ -2329,6 +2372,558 @@
           ((null? ws) (if (null? locals) #f (car locals)))
           ((not (retired-of store (car ws))) (car ws))
           (else (loop (cdr ws)))))))
+
+;; ---- publish: reading a segment record by record ---------------------------
+
+  ;; SCAN-SEGMENT STOPS AT THE FIRST ERROR, which is the right answer to
+  ;; "where does this writer's valid history end". Repair asks a
+  ;; different question -- WHICH records inside a file that fails as a
+  ;; whole are individually valid -- and section 4.4-prime says those are
+  ;; not the same question: a segment failing validation is never grounds
+  ;; for discarding the valid records inside it.
+  ;; THE FRAMING RULE STILL HAS ONE SUPPLIER. This splits on the newline
+  ;; and hands each line to `decode-line`, exactly as the scanner does;
+  ;; what differs is that it carries on past a bad one.
+  (define (segment-records bv)
+    (let ((n (bytevector-length bv)))
+      (let loop ((start 0) (out (quote ())))
+        (if (>= start n)
+            (reverse out)
+            (let ((nl (find-newline bv start n)))
+              (if (not nl)
+                  (reverse (cons (list (quote torn) start n (subbytes bv start n) #f) out))
+                  (let* ((end (+ nl 1))
+                         (line (subbytes bv start end))
+                         (r (decode-line line)))
+                    (loop end
+                          (cons (if (and (pair? r) (eq? (car r) (quote ok)))
+                                    (list (cadr r) start end line #t)
+                                    (list (quote bad) start end line #f))
+                                out)))))))))
+
+  ;; THE RANGE THE BYTES HOLD, WITHOUT PARSING ALL OF THEM. What the
+  ;; manifest declares is a first and a last sequence, so the first and
+  ;; last framed lines answer it. Reading every record to learn two
+  ;; numbers made the check a second full pass over every listed segment
+  ;; on every open -- work proportional to the history, repeated, to
+  ;; compare two integers.
+  (define (segment-edge-seqs bv)
+    (let ((n (bytevector-length bv)))
+      (and (> n 0)
+           (let ((first-nl (find-newline bv 0 n)))
+             (and first-nl
+                  (let ((last-start
+                          (let loop ((i (- n 2)))
+                            (cond ((< i 0) 0)
+                                  ((= 10 (bytevector-u8-ref bv i)) (+ i 1))
+                                  (else (loop (- i 1)))))))
+                    (and (= 10 (bytevector-u8-ref bv (- n 1)))
+                         (let ((a (line-seq bv 0 (+ first-nl 1)))
+                               (b (line-seq bv last-start n)))
+                           (and a b (cons a b))))))))))
+
+  (define (line-seq bv start end)
+    (let ((r (decode-line (subbytes bv start end))))
+      (and (pair? r) (eq? (car r) 'ok) (cadr r))))
+
+  (define (rec-seq r) (car r))
+  (define (rec-bytes r) (cadddr r))
+  (define (rec-ok? r) (car (cddddr r)))
+  (define (rec-end r) (caddr r))
+
+  (define (valid-records rs) (filter rec-ok? rs))
+
+  (define (records-contiguous? rs)
+    (let loop ((xs rs) (prev #f))
+      (cond
+        ((null? xs) #t)
+        ((not (rec-ok? (car xs))) #f)
+        ((and prev (not (= (rec-seq (car xs)) (+ prev 1)))) #f)
+        (else (loop (cdr xs) (rec-seq (car xs)))))))
+
+  (define (find-record rs seq)
+    (let loop ((xs rs))
+      (cond ((null? xs) #f)
+            ((and (rec-ok? (car xs)) (eqv? (rec-seq (car xs)) seq)) (car xs))
+            (else (loop (cdr xs))))))
+
+;; ---- publish: the dispatch (section 9.6) -----------------------------------
+
+  ;; COMPARISON IS BY (writer, seq) AGAINST THAT WRITER'S HISTORY, never
+  ;; by target filename: two forks may rotate at different points, so one
+  ;; event can sit in different segment numbers. And by BYTES, never by
+  ;; datum -- `storable-decode` is many-to-one on inputs nobody wrote and
+  ;; CRC32 is 32 bits, so a divergent record with an equal datum would be
+  ;; accepted silently.
+
+  ;; Every valid record this writer has, across all its segments, as
+  ;; (seq . bytes). The cross-segment divergence check needs this:
+  ;; comparing only the target file cannot see a disagreement that falls
+  ;; in a neighbouring segment.
+  (define (writer-history store writer)
+    (let loop ((ns (list-sort < (enumerate-segment-files store writer))) (out '()))
+      (if (null? ns)
+          out
+          (let* ((path (string-append (writer-directory store writer)
+                                      "/" (segment-file-name (car ns))))
+                 (rs (if (file-exists? path) (segment-records (read-whole path)) '())))
+            (loop (cdr ns)
+                  (append out
+                          (map (lambda (r) (cons (rec-seq r) (rec-bytes r)))
+                               (valid-records rs))))))))
+
+  ;; HOW A SEGMENT'S HASH IS WRITTEN, in one place. The manifest, the
+  ;; quarantine evidence, the caller's declaration and the command line
+  ;; all have to mean the same string by it, and a second way of
+  ;; computing it is a second answer waiting to disagree.
+  (define (segment-sha bytes) (bytevector->hex (sha256 bytes)))
+
+  (define (seq-range rs)
+    (let ((vs (map rec-seq (valid-records rs))))
+      (if (null? vs) #f (cons (apply min vs) (apply max vs)))))
+
+  ;; THE LAYOUT GATE: can these two ranges be compared at all? It runs
+  ;; before the validate/invalid split, because several rows below take
+  ;; "shorter" and "longer" to mean prefix relations. Local 1-100 against
+  ;; a candidate 90-110 is shorter by length and would have been answered
+  ;; `incomplete`, silently discarding 101-110.
+  (define (ranges-overlap? a b)
+    (and a b (<= (car a) (cdr b)) (<= (car b) (cdr a))))
+
+  (define (layout-conflict local-rs cand-rs target-exists?)
+    (let ((lr (seq-range local-rs))
+          (cr (seq-range cand-rs)))
+      (cond
+        ((not cr) 'empty-candidate)
+        ((not lr) (and target-exists? 'target-occupied))
+        ;; THE TWO CONFLICTS ARE DIFFERENT SITUATIONS AND SAY SO. A
+        ;; candidate that shares no sequence with what is here has not
+        ;; disagreed about anything -- the segment NUMBER is taken. A
+        ;; candidate that overlaps but starts elsewhere cannot be
+        ;; compared as a prefix at all, which is what the rows below
+        ;; assume when they read "shorter" and "longer".
+        ((not (ranges-overlap? lr cr)) 'target-occupied)
+        ((not (= (car lr) (car cr))) 'not-start-aligned)
+        ;; candidate shorter: A3 decides
+        ((< (cdr cr) (cdr lr)) #f)
+        (else #f))))
+
+  (define (segment-range store writer n)
+    (let ((path (string-append (writer-directory store writer)
+                               "/" (segment-file-name n))))
+      (and (file-exists? path)
+           (seq-range (segment-records (read-whole path))))))
+
+  ;; WHERE THE HISTORY BELOW THIS SEGMENT ENDS. Layout coordinates come
+  ;; from what the store DECLARES, never from whichever files happen to
+  ;; lie in the directory. Two declarations exist: the manifest lists the
+  ;; segments this writer has published, with the range each one holds,
+  ;; and the retirement record names the sequence a retained prefix ends
+  ;; at. A file neither of them names is an orphan -- bytes that arrived
+  ;; from somewhere and are not this writer's history -- so a writer with
+  ;; nothing declared below ends at 0, and a candidate for its first
+  ;; segment must begin at 1. Taking the end from the files instead let a
+  ;; killed install, whose segment was written but never listed, supply a
+  ;; history no reader can see.
+  ;;
+  ;; AND IT IS THE END OF THE TRAVERSABLE PREFIX, NOT THE HIGHEST
+  ;; SEQUENCE DECLARED. They differ only when the declarations already
+  ;; hold a hole, and there the difference decides whether the hole can
+  ;; ever be filled: with segments 1 and 3 declared and 2 free, the
+  ;; highest declared sequence would call a candidate for segment 2 an
+  ;; overlap and refuse the one segment number that could repair the
+  ;; history. Segment numbers only increase, so a refusal there is
+  ;; permanent. Reading forward from 1 -- or from the end of a retired
+  ;; prefix -- and stopping at the first break answers the question a
+  ;; reader would ask, and keeps the repair reachable.
+  (define (declared-end store writer segment)
+    (let* ((m (read-manifest store writer))
+           (listed (list-sort < (filter (lambda (n) (< n segment))
+                                        (manifest-segments m)))))
+      (let loop ((ns listed) (end (retired-end-below store writer segment)))
+        (if (null? ns)
+            end
+            (let ((r (manifest-range m (car ns))))
+              (if (and r (= (car r) (+ end 1)))
+                  (loop (cdr ns) (cdr r))
+                  end))))))
+
+  ;; A RETIRED PREFIX IS DECLARED HISTORY THAT NO MANIFEST LISTS. The
+  ;; record names the sequence the retained prefix ends at, which is the
+  ;; only statement a store makes about a writer whose early records are
+  ;; no longer where a reader would look for them. The file may hold more
+  ;; than the prefix, and whatever reads beyond it is history too, so the
+  ;; declaration is a floor rather than the answer.
+  (define (retired-end-below store writer segment)
+    (let ((r (retired-of store writer)))
+      (if (and r (not (eq? (car r) 'malformed)) (< (car r) segment))
+          (let ((br (segment-range store writer (car r))))
+            (if br (max (caddr r) (cdr br)) (caddr r)))
+          0)))
+
+  ;; AND WOULD THE RESULT READ? Even with every record identical,
+  ;; installing 1-8 as segment one when segment two holds 6-10 leaves a
+  ;; reader meeting 6 again after 8 and stopping, hiding 9 and 10.
+  ;;
+  ;; A READER WALKS INTO THE CANDIDATE AS WELL AS OUT OF IT, so the
+  ;; question has a second half, and the second half has two sides. A
+  ;; candidate beginning past the end of what precedes it leaves the
+  ;; sequences between them owned by nobody; one beginning before that
+  ;; end repeats sequences a reader has already passed, and the reader
+  ;; stops at the repeat. Only the forward half was written at first, and
+  ;; a free segment number was therefore enough to make a floating
+  ;; candidate read as a new segment: a writer whose history ended at 2
+  ;; published a candidate of 20-21.
+  ;;
+  ;; The answer is a reason rather than a boolean because the three ask
+  ;; for different repairs. Forward says this candidate is wrong for this
+  ;; segment number; a gap says something between has not arrived yet; an
+  ;; overlap says the sender and this store disagree about where this
+  ;; segment starts. Each names the two numbers that disagree.
+  (define (layout-read-problem store writer segment cand-rs)
+    (let ((cr (seq-range cand-rs)))
+      (and cr
+           (let ((before (declared-end store writer segment)))
+             (cond
+               ((> (car cr) (+ before 1))
+                (list 'gap-before-candidate
+                      (list 'history-ends before)
+                      (list 'candidate-starts (car cr))))
+               ((< (car cr) (+ before 1))
+                (list 'overlaps-preceding
+                      (list 'history-ends before)
+                      (list 'candidate-starts (car cr))))
+               ((not (forward-reads-through? store writer segment cr))
+                'would-not-read-through)
+               (else #f))))))
+
+  (define (forward-reads-through? store writer segment cr)
+    (let* ((m (read-manifest store writer))
+           (others (list-sort < (filter (lambda (n) (> n segment))
+                                        (manifest-segments m)))))
+      (let loop ((ns others) (highest (cdr cr)))
+        (if (null? ns)
+            #t
+            (let ((r (manifest-range m (car ns))))
+              (cond
+                ((not r) (loop (cdr ns) highest))
+                ;; a later segment must begin where the candidate ends
+                ((= (car r) (+ highest 1)) (loop (cdr ns) (cdr r)))
+                (else #f)))))))
+
+  ;; Divergence, looked for across the writer's whole history.
+  (define (first-divergence history cand-rs)
+    (let loop ((xs (valid-records cand-rs)))
+      (cond
+        ((null? xs) #f)
+        ((let ((mine (assv (rec-seq (car xs)) history)))
+           (and mine (not (bytevector=? (cdr mine) (rec-bytes (car xs))))
+                (rec-seq (car xs))))
+         => (lambda (seq) seq))
+        (else (loop (cdr xs))))))
+
+;; ---- publish: the actions --------------------------------------------------
+
+  ;; STAGING IS THE SHARED FIRST STEP of install and overwrite. Writing
+  ;; it only under install left the repair path flushing the evidence
+  ;; copy and the directory but never the bytes it was about to put in
+  ;; place: flushing the evidence does not flush the replacement.
+;; AN UNLABELLED DURABILITY POINT CANNOT BE REACHED BY ANY TEST. A
+  ;; staged fault never matches a call site that declares no stage, so
+  ;; the flush below -- and the evidence flush beside it -- were the only
+  ;; two steps of an installation that no case could arm. They were not
+  ;; untested by choice; they were untestable, and that is indis-
+  ;; tinguishable from tested until someone tries to write the row.
+  (define (stage-candidate! store writer bytes stage)
+    (parameterize ((theourgia-stage stage))
+    (let* ((target (string-append (writer-directory store writer) "/publish"))
+           (tmp (temp-name-for target))
+           (fd (fd-open tmp '(write create))))
+      (dynamic-wind
+        void
+        (lambda ()
+          (guard (e (#t (guard (e2 (#t (void))) (fd-close fd))
+                        (guard (e2 (#t (void))) (unlink! tmp))
+                        (raise e)))
+            (write-all! fd bytes tmp))
+          (fsync! fd tmp stage))
+        (lambda () (guard (e (#t (void))) (fd-close fd))))
+      tmp)))
+
+  ;; A DIRECTORY MADE FOR THE FIRST TIME NEEDS ITS OWN ENTRY PERSISTED.
+  ;; Fsyncing a directory does not persist its name in the directory
+  ;; above it, so a crash can take the whole directory and everything in
+  ;; it while the work that depended on it looks done.
+  (define (ensure-directory! path)
+    (unless (file-is-directory? path)
+      (mkdir-p! path)
+      (directory-entry-durable! path 'publish)))
+
+  (define (install-segment! store writer segment tmp sha bytes)
+    (let ((target (string-append (writer-directory store writer)
+                                 "/" (segment-file-name segment))))
+      ;; link(2) REFUSES TO OVERWRITE, so "publish never overwrites a
+      ;; sealed segment" is enforced by the syscall rather than by a
+      ;; check a race could pass.
+      (link! tmp target)
+      (unlink! tmp)
+      (directory-entry-durable! target 'publish)
+      (add-to-manifest! store writer segment sha bytes)
+      (list 'published segment)))
+
+  ;; REPLACEMENT, WHICH IS THE ONLY OTHER EXCEPTION TO SECTION 9.7.8.
+  ;; The original is never unlinked first: "move away, then install"
+  ;; leaves a window with no file at all, and a reader in that window
+  ;; sees a gap rather than a whole history.
+  (define (overwrite-segment! store writer segment tmp sha kind bytes)
+    (let* ((dir (writer-directory store writer))
+           (target (string-append dir "/" (segment-file-name segment)))
+           (damaged (string-append dir "/damaged")))
+      (when (file-exists? target)
+        (ensure-directory! damaged)
+        (let ((evidence (evidence-path damaged segment)))
+          (let ((fd (fd-open evidence '(write create))))
+            (dynamic-wind void
+              (lambda ()
+                (parameterize ((theourgia-stage 'publish))
+                  (write-all! fd (read-whole target) evidence)
+                  (fsync! fd evidence 'publish)))
+              (lambda () (guard (e (#t (void))) (fd-close fd)))))
+          ;; THE EVIDENCE'S NAME, not only its contents. Its bytes are
+          ;; already durable: they were flushed through the descriptor
+          ;; that wrote them, just above. They were once flushed a second
+          ;; time through a second descriptor, which was a second
+          ;; supplier and not a second mechanism -- the same syscall on
+          ;; the same inode, so whatever fails the first fails the
+          ;; second. No case could tell that call's absence from its
+          ;; presence, and being unfalsifiable was the argument for
+          ;; removing it rather than for trusting it.
+          ;;
+          ;; Until this returns, nothing has been replaced and the whole
+          ;; thing is retryable -- which is why the moment before it is
+          ;; not "evidence durable".
+          (directory-entry-durable! evidence 'publish)))
+      (rename-over! tmp target)
+      (directory-entry-durable! target 'publish)
+      (add-to-manifest! store writer segment sha bytes)
+      (list kind segment)))
+
+  (define (evidence-path damaged segment)
+    (let loop ((n 0))
+      (let ((p (string-append damaged "/" (segment-file-name segment)
+                              "." (number->string (wall-clock-ms))
+                              "." (number->string n))))
+        (if (file-exists? p) (loop (+ n 1)) p))))
+
+  ;; THE RANGE IS TAKEN FROM THE BYTES BEING PUBLISHED, once, here. They
+  ;; have passed their hash and their contiguity by the time anything is
+  ;; installed, so this is the one moment at which the declaration and
+  ;; what it describes are known to be the same thing.
+  (define (add-to-manifest! store writer segment sha bytes)
+    (let ((r (seq-range (segment-records bytes))))
+      (unless r
+        (assertion-violation 'add-to-manifest!
+                             "a published segment holds no record" segment))
+      (let* ((current (or (read-manifest store writer) '()))
+             (without (remp (lambda (e) (eqv? (car e) segment)) current))
+             (next (list-sort (lambda (a b) (< (car a) (car b)))
+                              (cons (list segment sha (car r) (cdr r)) without))))
+        (write-manifest! store writer next))))
+
+  ;; THE FORK IS MONOTONE. An existing fork at five and a new
+  ;; disagreement at eight must not move the marker to eight: that would
+  ;; bring five, six and seven back to life.
+  (define (quarantine! store writer seq theirs ours)
+    (let* ((path (writer-file store writer "quarantine.sexp"))
+           (existing (and (file-exists? path)
+                          (let ((d (guard (e (#t #f))
+                                     (string->sexpr-extended
+                                       (utf8->string (read-whole path))))))
+                            (and (list? d) (alist-ref d 'fork)))))
+           (fork (if (and existing (integer? existing)) (min existing seq) seq)))
+      (atomic-write! path
+                     (string->utf8
+                       (string-append "((format 1) (fork " (number->string fork) ")"
+                                      " (ours \"" ours "\") (theirs \"" theirs "\"))\n"))
+                     'publish)
+      (list 'divergence (list 'fork fork))))
+
+  ;; KEPT, NOT INSTALLED. The name is content-addressed so a re-arrival
+  ;; is recognised without re-reading; the marker beside it is an empty
+  ;; file whose existence says the BYTES passed -- per-record CRC and
+  ;; internal sequence continuity, which are properties of the bytes
+  ;; alone. The splice, the divergence check and the publish decision are
+  ;; redone every time, against the history as it is now.
+  (define (keep-incoming! store writer segment bytes sha why)
+    (let* ((dir (string-append (writer-directory store writer) "/incoming"))
+           (kept (string-append dir "/" (segment-file-name segment) "." sha ".seg"))
+           (marker (string-append dir "/" (segment-file-name segment) "." sha ".ok")))
+      (ensure-directory! dir)
+      (unless (file-exists? kept)
+        (let ((fd (fd-open kept '(write create))))
+          (dynamic-wind void
+            (lambda ()
+              (parameterize ((theourgia-stage 'publish))
+                (write-all! fd bytes kept)
+                (fsync! fd kept 'publish)))
+            (lambda () (guard (e (#t (void))) (fd-close fd)))))
+        ;; the candidate is durable, file and name, BEFORE the verdict
+        (directory-entry-durable! kept 'publish))
+      (unless (file-exists? marker)
+        (atomic-write! marker (make-bytevector 0) 'publish))
+      (list why (list 'kept kept) (list 'writer writer) (list 'segment segment))))
+
+;; ---- log-publish! (section 9.6) --------------------------------------------
+
+  (define (log-publish! store writer segment bytes sha)
+    (claim-store! store 'publish)
+    (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
+      (let ((answer (guard (e (#t (lock-release! lock) (release-store! store) (raise e)))
+                      (publish-locked! store writer segment bytes sha))))
+        (lock-release! lock)
+        (release-store! store)
+        answer)))
+
+  (define (publish-locked! store writer segment bytes sha)
+    (let* ((dir (writer-directory store writer))
+           (target (string-append dir "/" (segment-file-name segment)))
+           (local-bytes (and (file-exists? target) (read-whole target)))
+           (local-rs (if local-bytes (segment-records local-bytes) '()))
+           (cand-rs (segment-records bytes))
+           (history (writer-history store writer)))
+      (cond
+        ;; STEP 0, ABOVE EVERY OTHER RULE. An active local writer's
+        ;; current segment is never replaced by sync.
+        ((active-current-segment? store writer segment)
+         (list 'refused 'active-writer-segment))
+        ;; STEP 1. The caller's sha is checked here: a segment whose
+        ;; records all pass CRC but whose sha is wrong would install
+        ;; cleanly and be rejected by the next reader that reads the
+        ;; manifest.
+        ((not (string=? sha (segment-sha bytes)))
+         (list 'error 'invalid-candidate 'sha-mismatch))
+        ((not (records-contiguous? cand-rs))
+         (list 'error 'invalid-candidate 'not-contiguous))
+        ;; THE LAYOUT GATE, before the validate/invalid split: several
+        ;; rows below read "shorter" and "longer" as prefix relations.
+        ((layout-conflict local-rs cand-rs (and local-bytes #t))
+         => (lambda (why)
+              (keep-incoming! store writer segment bytes sha
+                              (list 'segment-layout-conflict why))))
+        ;; DIVERGENCE IS LOOKED FOR ACROSS THE WHOLE HISTORY, not just
+        ;; this file: a disagreement can fall in a neighbouring segment.
+        ((first-divergence history cand-rs)
+         => (lambda (seq)
+              (quarantine! store writer seq sha
+                           (if local-bytes (segment-sha local-bytes) ""))))
+        ;; AND THE RESULT HAS TO READ. Every record identical still is
+        ;; not enough if installing leaves a later segment unreachable.
+        ((layout-read-problem store writer segment cand-rs)
+         => (lambda (why)
+              (keep-incoming! store writer segment bytes sha
+                              (list 'segment-layout-conflict why))))
+        (else (publish-dispatch store writer segment bytes sha
+                                local-bytes local-rs cand-rs)))))
+
+  (define (publish-dispatch store writer segment bytes sha local-bytes local-rs cand-rs)
+    (let* ((local-valid (valid-records local-rs))
+           (local-whole (and local-bytes
+                             (= (length local-valid) (length local-rs))
+                             (records-contiguous? local-rs)))
+           (lr (seq-range local-rs))
+           (cr (seq-range cand-rs)))
+      (cond
+        ;; A: the local copy validates, or there is none
+        ((not local-bytes) (do-install store writer segment bytes sha))
+        (local-whole
+         (cond
+           ;; IDEMPOTENT MEANS FINISHED, and finished includes being in
+           ;; the manifest with this hash. A killed install leaves bytes
+           ;; that match and no manifest entry; answering idempotent
+           ;; there would make "done" mean two different things.
+           ((and (equal? lr cr) (published-with? store writer segment sha))
+            (list 'idempotent segment))
+           ((equal? lr cr) (do-install-over store writer segment bytes sha 'published))
+           ((< (cdr cr) (cdr lr)) (list 'incomplete segment))
+           ((retired-prefix-segment? store writer segment)
+            (do-extend store writer segment bytes sha cand-rs))
+           (else
+            (keep-incoming! store writer segment bytes sha 'newer-history-unmergeable))))
+        ;; B: the local copy fails validation
+        (else
+         (let ((missing (uncovered-record local-valid cand-rs)))
+           (cond
+             ;; ABSENCE IS NOT EVIDENCE OF DISAGREEMENT. Local records 1
+             ;; and 3 against a candidate of 1 and 2 would destroy 3.
+             (missing (list 'refused 'insufficient-coverage (list 'seq missing)))
+             ;; B1 WINS OVER A4b: a damaged local copy that the candidate
+             ;; covers is repaired even where the target is sealed.
+             (else (do-repair store writer segment bytes sha cand-rs))))))))
+
+  (define (uncovered-record local-valid cand-rs)
+    (let loop ((xs local-valid))
+      (cond
+        ((null? xs) #f)
+        ((not (find-record cand-rs (rec-seq (car xs)))) (rec-seq (car xs)))
+        (else (loop (cdr xs))))))
+
+  (define (published-with? store writer segment sha)
+    (let ((m (read-manifest store writer)))
+      (and m (equal? (manifest-hash m segment) sha))))
+
+  (define (do-install store writer segment bytes sha)
+    (let ((tmp (stage-candidate! store writer bytes 'publish)))
+      (install-segment! store writer segment tmp sha bytes)))
+
+  ;; The bytes are already there but the manifest is not: a killed
+  ;; install or a killed repair. Finish it rather than call it done.
+  (define (do-install-over store writer segment bytes sha kind)
+    (add-to-manifest! store writer segment sha bytes)
+    (list kind segment))
+
+  (define (do-extend store writer segment bytes sha cand-rs)
+    (let ((bad (retirement-coordinates-conflict store writer segment cand-rs)))
+      (if bad
+          (list 'refused 'retirement-coordinates bad)
+          (let ((tmp (stage-candidate! store writer bytes 'publish)))
+            (overwrite-segment! store writer segment tmp sha 'extended bytes)))))
+
+  (define (do-repair store writer segment bytes sha cand-rs)
+    (let ((bad (retirement-coordinates-conflict store writer segment cand-rs)))
+      (if bad
+          (list 'refused 'retirement-coordinates bad)
+          (let ((tmp (stage-candidate! store writer bytes 'publish)))
+            (overwrite-segment! store writer segment tmp sha 'repaired bytes)))))
+
+  ;; RETIREMENT DECLARES WHERE A SEQUENCE ENDS. A replacement that
+  ;; changes any earlier record's length moves that offset, and the
+  ;; declaration silently stops being true -- so it is recomputed from
+  ;; the candidate before anything is renamed.
+  (define (retirement-coordinates-conflict store writer segment cand-rs)
+    (let ((r (retired-of store writer)))
+      (and r
+           (not (eq? (car r) 'malformed))
+           (eqv? (car r) segment)
+           (let* ((seq (caddr r))
+                  (declared-off (cadr r))
+                  (rec (find-record cand-rs seq)))
+             (cond
+               ((not rec) (list 'sequence-absent seq))
+               ((not (= (rec-end rec) declared-off))
+                (list 'offset-moved (list 'declared declared-off)
+                      (list 'candidate (rec-end rec))))
+               (else #f))))))
+
+  (define (retired-prefix-segment? store writer segment)
+    (let ((r (retired-of store writer)))
+      (and r (not (eq? (car r) 'malformed)) (eqv? (car r) segment))))
+
+  (define (active-current-segment? store writer segment)
+    (and (file-exists? (writer-file store writer "owner.sexp"))
+         (not (retired-of store writer))
+         (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+           (and p (pair? (discovery-physical-current p))
+                (eqv? (car (discovery-physical-current p)) segment)))))
 
 ;; ---- generations (section 4.1) ---------------------------------------------
 
@@ -3082,17 +3677,17 @@
           (barrier! 'before-rotate-write)
           (let ((fd (fd-open path '(write))))
             (dynamic-wind (lambda () (if #f #f))
-                          (lambda () (fsync! fd path))
+                          (lambda () (fsync! fd path 'commit))
                           (lambda () (fd-close fd))))
           (barrier! 'after-current-fsync)
           (file-ensure! next-path)
           (barrier! 'after-create-next)
           (let ((fd (fd-open next-path '(write))))
             (dynamic-wind (lambda () (if #f #f))
-                          (lambda () (fsync! fd next-path))
+                          (lambda () (fsync! fd next-path 'commit))
                           (lambda () (fd-close fd))))
           (barrier! 'after-next-fsync)
-          (fsync-dir! (writer-directory store writer))
+          (fsync-dir! (writer-directory store writer) 'commit)
           (barrier! 'after-dir-fsync)
           (cons next next-path))))
 
@@ -3182,7 +3777,7 @@
                  (list 'reserved-not-written seq)
                  (list 'partial-write seq (vector-ref wrote 0))))
             (else
-             (let ((flushed (guard (e (#t #f)) (fsync! fd target-path) #t)))
+             (let ((flushed (guard (e (#t #f)) (fsync! fd target-path 'commit) #t)))
                ;; THE CLOSE MUST NOT REPLACE THE OUTCOME. A close that
                ;; fails after a durable write would otherwise escape as
                ;; an exception, losing the fact that the record IS on

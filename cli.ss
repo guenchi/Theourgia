@@ -192,6 +192,27 @@
                        (append (list (cons 'kind 'section) (cons 'title title))
                                (if body (list (cons 'src body)) '())))))))
 
+;; A NUMBER FROM THE COMMAND LINE IS CHECKED BY SHAPE BEFORE IT IS
+;; CONVERTED. `string->number` implements the whole of Scheme's numeric
+;; syntax, and `#e1e99999999` is a request to build an exact integer of
+;; ten billion digits: it does not refuse, it allocates until the machine
+;; is exhausted, and no check placed after it ever runs because the call
+;; does not return. A shape test first -- plain ASCII digits, and few
+;; enough of them to name something a store could hold -- makes the
+;; conversion bounded work. The same order is already used to read a
+;; segment file's name and a markdown list marker.
+(define count-digit-limit 18)
+
+(define (count-argument s)
+  (and (string? s)
+       (> (string-length s) 0)
+       (<= (string-length s) count-digit-limit)
+       (let loop ((i 0))
+         (cond
+           ((= i (string-length s)) (string->number s 10))
+           ((char<=? #\0 (string-ref s i) #\9) (loop (+ i 1)))
+           (else #f)))))
+
 (define (read-all-text port)
   (let-values (((out get) (open-string-output-port)))
     (let loop ()
@@ -316,17 +337,65 @@
                       (if (eq? (car a) 'written)
                           (ok! (list 'ok (list 'snapshot (cadr a)) (list 'cut (caddr a))))
                           (fail! (cons 'error (cdr a))))))))
+        ;; THE LOCAL END OF SYNC. It hands one segment's bytes to the log
+        ;; and prints what the log decided; every rule about whether they
+        ;; may be installed lives there, so the command and the library
+        ;; cannot come to disagree about what "published" means.
+        ;;
+        ;; IT WAITS RATHER THAN FAILING. Another process publishing, or a
+        ;; reader holding the shared lock, makes this block until the
+        ;; lock is free -- a sync client that had to distinguish "busy"
+        ;; from "refused" would have to re-send to find out which.
+        ;;
+        ;; THE HASH IS THE SENDER'S DECLARATION, so it is an argument
+        ;; when the sender has one. Computing it here from the same bytes
+        ;; would check nothing: it would compare a number with itself.
+        ;; Given no declaration, the bytes on disk are taken as their own.
+        ((string=? verb "publish")
+         (unless (or (= 3 (length args)) (= 4 (length args)))
+           (usage '(publish <writer> <segment> <file> [<sha256>])))
+         (require-store! store)
+         (let ((segment (count-argument (cadr args))))
+           (unless (and segment (> segment 0))
+             (usage '(publish <writer> <segment> <file> [<sha256>])))
+           (guarded
+             (lambda ()
+               (let* ((path (caddr args))
+                      (bytes (if (file-exists? path)
+                                 (call-with-port (open-file-input-port path)
+                                   (lambda (in)
+                                     (let ((b (get-bytevector-all in)))
+                                       (if (eof-object? b) (make-bytevector 0) b))))
+                                 #f)))
+                 (if (not bytes)
+                     (fail! (list 'error 'no-candidate (list 'path path)))
+                     (let* ((sha (if (= 4 (length args))
+                                     (cadddr args)
+                                     (segment-sha bytes)))
+                            (a (log-publish! store (car args) segment bytes sha)))
+                       ;; ONE SHAPE FOR A FAILURE: the first word is
+                       ;; `error' and the rest is the reason. The log
+                       ;; layer's own refusals already lead with `error'
+                       ;; where the candidate itself was wrong, and
+                       ;; wrapping those again would make a caller strip
+                       ;; two different depths to reach the same fact.
+                       (if (memq (car a) '(published idempotent repaired extended))
+                           (ok! (cons 'ok (list a)))
+                           (fail! (cons 'error
+                                        (if (eq? (car a) 'error) (cdr a) (list a))))))))))))
         ((string=? verb "batch")
          (require-store! store) (guarded (lambda () (parse-batch store actor args))))
         ((string=? verb "outline")
          (let-values (((depth rest) (take-option args "--depth")))
            (unless (null? rest) (usage '(outline ["--depth" <n>])))
+           (when (and depth (not (count-argument depth)))
+             (usage '(outline ["--depth" <n>])))
            (require-store! store)
            (guarded (lambda ()
                       (put-string (current-output-port)
                                   (if depth
                                       (outline-text (open-and-reduce store)
-                                                    (string->number depth))
+                                                    (count-argument depth))
                                       (outline-text (open-and-reduce store))))
                       (exit 0)))))
 ;; `read --md` GIVES BACK THE SECTION AS IT IS ON DISK, heading and

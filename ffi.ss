@@ -214,7 +214,7 @@
           lock-acquire! lock-release! lock-fd lock-held?
           path-device-inode
           fs-error? fs-error-op fs-error-target fs-error-errno
-          theourgia-fault theourgia-fault-armed? theourgia-stage
+          theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
           unlink! file-create-exclusive! mkdir-p!
@@ -481,6 +481,25 @@
                       (current-error-port)))
            #t))
 
+;; THE STAGES A DURABILITY POINT MAY BELONG TO, in one place and above
+  ;; the two builds, because the checked build and the plain one must
+  ;; mean the same thing by a stage name.
+  (define known-stages
+    '(deliver-barrier commit registry publish snapshot repair))
+
+  ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
+  ;; caller may leave off. A staged fault never matches a call that
+  ;; declares no stage, so an unstaged flush is a step of the system that
+  ;; no case can arm -- and a step nothing can arm reads, in every log,
+  ;; exactly like a step that passed. Two of them sat in the publish path
+  ;; until someone wrote a row that tried to arm them. A required
+  ;; argument is the difference between a rule people remember and a rule
+  ;; the shape of the call enforces.
+  (define (check-stage! who stage)
+    (unless (and (symbol? stage) (memq stage known-stages))
+      (assertion-violation who "stage must be one of the known stages"
+                           (list stage known-stages))))
+
   (meta-cond
     ((eq? inject-mode 'on)
 
@@ -504,9 +523,6 @@
      ;; declared", and a staged fault never matches that -- an
      ;; unlabelled call site cannot be the one a case is aiming at.
      (define theourgia-stage (make-parameter #f))
-
-     (define known-stages
-       '(deliver-barrier commit registry publish snapshot repair))
 
      ;; RETURNS TWO STRINGS, and the callers make the symbols they need.
      ;; An earlier version symbolized the head here, which was right for
@@ -860,15 +876,19 @@
        (trace-event! 'fsync subject #f)
        (void))))
 
-  (define (fsync! fd . opts)
-    (flush! fd (subject-of fd opts) 'fsync 'fullfsync 'file))
+  (define (fsync! fd subject stage)
+    (check-stage! 'fsync! stage)
+    (parameterize ((theourgia-stage stage))
+      (flush! fd (subject-of fd (list subject)) 'fsync 'fullfsync 'file)))
 
   ;; A directory is opened read-only because opening one for writing
   ;; fails with EISDIR; fsync takes a descriptor for the file, not a
   ;; writable channel to it, so a read-only one flushes it fine. The
   ;; descriptor is closed even when the flush raises.
-  (define (fsync-dir! path . opts)
-    (let ((subject (if (pair? opts) (car opts) path)))
+  (define (fsync-dir! path stage)
+    (check-stage! 'fsync-dir! stage)
+    (parameterize ((theourgia-stage stage))
+    (let ((subject path))
       (let ((fd (c-open path O_RDONLY)))
         (when (< fd 0) (fail! 'dir-open subject))
         (let ((done (box #f)))
@@ -879,7 +899,7 @@
               (unless (unbox done)
                 (set-box! done #t)
                 (close-quietly fd))))))
-      (void)))
+      (void))))
 
   ;; ---- size, position, truncation ---------------------------------------
 

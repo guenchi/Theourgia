@@ -12,6 +12,7 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
+
 (import (chezscheme) (theourgia wire))
 (printf "string dep accepted: ~a\n"
         (bytevector? (encode-record 1 2 "w" '(("zzzz" . 1)) '(a))))
@@ -22,5 +23,6 @@
        (line (string->utf8 (string-append (crc32-string-hex t) " " t "\n"))))
   (printf "hand-made symbol dep still READS: ~s\n" (decode-line line)))
 
-;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+;; A run that did not reach here is not a pass. The runner requires
+;; this line AND a zero failure count: they are two propositions.
 (printf "dep-check complete\n")

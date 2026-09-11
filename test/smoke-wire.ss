@@ -12,6 +12,7 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
+
 (import (chezscheme) (theourgia wire) (theourgia crc32))
 
 (define fails 0)
@@ -151,5 +152,6 @@
 
 (printf "\n~a mismatches\n" fails)
 
-;; Completion sentinel: run-all.sh treats a suite that ends without this line as a crash, not a pass.
+;; A run that did not reach here is not a pass. The runner requires
+;; this line AND a zero failure count: they are two propositions.
 (printf "smoke-wire complete\n")

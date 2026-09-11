@@ -34,6 +34,34 @@
         (theourgia trace)
         (only (igropyr crypto) sha256 bytevector->hex))
 
+;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
+;; declares first and last sequence beside the hash. A fixture that
+;; declared them from memory would be asserting its own arithmetic
+;; rather than what it actually wrote, and the product's own check for a
+;; manifest that contradicts its bytes would then be measuring the
+;; fixture.
+(define (segment-seqs bytes)
+  (let ((text (utf8->string bytes)))
+    (let loop ((i 0) (start 0) (seqs '()))
+      (cond
+        ((>= i (string-length text)) (reverse seqs))
+        ((char=? (string-ref text i) #\newline)
+         (let ((r (decode-line (string->utf8 (substring text start (+ i 1))))))
+           (loop (+ i 1) (+ i 1)
+                 (if (and (pair? r) (eq? (car r) 'ok)) (cons (cadr r) seqs) seqs))))
+        (else (loop (+ i 1) start seqs))))))
+
+(define (manifest-entry n hash bytes)
+  (let ((seqs (segment-seqs bytes)))
+    (if (null? seqs)
+        (list n hash 1 1)
+        (list n hash (apply min seqs) (apply max seqs)))))
+
+(define (manifest-entry-text n hash bytes)
+  (let ((e (manifest-entry n hash bytes)))
+    (string-append "(" (number->string n) " \"" hash "\" "
+                   (number->string (caddr e)) " " (number->string (cadddr e)) ")")))
+
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
 ;; under one session's scratchpad is green only while that exact
 ;; directory survives: tmp is swept, and another machine has no such path
@@ -61,7 +89,54 @@
               "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
               root)))
         (loop (+ i 1))))
-    (system (string-append "mkdir -p " path))
+    ;; THE SAME CHECK NOW GUARDS A REMOVAL, so it asks for two more
+    ;; things a creation did not need: an absolute path, and no `..`
+    ;; anywhere in it.
+    (unless (and (> (string-length path) 0) (char=? #\/ (string-ref path 0)))
+      (assertion-violation 'test-dir
+        "THEOURGIA_TEST_ROOT must be an absolute path" root))
+    (let loop ((i 0))
+      (when (< (+ i 1) (string-length path))
+        (when (and (char=? #\. (string-ref path i))
+                   (char=? #\. (string-ref path (+ i 1))))
+          (assertion-violation 'test-dir
+            "THEOURGIA_TEST_ROOT may not contain .." root))
+        (loop (+ i 1))))
+    ;; AND THE DIRECTORY IS MADE FRESH, NOT ASSUMED FRESH. The name
+    ;; carries the process id, which reads like a unique name and is not
+    ;; one: the pid space wraps, the scratch root outlives the run, and a
+    ;; directory left by an earlier run holding the same pid is handed to
+    ;; this one already populated. Counted in the default root on
+    ;; 2026-09-11: 4260 leftover directories over 1686 distinct pids, so
+    ;; about one run in twenty inherited an older run's store. It showed
+    ;; up once as a crash -- an init answering already-initialised to a
+    ;; fixture that expected a store id -- and the crash is the harmless
+    ;; form. The form that matters is an assertion passing against data
+    ;; the run did not write. The sibling `-home` goes with it, because
+    ;; the machine registry is keyed by store identity and a stale one
+    ;; makes a fresh store look like a rollback.
+    ;; AND THE LEAF IS NEVER THE ROOT. Removal only ever names
+    ;; <root>/<name>-<pid>; a name that collapsed to nothing would aim it
+    ;; at the scratch root itself, which holds every other run.
+    (unless (and (> (string-length path) (+ 1 (string-length root)))
+                 (string=? root (substring path 0 (string-length root)))
+                 (char=? #\/ (string-ref path (string-length root))))
+      (assertion-violation 'test-dir
+        "the directory must lie strictly inside the root" (list root path)))
+    ;; A CLEAN THAT FAILED MUST NOT READ AS A CLEAN THAT WORKED. If the
+    ;; removal fails -- contents that cannot be unlinked, a busy mount --
+    ;; `mkdir -p` then succeeds on the directory that is already there and
+    ;; hands back exactly the populated directory this is here to
+    ;; prevent. Both commands are checked, and a failure stops the run
+    ;; rather than quietly weakening it.
+    (let ((must! (lambda (command)
+                   (let ((status (system command)))
+                     (unless (eqv? 0 status)
+                       (assertion-violation 'test-dir
+                         "could not prepare the scratch directory"
+                         (list command status)))))))
+      (must! (string-append "rm -rf " path " " path "-home"))
+      (must! (string-append "mkdir -p " path)))
     path))
 
 (define bad 0)
@@ -96,11 +171,11 @@
     (if (eof-object? b) (make-bytevector 0) b)))
 (define (wpath w n) (string-append d "/writers/" w "/" (segment-file-name n)))
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" A " " d "/writers/" B " " d "/snap"))
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" A " " d "/writers/" B " " d "/snap"))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" A "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
-  (putenv "THEOURGIA_HOME" (string-append d "/home"))
+  (putenv "THEOURGIA_HOME" (string-append d "-home"))
   ;; ONLY THE LOCAL WRITER GETS AN owner.sexp -- that file is what makes
   ;; a writer local, so stamping every directory turned the mirrored
   ;; writer into a second local one.
@@ -112,9 +187,12 @@
   ;; and then every ordering row below would be measuring a store with
   ;; one writer in it.
   (put! (string-append d "/writers/" B "/published.sexp")
-        (string->utf8 (string-append "((1 . \"" (bytevector->hex (sha256 (slurp (wpath B 1))))
-                                     "\") (2 . \"" (bytevector->hex (sha256 (slurp (wpath B 2))))
-                                     "\"))\n"))))
+        (string->utf8
+          (string-append "("
+            (manifest-entry-text 1 (bytevector->hex (sha256 (slurp (wpath B 1)))) (slurp (wpath B 1)))
+            " "
+            (manifest-entry-text 2 (bytevector->hex (sha256 (slurp (wpath B 2)))) (slurp (wpath B 2)))
+            ")\n"))))
 (define (traced thunk)
   (let ((p (open-output-string)))
     (parameterize ((current-error-port p))

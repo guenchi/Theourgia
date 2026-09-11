@@ -12,6 +12,7 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
+
 ;; 4 MB through a fifo with a draining reader. Unfaulted, macOS takes it
 ;; in one write; with short-write armed the first call is offered seven
 ;; bytes, so the continuation branch -- the one that copies the tail and
@@ -43,3 +44,7 @@
     (close-port p)
     (printf "out.dat ~a bytes, identical ~a\n"
             (bytevector-length got) (equal? got payload))))
+
+;; A run that did not reach here is not a pass. The runner requires
+;; this line AND a zero failure count: they are two propositions.
+(printf "fault-pipe complete\n")
