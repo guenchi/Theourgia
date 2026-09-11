@@ -24,7 +24,10 @@
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-export CHEZSCHEMELIBDIRS="$root"
+# THEOURGIA_LIBDIR pins the library directory (a directory holding
+# igropyr/ and theourgia/); a pinned export of the dependencies keeps a
+# run from reading a working tree that is being edited underneath it.
+export CHEZSCHEMELIBDIRS="${THEOURGIA_LIBDIR:-"$root"}"
 export CHEZSCHEMELIBEXTS=.chezscheme.sls::.no-obj:.ss::.no-obj:.sls::.no-obj:.scm::.no-obj:.sch::.no-obj:.sc::.no-obj
 status=0
 # The log fixtures inject faults through the expand-time gate, so the
