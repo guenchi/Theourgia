@@ -69,13 +69,13 @@
 ;; creator sorting below it that implementation passes.
 (define (fresh-as! dir local mirror mirror-records)
   (let ((W local) (V mirror))
-  (system (string-append "rm -rf " dir "; mkdir -p " dir "/writers/" W
+  (system (string-append "rm -rf " dir " " dir "-home; mkdir -p " dir "/writers/" W
                          " " dir "/writers/" V " " dir "/snap"))
   (put! (string-append dir "/meta.sexp") (string->utf8 "((format 1) (store-id \"t\"))\n"))
   (call-with-port (open-file-output-port (string-append dir "/lock") (file-options no-fail))
     (lambda (p) (if #f #f)))
   (put! (string-append dir "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
-  (putenv "THEOURGIA_HOME" (string-append dir "/home"))
+  (putenv "THEOURGIA_HOME" (string-append dir "-home"))
   (let ((n (instance-install! dir))) (owner-install! dir W n))
   (put! (wpath dir W 1) (make-bytevector 0))
   (unless (null? mirror-records)
@@ -424,7 +424,7 @@
         (string-append
           "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
           "        (theourgia store) (theourgia reduce))\n"
-          "(putenv \"THEOURGIA_HOME\" \"" df "/home\")\n"
+          "(putenv \"THEOURGIA_HOME\" \"" df "-home\")\n"
           "(define res\n"
           "  (guard (e (#t (list (list 'raised))))\n"
           "    (with-store-write \"" df "\"\n"

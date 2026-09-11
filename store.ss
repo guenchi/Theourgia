@@ -17,7 +17,8 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!)
+  (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
+          store-check store-adopt!)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs io ports) (rnrs files)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
@@ -26,11 +27,15 @@
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
-                session-snapshot!
+                session-snapshot! log-open load-writers load-prefix load-commit!
+                discovery-end-seq discovery-integrity discovery-torn
+                snapshot-read snapshot-cut-supported? segment-file-number
+                log-error-kind log-error-segment log-error-offset log-error-detail
+                store-id-of adopt! registry-inside-store?
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
                 view-revision view-epoch view-writer view-expect-seq)
-          (only (theourgia ffi) mkdir-p! wall-clock-ms process-id)
+          (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries)
           (only (igropyr crypto) sha256 bytevector->hex)
           (theourgia reduce))
 
@@ -269,7 +274,8 @@
   ;; of the shape this library promises.
   (define (remedy-for why)
     (case why
-      ((integrity registry-ahead) 'adopt)
+      ((integrity registry-ahead missing-generation) 'adopt)
+      ((registry-inside-store) 'move-the-registry-outside-the-store)
       (else #f)))
 
   (define (block-ids-of payload writer seq)
@@ -536,4 +542,86 @@
                           s (list v (reduce-applied-cut state) (state->rows state))))))))
           (log-end! s)
           answer))))
+
+  ;; ---- check ---------------------------------------------------------------
+
+  ;; READ-ONLY, AND IT PRINTS WHAT IT FOUND EVEN WHEN THE ANSWER IS BAD.
+  ;; A checker that only said "damaged" would leave the caller to go
+  ;; looking; the point of running it is to be told which writer, which
+  ;; segment, and which snapshot.
+  ;;
+  ;; SNAPSHOTS ARE REPORTED BESIDE THE WRITERS, NOT INSIDE THEM. They
+  ;; live in one directory for the whole store and each one's cut names
+  ;; several writers, so filing a snapshot under a writer would either
+  ;; duplicate it or pick one of its writers arbitrarily.
+  (define (describe-error e)
+    (append (list (log-error-kind e))
+            (if (log-error-segment e) (list (list 'segment (log-error-segment e))) '())
+            (if (log-error-offset e) (list (list 'offset (log-error-offset e))) '())
+            (let ((d (log-error-detail e)))
+              (if (and (pair? d) (pair? (car d)))
+                  (map (lambda (p) (list (car p) (cdr p))) d)
+                  '()))))
+
+  (define (store-check store)
+    (let* ((ls (log-open store))
+           (writers (load-writers ls))
+           (prefixes (map (lambda (w) (cons w (load-prefix ls w))) writers))
+           (coverage (map (lambda (e)
+                            (cons (car e) (if (cdr e) (discovery-end-seq (cdr e)) 0)))
+                          prefixes))
+           (per-writer
+             (map (lambda (e)
+                    (let ((p (cdr e)))
+                      (list (car e)
+                            (list 'end (if p (discovery-end-seq p) 0))
+                            (list 'torn (and p (discovery-torn p) #t))
+                            (list 'integrity
+                                  (if p (map describe-error (discovery-integrity p)) '())))))
+                  prefixes))
+           (snapshots (check-snapshots store coverage))
+           (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
+                             per-writer)))
+      (load-commit! ls)
+      (list 'check
+            (list 'store (or (store-id-of store) 'unknown))
+            (list 'writers per-writer)
+            (list 'snapshots snapshots)
+            ;; REPORTED SEPARATELY FROM WRITER DAMAGE, because it is not
+            ;; damage: nothing in the store is wrong. What is wrong is
+            ;; where the registry was put, and the store cannot see it
+            ;; from the inside -- which is exactly why it is worth
+            ;; saying out loud.
+            (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
+            (list 'verdict (if (or damaged? (registry-inside-store?)) 'damaged 'ok)))))
+
+  ;; A SNAPSHOT THAT CANNOT BE USED IS NOT DAMAGE TO THE STORE -- the log
+  ;; still loads and the state is still right, it just has to be rebuilt
+  ;; from further back. So these are reported and do not decide the
+  ;; verdict; the writers' integrity does.
+  (define (check-snapshots store coverage)
+    (let ((dir (string-append store "/snap")))
+      (if (not (file-exists? dir))
+          '()
+          (let loop ((ns (list-sort < (filter (lambda (n) n)
+                                              (map segment-file-number
+                                                   (directory-entries dir)))))
+                     (out '()))
+            (if (null? ns)
+                (reverse out)
+                (let ((path (string-append dir "/" (segment-file-name (car ns)))))
+                  (let-values (((cut rows) (snapshot-read path)))
+                    (loop (cdr ns)
+                          (cons (list (segment-file-name (car ns))
+                                      (cond
+                                        ((not cut) (list 'unusable rows))
+                                        ((not (snapshot-cut-supported? cut coverage))
+                                         (list 'unusable 'unsupported-cut))
+                                        (else (list 'usable (list 'cut cut)))))
+                                out)))))))))
+
+  ;; The store-level name for the log layer's transaction. It adds
+  ;; nothing: adopt is decided and performed entirely from verified
+  ;; state, and there is no block-level fact to contribute.
+  (define (store-adopt! store) (adopt! store))
 )

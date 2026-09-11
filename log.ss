@@ -58,6 +58,8 @@
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
           log-clock registry-path machine-lock-path instance-install!
+          store-id-of adopt! continue-adopt! generation-chain-ok? adopt-needed? verify-instance
+          registry-inside-store?
           store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
@@ -1407,12 +1409,20 @@
   ;; by init and by adopt and never by a mirror, so it is the same fact
   ;; discovery uses to call an origin local -- asked once here rather
   ;; than re-derived at every append.
+;; THE LOCAL WRITER IS THE ONE THIS SESSION MAY WRITE, which after an
+  ;; adopt is not the first local writer it finds. Both generations have
+  ;; an owner.sexp -- that is what makes them local -- and the retired
+  ;; one is local history this machine may no longer extend. Taking the
+  ;; first left every session after an adopt holding the retired writer,
+  ;; so `session-view` was #f and the store looked unwritable.
   (define (local-writer-of store ls)
-    (let loop ((es (load-session-prefixes ls)))
-      (cond
-        ((null? es) #f)
-        ((eq? (discovery-origin (cdar es)) 'local) (caar es))
-        (else (loop (cdr es))))))
+    (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
+                          (load-session-prefixes ls))))
+      (let loop ((es locals))
+        (cond
+          ((null? es) (if (null? locals) #f (car (car locals))))
+          ((not (retired-of store (car (car es)))) (car (car es)))
+          (else (loop (cdr es)))))))
 
   ;; THE LOCK IS RELEASED BY THE SAME UNWIND THAT RELEASES THE GUARD.
   ;; A guard clause only sees exceptions: a callback that escapes by
@@ -2002,16 +2012,22 @@
                 (list 'mismatch 'nonce))
                (else 'ok))))))))
 
+;; THE HEAD'S OWNER, not whichever writer happens to sort first. After
+  ;; an identity-mismatch adopt the store holds owners from two
+  ;; instances: the retired predecessors name the nonce the store had
+  ;; when it was copied, and only the writer this machine may actually
+  ;; extend names the current one. Taking the first left a store that
+  ;; had just adopted failing its own identity check forever, because
+  ;; the answer came from a generation that had been superseded.
+  ;; "Which writer is this machine's" has one supplier.
   (define (owner-nonce store)
-    (let loop ((ws (store-writers store)))
-      (cond
-        ((null? ws) #f)
-        (else
-         (let* ((path (writer-file store (car ws) "owner.sexp"))
-                (d (and (file-exists? path)
-                        (guard (e (#t #f))
-                          (string->sexpr-extended (utf8->string (read-whole path)))))))
-           (or (and d (alist-ref d 'instance)) (loop (cdr ws))))))))
+    (let ((head (local-writer-name store)))
+      (and head
+           (let* ((path (writer-file store head "owner.sexp"))
+                  (d (and (file-exists? path)
+                          (guard (e (#t #f))
+                            (string->sexpr-extended (utf8->string (read-whole path)))))))
+             (and d (alist-ref d 'instance))))))
 
   ;; The machine's own identity: a name plus a nonce minted once and kept
   ;; in the machine home, so that two machines that happen to share a
@@ -2230,6 +2246,66 @@
                         (lambda (d i) (cons d i))))))
              (and a b (equal? a b))))))
 
+;; THE REGISTRY MUST NOT LIVE INSIDE A STORE, and "inside" means any
+  ;; depth, not just "is". The registry is the one witness to a rollback
+  ;; that does not travel with a backup of the store -- so putting it
+  ;; under the store puts the witness inside the thing it is watching.
+  ;; Restoring the store in place then restores the registry too, the
+  ;; generation record vanishes along with the generation, the chain
+  ;; agrees, and the rolled-back store writes on happily. It fails
+  ;; silently: the store opens, writes, and reports itself healthy.
+  ;;
+  ;; ANCESTRY IS WALKED BY (device, inode), NOT BY COMPARING STRINGS. A
+  ;; symlinked home whose target sits under the store has a path that
+  ;; shares no prefix with it; stat'ing "<home>/.." resolves the link
+  ;; first, so each step up is the real parent and an alias cannot get
+  ;; past it.
+  (define (dir-identity path)
+    (guard (e (#t #f))
+      (call-with-values (lambda () (path-device-inode path))
+        (lambda (d i) (cons d i)))))
+
+  ;; THE HOME MAY NOT EXIST YET -- it is created on first use, and this
+  ;; question is asked before that. So the walk starts at the nearest
+  ;; ancestor that does exist, found by trimming path components
+  ;; lexically; from there every step is a stat, which is what makes a
+  ;; symlink unable to hide.
+  (define (nearest-existing path)
+    (let loop ((p path) (n 0))
+      (cond
+        ((> n 64) #f)
+        ((dir-identity p) p)
+        (else
+         (let ((cut (let scan ((i (- (string-length p) 1)))
+                      (cond ((< i 1) #f)
+                            ((char=? (string-ref p i) #\/) i)
+                            (else (scan (- i 1)))))))
+           (and cut (loop (substring p 0 cut) (+ n 1))))))))
+
+  (define (registry-inside-store?)
+    (let ((start (nearest-existing (home-now)))
+          (home (home-now)))
+      (and start
+           ;; a home that IS a store is the other check's business, so
+           ;; the walk only reports ancestors -- unless the home did not
+           ;; exist, in which case its nearest existing ancestor is a
+           ;; genuine ancestor and counts.
+           (let ((skip-self (string=? start home)))
+             (let loop ((p start) (depth 0))
+               (cond
+                 ((> depth 64) #f)
+                 ((and (or (> depth 0) (not skip-self))
+                       (file-exists? (string-append p "/meta.sexp")))
+                  #t)
+                 (else
+                  (let* ((up (string-append p "/.."))
+                         (a (dir-identity p))
+                         (b (dir-identity up)))
+                    (cond
+                      ((not b) #f)
+                      ((equal? a b) #f)
+                      (else (loop up (+ depth 1))))))))))))
+
   ;; INIT PUTS THE STORE IN THE MACHINE REGISTRY AT WATER MARK ZERO.
   ;; The registry is what stops two instances of one store from writing
   ;; past each other, and a store that is not in it is invisible to that
@@ -2240,12 +2316,440 @@
     (reserve! store (store-id-of store) (instance-nonce store)
               (local-writer-name store) 0))
 
+;; THE HEAD OF THIS MACHINE'S CHAIN: local, and not already retired.
+  ;; After an adopt both generations have an owner.sexp -- that is what
+  ;; makes them local -- so taking the first would name a writer this
+  ;; machine may no longer extend, and adopting it again would branch
+  ;; from a generation that has already been superseded.
   (define (local-writer-name store)
+    (let ((locals (filter (lambda (w) (file-exists? (writer-file store w "owner.sexp")))
+                          (store-writers store))))
+      (let loop ((ws locals))
+        (cond
+          ((null? ws) (if (null? locals) #f (car locals)))
+          ((not (retired-of store (car ws))) (car ws))
+          (else (loop (cdr ws)))))))
+
+;; ---- generations (section 4.1) ---------------------------------------------
+
+  ;; TWO KINDS OF RECORD IN ONE FILE, EACH SELF-DESCRIBING. A water mark
+  ;; is `(store instance writer seq state)`; a generation leads with the
+  ;; symbol `gen`. One machine lock then covers both, and "only ever
+  ;; increases" is a rule about the water marks alone -- while a reader
+  ;; tells the two apart by the tag rather than by counting slots, so
+  ;; adding a field later cannot silently reinterpret an old file.
+  (define (gen-record? e)
+    (and (list? e) (= 9 (length e)) (eq? (car e) 'gen)))
+  (define (gen-store e) (list-ref e 1))
+  (define (gen-instance e) (list-ref e 2))
+  (define (gen-tx e) (list-ref e 3))
+  (define (gen-old e) (list-ref e 4))
+  (define (gen-new e) (list-ref e 5))
+  (define (gen-lost-from e) (list-ref e 6))
+  (define (gen-lost-to e) (list-ref e 7))
+  (define (gen-state e) (list-ref e 8))
+
+  (define (generations-of reg store-id instance)
+    (filter (lambda (e)
+              (and (gen-record? e)
+                   (equal? (gen-store e) store-id)
+                   (equal? (gen-instance e) instance)))
+            reg))
+
+  (define (generation-with-tx reg tx)
+    (let loop ((es reg))
+      (cond ((null? es) #f)
+            ((and (gen-record? (car es)) (equal? (gen-tx (car es)) tx)) (car es))
+            (else (loop (cdr es))))))
+
+  (define (make-gen store-id instance tx old new lost-from lost-to state)
+    (list 'gen store-id instance tx old new lost-from lost-to state))
+
+  (define (registry-put-generation reg entry)
+    (let ((found (vector #f)))
+      (let ((updated (map (lambda (e)
+                            (if (and (gen-record? e) (equal? (gen-tx e) (gen-tx entry)))
+                                (begin (vector-set! found 0 #t) entry)
+                                e))
+                          reg)))
+        (if (vector-ref found 0) updated (append updated (list entry))))))
+
+  (define (write-registry! reg)
+    (trace-event! 'registry-write (registry-path) #f)
+    (atomic-write! (registry-path)
+                   (string->utf8 (string-append (sexpr->string-extended reg) "\n"))
+                   'registry))
+
+  ;; ---- the chain, checked wherever a write is authorised --------------------
+
+  ;; NOT ONLY AT OPEN. A handle opened before somebody else adopted still
+  ;; sees its own writer as healthy -- identity matches, owner matches,
+  ;; no retirement marker, water mark where it left it -- so it reserves
+  ;; the next sequence and writes. Checking at open leaves a gap exactly
+  ;; as wide as a long-lived handle. This runs in the same machine-lock
+  ;; section that re-checks the water mark, for the same reason that
+  ;; check is there: what was true at open is not what authorises a
+  ;; write.
+  (define (generation-chain-ok? store reg store-id instance)
+    (let loop ((gs (generations-of reg store-id instance)))
+      (cond
+        ((null? gs) #t)
+        ((not (eq? (gen-state (car gs)) 'active)) (loop (cdr gs)))
+        ;; an active generation the store no longer carries: it was
+        ;; rolled back underneath us
+        ((not (generation-present? store (car gs))) #f)
+        (else (loop (cdr gs))))))
+
+  (define (generation-present? store g)
+    (let ((r (retired-of store (gen-old g))))
+      (and r
+           (not (eq? (car r) 'malformed))
+           (equal? (list-ref r 3) (gen-tx g))
+           (file-exists? (writer-file store (gen-new g) "owner.sexp")))))
+
+;; ---- the adopt transaction (section 4.1) ----------------------------------
+
+  ;; FOUR STEPS, EACH ONE atomic-write!, ALL INSIDE THE STORE'S EXCLUSIVE
+  ;; LOCK. Steps 2 and 4 take the machine lock as well, in that order --
+  ;; store then machine, everywhere.
+  ;;
+  ;;   1 retirement-prepared   writers/<old>/retired.sexp, tx, prefix, no successor
+  ;;   2 generation-reserved   registry (gen ... pending)
+  ;;   3a owner-installed      writers/<new>/owner.sexp, tx, predecessors
+  ;;   3b successor-backfilled old's retired.sexp gains (successor <new>)
+  ;;   4 transition-complete   registry entry becomes active
+  ;;
+  ;; A NEW WRITER MAY NOT WRITE UNTIL STEP 4 IS DURABLE. That is what
+  ;; makes cancelling a pending generation safe: it cannot orphan a
+  ;; committed record, because a pending generation was never authorised
+  ;; to commit one.
+
+  (define (new-transaction-id)
+    (string-append "tx-" (number->string (process-id))
+                   "-" (number->string (wall-clock-ms))
+                   "-" (bytevector->hex
+                         (sha256 (string->utf8
+                                   (string-append (machine-id)
+                                                  (number->string (wall-clock-ms))))))))
+
+  (define (retired-text tx seg off seq successor lost)
+    (string-append
+      "((format 1) (tx \"" tx "\")"
+      " (prefix " (number->string seg) " " (number->string off) " " (number->string seq) ")"
+      (if successor (string-append " (successor \"" successor "\")") "")
+      (if lost (string-append " (lost " (sexpr->string-extended lost) ")") "")
+      ")\n"))
+
+  (define (step-retirement-prepared! store old tx seg off seq)
+    (atomic-write! (writer-file store old "retired.sexp")
+                   (string->utf8 (retired-text tx seg off seq #f #f))
+                   'registry)
+    tx)
+
+  (define (step-generation-reserved! store store-id instance tx old new)
+    (with-machine-lock
+      (lambda ()
+        (let ((reg (read-registry)))
+          (write-registry!
+            (registry-put-generation
+              reg (make-gen store-id instance tx old new #f #f 'pending)))))))
+
+  (define (step-owner-installed! store new nonce tx old)
+    (mkdir-p! (writer-directory store new))
+    (atomic-write! (writer-file store new "owner.sexp")
+                   (string->utf8
+                     (string-append "((machine \"" (machine-id) "\")"
+                                    " (instance \"" nonce "\")"
+                                    " (tx \"" tx "\")"
+                                    " (predecessors (\"" old "\")))\n"))
+                   'registry)
+    ;; THE EMPTY FIRST SEGMENT IS PART OF MAKING THE WRITER EXIST. A
+    ;; writer with an owner and no segment has no append target at all,
+    ;; so every write is refused before it reserves -- correct about a
+    ;; writer nobody finished making, and useless as the outcome of an
+    ;; adopt. It carries no history, so creating it cannot corrupt
+    ;; anything; its absence is what makes the new generation unusable.
+    (let ((seg (string-append (writer-directory store new) "/" (segment-file-name 1))))
+      (unless (file-exists? seg)
+        (call-with-port (open-file-output-port seg (file-options no-fail))
+          (lambda (p) (if #f #f)))))
+    (directory-entry-durable! (writer-directory store new) 'registry))
+
+  (define (step-successor-backfilled! store old tx new)
+    (let ((r (retired-of store old)))
+      (atomic-write! (writer-file store old "retired.sexp")
+                     (string->utf8 (retired-text tx (car r) (cadr r) (caddr r) new #f))
+                     'registry)))
+
+  (define (step-transition-complete! store-id instance tx)
+    (with-machine-lock
+      (lambda ()
+        (let* ((reg (read-registry))
+               (g (generation-with-tx reg tx)))
+          (when g
+            (write-registry!
+              (registry-put-generation
+                reg (make-gen store-id instance tx (gen-old g) (gen-new g)
+                              (gen-lost-from g) (gen-lost-to g) 'active))))))))
+
+  ;; ---- recovery -------------------------------------------------------------
+
+  ;; THE NONCE TEST IS A GATE ON THE WHOLE TABLE, NOT A ROW IN IT. A
+  ;; copied store presents "retired.sexp bears tx T, this instance's
+  ;; registry has no T" -- which is the first row word for word, and the
+  ;; first row's action is to resume. It would finish somebody else's
+  ;; transaction, and finishing it proves nothing about THIS instance's
+  ;; authority, because the owner it completes names their nonce.
+  ;; Named for one writer, unlike `owner-nonce`, which answers for the
+  ;; store by taking the first writer that has an owner at all. The gate
+  ;; has to ask about a particular writer.
+  (define (writer-owner-nonce store writer)
+    (let ((p (writer-file store writer "owner.sexp")))
+      (and (file-exists? p)
+           (let ((d (guard (e (#t #f))
+                      (string->sexpr-extended (utf8->string (read-whole p))))))
+             (and (list? d) (alist-ref d 'instance))))))
+
+  (define (writer-owner-tx store writer)
+    (let ((p (writer-file store writer "owner.sexp")))
+      (and (file-exists? p)
+           (let ((d (guard (e (#t #f))
+                      (string->sexpr-extended (utf8->string (read-whole p))))))
+             (and (list? d) (transaction-of d))))))
+
+  ;; What the store says about a transaction, without deciding anything.
+  (define (transaction-state store reg store-id instance tx old)
+    (let* ((r (retired-of store old))
+           (g (generation-with-tx reg tx))
+           (new (and g (gen-new g)))
+           (owner? (and new (file-exists? (writer-file store new "owner.sexp"))))
+           (successor (and r (not (eq? (car r) 'malformed)) (retired-successor store old))))
+      (list (cons 'retired (and r (not (eq? (car r) 'malformed)) (equal? (list-ref r 3) tx)))
+            (cons 'gen (and g (gen-state g)))
+            (cons 'owner owner?)
+            (cons 'successor (and successor #t)))))
+
+  (define (retired-successor store writer)
+    (let ((p (writer-file store writer "retired.sexp")))
+      (and (file-exists? p)
+           (let ((d (guard (e (#t #f))
+                      (string->sexpr-extended (utf8->string (read-whole p))))))
+             (and (list? d)
+                  (let loop ((xs d))
+                    (cond ((null? xs) #f)
+                          ((and (list? (car xs)) (= 2 (length (car xs)))
+                                (eq? (caar xs) 'successor))
+                           (cadr (car xs)))
+                          (else (loop (cdr xs))))))))))
+
+  ;; ---- the driver -----------------------------------------------------------
+
+  ;; WHY AN ADOPT IS NEEDED IS DERIVED FROM VERIFIED STATE, never passed
+  ;; in. The conditions can hold at once, and taking one as THE reason
+  ;; discards the protection the others give: a caller who says "damage"
+  ;; skips the rollback check that only the registry can make.
+  (define (adopt-needed? store)
+    (let* ((id (verify-instance store))
+           (writer (local-writer-name store)))
+      (cond
+        ((and (pair? id) (eq? (car id) 'mismatch)) (list 'identity (cadr id)))
+        ((not writer) (list 'no-local-writer))
+        ((let ((r (retired-of store writer))) (and r #t)) (list 'retired))
+        (else
+         (let* ((store-id (store-id-of store))
+                (instance (instance-nonce store))
+                (reg (with-machine-lock (lambda () (read-registry)))))
+           (cond
+             ((not (generation-chain-ok? store reg store-id instance))
+              (list 'missing-generation))
+             ((registry-ahead-of-log? store reg store-id instance writer)
+              (list 'registry-ahead))
+             ((writer-damaged? store writer) (list 'damage))
+             (else #f)))))))
+
+  (define (registry-ahead-of-log? store reg store-id instance writer)
+    (let ((mark (registry-mark reg store-id instance writer))
+          (p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+      (and mark p (> mark (discovery-end-seq p)))))
+
+  (define (writer-damaged? store writer)
+    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+      (and p (not (null? (discovery-integrity p))))))
+
+  ;; CONTINUATION IS AUTOMATIC AND NEEDS NOBODY. Every crash state maps
+  ;; to one action; the gate runs first.
+  (define (continue-adopt! store)
+    (let* ((store-id (store-id-of store))
+           (instance (instance-nonce store))
+           (reg (with-machine-lock (lambda () (read-registry))))
+           (old (local-writer-name store)))
+      (cond
+        ((not (and store-id instance old)) 'nothing-to-do)
+        ;; IDENTITY FIRST. A copied store still carries the original's
+        ;; instance.sexp, so its owners' nonces match trivially and the
+        ;; gate below would let it through. The design's order is the
+        ;; answer: an identity mismatch mints a new nonce BEFORE the
+        ;; registry is consulted, and only then can "whose transaction
+        ;; is this" be asked at all.
+        ((let ((v (verify-instance store))) (and (pair? v) (eq? (car v) 'mismatch)))
+         'identity-mismatch)
+        ;; THE GATE: history whose owner names another instance is
+        ;; imported, not interrupted. It runs before the table because
+        ;; several rows match on the transaction id alone and would fire
+        ;; on a foreign transaction before anything looked at whose it
+        ;; was.
+        ((imported-history? store instance) 'imported)
+        ;; THE TABLE'S FIRST ROW IS STORE-DRIVEN, not registry-driven: a
+        ;; crash between step 1 and step 2 leaves a marker the registry
+        ;; has never heard of. A loop over the registry's own
+        ;; generations cannot see that state at all.
+        ((orphan-marker store reg store-id old)
+         => (lambda (tx)
+              (let ((new (derive-writer-id store tx)))
+                (step-generation-reserved! store store-id instance tx old new)
+                (step-owner-installed! store new instance tx old)
+                (step-successor-backfilled! store old tx new)
+                (step-transition-complete! store-id instance tx)
+                'resumed)))
+        (else
+         (let loop ((gs (generations-of reg store-id instance)) (did 'nothing-to-do))
+           (if (null? gs)
+               did
+               (let* ((g (car gs))
+                      (tx (gen-tx g))
+                      (st (gen-state g)))
+                 (cond
+                   ;; terminal: never resumed, whatever the store holds
+                   ((memq st '(cancelled lost active)) (loop (cdr gs) did))
+                   ((eq? st 'pending)
+                    (let ((s (transaction-state store reg store-id instance tx (gen-old g))))
+                      (cond
+                        ;; neither marker nor owner: this generation was
+                        ;; never authorised to commit a record, so it can
+                        ;; be cancelled without orphaning one
+                        ((and (not (cdr (assq 'retired s))) (not (cdr (assq 'owner s))))
+                         (cancel-generation! store-id instance tx g)
+                         (loop (cdr gs) 'cancelled))
+                        ((not (cdr (assq 'owner s)))
+                         (step-owner-installed! store (gen-new g) instance tx (gen-old g))
+                         (step-successor-backfilled! store (gen-old g) tx (gen-new g))
+                         (step-transition-complete! store-id instance tx)
+                         (loop (cdr gs) 'resumed))
+                        ((not (cdr (assq 'successor s)))
+                         (step-successor-backfilled! store (gen-old g) tx (gen-new g))
+                         (step-transition-complete! store-id instance tx)
+                         (loop (cdr gs) 'resumed))
+                        (else
+                         (step-transition-complete! store-id instance tx)
+                         (loop (cdr gs) 'resumed)))))
+                   (else (loop (cdr gs) did))))))))))
+
+  ;; A retirement marker bearing a transaction the registry has never
+  ;; recorded. Only for the local writer: another writer's marker is
+  ;; mirrored history, not this machine's interrupted work.
+  (define (orphan-marker store reg store-id writer)
+    (let ((r (retired-of store writer)))
+      (and r
+           (not (eq? (car r) 'malformed))
+           (list-ref r 3)
+           (not (generation-with-tx reg (list-ref r 3)))
+           (list-ref r 3))))
+
+  (define (imported-history? store instance)
     (let loop ((ws (store-writers store)))
       (cond
         ((null? ws) #f)
-        ((file-exists? (writer-file store (car ws) "owner.sexp")) (car ws))
+        ((let ((n (writer-owner-nonce store (car ws))))
+           (and n (writer-owner-tx store (car ws)) (not (equal? n instance))))
+         #t)
         (else (loop (cdr ws))))))
+
+  (define (cancel-generation! store-id instance tx g)
+    (with-machine-lock
+      (lambda ()
+        (let ((reg (read-registry)))
+          (write-registry!
+            (registry-put-generation
+              reg (make-gen store-id instance tx (gen-old g) (gen-new g)
+                            (gen-lost-from g) (gen-lost-to g) 'cancelled)))))))
+
+  ;; ADOPT REFUSES ON A HEALTHY STORE. It is the way out of a named
+  ;; condition; a voluntary generation change splits history for
+  ;; nothing. The refusal says which conditions were looked for.
+  ;; ADOPT TAKES THE STORE LOCK ITSELF. Every step of the transaction has
+  ;; to be inside it, and this is the entry point a person or a command
+  ;; reaches. `continue-adopt!` is the other half and assumes the lock is
+  ;; already held, because it runs on the write-open path that took it.
+  (define (adopt! store)
+    (claim-store! store 'adopt)
+    (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
+      (let ((answer (guard (e (#t (lock-release! lock) (release-store! store) (raise e)))
+                      (adopt-locked! store))))
+        (lock-release! lock)
+        (release-store! store)
+        answer)))
+
+  (define (adopt-locked! store)
+    (let ((why (adopt-needed? store)))
+      (if (not why)
+          (list 'refused 'not-needed
+                (list 'checked '(identity retired missing-generation registry-ahead damage)))
+          (let* ((store-id (store-id-of store))
+                 (old (local-writer-name store))
+                 (instance (adopt-nonce store why))
+                 (p (discover-prefix store old 'held-exclusive))
+                 (seg (if (pair? (discovery-physical-current p))
+                          (car (discovery-physical-current p))
+                          1))
+                 ;; WHERE THE VALID PREFIX ENDS, not where the file
+                 ;; ends. The whole reason this adopt is happening is
+                 ;; that there are bytes past the prefix; declaring the
+                 ;; file length as the retirement offset points the
+                 ;; marker at them, and the next load reports the marker
+                 ;; and the scan disagreeing about where seq N finished.
+;; A WRITER THAT HAS WRITTEN NOTHING HAS NO END OFFSET. That is
+                 ;; the state of a generation adopted the moment after it
+                 ;; was created -- an empty segment and no records -- and
+                 ;; its retirement prefix is simply (1 0 0).
+                 (off (or (discovery-end-offset p) 0))
+                 (seq (or (discovery-end-seq p) 0))
+                 (tx (new-transaction-id))
+                 (new (derive-writer-id store tx)))
+            (step-retirement-prepared! store old tx seg off seq)
+            (step-generation-reserved! store store-id instance tx old new)
+            (step-owner-installed! store new instance tx old)
+            (step-successor-backfilled! store old tx new)
+            (step-transition-complete! store-id instance tx)
+            (list 'adopted (list 'from old) (list 'to new)
+                  (list 'prefix seg off seq) (list 'reason (car why)))))))
+
+  ;; A RECOVERY ADOPT KEEPS THE NONCE; AN IDENTITY MISMATCH MINTS ONE
+  ;; FIRST, before the registry is consulted, so a copied store's old
+  ;; nonce is never used to look up this instance's chain.
+  (define (adopt-nonce store why)
+    (if (eq? (car why) 'identity)
+        (instance-install! store)
+        (instance-nonce store)))
+
+  (define (segment-length store writer seg)
+    (let ((p (string-append (writer-directory store writer) "/" (segment-file-name seg))))
+      (if (file-exists? p) (bytevector-length (read-whole p)) 0)))
+
+  (define (derive-writer-id store tx)
+    (let ((digits "0123456789abcdefghijklmnopqrstuvwxyz")
+          (hex (bytevector->hex (sha256 (string->utf8 (string-append store "|" tx))))))
+      (let loop ((i 0) (acc 0))
+        (if (= i 12)
+            (let build ((n 8) (v acc) (out '()))
+              (if (= n 0)
+                  (list->string out)
+                  (build (- n 1) (div v 36) (cons (string-ref digits (mod v 36)) out))))
+            (loop (+ i 1)
+                  (+ (* acc 16)
+                     (let ((c (string-ref hex i)))
+                       (if (char<=? #\0 c #\9)
+                           (- (char->integer c) (char->integer #\0))
+                           (+ 10 (- (char->integer c) (char->integer #\a)))))))))))
 
   (define (reserve! store store-id instance writer seq)
     (parameterize ((current-machine-home (machine-home)))
@@ -2255,6 +2759,20 @@
                (mark (registry-mark reg store-id instance writer)))
           (barrier! 'registry-read)
           (cond
+            ;; THE GENERATION CHAIN IS RE-CHECKED HERE, in the same
+            ;; machine-lock section that re-checks the water mark, and
+            ;; for the same reason: what was true when the handle opened
+            ;; is not what authorises a write. A handle opened before
+            ;; somebody else adopted still sees its own writer as
+            ;; healthy -- identity, owner, no retirement marker, water
+            ;; mark where it left it -- and a check performed only at
+            ;; open leaves a gap exactly as wide as that handle's life.
+            ;; THE WITNESS MUST NOT BE INSIDE WHAT IT WATCHES. Checked
+            ;; here rather than only at open for the same reason the
+            ;; chain is: the environment can change under a live handle.
+            ((registry-inside-store?) (list 'registry-inside-store))
+            ((not (generation-chain-ok? store reg store-id instance))
+             (list 'missing-generation))
             ((and mark (>= mark seq))
              (list 'registry-ahead mark))
             (else
@@ -2502,6 +3020,15 @@
            (cond
              ((and (pair? outcome) (eq? (car outcome) 'registry-ahead))
               (list 'refused-before-reserve 'registry-ahead))
+             ;; A GENERATION THIS INSTANCE OWNS IS GONE FROM THE STORE.
+             ;; Nothing inside the store says so -- identity, owner and
+             ;; water mark all still agree -- which is why the registry
+             ;; lives outside it and why this is checked here rather
+             ;; than when the handle opened.
+             ((and (pair? outcome) (eq? (car outcome) 'missing-generation))
+              (list 'refused-before-reserve 'missing-generation))
+             ((and (pair? outcome) (eq? (car outcome) 'registry-inside-store))
+              (list 'refused-before-reserve 'registry-inside-store))
              (else (write-line! s frame line seq target target-path fresh?))))))))
 
   ;; THE STAGE COVERS MAINTENANCE AS WELL AS THE WRITE. Rotation's size

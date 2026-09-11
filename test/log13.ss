@@ -69,7 +69,7 @@
             (if ok "" (format "   WANT ~s" expect)))))
 (define d (test-dir "log13work"))
 (define W "wwwc3q2a")
-(define home (string-append d "/home"))
+(define home (string-append d "-home"))
 (define fixed-ts 1757300000003)
 (define (rec seq ts deps payload)
   (encode-record seq ts "agent:claude" deps (storable-encode payload)))
@@ -91,7 +91,7 @@
   (let ((b (slurp path))) (if (bytevector? b) (bytevector-length b) b)))
 (define (wpath n) (string-append d "/writers/" W "/" (segment-file-name n)))
 (define (build!)
-  (system (string-append "rm -rf " d "; mkdir -p " d "/writers/" W " " d "/snap " home))
+  (system (string-append "rm -rf " d " " d "-home; mkdir -p " d "/writers/" W " " d "/snap " home))
   (put! (string-append d "/meta.sexp") (string->utf8 "((format 1) (store-id \"c3\"))\n"))
   (file-ensure! (string-append d "/lock"))
   (put! (string-append d "/writers/" W "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
@@ -245,8 +245,8 @@
 ;; then be refused for identity rather than for the mark -- a control
 ;; that varies two things at once cannot show which one refused.
 (want "CONTROL: same machine, empty registry, the restored store writes fine"
-      (begin (system (string-append "mkdir -p " d "/home2; cp " home "/machine.sexp " d "/home2/"))
-             (putenv "THEOURGIA_HOME" (string-append d "/home2"))
+      (begin (system (string-append "mkdir -p " d "-home2; cp " home "/machine.sexp " d "-home2/"))
+             (putenv "THEOURGIA_HOME" (string-append d "-home2"))
              (let ((res (with-session (lambda (s) (append-one! s '(put "w.3" ()))))))
                (putenv "THEOURGIA_HOME" home)
                (car res)))
@@ -312,7 +312,7 @@
         (string->utf8
           (string-append
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
-            "(putenv \"THEOURGIA_HOME\" \"" d "/home\")\n"
+            "(putenv \"THEOURGIA_HOME\" \"" d "-home\")\n"
             "(define res\n"
             "  (guard (e (#t (list 'raised)))\n"
             "    (parameterize ((log-clock (lambda () " (number->string fixed-ts) ")))\n"
@@ -323,7 +323,7 @@
             "                                               \"agent:claude\" '() '(put \"w.3\" ())))))\n"
             "        (log-end! s) r))))\n"
             "(printf \"~s ~s ~s\\n\" (car res) (file-size \"" (wpath 1) "\")\n"
-            "        (if (file-exists? \"" d "/home/instances.sexp\") 'registry 'no-registry))\n"))))
+            "        (if (file-exists? \"" d "-home/instances.sexp\") 'registry 'no-registry))\n"))))
 (define (child-says fault)
   (build!)
   (write-child!)

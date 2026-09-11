@@ -287,6 +287,27 @@
          (require-store! store)
          (guarded (lambda ()
                     (ok! (export-md store (car args) (= 2 (length args)))))))
+        ;; A REPORT AND A VERDICT. The report prints either way -- being
+        ;; told "damaged" without being told where is not an answer -- and
+        ;; the exit code is what a shell reads.
+;; THE WAY OUT OF A NAMED CONDITION, and it says which one. On a
+        ;; healthy store it refuses and lists what it looked for -- a
+        ;; voluntary generation change splits history for nothing.
+        ((string=? verb "adopt")
+         (unless (null? args) (usage '(adopt)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((a (store-adopt! store)))
+                      (if (eq? (car a) 'adopted)
+                          (ok! (cons 'ok (cdr a)))
+                          (fail! (cons 'error (cdr a))))))))
+        ((string=? verb "check")
+         (unless (null? args) (usage '(check)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((r (store-check store)))
+                      (say r)
+                      (exit (if (eq? 'ok (cadr (assq 'verdict (cdr r)))) 0 1))))))
         ((string=? verb "snapshot")
          (unless (null? args) (usage '(snapshot)))
          (require-store! store)
