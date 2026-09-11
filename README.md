@@ -12,6 +12,28 @@ Every verb prints one S-expression per item on stdout; the exit code is the verd
 **Empty output with a zero code is an answer** — no references, no hits, no
 differences — and is never an error.
 
+### `read <id> [--md] [--recursive]`
+
+    (ok (<block>))        |  (ok (items <block> ...))  |  (ok (text "<markdown>"))
+
+What a block says. Without options it is one block as data; `--md` gives its own
+bytes — the heading line it was written with, then its body.
+
+A file-level block holds almost nothing of its own: its body is the front matter
+and whatever sits above the first heading, which in most documents is nothing at all.
+`--recursive` asks for the subtree instead — the block and every block under it, in
+document order. With `--md` as well, that is the document: the same text `export-md`
+writes to the file, from the same renderer, so a read and a round trip cannot
+disagree.
+
+A section asked for on its own does not carry the document's front matter, which
+belongs to the document. Its body carries the blank line that separated it from
+whatever followed in the file, so a subtree lifted out of the middle of a document
+ends with one — put it back where it came from and the file is reproduced exactly.
+
+Neither option takes a value and both are stripped before the id is read, so the two
+orders are the same request.
+
 ### `refs <id>`
 
     (ref (from <id>) (rel <rel>) (via link|md))

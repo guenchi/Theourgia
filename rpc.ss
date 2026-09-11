@@ -120,6 +120,16 @@
          (loop (cddr xs) kept (cadr xs)))
         (else (loop (cdr xs) (cons (car xs) kept) found)))))
 
+  ;; A FLAG TAKES NO VALUE, so it is removed wherever it sits rather
+  ;; than consuming the word after it. `take-option` would take the id as
+  ;; `--md`'s value and leave the option list looking empty.
+  (define (take-flag args name)
+    (let loop ((xs args) (kept '()) (found #f))
+      (cond
+        ((null? xs) (values found (reverse kept)))
+        ((string=? (car xs) name) (loop (cdr xs) kept #t))
+        (else (loop (cdr xs) (cons (car xs) kept) found)))))
+
   ;; A NUMBER FROM A REQUEST IS CHECKED BY SHAPE BEFORE IT IS CONVERTED.
   ;; `string->number` implements the whole of Scheme's numeric syntax, and
   ;; `#e1e99999999` is a request to build an exact integer of ten billion
@@ -398,27 +408,56 @@
                                         (outline-text (open-and-reduce store)
                                                       (count-argument depth))
                                         (outline-text (open-and-reduce store)))))))))))
+      ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
+      ;; front matter and whatever sits above the first heading, which is
+      ;; usually empty -- everything a reader wants is in the sections
+      ;; under it. So `read` of a document answered with an empty body
+      ;; and was, for that one shape, useless; `--recursive` is what asks
+      ;; for the subtree.
+      ;;
+      ;; THE OPTIONS ARE INDEPENDENT AND BOTH ARE STRIPPED FIRST, so
+      ;; `--md --recursive` and `--recursive --md` are the same request.
+      ;; An order-sensitive option list is a component whose meaning
+      ;; depends on where it appears.
       (cons 'read
             (lambda (store actor args)
-              (cond
-                ((and (= 2 (length args)) (string=? (cadr args) "--md"))
-                 (guarded
-                   (lambda ()
-                     (let* ((state (open-and-reduce store))
-                            (b (state-read state (car args))))
-                       (if (not b)
-                           (unknown-id state (car args))
-                           (let* ((fs (cdr (assq 'fields b)))
-                                  (head (let ((e (assq 'heading-src fs))) (if e (cdr e) "")))
-                                  (body (let ((e (assq 'src fs))) (if e (cdr e) ""))))
-                             (text (string-append head body))))))))
-                ((= 1 (length args))
-                 (guarded
-                   (lambda ()
-                     (let* ((state (open-and-reduce store))
-                            (b (state-read state (car args))))
-                       (if b (cons 'ok (list b)) (unknown-id state (car args)))))))
-                (else (usage '(read <id> ["--md"]))))))
+              (let*-values (((md? rest1) (take-flag args "--md"))
+                            ((deep? rest) (take-flag rest1 "--recursive")))
+                (cond
+                  ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"])))
+                  (md?
+                   (guarded
+                     (lambda ()
+                       (let* ((state (open-and-reduce store))
+                              (b (state-read state (car rest))))
+                         (cond
+                           ((not b) (unknown-id state (car rest)))
+                           (deep? (text (block-text state (car rest) #f)))
+                           (else
+                            ;; ONE BLOCK'S OWN BYTES, which is not the
+                            ;; same question and is answered from the
+                            ;; block rather than from the renderer: a
+                            ;; reader asking for this block is asking
+                            ;; what IT says, not what its heading would
+                            ;; look like if the title had since changed.
+                            (let* ((fs (cdr (assq 'fields b)))
+                                   (head (let ((e (assq 'heading-src fs))) (if e (cdr e) "")))
+                                   (body (let ((e (assq 'src fs))) (if e (cdr e) ""))))
+                              (text (string-append head body)))))))))
+                  (deep?
+                   (guarded
+                     (lambda ()
+                       (let* ((state (open-and-reduce store))
+                              (ids (subtree-ids state (car rest))))
+                         (if (not ids)
+                             (unknown-id state (car rest))
+                             (items (map (lambda (id) (state-read state id)) ids)))))))
+                  (else
+                   (guarded
+                     (lambda ()
+                       (let* ((state (open-and-reduce store))
+                              (b (state-read state (car rest))))
+                         (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
       (cons 'refs
             (lambda (store actor args)
               (if (not (= 1 (length args)))

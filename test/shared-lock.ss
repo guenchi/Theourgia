@@ -14,7 +14,19 @@
 ;; limitations under the License.
 
 (import (chezscheme) (theourgia ffi))
-(with-shared-lock (cadr (command-line)) (lambda (fd) (void)))
+;; AN ARGUMENT THIS PROBE CANNOT DO WITHOUT, ASKED FOR BY NAME. Reading
+;; `(cadr (command-line))` with no argument raises on `cadr`, and a probe
+;; that died that way is indistinguishable from one that crashed -- so a
+;; runner classifying scripts by what they did cannot tell "needs an
+;; argument" from "broken", and either has to keep a list of names or
+;; report the probe as red for ever. One line makes the class decidable
+;; from the outcome.
+(define (shared-lock-argument)
+  (let ((a (command-line)))
+    (if (null? (cdr a))
+        (begin (printf "usage: shared-lock.ss <lock-path>\n") (exit 2))
+        (cadr a))))
+(with-shared-lock (shared-lock-argument) (lambda (fd) (void)))
 
 ;; A run that did not reach here is not a pass. The runner requires
 ;; this line AND a zero failure count: they are two propositions.

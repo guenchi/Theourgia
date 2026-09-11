@@ -23,7 +23,7 @@
 ;; 2.4 exists, and it is why a parser that understands very little is
 ;; enough for a projection that loses nothing.
 (library (theourgia project)
-  (export export-md import-md md-tree)
+  (export export-md import-md md-tree subtree-ids block-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
           (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?)
@@ -97,6 +97,50 @@
       (and (= 1 (length ss))
            (cons (section-level (car ss)) (section-title (car ss))))))
 
+  ;; ONE RENDERER, AND EXPORT IS ONE OF ITS CALLERS. Reading a document
+  ;; back and writing it to a file are the same question asked in two
+  ;; places, so a second renderer for `read` would drift from this one --
+  ;; and the drift would surface as a file that round-trips and a `read`
+  ;; that does not agree with it, which is the hardest kind of
+  ;; disagreement to notice.
+  ;;
+  ;; A DOCUMENT'S OWN TEXT COMES BEFORE ITS SECTIONS; a section's heading
+  ;; comes before its body, and its children follow its body rather than
+  ;; being interleaved with a sibling's. That is the same flattening the
+  ;; file has, because it IS the file.
+  (define (block-text state id recover?)
+    (let ((b (state-read state id)))
+      (and b
+           (if (eq? 'doc (kind-of b))
+               (md-join (text-field b 'front) (text-field b 'src)
+                        (map (lambda (sid) (rendered-section state sid recover?))
+                             (descendant-ids state id)))
+               ;; A SECTION IS ITS OWN HEADING AND BODY FIRST. The
+               ;; document's front matter belongs to the document, so a
+               ;; section asked for on its own does not carry it.
+               (md-join "" ""
+                        (map (lambda (sid) (rendered-section state sid recover?))
+                             (cons id (descendant-ids state id))))))))
+
+  (define (rendered-section state sid recover?)
+    (let ((sb (state-read state sid)))
+      (make-section
+        (or (field sb 'level) 1)
+        (text-field sb 'title)
+        (let ((h (effective-heading state sid)))
+          (if recover? (string-append (recovery-comment sid) h) h))
+        (text-field sb 'src))))
+
+  ;; Every block under this one, in document order and not including it.
+  (define (descendant-ids state id)
+    (let ((rows (state-outline state)))
+      (apply append (map flatten (subtree rows state id)))))
+
+  ;; The block and everything under it, which is what `--recursive`
+  ;; answers with.
+  (define (subtree-ids state id)
+    (and (state-read state id) (cons id (descendant-ids state id))))
+
   (define (export-md store dir . opts)
     (let* ((recover? (and (pair? opts) (car opts)))
            (state (open-and-reduce store))
@@ -106,23 +150,9 @@
           (let* ((id (car doc))
                  (b (state-read state id))
                  (path (text-field b 'path))
-                 (ids (apply append (map flatten (cdr doc))))
                  (full (string-append dir "/" path)))
             (mkdir-p! (parent-directory full))
-            (write-file full
-              (md-join (text-field b 'front)
-                       (text-field b 'src)
-                       (map (lambda (sid)
-                              (let ((sb (state-read state sid)))
-                                (make-section
-                                  (or (field sb 'level) 1)
-                                  (text-field sb 'title)
-                                  (let ((h (effective-heading state sid)))
-                                    (if recover?
-                                        (string-append (recovery-comment sid) h)
-                                        h))
-                                  (text-field sb 'src))))
-                            ids)))))
+            (write-file full (block-text state id recover?))))
         docs)
       (list 'ok (list 'files (length docs)))))
 

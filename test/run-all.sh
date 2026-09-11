@@ -39,7 +39,7 @@ for f in smoke-crc32 smoke-wire smoke-wire-fuzz smoke-wire-trace smoke-ffi \
          log1 log2 log3 log5 log6 log7 log8 log9 log10 log11 log12 log13 log14 \
          crash log15 log16 log17 reduce1 reduce2 store1 cli1 md1 md2 snap1 adopt1 \
          log18 log19 cli2 stage-gate cli3 rpc1 \
-         q1 q2 q3 q4 q5 q6 q7; do
+         q1 q2 q3 q4 q5 q6 q7 read1; do
   printf '== %s\n' "$f"
   out=$(scheme --script "$here/$f.ss" 2>&1); rc=$?
   printf '%s\n' "$out"

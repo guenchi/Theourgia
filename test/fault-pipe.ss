@@ -23,7 +23,19 @@
 ;; takes neither getenv nor make-parameter so that it stays portable.
 (define theourgia-trace?
   (make-parameter #f (lambda (v) (trace-enable! v) v)))
-(define dir (cadr (command-line)))
+;; AN ARGUMENT THIS PROBE CANNOT DO WITHOUT, ASKED FOR BY NAME. Reading
+;; `(cadr (command-line))` with no argument raises on `cadr`, and a probe
+;; that died that way is indistinguishable from one that crashed -- so a
+;; runner classifying scripts by what they did cannot tell "needs an
+;; argument" from "broken", and either has to keep a list of names or
+;; report the probe as red for ever. One line makes the class decidable
+;; from the outcome.
+(define (fault-pipe-argument)
+  (let ((a (command-line)))
+    (if (null? (cdr a))
+        (begin (printf "usage: fault-pipe.ss <directory>\n") (exit 2))
+        (cadr a))))
+(define dir (fault-pipe-argument))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "; mkfifo " dir "/f"))
 (system (string-append "cat " dir "/f > " dir "/out.dat &"))
 (define n 4000000)
