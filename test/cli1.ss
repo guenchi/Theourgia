@@ -50,7 +50,10 @@
                 (cond ((< i 0) #f)
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1)))))))
-    (string-append (if cut (substring self 0 cut) ".") "/cli.ss")))
+    (let* ((here (if cut (substring self 0 cut) "."))
+           (beside (string-append here "/cli.ss"))
+           (above (string-append here "/../cli.ss")))
+      (if (file-exists? beside) beside above))))
 
 (define (write-file! path text)
   (call-with-port (open-file-output-port path (file-options no-fail))
