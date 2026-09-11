@@ -207,9 +207,32 @@
 (want "a declared hash that is not the bytes' hash is refused before anything else"
       (why (log-publish! (fresh!) M 1 (recs 1 2) "deadbeef"))
       '(error invalid-candidate sha-mismatch))
-(want "a damaged local segment the candidate covers is repaired"
-      (let ((d (fresh!))) (plant! d 1 (damage (recs 1 3) 80)) (why (pub d 1 (recs 1 3))))
-      '(repaired 1))
+;; THE ANSWER NAMES THE BYTES IT DISPLACED. The sender is the one party
+;; that may want them, and deriving the name on its side would be a
+;; second supplier of it.
+(want "a damaged local segment the candidate covers is repaired, and the answer says where the old bytes went"
+      (let* ((d (fresh!))
+             (broken (damage (recs 1 3) 80))
+             (answer (begin (plant! d 1 broken) (pub d 1 (recs 1 3))))
+             (path (cadr (assq 'evidence (cddr answer)))))
+        (list (car answer) (cadr answer)
+              (file-exists? path)
+              (equal? (slurp path) broken)))
+      (list 'repaired 1 #t #t))
+;; TWO REPAIRS LEAVE TWO FILES. A name that collided would lose the
+;; first set of bytes to the second repair, which is the one moment they
+;; were worth keeping.
+(want "a second repair keeps its own evidence beside the first"
+      (let* ((d (fresh!))
+             (first (damage (recs 1 3) 80))
+             (a1 (begin (plant! d 1 first) (pub d 1 (recs 1 3))))
+             (second (damage (recs 1 3) 90))
+             (a2 (begin (plant! d 1 second) (pub d 1 (recs 1 3))))
+             (p1 (cadr (assq 'evidence (cddr a1))))
+             (p2 (cadr (assq 'evidence (cddr a2)))))
+        (list (equal? p1 p2) (file-exists? p1) (file-exists? p2)
+              (equal? (slurp p1) first) (equal? (slurp p2) second)))
+      (list #f #t #t #t #t))
 ;; ABSENCE IS NOT EVIDENCE OF DISAGREEMENT. Local 1 and 3 against a
 ;; candidate of 1 and 2 says nothing about 3, and installing would
 ;; destroy it.
@@ -411,8 +434,11 @@
         (pub d 1 (recs 1 5))
         (plant! d 2 tail)
         (retire! d 2 (bytevector-length tail) 8)
-        (list (why (pub d 2 (recs 6 10))) (listed? d 2)))
-      (list '(extended 2) #t))
+        (let ((answer (pub d 2 (recs 6 10))))
+          (list (car answer) (cadr answer)
+                (and (assq 'evidence (cddr answer)) #t)
+                (listed? d 2))))
+      (list 'extended 2 #t #t))
 (want "and the segment above a retired prefix continues from what it declares"
       (let* ((d (fresh!)) (tail (recs 6 8)))
         (pub d 1 (recs 1 5))
@@ -515,6 +541,35 @@
 (want "TWIN: with the manifest readable the same candidate publishes"
       (let ((d (published-once!))) (why (pub d 2 (recs 6 9))))
       '(published 2))
+
+(printf "\n== P10: segment numbers need not be dense, sequences must be ==\n")
+;; TWO DIFFERENT COORDINATES, and only one of them has to be contiguous.
+;; A reader walks segments in number order and records in sequence order,
+;; so a gap between segment NUMBERS costs nothing -- there is no record
+;; in it to miss -- while a gap between SEQUENCES is history nobody
+;; holds. A publisher that had to fill segment numbers densely would
+;; have to know what its peer had already used.
+(want "a candidate continuing the sequence may take any free segment number"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 2))
+        (list (why (pub d 7 (recs 3 3))) (listed? d 7)))
+      (list '(published 7) #t))
+(want "and a reader reads straight through the gap in the numbering"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 2))
+        (pub d 7 (recs 3 3))
+        (let* ((ls (log-open d)) (p (load-prefix ls M)))
+          (let ((end (if p (discovery-end-seq p) 'no-prefix)))
+            (load-abort! ls 'probe)
+            end)))
+      3)
+;; THE TWIN THAT MUST STILL BE REFUSED: the same free number, a sequence
+;; that does not continue.
+(want "TWIN: a free number does not excuse a gap in the sequence"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 2))
+        (why (pub d 7 (recs 4 4))))
+      '(segment-layout-conflict (gap-before-candidate (history-ends 2) (candidate-starts 4))))
 
 (printf "\n~a failures\n" bad)
 ;; A run that did not reach here is not a pass. The runner requires this

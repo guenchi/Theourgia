@@ -123,8 +123,12 @@ published and exit zero:
 |---|---|
 | `(published <n>)` | the candidate is installed and listed in the manifest. |
 | `(idempotent <n>)` | these exact bytes are already installed **and** already listed with this hash; there is nothing left to do. |
-| `(repaired <n>)` | the local copy failed validation, the candidate covers every valid record it still held, and it has been replaced. |
-| `(extended <n>)` | the segment holds a retired prefix and the candidate continues it; the retirement coordinates were re-checked against the candidate first. |
+| `(repaired <n> (evidence <path>))` | the local copy failed validation, the candidate covers every valid record it still held, and it has been replaced. |
+| `(extended <n> (evidence <path>))` | the segment holds a retired prefix and the candidate continues it; the retirement coordinates were re-checked against the candidate first. |
+
+Both replacements name the file the displaced bytes were copied to. The sender is the
+one party that may want them, and deriving that name on its side would be a second
+supplier of it — the two would part company the first time the naming rule changed.
 
 The rest refuse, and exit non-zero:
 
@@ -156,6 +160,13 @@ numbers that disagree, because each asks for a different repair:
 | `target-occupied` | the segment number already holds records that share no sequence with the candidate. |
 | `not-start-aligned` | the candidate overlaps what is here but starts elsewhere, so the two cannot be compared as prefixes at all. |
 | `empty-candidate` | the candidate holds no valid record. |
+
+**Segment numbers need not be dense; sequences must be.** A reader walks segments in
+number order and records in sequence order, so a gap between segment *numbers* costs
+nothing — there is no record in it to miss — while a gap between *sequences* is
+history nobody holds. A candidate that continues the sequence may therefore take any
+free segment number, which is what lets a publisher choose one without knowing which
+numbers its peer has already used.
 
 **Layout coordinates come from what the store declares, never from whichever files
 happen to be in the directory.** Two declarations exist: the manifest, which lists

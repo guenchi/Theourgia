@@ -2780,13 +2780,27 @@
   ;; The original is never unlinked first: "move away, then install"
   ;; leaves a window with no file at all, and a reader in that window
   ;; sees a gap rather than a whole history.
+  ;; THE ANSWER NAMES THE EVIDENCE IT LEFT. A replacement puts the bytes
+  ;; it displaced under `damaged/` with a generated name, and the sender
+  ;; is the one party that may want them -- to see what its peer had, or
+  ;; to keep them before they are swept. Deriving that name on the other
+  ;; side would be a second supplier of it, and the two would part
+  ;; company the first time the naming rule changed here.
+  ;;
+  ;; It is reported for every replacement, not only repairs: an extension
+  ;; displaces bytes for the same reason and leaves them in the same
+  ;; place, and an answer that named the file in one case and not the
+  ;; other would be describing the implementation rather than what
+  ;; happened.
   (define (overwrite-segment! store writer segment tmp sha kind bytes)
     (let* ((dir (writer-directory store writer))
            (target (string-append dir "/" (segment-file-name segment)))
-           (damaged (string-append dir "/damaged")))
+           (damaged (string-append dir "/damaged"))
+           (kept (vector #f)))
       (when (file-exists? target)
         (ensure-directory! damaged)
         (let ((evidence (evidence-path damaged segment)))
+          (vector-set! kept 0 evidence)
           (let ((fd (fd-open evidence '(write create))))
             (dynamic-wind void
               (lambda ()
@@ -2811,7 +2825,9 @@
       (rename-over! tmp target)
       (directory-entry-durable! target 'publish)
       (add-to-manifest! store writer segment sha bytes)
-      (list kind segment)))
+      (if (vector-ref kept 0)
+          (list kind segment (list 'evidence (vector-ref kept 0)))
+          (list kind segment))))
 
   (define (evidence-path damaged segment)
     (let loop ((n 0))
