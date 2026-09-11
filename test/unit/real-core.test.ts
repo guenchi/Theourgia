@@ -26,7 +26,7 @@
 
 import * as assert from 'assert';
 import * as path from 'path';
-import { documentFor, readBlock, splitDocument } from '../../src/blocks';
+import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
@@ -39,11 +39,20 @@ import { RealStore } from '../support/real-core';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
 
+/*
+ * THE TITLE COMES FROM THE BLOCK, not from the outline's rendering of it
+ * -- the same rule the model follows, for the same reason.
+ */
 async function idOfSection(store: RealStore, title: string): Promise<string> {
+  const model = new StoreModel(store.client);
   const outline = parseOutline((await store.client.request('outline', [])).text);
-  const row = outline.find((r) => r.title === title);
-  assert.ok(row !== undefined, `no row titled ${title} in the outline`);
-  return (row as { id: string }).id;
+  for (const row of outline) {
+    const block = await model.blockOf(row.id);
+    if (block !== null && titleOf(block) === title) {
+      return row.id;
+    }
+  }
+  throw new Error(`no block titled ${title} in this store`);
 }
 
 describe('O3 the tree the model builds is the tree the core printed', function () {
@@ -88,7 +97,7 @@ describe('O3 the tree the model builds is the tree the core printed', function (
     const roots = await model.roots();
     assert.strictEqual(roots.length, 1, 'one imported file is one top-level block');
     const outline = parseOutline((await store.client.request('outline', [])).text);
-    assert.strictEqual(roots[0].title, outline[0].title);
+    assert.strictEqual(roots[0].id, outline[0].id);
 
     const documents = await model.childrenOf(roots[0].id);
     assert.deepStrictEqual(

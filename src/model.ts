@@ -37,12 +37,17 @@
 
 import { Client } from './client';
 import { Block, readBlock, titleOf, hasFieldConflict } from './blocks';
-import { OutlineRow, parseOutline } from './outline';
+import { parseOutline } from './outline';
+import { TransportError } from './transport';
+import { Datum, headName, isList, isSym } from './wire';
+
+export type StructuralMark = 'cycle' | 'unplaced' | 'orphan' | 'nested-document';
 
 export interface Node {
   id: string;
   title: string;
   marked: boolean;
+  mark: StructuralMark | null;
   orphan: boolean;
   /*
    * WHETHER A NODE HAS CHILDREN IS NOT KNOWN UNTIL IT IS OPENED. The
@@ -54,22 +59,13 @@ export interface Node {
   mayHaveChildren: boolean;
 }
 
-function nodeFromRow(row: OutlineRow): Node {
-  return {
-    id: row.id,
-    title: row.title,
-    marked: row.mark !== null,
-    orphan: row.orphan,
-    mayHaveChildren: true
-  };
-}
-
-function nodeFromBlock(block: Block): Node {
+function nodeFromBlock(block: Block, mark: StructuralMark | null = null): Node {
   return {
     id: block.id,
     title: titleOf(block),
-    marked: hasFieldConflict(block),
-    orphan: false,
+    marked: mark !== null || hasFieldConflict(block),
+    mark,
+    orphan: mark === 'orphan',
     mayHaveChildren: true
   };
 }
@@ -81,9 +77,59 @@ export class StoreModel {
     this.client = client;
   }
 
+  /*
+   * THE OUTLINE PROPOSES IDS AND THE STORE CONFIRMS THEM. `read <id>`
+   * on every top-level row costs a request each, and buys the one thing
+   * the rendering cannot give: an id that came out of a title rather
+   * than out of the store answers `unknown-id`, and a block that does
+   * not exist is then a refusal instead of a row in the tree.
+   *
+   * A ROW THAT CANNOT BE CONFIRMED STOPS THE WHOLE LISTING. Showing the
+   * others would be showing a store that is smaller than it is, and the
+   * reason the listing is wrong -- a title carrying a newline -- makes
+   * no promise about which rows survived it.
+   */
   public async roots(): Promise<Node[]> {
     const answer = await this.client.request('outline', ['--depth', '1']);
-    return parseOutline(answer.text).map(nodeFromRow);
+    const rows = parseOutline(answer.text);
+    const marks = await this.structuralMarks();
+    const out: Node[] = [];
+    for (const row of rows) {
+      const block = await this.blockOf(row.id);
+      if (block === null) {
+        throw new TransportError(
+          'unreadable',
+          `the outline names ${row.id} at line ${row.line}, and the store has no such block. ` +
+            'A title carrying a newline can produce a line that looks like a row.',
+          answer.text
+        );
+      }
+      out.push(nodeFromBlock(block, marks.get(row.id) ?? null));
+    }
+    return out;
+  }
+
+  /*
+   * WHAT THE STORE HOLDS AND CANNOT SHOW, as data. This is where the
+   * marks come from; the outline prints them too, but prints them into
+   * text a title can imitate. The core says both are read from one
+   * place, so this is that place asked directly.
+   *
+   * AN ITEM WITH NO BLOCK IN IT IS NOT A MARK. `conflicts` also reports
+   * records still waiting for their premises, which name an event and
+   * not a block; those belong to whoever is repairing the store, not to
+   * a tree.
+   */
+  public async structuralMarks(): Promise<Map<string, StructuralMark>> {
+    const answer = await this.client.request('conflicts', []);
+    const out = new Map<string, StructuralMark>();
+    for (const item of answer.answers) {
+      const mark = readMark(item);
+      if (mark !== null) {
+        out.set(mark.id, mark.mark);
+      }
+    }
+    return out;
   }
 
   /*
@@ -127,4 +173,34 @@ export class StoreModel {
     const answer = await this.client.request('conflicts', []);
     return answer.ok ? answer.answers.length : 0;
   }
+}
+
+/*
+ * `(conflict <id> cycle)`, `(conflict <id> unplaced)`, `(orphan <id>)`
+ * and `(nested-document <id>)` are the items that name a block. The
+ * heads are read by name; anything else -- a pending record, an item a
+ * later core adds -- is left alone rather than guessed at, because a
+ * mark this client invented would be worse than one it did not draw.
+ */
+function readMark(item: Datum): { id: string; mark: StructuralMark } | null {
+  if (!isList(item) || item.length < 2 || typeof item[1] !== 'string') {
+    return null;
+  }
+  const id = item[1];
+  const head = headName(item);
+  if (head === 'orphan') {
+    return { id, mark: 'orphan' };
+  }
+  if (head === 'nested-document') {
+    return { id, mark: 'nested-document' };
+  }
+  if (head === 'conflict' && item.length >= 3) {
+    if (isSym(item[2], 'cycle')) {
+      return { id, mark: 'cycle' };
+    }
+    if (isSym(item[2], 'unplaced')) {
+      return { id, mark: 'unplaced' };
+    }
+  }
+  return null;
 }

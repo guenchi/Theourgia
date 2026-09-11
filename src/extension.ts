@@ -34,7 +34,7 @@ import { documentPathFor, hasUncommittedWork, markCommitted, writeDocument } fro
 import { Node, StoreModel } from './model';
 import { Outbox, outboxPathFor } from './outbox';
 import { Saver } from './saver';
-import { Notice, headingRefusedNotice, saveNotice, statusLine, wrongStoreNotice } from './status';
+import { Notice, StatusFacts, headingRefusedNotice, saveNotice, statusLine, wrongStoreNotice } from './status';
 import { TransportError } from './transport';
 import { initWire } from './wire';
 
@@ -80,12 +80,12 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     item.id = node.id;
     item.description = node.id;
     item.contextValue = 'theourgia.block';
-    if (node.marked) {
+    if (node.mark !== null) {
+      item.iconPath = new vscode.ThemeIcon(node.mark === 'orphan' ? 'question' : 'warning');
+      item.tooltip = `${node.id}: the store reports this block as ${node.mark}`;
+    } else if (node.marked) {
       item.iconPath = new vscode.ThemeIcon('warning');
-      item.tooltip = `${node.id} is in a structural conflict`;
-    } else if (node.orphan) {
-      item.iconPath = new vscode.ThemeIcon('question');
-      item.tooltip = `${node.id} has no parent in this store`;
+      item.tooltip = `${node.id} has a field with more than one candidate value`;
     }
     item.command = {
       command: 'theourgia.openBlock',
@@ -191,15 +191,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     paint();
   }
 
-  function paint(): void {
-    const line = statusLine({
+  /*
+   * THE FACTS ARE A VALUE, and `theourgia.showStatus` hands it back. A
+   * status bar can be looked at and not read: nothing can ask it what it
+   * says, so nothing could check that the conflict count belongs to the
+   * store whose name is beside it. Returning the facts makes that a
+   * question with an answer -- for a cell, and for anyone else who wants
+   * to know what this extension believes about the store.
+   */
+  function facts(): StatusFacts {
+    return {
       store: config.store,
       actor: config.actor,
       cursor: outbox?.cursor ?? null,
       conflicts,
       pending: outbox?.pendingCount ?? 0,
       blocked: saver?.blockedBecause ?? null
-    });
+    };
+  }
+
+  function paint(): void {
+    const line = statusLine(facts());
     status.text = line.text;
     status.tooltip = line.tooltip;
     status.backgroundColor = line.warning
@@ -381,9 +393,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       paint();
     }),
-    vscode.commands.registerCommand('theourgia.showStatus', async () => {
-      await refreshConflicts();
+    vscode.commands.registerCommand('theourgia.showStatus', async (options?: { ask?: boolean }) => {
+      if (options?.ask !== false) {
+        await refreshConflicts();
+      }
       vscode.window.showInformationMessage(status.tooltip as string);
+      return facts();
     }),
     vscode.workspace.onDidSaveTextDocument(onSaved),
     vscode.workspace.onDidChangeConfiguration((e) => {

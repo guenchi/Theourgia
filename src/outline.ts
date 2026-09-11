@@ -15,65 +15,74 @@
  */
 
 /*
- * Reading the outline the core drew.
+ * Reading the outline the core drew, for the ONE thing it is the only
+ * source of.
  *
- * THE OUTLINE IS TEXT AND THE CORE RENDERS IT. rpc.ss says why: a caller
- * given the rows and left to draw them would be a second opinion about
- * what an outline looks like, and the two would differ first at the rows
- * that are hardest to draw. So this file parses a rendering rather than
- * producing one, and every rule here is read off outline-text:
+ * THE OUTLINE IS A RENDERING, AND ONLY ITS IDS ARE UNAMBIGUOUS. It is
+ * text with no escaping in it: a title is written raw, and a title can
+ * contain the very things that separate one field from the next. Two
+ * real cases, both produced by the core from an ordinary store:
  *
- *   two spaces per level, then "- ", then the id, then TWO spaces, then
- *   the title, and then -- only when the row is in a structural conflict
- *   -- two more spaces and the mark, which is `conflict` or `unplaced`.
+ *     insert --title "Design notes  conflict"
+ *       gives "- W.1  Design notes  conflict", and reading the suffix as
+ *       a mark shows a sound block as being in a structural conflict
  *
- * THE TITLE IS SPLIT AT THE FIRST DOUBLE SPACE AND NOT AT EVERY ONE. A
- * title may contain two spaces of its own; the separator is the first
- * one after the id, because the id cannot contain a space at all.
+ *     insert --title "second line<newline>- fake.1  invented"
+ *       gives "- W.2  second line" and then "- fake.1  invented", and
+ *       reading the second of those as a row invents a block
  *
- * THE `orphans:` LINE IS A SECTION AND NOT A ROW. Blocks whose parent
- * was deleted are printed under it at depth zero; they are still blocks
- * and are still worth showing, but they are not children of anything.
+ * An id cannot contain a space, so the id is the one field whose
+ * boundary no title can forge. Everything else -- the title, whether the
+ * block is in a structural conflict, whether it is an orphan -- is asked
+ * for as DATA: `read <id>` for the title, `conflicts` for the marks. The
+ * core states that `outline` takes its marks from the same place
+ * `conflicts` does, so this is the same authority reached by a channel
+ * that cannot be forged, and not a second opinion about what an outline
+ * means.
+ *
+ * WHAT IS LEFT HERE IS THE SHAPE OF A ROW AND ITS DEPTH: two spaces per
+ * level, then "- ", then the id. A line that is not that stops the whole
+ * outline, because a line this cannot read is a block it would otherwise
+ * drop, and a shorter outline reads like a smaller store.
+ *
+ * THIS FILE GOES AWAY when the core offers the outline as data -- one
+ * item per block carrying id, parent, ord, title and mark -- at which
+ * point there is nothing here left to get wrong.
  */
 
 import { TransportError } from './transport';
 
-export type OutlineMark = 'conflict' | 'unplaced';
-
-export const OUTLINE_MARKS: OutlineMark[] = ['conflict', 'unplaced'];
-
 export interface OutlineRow {
   id: string;
-  title: string;
   depth: number;
-  mark: OutlineMark | null;
-  orphan: boolean;
+  line: number;
 }
 
-const ROW = /^( *)- (\S+)( {2})?(.*)$/;
+/*
+ * The id runs to the first space. The core writes two spaces after it
+ * and then the title, and neither is read here.
+ */
+const ROW = /^( *)- (\S+)(?:  .*)?$/;
 
 export function parseOutline(text: string): OutlineRow[] {
   const rows: OutlineRow[] = [];
-  let inOrphans = false;
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
     if (line.length === 0) {
       continue;
     }
+    /*
+     * THE ORPHAN SECTION IS A HEADING, NOT A ROW, and it is no longer
+     * read for anything else: which blocks are orphans is answered by
+     * `conflicts`, so a title whose second line happens to say
+     * `orphans:` can no longer change what any row means.
+     */
     if (line === 'orphans:') {
-      inOrphans = true;
       continue;
     }
     const found = ROW.exec(line);
     if (found === null) {
-      /*
-       * A LINE THIS CANNOT READ STOPS THE WHOLE OUTLINE. Skipping it
-       * would hide a block -- and the rows hardest to draw are exactly
-       * the ones in a structural conflict, which is to say the rows a
-       * reader most needs to see. A shorter outline reads like a smaller
-       * store.
-       */
       /*
        * THE LINE NUMBER AND THE LINE ITSELF, because the block this
        * belongs to has to be findable. A title carrying a newline is
@@ -89,34 +98,7 @@ export function parseOutline(text: string): OutlineRow[] {
         text
       );
     }
-    const indent = found[1].length;
-    const id = found[2];
-    const rest = found[4];
-    const { title, mark } = splitTitle(rest);
-    rows.push({
-      id,
-      title,
-      depth: inOrphans ? 0 : Math.floor(indent / 2),
-      mark,
-      orphan: inOrphans
-    });
+    rows.push({ id: found[2], depth: Math.floor(found[1].length / 2), line: i + 1 });
   }
   return rows;
-}
-
-/*
- * THE MARK IS TAKEN OFF THE END, NOT FOUND BY SPLITTING. Splitting the
- * remainder at its double spaces would cut a title that has two spaces
- * in it; the mark is one of two known words and sits last, so the only
- * question that can be answered without guessing is whether the text
- * ends with one of them after two spaces.
- */
-function splitTitle(rest: string): { title: string; mark: OutlineMark | null } {
-  for (const mark of OUTLINE_MARKS) {
-    const suffix = `  ${mark}`;
-    if (rest.endsWith(suffix)) {
-      return { title: rest.slice(0, rest.length - suffix.length), mark };
-    }
-  }
-  return { title: rest, mark: null };
 }

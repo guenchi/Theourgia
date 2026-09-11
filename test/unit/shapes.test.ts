@@ -51,38 +51,41 @@ describe('an outline line this client cannot read stops the outline', () => {
 
   it('still reads the two lines the core does produce beside rows', () => {
     const rows = parseOutline('- a.1  Doc\norphans:\n- b.2  Kid\n');
-    assert.deepStrictEqual(
-      rows.map((r) => [r.id, r.orphan]),
-      [
-        ['a.1', false],
-        ['b.2', true]
-      ]
-    );
+    assert.deepStrictEqual(rows.map((r) => r.id), ['a.1', 'b.2']);
   });
 
   it('reads a row whose title would look like a stray line', () => {
-    const rows = parseOutline('- a.1  orphans:\n');
-    assert.strictEqual(rows.length, 1);
-    assert.strictEqual(rows[0].title, 'orphans:');
+    assert.deepStrictEqual(parseOutline('- a.1  orphans:\n').map((r) => r.id), ['a.1']);
   });
 
   /*
-   * THIS PINS A CONSEQUENCE, NOT A PREFERENCE. `set <id> title` accepts
-   * a title with a newline in it and `outline` writes the title raw, so
-   * a real store can print a row that runs over two lines -- measured,
-   * not supposed: a scratch store built by the core prints
-   *
-   *     - p9wewqpa.1  first line
-   *     second line
-   *
-   * Refusing is the rule this batch was given, and it is the louder of
-   * the two wrong answers: the alternative, skipping, drops a block from
-   * the tree without a word. Neither is right. Reading an unmatched line
-   * as the rest of the previous row's title would be, and is a change to
-   * this one function -- it is not made here because the batch's rule
-   * says refuse, and a client that quietly did something else would be
-   * the second opinion this whole file exists to avoid.
+   * A CONTINUATION CAN CARRY TWO SPACES IN IT, and then it looks like a
+   * row with its dash missing. Only the dash tells a row from a line of
+   * prose, so that is what this pins: without it, `Design notes  here`
+   * is read as a block called `Design` and the tree gains a row nobody
+   * wrote.
    */
+  it('refuses a line that has a row\'s shape but no dash', () => {
+    assert.throws(
+      () => parseOutline('- a.1  first line\nDesign notes  here\n'),
+      (e: unknown) => e instanceof TransportError && e.failure === 'unreadable'
+    );
+  });
+
+  it('refuses an indented line with no dash', () => {
+    assert.throws(
+      () => parseOutline('- a.1  Doc\n  b.2  Kid\n'),
+      (e: unknown) => e instanceof TransportError && e.failure === 'unreadable'
+    );
+  });
+
+  it('refuses a row whose id would be empty', () => {
+    assert.throws(
+      () => parseOutline('-   two spaces and no id\n'),
+      (e: unknown) => e instanceof TransportError && e.failure === 'unreadable'
+    );
+  });
+
   it('refuses an outline whose row runs onto a second line, and says which line', () => {
     let caught: unknown = null;
     try {
@@ -94,45 +97,6 @@ describe('an outline line this client cannot read stops the outline', () => {
     assert.match((caught as Error).message, /line 2/, 'the refusal does not say which line');
     assert.match((caught as Error).message, /second line/, 'the refusal does not quote the line');
     assert.match((caught as Error).message, /a\.1/, 'the refusal does not name the row to go and look at');
-  });
-
-  /*
-   * TWO CASES THE REFUSAL DOES NOT CATCH, both reproduced against a real
-   * store built by the core. They are pinned here as what this client
-   * currently does, not as what it should do -- the ruling on multi-line
-   * titles is that the root cause is fixed in the core, and these say
-   * what happens until it is.
-   *
-   *   theourgia insert --under root --title "Design notes  conflict"
-   *   theourgia insert --under root --title "second line
-   *   - fake.1  invented"
-   *
-   * printed
-   *
-   *   - 0zfgvajv.1  Design notes  conflict
-   *   - 0zfgvajv.2  second line
-   *   - fake.1  invented
-   *
-   * while `conflicts` reported nothing at all.
-   */
-  it('cannot tell a title ending in the conflict mark from a conflicted row', () => {
-    const rows = parseOutline('- a.1  Design notes  conflict\n');
-    assert.strictEqual(rows[0].title, 'Design notes');
-    assert.strictEqual(
-      rows[0].mark,
-      'conflict',
-      'a block the store reports as sound is shown as being in a structural conflict'
-    );
-  });
-
-  it('cannot tell a row from the second line of a title that looks like one', () => {
-    const rows = parseOutline('- a.2  second line\n- fake.1  invented\n');
-    assert.strictEqual(rows.length, 2);
-    assert.strictEqual(
-      rows[1].id,
-      'fake.1',
-      'a block that does not exist is shown in the tree, and no refusal is raised'
-    );
   });
 });
 
