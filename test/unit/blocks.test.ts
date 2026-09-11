@@ -20,7 +20,16 @@
  */
 
 import * as assert from 'assert';
-import { Block, documentFor, hasFieldConflict, readBlock, splitDocument, titleOf } from '../../src/blocks';
+import {
+  Block,
+  documentFor,
+  hasFieldConflict,
+  isTopLevel,
+  parentOf,
+  readBlock,
+  splitDocument,
+  titleOf
+} from '../../src/blocks';
 import { initWire, wire } from '../../src/wire';
 
 const STORE = '/tmp/a-store';
@@ -42,7 +51,7 @@ describe('a block read from the core', () => {
       '((id . "a.2") (deleted . #f) (fields (heading-src . "## Two\\n") (kind . section) (level . 2) (src . "body\\n\\n") (title . "Two")) (position "a.1" . 0) (edges))'
     );
     assert.strictEqual(b.id, 'a.2');
-    assert.strictEqual(b.parent, 'a.1');
+    assert.deepStrictEqual(b.placement, { kind: 'under', parent: 'a.1' });
     assert.strictEqual(b.ord, 0);
     assert.strictEqual(titleOf(b), 'Two');
     const document = documentFor(b, STORE);
@@ -60,9 +69,27 @@ describe('a block read from the core', () => {
     assert.strictEqual(document.text, 'body');
   });
 
+  it('reads a block whose place is unsettled as neither root nor under anything', () => {
+    const b = block(
+      '((id . "a.2") (deleted . #f) (fields (title . "Two")) (position conflict 2) (edges))'
+    );
+    assert.deepStrictEqual(b.placement, { kind: 'unsettled', candidates: 2 });
+    assert.strictEqual(
+      b.ord,
+      null,
+      'the count of position candidates was handed back as a sibling index'
+    );
+    assert.strictEqual(
+      isTopLevel(b),
+      false,
+      'a block that has been moved twice was read as being at the top level'
+    );
+    assert.strictEqual(parentOf(b), null);
+  });
+
   it('reads a top-level block as a child of nothing', () => {
     const b = block('((id . "a.1") (deleted . #f) (fields (src . "")) (position root . 0) (edges))');
-    assert.strictEqual(b.parent, null);
+    assert.deepStrictEqual(b.placement, { kind: 'root' });
     assert.strictEqual(b.ord, 0);
   });
 
@@ -91,8 +118,24 @@ describe('S1 and S2 the heading decides whether a save is sent', () => {
     await initWire();
   });
 
-  const withHeading = { id: 'a.2', store: STORE, headingSrc: '## Two\n', src: 'body\n', text: '## Two\nbody\n' };
-  const withoutHeading = { id: 'a.2', store: STORE, headingSrc: '', src: 'body\n', text: 'body\n' };
+  const withHeading = {
+    id: 'a.2',
+    store: STORE,
+    prefix: '## Two\n',
+    front: '',
+    headingSrc: '## Two\n',
+    src: 'body\n',
+    text: '## Two\nbody\n'
+  };
+  const withoutHeading = {
+    id: 'a.2',
+    store: STORE,
+    prefix: '',
+    front: '',
+    headingSrc: '',
+    src: 'body\n',
+    text: 'body\n'
+  };
 
   it('sends the body alone when only the body changed', () => {
     const result = splitDocument(withHeading, '## Two\nbody2\n');
@@ -135,7 +178,15 @@ describe('S1 and S2 the heading decides whether a save is sent', () => {
   });
 
   it('leaves carriage returns alone when the block itself had one', () => {
-    const crlf = { id: 'a.2', store: STORE, headingSrc: '## Two\r\n', src: 'body\r\n', text: '## Two\r\nbody\r\n' };
+    const crlf = {
+      id: 'a.2',
+      store: STORE,
+      prefix: '## Two\r\n',
+      front: '',
+      headingSrc: '## Two\r\n',
+      src: 'body\r\n',
+      text: '## Two\r\nbody\r\n'
+    };
     const result = splitDocument(crlf, '## Two\r\nbody2\r\n');
     assert.deepStrictEqual(result, { ok: true, src: 'body2\r\n', normalised: false });
   });
@@ -144,5 +195,81 @@ describe('S1 and S2 the heading decides whether a save is sent', () => {
     const body = 'a "quoted" \\ back slash 中文 😀\n';
     const result = splitDocument(withHeading, `## Two\n${body}`);
     assert.strictEqual((result as { src: string }).src, body);
+  });
+});
+
+describe('a document block is opened with its front matter', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  /*
+   * MEASURED against a real store: importing a file whose front matter
+   * is `---\ntitle: front matter here\n---\n` gives a file-level block
+   * whose fields are `(front . "---\n...\n---\n") (kind . doc)
+   * (path . "d.md") (src . "\n")`, and whose `read --md` prints the
+   * front matter and then the body. Composing the buffer from
+   * heading-src and src alone showed that document as a buffer holding
+   * one newline, which invites pasting the front matter back in -- and
+   * it would then exist twice, once in the field and once in the body.
+   */
+  const FRONT = '---\ntitle: front matter here\n---\n';
+
+  it('shows the front matter, then the heading, then the body', () => {
+    const b = block(
+      `((id . "a.1") (deleted . #f) (fields (front . "---\\ntitle: front matter here\\n---\\n") (kind . doc) (path . "d.md") (src . "\\nbody\\n")) (position root . 0) (edges))`
+    );
+    const document = documentFor(b, STORE);
+    assert.strictEqual(document.front, FRONT);
+    assert.strictEqual(document.text, `${FRONT}\nbody\n`);
+    assert.strictEqual(document.prefix, FRONT, 'the front matter is not part of the protected prefix');
+  });
+
+  it('sends only the body back when the front matter is left alone', () => {
+    const document = {
+      id: 'a.1',
+      store: STORE,
+      prefix: FRONT,
+      front: FRONT,
+      headingSrc: '',
+      src: '\nbody\n',
+      text: `${FRONT}\nbody\n`
+    };
+    const split = splitDocument(document, `${FRONT}\nedited\n`);
+    assert.deepStrictEqual(split, { ok: true, src: '\nedited\n', normalised: false });
+  });
+
+  it('refuses when the front matter itself was edited', () => {
+    const document = {
+      id: 'a.1',
+      store: STORE,
+      prefix: FRONT,
+      front: FRONT,
+      headingSrc: '',
+      src: '\nbody\n',
+      text: `${FRONT}\nbody\n`
+    };
+    assert.deepStrictEqual(splitDocument(document, '---\ntitle: changed\n---\n\nbody\n'), {
+      ok: false,
+      reason: 'heading-changed'
+    });
+  });
+
+  it('protects the front matter and the heading together when a block has both', () => {
+    const document = {
+      id: 'a.2',
+      store: STORE,
+      prefix: `${FRONT}## Two\n`,
+      front: FRONT,
+      headingSrc: '## Two\n',
+      src: 'body\n',
+      text: `${FRONT}## Two\nbody\n`
+    };
+    assert.strictEqual(splitDocument(document, `${FRONT}## Three\nbody\n`).ok, false);
+    assert.deepStrictEqual(splitDocument(document, `${FRONT}## Two\nnew\n`), {
+      ok: true,
+      src: 'new\n',
+      normalised: false
+    });
   });
 });

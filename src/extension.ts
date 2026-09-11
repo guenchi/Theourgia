@@ -64,9 +64,20 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
   private readonly changed = new vscode.EventEmitter<Node | undefined>();
   public readonly onDidChangeTreeData = this.changed.event;
   private model: StoreModel | null;
+  private readonly failed: (e: unknown) => void;
+  private readonly unknownMarks: () => void;
+  private readonly generation: () => number;
 
-  constructor(model: StoreModel | null) {
+  constructor(
+    model: StoreModel | null,
+    failed: (e: unknown) => void,
+    unknownMarks: () => void,
+    generation: () => number
+  ) {
     this.model = model;
+    this.failed = failed;
+    this.unknownMarks = unknownMarks;
+    this.generation = generation;
   }
 
   public use(model: StoreModel | null): void {
@@ -88,9 +99,15 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     item.id = node.id;
     item.description = node.id;
     item.contextValue = 'theourgia.block';
-    const tooltip = nodeTooltip(node.id, node.mark, node.fieldConflict);
+    const tooltip = nodeTooltip(node.id, node.marks, node.fieldConflict);
     if (tooltip !== null) {
-      item.iconPath = new vscode.ThemeIcon(node.mark === 'orphan' ? 'question' : 'warning');
+      /*
+       * THE ICON FOLLOWS THE WORST OF WHAT IS TRUE, and orphanhood is
+       * not overridden by anything else the block also is.
+       */
+      item.iconPath = new vscode.ThemeIcon(
+        node.marks === null ? 'circle-slash' : node.orphan ? 'question' : 'warning'
+      );
       item.tooltip = tooltip;
     }
     item.command = {
@@ -105,12 +122,43 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     if (this.model === null) {
       return [];
     }
+    /*
+     * WHAT THIS REQUEST IS ABOUT IS DECIDED BEFORE IT IS MADE. A
+     * settings change replaces the model while a request is still
+     * running, and a late answer -- or a late failure -- belongs to the
+     * store it was asked of. Without this, an expansion of one store
+     * that failed could clear the conflict count of the store the user
+     * had by then moved to.
+     */
+    const asked = this.generation();
+    let nodes: Node[];
+    let marksKnown: boolean;
     try {
-      return node === undefined ? await this.model.roots() : await this.model.childrenOf(node.id);
+      if (node === undefined) {
+        nodes = await this.model.roots();
+        marksKnown = true;
+      } else {
+        const listing = await this.model.childrenOf(node.id);
+        nodes = listing.nodes;
+        marksKnown = listing.marksKnown;
+      }
     } catch (e) {
-      reportFailure(e);
+      if (asked === this.generation()) {
+        this.failed(e);
+      }
       return [];
     }
+    /*
+     * A SUBTREE THAT CAME BACK WITHOUT ITS MARKS IS STILL A FAILURE TO
+     * REPORT, even though it has children in it -- and even when it has
+     * NONE. An expansion that found no children returns an empty list
+     * either way, so the fact travels with the listing and not with the
+     * nodes.
+     */
+    if (!marksKnown && asked === this.generation()) {
+      this.unknownMarks();
+    }
+    return nodes;
   }
 }
 
@@ -145,7 +193,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const open = new Map<string, BlockDocument>();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = 'theourgia.showStatus';
-  const provider = new OutlineProvider(null);
+  /*
+   * A LISTING THAT FAILED ALSO INVALIDATES THE COUNT BESIDE IT. The tree
+   * and the status bar ask the same store two questions, and a failure
+   * that emptied the tree while the status bar went on reporting a count
+   * from before it would be showing a reassuring number about a store
+   * that had just refused to answer.
+   */
+  const provider = new OutlineProvider(
+    null,
+    (e: unknown) => {
+      conflicts = null;
+      reportFailure(e);
+      paint();
+    },
+    () => {
+      conflicts = null;
+      paint();
+    },
+    () => generation
+  );
 
   let config = readConfig();
   let client: Client | null = null;
@@ -315,8 +382,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const document = documentFor(block, store);
     if (hasUncommittedWork(file)) {
       const existing = await vscode.workspace.openTextDocument(uri);
+      if (asked !== generation) {
+        return;
+      }
       await vscode.languages.setTextDocumentLanguage(existing, 'markdown');
+      if (asked !== generation) {
+        return;
+      }
       await vscode.window.showTextDocument(existing, { preview: false });
+      if (asked !== generation) {
+        return;
+      }
       open.set(file, document);
       vscode.window.showWarningMessage(
         `theourgia: the file for ${id} holds changes the store does not have, so it was not ` +
@@ -328,6 +404,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     writeDocument(file, document);
     open.set(file, document);
     const opened = await vscode.workspace.openTextDocument(uri);
+    if (asked !== generation) {
+      return;
+    }
     /*
      * THE SETTINGS ARE CHECKED AGAIN BEFORE THE EDITOR APPEARS. Opening
      * a document is another wait, and a store changed during it would
@@ -336,10 +415,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * remembers its own store and a save into another is refused -- but
      * showing it is still the wrong answer to what the user last asked.
      */
+    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
+    /*
+     * AFTER EVERY WAIT, not only after the first one. Opening the
+     * document and setting its language are two more chances for the
+     * settings to change, and a check before them proves nothing about
+     * what is true after them.
+     */
     if (asked !== generation) {
       return;
     }
-    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
     await vscode.window.showTextDocument(opened, { preview: false });
   }
 

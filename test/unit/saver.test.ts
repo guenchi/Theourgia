@@ -320,7 +320,16 @@ describe('S6 an answer is sorted by what it says about the store', () => {
     assert.strictEqual(outbox.pendingCount, 0);
   });
 
-  it('drops the entry and says the block moved when the store refuses a stale write', async () => {
+  /*
+   * THIS ANSWER IS NOT REACHABLE FROM THIS CLIENT YET, and the cell says
+   * so rather than implying otherwise. The core produces `(error
+   * changed ...)` only for a write carrying `--if-unchanged`, and this
+   * batch does not send one -- so an ordinary save over somebody else's
+   * edit is NOT refused, it lands. What is pinned here is that the
+   * answer is classified correctly when X1b starts sending the option;
+   * it is not evidence that a stale save is protected today.
+   */
+  it('classifies the stale-write refusal, which X1b will be able to provoke', async () => {
     const { outcome, outbox } = await outcomeOf('(error changed (current "hhh"))\n', 1);
     assert.strictEqual(outcome.status, 'refused');
     assert.match(outcome.message, /changed in the store/);
@@ -679,5 +688,106 @@ describe('two savers over one queue are still one request at a time', () => {
       (fast?.started as number) >= (slow?.at as number),
       `the second saver started at ${fast?.started} while the first answered at ${slow?.at}`
     );
+  });
+});
+
+describe('a core that exits without answering says why, and the client passes it on', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THIS CAME OUT OF AN INCIDENT. A full run once reported "the core
+   * exited 255 without an answer" for a save against the real core, and
+   * it could not be looked into afterwards because the message carried
+   * the exit code and nothing else -- the core's own account of what
+   * went wrong was on the other stream and was dropped.
+   */
+  it('carries the core\'s stderr into the message when nothing was printed', async () => {
+    const r = rig([
+      {
+        match: ['set'],
+        stdout: '',
+        stderr: 'Exception in fasl-read: invalid situation\n',
+        rc: 255
+      }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'pending');
+    assert.match(outcome.message, /exited 255/);
+    assert.match(outcome.message, /invalid situation/, 'the core said why and the message dropped it');
+    assert.match(
+      r.outbox.entries[0].lastError as string,
+      /invalid situation/,
+      'the reason was not written down with the entry either'
+    );
+  });
+
+  it('says nothing extra when the core was silent on both streams', async () => {
+    const r = rig([{ match: ['set'], stdout: '', stderr: '', rc: 3 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.match(outcome.message, /exited 3 without an answer/);
+    assert.ok(!/It said/.test(outcome.message), 'an empty stderr was announced as though it said something');
+  });
+
+  it('carries the reason through a transport failure too', async () => {
+    const r = rig([
+      {
+        match: ['set'],
+        stdout: '',
+        stderr: 'Exception: library (igropyr sexpr) not found\n',
+        rc: 1
+      }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'pending');
+    assert.match(outcome.message, /libDirs/);
+  });
+});
+
+describe('a core that does not understand the request says which core it is', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * MEASURED. Against theourgia at 842cf46 a tracked write answers
+   * `(usage (set <id> <field> <value>))` with exit 1 -- that build has
+   * no request tracking at all, and the option this client always sends
+   * is not in its usage line. The message used to render as "the core
+   * refused the write: refused", which named nothing and cost an hour
+   * to work out by hand.
+   */
+  it('names the version problem when the core answers with a usage line', async () => {
+    const r = rig([{ match: ['set'], stdout: '(usage (set <id> <field> <value>))\n', rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'refused');
+    assert.match(outcome.message, /usage line/);
+    assert.match(outcome.message, /--req/);
+    assert.match(outcome.message, /corePath/);
+    assert.match(
+      outcome.message,
+      /arguments sent/,
+      'the message asserts a version problem where an argument problem is equally possible'
+    );
+    assert.ok(
+      !/refused the write: refused/.test(outcome.message),
+      'the message still says nothing about what went wrong'
+    );
+  });
+
+  it('still names an ordinary refusal by the name the core gave it', async () => {
+    const r = rig([{ match: ['set'], stdout: '(error req-mismatch ("w" . 6))\n', rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.match(outcome.message, /req-mismatch/);
   });
 });

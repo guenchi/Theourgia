@@ -149,7 +149,12 @@ export function wrongStoreNotice(id: string, was: string, now: string): Notice {
 }
 
 /*
- * WHAT A MARKED ROW SAYS WHEN YOU HOVER IT, and it says WHICH mark.
+ * WHAT A MARKED ROW SAYS WHEN YOU HOVER IT, and it says WHICH marks --
+ * plural, and together with a field conflict rather than instead of it.
+ * A block can be an orphan AND a nested document, and it can be either
+ * of those AND have a field with two candidate values; naming only the
+ * first fact found tells the reader about one problem and hides the
+ * rest, which is the same failure as naming none.
  * Four structural marks and a field conflict all used to draw one
  * warning icon with one sentence, so the tree told a reader "something
  * is wrong here" and never which of five things -- and the remedies are
@@ -164,14 +169,17 @@ export function wrongStoreNotice(id: string, was: string, now: string): Notice {
  */
 export function nodeTooltip(
   id: string,
-  mark: StructuralMark | null,
+  marks: StructuralMark[] | null,
   fieldConflict: boolean
 ): string | null {
-  if (mark !== null) {
-    return `${id}: the store reports this block as ${mark}`;
+  const said: string[] = [];
+  if (marks === null) {
+    said.push('structural marks unavailable: the conflicts request was refused');
+  } else if (marks.length > 0) {
+    said.push(`the store reports this block as ${marks.join(' and ')}`);
   }
   if (fieldConflict) {
-    return `${id} has a field with more than one candidate value`;
+    said.push('it has a field with more than one candidate value');
   }
-  return null;
+  return said.length === 0 ? null : `${id}: ${said.join('; ')}`;
 }

@@ -25,6 +25,7 @@
  * actionable rather than merely loud.
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -41,6 +42,67 @@ export interface CoreLocation {
   corePath: string;
   libDirs: string[];
   scheme: string;
+}
+
+/*
+ * WHAT THE CORE WAS WHEN THIS RAN.
+ *
+ * THE CORE IS SOMEBODY ELSE'S WORKING TREE unless it is deliberately
+ * frozen, and a suite that reads one is only as stable as the editing
+ * going on in it. That is not a hypothetical: a run of these cells once
+ * reported `the core exited 255 without an answer`, and a probe built to
+ * fish for it caught `Exception: variable t is not bound` at the exact
+ * second another session wrote `store.ss`. Neither was a defect in the
+ * core -- both were a half-written file being read.
+ *
+ * SO THE DIGEST IS TAKEN AT THE START AND CHECKED AT THE END. A failure
+ * that arrives with "the core changed while this ran" is a reading to
+ * throw away; one that arrives without it is about the code. Point
+ * THEOURGIA_CORE at a copy nobody is editing and this never fires.
+ */
+export function coreDigest(corePath: string): string {
+  const hash = createHash('sha256');
+  for (const name of fs.readdirSync(corePath).filter((f) => f.endsWith('.ss')).sort()) {
+    hash.update(name);
+    /*
+     * THE MODIFICATION TIME AS WELL AS THE BYTES. Comparing contents
+     * alone is blind to the case this exists for: a file written and
+     * then restored between the two readings has the same bytes at both
+     * ends and was a different file in the middle -- which is exactly
+     * what an editor doing a save-and-undo, or a checkout and a revert,
+     * leaves behind. A timestamp does not survive that.
+     */
+    const stat = fs.statSync(path.join(corePath, name));
+    hash.update(String(stat.size));
+    hash.update(String(stat.mtimeMs));
+    hash.update(fs.readFileSync(path.join(corePath, name)));
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+export function pinCore(): { corePath: string; digest: string } {
+  const where = locateCore();
+  return { corePath: where.corePath, digest: coreDigest(where.corePath) };
+}
+
+export function checkCorePin(pinned: { corePath: string; digest: string } | undefined): void {
+  /*
+   * A PIN THAT WAS NEVER TAKEN IS NOT A PIN THAT FAILED. When the setup
+   * itself threw -- no core at that path -- this runs with nothing to
+   * compare, and dereferencing it would replace an actionable setup
+   * failure with a TypeError about the check.
+   */
+  if (pinned === undefined) {
+    return;
+  }
+  const now = coreDigest(pinned.corePath);
+  if (now !== pinned.digest) {
+    throw new Error(
+      `the core at ${pinned.corePath} changed while these cells ran (${pinned.digest} -> ${now}). ` +
+        'Every reading in this file was taken against a moving tree and none of them mean anything. ' +
+        'Point THEOURGIA_CORE at a copy nobody is editing and run again.'
+    );
+  }
 }
 
 export function locateCore(): CoreLocation {

@@ -30,11 +30,27 @@
 import { TransportError } from './transport';
 import { Datum, asInteger, assocTail, cdrOf, clauseRest, isDotted, isList, isSym } from './wire';
 
+/*
+ * WHERE A BLOCK SITS HAS THREE ANSWERS, NOT TWO. `(position root . 0)`
+ * is the top level and `(position "<id>" . <n>)` is under a block -- and
+ * `(position conflict <n>)` is neither: the core writes that when a
+ * block has more than one position candidate, which is what two
+ * concurrent moves leave behind. Reading it as a missing parent, which
+ * is what a two-valued answer forces, says "top level" about a block
+ * whose place nobody knows -- so a block that has been moved twice would
+ * be listed among the roots on the strength of an answer that means the
+ * opposite.
+ */
+export type Placement =
+  | { kind: 'root' }
+  | { kind: 'under'; parent: string }
+  | { kind: 'unsettled'; candidates: number | null };
+
 export interface Block {
   id: string;
   deleted: boolean;
   fields: Map<string, Datum>;
-  parent: string | null;
+  placement: Placement;
   ord: number | null;
 }
 
@@ -106,34 +122,63 @@ export function readBlock(value: Datum): Block | null {
     }
   }
   const position = assocTail(value, 'position');
+  const placement = placementOf(position);
   return {
     id,
     deleted: deleted === true,
     fields,
-    parent: parentOf(position),
-    ord: ordOf(position)
+    placement,
+    /*
+     * A BLOCK WHOSE PLACE IS UNSETTLED HAS NO SIBLING INDEX. The datum
+     * for one is `(position conflict <n>)`, where n counts the CANDIDATE
+     * POSITIONS -- and reading the second element of a position as an
+     * order, which is right for every other shape, turns that count into
+     * an index among siblings it does not have.
+     */
+    ord: placement.kind === 'unsettled' ? null : ordOf(position)
   };
+}
+
+export function parentOf(block: Block): string | null {
+  return block.placement.kind === 'under' ? block.placement.parent : null;
+}
+
+export function isTopLevel(block: Block): boolean {
+  return block.placement.kind === 'root';
 }
 
 /*
  * A TOP-LEVEL BLOCK NAMES ITS PARENT WITH THE SYMBOL `root` AND EVERY
  * OTHER BLOCK NAMES IT WITH A STRING. Two spellings because they are two
- * different things -- `root` is not a block and cannot be read -- so
- * null here means "directly under the store" and never "unknown".
+ * different things -- `root` is not a block and cannot be read. The
+ * third shape, `(position conflict <n>)`, is a block whose place is
+ * unsettled, and it is kept apart from both: it is not the top level and
+ * there is no parent to name.
  */
-function parentOf(position: Datum): string | null {
+function placementOf(position: Datum): Placement {
   if (isDotted(position)) {
     const first = position.items[0];
     if (typeof first === 'string') {
-      return first;
+      return { kind: 'under', parent: first };
     }
-    return null;
+    if (isSym(first, 'root')) {
+      return { kind: 'root' };
+    }
+    return { kind: 'unsettled', candidates: null };
   }
   if (isList(position) && position.length >= 1) {
     const first = position[0];
-    return typeof first === 'string' ? first : null;
+    if (typeof first === 'string') {
+      return { kind: 'under', parent: first };
+    }
+    if (isSym(first, 'root')) {
+      return { kind: 'root' };
+    }
+    if (isSym(first, 'conflict')) {
+      return { kind: 'unsettled', candidates: position.length >= 2 ? asInteger(position[1]) : null };
+    }
   }
-  return null;
+  return { kind: 'unsettled', candidates: null };
 }
 
 function ordOf(position: Datum): number | null {
@@ -199,7 +244,18 @@ export function hasFieldConflict(block: Block): boolean {
 export interface BlockDocument {
   id: string;
   store: string;
+  /*
+   * EVERYTHING BEFORE THE BODY, AND NONE OF IT EDITABLE HERE. The core
+   * composes a block's own bytes as `front + heading-src + src`: front
+   * matter, then the heading the block was written with, then the body.
+   * A file-level block is where front matter lives, and composing
+   * without it showed a document as an almost empty buffer -- inviting
+   * the user to paste the front matter back in, which would then exist
+   * twice, once in the field and once in the body.
+   */
+  prefix: string;
   headingSrc: string;
+  front: string;
   src: string;
   text: string;
 }
@@ -212,9 +268,11 @@ export interface BlockDocument {
  * the title was edited.
  */
 export function documentFor(block: Block, store: string): BlockDocument {
+  const front = stringField(block, 'front');
   const headingSrc = stringField(block, 'heading-src');
   const src = stringField(block, 'src');
-  return { id: block.id, store, headingSrc, src, text: headingSrc + src };
+  const prefix = front + headingSrc;
+  return { id: block.id, store, prefix, front, headingSrc, src, text: prefix + src };
 }
 
 export type SplitResult =
@@ -222,7 +280,11 @@ export type SplitResult =
   | { ok: false; reason: 'heading-changed' };
 
 /*
- * WHAT CHANGED IS DECIDED BY THE HEADING'S BYTES, NOT BY A LINE NUMBER.
+ * WHAT CHANGED IS DECIDED BY THE PREFIX'S BYTES, NOT BY A LINE NUMBER.
+ * The prefix is the front matter and the heading together -- everything
+ * the core puts before the body -- because neither is edited by writing
+ * to `src`, and a buffer that no longer starts with both is a buffer
+ * whose front matter or title was changed.
  * Everything after the heading is the new body, and a buffer that no
  * longer starts with the heading it was given is a buffer whose title
  * was edited -- which is a different verb (`set <id> title`) and is not
@@ -246,11 +308,11 @@ export function splitDocument(document: BlockDocument, buffer: string): SplitRes
     text = text.replace(/\r\n/g, '\n');
     normalised = true;
   }
-  if (document.headingSrc.length === 0) {
+  if (document.prefix.length === 0) {
     return { ok: true, src: text, normalised };
   }
-  if (!text.startsWith(document.headingSrc)) {
+  if (!text.startsWith(document.prefix)) {
     return { ok: false, reason: 'heading-changed' };
   }
-  return { ok: true, src: text.slice(document.headingSrc.length), normalised };
+  return { ok: true, src: text.slice(document.prefix.length), normalised };
 }

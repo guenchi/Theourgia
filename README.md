@@ -168,6 +168,29 @@ THEOURGIA_CORE=/path/to/theourgia THEOURGIA_LIBDIRS=/path/holding/igropyr npm ru
 THEOURGIA_CORE=/path/to/theourgia THEOURGIA_LIBDIRS=/path/holding/igropyr npm run test:integration
 ```
 
+**This extension needs a core that has request tracking.** Every save carries `--req <id>
+--cursor <writer>:<seq>`, and a core without those options answers `(usage (set <id> <field>
+<value>))` — measured against theourgia at 842cf46, where the tokens `--req`, `--cursor`,
+`tracked-request` and `req-not-tracked` do not appear in `cli.ss` or `rpc.ss` at all. The
+outbox is built on that feature, so against such a core every save is refused. A usage line
+can also mean an argument the core did not expect, so the message names both.
+
+**A nested document is reported but not shown.** The core lists one under `conflicts`, and
+its recursive walk stops at a doc-kind child — `project.ss` says "a walk stops at one",
+because a nested document has its own file and descending would write its sections twice. It
+is therefore absent from its parent's expansion, and `nested-document` is not a mark that
+puts a block in the root listing either, so the only sign of one is the conflict count. What
+a nested document *means* is still open in the core's own design; this is pinned as current
+behaviour, not endorsed.
+
+**Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
+tree, and a suite that reads one is only as stable as the editing going on in it — a run of
+these cells once reported `the core exited 255 without an answer`, and a probe built to fish
+for it caught `Exception: variable t is not bound` at the exact second another session wrote
+`store.ss`. Neither was a defect in the core; both were a half-written file being read. The
+cells take a digest of the core at the start and check it at the end, so a reading taken
+against a moving tree says so instead of looking like a flake.
+
 The cells that need the core **fail** when it is not there; they do not skip. A skip and a
 pass are the same colour, and the two situations — "this works" and "nobody has checked" —
 should not be.

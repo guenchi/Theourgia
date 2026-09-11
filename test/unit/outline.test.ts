@@ -20,7 +20,7 @@
 
 import * as assert from 'assert';
 import { Client } from '../../src/client';
-import { StoreModel, StructuralMark } from '../../src/model';
+import { ROOT_MARKS, STRUCTURAL_MARKS, StoreModel, StructuralMark } from '../../src/model';
 import { nodeTooltip } from '../../src/status';
 import { parseOutline } from '../../src/outline';
 import { CliTransport } from '../../src/transport';
@@ -150,14 +150,17 @@ describe('O2 a node is expanded when it is opened and not before', () => {
    * is the hole. Adding a variant to StructuralMark without adding a row
    * here now fails the last cell in this block.
    */
-  const MARKS: { item: string; mark: StructuralMark }[] = [
-    { item: '(conflict "a.1" cycle)', mark: 'cycle' },
-    { item: '(conflict "a.1" unplaced)', mark: 'unplaced' },
-    { item: '(orphan "a.1")', mark: 'orphan' },
-    { item: '(nested-document "a.1")', mark: 'nested-document' }
+  const MARKS: { item: string; mark: StructuralMark; promotesToRoot: boolean }[] = [
+    { item: '(conflict "a.1" cycle)', mark: 'cycle', promotesToRoot: true },
+    { item: '(conflict "a.1" unplaced)', mark: 'unplaced', promotesToRoot: true },
+    { item: '(orphan "a.1")', mark: 'orphan', promotesToRoot: true },
+    { item: '(nested-document "a.1")', mark: 'nested-document', promotesToRoot: false }
   ];
 
-  for (const { item, mark } of MARKS) {
+  const CHILD_OF_A1 =
+    '(ok ((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position "a.9" . 0) (edges)))';
+
+  for (const { item, mark, promotesToRoot } of MARKS) {
     it(`reads ${item} as the ${mark} mark, and says so by name`, async () => {
       core = new FakeCore([
         { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
@@ -165,15 +168,15 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
       ]);
       const roots = await model().roots();
-      assert.strictEqual(roots[0].mark, mark);
+      assert.deepStrictEqual(roots[0].marks, [mark]);
       assert.strictEqual(roots[0].marked, true);
       assert.strictEqual(roots[0].fieldConflict, false, 'a structural mark was reported as a field conflict');
       assert.strictEqual(roots[0].orphan, mark === 'orphan');
-      const tooltip = nodeTooltip(roots[0].id, roots[0].mark, roots[0].fieldConflict);
+      const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict);
       assert.ok(tooltip !== null, 'a marked row has no tooltip');
       assert.match(tooltip as string, new RegExp(mark), `the tooltip does not name ${mark}`);
       for (const other of MARKS.map((m) => m.mark)) {
-        if (other !== mark) {
+        if (other !== mark && !mark.includes(other)) {
           assert.ok(
             !new RegExp(`\\b${other}\\b`).test(tooltip as string),
             `the tooltip for ${mark} also names ${other}`
@@ -181,21 +184,145 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         }
       }
     });
+
+    it(`${promotesToRoot ? 'lets' : 'does not let'} ${mark} put a block in the root listing`, async () => {
+      core = new FakeCore([
+        { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+        { match: ['conflicts'], stdout: `${item}\n`, rc: 0 },
+        { match: ['read', 'a.1'], stdout: `${CHILD_OF_A1}\n`, rc: 0 }
+      ]);
+      if (promotesToRoot) {
+        const roots = await model().roots();
+        assert.deepStrictEqual(roots.map((n) => n.id), ['a.1']);
+      } else {
+        await assert.rejects(
+          () => model().roots(),
+          (e: unknown) => e instanceof TransportError && /a\.9/.test(e.message),
+          `${mark} promoted a block that sits under another one into the root listing`
+        );
+      }
+    });
+
+    it(`carries ${mark} down to a child as well as to a root`, async () => {
+      /*
+       * `nested-document` IS NOT IN THIS ONE, and the reason is a fact
+       * about the core rather than a convenience: its recursive walk
+       * STOPS at a doc-kind child -- project.ss says "a walk stops at
+       * one", because the nested document has its own file and
+       * descending would write its sections twice. So the core never
+       * returns one from `read <parent> --recursive`, and a cell that
+       * scripted a stand-in into returning one was asserting behaviour
+       * of a core that does not exist. See the block below for what
+       * really happens to a nested document.
+       */
+      if (mark === 'nested-document') {
+        return;
+      }
+      const subtree = [
+        '((id . "p.1") (deleted . #f) (fields (title . "Parent")) (position root . 0) (edges))',
+        '((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position "p.1" . 0) (edges))'
+      ].join('\n');
+      core = new FakeCore([
+        { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
+        { match: ['conflicts'], stdout: `${item}\n`, rc: 0 }
+      ]);
+      const children = (await model().childrenOf('p.1')).nodes;
+      assert.deepStrictEqual(children.map((n) => n.marks), [[mark]]);
+    });
   }
+
+  /*
+   * WHAT REALLY HAPPENS TO A NESTED DOCUMENT, pinned as the current
+   * behaviour and not as the desired one. The core reports it under
+   * `conflicts` and omits it from the parent's recursive walk, and
+   * `nested-document` is not a mark that puts a block in the root
+   * listing -- so it is in neither place the tree draws from, and the
+   * only sign of it is the conflict count in the status bar. Whether
+   * that is right depends on what a nested document MEANS, which the
+   * core's own README says is still open.
+   */
+  describe('a nested document is reported but not shown', () => {
+    it('is absent from its parent\'s children, because the core does not return it', async () => {
+      const subtree = [
+        '((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges))'
+      ].join('\n');
+      core = new FakeCore([
+        { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
+        { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 }
+      ]);
+      const listing = await model().childrenOf('p.1');
+      assert.deepStrictEqual(listing.nodes, [], 'the walk returned a block the core stops at');
+      assert.strictEqual(listing.marksKnown, true);
+    });
+
+    it('is not promoted into the root listing by its mark either', async () => {
+      core = new FakeCore([
+        { match: ['outline'], stdout: '- n.1  Inner\n', rc: 0 },
+        { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 },
+        {
+          match: ['read', 'n.1'],
+          stdout:
+            '(ok ((id . "n.1") (deleted . #f) (fields (title . "Inner") (kind . doc)) (position "p.1" . 0) (edges)))\n',
+          rc: 0
+        }
+      ]);
+      await assert.rejects(
+        () => model().roots(),
+        (e: unknown) => e instanceof TransportError && /p\.1/.test(e.message)
+      );
+    });
+  });
 
   it('has a cell for every mark the model can produce', () => {
     /*
-     * The list this checks against is written out by hand on purpose: a
-     * variant added to StructuralMark and not to MARKS has no cell, and
-     * this is what shouts about it. It cannot be derived from the type,
-     * which is erased before it runs.
+     * `STRUCTURAL_MARKS` is the value the type is derived from, so a
+     * variant that is not in it does not exist and a variant added to it
+     * and not to MARKS fails here. Two hand-written lists could not do
+     * this: adding to the union changed neither of them.
      */
-    const known: StructuralMark[] = ['cycle', 'unplaced', 'orphan', 'nested-document'];
     assert.deepStrictEqual(
       MARKS.map((m) => m.mark).sort(),
-      known.slice().sort(),
+      Object.keys(STRUCTURAL_MARKS).sort(),
       'a structural mark has no cell of its own'
     );
+    assert.deepStrictEqual(
+      MARKS.filter((m) => m.promotesToRoot).map((m) => m.mark).sort(),
+      ROOT_MARKS.slice().sort(),
+      'the table and the code disagree about which marks belong at the root'
+    );
+  });
+
+  it('keeps every mark a block carries, not the last one read', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['conflicts'], stdout: '(orphan "a.1")\n(nested-document "a.1")\n', rc: 0 },
+      { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
+    ]);
+    const roots = await model().roots();
+    assert.deepStrictEqual((roots[0].marks as string[]).slice().sort(), ['nested-document', 'orphan']);
+    assert.strictEqual(roots[0].orphan, true, 'a later mark overwrote the fact that it is an orphan');
+    const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict) as string;
+    assert.match(tooltip, /orphan/);
+    assert.match(tooltip, /nested-document/);
+  });
+
+  it('says both when a block is marked and also has a field with candidates', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['conflicts'], stdout: '(orphan "a.1")\n', rc: 0 },
+      {
+        match: ['read', 'a.1'],
+        stdout:
+          '(ok ((id . "a.1") (deleted . #f) (fields (title conflict ("One" "Two"))) (position root . 0) (edges)))\n',
+        rc: 0
+      }
+    ]);
+    const roots = await model().roots();
+    assert.deepStrictEqual(roots[0].marks, ['orphan']);
+    assert.strictEqual(roots[0].fieldConflict, true);
+    const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict) as string;
+    assert.match(tooltip, /orphan/, 'the structural mark went missing');
+    assert.match(tooltip, /candidate value/, 'the field conflict went missing');
   });
 
   it('does not mark a root whose title merely ends in the word', async () => {
@@ -211,9 +338,9 @@ describe('O2 a node is expanded when it is opened and not before', () => {
     ]);
     const roots = await model().roots();
     assert.strictEqual(roots[0].title, 'Design notes  conflict', 'the title was truncated');
-    assert.strictEqual(roots[0].mark, null, 'a sound block was drawn as being in a conflict');
+    assert.deepStrictEqual(roots[0].marks, [], 'a sound block was drawn as being in a conflict');
     assert.strictEqual(roots[0].marked, false);
-    assert.strictEqual(nodeTooltip(roots[0].id, roots[0].mark, roots[0].fieldConflict), null);
+    assert.strictEqual(nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict), null);
   });
 
   it('makes no mark out of an item that names no block, or a head it does not know', async () => {
@@ -228,7 +355,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
     const roots = await model().roots();
-    assert.strictEqual(roots[0].mark, null, 'a mark was invented from an item this client cannot read');
+    assert.deepStrictEqual(roots[0].marks, [], 'a mark was invented from an item this client cannot read');
     assert.strictEqual(roots[0].marked, false);
   });
 
@@ -244,10 +371,10 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       }
     ]);
     const roots = await model().roots();
-    assert.strictEqual(roots[0].mark, null);
+    assert.deepStrictEqual(roots[0].marks, []);
     assert.strictEqual(roots[0].fieldConflict, true);
     assert.strictEqual(roots[0].marked, true);
-    const tooltip = nodeTooltip(roots[0].id, roots[0].mark, roots[0].fieldConflict);
+    const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict);
     assert.match(tooltip as string, /candidate value/);
     assert.ok(!/cycle|unplaced|orphan|nested-document/.test(tooltip as string));
   });
@@ -265,7 +392,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['conflicts'], stdout: '', rc: 0 }
     ]);
     const store = model();
-    const children = await store.childrenOf('a.1');
+    const children = (await store.childrenOf('a.1')).nodes;
     assert.deepStrictEqual(children.map((n) => n.id), ['a.2', 'a.3']);
     const requests = core.requests();
     assert.strictEqual(requests.length, 2, 'an expansion cost more than the subtree and the conflicts');
@@ -280,7 +407,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['read', 'a.1', '--recursive'], stdout: `${SUBTREE}\n`, rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 }
     ]);
-    const children = await model().childrenOf('a.1');
+    const children = (await model().childrenOf('a.1')).nodes;
     assert.deepStrictEqual(children.map((n) => n.id), ['a.2', 'a.3']);
     assert.deepStrictEqual(children.map((n) => n.title), ['Two', 'Three']);
   });
@@ -290,7 +417,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['read', 'root', '--recursive'], stdout: `${SUBTREE}\n`, rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 }
     ]);
-    const children = await model().childrenOf('root');
+    const children = (await model().childrenOf('root')).nodes;
     assert.deepStrictEqual(children, []);
   });
 });
@@ -359,7 +486,62 @@ describe('a row in the listing must be a block that is actually at the top level
     ]);
     const roots = await model().roots();
     assert.deepStrictEqual(roots.map((n) => n.id), ['a.2']);
-    assert.strictEqual(roots[0].mark, 'orphan');
+    assert.deepStrictEqual(roots[0].marks, ['orphan']);
+  });
+
+  /*
+   * A block with more than one position candidate is not at the top
+   * level, and saying it is would put a block whose place nobody knows
+   * among the roots. It is listed only if the store has marked it.
+   */
+  it('refuses a row whose block cannot say where it sits', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.2  Moved twice\n', rc: 0 },
+      { match: ['conflicts'], stdout: '', rc: 0 },
+      {
+        match: ['read', 'a.2'],
+        stdout:
+          '(ok ((id . "a.2") (deleted . #f) (fields (title . "Moved twice")) (position conflict 2) (edges)))\n',
+        rc: 0
+      }
+    ]);
+    await assert.rejects(
+      () => model().roots(),
+      (e: unknown) => e instanceof TransportError && /more than one candidate/.test(e.message)
+    );
+  });
+
+  it('lists a block with an unsettled position when the store has marked it', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.2  Moved twice\n', rc: 0 },
+      { match: ['conflicts'], stdout: '(conflict "a.2" unplaced)\n', rc: 0 },
+      {
+        match: ['read', 'a.2'],
+        stdout:
+          '(ok ((id . "a.2") (deleted . #f) (fields (title . "Moved twice")) (position conflict 2) (edges)))\n',
+        rc: 0
+      }
+    ]);
+    const roots = await model().roots();
+    assert.deepStrictEqual(roots.map((n) => n.id), ['a.2']);
+    assert.deepStrictEqual(roots[0].marks, ['unplaced']);
+  });
+
+  it('does not offer a block with an unsettled position as anybody\'s child', async () => {
+    const subtree = [
+      '((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position root . 0) (edges))',
+      '((id . "a.2") (deleted . #f) (fields (title . "Moved")) (position conflict 2) (edges))'
+    ].join('\n');
+    core = new FakeCore([
+      { match: ['read', 'a.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
+      { match: ['conflicts'], stdout: '(conflict "a.2" unplaced)\n', rc: 0 }
+    ]);
+    const children = (await model().childrenOf('a.1')).nodes;
+    assert.deepStrictEqual(
+      children.map((n) => n.id),
+      [],
+      'a block whose place is unsettled was drawn under a parent it may not have'
+    );
   });
 
   it('marks a child the store reports as a nested document', async () => {
@@ -371,11 +553,11 @@ describe('a row in the listing must be a block that is actually at the top level
       { match: ['read', 'a.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
       { match: ['conflicts'], stdout: '(nested-document "a.2")\n', rc: 0 }
     ]);
-    const children = await model().childrenOf('a.1');
+    const children = (await model().childrenOf('a.1')).nodes;
     assert.strictEqual(children.length, 1);
-    assert.strictEqual(
-      children[0].mark,
-      'nested-document',
+    assert.deepStrictEqual(
+      children[0].marks,
+      ['nested-document'],
       'a structural conflict that sits under another block reached the tree unmarked'
     );
   });
@@ -392,5 +574,147 @@ describe('a row in the listing must be a block that is actually at the top level
       'a refused question was read as a store with nothing wrong with it'
     );
     await assert.rejects(() => model().conflictCount(), TransportError);
+  });
+});
+
+describe('marks that could not be asked for are shown as unknown, not as none', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  function model(): StoreModel {
+    return new StoreModel(new Client(new CliTransport(core.config(), core.env())));
+  }
+
+  const SUBTREE_OF_P1 = [
+    '((id . "p.1") (deleted . #f) (fields (title . "Parent")) (position root . 0) (edges))',
+    '((id . "a.1") (deleted . #f) (fields (title . "One")) (position "p.1" . 0) (edges))',
+    '((id . "a.2") (deleted . #f) (fields (title . "Two")) (position "p.1" . 1) (edges))'
+  ].join('\n');
+
+  /*
+   * A REFUSED READ AND A BLOCK WITH NO CHILDREN ARE ONE COLLAPSE APART.
+   * The answer to a failed `read --recursive` is an error datum, and an
+   * error datum is not a block -- so the filter skips it and the
+   * expansion comes back empty, which is exactly what a leaf looks like.
+   */
+  it('refuses rather than reporting an empty subtree when the read was refused', async () => {
+    core = new FakeCore([
+      { match: ['read', 'p.1', '--recursive'], stdout: '(error unknown-id "p.1" (nearest ()))\n', rc: 1 },
+      { match: ['conflicts'], stdout: '', rc: 0 }
+    ]);
+    await assert.rejects(
+      () => model().childrenOf('p.1'),
+      (e: unknown) => e instanceof TransportError && /p\.1/.test(e.message),
+      'a store that would not read the subtree was reported as a block with no children'
+    );
+  });
+
+  it('says the marks were not asked for even when there are no children at all', async () => {
+    /*
+     * A LEAF EXPANSION RETURNS AN EMPTY LIST EITHER WAY. If the fact
+     * travelled with the nodes there would be none to carry it, and the
+     * status bar beside the tree would go on reporting a count from the
+     * question that had just failed.
+     */
+    const leaf = '((id . "a.1") (deleted . #f) (fields (title . "Leaf")) (position root . 0) (edges))';
+    core = new FakeCore([
+      { match: ['read', 'a.1', '--recursive'], stdout: `${leaf}\n`, rc: 0 },
+      { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 }
+    ]);
+    const listing = await model().childrenOf('a.1');
+    assert.deepStrictEqual(listing.nodes, []);
+    assert.strictEqual(
+      listing.marksKnown,
+      false,
+      'an expansion with no children lost the fact that the marks were refused'
+    );
+  });
+
+  it('says the marks were asked for when a leaf expansion succeeds', () => {
+    return (async () => {
+      const leaf = '((id . "a.1") (deleted . #f) (fields (title . "Leaf")) (position root . 0) (edges))';
+      core = new FakeCore([
+        { match: ['read', 'a.1', '--recursive'], stdout: `${leaf}\n`, rc: 0 },
+        { match: ['conflicts'], stdout: '', rc: 0 }
+      ]);
+      const listing = await model().childrenOf('a.1');
+      assert.deepStrictEqual(listing.nodes, []);
+      assert.strictEqual(listing.marksKnown, true);
+    })();
+  });
+
+  it('still shows the children when the conflicts request is refused', async () => {
+    core = new FakeCore([
+      { match: ['read', 'p.1', '--recursive'], stdout: `${SUBTREE_OF_P1}\n`, rc: 0 },
+      { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 }
+    ]);
+    const children = (await model().childrenOf('p.1')).nodes;
+    assert.deepStrictEqual(
+      children.map((n) => n.id),
+      ['a.1', 'a.2'],
+      'a subtree that arrived was thrown away because a second question was refused'
+    );
+    for (const child of children) {
+      assert.strictEqual(child.marks, null, 'an unknown mark was drawn as no mark');
+      assert.strictEqual(child.marked, true, 'a node whose marks are unknown was drawn as plain');
+      assert.strictEqual(child.orphan, false);
+      const tooltip = nodeTooltip(child.id, child.marks, child.fieldConflict);
+      assert.match(tooltip as string, /structural marks unavailable/);
+      assert.match(tooltip as string, /refused/);
+    }
+  });
+
+  /*
+   * The passing twin: when the question IS answered, nothing is unknown.
+   * Without this, a model that answered `null` for everything would
+   * satisfy the cell above.
+   */
+  it('leaves nothing unknown when the conflicts request is answered', async () => {
+    core = new FakeCore([
+      { match: ['read', 'p.1', '--recursive'], stdout: `${SUBTREE_OF_P1}\n`, rc: 0 },
+      { match: ['conflicts'], stdout: '(orphan "a.2")\n', rc: 0 }
+    ]);
+    const children = (await model().childrenOf('p.1')).nodes;
+    assert.deepStrictEqual(children.map((n) => n.marks), [[], ['orphan']]);
+    for (const child of children) {
+      assert.notStrictEqual(child.marks, null, 'a mark was reported as unknown although it was answered');
+    }
+    assert.strictEqual(nodeTooltip('a.1', children[0].marks, children[0].fieldConflict), null);
+  });
+
+  it('keeps a field conflict visible even when the marks are unknown', async () => {
+    const subtree = [
+      '((id . "p.1") (deleted . #f) (fields (title . "Parent")) (position root . 0) (edges))',
+      '((id . "a.1") (deleted . #f) (fields (title conflict ("One" "Two"))) (position "p.1" . 0) (edges))'
+    ].join('\n');
+    core = new FakeCore([
+      { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
+      { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 }
+    ]);
+    const children = (await model().childrenOf('p.1')).nodes;
+    const tooltip = nodeTooltip(children[0].id, children[0].marks, children[0].fieldConflict) as string;
+    assert.match(tooltip, /structural marks unavailable/);
+    assert.match(tooltip, /candidate value/, 'the field conflict was lost behind the unknown marks');
+  });
+
+  /*
+   * ROOTS ARE THE OTHER CASE ON PURPOSE. There a mark is what lets a
+   * block be in the listing at all, so a refused `conflicts` leaves no
+   * way to tell a real orphan from a row a title invented.
+   */
+  it('still refuses the root listing when the marks cannot be asked for', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 },
+      {
+        match: ['read', 'a.1'],
+        stdout: '(ok ((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position root . 0) (edges)))\n',
+        rc: 0
+      }
+    ]);
+    await assert.rejects(() => model().roots(), TransportError);
   });
 });

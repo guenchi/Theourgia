@@ -38,7 +38,15 @@ function scratch(): string {
 }
 
 function document(id: string, text: string): BlockDocument {
-  return { id, store: '/stores/one', headingSrc: '## Two\n', src: text, text: `## Two\n${text}` };
+  return {
+    id,
+    store: '/stores/one',
+    prefix: '## Two\n',
+    front: '',
+    headingSrc: '## Two\n',
+    src: text,
+    text: `## Two\n${text}`
+  };
 }
 
 describe('a file that is clean may still hold work the store has not got', () => {

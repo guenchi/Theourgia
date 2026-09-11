@@ -52,6 +52,20 @@ import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
 import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
 
+/*
+ * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
+ * sentence. Empty when it said nothing, so the sentence reads normally
+ * in the ordinary case.
+ */
+export function aside(stderr: string): string {
+  const text = stderr.trim();
+  if (text.length === 0) {
+    return '';
+  }
+  const first = text.split('\n').slice(0, 3).join(' / ');
+  return `. It said: ${first.length > 300 ? `${first.slice(0, 300)}...` : first}`;
+}
+
 export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked';
 
 export interface SaveOutcome {
@@ -86,6 +100,23 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
 }
 
 function describeRefusal(datum: Datum): string {
+  /*
+   * A USAGE LINE IS THE CORE SAYING IT DID NOT UNDERSTAND THE REQUEST,
+   * and it is the answer a core that predates request tracking gives to
+   * a tracked write: `(usage (set <id> <field> <value>))`, with no
+   * mention of --req or --cursor. Rendering it through the branch below
+   * produced "the core refused the write: refused", which says nothing
+   * at all -- and the thing it was failing to say is that the core is
+   * the wrong version, which takes a while to work out by hand.
+   */
+  if (headName(datum) === 'usage') {
+    return (
+      'the core rejected this request with its usage line. Check the version at ' +
+      'theourgia.corePath and the arguments sent: a core without request tracking answers ' +
+      'this way to a save carrying --req and --cursor, and so does a core that got an ' +
+      'argument it did not expect'
+    );
+  }
   if (!Array.isArray(datum) || datum.length < 2) {
     return 'the core refused the write';
   }
@@ -279,12 +310,13 @@ export class Saver {
       answer = await this.client.request('set', args);
     } catch (e) {
       if (e instanceof TransportError) {
-        this.outbox.markPending(entry.req, e.message);
+        const why = aside(e.detail);
+        this.outbox.markPending(entry.req, `${e.message}${why}`);
         return {
           status: 'pending',
           req: entry.req,
           id: entry.id,
-          message: `${e.message}; the save is kept and can be retried`,
+          message: `${e.message}; the save is kept and can be retried${why}`,
           answer: null
         };
       }
@@ -342,12 +374,22 @@ export class Saver {
     }
 
     if (datum === null) {
-      this.outbox.markPending(entry.req, `the core exited ${answer.rc} without saying why`);
+      /*
+       * THE OTHER STREAM IS THE ONLY EVIDENCE THERE IS. A core that
+       * exits without printing an answer has usually said why on stderr,
+       * and a message that drops it leaves whoever reads the report with
+       * an exit code and nothing to act on. This happened once in a full
+       * run and could not be reproduced; the reason it could not be
+       * looked into afterwards is that this sentence did not carry it.
+       */
+      const why = aside(answer.stderr);
+      this.outbox.markPending(entry.req, `the core exited ${answer.rc} without saying why${why}`);
       return {
         status: 'pending',
         req: entry.req,
         id: entry.id,
-        message: `the core exited ${answer.rc} without an answer; the save is kept and can be retried`,
+        message:
+          `the core exited ${answer.rc} without an answer; the save is kept and can be retried${why}`,
         answer: null
       };
     }
