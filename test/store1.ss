@@ -571,10 +571,19 @@
 ;; what makes one id nearer than another. Every row that reads them has
 ;; been happy with any three ids at all, because the stores those rows
 ;; used had at most three blocks.
-;; THE RULE: longest shared prefix first, ties broken lexicographically,
-;; at most three. Ids share a long prefix exactly when they come from
-;; the same writer, which is what makes the prefix the useful measure
-;; here -- a typo in a block id is almost always a typo in the tail.
+;; THE RULE: an id from the same writer is nearer than any id from
+;; another, however much text they happen to share, and among one
+;; writer's ids the nearest are those whose sequence is closest; ties on
+;; distance go to the lower sequence. Only when no id shares the writer
+;; does the longest shared prefix decide, then lexicographic order. At
+;; most three either way.
+;;
+;; The rule used to be shared prefix alone, which APPROXIMATED "the same
+;; writer" -- and then answered `.1 .2 .3` for a request for `.7`,
+;; because every candidate shared the whole writer and the tie fell to
+;; lexicographic order, handing back the three furthest sequences. A
+;; typo in a block id is almost always a typo in the tail, so the tail
+;; is what the rule now measures.
 (define dn (test-dir "store1nearest"))
 (fresh! dn)
 (let loop ((n 0))
@@ -585,14 +594,15 @@
 (want "CONTROL: there are more blocks than a refusal will name"
       (length (state-datum (state-of dn)))
       6)
-;; A NEAR MISS ON THE TAIL: the ids are <writer>.1 .. <writer>.6, and a
-;; request for <writer>.7 shares the whole writer with all of them. The
-;; tie is then lexicographic, so the first three by id come back.
-(want "an id differing only in its tail is answered with the lowest three"
+;; A NEAR MISS ON THE TAIL: the ids are <writer>.1 .. <writer>.6 and the
+;; request is <writer>.7, so every candidate shares the whole writer and
+;; the sequences decide. Distances from 7 are 1, 2, 3 for .6, .5, .4 --
+;; computed from the rule, not read back from the answer.
+(want "an id differing only in its tail is answered with the closest three"
       (let ((a (one dn (list 'set (string-append W ".7") 'title "x"))))
         (list (car a) (cadr a) (cadr (cadddr a))))
       (list 'error 'unknown-id
-            (list (string-append W ".1") (string-append W ".2") (string-append W ".3"))))
+            (list (string-append W ".6") (string-append W ".5") (string-append W ".4"))))
 ;; AND AN ID SHARING NOTHING STILL GETS AN ANSWER rather than an empty
 ;; list: the caller asked for help, and "no id is close" is less useful
 ;; than "here is what this store holds".
@@ -625,10 +635,14 @@
       (list (string<? (string-append V ".1") (string-append W ".1"))
             (length (state-datum (state-of dn2))))
       (list #t 6))
+;; The local writer holds .1 .2 .3 and the request is .9, so the
+;; distances are 8, 7, 6 and the order is .3 .2 .1. What this row is for
+;; is unchanged: every suggestion belongs to the local writer, and none
+;; to the mirror whose name sorts first.
 (want "a typo in a local id is answered with local ids, not the alphabetically first"
       (let ((a (one dn2 (list 'set (string-append W ".9") 'title "x"))))
         (cadr (cadddr a)))
-      (list (string-append W ".1") (string-append W ".2") (string-append W ".3")))
+      (list (string-append W ".3") (string-append W ".2") (string-append W ".1")))
 
 (printf "\n~a failures\n" bad)
 (printf "store1 complete\n")

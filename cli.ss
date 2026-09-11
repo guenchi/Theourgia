@@ -383,6 +383,39 @@
                            (ok! (cons 'ok (list a)))
                            (fail! (cons 'error
                                         (if (eq? (car a) 'error) (cdr a) (list a))))))))))))
+        ;; WHAT REFERS TO THIS BLOCK, from link records and from the
+        ;; text, each line saying which. A block with nothing pointing at
+        ;; it prints nothing and exits zero: that is an answer, not a
+        ;; failure.
+        ((string=? verb "refs")
+         (unless (= 1 (length args)) (usage '(refs <id>)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((a (store-refs store (car args))))
+                      (if (eq? (car a) 'ok)
+                          (begin
+                            (for-each (lambda (r)
+                                        (say (list 'ref (list 'from (car r))
+                                                   (list 'rel (cadr r))
+                                                   (list 'via (caddr r)))))
+                                      (cadr a))
+                            (exit 0))
+                          (fail! a))))))
+        ;; A QUERY IS A STRING AND NOTHING ELSE. It is matched, never
+        ;; parsed: a token that looks like a number is text like any
+        ;; other, so nothing here can be asked to build one.
+        ;;
+        ;; NO HITS IS AN ANSWER. Empty output with a zero code says the
+        ;; store was read and nothing matched; an error would say the
+        ;; question could not be asked.
+        ((string=? verb "search")
+         (unless (= 1 (length args)) (usage '(search <query>)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (for-each (lambda (hit)
+                                (say (cons 'hit hit)))
+                              (store-search store (car args)))
+                    (exit 0))))
         ((string=? verb "batch")
          (require-store! store) (guarded (lambda () (parse-batch store actor args))))
         ((string=? verb "outline")

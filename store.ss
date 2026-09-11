@@ -18,9 +18,10 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
-          store-check store-adopt!)
+          store-check store-adopt! store-search store-refs)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs io ports) (rnrs files)
+          (only (theourgia md) md-refs)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
           (only (theourgia log)
                 log-open load-deliver! load-commit!
@@ -133,6 +134,38 @@
   ;; renders the list; neither needs the library to behave differently
   ;; depending on how many intents it was given.
 
+  ;; THE NEAREST IDS TO ONE THAT IS NOT HERE. A block id is
+  ;; <writer>.<sequence>, and a mistyped id is almost always mistyped in
+  ;; the tail -- so an id from the same writer is nearer than any id from
+  ;; another writer, however much text they happen to share, and among
+  ;; the same writer's ids the nearest are those whose sequence is
+  ;; closest. An earlier version ranked by shared prefix alone, which
+  ;; approximated "the same writer" and then answered `.1 .2 .3` for a
+  ;; request for `.7`: every candidate shared the whole writer, so the
+  ;; tie fell to lexicographic order and the three furthest sequences
+  ;; came back.
+  ;;
+  ;; Ties on distance go to the lower sequence, so the answer is total
+  ;; and two runs of the same store cannot differ.
+  ;; THE TAIL IS SCANNED BEFORE IT IS CONVERTED, so only ASCII digits
+  ;; ever reach `string->number` and the numeric syntax -- `#e` and an
+  ;; exponent above all -- cannot enter through an id. The work is then
+  ;; proportional to the text, which is the property the shape test buys.
+  (define (split-id id)
+    (let loop ((i (- (string-length id) 1)))
+      (cond
+        ((< i 0) (values id #f))
+        ((char=? (string-ref id i) #\.)
+         (let ((tail (substring id (+ i 1) (string-length id))))
+           (values (substring id 0 i)
+                   (let scan ((k 0))
+                     (cond
+                       ((= k (string-length tail))
+                        (and (> (string-length tail) 0) (string->number tail 10)))
+                       ((char<=? #\0 (string-ref tail k) #\9) (scan (+ k 1)))
+                       (else #f))))))
+        (else (loop (- i 1))))))
+
   (define (nearest-ids state id)
     (define (shared a b)
       (let loop ((i 0))
@@ -140,17 +173,218 @@
                 (not (char=? (string-ref a i) (string-ref b i))))
             i
             (loop (+ i 1)))))
-    (let ((ids (map cadr (state-datum state))))
-      (let loop ((xs (list-sort (lambda (a b)
-                                  (let ((sa (shared id a)) (sb (shared id b)))
-                                    (if (= sa sb) (string<? a b) (> sa sb))))
-                                ids))
-                 (n 0) (out '()))
-        (if (or (null? xs) (= n 3))
-            (reverse out)
-            (loop (cdr xs) (+ n 1) (cons (car xs) out))))))
+    (define (take3 xs)
+      (let loop ((xs xs) (n 0) (out '()))
+        (if (or (null? xs) (= n 3)) (reverse out) (loop (cdr xs) (+ n 1) (cons (car xs) out)))))
+    (let-values (((writer seq) (split-id id)))
+      (let* ((ids (map cadr (state-datum state)))
+             (same (if (and writer seq)
+                       (filter (lambda (other)
+                                 (let-values (((w s) (split-id other)))
+                                   (and w s (string=? w writer))))
+                               ids)
+                       '())))
+        (if (not (null? same))
+            (take3 (list-sort
+                     (lambda (a b)
+                       (let-values (((wa sa) (split-id a)) ((wb sb) (split-id b)))
+                         (let ((da (abs (- sa seq))) (db (abs (- sb seq))))
+                           (if (= da db) (< sa sb) (< da db)))))
+                     same))
+            (take3 (list-sort
+                     (lambda (a b)
+                       (let ((sa (shared id a)) (sb (shared id b)))
+                         (if (= sa sb) (string<? a b) (> sa sb))))
+                     ids))))))
+
+
+  ;; ---- search ---------------------------------------------------------------
+
+  ;; SEARCH IS A READ, AND ITS RULES LIVE HERE. What "matches" means is
+  ;; not the command's business: a second caller must not be able to come
+  ;; to a different answer about the same store.
+  ;;
+  ;; A QUERY IS TOKENS AND EVERY TOKEN MUST HIT. Tokens are split on
+  ;; whitespace; a hit is a case-insensitive substring, so `cat' hits
+  ;; `concatenate'. A repeated hit does not add score -- a field is
+  ;; either hit or it is not -- so title is worth 2, src is worth 1, and
+  ;; a block hit in both scores 3.
+  ;;
+  ;; WITH MORE THAN ONE TOKEN the fields still score as a whole: the
+  ;; block matches when every token hits somewhere in it, and the score
+  ;; says which fields were hit at all. For a single token, the case the
+  ;; rule was fixed for, the two readings coincide.
+  ;;
+  ;; THE ORDER IS TOTAL -- score descending, then id ascending -- so
+  ;; nothing in the output can depend on the order a hash table or an
+  ;; alist happens to hand back. Two runs over one store agree.
+  ;;
+  ;; A QUERY IS ONLY EVER A STRING. No part of it reaches a numeric
+  ;; parser, so a token like `#e1e99999999' is text to match, not a
+  ;; number to build.
+  (define (whitespace? c)
+    (or (char=? c #\space) (char=? c #\tab) (char=? c #\newline)
+        (char=? c #\return) (char=? c #\page)))
+
+  (define (tokens-of query)
+    (let loop ((i 0) (start #f) (out (quote ())))
+      (cond
+        ((= i (string-length query))
+         (reverse (if start (cons (substring query start i) out) out)))
+        ((whitespace? (string-ref query i))
+         (loop (+ i 1) #f (if start (cons (substring query start i) out) out)))
+        (else (loop (+ i 1) (or start i) out)))))
+
+  (define (contains-ci? text token)
+    (let* ((t (string-downcase text))
+           (q (string-downcase token))
+           (n (string-length t))
+           (m (string-length q)))
+      (and (<= m n)
+           (let loop ((i 0))
+             (cond
+               ((> (+ i m) n) #f)
+               ((string=? (substring t i (+ i m)) q) #t)
+               (else (loop (+ i 1))))))))
+
+  ;; ONLY TEXT IS SEARCHED. A field whose value is not a string is not
+  ;; text, and a field in conflict offers every candidate that is.
+  (define (field-strings block name)
+    (let* ((fields (cdr (assq (quote fields) block)))
+           (e (assq name fields)))
+      (cond
+        ((not e) (quote ()))
+        ((string? (cdr e)) (list (cdr e)))
+        ((and (pair? (cdr e)) (eq? (car (cdr e)) (quote conflict)))
+         (filter string? (map car (cadr (cdr e)))))
+        (else (quote ())))))
+
+  (define (any-hit? strings token)
+    (exists (lambda (text) (contains-ci? text token)) strings))
+
+  (define (lines-of-text text)
+    (let loop ((i 0) (start 0) (out (quote ())))
+      (cond
+        ((= i (string-length text)) (reverse (cons (substring text start i) out)))
+        ((char=? (string-ref text i) #\newline)
+         (loop (+ i 1) (+ i 1) (cons (substring text start i) out)))
+        (else (loop (+ i 1) start out)))))
+
+  (define snippet-limit 80)
+
+  (define (collapse-whitespace text)
+    (let loop ((i 0) (gap #f) (out (quote ())))
+      (cond
+        ((= i (string-length text))
+         (list->string (reverse (if (and (pair? out) (char=? (car out) #\space))
+                                    (cdr out)
+                                    out))))
+        ((whitespace? (string-ref text i))
+         (loop (+ i 1) #t out))
+        (else
+         (loop (+ i 1) #f
+               (cons (string-ref text i)
+                     (if (and gap (pair? out)) (cons #\space out) out)))))))
+
+  (define (clip text)
+    (if (> (string-length text) snippet-limit)
+        (substring text 0 snippet-limit)
+        text))
+
+  ;; THE SNIPPET IS THE FIRST LINE THAT HITS, title before src, with its
+  ;; whitespace collapsed and cut to the limit.
+  (define (snippet-for block tokens)
+    (let* ((titles (field-strings block (quote title)))
+           (srcs (field-strings block (quote src)))
+           (lines (append titles
+                          (apply append (map lines-of-text srcs)))))
+      (let loop ((ls lines))
+        (cond
+          ((null? ls) "")
+          ((exists (lambda (tk) (contains-ci? (car ls) tk)) tokens)
+           (clip (collapse-whitespace (car ls))))
+          (else (loop (cdr ls)))))))
+
+  (define (store-search store query)
+    (let* ((state (open-and-reduce store))
+           (tokens (tokens-of query)))
+      (if (null? tokens)
+          (quote ())
+          (let ((hits
+                  (let loop ((ds (state-datum state)) (out (quote ())))
+                    (if (null? ds)
+                        out
+                        (let* ((id (cadr (car ds)))
+                               (block (state-read state id))
+                               (titles (field-strings block (quote title)))
+                               (srcs (field-strings block (quote src)))
+                               (in-title (exists (lambda (tk) (any-hit? titles tk)) tokens))
+                               (in-src (exists (lambda (tk) (any-hit? srcs tk)) tokens))
+                               (every-token
+                                 (for-all (lambda (tk)
+                                            (or (any-hit? titles tk) (any-hit? srcs tk)))
+                                          tokens)))
+                          (loop (cdr ds)
+                                (if every-token
+                                    (cons (list id
+                                                (+ (if in-title 2 0) (if in-src 1 0))
+                                                (snippet-for block tokens))
+                                          out)
+                                    out)))))))
+            (list-sort (lambda (a b)
+                         (if (= (cadr a) (cadr b))
+                             (string<? (car a) (car b))
+                             (> (cadr a) (cadr b))))
+                       hits)))))
 
   (define (known? state id) (and (state-read state id) #t))
+
+  ;; ---- refs -----------------------------------------------------------------
+
+  ;; WHAT REFERS TO A BLOCK, from both places a reference can live.
+  ;;
+  ;; A LINK RECORD IS AN EDGE SOMEONE WROTE, and `unlink` removes it. A
+  ;; REFERENCE IN THE TEXT IS A SENTENCE, and nothing removes it but
+  ;; editing the sentence -- so the two are reported with the source they
+  ;; came from rather than merged. Deriving the text ones at read time is
+  ;; deliberate: materialising them as link records at import would give
+  ;; one fact two suppliers, and `unlink` could then delete the edge
+  ;; while the sentence still said it. You can unlink an edge; you cannot
+  ;; unlink a sentence.
+  ;;
+  ;; OUT-EDGES ARE NOT REFERENCES TO THIS BLOCK. state-refs filters on
+  ;; the far end for exactly that reason.
+  (define (md-referrers state id)
+    (let loop ((ds (state-datum state)) (out (quote ())))
+      (if (null? ds)
+          out
+          (let* ((from (cadr (car ds)))
+                 (block (state-read state from))
+                 (srcs (field-strings block (quote src)))
+                 (keys (apply append (map (lambda (text) (map caddr (md-refs text))) srcs))))
+            (loop (cdr ds)
+                  (if (and (not (equal? from id)) (member id keys))
+                      (cons from out)
+                      out))))))
+
+  (define (store-refs store id)
+    (let ((state (open-and-reduce store)))
+      (if (not (known? state id))
+          (list (quote error) (quote unknown-id) id
+                (list (quote nearest) (nearest-ids state id)))
+          (let ((linked (map (lambda (p) (list (car p) (cdr p) (quote link)))
+                             (state-refs state id)))
+                (derived (map (lambda (from) (list from (quote ref) (quote md)))
+                              (md-referrers state id))))
+            (cons (quote ok)
+                  (list (list-sort
+                          (lambda (a b)
+                            (if (string=? (car a) (car b))
+                                (string<? (symbol->string (cadr a)) (symbol->string (cadr b)))
+                                (string<? (car a) (car b))))
+                          (append linked derived))))))))
+
+
 
   (define (deleted? state id)
     (let ((b (state-read state id)))

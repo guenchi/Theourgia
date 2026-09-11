@@ -348,5 +348,206 @@
       (publish-then-adopt "fsync-fail@deliver-barrier:file=published.sexp")
       '(raised 0))
 
+(printf "\n== Q7: a kept candidate is checked by its content, not by its name ==\n")
+;; The kept file is named by the hash of the bytes it should hold, so an
+;; interrupted keep leaves exactly the right name over the wrong bytes.
+;; Answering `kept' for that points the sender at evidence that is not
+;; its candidate.
+(define (kept-path segment sha)
+  (string-append d "/writers/" M "/incoming/" (segment-file-name segment) "." sha ".seg"))
+(define (gap-keep!)
+  (build!)
+  (child-says #f 1 (recs 1 3))
+  (let* ((b (recs 20 21)) (sha (sha-of b)))
+    (child-says #f 5 b)
+    (list b sha (kept-path 5 sha))))
+(want "CONTROL: a refused candidate is kept whole"
+      (let* ((k (gap-keep!)) (b (car k)) (path (caddr k)))
+        (list (file-exists? path) (equal? (slurp path) b)))
+      (list #t #t))
+(want "a kept file truncated under the right name is made whole again"
+      (let* ((k (gap-keep!)) (b (car k)) (sha (cadr k)) (path (caddr k)))
+        (put! path (make-bytevector 3))
+        (child-says #f 5 b)
+        (list (equal? (slurp path) b) (bytevector-length (slurp path))))
+      (list #t (bytevector-length (recs 20 21))))
+
+(printf "\n== Q8: a writer this store has never seen ==\n")
+;; Until the directory is made here, the first thing to touch a new
+;; writer was an open with `create` -- which creates a file and not the
+;; directory above it, so the first publish for a new writer failed on an
+;; open instead of answering.
+(define (publish-to-new-writer fault)
+  (build!)
+  (system (string-append "rm -rf " d "/writers/neverseen"))
+  (put! (string-append scratch "/cand.bin") (recs 1 2))
+  (put! child
+        (string->utf8
+          (string-append
+            "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
+            "(define b (call-with-port (open-file-input-port \"" scratch "/cand.bin\")\n"
+            "            get-bytevector-all))\n"
+            "(printf \"~s\\n\"\n"
+            "  (guard (e (#t (list 'raised)))\n"
+            "    (log-publish! \"" d "\" \"neverseen\" 1 b\n"
+            "                  (bytevector->hex (sha256 b)))))\n")))
+  (system (string-append
+            (if fault (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 ") "")
+            "scheme --script " child " > " child-out " 2> " (string-append scratch "/trace.txt")))
+  (let ((text (let ((b (slurp child-out))) (if b (utf8->string b) ""))))
+    (if (= 0 (string-length text))
+        (list 'child-failed fault)
+        (guard (e (#t (list 'unreadable text)))
+          (read (open-string-input-port text))))))
+(define (trace-has? pattern)
+  (let* ((text (let ((b (slurp (string-append scratch "/trace.txt")))) (if b (utf8->string b) "")))
+         (n (string-length text)) (m (string-length pattern)))
+    (let loop ((i 0))
+      (cond ((> (+ i m) n) #f)
+            ((string=? (substring text i (+ i m)) pattern) #t)
+            (else (loop (+ i 1)))))))
+(want "the first candidate for an unseen writer is published, not an open failure"
+      (publish-to-new-writer #t)
+      '(published 1))
+;; AND THE NAME IS DURABLE. A segment whose directory entry is not
+;; flushed is a segment a crash can strand where no reader looks.
+(want "and the entry for it in writers/ was made durable"
+      (trace-has? (string-append "(trace fsync " d "/writers #f)"))
+      #t)
+
+(printf "\n== Q9: idempotent means listed durably ==\n")
+;; A sync client deletes its own copy on the strength of this word, and
+;; the entry it names may have been written by a process that died before
+;; flushing it.
+(want "CONTROL: with nothing armed the second offer is idempotent"
+      (begin (build!)
+             (child-says #f 1 (recs 1 3))
+             (child-says #f 1 (recs 1 3)))
+      '(idempotent present listed))
+(want "with the manifest's flush failing, idempotent does not get said"
+      (begin (build!)
+             (child-says #f 1 (recs 1 3))
+             (child-says "fsync-fail@publish:file=published.sexp" 1 (recs 1 3)))
+      '(raised present listed))
+
+(printf "\n== Q10: a manifest that cannot be read ==\n")
+;; Unreadable and unparseable are one fact to every caller: this store
+;; cannot say what this writer published. Either way the answer is an
+;; integrity error naming the manifest, and the writer stops before it --
+;; not an implementation's own i/o condition reaching a caller as a
+;; broken tool.
+(define (with-manifest-text text thunk)
+  (build!)
+  (child-says #f 1 (recs 1 3))
+  (put! (string-append d "/writers/" M "/published.sexp") (string->utf8 text))
+  (thunk))
+(want "CONTROL: the manifest as published reads, and the writer has its records"
+      (begin (build!) (child-says #f 1 (recs 1 3))
+             (let* ((ls (log-open d)) (p (load-prefix ls M)))
+               (let ((r (if p (discovery-end-seq p) 'no-prefix)))
+                 (load-abort! ls 'probe) r)))
+      3)
+(want "a truncated manifest is an integrity error, and the writer stops before it"
+      (with-manifest-text "((1 \"aa\" 1"
+        (lambda ()
+          (list (guard (e ((log-error? e) (log-error-kind e)) (#t 'raised))
+                  (read-manifest d M) 'no-error)
+                (let* ((ls (log-open d)) (p (load-prefix ls M)))
+                  (let ((r (if p (discovery-end-seq p) 'no-prefix)))
+                    (load-abort! ls 'probe) r)))))
+      (list 'manifest 0))
+(want "and an entry of the wrong shape is the same integrity error"
+      (with-manifest-text "((1 . \"aa\"))\n"
+        (lambda ()
+          (guard (e ((log-error? e) (log-error-kind e)) (#t 'raised))
+            (read-manifest d M) 'no-error)))
+      'manifest)
+
+(printf "\n== Q11: a metadata file that will not open ==\n")
+;; WHAT A STORE CANNOT READ IT CANNOT PROMISE. On the reading side that
+;; means the writer stops before its records and every other writer is
+;; unaffected -- the open itself succeeds, because one writer's
+;; unreadable metadata is a fact about that writer and not a broken
+;; tool. On the writing side it means the next append is refused. The
+;; reason carries the path and what the operating system said, which is
+;; the one thing an integrity note cannot reconstruct afterwards.
+(define (unreadable-manifest! w)
+  (system (string-append "chmod 000 " d "/writers/" w "/published.sexp")))
+(define (readable-manifest! w)
+  (system (string-append "chmod 644 " d "/writers/" w "/published.sexp")))
+
+(define (open-and-report)
+  (let* ((ls (log-open d))
+         (p (load-prefix ls M))
+         (ends (if p (discovery-end-seq p) 'no-prefix))
+         (kinds (map (lambda (e) (log-error-kind (cdr e))) (load-integrity ls))))
+    (load-abort! ls 'probe)
+    (list ends kinds)))
+
+(want "CONTROL: with the manifest readable the writer has its records"
+      (begin (build!) (child-says #f 1 (recs 1 3)) (open-and-report))
+      (list 3 '()))
+(want "an unreadable manifest stops that writer, and the open still succeeds"
+      (begin (build!) (child-says #f 1 (recs 1 3))
+             (unreadable-manifest! M)
+             (let ((r (open-and-report))) (readable-manifest! M) r))
+      (list 0 '(metadata-unreadable)))
+(want "TWIN: made readable again, the records are delivered once more"
+      (open-and-report)
+      (list 3 '()))
+;; AND THE REASON IS IN THE REPORT, path and operating-system text both:
+;; an operator reading `check` is told which file and why.
+(want "the note names the file and what the system said about it"
+      (begin (build!) (child-says #f 1 (recs 1 3))
+             (unreadable-manifest! M)
+             (let* ((ls (log-open d))
+                    (detail (let ((es (load-integrity ls)))
+                              (if (null? es) 'none (log-error-detail (cdr (car es)))))))
+               (load-abort! ls 'probe)
+               (readable-manifest! M)
+               (list (and (assq 'path detail) #t)
+                     (cdr (assq 'reason detail)))))
+      (list #t "Permission denied"))
+
+(printf "\n== Q12: and the writing side refuses rather than promising ==\n")
+;; The reading side stops that writer before its records; the writing
+;; side stops before its next one. A local writer whose own metadata will
+;; not open cannot be flushed, cannot be compared against the versions
+;; the session remembers, and cannot be promised durable -- so the append
+;; is refused before anything is reserved, and the log does not grow.
+(define (append-once)
+  (guard (e (#t (list 'raised)))
+    (let* ((s (log-begin d (lambda args 'applied)))
+           (v (session-view s))
+           (r (if v
+                  (session-append! s (make-frame (view-revision v) (view-epoch v)
+                                                 (view-writer v) (view-expect-seq v)
+                                                 "agent:claude" '() '(put "w.1" ())))
+                  'no-view)))
+      (log-end! s)
+      (if (pair? r) (list (car r) (cadr r)) r))))
+(define (local-log-size)
+  (let ((p (string-append d "/writers/" W "/" (segment-file-name 1))))
+    (if (file-exists? p) (file-size p) 0)))
+
+(want "CONTROL: with its metadata readable the local writer appends"
+      (begin (build!) (append-once))
+      '(committed 1))
+(want "with its own metadata unreadable the append is refused, and nothing is written"
+      (begin (build!)
+             (put! (string-append d "/writers/" W "/published.sexp") (string->utf8 "()\n"))
+             (append-once)
+             (let ((before (local-log-size)))
+               (system (string-append "chmod 000 " d "/writers/" W "/published.sexp"))
+               (let ((answer (append-once)))
+                 (system (string-append "chmod 644 " d "/writers/" W "/published.sexp"))
+                 (list answer (= before (local-log-size))))))
+      (list '(refused-before-reserve metadata-unreadable) #t))
+(want "TWIN: readable again, the next append commits"
+      (append-once)
+      '(committed 2))
+
 (printf "\n~a failures\n" bad)
 (printf "log19 complete\n")

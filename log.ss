@@ -366,15 +366,25 @@
   (define (manifest-path store writer)
     (string-append (writer-directory store writer) "/published.sexp"))
 
+  ;; UNREADABLE AND UNPARSEABLE ARE ONE FACT TO EVERY CALLER: this store
+  ;; cannot say what this writer published. A file whose bytes will not
+  ;; come back -- permissions, a bad device, a name that is now a
+  ;; directory -- used to escape as the implementation's own i/o
+  ;; condition, which reaches a caller as a broken tool rather than as a
+  ;; broken manifest, and which no layer above knows to turn into an
+  ;; integrity answer.
   (define (read-manifest store writer)
     (let ((path (manifest-path store writer)))
       (and (file-exists? path)
-           (let ((text (utf8->string (read-whole path))))
-             (let ((datum (guard (e (#t 'bad)) (string->sexpr-extended text))))
-               (if (valid-manifest? datum)
-                   datum
-                   (raise (make-log-error 'manifest writer #f #f
-                                          (list (cons 'path path))))))))))
+           (let* ((text (guard (e (#t 'unreadable))
+                          (utf8->string (read-whole path))))
+                  (datum (if (eq? text 'unreadable)
+                             'bad
+                             (guard (e (#t 'bad)) (string->sexpr-extended text)))))
+             (if (valid-manifest? datum)
+                 datum
+                 (raise (make-log-error 'manifest writer #f #f
+                                        (list (cons 'path path)))))))))
 
   (define (whole-number? v) (and (integer? v) (exact? v)))
 
@@ -862,6 +872,15 @@
                     (vector-set! errs 0 (cons (make-log-error kind writer seg off detail)
                                               (vector-ref errs 0))))))
       (cond
+        ;; THE WRITER STOPS BEFORE IT, AND THE OPEN DOES NOT. Nothing
+        ;; this writer holds is delivered, because what a store cannot
+        ;; read it cannot promise; every other writer is unaffected, and
+        ;; `check` reports the reason.
+        ((unreadable-version? (cdr (assq 'manifest versions)))
+         (let ((v (cdr (assq 'manifest versions))))
+           (note! 'metadata-unreadable #f #f
+                  (list (cons 'path (cadr v)) (cons 'reason (caddr v)))))
+         (finish origin 0 '() #f #f errs quarantine retired versions))
         ((eq? manifest 'malformed)
          (note! 'manifest #f #f '())
          (finish origin 0 '() #f #f errs quarantine retired versions))
@@ -1207,9 +1226,35 @@
   (define (read-manifest-safely store writer)
     (guard (e (#t 'malformed)) (read-manifest store writer)))
 
+  ;; A METADATA FILE THAT WILL NOT OPEN IS NOT AN ABSENT ONE, and it is
+  ;; not a broken tool either. Reading it is how this writer's version is
+  ;; known, and a failure here used to let the implementation's own i/o
+  ;; condition escape the whole discovery -- so a single unreadable
+  ;; manifest took down the open of a store whose other writers were
+  ;; perfectly readable, and reached the caller as an exception rather
+  ;; than as a fact about one writer.
+  ;;
+  ;; The reason travels with it: what could not be read, and what the
+  ;; operating system said about it. "Permission denied" is the sentence
+  ;; that tells an operator what to do next, and it is the one thing an
+  ;; integrity note cannot reconstruct later.
+  (define (unreadable-reason e)
+    (if (and (message-condition? e) (irritants-condition? e))
+        (let ((irritants (condition-irritants e)))
+          (let loop ((xs irritants) (text "unreadable"))
+            (cond ((null? xs) text)
+                  ((string? (car xs)) (loop (cdr xs) (car xs)))
+                  (else (loop (cdr xs) text)))))
+        "unreadable"))
+
   (define (manifest-version store writer)
     (let ((p (writer-file store writer "published.sexp")))
-      (and (file-exists? p) (crc32-hex (read-whole p)))))
+      (and (file-exists? p)
+           (guard (e (#t (list 'unreadable p (unreadable-reason e))))
+             (crc32-hex (read-whole p))))))
+
+  (define (unreadable-version? v)
+    (and (pair? v) (eq? (car v) 'unreadable)))
 
   ;; A READ FAILURE IS NOT AN ABSENT FILE. Returning 'unreadable keeps
   ;; the two apart; answering with empty bytes would report a writer as
@@ -1814,8 +1859,18 @@
                 (touched (vector #f)))
             (for-each
               (lambda (name)
+                ;; A FILE THAT WILL NOT OPEN IS NOT FLUSHED HERE. Trying
+                ;; would raise out of a barrier that every session start
+                ;; runs, taking the whole store down for one writer's
+                ;; unreadable metadata. It is already recorded as
+                ;; unreadable where that fact belongs -- the reading side
+                ;; stops that writer, the writing side refuses its next
+                ;; append -- and neither of those can happen if this
+                ;; raises first.
                 (let ((version (file-version store w name)))
-                  (when (and version (not (equal? version (last-flushed s w name))))
+                  (when (and version
+                             (not (unreadable-version? version))
+                             (not (equal? version (last-flushed s w name))))
                     (flush-file! (writer-file store w name) stage)
                     (note-flushed! s w name version)
                     (vector-set! touched 0 #t))))
@@ -1867,9 +1922,25 @@
   ;; OWNER CONTENT, NOT MERELY ITS PRESENCE. Rewriting owner.sexp with a
   ;; different instance leaves the path in place, and comparing only
   ;; existence let an authority change pass unnoticed.
+  ;; THE SAME SENTINEL AS manifest-version, and for the same reason: a
+  ;; metadata file that will not open is a fact about one writer, not an
+  ;; exception that should leave a session start or a version comparison
+  ;; by the exception path.
   (define (file-version store writer name)
     (let ((p (writer-file store writer name)))
-      (and (file-exists? p) (segment-sha (read-whole p)))))
+      (and (file-exists? p)
+           (guard (e (#t (list 'unreadable p (unreadable-reason e))))
+             (segment-sha (read-whole p))))))
+
+  ;; Which of this writer's metadata files cannot be read, if any.
+  (define (unreadable-metadata store writer)
+    (let loop ((names metadata-files))
+      (cond
+        ((null? names) #f)
+        ((unreadable-version? (file-version store writer (car names)))
+         (let ((v (file-version store writer (car names))))
+           (list (cadr v) (caddr v))))
+        (else (loop (cdr names))))))
 
   (define (metadata-versions store)
     (map (lambda (w)
@@ -2754,19 +2825,42 @@
   ;; internal sequence continuity, which are properties of the bytes
   ;; alone. The splice, the divergence check and the publish decision are
   ;; redone every time, against the history as it is now.
+  ;; The bytes are read back and hashed rather than compared by length:
+  ;; a truncation is the likely damage and a length check would catch it,
+  ;; but a file of the right length and the wrong content is the damage
+  ;; that a length check reads as healthy.
+  (define (kept-content-ok? path sha)
+    (and (file-exists? path)
+         (let ((held (guard (e (#t #f)) (read-whole path))))
+           (and held (string=? sha (segment-sha held))))))
+
   (define (keep-incoming! store writer segment bytes sha why)
     (let* ((dir (string-append (writer-directory store writer) "/incoming"))
            (kept (string-append dir "/" (segment-file-name segment) "." sha ".seg"))
            (marker (string-append dir "/" (segment-file-name segment) "." sha ".ok")))
       (ensure-directory! dir)
-      (unless (file-exists? kept)
-        (let ((fd (fd-open kept '(write create))))
-          (dynamic-wind void
-            (lambda ()
-              (parameterize ((theourgia-stage 'publish))
-                (write-all! fd bytes kept)
-                (fsync! fd kept 'publish)))
-            (lambda () (guard (e (#t (void))) (fd-close fd)))))
+      ;; THE NAME IS A CLAIM ABOUT THE CONTENT AND IS NOT THE CONTENT. The
+      ;; file is named by the hash of the bytes it should hold, so an
+      ;; interrupted earlier keep leaves a file with exactly the right
+      ;; name and the wrong bytes -- and answering `kept' for it points
+      ;; the sender at evidence that is not its candidate. What the name
+      ;; says is checked against what the file holds, every time.
+      ;;
+      ;; AND THE REPLACEMENT IS ATOMIC. Writing in place would make the
+      ;; window wider rather than narrower: a keep interrupted while
+      ;; overwriting leaves neither the old bytes nor the new ones. The
+      ;; candidate is staged under a temporary name, flushed, and renamed
+      ;; over -- so the name only ever appears with whole content.
+      (unless (kept-content-ok? kept sha)
+        (let ((tmp (temp-name-for kept)))
+          (let ((fd (fd-open tmp '(write create))))
+            (dynamic-wind void
+              (lambda ()
+                (parameterize ((theourgia-stage 'publish))
+                  (write-all! fd bytes tmp)
+                  (fsync! fd tmp 'publish)))
+              (lambda () (guard (e (#t (void))) (fd-close fd)))))
+          (rename-over! tmp kept))
         ;; the candidate is durable, file and name, BEFORE the verdict
         (directory-entry-durable! kept 'publish))
       (unless (file-exists? marker)
@@ -2784,7 +2878,22 @@
         (release-store! store)
         answer)))
 
+  ;; A WRITER THIS STORE HAS NEVER SEEN ARRIVES AS ITS FIRST CANDIDATE,
+  ;; and until now the first thing that touched it was `fd-open` with
+  ;; `create` -- which creates a file and not the directory above it, so
+  ;; the first publish for a new writer failed on an open rather than
+  ;; answering. The directory is made here, before anything is staged
+  ;; into it, and the entry for it in `writers/` is made durable: a
+  ;; segment whose directory is not durable is a segment a crash can
+  ;; strand where no reader will look for it.
+  (define (ensure-writer-directory! store writer)
+    (let ((dir (writer-directory store writer)))
+      (unless (file-is-directory? dir)
+        (mkdir-p! dir)
+        (directory-entry-durable! dir 'publish))))
+
   (define (publish-locked! store writer segment bytes sha)
+    (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
            (target (string-append dir "/" (segment-file-name segment)))
            (local-bytes (and (file-exists? target) (read-whole target)))
@@ -2842,7 +2951,15 @@
            ;; that match and no manifest entry; answering idempotent
            ;; there would make "done" mean two different things.
            ((and (equal? lr cr) (published-with? store writer segment sha))
-            (list 'idempotent segment))
+            ;; IDEMPOTENT IS A PROMISE THE CALLER ACTS ON. A sync client
+            ;; that is told the segment is already published deletes its
+            ;; own copy on the strength of it, so "listed" has to mean
+            ;; "listed durably" -- and the entry may have been written by
+            ;; a process that died before flushing it. The manifest and
+            ;; the directory entry naming it are made durable before the
+            ;; word is said, not after.
+            (begin (manifest-durable! store writer)
+                   (list 'idempotent segment)))
            ((equal? lr cr) (do-install-over store writer segment bytes sha 'published))
            ((< (cdr cr) (cdr lr)) (list 'incomplete segment))
            ((retired-prefix-segment? store writer segment)
@@ -2866,6 +2983,10 @@
         ((null? xs) #f)
         ((not (find-record cand-rs (rec-seq (car xs)))) (rec-seq (car xs)))
         (else (loop (cdr xs))))))
+
+  (define (manifest-durable! store writer)
+    (flush-file! (manifest-path store writer) 'publish)
+    (fsync-dir! (writer-directory store writer) 'publish))
 
   (define (published-with? store writer segment sha)
     (let ((m (read-manifest store writer)))
@@ -3401,19 +3522,32 @@
                              (list (cons 'store (session-store s))
                                    (cons 'remedy 'adopt)))))
     (barrier! 'before-append)
-    ;; THE BARRIER COMES FIRST, BEFORE THE RELOAD. A reload delivers the
-    ;; records the new metadata admits, and delivery implies durability --
-    ;; so flushing afterwards means the reducer has already been handed
-    ;; records whose manifest may not survive the crash. The versions are
-    ;; on disk by now either way; what this decides is whether they are
-    ;; durable before anything is computed from them.
-    (let ((durable (guard (e (#t 'barrier-failed)) (metadata-barrier! s))))
-      (if (eq? durable 'barrier-failed)
-          (list 'refused-before-reserve 'metadata-not-durable)
-          (begin
-            (when (and (not (session-reset-pending s)) (versions-changed? s))
-              (reload! s))
-            (append-after-barrier! s frame)))))
+    ;; WHAT THIS STORE CANNOT READ IT MAY NOT BUILD ON. A local writer
+    ;; whose own metadata will not open cannot be flushed, cannot be
+    ;; compared against the session's remembered versions, and cannot be
+    ;; promised durable -- so the append is refused before anything is
+    ;; reserved, naming the file and what the operating system said. The
+    ;; reading side stops that writer before its records; the writing
+    ;; side stops before its next one. Neither pretends.
+    (let ((unreadable (unreadable-metadata (session-store s) (session-writer s))))
+      (if unreadable
+          (list 'refused-before-reserve 'metadata-unreadable
+                (list 'path (car unreadable))
+                (list 'reason (cadr unreadable)))
+          ;; THE BARRIER COMES FIRST, BEFORE THE RELOAD. A reload delivers
+          ;; the records the new metadata admits, and delivery implies
+          ;; durability -- so flushing afterwards means the reducer has
+          ;; already been handed records whose manifest may not survive the
+          ;; crash. The versions are on disk by now either way; what this
+          ;; decides is whether they are durable before anything is
+          ;; computed from them.
+          (let ((durable (guard (e (#t 'barrier-failed)) (metadata-barrier! s))))
+            (if (eq? durable 'barrier-failed)
+                (list 'refused-before-reserve 'metadata-not-durable)
+                (begin
+                  (when (and (not (session-reset-pending s)) (versions-changed? s))
+                    (reload! s))
+                  (append-after-barrier! s frame)))))))
 
   (define (append-after-barrier! s frame)
     (if (session-reset-pending s)

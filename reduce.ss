@@ -42,7 +42,7 @@
 (library (theourgia reduce)
   (export reduce-empty reduce-apply! reduce-pending reduce-applied-cut reduce-trace
           state-read state-outline state-dump state-hash state-datum block-hash
-          state-structure cut-usable? cut-id
+          state-structure state-refs cut-usable? cut-id
           state->rows rows->state
           ord-between block-id
           reduction? reduction-state)
@@ -484,6 +484,27 @@
                  ;; one question, and the edge set is as much a part of
                  ;; the block as any field.
                  (cons 'edges (block-edges r id))))))
+
+  ;; WHAT POINTS AT THIS BLOCK, the mirror of block-edges and held to the
+  ;; same discipline: the logical edge set, one entry per (from, rel)
+  ;; however many link events produced it, and no event ids. Two
+  ;; libraries that agree on the edges must agree on this too.
+  ;;
+  ;; block-edges filters on `from` and so answers what a block points AT;
+  ;; this filters on `to`. A reader that confused them would list a
+  ;; block's own out-edges as references to it, which is why they are two
+  ;; procedures and not one with a flag.
+  (define (state-refs r id)
+    (let ((pairs (map (lambda (l) (cons (car l) (cadr l)))
+                      (filter (lambda (l) (equal? (caddr l) id)) (reduction-links r)))))
+      (list-sort (lambda (x y)
+                   (if (string=? (car x) (car y))
+                       (string<? (symbol->string (cdr x)) (symbol->string (cdr y)))
+                       (string<? (car x) (car y))))
+                 (let dedupe ((ps pairs) (out (quote ())))
+                   (cond ((null? ps) out)
+                         ((member (car ps) out) (dedupe (cdr ps) out))
+                         (else (dedupe (cdr ps) (cons (car ps) out))))))))
 
   (define (candidate<? a b)
     (if (string=? (cadr a) (cadr b))
