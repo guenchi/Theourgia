@@ -17,7 +17,7 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export open-and-reduce with-store-write store-init! nearest-ids)
+  (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs io ports) (rnrs files)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
@@ -26,6 +26,7 @@
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
+                session-snapshot!
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
                 view-revision view-epoch view-writer view-expect-seq)
@@ -507,4 +508,32 @@
                            (file-options no-fail))
            (lambda (p) (if #f #f)))
          (list 'ok (list 'store sid) (list 'writer writer))))))
+
+  ;; ---- snapshots -----------------------------------------------------------
+
+  ;; THE THREE PARTS OF THE ENVELOPE ARE TAKEN TOGETHER, from a state
+  ;; nothing has touched since. The cut is the reduction's own applied
+  ;; cursor -- causally closed by construction, because it is what the
+  ;; reducer actually applied -- and the rows are that same reduction
+  ;; serialised. Taking them at two moments is how a snapshot comes to
+  ;; describe a state that never existed.
+  ;;
+  ;; IT IS A WRITE SESSION EVEN THOUGH IT WRITES NO RECORD. Only the
+  ;; holder of the exclusive lock may produce a snapshot: the cut has to
+  ;; mean something for the length of time it takes to write it down,
+  ;; and a reader's shared lock does not stop anybody appending.
+  (define (store-snapshot! store . opts)
+    (let ((actor (if (pair? opts) (car opts) "unknown"))
+          (state (reduce-empty)))
+      (let ((s (log-begin store (deliver-into state #f))))
+        (session-applied! s (session-epoch s) (reduce-applied-cut state))
+        (let ((answer
+                (guard (e (#t (log-end! s) (raise e)))
+                  (let ((v (session-view s)))
+                    (if (not v)
+                        (list 'refused 'no-local-writer)
+                        (session-snapshot!
+                          s (list v (reduce-applied-cut state) (state->rows state))))))))
+          (log-end! s)
+          answer))))
 )

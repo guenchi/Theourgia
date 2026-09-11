@@ -72,6 +72,10 @@
   (call-with-port (open-file-output-port path (file-options no-fail))
     (lambda (p) (put-bytevector p (string->utf8 text)))))
 
+(define (write-file! path text)
+  (call-with-port (open-file-output-port path (file-options no-fail))
+    (lambda (p) (put-bytevector p (string->utf8 text)))))
+
 (define (slurp path)
   (guard (e (#t ""))
     (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
@@ -860,6 +864,48 @@
              (fs (cdr (assq 'fields b))))
         (list (code-of r) (cdr (assq 'title fs)) (cdr (assq 'kind fs))))
       (list 0 "\x7B2C;\x4E8C;\x7AE0;" 'section))
+
+(printf "== the snapshot verb ==\n")
+(define d11 (test-dir "cli1snapshot"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home11"))
+(run d11 "init")
+(system (string-append "mkdir -p " scratch "/snapsrc"))
+(write-file! (string-append scratch "/snapsrc/a.md") "# A\nbody\n## B\nmore\n")
+(run d11 (string-append "import-md " scratch "/snapsrc"))
+(define snap-run (run d11 "snapshot"))
+(want "it answers with the file it wrote and the cut it froze"
+      (list (code-of snap-run)
+            (car (datum-of snap-run))
+            (car (cadr (datum-of snap-run)))
+            (car (caddr (datum-of snap-run))))
+      (list 0 'ok 'snapshot 'cut))
+(want "the cut is the one the store's own reduction reached"
+      (cadr (caddr (datum-of snap-run)))
+      (reduce-applied-cut (open-and-reduce d11)))
+;; A SECOND SNAPSHOT DOES NOT REPLACE THE FIRST. Selection falls back to
+;; older ones when the newest turns out to be unusable, so overwriting
+;; would throw away the fallback that makes the fallback possible.
+(want "a second one is a new file beside it"
+      (begin (run d11 "snapshot")
+             (list-sort string<? (directory-list (string-append d11 "/snap"))))
+      '("000001.sexp" "000002.sexp"))
+;; AND THE STORE READS THE SAME AFTERWARDS. A snapshot is an
+;; optimisation; if taking one changed an answer it would be a write.
+(want "the outline is unchanged by having taken one"
+      (out-of (run d11 "outline"))
+      (let ((w (writer-of d11)))
+        (string-append "- " w ".1  a.md\n"
+                       "  - " w ".2  A\n"
+                       "    - " w ".3  B\n")))
+;; THE SNAPSHOT IS DOING THE WORK. Without this the rows above are green
+;; for a store that writes snapshot files and then ignores them.
+(want "reopening replays nothing, because the snapshot covers it all"
+      (length (reduce-trace (open-and-reduce d11)))
+      0)
+(want "a store that was never initialised cannot be snapshotted"
+      (let ((r (run (test-dir "cli1snapnostore") "snapshot")))
+        (list (> (code-of r) 0) (car (datum-of r)) (cadr (datum-of r))))
+      (list #t 'error 'no-store))
 
 (printf "\n~a failures\n" bad)
 (printf "cli1 complete\n")

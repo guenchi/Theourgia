@@ -73,6 +73,7 @@
           load-commit! load-abort! load-outcome load-deliver!
           load-snapshot-cut load-snapshot-rows load-snapshot-reason
           snapshot-write! snapshot-read snapshot-cut-supported?
+          session-snapshot!
           scan-segment
           atomic-write!
           segment-file-name segment-file-number
@@ -2320,15 +2321,23 @@
   ;; against a superseded view is refused for a reason the caller can act
   ;; on: a stale revision means re-take the view and recompute, a wrong
   ;; writer means the frame was built for another store.
+;; WHY THERE IS NO VIEW, named. Every caller that has to explain a
+  ;; missing view asks this -- a second copy of the cascade would answer
+  ;; "no local writer" for a session that has one and is merely waiting
+  ;; to be confirmed, which is a different thing to do about it.
+  (define (no-view-reason s)
+    (cond
+      ((session-reset-pending s) 'reset-pending)
+      ((session-poisoned s) 'writer-stopped)
+      ((session-retired? s) 'retired)
+      ((session-unconfirmed s) 'not-ready)
+      ((not (predecessor-applied? s)) 'predecessor-not-applied)
+      (else 'no-local-writer)))
+
   (define (binding-refusal s frame)
     (let ((view (session-view s)))
       (cond
-        ((and (not view) (session-reset-pending s)) 'reset-pending)
-        ((and (not view) (session-poisoned s)) 'writer-stopped)
-        ((and (not view) (session-retired? s)) 'retired)
-        ((and (not view) (session-unconfirmed s)) 'not-ready)
-        ((and (not view) (not (predecessor-applied? s))) 'predecessor-not-applied)
-        ((not view) 'no-local-writer)
+        ((not view) (no-view-reason s))
         ((not (eqv? (frame-epoch frame) (session-epoch s))) 'epoch)
         ((not (eqv? (frame-view-id frame) (view-revision view))) 'view)
         ((not (and (string? (frame-writer frame))
@@ -2336,6 +2345,87 @@
          'writer)
         ((not (eqv? (frame-expect-seq frame) (view-expect-seq view))) 'expect-seq)
         (else #f))))
+
+  ;; ---- session-snapshot! (section 4.5-prime) --------------------------------
+
+  ;; THE ENVELOPE IS ONE FREEZE. The view, the cut and the rows were
+  ;; taken together by the reduction layer; this layer either writes
+  ;; that, or refuses it. It never writes the rows under a smaller cut.
+  ;;
+  ;; AHEAD IS REFUSED, NOT DEGRADED. Trimming the cut to what this layer
+  ;; can vouch for would pair a state computed over one set of records
+  ;; with a cut naming a smaller one -- a snapshot that is internally a
+  ;; lie, and one nothing downstream could detect. The reduction layer
+  ;; recomputes at a smaller cut instead. It should not happen at all,
+  ;; because delivery implies durability; a refusal here says that
+  ;; invariant has been broken somewhere else.
+  (define (session-snapshot! s envelope)
+    (check-live! 'session-snapshot! s)
+    (unless (and (list? envelope) (= 3 (length envelope)))
+      (assertion-violation 'session-snapshot! "envelope must be (view cut rows)" envelope))
+    (let ((v (car envelope)) (cut (cadr envelope)) (rows (caddr envelope)))
+      (cond
+        ((not (view? v)) (list 'refused 'not-a-view))
+        ((not (valid-cut? cut)) (list 'refused 'malformed-cut))
+        ((not (list? rows)) (list 'refused 'malformed-rows))
+        ((snapshot-view-refusal s v) => (lambda (why) (list 'refused why)))
+        ((cut-beyond-durable s cut)
+         => (lambda (entry) (cons 'refused (cons 'cut-ahead entry))))
+        (else (install-snapshot! s cut rows)))))
+
+  ;; The same bindings a frame is checked against, minus the sequence
+  ;; number: a snapshot does not claim a place in the log, so an
+  ;; expect-seq that has moved on since the view was taken is not a
+  ;; reason to refuse one.
+  (define (snapshot-view-refusal s v)
+    (let ((now (session-view s)))
+      (cond
+        ((not now) (no-view-reason s))
+        ((not (eqv? (view-epoch v) (session-epoch s))) 'epoch)
+        ((not (eqv? (view-revision v) (view-revision now))) 'stale-view)
+        ((not (string=? (view-writer v) (view-writer now))) 'writer)
+        (else #f))))
+
+  ;; THE LOCAL WRITER'S DURABLE FRONTIER INCLUDES THIS SESSION'S OWN
+  ;; APPENDS. `next-seq` only advances when an append comes back
+  ;; committed -- that is, fsynced -- so one less than it is the highest
+  ;; sequence this writer has on disk. Reading the frontier from the
+  ;; load alone would stop at what was there when the session opened,
+  ;; and every snapshot taken after a write would be refused.
+  (define (durable-seq s writer)
+    (if (and (session-writer s) (string=? writer (session-writer s)))
+        (- (session-next-seq s) 1)
+        (let ((e (assoc writer (load-session-prefixes (session-load s)))))
+          (if e (discovery-end-seq (cdr e)) 0))))
+
+  (define (cut-beyond-durable s cut)
+    (let loop ((xs cut))
+      (cond
+        ((null? xs) #f)
+        ((> (cdr (car xs)) (durable-seq s (car (car xs))))
+         (list (list 'writer (car (car xs)))
+               (list 'cut (cdr (car xs)))
+               (list 'durable (durable-seq s (car (car xs))))))
+        (else (loop (cdr xs))))))
+
+  ;; A NEW FILE EACH TIME, NUMBERED ABOVE EVERY EXISTING ONE. Selection
+  ;; tries the highest first and falls back to older ones, so replacing
+  ;; a snapshot in place would destroy the fallback that section 4.5'
+  ;; requires when the newest turns out to be unusable.
+  (define (install-snapshot! s cut rows)
+    (let* ((store (session-store s))
+           (dir (string-append store "/snap"))
+           (next (+ 1 (let loop ((ns (if (file-is-directory? dir)
+                                         (map segment-file-number (directory-entries dir))
+                                         '()))
+                                 (best 0))
+                        (cond ((null? ns) best)
+                              ((and (car ns) (> (car ns) best)) (loop (cdr ns) (car ns)))
+                              (else (loop (cdr ns) best))))))
+           (path (string-append dir "/" (segment-file-name next))))
+      (mkdir-p! dir)
+      (snapshot-write! path cut rows)
+      (list 'written path cut)))
 
   (define (catch-up-and-append! s frame)
     (let* ((store (session-store s))
