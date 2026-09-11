@@ -34,7 +34,15 @@ import { documentPathFor, hasUncommittedWork, markCommitted, writeDocument } fro
 import { Node, StoreModel } from './model';
 import { Outbox, outboxPathFor } from './outbox';
 import { Saver } from './saver';
-import { Notice, StatusFacts, headingRefusedNotice, saveNotice, statusLine, wrongStoreNotice } from './status';
+import {
+  Notice,
+  StatusFacts,
+  headingRefusedNotice,
+  nodeTooltip,
+  saveNotice,
+  statusLine,
+  wrongStoreNotice
+} from './status';
 import { TransportError } from './transport';
 import { initWire } from './wire';
 
@@ -80,12 +88,10 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     item.id = node.id;
     item.description = node.id;
     item.contextValue = 'theourgia.block';
-    if (node.mark !== null) {
+    const tooltip = nodeTooltip(node.id, node.mark, node.fieldConflict);
+    if (tooltip !== null) {
       item.iconPath = new vscode.ThemeIcon(node.mark === 'orphan' ? 'question' : 'warning');
-      item.tooltip = `${node.id}: the store reports this block as ${node.mark}`;
-    } else if (node.marked) {
-      item.iconPath = new vscode.ThemeIcon('warning');
-      item.tooltip = `${node.id} has a field with more than one candidate value`;
+      item.tooltip = tooltip;
     }
     item.command = {
       command: 'theourgia.openBlock',
@@ -322,6 +328,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     writeDocument(file, document);
     open.set(file, document);
     const opened = await vscode.workspace.openTextDocument(uri);
+    /*
+     * THE SETTINGS ARE CHECKED AGAIN BEFORE THE EDITOR APPEARS. Opening
+     * a document is another wait, and a store changed during it would
+     * leave a buffer from the old store arriving in front of a user who
+     * has moved on. Nothing is corrupted if it does -- the buffer
+     * remembers its own store and a save into another is refused -- but
+     * showing it is still the wrong answer to what the user last asked.
+     */
+    if (asked !== generation) {
+      return;
+    }
     await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
     await vscode.window.showTextDocument(opened, { preview: false });
   }

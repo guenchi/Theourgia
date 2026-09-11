@@ -46,8 +46,16 @@ export type StructuralMark = 'cycle' | 'unplaced' | 'orphan' | 'nested-document'
 export interface Node {
   id: string;
   title: string;
+  /*
+   * `mark` is what the STORE says is wrong with this block's place in
+   * the tree; `fieldConflict` is a block whose own field has more than
+   * one candidate value. They are different things with different
+   * remedies, and drawing them the same way told a reader one thing when
+   * the store had said the other. `marked` is only "draw an icon".
+   */
   marked: boolean;
   mark: StructuralMark | null;
+  fieldConflict: boolean;
   orphan: boolean;
   /*
    * WHETHER A NODE HAS CHILDREN IS NOT KNOWN UNTIL IT IS OPENED. The
@@ -60,11 +68,13 @@ export interface Node {
 }
 
 function nodeFromBlock(block: Block, mark: StructuralMark | null = null): Node {
+  const fieldConflict = hasFieldConflict(block);
   return {
     id: block.id,
     title: titleOf(block),
-    marked: mark !== null || hasFieldConflict(block),
+    marked: mark !== null || fieldConflict,
     mark,
+    fieldConflict,
     orphan: mark === 'orphan',
     mayHaveChildren: true
   };
@@ -104,7 +114,36 @@ export class StoreModel {
           answer.text
         );
       }
-      out.push(nodeFromBlock(block, marks.get(row.id) ?? null));
+      const mark = marks.get(row.id) ?? null;
+      /*
+       * EXISTING IS NOT THE SAME AS BEING AT THE TOP LEVEL. A title can
+       * name a block that really does exist -- a child of the very block
+       * whose title carries the line -- and `read` then confirms it,
+       * putting a child in the root listing and again under its parent.
+       * So the block is asked where it sits, and only a block that says
+       * `root` belongs here.
+       *
+       * EXCEPT THE ONES THE STORE HAS ALREADY SAID ARE OUT OF PLACE. An
+       * orphan still names the parent that was deleted -- measured, not
+       * supposed: a real store answers `(position "<dead id>" . 0)` for
+       * a block it reports under `orphan` -- so those are listed on the
+       * strength of the mark rather than of their position.
+       *
+       * AND THIS IS ALSO WHAT CATCHES A TREE THAT NEVER EXISTED. The
+       * listing and the block are read by two requests, and a block can
+       * move between them; a row whose block now says it is somewhere
+       * else is refused rather than drawn at a place it has left.
+       */
+      if (block.parent !== null && mark === null) {
+        throw new TransportError(
+          'unreadable',
+          `the outline lists ${row.id} at line ${row.line} as a top-level block, and the store ` +
+            `says it sits under ${block.parent}. Either a title carries a newline that looks ` +
+            'like a row, or the block moved while the outline was being read.',
+          answer.text
+        );
+      }
+      out.push(nodeFromBlock(block, mark));
     }
     return out;
   }
@@ -122,6 +161,20 @@ export class StoreModel {
    */
   public async structuralMarks(): Promise<Map<string, StructuralMark>> {
     const answer = await this.client.request('conflicts', []);
+    /*
+     * A QUESTION THAT WAS REFUSED IS NOT AN ANSWER OF "NONE". `conflicts`
+     * exiting non-zero -- no store at that path, a store being replaced
+     * underneath -- would otherwise produce an empty map, and every
+     * warning in the tree would quietly go out while the reads that
+     * follow still succeed.
+     */
+    if (!answer.ok) {
+      throw new TransportError(
+        'unreadable',
+        `the store would not say what it holds and cannot show: ${answer.text.trim()}`,
+        answer.text
+      );
+    }
     const out = new Map<string, StructuralMark>();
     for (const item of answer.answers) {
       const mark = readMark(item);
@@ -141,13 +194,22 @@ export class StoreModel {
    */
   public async childrenOf(id: string): Promise<Node[]> {
     const answer = await this.client.request('read', [id, '--recursive']);
+    /*
+     * TWO REQUESTS, NOT ONE, AND THE SECOND IS NOT OPTIONAL. A nested
+     * document is a structural conflict that sits UNDER another block,
+     * so it reaches the tree through here and not through the root
+     * listing -- and without asking, it would be drawn as an ordinary
+     * child with no warning on it at all. The subtree answer says what a
+     * block is; only `conflicts` says what the store cannot show.
+     */
+    const marks = await this.structuralMarks();
     const out: Node[] = [];
     for (const item of answer.answers) {
       const block = readBlock(item);
       if (block === null || block.id === id || block.parent !== id) {
         continue;
       }
-      out.push(nodeFromBlock(block));
+      out.push(nodeFromBlock(block, marks.get(block.id) ?? null));
     }
     return out;
   }
@@ -169,9 +231,22 @@ export class StoreModel {
     return null;
   }
 
+  /*
+   * HOW MANY THINGS THE STORE HOLDS AND CANNOT SHOW. A refusal is not
+   * zero of them: answering zero to a question that was refused is the
+   * one reading a user would act on, and it would be wrong exactly when
+   * something was wrong.
+   */
   public async conflictCount(): Promise<number> {
     const answer = await this.client.request('conflicts', []);
-    return answer.ok ? answer.answers.length : 0;
+    if (!answer.ok) {
+      throw new TransportError(
+        'unreadable',
+        `the store would not say what it holds and cannot show: ${answer.text.trim()}`,
+        answer.text
+      );
+    }
+    return answer.answers.length;
   }
 }
 

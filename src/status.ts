@@ -29,6 +29,8 @@
  * draws the same thing for "none" and "the question could not be put"
  * is telling the user the better of the two every time it fails.
  */
+import { StructuralMark } from './model';
+
 export interface StatusFacts {
   store: string;
   actor: string;
@@ -144,4 +146,32 @@ export function wrongStoreNotice(id: string, was: string, now: string): Notice {
       'so nothing was sent. Close this editor, or point theourgia.store back at the store ' +
       'this block came from.'
   };
+}
+
+/*
+ * WHAT A MARKED ROW SAYS WHEN YOU HOVER IT, and it says WHICH mark.
+ * Four structural marks and a field conflict all used to draw one
+ * warning icon with one sentence, so the tree told a reader "something
+ * is wrong here" and never which of five things -- and the remedies are
+ * not the same: an orphan has lost its parent, a cycle has a parent
+ * chain that closes on itself, a nested document is a shape the write
+ * path refuses to make, and a field conflict is two candidate values
+ * waiting for someone to choose.
+ *
+ * IT IS A FUNCTION SO THAT A CELL CAN READ IT. A tooltip composed where
+ * it is displayed is a sentence nothing can check, and the thing it
+ * would be wrong about is which of the five the store actually said.
+ */
+export function nodeTooltip(
+  id: string,
+  mark: StructuralMark | null,
+  fieldConflict: boolean
+): string | null {
+  if (mark !== null) {
+    return `${id}: the store reports this block as ${mark}`;
+  }
+  if (fieldConflict) {
+    return `${id} has a field with more than one candidate value`;
+  }
+  return null;
 }
