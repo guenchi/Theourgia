@@ -22,7 +22,8 @@
 ;; STDOUT IS THE ANSWER AND THE EXIT CODE IS THE VERDICT. An agent reads
 ;; the S-expression; a shell reads the code. Diagnostics go to stderr and
 ;; are never part of either.
-(import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log))
+(import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log)
+        (theourgia project) (theourgia md))
 
 (define (say x) (write x (current-output-port)) (newline (current-output-port)))
 
@@ -80,6 +81,20 @@
        (usage (list (string->symbol name) '<value>)))
       (else (loop (cdr xs) (cons (car xs) out) found)))))
 
+;; WHO IS WRITING, IN THE ORDER THE CALLER CAN OVERRIDE. An explicit
+;; --actor beats the environment, the environment beats the account the
+;; process is running under, and a caller with none of those is written
+;; down as "cli" -- a program, which is what it is.
+(define (actor-of args)
+  (let-values (((v rest) (take-option args "--actor")))
+    (values (or v
+                (let ((e (getenv "THEOURGIA_ACTOR")))
+                  (and e (> (string-length e) 0) e))
+                (let ((u (getenv "USER")))
+                  (and u (> (string-length u) 0) u))
+                "cli")
+            rest)))
+
 (define (store-of args)
   (let-values (((v rest) (take-option args "--store")))
     (values (or v (let ((e (getenv "THEOURGIA_STORE"))) (or e "."))) rest)))
@@ -91,11 +106,16 @@
 ;; into indentation. Rows whose parent is a block that is not itself
 ;; placed would be unreachable from the root, so they are listed under
 ;; their own headings rather than silently dropped.
+;; A DOCUMENT HAS A PATH WHERE A SECTION HAS A TITLE. Showing the title
+;; field for both left every document in the outline as a bare id with
+;; two spaces after it -- the one line in the listing a reader most
+;; needs in order to know which file they are looking at.
 (define (title-of state id)
   (let* ((b (state-read state id))
          (fs (and b (cdr (assq 'fields b))))
-         (e (and fs (assq 'title fs))))
-    (if (and e (string? (cdr e))) (cdr e) "")))
+         (get (lambda (k) (let ((e (and fs (assq k fs))))
+                            (and e (string? (cdr e)) (cdr e))))))
+    (or (get 'title) (get 'path) "")))
 
 (define (outline-text state)
   (let* ((rows (state-outline state))
@@ -133,8 +153,8 @@
 ;; EVERY WRITING VERB GOES THROUGH ONE DOOR. The answer shape, the
 ;; failure shape and the exit code are decided here once rather than in
 ;; each verb, so a verb cannot invent a third way to report a refusal.
-(define (write-one store intent)
-  (let ((answers (with-store-write store (lambda (state view) (list intent)))))
+(define (write-one store actor intent)
+  (let ((answers (with-store-write store (lambda (state view) (list intent)) actor)))
     (let ((a (car answers)))
       (if (eq? (car a) 'ok) (ok! a) (fail! a)))))
 
@@ -145,7 +165,7 @@
 (define insert-usage
   '(insert "--under" <id> ["--after" <id>] "--title" <text> ["--text" <text>]))
 
-(define (parse-insert store args)
+(define (parse-insert store actor args)
   (let*-values (((under rest1) (take-option args "--under"))
                 ((after rest2) (take-option rest1 "--after"))
                 ((title rest3) (take-option rest2 "--title"))
@@ -154,14 +174,26 @@
       (usage insert-usage))
     (unless title
       (usage insert-usage))
-    (write-one store
-               (list 'insert
-                     (if (or (not under) (string=? under "root")) 'root under)
-                     after
-                     (append (list (cons 'kind 'section) (cons 'title title))
-                             (if text (list (cons 'text text)) '()))))))
+    ;; `--text -` READS THE BODY FROM STDIN, because markdown does not
+    ;; fit on a command line: newlines, quotes and everything a shell
+    ;; would eat are exactly what a section body is made of.
+    (let ((body (cond ((not text) #f)
+                      ((string=? text "-") (read-all-text (current-input-port)))
+                      (else text))))
+      (write-one store actor
+                 (list 'insert
+                       (if (or (not under) (string=? under "root")) 'root under)
+                       after
+                       (append (list (cons 'kind 'section) (cons 'title title))
+                               (if body (list (cons 'src body)) '())))))))
 
-(define (parse-set store args)
+(define (read-all-text port)
+  (let-values (((out get) (open-string-output-port)))
+    (let loop ()
+      (let ((c (read-char port)))
+        (if (eof-object? c) (get) (begin (put-char out c) (loop)))))))
+
+(define (parse-set store actor args)
   (let-values (((expect rest) (take-option args "--if-unchanged")))
     (let ((intent
             (cond
@@ -170,20 +202,20 @@
               ((= 2 (length rest))
                (list 'set (car rest) (string->symbol (cadr rest))))
               (else (usage '(set <id> <field> <value>))))))
-      (write-one store (if expect (list 'expect expect intent) intent)))))
+      (write-one store actor (if expect (list 'expect expect intent) intent)))))
 
-(define (parse-move store args)
+(define (parse-move store actor args)
   (let-values (((after rest) (take-option args "--after")))
     (unless (= 2 (length rest)) (usage '(move <id> <parent> ["--after" <id>])))
-    (write-one store
+    (write-one store actor
                (list 'move (car rest)
                      (if (string=? (cadr rest) "root") 'root (cadr rest))
                      after))))
 
-(define (parse-edge store verb args)
+(define (parse-edge store actor verb args)
   (unless (= 3 (length args))
     (usage (list verb '<from> '<rel> '<to>)))
-  (write-one store (list verb (car args) (string->symbol (cadr args)) (caddr args))))
+  (write-one store actor (list verb (car args) (string->symbol (cadr args)) (caddr args))))
 
 ;; A BATCH IS ONE LOCK AND ONE ANSWER PER ITEM. The intents come in as
 ;; S-expressions on stdin and go to the store in one call, so the lock is
@@ -194,21 +226,22 @@
     (let ((x (read port)))
       (if (eof-object? x) (reverse acc) (loop (cons x acc))))))
 
-(define (parse-batch store args)
+(define (parse-batch store actor args)
   (unless (null? args) (usage '(batch)))
   (let ((items (let ((data (read-all-data (current-input-port))))
                  (if (and (= 1 (length data)) (list? (car data))
                           (pair? (car data)) (list? (car (car data))))
                      (car data)
                      data))))
-    (let ((answers (with-store-write store (lambda (state view) items))))
+    (let ((answers (with-store-write store (lambda (state view) items) actor)))
       (say (cons 'batch (list answers)))
       (exit (if (for-all (lambda (a) (eq? (car a) 'ok)) answers) 0 1)))))
 
 (define (main argv)
   (when (null? argv)
     (usage '(theourgia <verb> ...)))
-  (let-values (((store args) (store-of (cdr argv))))
+  (let*-values (((store rest0) (store-of (cdr argv)))
+                ((actor args) (actor-of rest0)))
     (let ((verb (car argv)))
       (cond
         ((string=? verb "init")
@@ -216,27 +249,62 @@
                     (let ((a (store-init! store)))
                       (if (eq? (car a) 'ok) (ok! a) (fail! a))))))
         ((string=? verb "insert")
-         (require-store! store) (guarded (lambda () (parse-insert store args))))
+         (require-store! store) (guarded (lambda () (parse-insert store actor args))))
         ((string=? verb "set")
-         (require-store! store) (guarded (lambda () (parse-set store args))))
+         (require-store! store) (guarded (lambda () (parse-set store actor args))))
         ((string=? verb "move")
-         (require-store! store) (guarded (lambda () (parse-move store args))))
+         (require-store! store) (guarded (lambda () (parse-move store actor args))))
         ((string=? verb "del")
          (unless (= 1 (length args)) (usage '(del <id>)))
          (require-store! store)
-         (guarded (lambda () (write-one store (list 'del (car args))))))
+         (guarded (lambda () (write-one store actor (list 'del (car args))))))
         ((string=? verb "link")
-         (require-store! store) (guarded (lambda () (parse-edge store 'link args))))
+         (require-store! store) (guarded (lambda () (parse-edge store actor 'link args))))
         ((string=? verb "unlink")
-         (require-store! store) (guarded (lambda () (parse-edge store 'unlink args))))
+         (require-store! store) (guarded (lambda () (parse-edge store actor 'unlink args))))
+;; A DIRECTORY AND THE STORE, EACH MADE FROM THE OTHER. import answers
+        ;; with one entry per intent, exactly as batch does -- a refusal
+        ;; about identity is an ordinary refusal and reads like one.
+        ((string=? verb "import-md")
+         (unless (= 1 (length args)) (usage '(import-md <dir>)))
+         (require-store! store)
+         (guarded (lambda ()
+                    (let ((answers (import-md store (car args) actor)))
+                      (say (cons 'import (list answers)))
+                      (exit (if (for-all (lambda (a) (eq? (car a) 'ok)) answers) 0 1))))))
+        ((string=? verb "export-md")
+         (unless (or (= 1 (length args))
+                     (and (= 2 (length args)) (string=? (cadr args) "--with-ids")))
+           (usage '(export-md <dir> ["--with-ids"])))
+         (require-store! store)
+         (guarded (lambda ()
+                    (ok! (export-md store (car args) (= 2 (length args)))))))
         ((string=? verb "batch")
-         (require-store! store) (guarded (lambda () (parse-batch store args))))
+         (require-store! store) (guarded (lambda () (parse-batch store actor args))))
         ((string=? verb "outline")
          (unless (null? args) (usage '(outline)))
          (require-store! store)
          (guarded (lambda ()
                     (put-string (current-output-port) (outline-text (open-and-reduce store)))
                     (exit 0))))
+;; `read --md` GIVES BACK THE SECTION AS IT IS ON DISK, heading and
+        ;; all, rather than the block datum. That is what a person or an
+        ;; editor wants; the S-expression is what a program wants, and
+        ;; both are the same bytes seen two ways.
+        ((and (string=? verb "read") (= 2 (length args)) (string=? (cadr args) "--md"))
+         (require-store! store)
+         (guarded
+           (lambda ()
+             (let* ((state (open-and-reduce store))
+                    (b (state-read state (car args))))
+               (if (not b)
+                   (fail! (list 'error 'unknown-id (car args)
+                                (list 'nearest (nearest-ids state (car args)))))
+                   (let* ((fs (cdr (assq 'fields b)))
+                          (head (let ((e (assq 'heading-src fs))) (if e (cdr e) "")))
+                          (body (let ((e (assq 'src fs))) (if e (cdr e) ""))))
+                     (put-string (current-output-port) (string-append head body))
+                     (exit 0)))))))
         ((string=? verb "read")
          (require-store! store)
          (unless (= 1 (length args)) (usage '(read <id>)))

@@ -44,16 +44,29 @@
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
 
+;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
+;; delivery directory the fixture and cli.ss sit side by side; in the
+;; repository the fixtures are under test/ and cli.ss is at the root.
+;; Looking only beside itself, this fixture started no child at all in
+;; the repository -- and every row then read the empty output of a
+;; process that never ran.
+;; AND IF NEITHER EXISTS IT SAYS SO AT ONCE, rather than letting each
+;; row discover it separately.
 (define cli
   (let* ((self (car (command-line)))
          (cut (let loop ((i (- (string-length self) 1)))
                 (cond ((< i 0) #f)
                       ((char=? (string-ref self i) #\/) i)
-                      (else (loop (- i 1)))))))
-    (let* ((here (if cut (substring self 0 cut) "."))
-           (beside (string-append here "/cli.ss"))
-           (above (string-append here "/../cli.ss")))
-      (if (file-exists? beside) beside above))))
+                      (else (loop (- i 1))))))
+         (dir (if cut (substring self 0 cut) "."))
+         (beside (string-append dir "/cli.ss"))
+         (above (string-append dir "/../cli.ss")))
+    (cond
+      ((file-exists? beside) beside)
+      ((file-exists? above) above)
+      (else (assertion-violation 'cli1
+              "cli.ss is neither beside this fixture nor one level up"
+              (list beside above))))))
 
 (define (write-file! path text)
   (call-with-port (open-file-output-port path (file-options no-fail))
@@ -96,9 +109,25 @@
 (define (code-of r) (car r))
 (define (out-of r) (cadr r))
 (define (err-of r) (caddr r))
+;; A CHILD THAT NEVER RAN IS A READING, NOT AN EXCEPTION. An empty
+;; stdout used to reach `read` as end-of-file and every row that took a
+;; cadr of the result died there -- so a fixture whose child could not
+;; start ended with no failure count at all, which reads like a run that
+;; was never made. The exit code and the first line of stderr come back
+;; instead, because those are what say why.
 (define (datum-of r)
-  (guard (e (#t 'unreadable))
-    (let ((p (open-string-input-port (out-of r)))) (read p))))
+  (let ((text (out-of r)))
+    (if (= 0 (string-length text))
+        (list 'child-failed (code-of r)
+              (let loop ((i 0))
+                (cond ((>= i (string-length (err-of r))) (err-of r))
+                      ((char=? (string-ref (err-of r) i) #\newline)
+                       (substring (err-of r) 0 i))
+                      (else (loop (+ i 1))))))
+        (guard (e (#t (list 'unreadable text)))
+          (let* ((p (open-string-input-port text))
+                 (x (read p)))
+            (if (eof-object? x) (list 'unreadable text) x))))))
 ;; THE DIAGNOSTIC LINE THE FFI PRINTS ON EVERY RUN IS NOT AN ERROR. P6
 ;; allows stderr to hold one line; what it must not hold is a second
 ;; one, and what stdout must never hold is a diagnostic.
@@ -720,6 +749,62 @@
             (equal? before-damage-registry
                     (slurp (string-append scratch "/home9b/instances.sexp"))))
       (list #t #t))
+
+(printf "== who the record says wrote it ==\n")
+;; A PUBLISHED LIBRARY MUST NOT PUT ANYBODY'S NAME IN ITS DEFAULT. The
+;; actor was a constant in the source, so every record every user ever
+;; wrote carried it. It comes from the caller now, in an order the
+;; caller can override, and the fallback is a program's name rather than
+;; a person's.
+(define da (test-dir "cli1actor"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/homea"))
+(run da "init")
+(define (actor-run title extra)
+  (let ((out (string-append scratch "/a.out"))
+        (err (string-append scratch "/a.err")))
+    (system (string-append "{ " extra " env -u THEOURGIA_INJECT scheme --script " cli
+                           " insert --under root --title " title
+                           " --store " da " ; } > " out " 2> " err))
+    (slurp out)))
+(define (actors-on-disk)
+  (let* ((w (writer-of da))
+         (text (slurp (string-append da "/writers/" w "/000001.sexp"))))
+    (let loop ((i 0) (start 0) (out '()))
+      (cond
+        ((>= i (string-length text)) (reverse out))
+        ((char=? (string-ref text i) #\newline)
+         (let ((r (decode-line (string->utf8 (substring text start (+ i 1))))))
+           (loop (+ i 1) (+ i 1)
+                 (cons (if (and (pair? r) (eq? (car r) 'ok)) (list-ref r 3) r) out))))
+        (else (loop (+ i 1) start out))))))
+(actor-run "A" "")
+(actor-run "B" "THEOURGIA_ACTOR=from-env")
+(want "an explicit actor beats the environment, which beats the account"
+      (begin
+        (system (string-append "{ env -u THEOURGIA_INJECT THEOURGIA_ACTOR=loses scheme --script "
+                               cli " insert --under root --title C --actor wins --store " da
+                               " ; } > /dev/null 2>&1"))
+        (actors-on-disk))
+      (list (or (getenv "USER") "cli") "from-env" "wins"))
+;; AND WITH NOTHING AT ALL TO GO ON it writes a program's name. The row
+;; above cannot show this: the account is almost always set.
+(want "with no flag, no variable and no account, the actor is the program"
+      (begin
+        (system (string-append "{ env -u THEOURGIA_INJECT -u THEOURGIA_ACTOR -u USER scheme --script "
+                               cli " insert --under root --title D --store " da
+                               " ; } > /dev/null 2>&1"))
+        (car (reverse (actors-on-disk))))
+      "cli")
+;; AND NO NAME OF ANY TOOL APPEARS IN ANY OF THEM.
+(define (holds? s sub)
+  (let ((n (string-length s)) (m (string-length sub)))
+    (let loop ((i 0))
+      (cond ((> (+ i m) n) #f)
+            ((string=? (substring s i (+ i m)) sub) #t)
+            (else (loop (+ i 1)))))))
+(want "CONTROL: nothing on disk carries a hard-coded agent name"
+      (filter (lambda (a) (and (string? a) (holds? a "agent:"))) (actors-on-disk))
+      '())
 
 (printf "\n~a failures\n" bad)
 (printf "cli1 complete\n")

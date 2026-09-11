@@ -366,6 +366,88 @@
       (one-t (list 'expect token-live (list 'set X 'summary "too late")))
       (list 'error 'deleted X))
 
+(printf "== applying a write locally drains what was waiting on it ==\n")
+;; A RECORD ALREADY IN THE STORE CAN BE WAITING FOR THE ONE ABOUT TO BE
+;; WRITTEN. The mirror's only record names (W . 1) as its premise, and
+;; W has written nothing yet, so it sits pending through log-begin. The
+;; local insert then CREATES (W . 1) -- and applying it has to drain the
+;; mirror's record too, or the state this session goes on to answer from
+;; is not the state a replay produces.
+(define dd (test-dir "store1drain"))
+(fresh-as! dd W V
+           (list (list 1 (list (cons W 1)) (list 'set (string-append W ".1") 'title "from-v"))))
+(want "CONTROL: the mirror's record is waiting, and its effect is nowhere"
+      (let ((st (state-of dd)))
+        (list (length (reduce-pending st))
+              (assoc V (reduce-applied-cut st))
+              (map cadr (state-datum st))))
+      (list 1 #f '()))
+(define in-session (vector #f))
+(define drain-answer
+  (with-store-write dd
+    (lambda (state view)
+      (vector-set! in-session 0 state)
+      '((insert root #f ((kind . section) (title . "mine")))))))
+;; NOT (cdr (assoc …)): when the drain does not happen there is no
+;; entry for V at all, and cdr of #f ends the file with an exception
+;; instead of a FAIL row -- a run with no failure count reads like a
+;; run that was never made.
+(define (reached cut w)
+  (let ((e (assoc w cut))) (if e (cdr e) 'not-applied)))
+(want "the write commits and the waiting record goes with it"
+      (list (car (car drain-answer))
+            (length (reduce-pending (vector-ref in-session 0)))
+            (reached (reduce-applied-cut (vector-ref in-session 0)) V))
+      (list 'ok 0 1))
+;; AND THE SESSION'S STATE IS THE STATE A REPLAY GIVES. Skipping the
+;; drain leaves the title as the insert wrote it, and the next process
+;; to open the store reads something else.
+(want "the in-session state and a fresh replay agree, title and all"
+      (let ((fresh (state-of dd)))
+        (list (equal? (state-datum (vector-ref in-session 0)) (state-datum fresh))
+              (field dd (string-append W ".1") 'title)))
+      (list #t "from-v"))
+
+(printf "== an append whose outcome is unknown does not answer 'refused' ==\n")
+;; ONLY ONE OF THE FIVE OUTCOMES MEANS THE LOG IS UNTOUCHED. A caller
+;; told "this failed" will not look for the record; if the bytes are in
+;; fact durable, the next replay hands it a record its own answer said
+;; did not exist. fsync failing after the write is exactly that case.
+;; A CHILD PROCESS, because THEOURGIA_INJECT is an expansion-time gate:
+;; arming it here would arm it for every append in this file.
+(define df (test-dir "store1fault"))
+(fresh! df)
+(define child-path (string-append df "/child.ss"))
+(define child-out (string-append df "/child.out"))
+(put! child-path
+      (string->utf8
+        (string-append
+          "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+          "        (theourgia store) (theourgia reduce))\n"
+          "(putenv \"THEOURGIA_HOME\" \"" df "/home\")\n"
+          "(define res\n"
+          "  (guard (e (#t (list (list 'raised))))\n"
+          "    (with-store-write \"" df "\"\n"
+          "      (lambda (st v) '((insert root #f ((kind . section) (title . \"faulted\"))))))))\n"
+          "(printf \"~s\\n\" (car res))\n")))
+(define faulted-answer
+  (begin
+    (system (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@commit:file=000001.sexp "
+                           "scheme --script " child-path " > " child-out " 2>/dev/null"))
+    (let ((text (let ((b (slurp child-out))) (if (bytevector? b) (utf8->string b) ""))))
+      (guard (e (#t (list 'unreadable text)))
+        (read (open-string-input-port text))))))
+(want "the answer names the outcome and says it is indeterminate, not refused"
+      (list (car faulted-answer) (cadr faulted-answer) (caddr faulted-answer))
+      (list 'error 'indeterminate 'written-fsync-failed))
+;; AND THE RECORD IS THERE. This is what makes the wording matter: had
+;; the answer said refused, the caller would not have looked, and the
+;; block below would be a block nobody believes was written.
+(want "and a plain replay finds the record the caller was not told about"
+      (list (length (reduce-trace (state-of df)))
+            (map cadr (state-datum (state-of df))))
+      (list 1 (list (string-append W ".1"))))
+
 (printf "== P9: a view that has gone stale inside one process ==\n")
 ;; ONE PROCESS, NOT TWO. P4 covers two processes racing for the lock;
 ;; this is the case where the same session prepares a frame, commits
@@ -401,6 +483,70 @@
             (length (reduce-trace (state-of ds2)))
             (cdr (assoc W (reduce-applied-cut (state-of ds2)))))
       (list 1 1 1))
+
+(printf "== which ids a refusal suggests ==\n")
+;; THE SUGGESTIONS ARE PART OF THE ANSWER, and nothing so far has said
+;; what makes one id nearer than another. Every row that reads them has
+;; been happy with any three ids at all, because the stores those rows
+;; used had at most three blocks.
+;; THE RULE: longest shared prefix first, ties broken lexicographically,
+;; at most three. Ids share a long prefix exactly when they come from
+;; the same writer, which is what makes the prefix the useful measure
+;; here -- a typo in a block id is almost always a typo in the tail.
+(define dn (test-dir "store1nearest"))
+(fresh! dn)
+(let loop ((n 0))
+  (when (< n 6)
+    (one dn (list 'insert 'root #f (list (cons 'kind 'section)
+                                         (cons 'title (number->string n)))))
+    (loop (+ n 1))))
+(want "CONTROL: there are more blocks than a refusal will name"
+      (length (state-datum (state-of dn)))
+      6)
+;; A NEAR MISS ON THE TAIL: the ids are <writer>.1 .. <writer>.6, and a
+;; request for <writer>.7 shares the whole writer with all of them. The
+;; tie is then lexicographic, so the first three by id come back.
+(want "an id differing only in its tail is answered with the lowest three"
+      (let ((a (one dn (list 'set (string-append W ".7") 'title "x"))))
+        (list (car a) (cadr a) (cadr (cadddr a))))
+      (list 'error 'unknown-id
+            (list (string-append W ".1") (string-append W ".2") (string-append W ".3"))))
+;; AND AN ID SHARING NOTHING STILL GETS AN ANSWER rather than an empty
+;; list: the caller asked for help, and "no id is close" is less useful
+;; than "here is what this store holds".
+(want "an id from another writer entirely still gets three suggestions"
+      (let ((a (one dn '(set "zzzzzzzz.1" title "x"))))
+        (list (car a) (length (cadr (cadddr a)))))
+      (list 'error 3))
+;; AT MOST THREE, whatever the store holds. A refusal that listed every
+;; id would be a refusal an agent has to parse before it can act.
+(want "never more than three, however many blocks there are"
+      (let ((a (one dn (list 'set (string-append W ".9") 'title "x"))))
+        (length (cadr (cadddr a))))
+      3)
+;; THE ROWS ABOVE DO NOT SEPARATE "longest shared prefix" FROM PLAIN
+;; ALPHABETICAL ORDER, because every id in that store came from one
+;; writer and so shares its whole prefix. Here two writers are present
+;; and the mirror's name sorts FIRST -- so an implementation that only
+;; sorted would suggest the mirror's blocks for a typo in a local id.
+(define dn2 (test-dir "store1nearest2"))
+(fresh-as! dn2 W V
+           (list (list 1 '() (list 'put (list (cons 'kind 'section) (cons 'title "m1"))))
+                 (list 2 '() (list 'put (list (cons 'kind 'section) (cons 'title "m2"))))
+                 (list 3 '() (list 'put (list (cons 'kind 'section) (cons 'title "m3"))))))
+(let loop ((n 0))
+  (when (< n 3)
+    (one dn2 (list 'insert 'root #f (list (cons 'kind 'section)
+                                          (cons 'title (number->string n)))))
+    (loop (+ n 1))))
+(want "CONTROL: the mirror's ids sort before the local writer's"
+      (list (string<? (string-append V ".1") (string-append W ".1"))
+            (length (state-datum (state-of dn2))))
+      (list #t 6))
+(want "a typo in a local id is answered with local ids, not the alphabetically first"
+      (let ((a (one dn2 (list 'set (string-append W ".9") 'title "x"))))
+        (cadr (cadddr a)))
+      (list (string-append W ".1") (string-append W ".2") (string-append W ".3")))
 
 (printf "\n~a failures\n" bad)
 (printf "store1 complete\n")

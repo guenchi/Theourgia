@@ -285,8 +285,15 @@
                                      ((member (car xs) out) (dedupe (cdr xs) out))
                                      (else (dedupe (cdr xs) (cons (car xs) out))))))))
 
-  (define (with-store-write store proc)
-    (let ((state (reduce-empty)))
+;; THE ACTOR COMES FROM THE CALLER. A published library must not put
+  ;; anybody's name in its default: whoever ran the command is a fact
+  ;; only the caller has, and a constant baked in here would appear in
+  ;; every record every user ever writes. "unknown" is what a caller who
+  ;; declines to say gets -- it is not a person, and it is visibly not
+  ;; one.
+  (define (with-store-write store proc . rest)
+    (let ((actor (if (null? rest) "unknown" (car rest)))
+          (state (reduce-empty)))
       (let ((s (log-begin store (deliver-into state #f))))
         ;; THE FRONTIER IS REPORTED ONCE DELIVERY IS OVER, not inferred
         ;; from the per-record answers. A record is answered as it
@@ -303,24 +310,68 @@
         (session-applied! s (session-epoch s) (reduce-applied-cut state))
         (let ((answers
                 (guard (e (#t (log-end! s) (raise e)))
-                  (run-intents! s state (proc state (session-view s))))))
+                  (run-intents! s state actor (proc state (session-view s))))))
           (log-end! s)
           answers))))
 
-  (define (run-intents! s state intents)
-    (let loop ((is intents) (out '()))
+;; A BATCH CAN BUILD A TREE, so an intent must be able to name a block
+  ;; an earlier intent in the same batch created. The id of a new block
+  ;; is derived from the sequence number it is written at, which nobody
+  ;; knows until it commits -- so the caller writes `(from <n>)` for the
+  ;; nth intent of this batch and the resolution happens here, where the
+  ;; answers are.
+  ;; THE ALTERNATIVE WAS TWO CALLS, one to make the parents and one to
+  ;; make the children, which would take the lock twice and leave a
+  ;; state on disk between them that no single import ever intended.
+  (define (resolve-from made x)
+    (if (and (pair? x) (eq? (car x) 'from))
+        (let ((e (assv (cadr x) made)))
+          (if e (cdr e) (list 'error 'no-such-intent (cadr x))))
+        x))
+
+  (define (intent-with-parent intent parent)
+    (let ((i (unwrap intent)))
+      (case (car i)
+        ((insert) (list 'insert parent (caddr i) (cadddr i)))
+        ((move) (list 'move (cadr i) parent (cadddr i)))
+        (else i))))
+
+  (define (intent-parent intent)
+    (let ((i (unwrap intent)))
+      (case (car i)
+        ((insert) (cadr i))
+        ((move) (caddr i))
+        (else #f))))
+
+  (define (run-intents! s state actor intents)
+    (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
-          (let ((answer (one-intent! s state (car is))))
+          (let* ((raw (car is))
+                 (p (intent-parent raw))
+                 (fixed (if (and (pair? p) (eq? (car p) 'from))
+                            (let ((r (resolve-from made p)))
+                              (if (and (pair? r) (eq? (car r) 'error))
+                                  r
+                                  (intent-with-parent raw r)))
+                            raw))
+                 (answer (if (and (pair? fixed) (eq? (car fixed) 'error))
+                             fixed
+                             (one-intent! s state actor fixed))))
             ;; A FAILED INTENT STOPS THE REST. Later intents were written
             ;; against a state this one was meant to produce; running them
             ;; anyway asks each to be judged against a history its author
             ;; did not have.
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
-                (loop (cdr is) (cons answer out)))))))
+                (loop (cdr is) (+ n 1)
+                      (let ((ids (cadr (assq 'state (cdr answer)))))
+                        (if (and (eq? 'insert (car (unwrap fixed))) (pair? ids))
+                            (cons (cons n (car (car ids))) made)
+                            made))
+                      (cons answer out)))))))
 
-  (define (one-intent! s state intent)
+  (define (one-intent! s state actor intent)
     (let ((v (session-view s)))
       (if (not v)
           (list 'error 'no-view)
@@ -334,7 +385,7 @@
                         payload
                         (let* ((deps (deps-for state writer))
                                (frame (make-frame (view-revision v) (view-epoch v)
-                                                  writer seq "agent:claude" deps payload))
+                                                  writer seq actor deps payload))
                                (outcome (session-append! s frame)))
                           ;; NOT EVERY FAILURE MEANS NOTHING HAPPENED.
                           ;; `refused-before-reserve` is the only outcome
