@@ -789,6 +789,71 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
    * pins that it FAILS LOUDLY, naming the block, rather than coming back
    * as a block with no edges.
    */
+  /*
+   * AND A NAME THE STORE ACCEPTS THAT THIS READER WILL NOT READ.
+   *
+   * MEASURED, NOT ASSUMED. `wire-safe-symbol?` answering false does not
+   * refuse a write: `storable-encode` stores the wrapped form
+   * `("#%sym" "1")` instead, and `read` prints the name back escaped as
+   * `\x31;`. goeteia 1.7.2 refuses that escape, so an ordinary `link`
+   * is enough to make a block this client cannot read. The byte-level
+   * twin of this cell is in shapes.test.ts; this one builds the state
+   * with the store itself, which is the only evidence that the state is
+   * reachable at all.
+   *
+   * THE ANSWER TO `link` IS NOT ASSERTED. This core reports an internal
+   * error for a write that lands -- the defect this batch has already
+   * queued against it -- so what the cell is about is what the store
+   * then holds.
+   *
+   * WHEN THE WRITE PATH REFUSES THESE NAMES, the expectation here
+   * becomes the refusal, and the byte-level twin keeps this behaviour
+   * for stores written before that change.
+   */
+  it('reports a block whose edge name the store accepts and this reader refuses', async () => {
+    /*
+     * ITS OWN STORE. The cell beside this one asks its store for the
+     * whole outline and expects the two blocks it made; blocks inserted
+     * here would be counted there, and the first version of this cell
+     * broke it that way. A cell that adds to a shared store has to own
+     * one instead.
+     */
+    const mine = await RealStore.make('vscode-numeric');
+    try {
+      await runNumericNameCell(mine);
+    } finally {
+      mine.dispose();
+    }
+  });
+
+  async function runNumericNameCell(store: RealStore): Promise<void> {
+    const a = await store.client.request('insert', ['--under', 'root', '--title', 'NA', '--text', 'a']);
+    assert.strictEqual(a.ok, true, a.text);
+    const b = await store.client.request('insert', ['--under', 'root', '--title', 'NB', '--text', 'b']);
+    assert.strictEqual(b.ok, true, b.text);
+    const rows = parseOutline((await store.client.request('outline', [])).text);
+    const [from, to] = rows.map((r) => r.id);
+
+    /*
+     * READABLE BEFORE THE LINK, and readable with an ORDINARY edge, so
+     * that the refusal below belongs to the numeric name rather than to
+     * having any edge at all.
+     */
+    const spelled = await store.client.request('link', [from, 'has-part', to]);
+    assert.strictEqual(spelled.ok, true, `an ordinary link was refused: ${spelled.text}`);
+    const before = await store.client.request('read', [from]);
+    assert.strictEqual(before.ok, true, 'the block was unreadable before the numeric name');
+
+    await store.client.request('link', [from, '1', to]);
+
+    await assert.rejects(
+      () => store.client.request('read', [from]),
+      (e: unknown) =>
+        e instanceof TransportError && e.failure === 'unreadable' && e.message.includes(from),
+      'a block carrying a numeric-form edge name was read as an ordinary block'
+    );
+  }
+
   it('reports a block whose edge name the wire cannot carry, and names it', async () => {
     const a = await store.client.request('insert', ['--under', 'root', '--title', 'A', '--text', 'a']);
     assert.strictEqual(a.ok, true, a.text);

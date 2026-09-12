@@ -34,7 +34,7 @@ import * as assert from 'assert';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { SexprApi, initWire } from '../../src/wire';
+import { READER, SexprApi, initWire } from '../../src/wire';
 
 /*
  * THE VERSION THESE TABLES WERE RUN AGAINST. Raising it is a decision,
@@ -43,6 +43,13 @@ import { SexprApi, initWire } from '../../src/wire';
  * refused. Change it only together with a run of this whole suite.
  */
 const PINNED_GOETEIA = '1.7.2';
+
+/*
+ * THE DIGEST OF THE FILE THAT LOADS. Kept beside the version because the
+ * two answer different questions: the version says what npm installed,
+ * this says what the loader actually resolves and reads.
+ */
+const READER_DIGEST = '45ed90f1b7c56de5d15e8fbbe6c3afc5';
 
 interface ReadProbe {
   name: string;
@@ -171,6 +178,17 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
       try {
         sexpr.read(wireOf(probe, 'input_b64', 'input_rule'));
       } catch (e) {
+        /*
+         * THE KIND OF REFUSAL IS PART OF THE CLAIM. Collecting "it threw"
+         * accepts a reader that fails on these four for an unrelated
+         * reason -- a TypeError from a broken code path reads exactly
+         * like a considered refusal, and this list would go on calling it
+         * the tightening it is not.
+         */
+        assert.ok(
+          e instanceof sexpr.SexprError,
+          `${probe.name} was refused by a ${(e as Error)?.constructor?.name}, not by the reader`
+        );
         refused.push(probe.name);
       }
     }
@@ -302,14 +320,17 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
        * partner of the rows that ARE refused, on the ground that "a
        * reader that refused both is too narrow".
        *
-       * THE TABLE IS ABOUT READING, AND THE STORE DECIDES BY WRITING.
-       * The core's wire-safety predicate answers by round-tripping a
-       * name through igropyr's writer: `|1|` comes back as the NUMBER
-       * 1, not a symbol, so the predicate answers false and the write
-       * path refuses the name. goeteia 1.7.2 refuses it when reading.
-       * The two agree; what the table records is the older, wider
-       * reader. This was first written down here as goeteia being too
-       * narrow, which was wrong.
+       * AND THE STORE AT THIS PIN SIDES WITH THE TABLE, WHICH WAS
+       * MEASURED RATHER THAN ASSUMED. The core's wire-safety predicate
+       * does answer false for `|1|` -- it round-trips the name through
+       * igropyr's writer and gets the number 1 back -- but a false
+       * answer selects a WRAPPED STORAGE FORM, `("#%sym" "1")`; it does
+       * not refuse the write. `link a 1 b` stores the name and `read`
+       * prints it as `\x31;`, so a store can hold a block this reader
+       * will not read. Two earlier versions of this comment said the
+       * opposite, once calling goeteia too narrow and once calling the
+       * store the thing that refuses. Both were written without
+       * measuring.
        *
        * IT DOES NOT REACH THIS EXTENSION. The core's write predicate
        * refuses numeric-form names, so no such symbol is produced into
@@ -417,6 +438,36 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
       installed.version,
       PINNED_GOETEIA,
       'the installed reader is not the one these tables were run against'
+    );
+  });
+
+  /*
+   * AND THE BYTES THAT ACTUALLY LOAD, not the version beside them. A
+   * version number in a package.json says what was installed; it says
+   * nothing about which file the loader resolved, and pointing the
+   * loader at a copy while leaving the metadata alone left every cell in
+   * this file passing. The vendored reader was pinned by its own digest;
+   * losing that when it became a dependency was a real loss of evidence,
+   * and this is it restored: the specifier `goeteia/sexpr` is resolved
+   * the same way the product resolves it, and the file that comes back
+   * is digested.
+   */
+  it('loads the reader the specifier resolves to, byte for byte', () => {
+    /*
+     * THE SPECIFIER COMES FROM THE PRODUCT. Writing it out here again
+     * would make this cell check its own copy of the name: a build
+     * pointed at another file keeps passing, which is exactly what
+     * happened the first time this was written.
+     */
+    const resolved = require.resolve(READER);
+    assert.ok(
+      resolved.includes(`${path.sep}node_modules${path.sep}goeteia${path.sep}`),
+      `the specifier resolved outside the package: ${resolved}`
+    );
+    assert.strictEqual(
+      createHash('md5').update(fs.readFileSync(resolved)).digest('hex'),
+      READER_DIGEST,
+      'the reader that loads is not the one these tables were run against'
     );
   });
 

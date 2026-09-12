@@ -379,22 +379,27 @@ describe('a retry reports a count that may not exist', () => {
  *
  * goeteia 1.7.2 refuses a symbol whose escaped name is numeric --
  * `\x31;`, the symbol called `1`. The golden table records that name as
- * readable, which is what the older reader did; the STORE refuses it,
- * because its wire-safety predicate round-trips a name through
- * igropyr's writer and `|1|` comes back as the number 1 rather than a
- * symbol. Reader and store agree; the table is the wider, older
- * account. That is recorded against the table in
- * dependency-sexpr.test.ts; this is what it costs HERE, which is the
- * part a user would meet.
+ * readable, which is what the older reader did.
  *
- * SO SUCH A DATUM IS NOT PRODUCED INTO A STORE BY THIS CORE AT ALL.
- * "Should not be produced" is not "cannot arrive": a store written by an
- * older build, or copied from elsewhere, can hold one. What must not
- * happen is the answer coming back as a block with a field quietly
- * missing -- so the refusal has to name the block to go and look at.
+ * THE STORE AT THIS PIN DOES NOT REFUSE IT, AND THAT WAS MEASURED. The
+ * first version of this comment said the core's wire-safety predicate
+ * kept such names out of stores, which is wrong: when the predicate
+ * answers false `storable-encode` does not refuse, it stores the
+ * wrapped form `("#%sym" "1")`, and `read` then prints the name back as
+ * `\x31;`. An ordinary `link a 1 b` is enough to make one. So this is
+ * not a shape only an old or foreign store could hold.
  *
- * WHEN THE CORE REFUSES THE WRITE ITSELF, this cell should become one
- * that asks the core to make the name and checks that it will not.
+ * What must not happen is the answer coming back as a block with a
+ * field quietly missing -- so the refusal has to name the block to go
+ * and look at. The real-core cell that builds this state through `link`
+ * is in real-core.test.ts; this one pins the same behaviour at the
+ * client, on bytes, without paying for a store.
+ *
+ * THE WRITE PATH IS BEING CHANGED to refuse these names at intent time,
+ * which is a decision taken after this was measured. When that lands,
+ * the real-core cell becomes one that asks the core to make the name
+ * and checks that it will not; this cell stays as it is, because a
+ * store written before that change can still hold one.
  */
 describe('a symbol name this reader refuses stops the answer and names the block', () => {
   before(async () => {

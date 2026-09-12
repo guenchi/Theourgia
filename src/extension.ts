@@ -443,10 +443,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * least visible, but it is still the wrong text in front of the
      * user.
      */
-    if (!open.register(file, document, ticket)) {
+    if (!open.register(file, document, ticket, () => writeDocument(file, document))) {
       return;
     }
-    writeDocument(file, document);
     const opened = await vscode.workspace.openTextDocument(uri);
     await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
     await vscode.window.showTextDocument(opened, { preview: false });
@@ -491,7 +490,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * no longer matches the prefix -- an ordinary body edit refused
        * for a change nobody made.
        */
-      open.revise(file, { ...document, src: split.src, text: document.prefix + split.src });
+      open.confirmed(file, { ...document, src: split.src, text: document.prefix + split.src });
       /*
        * THE FILE AS IT STANDS IS NOW IN THE STORE, so the next time this
        * block is opened it may be taken from the store again. This is

@@ -133,6 +133,6 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "goeteia": "^1.7.2"
+    "goeteia": "1.7.2"
   }
 }

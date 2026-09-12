@@ -79,12 +79,20 @@ const dynamicImport = new Function('specifier', 'return import(specifier);') as 
   specifier: string
 ) => Promise<unknown>;
 
+/*
+ * THE ONE PLACE THE READER IS NAMED. Exported so that a cell can ask
+ * WHICH module this loads rather than assuming it: a suite that resolves
+ * the specifier for itself is checking its own copy of the name, and a
+ * build pointed at some other file would go on passing it.
+ */
+export const READER = 'goeteia/sexpr';
+
 export async function initWire(): Promise<SexprApi> {
   if (api !== null) {
     return api;
   }
   if (loading === null) {
-    loading = dynamicImport('goeteia/sexpr').then((mod: unknown) => {
+    loading = dynamicImport(READER).then((mod: unknown) => {
       api = mod as SexprApi;
       return api;
     });

@@ -65,11 +65,25 @@ export class OpenBuffers<T> {
    * Returns whether this registration was taken. A refusal is not an
    * error: it means a newer reading of the same block is already the
    * baseline, which is the outcome this exists to produce.
+   *
+   * `commit` IS RUN BETWEEN THE DECISION AND THE RECORD, and that is the
+   * whole reason it is a parameter rather than the caller's next line.
+   * Opening a block writes the file before the baseline is recorded; if
+   * the write is admitted and then fails, a caller that had already
+   * recorded the baseline leaves one describing a file that was never
+   * written -- and when the prefix of that baseline is empty, the save
+   * path does not refuse the mismatch, it takes the buffer's heading for
+   * body and sends it. Running the write here means a failure records
+   * nothing, and nothing can interleave between the two: `commit` is
+   * synchronous and so is this.
    */
-  public register(file: string, value: T, ticket: number): boolean {
+  public register(file: string, value: T, ticket: number, commit?: () => void): boolean {
     const held = this.held.get(file);
     if (held !== undefined && held.ticket > ticket) {
       return false;
+    }
+    if (commit !== undefined) {
+      commit();
     }
     this.held.set(file, { value, ticket });
     return true;
@@ -80,13 +94,24 @@ export class OpenBuffers<T> {
   }
 
   /*
-   * A SAVE DOES NOT REORDER ANYTHING. It revises the baseline that is
-   * already there, so it keeps that entry's ticket rather than taking a
-   * new one -- taking one would let a save promote a stale open above a
-   * newer one.
+   * WHAT THE STORE CONFIRMED IS THE NEWEST THING ANYONE KNOWS. A save
+   * that has been answered establishes the block's content at a later
+   * moment than any read that was already in flight, so it takes a fresh
+   * ticket -- the highest -- and every open that started earlier is
+   * refused when it arrives.
+   *
+   * AN EARLIER VERSION KEPT THE TICKET THAT WAS ALREADY THERE, on the
+   * reasoning that a save reorders nothing. It admitted two sequences.
+   * One: a save captures the baseline, a newer open replaces it, and the
+   * save then installs its own older reading under the newer open's
+   * ticket. The other: an open starts reading, the user saves, the save
+   * is confirmed and the file marked committed, and the open's older
+   * answer then arrives with a ticket above the baseline's and
+   * overwrites the file the user just saved. Ordering opens against each
+   * other is not enough; what a save confirmed has to outrank a read
+   * that began before it.
    */
-  public revise(file: string, value: T): void {
-    const held = this.held.get(file);
-    this.held.set(file, { value, ticket: held?.ticket ?? this.claim() });
+  public confirmed(file: string, value: T): void {
+    this.held.set(file, { value, ticket: this.claim() });
   }
 }

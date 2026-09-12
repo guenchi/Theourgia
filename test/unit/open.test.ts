@@ -80,22 +80,101 @@ describe('the newest reading of a block is the one a save is measured against', 
   });
 
   /*
-   * A SAVE REVISES; IT DOES NOT REOPEN. Giving a save a fresh ticket
-   * would promote whatever reading it revised above every open still in
-   * flight, which is the stale-baseline fault arriving by another door.
+   * WHAT THE STORE CONFIRMED OUTRANKS A READ THAT BEGAN BEFORE IT. The
+   * first version of this class kept the ticket already present when a
+   * save was confirmed, so a read that started earlier and answered
+   * later still outranked it -- and that read's answer predates the
+   * bytes the store has just accepted.
    */
-  it('keeps a save from promoting the reading it revised', () => {
+  it('lets a confirmed save outrank an open that started before it', () => {
+    const open = new OpenBuffers<string>();
+    const started = open.claim();
+    open.register('/f', 'read', started);
+    open.confirmed('/f', 'saved');
+    assert.strictEqual(
+      open.register('/f', 'the older read, arriving late', started),
+      false,
+      'a read that began before the save was confirmed overwrote what the store accepted'
+    );
+    assert.strictEqual(open.get('/f'), 'saved');
+  });
+
+  /*
+   * INCLUDING A READ THAT STARTED AFTER THE SAVE WAS CAPTURED BUT BEFORE
+   * IT WAS ANSWERED. This is the ordering that made the previous rule
+   * look sound: the open is newer than the save's own baseline, so
+   * keeping the existing ticket seemed to order them correctly -- but
+   * the save is answered later still, and it is the store speaking.
+   */
+  it('outranks an open that started while the save was in flight', () => {
+    const open = new OpenBuffers<string>();
+    const first = open.claim();
+    open.register('/f', 'first', first);
+    const during = open.claim();
+    open.confirmed('/f', 'saved');
+    assert.strictEqual(open.register('/f', 'read during the save', during), false);
+    assert.strictEqual(open.get('/f'), 'saved');
+  });
+
+  /*
+   * AND AN OPEN THAT STARTED AFTERWARDS STILL WINS, or the rule above
+   * would freeze the baseline at the last save and no later reading of
+   * the store could ever replace it.
+   */
+  it('still admits an open that started after the save was confirmed', () => {
+    const open = new OpenBuffers<string>();
+    open.confirmed('/f', 'saved');
+    const after = open.claim();
+    assert.strictEqual(open.register('/f', 'read afterwards', after), true);
+    assert.strictEqual(open.get('/f'), 'read afterwards');
+  });
+
+  /*
+   * A WRITE THAT FAILED RECORDS NOTHING. Admission has to happen before
+   * the file is written -- a losing open must not put its older text
+   * there -- but a baseline recorded for a write that then failed
+   * describes a file nobody wrote. When its prefix is empty the save
+   * path does not refuse the mismatch: it takes the buffer's heading for
+   * body and sends it.
+   */
+  it('keeps the previous baseline when the write it admitted fails', () => {
+    const open = new OpenBuffers<string>();
+    open.register('/f', 'already there', open.claim());
+    const ticket = open.claim();
+    assert.throws(
+      () =>
+        open.register('/f', 'never written', ticket, () => {
+          throw new Error('EACCES');
+        }),
+      /EACCES/
+    );
+    assert.strictEqual(
+      open.get('/f'),
+      'already there',
+      'a baseline was recorded for a write that failed'
+    );
+  });
+
+  it('records the baseline when the write it admitted succeeds', () => {
+    const open = new OpenBuffers<string>();
+    let wrote = 0;
+    assert.strictEqual(open.register('/f', 'written', open.claim(), () => { wrote += 1; }), true);
+    assert.strictEqual(wrote, 1, 'the write was not run');
+    assert.strictEqual(open.get('/f'), 'written');
+  });
+
+  /*
+   * AND A REFUSED REGISTRATION DOES NOT WRITE AT ALL. The write is run
+   * between the decision and the record precisely so that a losing open
+   * never reaches the file.
+   */
+  it('does not run the write when the registration is refused', () => {
     const open = new OpenBuffers<string>();
     const older = open.claim();
-    const newer = open.claim();
-    open.register('/f', 'older', older);
-    open.revise('/f', 'older, saved');
-    assert.strictEqual(
-      open.register('/f', 'newer', newer),
-      true,
-      'a save let a stale reading outrank an open that started later'
-    );
-    assert.strictEqual(open.get('/f'), 'newer');
+    open.register('/f', 'newer', open.claim());
+    let wrote = 0;
+    assert.strictEqual(open.register('/f', 'older', older, () => { wrote += 1; }), false);
+    assert.strictEqual(wrote, 0, 'a losing open wrote its older text to the file');
   });
 
   it('has no baseline for a file nobody opened', () => {
