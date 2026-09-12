@@ -40,6 +40,7 @@
 
 import * as path from 'path';
 import { Outbox, OutboxEntry } from './outbox';
+import { Settlement } from './saver';
 import { Publisher, digestOfBytes } from './publication';
 import { Saving, Unrecorded } from './saving';
 import { Sessions } from './sessions';
@@ -89,7 +90,25 @@ export interface SettlingParts {
   unrecorded: (file: string, because: Unrecorded) => Notice;
 }
 
-export type Settler = (req: string, cursor: string | null) => void;
+/*
+ * ⚠️ A SETTLER CARRIES THE QUEUE IT WAS BUILT FOR.
+ *
+ * The pairing checked below is settler-to-store. `Saver` takes its own
+ * outbox and a settlement callback as two separate arguments, so a
+ * correctly built settler for one store can still be attached to a Saver
+ * over another -- and then the answers one queue receives are settled
+ * against the other. Reproduced in review: with the same request id in
+ * both, one store's answer removed the other's entry and wrote its
+ * cursor beside the other's file.
+ *
+ * The queue rides along on the function so that `Saver` can compare it
+ * with its own by identity, at construction. A bare callback carries
+ * none and is accepted -- the cells in `saver.test.ts` pass one on
+ * purpose, because what they are about is the sending -- and every
+ * settler the extension builds comes from `settlerFor`, so the path
+ * that ships is always checked.
+ */
+export type Settler = ((req: string, settlement: Settlement) => void) & { queue?: Outbox };
 
 export function settlerFor(parts: SettlingParts): Settler {
   const { queue, storeHash, sessionId, pendingSaves, sessions, publisher, saving } = parts;
@@ -214,10 +233,54 @@ export function settlerFor(parts: SettlingParts): Settler {
     return digestOfBytes(Buffer.from(entry.payload, 'utf8')) === held.sentDigest ? held : undefined;
   };
 
-  return (req: string, cursor: string | null): void => {
+  const settle: Settler = (req: string, settlement: Settlement): void => {
+    /*
+     * ⚠️ A REFUSAL IS NOT AN ACKNOWLEDGEMENT, AND USED TO BE RECORDED AS
+     * ONE.
+     *
+     * The store said no. Nothing about the file changed, so nothing is
+     * written beside it and the entry stays where it is: the bytes the
+     * user wrote are still only in their file, which is what `draft`
+     * means, and the queue still holds the request that was turned
+     * down. Writing an acknowledgement here -- which is what an empty
+     * cursor and `mismatch: false` amounted to -- told the user their
+     * rejected edit had been saved and took it out of every count that
+     * would have shown otherwise. Reproduced end to end in review.
+     *
+     * `req-mismatch` is the refusal that leaves a mark: the store holds
+     * a different request under this id and no retry can settle that, so
+     * the record is marked unresolved for a person to look at -- the
+     * path in `Saving` that this function used to make unreachable by
+     * passing `mismatch: false` for every answer.
+     */
     const entry = queue.find(req);
     const mine = entry === undefined ? undefined : remembered(entry);
     const context = entry === undefined ? undefined : mine ?? recovered(entry);
+    const cursor = settlement.verdict === 'confirmed' ? settlement.cursor : null;
+    /*
+     * ⚠️ A PLAIN REFUSAL RELEASES THE REQUEST AND RECORDS NOTHING.
+     *
+     * The store has answered, so the request is not waiting any more and
+     * leaving it queued would make the count of unresolved saves say
+     * something untrue -- and, because a save stops at the first request
+     * it cannot settle, would stop the queue for ever with no way in the
+     * extension to clear it.
+     *
+     * Recording nothing is the other half, and it is what tells the
+     * user: the file's record still has no cursor and no acknowledged
+     * bytes, so the block stays a DRAFT and goes on being reported as
+     * work the store has not got. Writing an acknowledgement here --
+     * which an empty cursor with `mismatch: false` amounted to -- said
+     * the rejected edit had been saved and took it out of every count
+     * that would have shown otherwise.
+     */
+    if (settlement.verdict === 'refused') {
+      queue.resolve(req, null);
+      if (entry !== undefined && mine !== undefined && pendingSaves.get(entry.id) === mine) {
+        pendingSaves.delete(entry.id);
+      }
+      return;
+    }
     if (context === undefined) {
       /*
        * NOTHING IN MEMORY AND NOTHING ON DISK SAYS WHICH VERSION THIS
@@ -225,7 +288,19 @@ export function settlerFor(parts: SettlingParts): Settler {
        * newest version does not hold the body this request sent, so the
        * user has edited since and the file is a draft, correctly. The
        * entry is released because the store HAS answered it. (§12.17.4)
+       *
+       * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
+       * saying this id names another request; the entry is what a person
+       * will look at, and there is no file to mark.
        */
+      /*
+       * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
+       * saying this id names another request; the entry is what a person
+       * will look at, and there is no file to mark.
+       */
+      if (settlement.verdict === 'req-mismatch') {
+        return;
+      }
       queue.resolve(req, cursor);
       return;
     }
@@ -236,7 +311,7 @@ export function settlerFor(parts: SettlingParts): Settler {
         cursor: cursor ?? '',
         rawDigest: context.rawDigest,
         sentDigest: context.sentDigest,
-        mismatch: false
+        mismatch: settlement.verdict === 'req-mismatch'
       },
       () => queue.resolve(req, cursor)
     );
@@ -256,8 +331,19 @@ export function settlerFor(parts: SettlingParts): Settler {
      * waiting to settle -- which is the second half of the defect above,
      * reached from the other direction.
      */
-    if (mine !== undefined) {
+    /*
+     * ⚠️ AND THE TEST IS OBJECT IDENTITY, in both places that delete.
+     * `mine !== undefined` already meant "this context came from the map
+     * and passed both checks", which is the same thing here because
+     * nothing between the two lines waits -- but the OTHER place that
+     * deletes (the save handler's catch) does wait, and was wrong for
+     * exactly that reason. One rule, spelled the same way in both, so
+     * that neither reads as the special case.
+     */
+    if (mine !== undefined && pendingSaves.get(context.blockId) === mine) {
       pendingSaves.delete(context.blockId);
     }
   };
+  settle.queue = queue;
+  return settle;
 }

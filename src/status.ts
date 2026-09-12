@@ -122,7 +122,25 @@ export function saveNotice(
   normalised: boolean
 ): Notice {
   if (outcome.status === 'refused' || outcome.status === 'blocked') {
-    return { level: 'error', text: outcome.message };
+    /*
+     * ⚠️ THE BLOCK IS NAMED, AND SO IS WHAT BECOMES OF THE EDIT.
+     *
+     * This was the core's sentence alone -- "the core refused the write:
+     * cursor-unreachable" -- with no way to tell WHICH block it was
+     * about when several are open, and no word about the text the user
+     * had just typed. And for a while a refusal was not even reported
+     * as one: the settler recorded it as an acknowledgement, so the
+     * block stopped being counted as unsent and this sentence was the
+     * only trace left of the edit. It is now the sentence a user acts
+     * on, so it says the three things: which block, why the store said
+     * no, and that their text is still there and still unsent.
+     */
+    return {
+      level: 'error',
+      text:
+        `${outcome.id}: ${outcome.message}. Your text is still in the file and has not been ` +
+        'saved to the store.'
+    };
   }
   if (outcome.status === 'pending') {
     return { level: 'warning', text: outcome.message };

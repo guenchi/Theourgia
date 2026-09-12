@@ -83,7 +83,28 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
  * always written first would have to live somewhere this signature
  * cannot reach.
  */
-export type Settle = (req: string, cursor: string | null) => void;
+/*
+ * ⚠️ WHAT THE STORE SAID, NOT JUST WHERE IT LEFT THE WRITER.
+ *
+ * This was `(req, cursor: string | null)`, and `null` was used for two
+ * things that could not be less alike: an answer that did not name a
+ * record, and A REFUSAL. The settler turned the null into an empty
+ * cursor, recorded the answer as an acknowledgement, and dequeued --
+ * so a save the store REJECTED came out as `draft: false`, nothing
+ * pending, `unresolved: false`, and the user's bytes stopped being
+ * reported as unsent work anywhere. The whole `mismatch` path in
+ * `Saving` was unreachable, because the settler passed `false` for it.
+ * Reproduced end to end in review.
+ *
+ * Three verdicts, because there are three things the store can have
+ * said, and each demands something different of the file and the queue.
+ */
+export type Settlement =
+  | { verdict: 'confirmed'; cursor: string }
+  | { verdict: 'refused' }
+  | { verdict: 'req-mismatch' };
+
+export type Settle = (req: string, settlement: Settlement) => void;
 
 export interface SaveOutcome {
   status: SaveStatus;
@@ -91,6 +112,19 @@ export interface SaveOutcome {
   id: string;
   message: string;
   answer: Datum | null;
+  /*
+   * ⚠️ THIS REFUSAL LEFT THE REQUEST IN THE QUEUE ON PURPOSE.
+   *
+   * `req-mismatch` is the one refusal no retry can settle -- the store
+   * holds a different request under this id -- so the entry stays for a
+   * person to look at and the record beside the file is marked
+   * unresolved. `drain` has to be able to tell that apart from an entry
+   * that is still there because the answer COULD NOT BE RECORDED, which
+   * it reports in quite different words. It used to work it out from
+   * "refused and still queued", and a reading derived that way is one
+   * more thing to be wrong about; this is the sender saying what it did.
+   */
+  keptForAPerson?: true;
 }
 
 export interface SaverOptions {
@@ -105,6 +139,20 @@ export interface SaverOptions {
  */
 function saysNobodyKnows(datum: Datum): boolean {
   return headName(datum) === 'error' && Array.isArray(datum) && datum.length >= 2 && isSym(datum[1], 'unknown');
+}
+
+/*
+ * THE STORE HAS A DIFFERENT REQUEST UNDER THAT ID. `(error req-mismatch
+ * ("w" . 6))`. Retrying cannot fix it, so it is the one refusal that
+ * leaves a mark on the file for somebody to look at.
+ */
+function saysTheIdIsTaken(datum: Datum): boolean {
+  return (
+    headName(datum) === 'error' &&
+    Array.isArray(datum) &&
+    datum.length >= 2 &&
+    isSym(datum[1], 'req-mismatch')
+  );
 }
 
 function saysAnOperatorSettledIt(datum: Datum): boolean {
@@ -160,6 +208,39 @@ export class Saver {
   private bootstrapProblem: string | null = null;
 
   constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions = {}) {
+    /*
+     * ⚠️ IF THE SETTLER KNOWS WHICH QUEUE IT IS FOR, IT HAS TO BE THIS
+     * ONE.
+     *
+     * `settlerFor` checks itself against its store; nothing checked it
+     * against the SAVER. These are two arguments here, so a settler
+     * correctly built for one store could be handed to a Saver over
+     * another, and then every answer this queue receives is settled
+     * against that one: reproduced in review with the same request id in
+     * both queues -- one store's answer removed the other's entry and
+     * wrote its cursor beside the other's file.
+     *
+     * The test is object identity, not paths: the settler must hold the
+     * very queue this Saver locks and reloads, not another object over
+     * the same file, because two objects over one file are two copies
+     * and writing one back erases what the other holds.
+     *
+     * ⚠️ A BARE CALLBACK IS ACCEPTED, and that is deliberate rather than
+     * overlooked: the cells in this file pass one on purpose, since what
+     * they are about is the sending. Every settler the extension builds
+     * comes from `settlerFor`, which attaches its queue, so the path
+     * that ships is always checked. What this cannot check is
+     * STALENESS -- whether the queue object is one whose contents have
+     * been superseded -- because that is a property of when it is used,
+     * not of what it was built with.
+     */
+    const carried = (settle as { queue?: Outbox }).queue;
+    if (carried !== undefined && carried !== outbox) {
+      throw new Error(
+        `a saver over ${outbox.path} was given a settler built for ${carried.path}; the answers ` +
+          'this queue receives would be settled against another one'
+      );
+    }
     this.client = client;
     this.outbox = outbox;
     this.settle = settle;
@@ -388,6 +469,15 @@ export class Saver {
       if (outcome.status === 'pending') {
         return outcomes;
       }
+      /*
+       * AN ENTRY KEPT ON PURPOSE IS NOT AN ENTRY THAT COULD NOT BE
+       * RECORDED. The loop still stops -- nothing goes out past it --
+       * but the refusal keeps its own words, which name what the store
+       * said rather than describing a write that never failed.
+       */
+      if (outcome.keptForAPerson === true) {
+        return outcomes;
+      }
       if (this.outbox.find(entry.req) !== undefined) {
         const why =
           'the store answered and the answer could not be recorded beside the file; the request ' +
@@ -465,7 +555,7 @@ export class Saver {
           answer: datum
         };
       }
-      this.settle(entry.req, moved);
+      this.settle(entry.req, { verdict: 'confirmed', cursor: moved });
       return {
         status: isReplay(answer) ? 'replayed' : 'saved',
         req: entry.req,
@@ -509,7 +599,16 @@ export class Saver {
       };
     }
 
-    this.settle(entry.req, null);
+    /*
+     * ⚠️ A REFUSAL IS CARRIED AS ONE, and the one refusal that means
+     * something different to the file is named: `req-mismatch` says the
+     * store holds a DIFFERENT request under this id, which nobody here
+     * can settle by retrying, so the record is marked for a person and
+     * the entry is kept. Every other refusal is the store declining this
+     * write; the bytes stay a draft and the entry stays with them.
+     */
+    const idIsTaken = saysTheIdIsTaken(datum);
+    this.settle(entry.req, idIsTaken ? { verdict: 'req-mismatch' } : { verdict: 'refused' });
     if (saysAnOperatorSettledIt(datum)) {
       return {
         status: 'replayed',
@@ -524,7 +623,8 @@ export class Saver {
       req: entry.req,
       id: entry.id,
       message: describeRefusal(datum),
-      answer: datum
+      answer: datum,
+      ...(idIsTaken ? { keptForAPerson: true as const } : {})
     };
   }
 }

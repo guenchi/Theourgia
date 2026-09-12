@@ -41,7 +41,10 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { Client } from '../../src/client';
 import { Outbox } from '../../src/outbox';
+import { Saver } from '../../src/saver';
+import { CliTransport } from '../../src/transport';
 import { Publisher, digestOfBytes } from '../../src/publication';
 import { Saving } from '../../src/saving';
 import { Sessions } from '../../src/sessions';
@@ -170,7 +173,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
 
-    settle(req, 'w:2');
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
 
     /*
      * THE RECORD WAS WRITTEN BESIDE STORE A'S FILE. That is what the
@@ -213,6 +216,114 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     assert.ok(!fs.existsSync(bQueue), `store B has a queue file at ${bQueue} and never had one`);
     const bBlocks = r.sessions.directoryFor('S-mine', B, 'a.2');
     assert.ok(!fs.existsSync(bBlocks), `store B has a directory for a block it has never seen`);
+  });
+
+  /*
+   * ⚠️ A REFUSED SAVE IS STILL A DRAFT, AND THAT IS THE OBSERVABLE HALF
+   * OF "RECORDS NOTHING".
+   *
+   * The settler used to turn every answer into an acknowledgement: an
+   * empty cursor, `mismatch: false`, `recordAnswer`. A save the store
+   * had REJECTED came out of that as settled -- `draft: false`, nothing
+   * pending, `unresolved: false` -- so the user's rejected text stopped
+   * being reported as work the store has not got, anywhere. Reproduced
+   * end to end in review.
+   *
+   * The repair records nothing, and the fact worth asserting is not a
+   * field of the sidecar but what the product says about the block
+   * afterwards: it is a draft. That is what a scan for unsent work
+   * looks at, and it is what the user sees.
+   */
+  it('leaves a refused save as a draft, with the request released', async () => {
+    const r = rig();
+    const { req, file } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    const settle = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves: new Map<string, SaveContext>(),
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+
+    /*
+     * ⚠️ THE FILE HAS BEEN EDITED SINCE IT WAS PUBLISHED, because that
+     * is what a save IS. The first version of this cell settled a
+     * refusal over an untouched file and asked whether it was a draft:
+     * it was not, and correctly so -- nothing had changed. The premise
+     * had to be the one the product is about.
+     */
+    fs.writeFileSync(file, '## Two\nbody the store refused\n', 'utf8');
+    const before = r.publisher.standingOf(file);
+    assert.strictEqual(
+      (before as { draft?: boolean }).draft,
+      true,
+      `the edited file is not a draft even before the answer: ${JSON.stringify(before)}`
+    );
+
+    settle(req, { verdict: 'refused' });
+
+    const standing = r.publisher.standingOf(file);
+    assert.strictEqual(
+      (standing as { draft?: boolean }).draft,
+      true,
+      `a refused save is not reported as a draft: ${JSON.stringify(standing)}`
+    );
+    const record = r.publisher.sidecarOf(file);
+    assert.strictEqual(record?.cursor, null, 'a refusal moved the cursor');
+    assert.strictEqual(record?.acknowledgedRaw, null, 'a refusal was recorded as acknowledged');
+    assert.strictEqual(record?.unresolved, false, 'a plain refusal was marked for a person');
+
+    /*
+     * AND THE REQUEST IS RELEASED: the store has answered it, so leaving
+     * it queued would make the count of saves still waiting say
+     * something untrue -- and would stop the queue with nothing in the
+     * extension able to clear it.
+     */
+    assert.strictEqual(r.queueOf(A).find(req), undefined, 'the answered request is still queued');
+  });
+
+  /*
+   * ⚠️ AND THE ONE REFUSAL THAT IS KEPT. `req-mismatch` says the store
+   * holds a different request under this id: no retry settles that, so
+   * the entry stays for a person and the record is marked. Without this
+   * row, a build that released everything passes the cell above.
+   */
+  it('keeps a req-mismatch for a person, and marks the record', async () => {
+    const r = rig();
+    const { req, file } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    const pendingSaves = new Map<string, SaveContext>();
+    pendingSaves.set('a.2', {
+      blockId: 'a.2',
+      storeHash: A,
+      file,
+      rawDigest: digestOfBytes(Buffer.from('## Two\nbody\n', 'utf8')),
+      sentDigest: digestOfBytes(Buffer.from('body\n', 'utf8'))
+    });
+    const settle = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves,
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+
+    settle(req, { verdict: 'req-mismatch' });
+
+    const record = r.publisher.sidecarOf(file);
+    assert.strictEqual(record?.unresolved, true, 'the record was not marked for a person');
+    assert.strictEqual(record?.cursor, null, 'a refusal moved the cursor');
+    assert.ok(
+      r.queueOf(A).find(req) !== undefined,
+      'the request nobody can retry was released anyway'
+    );
   });
 
   /*
@@ -266,7 +377,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
 
-    settle(req, 'w:2');
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
 
     /*
      * STORE B'S FILE IS UNTOUCHED: no cursor from another store's
@@ -345,7 +456,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
 
-    settle(req, 'w:2');
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
 
     const after = r.publisher.sidecarOf(bFile);
     assert.strictEqual(after?.cursor, null, 'store A’s answer put its cursor on store B’s file');
@@ -415,7 +526,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
 
-    settle(first.req, 'w:2');
+    settle(first.req, { verdict: 'confirmed', cursor: 'w:2' });
 
     assert.ok(
       pendingSaves.has('a.2'),
@@ -432,6 +543,63 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       after.find('req-second') !== undefined,
       'the unanswered second send was removed by the first answer'
     );
+  });
+
+  /*
+   * ⚠️ AND THE SAVER IT IS HANDED TO MUST BE OVER THE SAME QUEUE OBJECT.
+   *
+   * The pairing checked in `settlerFor` is settler-to-store. `Saver`
+   * takes its outbox and its settlement callback as two arguments, so a
+   * correctly built settler for one store could still be attached to a
+   * Saver over another -- and a review reproduced what follows: with the
+   * same request id in both queues, one store's answer removed the
+   * other's entry and wrote its cursor beside the other's file.
+   *
+   * It is object identity rather than path equality: two Outbox objects
+   * over one file are two copies of it, and writing one back erases what
+   * the other holds.
+   */
+  it('cannot be handed to a saver over a different queue', async () => {
+    const r = rig();
+    await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    await queuedBeforeWeStarted(r, B, 'a.2', 'body\n');
+    const settlerForA = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves: new Map<string, SaveContext>(),
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+    const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', timeoutMs: 1000, transport: 'cli' }, {}));
+
+    assert.throws(
+      () => new Saver(client, r.queueOf(B), settlerForA),
+      /was given a settler built for/,
+      'a saver took a settler belonging to another queue'
+    );
+
+    /*
+     * AND A SETTLER OVER THE SAVER'S OWN QUEUE IS ACCEPTED -- the
+     * control that stops "refuse everything" from passing the row above,
+     * which would mean no saves at all.
+     */
+    const queue = r.queueOf(A);
+    const settlerOverThatQueue = settlerFor({
+      queue,
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves: new Map<string, SaveContext>(),
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+    assert.doesNotThrow(() => new Saver(client, queue, settlerOverThatQueue));
   });
 
   /*
@@ -528,7 +696,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
 
-    settle(req, 'w:2');
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
 
     /*
      * ⚠️ THE SIDECAR IS ALREADY THERE -- the fixture published a version

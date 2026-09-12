@@ -38,8 +38,29 @@ import { assertRuledRefusal } from '../support/refusal-shape';
  * the cells that ARE about it are in answering.test.ts, where settling
  * goes through `Saving.recordAnswer`.
  */
-function settling(outbox: Outbox): (req: string, cursor: string | null) => void {
-  return (req, cursor) => outbox.resolve(req, cursor);
+/*
+ * ⚠️ THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
+ *
+ * These cells are about the sending, not about the recording, so the
+ * settler here just releases the entry -- but it has to release it only
+ * for the verdicts that release it in the product, or the cells stop
+ * describing the same machine. A refusal keeps the entry: the store said
+ * no and the bytes are still only in the user's file.
+ */
+function settling(outbox: Outbox): Settle {
+  return (req, settlement) => {
+    /*
+     * A PLAIN REFUSAL RELEASES THE REQUEST -- the store has answered it,
+     * so it is not waiting any more -- and `req-mismatch` does not: the
+     * store says this id names a different request, and the entry is
+     * what a person will look at. The product records things as well;
+     * these cells are about the sending.
+     */
+    if (settlement.verdict === 'req-mismatch') {
+      return;
+    }
+    outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+  };
 }
 import * as path from 'path';
 import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
@@ -53,7 +74,7 @@ import { Client } from '../../src/client';
 import { CliTransport, TransportError } from '../../src/transport';
 import { Counting } from '../support/counting';
 import { SpawnSpy } from '../support/spawn-spy';
-import { Saver } from '../../src/saver';
+import { Saver, Settle } from '../../src/saver';
 import { LosesTheAnswer } from '../support/lossy';
 import { clause, clauseValue, initWire, readEvent } from '../../src/wire';
 import { CorePin, RealStore, checkCorePin, pinCore } from '../support/real-core';

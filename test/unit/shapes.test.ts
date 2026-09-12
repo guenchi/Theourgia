@@ -338,7 +338,31 @@ describe('S8 what the user is told after a save', () => {
   it('does not let a normalisation notice hide a refusal', () => {
     const notice = saveNotice({ ...saved, status: 'refused', message: 'the block changed' }, true);
     assert.strictEqual(notice.level, 'error');
-    assert.strictEqual(notice.text, 'the block changed');
+    assert.ok(notice.text.includes('the block changed'), notice.text);
+  });
+
+  /*
+   * ⚠️ AND A REFUSAL SAYS WHICH BLOCK, AND WHAT BECAME OF THE TEXT.
+   *
+   * It used to be the core's sentence and nothing else. Two things were
+   * missing and both matter to somebody with several blocks open: which
+   * one this is about, and that what they typed is still in the file and
+   * still unsent. The second became urgent when a review found that a
+   * refusal was being recorded as an acknowledgement -- the block then
+   * stopped being counted as unsent, and this sentence was the only
+   * trace of the edit left anywhere.
+   */
+  it('names the block and says the text is still there, unsent', () => {
+    const notice = saveNotice(
+      { ...saved, id: 'a.7', status: 'refused', message: 'the core refused the write: req-mismatch' },
+      false
+    );
+    assert.strictEqual(
+      notice.text,
+      'a.7: the core refused the write: req-mismatch. Your text is still in the file and has ' +
+        'not been saved to the store.',
+      `the refusal does not say all three things: ${notice.text}`
+    );
   });
 
   it('says both facts when an edit to the protected prefix is refused', () => {

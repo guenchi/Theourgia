@@ -889,19 +889,38 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * answer names only the request and the Saver's settler needs the
      * file and the digests to write the record.
      */
-    pendingSaves.set(sidecar.blockId, {
+    const context: SaveContext = {
       blockId: sidecar.blockId,
       storeHash: storeHash(config.store),
       file,
       rawDigest: decision.rawDigest,
       sentDigest: decision.sentDigest
-    });
+    };
+    pendingSaves.set(sidecar.blockId, context);
 
     let outcome;
     try {
       outcome = await saver.save(sidecar.blockId, decision.intent.field, decision.src);
     } catch (e) {
-      pendingSaves.delete(sidecar.blockId);
+      /*
+       * ⚠️ ONLY THIS SAVE'S OWN MEMORY IS FORGOTTEN.
+       *
+       * The delete was by block id and unconditional, and this line runs
+       * AFTER a wait: save a block in one store, change the store, save
+       * the same block there, and then let this save fail -- and the
+       * entry it removes is the OTHER save's, which is still waiting for
+       * an answer. When that answer came, its file could no longer be
+       * recognised and it was dequeued with nothing recorded: the user's
+       * saved text left as a draft nothing would send again.
+       *
+       * The settler had the same defect and was repaired one round
+       * earlier; this copy survived because the repair was applied where
+       * the finding pointed instead of everywhere the shape was. Found
+       * in review, in the same place I had just looked.
+       */
+      if (pendingSaves.get(sidecar.blockId) === context) {
+        pendingSaves.delete(sidecar.blockId);
+      }
       reportFailure(e);
       paint();
       return;

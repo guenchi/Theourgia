@@ -577,7 +577,8 @@ describe('review 22 a takeover moves one store’s work, through one lock', () =
       const saver = new Saver(
         new Client(new CliTransport(core.config(), core.env())),
         outbox,
-        (req, cursor) => outbox.resolve(req, cursor)
+        (req, settlement) =>
+          settlement.verdict === 'confirmed' ? outbox.resolve(req, settlement.cursor) : undefined
       );
       const order: string[] = [];
       const saving = saver.save('a.2', 'src', 'body\n').then(() => {

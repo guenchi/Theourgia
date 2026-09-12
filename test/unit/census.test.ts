@@ -80,7 +80,7 @@ const AT_LEAST: Array<[string, number]> = [
    * host, after a review traced a takeover into the queue the window had
    * just stopped using.
    */
-  ['awaiting.test.ts', 5],
+  ['awaiting.test.ts', 7],
   ['blocks.test.ts', 20],
   /*
    * ⚠️ INCLUDING ITSELF. This file was exempt from the inventory check
@@ -108,9 +108,9 @@ const AT_LEAST: Array<[string, number]> = [
    * `src/settling.ts` so that "which queue, which store" could be
    * driven by a cell at all.
    */
-  ['settling.test.ts', 6],
+  ['settling.test.ts', 10],
   ['sessions.test.ts', 100],
-  ['shapes.test.ts', 62],
+  ['shapes.test.ts', 63],
   ['transport.test.ts', 20],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]

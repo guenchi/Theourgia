@@ -33,15 +33,36 @@ import * as assert from 'assert';
  * the cells that ARE about it are in answering.test.ts, where settling
  * goes through `Saving.recordAnswer`.
  */
-function settling(outbox: Outbox): (req: string, cursor: string | null) => void {
-  return (req, cursor) => outbox.resolve(req, cursor);
+/*
+ * ⚠️ THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
+ *
+ * These cells are about the sending, not about the recording, so the
+ * settler here just releases the entry -- but it has to release it only
+ * for the verdicts that release it in the product, or the cells stop
+ * describing the same machine. A refusal keeps the entry: the store said
+ * no and the bytes are still only in the user's file.
+ */
+function settling(outbox: Outbox): Settle {
+  return (req, settlement) => {
+    /*
+     * A PLAIN REFUSAL RELEASES THE REQUEST -- the store has answered it,
+     * so it is not waiting any more -- and `req-mismatch` does not: the
+     * store says this id names a different request, and the entry is
+     * what a person will look at. The product records things as well;
+     * these cells are about the sending.
+     */
+    if (settlement.verdict === 'req-mismatch') {
+      return;
+    }
+    outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+  };
 }
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
 import { Outbox, OutboxWriteError } from '../../src/outbox';
-import { Saver } from '../../src/saver';
+import { Saver, Settle } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
@@ -362,10 +383,30 @@ describe('S6 an answer is sorted by what it says about the store', () => {
     assert.strictEqual(outbox.pendingCount, 1);
   });
 
-  it('drops the entry when the id already names a different request', async () => {
+  /*
+   * ⚠️ THIS EXPECTATION CHANGED, AND THE CHANGE IS THE POINT.
+   *
+   * It used to read "drops the entry", asserting `pendingCount === 0`,
+   * and it was written against what the code did: every refusal was
+   * settled as though it had been acknowledged, so every refusal
+   * dequeued. A review showed what that cost -- a rejected edit was
+   * recorded as saved, and the `mismatch` path in `Saving` was
+   * unreachable -- and the main session ruled the contract: a plain
+   * refusal releases the request and records nothing, while
+   * `req-mismatch` KEEPS it, because the store is saying this id names a
+   * different request and no retry can settle that. The entry is what a
+   * person will look at.
+   *
+   * The other six cells in this section did not change, which is the
+   * reading that says the new contract is the one they were already
+   * written for.
+   */
+  it('keeps the entry when the id already names a different request', async () => {
     const { outcome, outbox } = await outcomeOf('(error req-mismatch ("w" . 6))\n', 1);
     assert.strictEqual(outcome.status, 'refused');
-    assert.strictEqual(outbox.pendingCount, 0);
+    assert.strictEqual(outcome.keptForAPerson, true, 'the refusal did not say it kept the entry');
+    assert.strictEqual(outbox.pendingCount, 1, 'the request nobody can retry was dropped');
+    assert.match(outcome.message, /req-mismatch/, 'the refusal lost the name the core gave it');
   });
 
   it('drops the entry when the cursor names an unreachable position', async () => {
@@ -1167,15 +1208,15 @@ describe('X1c a save stops when the answer could not be recorded', () => {
     outbox.load();
     const client = new Client(new CliTransport(core.config(), core.env()));
     let settled = 0;
-    const saver = new Saver(client, outbox, (req, cursor) => {
+    const saver = new Saver(client, outbox, (req, settlement) => {
       /*
        * THE FIRST ANSWER IS RECORDED, THE SECOND IS NOT -- which is what
        * `recordAnswer` does when the record beside the second file
        * cannot be written.
        */
       settled += 1;
-      if (settled === 1) {
-        outbox.resolve(req, cursor);
+      if (settled === 1 && settlement.verdict === 'confirmed') {
+        outbox.resolve(req, settlement.cursor);
       }
     });
     await saver.save('a.2', 'src', 'one\n');

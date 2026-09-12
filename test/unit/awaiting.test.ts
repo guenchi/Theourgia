@@ -253,6 +253,137 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
 };
 
 /*
+ * ⚠️ AND THE DOOR THAT IS LEFT OPEN ON PURPOSE HAS TO BE WATCHED.
+ *
+ * `Saver` refuses a settler that carries a queue other than its own, and
+ * accepts a bare callback carrying none -- deliberately, because the
+ * cells in `saver.test.ts` pass one, and what they are about is the
+ * sending rather than the recording. The safety of that rests on a
+ * sentence: "every settler the extension builds comes from
+ * `settlerFor`, so the path that ships is always checked".
+ *
+ * ⚠️ THAT SENTENCE WAS NARRATION. Nothing made it true, and one bare
+ * arrow function at the wiring would have unmade it silently -- the same
+ * shape as `openBlock`'s exemption, which stated a false premise for two
+ * rounds. A review asked for the guard rather than the claim. This is
+ * it: in `src/`, the settler handed to a Saver comes from `settlerFor`,
+ * read from the syntax rather than from a search for the word.
+ */
+describe('every saver the extension builds gets a settler that knows its queue', () => {
+  it('passes a settlerFor(...) to every new Saver in src', () => {
+    const directory = path.join(__dirname, '..', '..', '..', 'src');
+    const built: string[] = [];
+    const bare: string[] = [];
+    for (const name of fs.readdirSync(directory).filter((f) => f.endsWith('.ts'))) {
+      const src = ts.createSourceFile(
+        name,
+        fs.readFileSync(path.join(directory, name), 'utf8'),
+        ts.ScriptTarget.ES2022,
+        true
+      );
+      const walk = (n: ts.Node): void => {
+        if (ts.isNewExpression(n) && n.expression.getText(src) === 'Saver') {
+          const settler = n.arguments?.[2];
+          const where = `${name}:${src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1}`;
+          const from =
+            settler !== undefined &&
+            ts.isCallExpression(settler) &&
+            settler.expression.getText(src) === 'settlerFor';
+          (from ? built : bare).push(where);
+        }
+        ts.forEachChild(n, walk);
+      };
+      walk(src);
+    }
+    /*
+     * THE INSTRUMENT'S OWN READING FIRST: a scan that found no Saver at
+     * all would pass the check below while saying nothing.
+     */
+    assert.ok(
+      built.length + bare.length > 0,
+      'no Saver is constructed anywhere in src, so this cell is about nothing'
+    );
+    assert.deepStrictEqual(
+      bare,
+      [],
+      'these savers are given a settler that does not come from settlerFor, so nothing checks ' +
+        'that it belongs to the queue they lock'
+    );
+  });
+});
+
+/*
+ * ⚠️ WHAT A HANDLER FORGETS AFTER A WAIT.
+ *
+ * `pendingSaves` is keyed by block id and outlives every rebuild, so an
+ * entry under a key may have been written by a different save -- to
+ * another store, or of other bytes. Two places delete from it, and both
+ * run after a wait: the settler, and the save handler's `catch`. The
+ * settler was repaired a round earlier; the catch was found still
+ * deleting unconditionally, and what it threw away was another save's
+ * record of what it had sent -- that save's answer could then not
+ * recognise its own file and was dequeued with nothing written, leaving
+ * the user's saved text a draft nothing would send again. Reproduced in
+ * review, in the place I had just repaired.
+ *
+ * ⚠️ AND IT IS CHECKED FROM THE SOURCE BECAUSE THE HANDLER IS NOT
+ * REACHABLE, said rather than left as a gap: `onSaved` is built inside
+ * `activate` and needs the editor host, so no unit cell drives it, and
+ * the mutation that removes this guard survives every suite. What can
+ * be read is the shape the repair has: a delete guarded by an identity
+ * comparison against the context this save is holding. So that is what
+ * is read -- the same instrument as the census below, for the same
+ * reason.
+ */
+describe('nothing forgets a pending save that was not its own', () => {
+  it('guards every delete from pendingSaves with an identity check', () => {
+    for (const name of ['extension.ts', 'settling.ts']) {
+      const file = path.join(__dirname, '..', '..', '..', 'src', name);
+      const src = ts.createSourceFile(
+        name,
+        fs.readFileSync(file, 'utf8'),
+        ts.ScriptTarget.ES2022,
+        true
+      );
+      const deletes: ts.CallExpression[] = [];
+      const walk = (n: ts.Node): void => {
+        if (
+          ts.isCallExpression(n) &&
+          /pendingSaves\.delete$/.test(n.expression.getText(src))
+        ) {
+          deletes.push(n);
+        }
+        ts.forEachChild(n, walk);
+      };
+      walk(src);
+      assert.ok(deletes.length > 0, `${name} no longer deletes from pendingSaves at all`);
+      for (const call of deletes) {
+        /*
+         * THE GUARD IS THE `if` THIS DELETE SITS INSIDE, and it has to
+         * compare something with `pendingSaves.get(...)` -- identity,
+         * not presence. A delete that is not inside such an `if` is the
+         * defect this describe exists for.
+         */
+        let at: ts.Node | undefined = call.parent;
+        let guarded = false;
+        while (at !== undefined && !ts.isFunctionDeclaration(at) && !ts.isArrowFunction(at)) {
+          if (ts.isIfStatement(at) && /pendingSaves\.get\(/.test(at.expression.getText(src))) {
+            guarded = true;
+            break;
+          }
+          at = at.parent;
+        }
+        assert.ok(
+          guarded,
+          `${name}:${src.getLineAndCharacterOfPosition(call.getStart(src)).line + 1} deletes a ` +
+            'pending save without checking that the map still holds the one this code is about'
+        );
+      }
+    }
+  });
+});
+
+/*
  * ⚠️ AND THE ONE EXEMPTION WHOSE ARGUMENT IS ABOUT WHERE THE WRITING
  * GOES, CHECKED WHERE IT CAN BE.
  *
