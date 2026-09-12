@@ -46,6 +46,19 @@ function scratch(): string {
 }
 
 /*
+ * WHICH WINDOW A CLAIM TOKEN NAMES, read the way `claim` reads it.
+ *
+ * ⚠️ THE TOKEN HAS TWO LINES: the session id, and the nonce of the
+ * incarnation that published it. The cells used to `trim()` the whole
+ * file, which was the id when there was only one line and is now both.
+ * A cell reading a file differently from the code that writes it is a
+ * cell about a different file.
+ */
+function holderOf(token: string): string {
+  return fs.readFileSync(token, 'utf8').split('\n')[0];
+}
+
+/*
  * A SESSION DIRECTORY THAT EXISTS, with the identity a cell wants it to
  * have. Several cells below are about what happens to ANOTHER session,
  * and a session that was never written to disk is not another session --
@@ -661,7 +674,7 @@ describe('X1c ⑧ the claim token names the window that took it', () => {
     assert.ok(answer.claimed, JSON.stringify(answer));
     if (answer.claimed) {
       assert.strictEqual(
-        fs.readFileSync(answer.token, 'utf8').trim(),
+        holderOf(answer.token),
         'S-mine',
         'the token does not say which window holds the claim'
       );
@@ -713,7 +726,7 @@ describe('X1c ⑧ the claim token names the window that took it', () => {
     assert.ok(second.claimed, 'the queue was stranded although its holder is gone');
     if (second.claimed) {
       assert.strictEqual(
-        fs.readFileSync(second.token, 'utf8').trim(),
+        holderOf(second.token),
         'S-next',
         'the new token still names the window that died'
       );
@@ -957,7 +970,7 @@ describe('U-claim taking over a window that left no record', () => {
     assert.strictEqual(forced.claimed, true, JSON.stringify(forced));
     if (forced.claimed) {
       assert.strictEqual(
-        fs.readFileSync(forced.token, 'utf8').trim(),
+        holderOf(forced.token),
         'S-mine',
         'the forced token does not say who holds it'
       );
@@ -1158,5 +1171,198 @@ describe('review 21 a look that failed is not a missing record', () => {
     const row = (await sessions.others()).find((o) => o.sessionId === 'S-broken2');
     assert.ok(row !== undefined, 'the only trace of that window is not in the listing');
     assert.strictEqual(row?.forceable, false);
+  });
+});
+
+/*
+ * REVIEW ROUND 24: A NAME IS NOT AN IDENTITY.
+ *
+ * Re-entering one's own claim compared the id written in the token with
+ * this window's id, after trimming the file. A window called `"S "`
+ * therefore published a token that read back as `"S"`, and a DIFFERENT
+ * window called `"S"` re-entered its claim and sent what the first was
+ * still draining -- the double-send the token exists to prevent.
+ * Reproduced in review. A window that died and was replaced by one with
+ * the same id was accepted too, and inherited a generation number that
+ * then described two claimants.
+ *
+ * The token carries the nonce `begin` made, which identifies the
+ * incarnation. Sharing a name is no longer sharing a claim.
+ */
+describe('review 24 re-entering a claim is about the window, not its name', () => {
+  it('refuses a window whose id only looks like the holder’s', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    /*
+     * THE HOLDER'S ID CARRIES A TRAILING SPACE, which the trimmed
+     * comparison erased. It is alive, so a second window must be
+     * refused; the point is which refusal it gets and why.
+     */
+    const holder = new Sessions(new RecordingFs(), storage);
+    holder.begin('S-taker ', []);
+    assert.ok((await holder.claim('S-old')).claimed);
+
+    const lookalike = new Sessions(new RecordingFs(), storage);
+    lookalike.begin('S-taker', []);
+    const answer = await lookalike.claim('S-old');
+    assert.strictEqual(
+      answer.claimed,
+      false,
+      'a window re-entered a claim that belonged to another window with a similar name'
+    );
+  });
+
+  /*
+   * ⚠️ AND A REPLACEMENT WITH THE SAME ID INHERITS NOTHING -- it is
+   * REFUSED, and that is the honest answer rather than a convenient one.
+   *
+   * The expectation here was written as "it takes over by the ordinary
+   * route, with the next number", and the code said otherwise: the
+   * token's holder is looked up by NAME, and that name now belongs to a
+   * window which is alive, so the claim reads as held by a running
+   * window. Nothing on disk distinguishes "I am the window that
+   * published this" from "I have its name", which is the whole point of
+   * the nonce -- and when the nonce does not match, the safe answer is
+   * to refuse.
+   *
+   * IT IS NOT A STRANDING: the name is held by a live window, and when
+   * that one stops, the next takes the next number by the ordinary
+   * route.
+   */
+  it('refuses a later window that merely took the same id', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const first = new Sessions(new RecordingFs(), storage);
+    first.begin('S-same', []);
+    const won = await first.claim('S-old');
+    assert.ok(won.claimed);
+    /*
+     * THE PUBLISHER DIES AND A NEW WINDOW TAKES ITS NAME.
+     */
+    makeSession(storage, 'S-same', { pid: 999999, startedAt: 1000 });
+    const second = new Sessions(new RecordingFs(), storage);
+    second.begin('S-same', []);
+    const again = await second.claim('S-old');
+    assert.deepStrictEqual(
+      again,
+      { claimed: false, because: 'already-claimed' },
+      'a different incarnation was let into a claim on the strength of sharing a name'
+    );
+  });
+
+  /*
+   * AND THE GREEN TWIN: the window that really did publish the token
+   * still re-enters it. Without this the two cells above are satisfied
+   * by a build that never re-enters, which is the stranding round 23
+   * removed.
+   */
+  it('still lets the very window that published the token take it up again', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-taker', []);
+    const first = await sessions.claim('S-old');
+    const again = await sessions.claim('S-old');
+    assert.ok(again.claimed, JSON.stringify(again));
+    if (first.claimed && again.claimed) {
+      assert.strictEqual(again.sequence, first.sequence);
+    }
+  });
+});
+
+/*
+ * REVIEW ROUND 24: WHAT A TAKEOVER LEFT, COUNTED HONESTLY.
+ */
+describe('review 24 what a takeover reports as still waiting', () => {
+  function queueAt(storage: string, id: string, where: string, entries: unknown[]): void {
+    const dir = where === '' ? path.join(storage, 'sessions', id) : path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outbox.json'), JSON.stringify({ cursor: null, entries }), 'utf8');
+  }
+
+  function entry(req: string, importedBy: string | null = null): unknown {
+    return {
+      req,
+      cursor: 'w:1',
+      id: 'a.1',
+      field: 'src',
+      payload: 'x',
+      state: 'queued',
+      createdAt: 0,
+      lastError: null,
+      importedBy
+    };
+  }
+
+  it('does not count a request an earlier takeover already carried away', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', [entry('gone', 'S-dead.claim.1')]);
+    queueAt(storage, 'S-dead', 'store-b', [entry('waiting')]);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed);
+    const moved = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          'store-b'
+        )
+      : null;
+    assert.strictEqual(
+      moved?.leftBehind,
+      0,
+      'the user was told to go back for a request an earlier run had already brought across'
+    );
+    assert.strictEqual(moved?.imported, 1);
+  });
+
+  /*
+   * ⚠️ AND A QUEUE NOBODY CAN READ IS NOT AN EMPTY ONE. Counting it as
+   * zero reported somebody's unsent work as nothing left behind.
+   */
+  it('says a queue could not be read rather than counting it as empty', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', [entry('r1')]);
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-dead', 'store-x'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'sessions', 'S-dead', 'store-x', 'outbox.json'), '{ not json', 'utf8');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    const moved = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          'store-a'
+        )
+      : null;
+    assert.strictEqual(moved?.unreadable, 1, 'an unreadable queue was reported as nothing left');
+    assert.strictEqual(moved?.leftBehind, 0);
+  });
+
+  /*
+   * AND A QUEUE FROM BEFORE STORES HAD DIRECTORIES IS COUNTED APART,
+   * because no configuration reaches it and "configure that store" is an
+   * instruction the user cannot carry out.
+   */
+  it('counts a queue whose store nothing can establish apart from the rest', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', [entry('r1')]);
+    queueAt(storage, 'S-dead', '', [entry('old1'), entry('old2')]);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    const moved = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          'store-a'
+        )
+      : null;
+    assert.strictEqual(moved?.unrouted, 2);
+    assert.strictEqual(moved?.leftBehind, 0, 'the unroutable queue was counted as another store’s');
   });
 });

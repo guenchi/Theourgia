@@ -658,7 +658,11 @@ export function adoptedNotice(
   imported: number,
   skipped: number,
   nowhereToPutThem: boolean,
-  leftBehind = 0
+  left: { leftBehind: number; unrouted: number; unreadable: number } = {
+    leftBehind: 0,
+    unrouted: 0,
+    unreadable: 0
+  }
 ): Notice {
   if (nowhereToPutThem) {
     /*
@@ -682,15 +686,34 @@ export function adoptedNotice(
    * claim is re-entrant for the window that holds it.
    */
   const rest =
-    leftBehind === 0
+    left.leftBehind === 0
       ? ''
-      : ` ${leftBehind} more belong to other stores and are still there; configure that store and ` +
-        'run this command again to bring them across.';
+      : ` ${left.leftBehind} more belong to other stores and are still there; configure that ` +
+        'store and run this command again to bring them across.';
+  /*
+   * ⚠️ THE ONES NOTHING CAN ROUTE ARE SAID SEPARATELY, and no advice is
+   * offered for them. They sit in a queue written before stores had
+   * their own directories; nothing can establish which store they were
+   * for, so "configure that store" is an instruction the user cannot
+   * carry out. Telling them to do it anyway is worse than telling them
+   * it cannot be done from here.
+   */
+  const stranded =
+    left.unrouted === 0
+      ? ''
+      : ` ${left.unrouted} more are in a queue from an older version of this extension, which ` +
+        'does not say which store they were for; this command cannot move those.';
+  const broken =
+    left.unreadable === 0
+      ? ''
+      : ` ${left.unreadable} of its queue file(s) could not be read, so what is in them is not ` +
+        'known and nothing was taken from them.';
   return {
     level: 'information',
     text:
-      `${sessionId}: ${imported} unsent request(s) are now in this window's queue.${also}${rest} ` +
-      `They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`
+      `${sessionId}: ${imported} unsent request(s) are now in this window's ` +
+      `queue.${also}${rest}${stranded}${broken} They go out with the next save, or run ` +
+      `"${RETRY_OUTBOX.title}" to send them now.`
   };
 }
 

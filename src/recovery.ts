@@ -302,9 +302,7 @@ async function act(
       into.storeHash
     )
   );
-  chooser.say(
-    adoptedNotice(row.sessionId, moved.imported, moved.skipped, false, moved.leftBehind)
-  );
+  chooser.say(adoptedNotice(row.sessionId, moved.imported, moved.skipped, false, moved));
   return {
     did: 'take-over',
     sessionId: row.sessionId,

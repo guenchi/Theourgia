@@ -247,6 +247,12 @@ export class Sessions {
   private readonly globalStorage: string;
   private readonly startTime: StartTimeReader;
   private mine: string | null = null;
+  /*
+   * THIS WINDOW'S INCARNATION. `begin` makes it; a claim token carries
+   * it so that re-entering a claim is about the window that published
+   * it and not about a window that happens to have the same name.
+   */
+  private nonce: string | null = null;
 
   constructor(files: FileOps, globalStorage: string, startTime: StartTimeReader = systemStartTime) {
     this.files = files;
@@ -368,6 +374,7 @@ export class Sessions {
       stores
     };
     this.mine = sessionId;
+    this.nonce = identity.nonce;
     this.files.makeDirectory(this.sessionDirectory(sessionId));
     this.files.writeText(this.identityFile(sessionId), `${JSON.stringify(identity, null, 2)}\n`);
     return identity;
@@ -698,7 +705,27 @@ export class Sessions {
        * and carries on, so an interrupted takeover is not the end of
        * the queue. (§12.11.3)
        */
-      const holder = this.files.readText(path.join(this.sessionsRoot(), newest)).trim();
+      const written = this.files.readText(path.join(this.sessionsRoot(), newest));
+      const holder = written.split('\n')[0];
+      /*
+       * ⚠️ THE SECOND LINE IS THE NONCE, AND RE-ENTRY NEEDS BOTH.
+       *
+       * Comparing the id alone was not ownership. The text was trimmed
+       * before the comparison, so a window called `"S "` published a
+       * token that read back as `"S"` and a DIFFERENT window called
+       * `"S"` re-entered its claim -- and sent what the first was still
+       * draining, which is the double-send the token exists to prevent.
+       * Reproduced in review. A window that died and was replaced by one
+       * with the same id was accepted too, and inherited a generation
+       * number that then described two claimants.
+       *
+       * The nonce is made fresh at `begin` and identifies the
+       * INCARNATION. A token written before this carries no second line,
+       * and is not re-enterable: it falls through to the liveness check
+       * below, which is the answer this code gave before re-entry
+       * existed and is the conservative one.
+       */
+      const stamp = written.split('\n')[1] ?? '';
       /*
        * ⚠️ A CLAIM THIS WINDOW ALREADY HOLDS IS RE-ENTERED, NOT REFUSED.
        *
@@ -720,7 +747,7 @@ export class Sessions {
        * because a new number would say a new generation took over.
        * (§12.11.3)
        */
-      if (this.mine !== null && holder === this.mine) {
+      if (this.mine !== null && holder === this.mine && stamp !== '' && stamp === this.nonce) {
         return {
           claimed: true,
           token: path.join(this.sessionsRoot(), newest),
@@ -743,7 +770,13 @@ export class Sessions {
     const token = path.join(this.sessionsRoot(), `${prefix}${sequence}`);
     const temporary = `${token}.tmp-${randomUUID()}`;
     this.files.makeDirectory(this.sessionsRoot());
-    this.files.writeDurably(temporary, `${this.mine ?? 'unnamed'}\n`);
+    /*
+     * THE ID AND THE INCARNATION, one per line. The id is what another
+     * window reads to judge the holder; the nonce is what this window
+     * reads to know the claim is its OWN and not one belonging to a
+     * different window that happens to share a name.
+     */
+    this.files.writeDurably(temporary, `${this.mine ?? 'unnamed'}\n${this.nonce ?? ''}\n`);
     try {
       this.files.link(temporary, token);
     } catch (e) {
@@ -796,9 +829,15 @@ export class Sessions {
     token: ClaimToken,
     into: ImportTarget,
     storeHash?: string
-  ): { imported: number; skipped: number; leftBehind: number } {
+  ): {
+    imported: number;
+    skipped: number;
+    leftBehind: number;
+    unrouted: number;
+    unreadable: number;
+  } {
     if (!this.files.exists(token.file)) {
-      return { imported: 0, skipped: 0, leftBehind: 0 };
+      return { imported: 0, skipped: 0, leftBehind: 0, unrouted: 0, unreadable: 0 };
     }
     let imported = 0;
     let skipped = 0;
@@ -820,28 +859,66 @@ export class Sessions {
      */
     const untouched = all.filter((q) => !queues.includes(q));
     let leftBehind = 0;
+    let unrouted = 0;
+    let unreadable = 0;
+    const legacy = path.join(this.sessionDirectory(token.deadSessionId), 'outbox.json');
     for (const queue of untouched) {
-      leftBehind += this.entriesIn(queue);
+      const count = this.entriesIn(queue);
+      if (count === null) {
+        unreadable += 1;
+        continue;
+      }
+      /*
+       * ⚠️ A QUEUE FROM BEFORE STORES HAD THEIR OWN DIRECTORIES IS NOT
+       * "ANOTHER STORE'S". Nothing can say which store it was for, so no
+       * configuration reaches it and telling the user to configure that
+       * store is advice they cannot act on. It is counted apart.
+       */
+      if (path.resolve(queue) === path.resolve(legacy)) {
+        unrouted += count;
+        continue;
+      }
+      leftBehind += count;
     }
     for (const queue of queues) {
       const outcome = this.importQueue(queue, token, into);
       imported += outcome.imported;
       skipped += outcome.skipped;
     }
-    return { imported, skipped, leftBehind };
+    return { imported, skipped, leftBehind, unrouted, unreadable };
   }
 
   /*
-   * How many requests a queue file holds, or none when it will not read.
-   * A queue nobody can parse is left for a build that can.
+   * HOW MANY REQUESTS A QUEUE STILL HAS FOR SOMEBODY, or `null` when it
+   * will not read.
+   *
+   * ⚠️ NULL AND ZERO ARE DIFFERENT ANSWERS. This returned zero for a
+   * queue nobody could parse, so an unreadable file full of somebody's
+   * unsent work was reported as nothing left behind -- the shape this
+   * batch has met six times, an absence drawn as the reassuring answer.
+   *
+   * ⚠️ AND AN ENTRY ALREADY CARRIED AWAY IS NOT STILL WAITING. The count
+   * was of the whole array, so the second run of a takeover advised the
+   * user to go back for a request the first run had already brought
+   * across. `imported-by` is the mark that says it went.
    */
-  private entriesIn(queue: string): number {
+  private entriesIn(queue: string): number | null {
+    let raw: { entries?: unknown[] };
     try {
-      const raw = JSON.parse(this.files.readText(queue)) as { entries?: unknown[] };
-      return Array.isArray(raw.entries) ? raw.entries.length : 0;
+      raw = JSON.parse(this.files.readText(queue)) as { entries?: unknown[] };
     } catch (e) {
-      return 0;
+      return null;
     }
+    if (!Array.isArray(raw.entries)) {
+      return null;
+    }
+    return raw.entries.filter(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as { req?: unknown }).req === 'string' &&
+        (entry as { importedBy?: unknown }).importedBy == null
+    ).length;
   }
 
   private importQueue(
