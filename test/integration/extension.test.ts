@@ -111,12 +111,19 @@ describe('the extension inside an editor', function () {
    * cannot be exercised outside a host -- reports a dismissal as the
    * flow expects.
    *
-   * ⚠️ AND IT HAS TO DISMISS THE LIST. The first version of this cell
-   * assumed the host would have no other sessions and the flow would
-   * take its first exit. It does not: every earlier run of this suite
-   * left a session directory in the host's storage, so the list opens
-   * and waits on a person -- 180 seconds of it. A cell that waits on a
-   * person is a cell that reports a timeout.
+   * ⚠️ AND IT EXPECTS AN EMPTY LIST, WHICH THE RUNNER MAKES TRUE. The
+   * first version of this cell assumed that and was wrong: every earlier
+   * run left a session directory in the host's storage and nothing
+   * reclaims them, so the list opened and waited on a person -- 180
+   * seconds of it. The runner now empties that storage before it starts
+   * and refuses to start if it could not, so "this host has one session"
+   * is a guarantee rather than a hope, and the cell says which exit it
+   * expects instead of accepting either.
+   *
+   * THE DISMISSAL STAYS. If a session does turn up the list opens, and a
+   * cell that waits on a person is a cell that reports a timeout; this
+   * way it reports the assertion below instead, which says what
+   * happened.
    */
   it('runs the recovery command, and dismissing its list does nothing', async () => {
     const running = vscode.commands.executeCommand('theourgia.otherSessions') as Promise<{
@@ -127,10 +134,10 @@ describe('the extension inside an editor', function () {
     await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
     const outcome = await running;
     assert.ok(outcome !== undefined, 'the command returned nothing, so it decided nothing');
-    assert.strictEqual(
-      outcome.did,
-      'nothing',
-      `dismissing the list acted on something: ${JSON.stringify(outcome)}`
+    assert.deepStrictEqual(
+      outcome,
+      { did: 'nothing', because: 'no-other-sessions' },
+      'the recovery command found another window in a host the runner had just emptied'
     );
     /*
      * ⚠️ WHAT THIS CELL DOES NOT ESTABLISH: that nothing moved on disk.

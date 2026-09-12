@@ -611,11 +611,17 @@ export function refusedTakeoverNotice(
     };
   }
   if (because === 'already-claimed') {
+    /*
+     * ⚠️ IT DOES NOT SAY THE WORK IS BEING SENT. Whoever holds the claim
+     * may have imported nothing -- this window reached that state itself
+     * once -- so "it is being sent from there" would be a promise this
+     * code has no way to keep.
+     */
     return {
       level: 'warning',
       text:
-        `${sessionId} was not ${what}: another window has already taken it over and is still ` +
-        'running. Its work is not lost; it is being sent from there.'
+        `${sessionId} was not ${what}: another window holds the takeover and is still running. ` +
+        'Nothing here can move its work while that is true.'
     };
   }
   if (because === 'not-found') {
@@ -633,9 +639,18 @@ export function refusedTakeoverNotice(
 }
 
 /*
- * WHAT A TAKEOVER MOVED. `skipped` is not a failure: an entry already in
- * this window's queue is one an earlier takeover carried, and copying it
- * again would send it twice.
+ * WHAT A TAKEOVER MOVED.
+ *
+ * ⚠️ `skipped` COUNTS TWO DIFFERENT THINGS and the sentence must not
+ * claim either: an entry already in this window's queue, and one the
+ * source has marked as handed to some other claimant. An earlier comment
+ * here said it meant the first, which a review pointed out is not
+ * established.
+ *
+ * ⚠️ AND MOVING THEM IS NOT SENDING THEM. Nothing here starts a drain:
+ * the entries wait for the next save or an explicit retry, and a
+ * sentence promising they are on their way would be describing work that
+ * has not been scheduled.
  */
 export function adoptedNotice(
   sessionId: string,
@@ -651,10 +666,12 @@ export function adoptedNotice(
         'store is configured here. Set theourgia.store and run the command again.'
     };
   }
-  const also = skipped === 0 ? '' : ` ${skipped} were already here and were left alone.`;
+  const also = skipped === 0 ? '' : ` ${skipped} were left where they were.`;
   return {
     level: 'information',
-    text: `${sessionId} was taken over: ${imported} unsent request(s) moved into this window.${also}`
+    text:
+      `${sessionId} was taken over: ${imported} unsent request(s) are now in this window's ` +
+      `queue.${also} They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`
   };
 }
 

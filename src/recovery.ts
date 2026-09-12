@@ -31,11 +31,19 @@
  * and what a cell supplies; the flow cannot tell them apart, so what a
  * cell exercises is what runs.
  *
- * ⚠️ AND THE SENTENCES ARE NOT WRITTEN HERE. Every line the user reads
- * comes from `status.ts` or from `Sessions`, where cells already pin
- * them. A confirmation that composed its own wording would be a second
- * copy of the one thing that has to be exactly right -- the statement of
- * what the action costs.
+ * ⚠️ THE SENTENCES THAT SAY WHAT AN ACTION COSTS ARE NOT WRITTEN HERE.
+ * The forced takeover's warning and the two fixed discard notes come
+ * from `status.ts` and `sessions.ts` unchanged, because a copy of the
+ * one thing that has to be exactly right is a second place for it to be
+ * wrong.
+ *
+ * ⚠️ THE LABELS AND THE COUNTS ARE WRITTEN HERE, and an earlier version
+ * of this paragraph said otherwise -- it claimed every line the user
+ * reads comes from elsewhere, which is false of the row descriptions,
+ * the two decidable-liveness phrases, the action labels and details, the
+ * list's placeholder and the discard button's word. A review said so.
+ * They are here because they are about this list and nothing else reads
+ * them; what is elsewhere is what states a cost.
  */
 import {
   DISCARD_BACKUP_NOTE,
@@ -98,10 +106,11 @@ function counts(row: OtherSession): string {
 }
 
 /*
- * THE SENTENCE FOR A ROW COMES FROM status.ts. A window that can be
- * judged says so in one word; one that cannot gets the sentence for the
- * particular reason, because the five reasons are not the same news and
- * two of them will never resolve.
+ * THE SENTENCE FOR A ROW. A window that cannot be judged gets the
+ * sentence `status.ts` writes for that particular reason, because the
+ * five reasons are not the same news and two of them will never resolve.
+ * The two decidable cases are phrased here: they are a word apiece and
+ * nothing else says them.
  */
 function sentenceFor(row: OtherSession): string {
   if ('alive' in row.liveness) {
@@ -148,10 +157,38 @@ function actionsFor(row: OtherSession): Array<Choice<RecoveryAction>> {
  * decision: which windows there are, what may be done to this one, what
  * the user is told it costs, and what is then done.
  */
+/*
+ * WHERE A TAKEOVER'S ENTRIES GO.
+ *
+ * ⚠️ IT IS A FUNCTION AND NOT AN OBJECT, and it carries the name of its
+ * store. Both were defects a review found. An object closing over a
+ * queue is written to outside whatever serialises that queue, so a save
+ * in flight erases the import while the source is already marked as
+ * having handed it over -- the bytes survive and nothing ever offers
+ * them again. And a destination with no store named took every one of
+ * the dead window's queues, so requests written for one store were
+ * dropped into another and would have been sent there.
+ *
+ * ⚠️ AND THIS PARAGRAPH NAMES THE FUNCTION RATHER THAN ASSERTING THE
+ * STATE. The comment it replaces said the destination "is held by the
+ * Saver's serial chain", which was a claim about how things stood and
+ * was false -- nothing made it true and nothing would have noticed. What
+ * can be checked by reading is which function opens the section, so that
+ * is what is written: in production `run` is `Saver.adopt`, which goes
+ * through `Saver.serialise` -- the same one `save` and `retry` use, and
+ * which reloads the queue from disk after taking it. A reader who wants
+ * to know whether the import is serialised follows that name; they
+ * cannot follow an assertion.
+ */
+export interface Destination {
+  storeHash: string;
+  run<T>(work: (into: ImportTarget) => T): Promise<T>;
+}
+
 export async function chooseAndRecover(
   sessions: Sessions,
   chooser: Chooser,
-  into: ImportTarget | null
+  into: Destination | null
 ): Promise<RecoveryOutcome> {
   const rows = await sessions.others();
   if (rows.length === 0) {
@@ -183,7 +220,7 @@ async function act(
   chooser: Chooser,
   row: OtherSession,
   action: RecoveryAction,
-  into: ImportTarget | null
+  into: Destination | null
 ): Promise<RecoveryOutcome> {
   if (action === 'discard') {
     /*
@@ -208,6 +245,20 @@ async function act(
     return { did: 'discard', sessionId: row.sessionId, trash: outcome.trash };
   }
 
+  /*
+   * ⚠️ THE DESTINATION IS CHECKED BEFORE THE TOKEN IS TAKEN.
+   *
+   * Claiming first and then finding nowhere to put the entries left this
+   * window holding a live claim over work it had not moved -- and the
+   * advice it then gave, "configure a store and run the command again",
+   * ran straight into that claim and was refused as `already-claimed`.
+   * The way out was blocked by the attempt to use it. Found in review.
+   */
+  if (into === null) {
+    const notice = adoptedNotice(row.sessionId, 0, 0, true);
+    chooser.say(notice);
+    return { did: 'refused', sessionId: row.sessionId, action, because: 'nowhere-to-put-them' };
+  }
   const forced = action === 'force-take-over';
   if (forced) {
     /*
@@ -239,14 +290,14 @@ async function act(
    * to put them -- no store configured -- the token is still won and the
    * user is told nothing moved.
    */
-  const moved =
-    into === null
-      ? { imported: 0, skipped: 0 }
-      : sessions.importFrom(
-          { deadSessionId: row.sessionId, sequence: won.sequence, file: won.token },
-          into
-        );
-  chooser.say(adoptedNotice(row.sessionId, moved.imported, moved.skipped, into === null));
+  const moved = await into.run((target) =>
+    sessions.importFrom(
+      { deadSessionId: row.sessionId, sequence: won.sequence, file: won.token },
+      target,
+      into.storeHash
+    )
+  );
+  chooser.say(adoptedNotice(row.sessionId, moved.imported, moved.skipped, false));
   return {
     did: 'take-over',
     sessionId: row.sessionId,

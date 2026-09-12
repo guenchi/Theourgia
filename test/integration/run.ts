@@ -123,9 +123,60 @@ function chooseProfile(root: string): string {
   );
 }
 
+/*
+ * THE EXTENSION'S OWN STORAGE, EMPTIED BEFORE EVERY RUN.
+ *
+ * Each activation records a session directory under the host's
+ * globalStorage, and NOTHING RECLAIMS IT -- by design: those directories
+ * hold unsent work, and a window that tidied up another window's would
+ * be deleting the one thing this whole mechanism exists to rescue. In a
+ * test host that means they accumulate, one per run. Measured: 26 of
+ * them after a day of runs, which is a recovery list 26 rows long that
+ * nothing in the suite put there.
+ *
+ * ⚠️ SO IT IS THE HARNESS THAT CLEANS, NOT THE PRODUCT. The profile
+ * belongs to this runner; the accumulation is an artefact of reusing it,
+ * and the product's refusal to reclaim is the behaviour under test.
+ *
+ * ⚠️ AND THE EMPTINESS IS CHECKED RATHER THAN ASSUMED. What this catches
+ * is a removal that failed -- a locked file, a permission, a path that
+ * drifted -- because a clean that silently did nothing looks exactly
+ * like a clean that worked, right up until a cell wonders why the list
+ * has thirty rows in it.
+ *
+ * THE IDENTIFIER COMES FROM THE MANIFEST. A hard-coded one that drifted
+ * would clean a directory nobody writes to, and the check would then
+ * pass on an empty path for ever while the real one filled up.
+ */
+function extensionStorage(root: string, profile: string): string {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as {
+    publisher?: string;
+    name?: string;
+  };
+  if (!manifest.publisher || !manifest.name) {
+    throw new Error('package.json names no publisher or no name, so the storage path is a guess');
+  }
+  return path.join(profile, 'User', 'globalStorage', `${manifest.publisher}.${manifest.name}`);
+}
+
+function emptyTheStorage(root: string, profile: string): void {
+  const storage = extensionStorage(root, profile);
+  fs.rmSync(storage, { recursive: true, force: true });
+  const left = fs.existsSync(storage) ? fs.readdirSync(storage) : [];
+  if (left.length > 0) {
+    throw new Error(
+      `the extension's storage at ${storage} could not be emptied and still holds ` +
+        `${left.join(', ')}. Every run leaves a session directory there and nothing reclaims ` +
+        'them, so a clean that quietly fails makes the recovery list grow until a cell trips ' +
+        'over it.'
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const root = path.resolve(__dirname, '..', '..', '..');
   const profile = chooseProfile(root);
+  emptyTheStorage(root, profile);
   try {
     const reported = await downloadAndUnzipVSCode();
     const executable = resolveExecutable(reported);

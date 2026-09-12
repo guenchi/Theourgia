@@ -48,6 +48,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { Client } from './client';
 import { Outbox, OutboxEntry } from './outbox';
+import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
 import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
@@ -223,6 +224,34 @@ export class Saver {
 
   public retry(): Promise<SaveOutcome[]> {
     return this.serialise(() => this.drain());
+  }
+
+  /*
+   * ⚠️ A TAKEOVER'S ENTRIES ARRIVE THROUGH THE SAME LOCK AS A SAVE.
+   *
+   * The import used to be handed a bare `Outbox` and told the comment
+   * "this is held by the Saver's serial chain". It was not: a save in
+   * flight answers, writes ITS copy of the queue back, and the imported
+   * entries are gone -- while the source is already marked as having
+   * handed them over, so no later takeover offers them again. The bytes
+   * survive in the dead window's file and automatic recovery stops
+   * seeing them. Reproduced in review.
+   *
+   * Going through `serialise` also reloads this copy from disk first,
+   * which is the other half: importing into a stale copy writes the
+   * stale one back.
+   *
+   * IT IS THE SAME `serialise` THAT `save` AND `retry` USE, keyed by the
+   * queue's path, so an import and a save over one file wait for each
+   * other whichever objects they were reached through.
+   */
+  public adopt<T>(work: (into: ImportTarget) => T): Promise<T> {
+    return this.serialise(async () =>
+      work({
+        has: (req: string) => this.outbox.find(req) !== undefined,
+        adopt: (entry: OutboxEntry) => this.outbox.enqueue(entry)
+      })
+    );
   }
 
   /*

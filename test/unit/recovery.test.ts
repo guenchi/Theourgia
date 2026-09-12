@@ -35,7 +35,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Choice, Chooser, RecoveryAction, chooseAndRecover } from '../../src/recovery';
+import { Choice, Chooser, Destination, RecoveryAction, chooseAndRecover } from '../../src/recovery';
 import { ImportTarget, SessionIdentity, Sessions, systemStartTime } from '../../src/sessions';
 import { Notice } from '../../src/status';
 import { OutboxEntry } from '../../src/outbox';
@@ -89,7 +89,7 @@ class Recorder implements Chooser {
   public readonly placeholders: string[] = [];
   public readonly confirmations: Array<{ text: string; word: string }> = [];
   public readonly said: Notice[] = [];
-  private readonly picks: unknown[];
+  public readonly picks: unknown[];
   private readonly agrees: boolean[];
 
   public constructor(picks: unknown[], agrees: boolean[] = []) {
@@ -126,16 +126,59 @@ class Recorder implements Chooser {
   public say(notice: Notice): void {
     this.said.push(notice);
   }
+
+  /*
+   * ⚠️ EVERY SCRIPTED ANSWER HAD TO BE ASKED FOR.
+   *
+   * Without this, a flow that asked nothing at all and returned
+   * `cancelled` passed every cancellation cell here -- four of them --
+   * because each only checked the answer. Found in review with that
+   * exact replacement. A cell about a user declining has to establish
+   * that they were asked.
+   */
+  public asked(picks: number, confirmations: number): void {
+    assert.strictEqual(
+      this.offered.length,
+      picks,
+      `the flow put ${this.offered.length} lists in front of the user and not ${picks}`
+    );
+    assert.strictEqual(
+      this.confirmations.length,
+      confirmations,
+      `the flow asked ${this.confirmations.length} confirmations and not ${confirmations}`
+    );
+    assert.strictEqual(this.picks.length, 0, 'the script named choices the flow never offered');
+  }
 }
 
-function nowhere(): ImportTarget {
+/*
+ * A DESTINATION THAT ACCEPTS EVERYTHING AND REMEMBERS IT, standing in
+ * for this window's own queue. `run` is where the lock would be, and
+ * calling `work` inside it is exactly what the Saver does.
+ */
+function destination(storeHash = 'h'): { into: Destination; held: OutboxEntry[]; runs: number } {
   const held: OutboxEntry[] = [];
-  return {
-    has: (req) => held.some((e) => e.req === req),
-    adopt: (entry) => {
-      held.push(entry);
+  const box = {
+    held,
+    runs: 0,
+    into: {
+      storeHash,
+      run: async <T>(work: (into: ImportTarget) => T): Promise<T> => {
+        box.runs += 1;
+        return work({
+          has: (req: string) => held.some((e) => e.req === req),
+          adopt: (entry: OutboxEntry) => {
+            held.push(entry);
+          }
+        });
+      }
     }
   };
+  return box;
+}
+
+function nowhere(): Destination {
+  return destination().into;
 }
 
 describe('U-recover the command that shows another window’s unsent work', () => {
@@ -212,8 +255,15 @@ describe('U-recover the command that shows another window’s unsent work', () =
     withQueue(storage, 'S-norecord', ['r1', 'r2', 'r3']);
     const sessions = new Sessions(new RecordingFs(), storage);
     sessions.begin('S-mine', []);
+    const box = destination();
     const chooser = new Recorder(['S-norecord', 'force-take-over'], [true]);
-    await chooseAndRecover(sessions, chooser, nowhere());
+    const outcome = await chooseAndRecover(sessions, chooser, box.into);
+    /*
+     * ⚠️ AND IT WENT THROUGH. A cell that only read the dialog's wording
+     * passed a flow that asked the right question and then did nothing,
+     * which is not a forced takeover.
+     */
+    assert.strictEqual(outcome.did, 'take-over', JSON.stringify(outcome));
     assert.strictEqual(chooser.confirmations.length, 1, 'a forced takeover was not confirmed');
     const { text, word } = chooser.confirmations[0];
     const expected = require('../../src/status').forceClaimNotice('S-norecord', 3).text;
@@ -234,6 +284,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder(['S-norecord', 'force-take-over'], [false]);
     const outcome = await chooseAndRecover(sessions, chooser, nowhere());
     assert.deepStrictEqual(outcome, { did: 'nothing', because: 'cancelled' });
+    chooser.asked(2, 1);
     const left = fs
       .readdirSync(path.join(storage, 'sessions'))
       .filter((name) => name.includes('.claim.'));
@@ -250,7 +301,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder([]);
     const outcome = await chooseAndRecover(sessions, chooser, nowhere());
     assert.deepStrictEqual(outcome, { did: 'nothing', because: 'cancelled' });
-    assert.strictEqual(chooser.confirmations.length, 0);
+    chooser.asked(1, 0);
   });
 
   it('does nothing when the window is closed at the action', async () => {
@@ -262,7 +313,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder(['S-dead']);
     const outcome = await chooseAndRecover(sessions, chooser, nowhere());
     assert.deepStrictEqual(outcome, { did: 'nothing', because: 'cancelled' });
-    assert.strictEqual(chooser.confirmations.length, 0);
+    chooser.asked(2, 0);
   });
 
   /*
@@ -276,14 +327,10 @@ describe('U-recover the command that shows another window’s unsent work', () =
     withQueue(storage, 'S-dead', ['r1', 'r2']);
     const sessions = new Sessions(new RecordingFs(), storage);
     sessions.begin('S-mine', []);
-    const landed: OutboxEntry[] = [];
-    const into: ImportTarget = {
-      has: (req) => landed.some((e) => e.req === req),
-      adopt: (entry) => {
-        landed.push(entry);
-      }
-    };
-    const outcome = await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), into);
+    const box = destination();
+    const outcome = await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), box.into);
+    const landed = box.held;
+    assert.strictEqual(box.runs, 1, 'the import did not go through the lock the destination owns');
     assert.deepStrictEqual(outcome, {
       did: 'take-over',
       sessionId: 'S-dead',
@@ -352,6 +399,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder(['S-dead', 'discard'], [false]);
     const outcome = await chooseAndRecover(sessions, chooser, nowhere());
     assert.deepStrictEqual(outcome, { did: 'nothing', because: 'cancelled' });
+    chooser.asked(2, 1);
     assert.ok(fs.existsSync(path.join(storage, 'sessions', 'S-dead')), 'a declined discard moved files');
   });
 
@@ -369,7 +417,120 @@ describe('U-recover the command that shows another window’s unsent work', () =
     sessions.begin('S-mine', []);
     const chooser = new Recorder(['S-dead', 'take-over']);
     const outcome = await chooseAndRecover(sessions, chooser, null);
-    assert.strictEqual(outcome.did, 'take-over');
+    /*
+     * ⚠️ AND IT REFUSES BEFORE TAKING A TOKEN. Claiming first and then
+     * finding nowhere to put the entries left this window holding a live
+     * claim over work it had not moved, and the advice it then gave --
+     * configure a store and run this again -- was refused by that very
+     * claim. The way out was blocked by the attempt to use it.
+     */
+    assert.strictEqual(outcome.did, 'refused');
     assert.match(chooser.said[0].text, /no store is configured/);
+    const tokens = fs
+      .readdirSync(path.join(storage, 'sessions'))
+      .filter((name) => name.includes('.claim.'));
+    assert.deepStrictEqual(tokens, [], 'a takeover that moved nothing still took a token');
+  });
+});
+
+/*
+ * REVIEW ROUND 22: WHOSE STORE, AND WHOSE LOCK.
+ *
+ * Two defects with the same shape: a takeover that moves work somewhere
+ * it was not meant to go.
+ */
+describe('review 22 a takeover moves one store’s work, through one lock', () => {
+  /*
+   * ⚠️ A WINDOW WRITES TO AS MANY STORES AS IT WAS CONFIGURED FOR, and
+   * keeps a queue for each -- a queue carries one cursor and a cursor
+   * belongs to one store. The import walked every one of them into a
+   * single destination, so requests written for one store landed in
+   * another window's queue for a DIFFERENT store, and its next drain
+   * would have sent them there. Agreeing to rescue one store's unsent
+   * work is not agreeing to redirect those writes.
+   */
+  it('imports only the queue belonging to the destination’s store', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    withQueue(storage, 'S-dead', ['for-a']);
+    /*
+     * A SECOND STORE'S QUEUE IN THE SAME SESSION. `withQueue` writes
+     * under 'h'; this one is under another store's name.
+     */
+    const other = path.join(storage, 'sessions', 'S-dead', 'other-store');
+    fs.mkdirSync(other, { recursive: true });
+    fs.writeFileSync(
+      path.join(other, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'for-b',
+            cursor: 'w:1',
+            id: 'a.9',
+            field: 'src',
+            payload: 'x',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null
+          }
+        ]
+      }),
+      'utf8'
+    );
+
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const box = destination('h');
+    const outcome = await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), box.into);
+    assert.strictEqual(outcome.did, 'take-over', JSON.stringify(outcome));
+    assert.deepStrictEqual(
+      box.held.map((e) => e.req),
+      ['for-a'],
+      'a request written for another store was moved into this one’s queue'
+    );
+  });
+
+  /*
+   * AND THE IMPORT HAPPENS INSIDE THE LOCK THE DESTINATION OWNS. The
+   * destination used to be a bare queue object, written to outside
+   * whatever serialises that file: a save answering in the middle wrote
+   * its own copy back over the imported entries, while the source was
+   * already marked as having handed them over -- so the bytes survived
+   * and nothing ever offered them again.
+   */
+  it('asks the destination to run the import rather than writing to it', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    withQueue(storage, 'S-dead', ['r1']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const box = destination();
+    let insideWhenAdopted = false;
+    const watching: Destination = {
+      storeHash: box.into.storeHash,
+      run: async (work) => {
+        let inside = true;
+        try {
+          return await box.into.run((target) =>
+            work({
+              has: target.has,
+              adopt: (entry) => {
+                insideWhenAdopted = inside;
+                target.adopt(entry);
+              }
+            })
+          );
+        } finally {
+          inside = false;
+        }
+      }
+    };
+    await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), watching);
+    assert.strictEqual(
+      insideWhenAdopted,
+      true,
+      'an entry was adopted outside the section the destination opened for it'
+    );
   });
 });

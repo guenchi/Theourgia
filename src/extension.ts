@@ -34,7 +34,6 @@ import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
 import { Outbox, OutboxEntry } from './outbox';
-import { ImportTarget } from './sessions';
 import { activateCore } from './activate';
 import {
   OPEN_BLOCK,
@@ -44,7 +43,7 @@ import {
   RETRY_OUTBOX,
   SHOW_STATUS
 } from './commands';
-import { Choice, Chooser, chooseAndRecover } from './recovery';
+import { Choice, Chooser, Destination, chooseAndRecover } from './recovery';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -795,18 +794,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   /*
-   * WHERE A TAKEOVER'S ENTRIES GO. Null when no store is configured:
-   * there is then no queue of this window's own to put them in, and the
-   * flow says so rather than dropping them.
+   * WHERE A TAKEOVER'S ENTRIES GO. Null when there is no Saver, which is
+   * to say no usable store: there is then no queue of this window's own
+   * to put them in, and the flow refuses before taking a token rather
+   * than holding one over work it did not move.
+   *
+   * ⚠️ IT RUNS THE IMPORT INSIDE THE SAVER'S LOCK, through `adopt`.
+   * Handing out a bare queue put the import outside whatever serialises
+   * that file, and a save answering in the middle of it wrote its own
+   * copy back over the imported entries.
    */
-  function adoptingInto(): ImportTarget | null {
-    const queue = outbox;
-    if (queue === null) {
+  function adoptingInto(): Destination | null {
+    const active = saver;
+    if (active === null) {
       return null;
     }
     return {
-      has: (req: string) => queue.find(req) !== undefined,
-      adopt: (entry) => queue.enqueue(entry)
+      storeHash: storeHash(config.store),
+      run: (work) => active.adopt(work)
     };
   }
 

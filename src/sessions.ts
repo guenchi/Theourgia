@@ -746,13 +746,39 @@ export class Sessions {
    * are marked with it, so which generation of takeover carried an entry
    * is recorded rather than guessed. (§12.11.3, P2-5)
    */
-  public importFrom(token: ClaimToken, into: ImportTarget): { imported: number; skipped: number } {
+  /*
+   * ⚠️ ONE STORE'S QUEUE, NOT ALL OF THEM.
+   *
+   * A session writes to as many stores as it was configured for and
+   * keeps a queue for each, because a queue carries one cursor and a
+   * cursor belongs to one store. This walked every one of them into a
+   * single destination -- so a window that had been writing to two
+   * stores had both sets of requests dropped into whichever store the
+   * adopting window happens to have configured, and its next drain SENT
+   * them there. A user agreeing to rescue one store's unsent work has
+   * not agreed to redirect those writes into a different store.
+   * Reproduced in review; the requests landed and would have been sent.
+   *
+   * `storeHash` names the destination's store, and only the queue under
+   * that name is imported. Omitting it keeps the old behaviour and is
+   * for callers that really do mean every queue -- there are none in
+   * production, and a cell says so.
+   */
+  public importFrom(
+    token: ClaimToken,
+    into: ImportTarget,
+    storeHash?: string
+  ): { imported: number; skipped: number } {
     if (!this.files.exists(token.file)) {
       return { imported: 0, skipped: 0 };
     }
     let imported = 0;
     let skipped = 0;
-    for (const queue of this.outboxPathsFor(token.deadSessionId)) {
+    const queues =
+      storeHash === undefined
+        ? this.outboxPathsFor(token.deadSessionId)
+        : [this.outboxPathFor(token.deadSessionId, storeHash)].filter((q) => this.files.exists(q));
+    for (const queue of queues) {
       const outcome = this.importQueue(queue, token, into);
       imported += outcome.imported;
       skipped += outcome.skipped;
