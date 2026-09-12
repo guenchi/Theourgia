@@ -60,32 +60,50 @@ export interface CoreLocation {
  * throw away; one that arrives without it is about the code. Point
  * THEOURGIA_CORE at a copy nobody is editing and this never fires.
  */
-export function coreDigest(corePath: string): string {
-  const hash = createHash('sha256');
-  for (const name of fs.readdirSync(corePath).filter((f) => f.endsWith('.ss')).sort()) {
-    hash.update(name);
-    /*
-     * THE MODIFICATION TIME AS WELL AS THE BYTES. Comparing contents
-     * alone is blind to the case this exists for: a file written and
-     * then restored between the two readings has the same bytes at both
-     * ends and was a different file in the middle -- which is exactly
-     * what an editor doing a save-and-undo, or a checkout and a revert,
-     * leaves behind. A timestamp does not survive that.
-     */
-    const stat = fs.statSync(path.join(corePath, name));
-    hash.update(String(stat.size));
-    hash.update(String(stat.mtimeMs));
-    hash.update(fs.readFileSync(path.join(corePath, name)));
-  }
-  return hash.digest('hex').slice(0, 16);
+export interface CoreDigest {
+  /*
+   * TWO DIGESTS, BECAUSE THE TWO ANSWERS ARE DIFFERENT NEWS. `bytes` is
+   * what the core says; `stamped` also covers size and modification
+   * time, which is what catches the case this guard exists for -- a file
+   * written and then restored between the two readings has the same
+   * bytes at both ends and was a different file in between.
+   *
+   * KEEPING THEM APART IS WHAT STOPS THE GUARD BEING IGNORED. A checkout
+   * or a re-export rewrites every timestamp without changing a byte, and
+   * a guard that reported that as "the core changed" in the same words
+   * it uses for a real edit would be trained away within a day.
+   */
+  bytes: string;
+  stamped: string;
 }
 
-export function pinCore(): { corePath: string; digest: string } {
+export function coreDigest(corePath: string): CoreDigest {
+  const bytes = createHash('sha256');
+  const stamped = createHash('sha256');
+  for (const name of fs.readdirSync(corePath).filter((f) => f.endsWith('.ss')).sort()) {
+    const content = fs.readFileSync(path.join(corePath, name));
+    const stat = fs.statSync(path.join(corePath, name));
+    bytes.update(name);
+    bytes.update(content);
+    stamped.update(name);
+    stamped.update(String(stat.size));
+    stamped.update(String(stat.mtimeMs));
+    stamped.update(content);
+  }
+  return { bytes: bytes.digest('hex').slice(0, 16), stamped: stamped.digest('hex').slice(0, 16) };
+}
+
+export interface CorePin {
+  corePath: string;
+  digest: CoreDigest;
+}
+
+export function pinCore(): CorePin {
   const where = locateCore();
   return { corePath: where.corePath, digest: coreDigest(where.corePath) };
 }
 
-export function checkCorePin(pinned: { corePath: string; digest: string } | undefined): void {
+export function checkCorePin(pinned: CorePin | undefined): void {
   /*
    * A PIN THAT WAS NEVER TAKEN IS NOT A PIN THAT FAILED. When the setup
    * itself threw -- no core at that path -- this runs with nothing to
@@ -96,11 +114,21 @@ export function checkCorePin(pinned: { corePath: string; digest: string } | unde
     return;
   }
   const now = coreDigest(pinned.corePath);
-  if (now !== pinned.digest) {
+  if (now.bytes !== pinned.digest.bytes) {
     throw new Error(
-      `the core at ${pinned.corePath} changed while these cells ran (${pinned.digest} -> ${now}). ` +
-        'Every reading in this file was taken against a moving tree and none of them mean anything. ' +
-        'Point THEOURGIA_CORE at a copy nobody is editing and run again.'
+      `the core at ${pinned.corePath} was EDITED while these cells ran ` +
+        `(${pinned.digest.bytes} -> ${now.bytes}). Every reading in this file was taken against a ` +
+        'moving tree and none of them mean anything. Point THEOURGIA_CORE at a copy nobody is ' +
+        'editing and run again.'
+    );
+  }
+  if (now.stamped !== pinned.digest.stamped) {
+    throw new Error(
+      `the core at ${pinned.corePath} was REWRITTEN while these cells ran: the bytes are the same ` +
+        `(${now.bytes}) and the files are not (${pinned.digest.stamped} -> ${now.stamped}). That is ` +
+        'a checkout, a re-export, or an edit that was undone -- in the last case a request in the ' +
+        'middle of this run saw something neither reading shows. Take the copy out of reach of ' +
+        'whatever rewrote it and run again.'
     );
   }
 }

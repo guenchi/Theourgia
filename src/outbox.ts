@@ -107,6 +107,45 @@ export class OutboxWriteError extends Error {
   }
 }
 
+/*
+ * WHAT A PERSON CAN DO ABOUT IT. Refusing to touch a queue this build
+ * cannot read is the right thing to do with it -- but it also means no
+ * save will go out until something changes, and a message that stops at
+ * "could not be read" leaves the user stuck with no way forward and no
+ * idea that there is one. Saying it costs a sentence.
+ *
+ * THE ADVICE DEPENDS ON THE FAULT, which is why the fault is a
+ * parameter. A file whose BYTES this build cannot make sense of is
+ * repaired by moving that file; a file this build could not REACH --
+ * a permission on the directory, a device error -- is not, and telling
+ * someone to move a file they cannot read is advice that fails in the
+ * same way the read did. One sentence for both cases was a sentence
+ * that was wrong in one of them.
+ *
+ * MOVING THE FILE ASIDE IS OFFERED, NOT DONE, and its cost is stated
+ * rather than softened. The queue holds whole requests, including ones
+ * that were never sent: setting it aside does not merely lose a list of
+ * unknown outcomes, it takes that unsent work out of every future
+ * retry, because the next load finds no file and starts an empty queue.
+ * Saying "what is lost is only the record" invited a user to discard
+ * saves they still had.
+ */
+type OutboxFault = 'unreachable' | 'unreadable';
+
+function andWhatToDo(file: string, fault: OutboxFault): string {
+  const wayBack =
+    fault === 'unreachable'
+      ? `Make ${file} readable again -- a permission or a device error stops this client ` +
+        'reading it, and the contents may be intact'
+      : `Repair ${file}, or move it aside to carry on with an empty queue`;
+  return (
+    `. It holds this client's record of saves -- both those whose outcome is not known and ` +
+    'any that were written down and never sent -- so it is left untouched and no further ' +
+    `save will be sent. ${wayBack}. Setting it aside does not touch the store, but the work ` +
+    'recorded in it will not be retried, so copy anything out of it that matters first'
+  );
+}
+
 export class Outbox {
   private readonly file: string;
   private data: OutboxFile;
@@ -153,7 +192,8 @@ export class Outbox {
       }
       this.readable = false;
       throw new OutboxWriteError(
-        `the outbox at ${this.file} could not be read and was left alone: ${String(e)}`
+        `the outbox at ${this.file} could not be read: ${String(e)}` +
+          `${andWhatToDo(this.file, 'unreachable')}`
       );
     }
     let parsed: unknown;
@@ -162,10 +202,19 @@ export class Outbox {
     } catch (e) {
       this.readable = false;
       throw new OutboxWriteError(
-        `the outbox at ${this.file} could not be read as JSON and was left alone: ${String(e)}`
+        `the outbox at ${this.file} is not readable as JSON: ${String(e)}` +
+          `${andWhatToDo(this.file, 'unreadable')}`
       );
     }
-    this.data = normalise(parsed);
+    try {
+      this.data = normalise(parsed);
+    } catch (e) {
+      this.readable = false;
+      throw new OutboxWriteError(
+        `the outbox at ${this.file} is in a shape this build cannot read: ` +
+          `${(e as Error).message}${andWhatToDo(this.file, 'unreadable')}`
+      );
+    }
     this.readable = true;
   }
 
@@ -177,8 +226,12 @@ export class Outbox {
     return this.data.entries.slice();
   }
 
-  public get pendingCount(): number {
-    return this.data.entries.length;
+  /*
+   * NULL WHEN THE QUEUE COULD NOT BE READ. The count of entries in a
+   * queue nobody could read is not zero; it is not known.
+   */
+  public get pendingCount(): number | null {
+    return this.readable ? this.data.entries.length : null;
   }
 
   public find(req: string): OutboxEntry | undefined {
@@ -328,51 +381,74 @@ export class Outbox {
 }
 
 /*
- * WHAT CAME BACK OFF DISK IS TREATED AS A STRANGER. It was written by a
+ * WHAT CAME BACK OFF DISK IS TREATED AS A STRANGER -- AND A STRANGER
+ * THIS CANNOT READ IS REFUSED, NOT REPAIRED. It was written by a
  * previous version of this extension, or edited by hand, and an entry
  * missing its cursor would otherwise be sent as `--cursor undefined`.
+ *
+ * SILENTLY DROPPING THE PARTS IT DID NOT UNDERSTAND WAS WORSE THAN THAT.
+ * A file holding `null`, or one entry without a cursor, came back as a
+ * queue with that work missing -- and the next save then wrote the
+ * repaired queue over the file, so work nobody could read became work
+ * nobody had. Refusing leaves the file alone, which is the whole of what
+ * `load` promises when it cannot read one.
  */
 function normalise(parsed: unknown): OutboxFile {
   const out = emptyFile();
-  if (typeof parsed !== 'object' || parsed === null) {
-    return out;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new OutboxWriteError('the outbox is not an object');
   }
   const raw = parsed as { version?: unknown; cursor?: unknown; entries?: unknown };
+  if (raw.version !== undefined && raw.version !== OUTBOX_VERSION) {
+    throw new OutboxWriteError(
+      `the outbox says it is version ${String(raw.version)}, and this build writes ${OUTBOX_VERSION}`
+    );
+  }
+  if (raw.cursor !== undefined && raw.cursor !== null && typeof raw.cursor !== 'string') {
+    throw new OutboxWriteError('the outbox cursor is not a string');
+  }
   if (typeof raw.cursor === 'string') {
     out.cursor = raw.cursor;
   }
+  /*
+   * A QUEUE WITH NO `entries` AT ALL IS NOT AN EMPTY QUEUE. Every build
+   * that has written this file wrote the key, even when the list was
+   * empty, so a file without it is a file this build does not
+   * understand -- and treating it as empty would let the next save write
+   * over whatever it really was.
+   */
   if (!Array.isArray(raw.entries)) {
-    return out;
+    throw new OutboxWriteError(
+      raw.entries === undefined ? 'the outbox has no entries list' : 'the outbox entries are not a list'
+    );
   }
-  for (const item of raw.entries) {
-    const entry = normaliseEntry(item);
-    if (entry !== null) {
-      out.entries.push(entry);
-    }
+  for (let i = 0; i < raw.entries.length; i += 1) {
+    out.entries.push(readEntry(raw.entries[i], i));
   }
   return out;
 }
 
-function normaliseEntry(item: unknown): OutboxEntry | null {
-  if (typeof item !== 'object' || item === null) {
-    return null;
+function readEntry(item: unknown, at: number): OutboxEntry {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+    throw new OutboxWriteError(`outbox entry ${at} is not an object`);
   }
   const raw = item as Record<string, unknown>;
-  if (
-    typeof raw.req !== 'string' ||
-    typeof raw.cursor !== 'string' ||
-    typeof raw.id !== 'string' ||
-    typeof raw.field !== 'string' ||
-    typeof raw.payload !== 'string'
-  ) {
-    return null;
+  for (const name of ['req', 'cursor', 'id', 'field', 'payload']) {
+    if (typeof raw[name] !== 'string') {
+      throw new OutboxWriteError(
+        `outbox entry ${at} has no readable ${name}, so what it was asking for is not known`
+      );
+    }
+  }
+  if (raw.state !== undefined && !['queued', 'sent', 'pending'].includes(raw.state as string)) {
+    throw new OutboxWriteError(`outbox entry ${at} is in a state this build does not know: ${String(raw.state)}`);
   }
   return {
-    req: raw.req,
-    cursor: raw.cursor,
-    id: raw.id,
-    field: raw.field,
-    payload: raw.payload,
+    req: raw.req as string,
+    cursor: raw.cursor as string,
+    id: raw.id as string,
+    field: raw.field as string,
+    payload: raw.payload as string,
     state: raw.state === 'pending' ? 'pending' : raw.state === 'sent' ? 'sent' : 'queued',
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null

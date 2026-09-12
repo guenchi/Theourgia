@@ -25,6 +25,7 @@
 import * as assert from 'assert';
 import { Answer } from '../../src/client';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor, writersFromCheck } from '../../src/cursor';
+import { formatCursor } from '../../src/wire';
 import { initWire, wire } from '../../src/wire';
 
 function answerOf(text: string, rc = 0): Answer {
@@ -69,7 +70,12 @@ describe('the cursor a write carries forward', () => {
   it('spells a cursor the way the core parses one', () => {
     const event = eventFromWrite(answerOf(FRESH_WRITE));
     assert.ok(event !== null);
-    assert.strictEqual(`${event?.writer}:${event?.seq}`, 'fsu7hd1k:6');
+    /*
+     * THROUGH THE PRODUCTION SPELLING, not a copy of it written here. A
+     * broken formatter would leave an assertion that composes the string
+     * itself perfectly green.
+     */
+    assert.strictEqual(formatCursor(event as NonNullable<typeof event>), 'fsu7hd1k:6');
     assert.ok(isWellFormedCursor('fsu7hd1k:6'));
     assert.ok(!isWellFormedCursor('fsu7hd1k'));
     assert.ok(!isWellFormedCursor('fsu7hd1k:'));

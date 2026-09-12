@@ -87,7 +87,10 @@ The queue itself never changes before the file does: every change is written and
 adopted, because a queue that changed in memory and not on disk is worse than one that
 changed in neither — the next call sees the new state, believes it was recorded, and acts
 on it. The file is written, flushed, renamed and the directory flushed, so that what
-survives a machine losing power is what the user was told had been recorded. And only a
+survives a machine losing power is, as far as this client can arrange it, what the user was
+told had been recorded. That is an effort, not a guarantee: the directory flush is allowed
+to fail silently, because some file systems refuse it and the bytes are already down by
+then — so a failure there is indistinguishable from a refusal, and neither stops the save. And only a
 file that is *not there* is an empty queue: every other reason a read can fail leaves open
 the question of what was recorded, so the outbox refuses to be written to at all rather
 than replacing a file it could not read.
@@ -98,6 +101,15 @@ to the position the previous answer established; a sent one may not, because the
 part of the request's identity and changing it would turn a retry into a different request
 wearing the first one's id. A host killed between the send and the answer leaves a `sent`
 entry behind, and that is the state the distinction exists for.
+
+**Known limitation: two editor windows on one store.** The queue is serialised within a
+process and re-read from the file after taking that lock, so two savers inside one window
+cannot lose each other's work. Two *windows* are two processes, and nothing arbitrates
+between them — a save recorded by one can be overwritten by the other, and what is lost is
+an entry whose outcome was not yet known. The store itself is not corrupted by this: every
+write carries a request id, so the core will not apply the same request twice; what goes
+missing is this client's record that a request is still unresolved. A lock file and a
+staleness check are the fix, and they belong to a later batch.
 
 The first cursor, before any write has been answered, comes from `check`: a store with one
 writer has no ambiguity. `check` does not say which writer is local, so a store with more
@@ -131,27 +143,61 @@ records which generation of the settings it was made under and is dropped if tha
 generation has been replaced — otherwise a block read from one store would be written into
 a file named after another, and saved into it.
 
-**Two cases the outline refusal does not catch**, both reproduced on a real store. A title
-ending in `  conflict` is read as a conflict mark, so a sound block is shown as conflicted.
-A title whose second line looks like a row (`second line\n- fake.1  invented`) produces a
-row for a block that does not exist, with no refusal at all. The root cause is that the
-outline is a text rendering with no escaping, and the fix belongs in the core; both are
-pinned in `test/unit/shapes.test.ts` as what this client does until it lands.
+**Two cases the outline's text cannot express**, both reproduced on a real store: a title
+ending in `  conflict`, and a title whose second line looks like a row
+(`second line\n- fake.1  invented`). Neither reaches the tree any more — the outline is read
+only for ids and depth, the title comes from `read <id>` and the mark from `conflicts`, and
+every top-level id is confirmed against the store, so a forged row is a refusal naming the id
+and its line. The root cause is still that the outline is a rendering with no escaping, and
+the fix belongs in the core; until then this client does not read anything from it that a
+title could forge.
 
 ## The s-expression reader
 
 `src/vendor/goeteia/sexpr.mjs` is a verbatim copy of goeteia's `rt/sexpr.mjs`, held to
 `sexpr-vectors.json`, the golden fixture generated from `(igropyr sexpr)` — the authority
 for this wire format. The copy exists only because goeteia's package does not export the
-deep path yet; when it does, the copy goes and a dependency takes its place. Do not edit
-it. `test/unit/vendor-sexpr.test.ts` sweeps the whole read side of the fixture.
+deep path in a published release yet. Do not edit it: `test/unit/vendor-sexpr.test.ts`
+sweeps both fixtures and checks the file's own bytes against the digest its provenance note
+claims, so an edited copy that kept its note fails.
 
-**Known gap.** That reader accepts the string escapes `\n \t \r \" \\`; Chez's writer,
-which is what `cli.ss` prints with, also emits `\a \b \f \v` and `\xHH;`, and escapes
-awkward symbols the same way. A block whose body contains a form feed is therefore stored
-happily by the core and cannot be read back by this extension. Widening the reader is
-queued upstream in goeteia; `S14` in `test/unit/real-core.test.ts` is red until it lands
-and is the cell that will notice.
+It is held to two fixtures, both copied beside it: `sexpr-vectors.json`, generated from
+`(igropyr sexpr)`, and `sexpr-escape-vectors.json`, which covers the escapes a conforming
+R6RS writer emits — `\a \b \f \v` and `\xHH;`, in strings and in symbols. That second
+table exists because of a gap this extension hit: the reader used to accept only
+`\n \t \r \" \\`, so a block whose body contained a form feed was stored happily by the
+core and could never be read back. `S14` in `test/unit/real-core.test.ts` was red for as
+long as that was true and is now the guard against it reopening.
+
+**Why it is still a copy.** goeteia's package exports `./sexpr` now, but the published
+1.7.1 predates that export, so depending on it would not resolve. When a release carries
+the export, this copy goes and a dependency takes its place.
+
+## What the cells do not cover
+
+Recorded here rather than left to be rediscovered. Each of these is a place where a cell
+exists and proves less than its name suggests, or where no cell exists at all.
+
+* **A save the *core* refused.** The editor-hosted cell named for a refused save exercises
+  a refusal this client makes: a changed heading is turned away by `splitDocument` before
+  the saver is reached. A save the store itself rejects travels a different path, and
+  nothing here walks it — an implementation that preserved locally refused edits while
+  overwriting ones the store turned down would pass every cell in this tree.
+* **Atomic replacement and flushing.** The disk-failure cells make the queue's parent
+  directory unusable, so they fail at the directory check that precedes the temporary
+  file. They establish that a failed write does not damage the queue; they do *not*
+  establish that the write is a temporary file, a flush and a rename, which is what the
+  code does. A writer that truncated the real file in place, or omitted `fsync`, would
+  pass them.
+* **Most of the generation checks.** Three places take the settings generation before
+  waiting and check it after — the conflict count, opening a block, and the retry report —
+  and the outline provider keeps its own. Each of the three has a cell (C5, C1 and the
+  retry cell), but `openBlock` checks the generation at six points and only the first is
+  covered: replacing the other five with `false` leaves every editor-hosted cell green.
+  That was measured, not assumed.
+* **Nested-document visibility.** The tree does not mark a nested document, because the
+  core's own handling of the shape is still being decided. The mark is read and carried;
+  what the tree should draw for it is not settled.
 
 ## Running the cells
 
@@ -179,9 +225,11 @@ can also mean an argument the core did not expect, so the message names both.
 its recursive walk stops at a doc-kind child — `project.ss` says "a walk stops at one",
 because a nested document has its own file and descending would write its sections twice. It
 is therefore absent from its parent's expansion, and `nested-document` is not a mark that
-puts a block in the root listing either, so the only sign of one is the conflict count. What
-a nested document *means* is still open in the core's own design; this is pinned as current
-behaviour, not endorsed.
+puts a block in the root listing either — so while its parent is alive, the only sign of one
+is the conflict count. Delete that parent and it becomes an orphan as well, and *that* mark
+does put it in the root listing, where it shows with both marks. What a nested document
+*means* is still open in the core's own design; this is pinned as current behaviour, not
+endorsed.
 
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of

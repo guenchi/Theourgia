@@ -104,6 +104,7 @@ function watched() {
 const base = {
   argv,
   coreArgv,
+  pid: process.pid,
   cwd: process.cwd(),
   env: {
     CHEZSCHEMELIBDIRS: process.env.CHEZSCHEMELIBDIRS || null,

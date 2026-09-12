@@ -1,0 +1,388 @@
+{
+  "purpose": "Reader-only widening: the escapes a conforming R6RS writer emits must read back. Writer and test/sexpr-vectors.json are deliberately untouched -- this is the accept side only.",
+  "read_by": [
+    "test/sexpr-escapes.mjs",
+    "test/sexpr-escapes.ss"
+  ],
+  "why_one_table": "Two implementations held to one table cannot drift; two tables would.",
+  "bytes_note": "The comparison column is UTF-8 BYTES. The two harnesses reach it by DIFFERENT routes -- the Scheme one reads char->integer straight off the string, because a Goeteia string holds one character per UTF-8 byte; the JavaScript one encodes its code-point string. That difference is the point: the Scheme side would report 128512 for a wrongly-stored single astral character, so the astral rows pin representation there and round-trip here.",
+  "reject_note": "The reject rows are the control. A reader that simply stopped checking after a backslash satisfies every accepting row and fails these.",
+  "accept": [
+    {
+      "src": "(ok \"a\\tb\")",
+      "want": "tab -- already accepted, control",
+      "bytes": [
+        97,
+        9,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\nb\")",
+      "want": "newline -- already accepted, control",
+      "bytes": [
+        97,
+        10,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\rb\")",
+      "want": "carriage return -- already accepted, control",
+      "bytes": [
+        97,
+        13,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\\"b\")",
+      "want": "quote -- already accepted, control",
+      "bytes": [
+        97,
+        34,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\\\b\")",
+      "want": "backslash -- already accepted, control",
+      "bytes": [
+        97,
+        92,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\fb\")",
+      "want": "form feed -- the real-world case",
+      "bytes": [
+        97,
+        12,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\ab\")",
+      "want": "bell",
+      "bytes": [
+        97,
+        7,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\vb\")",
+      "want": "vertical tab",
+      "bytes": [
+        97,
+        11,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\bb\")",
+      "want": "backspace",
+      "bytes": [
+        97,
+        8,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x41;b\")",
+      "want": "hex escape",
+      "bytes": [
+        97,
+        65,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x0;b\")",
+      "want": "hex escape naming NUL",
+      "bytes": [
+        97,
+        0,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\xA2;b\")",
+      "want": "hex escape, two UTF-8 bytes",
+      "bytes": [
+        97,
+        194,
+        162,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x20AC;b\")",
+      "want": "hex escape, three UTF-8 bytes",
+      "bytes": [
+        97,
+        226,
+        130,
+        172,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x1F600;b\")",
+      "want": "hex escape, astral -- four UTF-8 bytes",
+      "bytes": [
+        97,
+        240,
+        159,
+        152,
+        128,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x10FFFF;b\")",
+      "want": "hex escape at the top of the range",
+      "bytes": [
+        97,
+        244,
+        143,
+        191,
+        191,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x1f600;b\")",
+      "want": "hex digits in lower case",
+      "bytes": [
+        97,
+        240,
+        159,
+        152,
+        128,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\xaB;b\")",
+      "want": "hex digits in mixed case",
+      "bytes": [
+        97,
+        194,
+        171,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"a\\x00000041;b\")",
+      "want": "leading zeros, past six digits",
+      "bytes": [
+        97,
+        65,
+        98
+      ]
+    },
+    {
+      "src": "(ok \"\\x41;\")",
+      "want": "escape immediately before the close",
+      "bytes": [
+        65
+      ]
+    },
+    {
+      "src": "(ok \"\\x41;\\x42;\\nZ\")",
+      "want": "two hex escapes, then a fixed-length one",
+      "bytes": [
+        65,
+        66,
+        10,
+        90
+      ]
+    },
+    {
+      "src": "(ok \"\\f\\x41;\")",
+      "want": "fixed-length escape, then a variable one",
+      "bytes": [
+        12,
+        65
+      ]
+    },
+    {
+      "src": "(ok \"\\x22;\\x28;\\x29;\\x3B;\")",
+      "want": "decoded quote, parens, semicolon stay data",
+      "bytes": [
+        34,
+        40,
+        41,
+        59
+      ]
+    },
+    {
+      "src": "(ok \"\\x5C;n\")",
+      "want": "a decoded backslash is not re-read as an escape",
+      "bytes": [
+        92,
+        110
+      ]
+    },
+    {
+      "src": "(ok \"\\\\x41;\")",
+      "want": "an escaped backslash does not open a hex escape",
+      "bytes": [
+        92,
+        120,
+        52,
+        49,
+        59
+      ]
+    }
+  ],
+  "symbols": [
+    {
+      "src": "(error unknown-verb \\x2D;-store (verbs init))",
+      "sym_index": 2,
+      "len": 4,
+      "want": "a writer escapes a leading dash so the name stays readable",
+      "bytes": [
+        45,
+        45,
+        115,
+        116,
+        111,
+        114,
+        101
+      ]
+    },
+    {
+      "src": "(x \\x41; y)",
+      "sym_index": 1,
+      "len": 3,
+      "want": "escape then a delimiter",
+      "bytes": [
+        65
+      ]
+    },
+    {
+      "src": "(x \\x41;y z)",
+      "sym_index": 1,
+      "len": 3,
+      "want": "the escape's semicolon ends the ESCAPE, not the token",
+      "bytes": [
+        65,
+        121
+      ]
+    },
+    {
+      "src": "(x \\x2D;\\x2D;store y)",
+      "sym_index": 1,
+      "len": 3,
+      "want": "two escapes with nothing between them",
+      "bytes": [
+        45,
+        45,
+        115,
+        116,
+        111,
+        114,
+        101
+      ]
+    },
+    {
+      "src": "(x \\x31; y)",
+      "sym_index": 1,
+      "len": 3,
+      "want": "R6RS makes an inline hex escape identifier syntax, so this is the SYMBOL 1",
+      "bytes": [
+        49
+      ]
+    }
+  ],
+  "reject": [
+    {
+      "src": "(ok \"a\\x41b\")",
+      "why": "hex escape with no terminating semicolon"
+    },
+    {
+      "src": "(ok \"a\\xZZ;b\")",
+      "why": "hex escape whose digits are not hex"
+    },
+    {
+      "src": "(ok \"a\\x;b\")",
+      "why": "hex escape with no digits"
+    },
+    {
+      "src": "(ok \"a\\qb\")",
+      "why": "escape the grammar does not define"
+    },
+    {
+      "src": "(ok \"a\\x41G;b\")",
+      "why": "valid digits then an invalid one -- parseInt('41G',16) is 65"
+    },
+    {
+      "src": "(ok \"a\\x+41;b\")",
+      "why": "a sign, which a permissive numeric conversion takes"
+    },
+    {
+      "src": "(ok \"a\\x 41;b\")",
+      "why": "whitespace, which a permissive numeric conversion trims"
+    },
+    {
+      "src": "(ok \"a\\x0x41;b\")",
+      "why": "a radix prefix, which a permissive numeric conversion takes"
+    },
+    {
+      "src": "(ok \"a\\xD800;b\")",
+      "why": "a surrogate code point, which is not a scalar value"
+    },
+    {
+      "src": "(ok \"a\\x110000;b\")",
+      "why": "one past the top of the range"
+    },
+    {
+      "src": "(ok \"a\\x100000041;b\")",
+      "why": "out of range, and wraps to 65 in 32-bit arithmetic"
+    },
+    {
+      "src": "(x \\x41 y)",
+      "why": "symbol escape with no terminating semicolon"
+    },
+    {
+      "src": "(x \\xZZ; y)",
+      "why": "symbol escape whose digits are not hex"
+    },
+    {
+      "src": "(ok \"a\\X41;b\")",
+      "why": "R6RS spells the escape with a lowercase x; only its DIGITS vary in case"
+    },
+    {
+      "src": "(x \\X41; y)",
+      "why": "the same, in a symbol"
+    }
+  ],
+  "name_outside_grammar": [
+    {
+      "src": "(x \\x28; y)",
+      "why": "a paren is not a symbol character"
+    },
+    {
+      "src": "(x a\\x20;b y)",
+      "why": "a space is not a symbol character"
+    },
+    {
+      "src": "(x \\x41;; y)",
+      "why": "a semicolon is not a symbol character; this grammar has no comments, so \\x41;; is one token decoding to A;"
+    },
+    {
+      "src": "(x \\x5C;x41; y)",
+      "why": "a backslash is not a symbol character"
+    },
+    {
+      "src": "(x caf\\xE9; y)",
+      "why": "the symbol grammar is ASCII; a non-ASCII name travels as a string"
+    }
+  ],
+  "name_outside_grammar_note": "THE RULE IS: an escape DISAMBIGUATES a name, it does not EXTEND the character set a name may be spelled from. These rows decode to a character outside the symbol grammar and are refused. Their discriminating partner is symbols row 5: \\x31; decodes to \"1\", whose character IS in the grammar and which is escaped only so it is not read as the number -- that one is ACCEPTED. The pair is what discriminates, and neither row alone does: a reader that refused both is too narrow, one that accepted both is full R6RS and lets a peer intern arbitrary character sequences, and one that accepted ( while refusing 1 is incoherent.",
+  "rejected_framing_note": "An earlier version of this section asserted that the reader refuses exactly the names the WRITER refuses. That was wrong and the writer half has been removed rather than kept as a second opinion. It was induced from five measured names without being checked against the rest of this table, where symbols row 5 already contradicted it -- the writer refuses the name 1 and the reader must accept \\x31;. It is also self-defeating: this wire writer emits NO escape for any symbol, it refuses instead, so 'accept only what the writer emits' argues for accepting no escapes at all. The five rows passed under that framing by coincidence, being refused for the character-set reason and not the writer one.",
+  "not_covered": "Error POSITIONS are not asserted by any row here. A boolean refusal cannot catch a right refusal reported at the wrong offset, and both readers had that defect for symbol escapes. Stated so the gap is a known one rather than an invisible one."
+}

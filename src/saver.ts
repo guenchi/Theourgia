@@ -148,7 +148,7 @@ export class Saver {
     this.now = options.now ?? (() => Date.now());
   }
 
-  public get pendingCount(): number {
+  public get pendingCount(): number | null {
     return this.outbox.pendingCount;
   }
 
@@ -221,7 +221,23 @@ export class Saver {
   private serialise<T>(work: () => Promise<T>): Promise<T> {
     const key = path.resolve(this.outbox.path);
     const before = queues.get(key) ?? Promise.resolve();
-    const next = before.then(work, work);
+    /*
+     * THE FILE IS THE QUEUE; THIS OBJECT IS A COPY OF IT. Waiting for
+     * the previous holder of the lock is not enough -- what that holder
+     * wrote is on disk, and this Saver's Outbox still holds whatever it
+     * read when it was built. The extension makes a new Saver, over a
+     * new Outbox, on every settings change, and the old one may add a
+     * pending entry after the new one loaded: writing this copy back
+     * then ERASES it, which is the one thing the outbox exists to stop.
+     *
+     * So the copy is refreshed from the file after taking the lock and
+     * before doing anything with it.
+     */
+    const reloaded = () => {
+      this.outbox.load();
+      return work();
+    };
+    const next = before.then(reloaded, reloaded);
     queues.set(
       key,
       next.then(

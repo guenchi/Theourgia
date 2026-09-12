@@ -26,11 +26,17 @@
  */
 
 import * as assert from 'assert';
-import { documentFor, readBlock } from '../../src/blocks';
+import { documentFor, fieldConflict, readBlock } from '../../src/blocks';
 import { parseOutline } from '../../src/outline';
-import { headingRefusedNotice, saveNotice, statusLine, wrongStoreNotice } from '../../src/status';
+import {
+  prefixRefusedNotice,
+  retryNotice,
+  saveNotice,
+  statusLine,
+  wrongStoreNotice
+} from '../../src/status';
 import { TransportError } from '../../src/transport';
-import { initWire, wire } from '../../src/wire';
+import { Datum, asInteger, initWire, wire } from '../../src/wire';
 
 describe('an outline line this client cannot read stops the outline', () => {
   before(async () => {
@@ -132,6 +138,66 @@ describe('a field this client cannot read stops the block', () => {
     const block = readBlock(value);
     assert.ok(block !== null);
     assert.strictEqual(block?.fields.size, 3);
+    /*
+     * AND WHAT THE THREE HOLD. Counting them accepts a reader that kept
+     * every name and replaced every value -- the numeric one with zero,
+     * the conflicted one with a string -- which is the whole of what
+     * reading a field shape means.
+     */
+    assert.strictEqual(block?.fields.get('heading-src'), '## Two\n');
+    /*
+     * AND IT COMES BACK AS A BigInt, which is what the authority's
+     * reader makes of every integer. Writing this cell is what showed
+     * it: the count-only assertion it replaces was compatible with the
+     * field holding anything at all, including the number 2 that this
+     * one is not.
+     */
+    assert.strictEqual(
+      asInteger(block?.fields.get('level') as Datum),
+      2,
+      'the numeric field did not come back as its value'
+    );
+    const conflict = fieldConflict(block?.fields.get('title') as Datum);
+    assert.ok(conflict !== null, 'the conflicted field was not read as a conflict');
+    assert.deepStrictEqual(conflict?.candidates, ['One', 'Two']);
+  });
+});
+
+describe('a queue nobody could read is not a queue with nothing in it', () => {
+  const facts = {
+    store: '/tmp/s',
+    actor: 'someone',
+    cursor: 'w:7',
+    conflicts: 0,
+    blocked: null
+  };
+
+  /*
+   * THE MOST REASSURING SENTENCE AT THE LEAST APPROPRIATE MOMENT. A
+   * corrupt queue stops every save; reporting its count as zero put
+   * "nothing waiting to be saved" on the screen of a user whose saves
+   * had just stopped going out.
+   */
+  it('says the queue could not be read rather than that nothing is waiting', () => {
+    const line = statusLine({ ...facts, pending: null });
+    assert.match(line.tooltip, /could not be read/);
+    assert.ok(!/nothing waiting to be saved/.test(line.tooltip), 'an unreadable queue read as empty');
+    assert.match(line.text, /unreadable/);
+    assert.ok(line.warning, 'a stopped queue was drawn as though nothing were wrong');
+  });
+
+  it('says so differently from a queue that is genuinely empty', () => {
+    const unknown = statusLine({ ...facts, pending: null });
+    const empty = statusLine({ ...facts, pending: 0 });
+    assert.notStrictEqual(unknown.text, empty.text);
+    assert.match(empty.tooltip, /nothing waiting to be saved/);
+    assert.strictEqual(empty.warning, false);
+  });
+
+  it('still counts the entries when there are some', () => {
+    const line = statusLine({ ...facts, pending: 3 });
+    assert.match(line.text, /3/);
+    assert.ok(line.warning);
   });
 });
 
@@ -192,11 +258,39 @@ describe('S8 what the user is told after a save', () => {
     assert.strictEqual(notice.text, 'the block changed');
   });
 
-  it('says both facts when a heading edit is refused', () => {
-    const notice = headingRefusedNotice('a.2');
+  it('says both facts when an edit to the protected prefix is refused', () => {
+    const notice = prefixRefusedNotice('a.2', false, true);
     assert.strictEqual(notice.level, 'warning');
     assert.match(notice.text, /nothing.*was sent/);
     assert.match(notice.text, /still holds what you wrote/);
+  });
+
+  /*
+   * THE SENTENCE NAMES WHAT THE USER ACTUALLY EDITED. A document block
+   * has front matter and no heading; telling its editor that "the
+   * heading line changed" points at something the block does not have.
+   */
+  it('names the heading for a block that has one', () => {
+    const notice = prefixRefusedNotice('a.2', false, true);
+    assert.match(notice.text, /heading line/);
+    assert.ok(!/front matter/.test(notice.text));
+  });
+
+  it('names the front matter for a document, which has no heading', () => {
+    const notice = prefixRefusedNotice('a.1', true, false);
+    assert.match(notice.text, /front matter/);
+    assert.ok(!/heading line/.test(notice.text), 'a block with no heading was told its heading changed');
+  });
+
+  it('names both when a block carries both', () => {
+    const notice = prefixRefusedNotice('a.2', true, true);
+    assert.match(notice.text, /front matter/);
+    assert.match(notice.text, /heading line/);
+  });
+
+  it('says something usable for a block that has neither', () => {
+    const notice = prefixRefusedNotice('a.3', false, false);
+    assert.match(notice.text, /text before the body/);
   });
 });
 
@@ -221,5 +315,53 @@ describe('a buffer carries the store it was opened from', () => {
     assert.match(notice.text, /\/stores\/one/);
     assert.match(notice.text, /\/stores\/two/);
     assert.match(notice.text, /nothing was sent/);
+  });
+});
+
+/*
+ * WHAT A RETRY SAYS WHEN IT CANNOT COUNT WHAT IS LEFT.
+ *
+ * THE WORD "null" REACHED THE USER. The sentence was built at the call
+ * to the editor by interpolating `saver.pendingCount`, whose type is
+ * `number | null`, so a queue this build could not read produced
+ * "1 of 1 resolved; null still waiting." -- a sentence that reads like a
+ * count and names a value no user has a word for. It is the same fault
+ * the status bar already had, arriving through the one path that had
+ * kept composing its own text.
+ */
+describe('a retry reports a count that may not exist', () => {
+  it('does not put the word null in front of the user', () => {
+    const notice = retryNotice('/tmp/s', 1, 1, null);
+    assert.ok(!/null/.test(notice.text), `the absent count was rendered: ${notice.text}`);
+  });
+
+  it('says the number is not known rather than reporting one', () => {
+    const notice = retryNotice('/tmp/s', 1, 1, null);
+    assert.match(notice.text, /not known/, 'an unreadable queue was not reported as unknown');
+    assert.strictEqual(notice.level, 'warning', 'a stopped queue was reported as information');
+  });
+
+  it('says that differently from a queue with nothing left in it', () => {
+    const unknown = retryNotice('/tmp/s', 1, 1, null);
+    const done = retryNotice('/tmp/s', 1, 1, 0);
+    assert.notStrictEqual(unknown.text, done.text);
+    assert.match(done.text, /0 still waiting/);
+    assert.strictEqual(done.level, 'information');
+  });
+
+  it('still reports the count when there is one', () => {
+    const notice = retryNotice('/tmp/s', 2, 5, 3);
+    assert.match(notice.text, /2 of 5 resolved/);
+    assert.match(notice.text, /3 still waiting/);
+  });
+
+  /*
+   * THE COUNT AND THE OUTCOMES MUST BE ABOUT ONE STORE. A sentence with
+   * no store in it cannot be caught pairing one store's outcomes with
+   * another store's queue, which is exactly what the command did when
+   * the settings changed while a retry was in flight.
+   */
+  it('names the store the numbers belong to', () => {
+    assert.match(retryNotice('/stores/one', 1, 1, 0).text, /\/stores\/one/);
   });
 });

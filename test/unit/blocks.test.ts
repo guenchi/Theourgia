@@ -273,3 +273,18 @@ describe('a document block is opened with its front matter', () => {
     });
   });
 });
+
+/*
+ * THE CELLS THAT USED TO BE HERE REBUILT THE BASELINE THEMSELVES and
+ * then checked the rebuild they had just performed. The rebuild lives in
+ * the extension, beside the editor; a helper here that reimplements it
+ * is a copy, and mutating the real line in extension.ts left both of
+ * those cells green. They are gone rather than kept alongside the real
+ * one -- a cell that cannot fail for the reason it names is worse than
+ * an absent cell, because the count says it is covered.
+ *
+ * What replaced them: "a document block with front matter, edited twice"
+ * in test/integration/extension.test.ts, which drives the real command,
+ * the real save handler and the real rebuild. Mutating extension.ts
+ * kills it.
+ */

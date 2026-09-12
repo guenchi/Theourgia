@@ -37,8 +37,9 @@ import { Saver } from './saver';
 import {
   Notice,
   StatusFacts,
-  headingRefusedNotice,
+  prefixRefusedNotice,
   nodeTooltip,
+  retryNotice,
   saveNotice,
   statusLine,
   wrongStoreNotice
@@ -278,7 +279,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       actor: config.actor,
       cursor: outbox?.cursor ?? null,
       conflicts,
-      pending: outbox?.pendingCount ?? 0,
+      /*
+       * NO OUTBOX IS NOT AN EMPTY OUTBOX. `outbox` is null only when the
+       * settings are unusable, which means the queue's location is not
+       * known -- not that there is nothing in it. Answering zero there
+       * put "nothing waiting to be saved" in front of a user whose
+       * settings had just broken while saves sat unsent on disk.
+       */
+      pending: outbox === null ? null : outbox.pendingCount,
       blocked: saver?.blockedBecause ?? null
     };
   }
@@ -440,7 +448,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const split = splitDocument(document, saved.getText());
     if (!split.ok) {
-      show(headingRefusedNotice(document.id));
+      show(prefixRefusedNotice(document.id, document.front.length > 0, document.headingSrc.length > 0));
       return;
     }
     let outcome;
@@ -458,7 +466,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * body the block had when it was opened, and the heading check
        * would be right only by accident.
        */
-      open.set(file, { ...document, src: split.src, text: document.headingSrc + split.src });
+      /*
+       * THE WHOLE PREFIX, NOT JUST THE HEADING. Rebuilding the baseline
+       * from `headingSrc + src` drops the front matter, and the next
+       * save is then measured against a text the buffer never held: with
+       * an empty body the baseline contains no carriage return, so a
+       * CRLF buffer gets normalised whole and its untouched front matter
+       * no longer matches the prefix -- an ordinary body edit refused
+       * for a change nobody made.
+       */
+      open.set(file, { ...document, src: split.src, text: document.prefix + split.src });
       /*
        * THE FILE AS IT STANDS IS NOW IN THE STORE, so the next time this
        * block is opened it may be taken from the store again. This is
@@ -480,20 +497,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await refreshConflicts();
     }),
     vscode.commands.registerCommand('theourgia.openBlock', openBlock),
+    /*
+     * THE SAVER THAT RAN IS THE SAVER THAT IS REPORTED. `saver` is
+     * rebuilt whenever the settings change, and a retry is an await --
+     * so reading it again afterwards reports the count of whatever store
+     * is configured by then. Changing `theourgia.store` while a retry is
+     * in flight produced a sentence pairing one store's outcomes with
+     * another store's queue, and if that queue was unreadable the count
+     * in it was the word "null". The generation check is the one
+     * `refreshConflicts` already uses, for the same reason.
+     *
+     * IT RETURNS THE NOTICE for the reason `showStatus` returns its
+     * facts: a message shown and not returned is a message no cell can
+     * read, and what it would be wrong about is which store the numbers
+     * belong to.
+     */
     vscode.commands.registerCommand('theourgia.retryOutbox', async () => {
-      if (saver === null) {
-        return;
+      const active = saver;
+      const store = config.store;
+      const asked = generation;
+      if (active === null) {
+        return null;
       }
+      let notice: Notice | null = null;
       try {
-        const outcomes = await saver.retry();
+        const outcomes = await active.retry();
+        if (asked !== generation) {
+          return null;
+        }
         const stuck = outcomes.filter((o) => o.status === 'pending').length;
-        vscode.window.showInformationMessage(
-          `theourgia: ${outcomes.length - stuck} of ${outcomes.length} resolved; ${saver.pendingCount} still waiting.`
-        );
+        notice = retryNotice(store, outcomes.length - stuck, outcomes.length, active.pendingCount);
+        show(notice);
       } catch (e) {
+        if (asked !== generation) {
+          return null;
+        }
         reportFailure(e);
       }
       paint();
+      return notice;
     }),
     vscode.commands.registerCommand('theourgia.showStatus', async (options?: { ask?: boolean }) => {
       if (options?.ask !== false) {

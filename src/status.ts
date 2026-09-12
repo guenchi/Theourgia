@@ -36,7 +36,15 @@ export interface StatusFacts {
   actor: string;
   cursor: string | null;
   conflicts: number | null;
-  pending: number;
+  /*
+   * `pending` IS NULL WHEN THE QUEUE COULD NOT BE READ. Not zero: a
+   * queue this build cannot read is a queue whose contents are unknown,
+   * and it is exactly the state in which no save will go out. Reporting
+   * zero there put "nothing waiting to be saved" on the screen of a user
+   * whose saves had stopped -- the most reassuring possible sentence at
+   * the least appropriate moment.
+   */
+  pending: number | null;
   blocked: string | null;
 }
 
@@ -53,7 +61,9 @@ export function statusLine(facts: StatusFacts): StatusLine {
   } else if (facts.conflicts > 0) {
     parts.push(`$(error) ${facts.conflicts}`);
   }
-  if (facts.pending > 0) {
+  if (facts.pending === null) {
+    parts.push('$(warning) queue unreadable');
+  } else if (facts.pending > 0) {
     parts.push(`$(cloud-upload) ${facts.pending}`);
   }
   if (facts.blocked !== null) {
@@ -68,9 +78,11 @@ export function statusLine(facts: StatusFacts): StatusLine {
       : facts.conflicts > 0
         ? `${facts.conflicts} conflict(s) reported by the store`
         : 'no conflicts',
-    facts.pending > 0
-      ? `${facts.pending} save(s) whose outcome is unknown; run "theourgia: Retry Pending Saves"`
-      : 'nothing waiting to be saved',
+    facts.pending === null
+      ? 'the outbox could not be read, so no save will be sent and what it holds is not known'
+      : facts.pending > 0
+        ? `${facts.pending} save(s) whose outcome is unknown; run "theourgia: Retry Pending Saves"`
+        : 'nothing waiting to be saved',
     ...(facts.blocked === null ? [] : [`writing is blocked: ${facts.blocked}`])
   ].join('\n');
   return {
@@ -79,6 +91,7 @@ export function statusLine(facts: StatusFacts): StatusLine {
     warning:
       facts.conflicts === null ||
       facts.conflicts > 0 ||
+      facts.pending === null ||
       facts.pending > 0 ||
       facts.blocked !== null
   };
@@ -119,16 +132,30 @@ export function saveNotice(
 }
 
 /*
- * THE HEADING REFUSAL HAS ITS OWN SENTENCE because it is the one case
- * where nothing was sent and the file still holds what the user wrote --
- * two facts they need in the same breath.
+ * THE REFUSAL HAS ITS OWN SENTENCE because it is the one case where
+ * nothing was sent and the file still holds what the user wrote -- two
+ * facts they need in the same breath.
+ *
+ * AND IT NAMES WHAT WAS ACTUALLY EDITED. A block's protected prefix is
+ * its front matter and its heading, and a save that writes only `src`
+ * can change neither -- but a sentence that always said "the heading
+ * line" sent a user who had edited front matter, on a block that has no
+ * heading, to look at something that is not there.
  */
-export function headingRefusedNotice(id: string): Notice {
+export function prefixRefusedNotice(id: string, hasFront: boolean, hasHeading: boolean): Notice {
+  const parts: string[] = [];
+  if (hasFront) {
+    parts.push('front matter');
+  }
+  if (hasHeading) {
+    parts.push('heading line');
+  }
+  const what = parts.length === 0 ? 'text before the body' : parts.join(' or ');
   return {
     level: 'warning',
     text:
-      `the heading line of ${id} changed. Editing a title is not in this batch, so nothing ` +
-      'was sent; the file still holds what you wrote.'
+      `the ${what} of ${id} changed. This batch sends only the body, so nothing was sent; ` +
+      'the file still holds what you wrote.'
   };
 }
 
@@ -182,4 +209,35 @@ export function nodeTooltip(
     said.push('it has a field with more than one candidate value');
   }
   return said.length === 0 ? null : `${id}: ${said.join('; ')}`;
+}
+
+/*
+ * WHAT A RETRY REPORTS, and it reports a count that may not exist.
+ *
+ * THE SENTENCE IS COMPOSED HERE FOR THE REASON AT THE TOP OF THIS FILE.
+ * It used to be built at the call to the editor out of
+ * `saver.pendingCount`, whose type is `number | null` -- so a queue this
+ * build cannot read put the word "null" in front of the user, inside a
+ * sentence that otherwise reads like a count. Interpolating a value
+ * whose absent case is a word is how "unknown" gets drawn as a fact.
+ *
+ * IT NAMES THE STORE because the count and the outcomes must be about
+ * the same one. A retry that is still in flight when the settings change
+ * has no business reporting the new store's queue, and a sentence with
+ * no store in it cannot be caught doing so.
+ */
+export function retryNotice(
+  store: string,
+  resolved: number,
+  total: number,
+  pending: number | null
+): Notice {
+  const waiting =
+    pending === null
+      ? 'how many are still waiting is not known, because that queue could not be read'
+      : `${pending} still waiting`;
+  return {
+    level: pending === null || pending > 0 ? 'warning' : 'information',
+    text: `${resolved} of ${total} resolved for ${store}; ${waiting}.`
+  };
 }

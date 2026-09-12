@@ -188,14 +188,14 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
       ok,
       kind: 'datum',
       text: raw.stdout,
-      answers: readData(raw, verb),
+      answers: readData(raw, verb, args),
       stderr: raw.stderr
     };
   }
   if (kind === 'text') {
     return { argv: raw.argv, rc: raw.rc, ok, kind, text: raw.stdout, answers: [], stderr: raw.stderr };
   }
-  const answers = readData(raw, verb);
+  const answers = readData(raw, verb, args);
   if (answers.length === 0 && appendsARecord(verb, args)) {
     throw new TransportError(
       'no-answer',
@@ -214,14 +214,24 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
   return { argv: raw.argv, rc: raw.rc, ok, kind, text: raw.stdout, answers, stderr: raw.stderr };
 }
 
-function readData(raw: RawResult, verb: string): Datum[] {
+/*
+ * AN UNREADABLE ANSWER NAMES WHAT IT WAS ABOUT. "the core's answer to
+ * read could not be read" sends whoever gets it looking through a whole
+ * store; the id was in the request all along. A block can be made
+ * unreadable by something stored in it -- an edge whose name the wire
+ * cannot spell, a body byte the reader refuses -- and then this message
+ * is the only thing pointing at which block to go and look at.
+ */
+function readData(raw: RawResult, verb: string, args: string[]): Datum[] {
   try {
     return parseAnswers(raw.stdout);
   } catch (e) {
     if (e instanceof AnswerParseError) {
+      const about = args.filter((a) => !a.startsWith('--'));
+      const named = about.length > 0 ? ` (${about[0]})` : '';
       throw new TransportError(
         'unreadable',
-        `the core's answer to ${verb} could not be read at line ${e.line}: ${e.message}`,
+        `the core's answer to ${verb}${named} could not be read at line ${e.line}: ${e.message}`,
         e.text
       );
     }

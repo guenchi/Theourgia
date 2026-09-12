@@ -176,3 +176,279 @@ describe('a timeout the timer cannot honour is refused where it is read', () => 
     assert.strictEqual(problemsWith({ ...base, timeoutMs: -1 }).length, 1);
   });
 });
+
+describe('a queue in a shape this build cannot read is refused, not repaired', () => {
+  /*
+   * SILENTLY DROPPING THE UNREADABLE PART WAS THE WORSE FAILURE. A file
+   * holding one entry without a cursor came back as a queue with that
+   * entry missing, and the next save wrote the repaired queue over the
+   * file -- so work nobody could read became work nobody had. Each of
+   * these leaves the file alone instead.
+   */
+  const bad: { name: string; text: string; says: RegExp }[] = [
+    { name: 'a queue that is not an object', text: 'null\n', says: /not an object/ },
+    { name: 'a queue that is a list', text: '[]\n', says: /not an object/ },
+    {
+      name: 'entries that are not a list',
+      text: '{"version":1,"cursor":null,"entries":{}}\n',
+      says: /not a list/
+    },
+    {
+      name: 'an entry with no cursor',
+      text: '{"version":1,"cursor":"w:7","entries":[{"req":"r","id":"a.2","field":"src","payload":"x"}]}\n',
+      says: /no readable cursor/
+    },
+    {
+      name: 'an entry whose payload is not text',
+      text:
+        '{"version":1,"cursor":"w:7","entries":[{"req":"r","cursor":"w:7","id":"a.2","field":"src","payload":42}]}\n',
+      says: /no readable payload/
+    },
+    {
+      name: 'an entry in a state this build does not know',
+      text:
+        '{"version":1,"cursor":"w:7","entries":[{"req":"r","cursor":"w:7","id":"a.2","field":"src","payload":"x","state":"halfway"}]}\n',
+      says: /state this build does not know/
+    },
+    {
+      name: 'a queue from a later version',
+      text: '{"version":2,"cursor":"w:7","entries":[]}\n',
+      says: /version 2/
+    },
+    {
+      /*
+       * IT BELONGS IN THE MATRIX, not beside it. As its own cell this
+       * shape was asked only whether `load` refused; the matrix also
+       * asks whether the refusal stops the file being written over,
+       * which is the half that matters and the half a build could fail
+       * while still throwing.
+       */
+      name: 'a queue with no entries list at all',
+      text: '{"cursor":"w:7"}\n',
+      says: /no entries list/
+    }
+  ];
+
+  for (const row of bad) {
+    it(`refuses ${row.name}, and leaves the file alone`, () => {
+      const file = scratch('malformed');
+      fs.writeFileSync(file, row.text, 'utf8');
+      const outbox = new Outbox(file);
+      assert.throws(() => outbox.load(), (e: unknown) => e instanceof OutboxWriteError && row.says.test((e as Error).message));
+      assert.throws(
+        () => outbox.setCursor('w:9'),
+        OutboxWriteError,
+        'a queue that could not be read was about to be written over'
+      );
+      assert.strictEqual(fs.readFileSync(file, 'utf8'), row.text, 'the unreadable file was changed');
+    });
+  }
+
+  /*
+   * A REFUSAL THAT LEAVES NO WAY FORWARD IS NOT FINISHED. Once the queue
+   * is unreadable nothing will be written to it, so saving stops until a
+   * person does something -- and the message is the only place they will
+   * learn what. It names the file, says why it is being left alone, and
+   * says that moving it aside resumes saving and what that costs.
+   */
+  function refusalFor(file: string): string {
+    const outbox = new Outbox(file);
+    let caught: unknown = null;
+    try {
+      outbox.load();
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof OutboxWriteError, `load did not refuse ${file}`);
+    return (caught as Error).message;
+  }
+
+  it('tells the user what they can do about a queue whose bytes it cannot read', () => {
+    const file = scratch('stuck');
+    fs.writeFileSync(file, 'this is not json\n', 'utf8');
+    const said = refusalFor(file);
+    assert.ok(said.includes(file), 'the message does not name the file');
+    assert.match(said, /no further save will be sent/, 'the message does not say saving has stopped');
+    assert.match(said, /move it aside/, 'the message does not say what can be done');
+  });
+
+  /*
+   * WHAT SETTING THE QUEUE ASIDE ACTUALLY COSTS. The message used to say
+   * that "what is lost is only the record of which requests were still
+   * unresolved", which is not what the file holds: entries carry whole
+   * payloads, and one written down and never sent is work that exists
+   * nowhere else. A user told the loss was bookkeeping would move the
+   * file and lose saves. The sentence has to say the work will not be
+   * retried, and it must not describe the loss as only a record.
+   */
+  it('does not describe setting the queue aside as losing only a record', () => {
+    const file = scratch('stuck-cost');
+    fs.writeFileSync(file, 'this is not json\n', 'utf8');
+    const said = refusalFor(file);
+    assert.match(said, /never sent/, 'the message does not say the queue holds unsent work');
+    assert.match(
+      said,
+      /will not be retried/,
+      'the message does not say the recorded work stops being retried'
+    );
+    assert.ok(
+      !/only the record/.test(said),
+      'the message still calls the loss a record, which is what made it safe to discard'
+    );
+  });
+
+  /*
+   * ADVICE THAT WOULD NOT HAVE WORKED. A queue that could not be REACHED
+   * -- a permission, a device error -- is not repaired by moving the
+   * file, and a user who cannot read the file may not be able to move it
+   * either. One sentence served both faults, so in this one it named a
+   * remedy for a different problem.
+   */
+  it('does not answer an unreachable queue with the advice for an unreadable one', () => {
+    /*
+     * A DIRECTORY IN THE QUEUE'S PLACE reaches the same branch as a
+     * permission or a device error -- the read fails with something that
+     * is not ENOENT -- and it does so without depending on which user is
+     * running the suite, which a chmod would.
+     */
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-unreachable-')), 'outbox.json');
+    fs.mkdirSync(file);
+    const said = refusalFor(file);
+    assert.match(said, /readable again/, 'the message does not say what would repair this fault');
+    assert.ok(
+      !/move it aside/.test(said),
+      'an unreachable queue was answered with the remedy for an unreadable one'
+    );
+  });
+
+  it('says the same for a shape it cannot read, not only for bad JSON', () => {
+    const file = scratch('stuck2');
+    fs.writeFileSync(file, '{"version":1,"cursor":"w:7","entries":[{"req":"r"}]}\n', 'utf8');
+    const said = refusalFor(file);
+    assert.match(said, /shape this build cannot read/);
+    assert.match(said, /move it aside/);
+  });
+
+  it('still reads a queue this build wrote', () => {
+    const file = scratch('roundtrip');
+    const first = new Outbox(file);
+    first.load();
+    first.setCursor('w:7');
+    first.enqueue(entry('11111111-1111-1111-1111-111111111111', 'one\n'));
+
+    const second = new Outbox(file);
+    second.load();
+    assert.strictEqual(second.cursor, 'w:7');
+    assert.deepStrictEqual(
+      second.entries.map((e) => [e.req, e.payload, e.state]),
+      [['11111111-1111-1111-1111-111111111111', 'one\n', 'queued']]
+    );
+  });
+
+  /*
+   * THE LEGACY CASE HAS TO CARRY WORK IN IT. A cell that loads an EMPTY
+   * versionless queue is satisfied by a build that accepts empty ones
+   * and drops or refuses populated ones -- which is the migration this
+   * change could actually break.
+   */
+  it('reads a populated queue with no version field, keeping every entry', () => {
+    const file = scratch('noversion');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        cursor: 'w:7',
+        entries: [
+          { req: 'aaaaaaaa-1111-1111-1111-111111111111', cursor: 'w:3', id: 'a.2', field: 'src', payload: 'one\n', state: 'pending' },
+          /*
+           * A SECOND FIELD NAME, so that a reader which hardcodes the
+           * one this batch happens to write is caught. Both entries
+           * saying 'src' let such a reader reproduce the fixture.
+           */
+          { req: 'bbbbbbbb-2222-2222-2222-222222222222', cursor: 'w:5', id: 'a.9', field: 'title', payload: 'two\n' }
+        ]
+      }),
+      'utf8'
+    );
+    const outbox = new Outbox(file);
+    outbox.load();
+    assert.strictEqual(outbox.cursor, 'w:7');
+    assert.deepStrictEqual(
+      /*
+       * THE FIELD IS PART OF THE ENTRY. Leaving it out of the comparison
+       * let a reader that replaced every legacy entry's field pass a
+       * cell whose name promises the entries survived -- and the field
+       * is what the retry writes.
+       */
+      outbox.entries.map((e) => [e.req, e.cursor, e.id, e.field, e.payload, e.state]),
+      [
+        ['aaaaaaaa-1111-1111-1111-111111111111', 'w:3', 'a.2', 'src', 'one\n', 'pending'],
+        ['bbbbbbbb-2222-2222-2222-222222222222', 'w:5', 'a.9', 'title', 'two\n', 'queued']
+      ],
+      'a queue an earlier build wrote did not survive the stricter reading'
+    );
+  });
+
+  /*
+   * THE FLAG HAS TO BE CLEARED, not merely never set. Every malformed
+   * cell above starts from a fresh Outbox that was never readable, so
+   * none of them would notice a build that kept writing after a
+   * successful load was followed by a failed one.
+   */
+  /*
+   * AND FOR EVERY WAY A LOAD CAN FAIL, not only for bad JSON. `load`
+   * clears the flag in three separate catches -- the read, the parse and
+   * the shape -- and a cell that exercises one of them accepts a build
+   * that dropped the other two. The three faults are the three rows.
+   */
+  const wentBad: Array<{ name: string; spoil: (file: string) => string }> = [
+    {
+      name: 'bytes that are not JSON',
+      spoil: (file) => {
+        fs.writeFileSync(file, 'this is not json\n', 'utf8');
+        return 'this is not json\n';
+      }
+    },
+    {
+      name: 'a shape this build cannot read',
+      spoil: (file) => {
+        const text = '{"version":1,"cursor":"w:7","entries":[{"req":"r"}]}\n';
+        fs.writeFileSync(file, text, 'utf8');
+        return text;
+      }
+    },
+    {
+      name: 'a file it can no longer reach',
+      spoil: (file) => {
+        fs.rmSync(file);
+        fs.mkdirSync(file);
+        return '';
+      }
+    }
+  ];
+
+  for (const row of wentBad) {
+    it(`stops writing after a queue it had read becomes ${row.name}`, () => {
+      const file = scratch('wentbad');
+      const outbox = new Outbox(file);
+      outbox.load();
+      outbox.setCursor('w:7');
+      assert.strictEqual(outbox.pendingCount, 0);
+
+      const after = row.spoil(file);
+      assert.throws(() => outbox.load(), OutboxWriteError);
+      assert.strictEqual(
+        outbox.pendingCount,
+        null,
+        'the count of an unreadable queue was reported as a number'
+      );
+      assert.throws(
+        () => outbox.setCursor('w:9'),
+        OutboxWriteError,
+        'a queue that had gone bad was still being written to'
+      );
+      if (after !== '') {
+        assert.strictEqual(fs.readFileSync(file, 'utf8'), after, 'the unreadable file was changed');
+      }
+    });
+  }
+});

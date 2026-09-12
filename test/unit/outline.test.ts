@@ -54,9 +54,36 @@ describe('O1 the outline is read for the one field a title cannot forge', () => 
     assert.deepStrictEqual(Object.keys(rows[0]).sort(), ['depth', 'id', 'line']);
   });
 
-  it('takes the depth from leading spaces and not from tabs', () => {
+  it('takes the depth from leading spaces', () => {
     const rows = parseOutline('- a  A\n  - b  B\n    - c  C\n      - d  D\n');
     assert.deepStrictEqual(rows.map((r) => r.depth), [0, 1, 2, 3]);
+  });
+
+  /*
+   * A CELL NAMED "not from tabs" WITH NO TAB IN IT SAYS NOTHING. The
+   * core indents with two spaces per level and never with a tab, so a
+   * line indented by one is a line this cannot read -- and refusing it
+   * is what stops a tab being counted as some number of levels.
+   */
+  it('refuses a row indented with a tab, rather than guessing its depth', () => {
+    assert.throws(
+      () => parseOutline('- a  A\n\t- b  B\n'),
+      (e: unknown) => e instanceof TransportError && e.failure === 'unreadable'
+    );
+  });
+
+  /*
+   * AND THE ROW THAT MUST STILL BE ACCEPTED. A refusal cell on its own
+   * is satisfied by refusing too much: "reject any outline containing a
+   * tab" passes the cell above and throws away a perfectly ordinary row
+   * whose TITLE holds a tab, which the grammar accepts and the core can
+   * produce. The two cells together say where the line is.
+   */
+  it('reads a row whose title contains a tab, which is not an indent', () => {
+    const rows = parseOutline('- a.1  A\tB\n');
+    assert.strictEqual(rows.length, 1);
+    assert.strictEqual(rows[0].id, 'a.1');
+    assert.strictEqual(rows[0].depth, 0);
   });
 
   it('reads a row whose title is empty, and one with no title at all', () => {
@@ -79,11 +106,20 @@ describe('O1 the outline is read for the one field a title cannot forge', () => 
   });
 });
 
+/*
+ * THE CHILDREN AGREE WITH NO SORT AT ALL, in either direction. The
+ * first version had them ascending in every field, so any sort passed;
+ * the second had them descending in every field, so a descending sort
+ * passed. Document order here is a.5, a.9, a.2 -- ids neither up nor
+ * down, titles Mike, Alpha, Zulu likewise, ords 2, 0, 1 -- so only
+ * keeping the order the core answered in reproduces it.
+ */
 const SUBTREE = [
   '((id . "a.1") (deleted . #f) (fields (src . "") (title . "Doc")) (position root . 0) (edges))',
-  '((id . "a.2") (deleted . #f) (fields (src . "body") (title . "Two")) (position "a.1" . 0) (edges))',
-  '((id . "a.3") (deleted . #f) (fields (src . "b3") (title . "Three")) (position "a.1" . 1) (edges))',
-  '((id . "a.4") (deleted . #f) (fields (src . "deep") (title . "Deeper")) (position "a.2" . 0) (edges))'
+  '((id . "a.5") (deleted . #f) (fields (src . "body") (title . "Mike")) (position "a.1" . 2) (edges))',
+  '((id . "a.9") (deleted . #f) (fields (src . "b3") (title . "Alpha")) (position "a.1" . 0) (edges))',
+  '((id . "a.2") (deleted . #f) (fields (src . "x") (title . "Zulu")) (position "a.1" . 1) (edges))',
+  '((id . "a.4") (deleted . #f) (fields (src . "deep") (title . "Deeper")) (position "a.5" . 0) (edges))'
 ].join('\n');
 
 const BLOCK_OF: { [id: string]: string } = {
@@ -203,21 +239,25 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       }
     });
 
+    /*
+     * `nested-document` HAS NO CELL HERE, and the variant is skipped
+     * BEFORE the cell is registered rather than returning from inside
+     * it. A test that returns early still reports as passing, and a
+     * green line saying "carries nested-document down to a child" -- for
+     * a case the core cannot produce and this cell never checked -- is a
+     * worse thing to leave behind than no line at all.
+     *
+     * The reason it has none: the core's recursive walk STOPS at a
+     * doc-kind child (project.ss says "a walk stops at one", because a
+     * nested document has its own file and descending would write its
+     * sections twice), so one never arrives through this path. What does
+     * happen to it is in its own block below.
+     */
+    if (mark === 'nested-document') {
+      continue;
+    }
+
     it(`carries ${mark} down to a child as well as to a root`, async () => {
-      /*
-       * `nested-document` IS NOT IN THIS ONE, and the reason is a fact
-       * about the core rather than a convenience: its recursive walk
-       * STOPS at a doc-kind child -- project.ss says "a walk stops at
-       * one", because the nested document has its own file and
-       * descending would write its sections twice. So the core never
-       * returns one from `read <parent> --recursive`, and a cell that
-       * scripted a stand-in into returning one was asserting behaviour
-       * of a core that does not exist. See the block below for what
-       * really happens to a nested document.
-       */
-      if (mark === 'nested-document') {
-        return;
-      }
       const subtree = [
         '((id . "p.1") (deleted . #f) (fields (title . "Parent")) (position root . 0) (edges))',
         '((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position "p.1" . 0) (edges))'
@@ -242,6 +282,32 @@ describe('O2 a node is expanded when it is opened and not before', () => {
    * core's own README says is still open.
    */
   describe('a nested document is reported but not shown', () => {
+    /*
+     * WITH ONE WAY IN, and it was missing from this account. A nested
+     * document whose parent is then deleted is reported by the core as
+     * BOTH an orphan and a nested document -- the two are computed
+     * independently -- and the orphan mark is one that puts a block in
+     * the root listing. So it does reach the tree, as a marked root.
+     * "The only sign is the conflict count" was true only while its
+     * parent was alive.
+     */
+    it('does reach the root listing once its parent is deleted', async () => {
+      core = new FakeCore([
+        { match: ['outline'], stdout: 'orphans:\n- n.1  Inner\n', rc: 0 },
+        { match: ['conflicts'], stdout: '(orphan "n.1")\n(nested-document "n.1")\n', rc: 0 },
+        {
+          match: ['read', 'n.1'],
+          stdout:
+            '(ok ((id . "n.1") (deleted . #f) (fields (title . "Inner") (kind . doc)) (position "p.1" . 0) (edges)))\n',
+          rc: 0
+        }
+      ]);
+      const roots = await model().roots();
+      assert.deepStrictEqual(roots.map((n) => n.id), ['n.1']);
+      assert.deepStrictEqual((roots[0].marks as string[]).slice().sort(), ['nested-document', 'orphan']);
+      assert.strictEqual(roots[0].orphan, true);
+    });
+
     it('is absent from its parent\'s children, because the core does not return it', async () => {
       const subtree = [
         '((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges))'
@@ -393,11 +459,11 @@ describe('O2 a node is expanded when it is opened and not before', () => {
     ]);
     const store = model();
     const children = (await store.childrenOf('a.1')).nodes;
-    assert.deepStrictEqual(children.map((n) => n.id), ['a.2', 'a.3']);
+    assert.deepStrictEqual(children.map((n) => n.id), ['a.5', 'a.9', 'a.2']);
     const requests = core.requests();
     assert.strictEqual(requests.length, 2, 'an expansion cost more than the subtree and the conflicts');
     assert.ok(
-      !requests.some((r) => r[0] === 'read' && r[1] === 'a.2'),
+      !requests.some((r) => r[0] === 'read' && r.length === 2),
       'a child was fetched one at a time'
     );
   });
@@ -408,8 +474,12 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['conflicts'], stdout: '', rc: 0 }
     ]);
     const children = (await model().childrenOf('a.1')).nodes;
-    assert.deepStrictEqual(children.map((n) => n.id), ['a.2', 'a.3']);
-    assert.deepStrictEqual(children.map((n) => n.title), ['Two', 'Three']);
+    assert.deepStrictEqual(
+      children.map((n) => n.id),
+      ['a.5', 'a.9', 'a.2'],
+      'the children came back in some order other than the one the core answered in'
+    );
+    assert.deepStrictEqual(children.map((n) => n.title), ['Mike', 'Alpha', 'Zulu']);
   });
 
   it('reads a top-level block as a child of nothing, not of a block called root', async () => {
@@ -544,23 +614,15 @@ describe('a row in the listing must be a block that is actually at the top level
     );
   });
 
-  it('marks a child the store reports as a nested document', async () => {
-    const subtree = [
-      '((id . "a.1") (deleted . #f) (fields (title . "Doc")) (position root . 0) (edges))',
-      '((id . "a.2") (deleted . #f) (fields (title . "Inner")) (position "a.1" . 0) (edges))'
-    ].join('\n');
-    core = new FakeCore([
-      { match: ['read', 'a.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
-      { match: ['conflicts'], stdout: '(nested-document "a.2")\n', rc: 0 }
-    ]);
-    const children = (await model().childrenOf('a.1')).nodes;
-    assert.strictEqual(children.length, 1);
-    assert.deepStrictEqual(
-      children[0].marks,
-      ['nested-document'],
-      'a structural conflict that sits under another block reached the tree unmarked'
-    );
-  });
+  /*
+   * THE CELL THAT USED TO BE HERE SCRIPTED A NESTED DOCUMENT INTO A
+   * SUBTREE ANSWER and asserted that it arrived marked. The core's walk
+   * stops at a doc-kind child, so it never arrives at all -- the cell
+   * was describing a core that does not exist, and it was left behind
+   * when its replacement was written. What a marked child really looks
+   * like is covered by the table above, one cell per mark; what happens
+   * to a nested document is covered in its own block.
+   */
 
   it('refuses rather than reporting no conflicts when the store would not say', async () => {
     core = new FakeCore([

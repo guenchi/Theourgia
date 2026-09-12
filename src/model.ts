@@ -279,12 +279,15 @@ export class StoreModel {
       );
     }
     /*
-     * TWO REQUESTS, NOT ONE, AND THE SECOND IS NOT OPTIONAL. A nested
-     * document is a structural conflict that sits UNDER another block,
-     * so it reaches the tree through here and not through the root
-     * listing -- and without asking, it would be drawn as an ordinary
-     * child with no warning on it at all. The subtree answer says what a
-     * block is; only `conflicts` says what the store cannot show.
+     * TWO REQUESTS, NOT ONE, AND THE SECOND IS NOT OPTIONAL. The subtree
+     * answer says what a block IS; only `conflicts` says what the store
+     * holds and cannot show, and without asking, a marked block would be
+     * drawn as an ordinary child with no warning on it at all.
+     *
+     * A NESTED DOCUMENT IS NOT WHAT THIS IS FOR, and the comment here
+     * used to say it was. The core's walk stops at a doc-kind child, so
+     * one never arrives through this path; what does arrive marked is
+     * any child the store reports under `conflicts` for another reason.
      */
     /*
      * A REFUSAL HERE COSTS THE MARKS AND NOT THE CHILDREN. Which blocks

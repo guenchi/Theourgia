@@ -25,7 +25,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
-import { Outbox } from '../../src/outbox';
+import { Outbox, OutboxWriteError } from '../../src/outbox';
 import { Saver } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
 import { initWire } from '../../src/wire';
@@ -97,17 +97,58 @@ describe('S1 a save is one set, carrying a request id and a cursor', () => {
     const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }, { match: ['set'], stdout: wrote(8), rc: 0 }]);
     core = core0;
     /*
-     * The outbox's directory is occupied by a FILE, so making it fails
-     * and the entry cannot be recorded. The cell is about the order of
-     * the two steps, and the only way to see an order is to break the
-     * first one.
+     * THE DIRECTORY IS READABLE AND NOT WRITABLE. An earlier version put
+     * a FILE where the directory belonged, and this comment still said
+     * so for a round after the fixture stopped doing it. The cell is
+     * about the order of the two steps, and the only way to see an
+     * order is to break the second one while the first still works.
      */
-    const blocked = path.join(core0.root, 'occupied');
-    fs.writeFileSync(blocked, 'not a directory\n', 'utf8');
+    /*
+     * THE READ HAS TO SUCCEED AND THE WRITE HAS TO FAIL. Putting a file
+     * where the directory belongs made the RELOAD fail instead -- the
+     * save was refused before `enqueue` was ever reached, so the cell
+     * passed without testing what it names. A directory that can be read
+     * and not written separates the two.
+     */
+    const blocked = path.join(core0.root, 'readonly');
+    fs.mkdirSync(blocked, { recursive: true });
     const outbox = new Outbox(path.join(blocked, 'outbox.json'));
+    outbox.load();
+    assert.strictEqual(outbox.pendingCount, 0, 'the queue was not readable, so this tests the wrong step');
+    /*
+     * THE CURSOR IS ESTABLISHED WHILE THE DIRECTORY IS STILL WRITABLE.
+     * Without this the bootstrap's own `setCursor` is the first write to
+     * fail, and the save is refused before `enqueue` is ever reached --
+     * so a build that swallowed an enqueue failure still passed. The
+     * cell's name is about enqueue, so enqueue has to be the first write
+     * that happens.
+     */
+    outbox.setCursor('w:7');
+    fs.chmodSync(blocked, 0o500);
     const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox);
-    await assert.rejects(() => saver.save('a.2', 'src', 'body\n'));
-    assert.deepStrictEqual(setCalls(core0), [], 'a save was sent that had not been written down');
+    try {
+      await assert.rejects(
+        () => saver.save('a.2', 'src', 'body\n'),
+        (e: unknown) => e instanceof OutboxWriteError,
+        'the save failed for some reason other than not being able to write the entry down'
+      );
+      assert.deepStrictEqual(setCalls(core0), [], 'a save was sent that had not been written down');
+      /*
+       * AND THE ENTRY IS NOT SITTING IN MEMORY EITHER. Without this, an
+       * `enqueue` that appended to the in-memory list, swallowed its own
+       * write failure and returned still passed: the rejection this cell
+       * observes would then be raised later, by `aboutToSend`, and both
+       * the refusal and the absence of traffic look identical from here.
+       * The step this cell is named for is the one that has to fail.
+       */
+      assert.strictEqual(
+        outbox.entries.length,
+        0,
+        'the entry was kept in memory although writing it down had failed'
+      );
+    } finally {
+      fs.chmodSync(blocked, 0o700);
+    }
   });
 
   it('refuses to write against a store whose local writer is not known', async () => {
@@ -476,11 +517,18 @@ describe('S11 a host interrupted between the send and the answer', () => {
     await r.saver.save('a.2', 'src', 'first\n');
     assert.strictEqual(r.outbox.cursor, 'w:9');
 
+    /*
+     * THE ENTRY'S CURSOR AND THE OUTBOX'S ARE DIFFERENT ON PURPOSE. With
+     * both at `w:9` a client that rewrote the first from the second
+     * would be invisible -- the value it wrote would be the value that
+     * was already there. `w:4` is the position this request really went
+     * out at, which is what makes the rewrite observable.
+     */
     const interrupted = new Outbox(file);
     interrupted.load();
     interrupted.enqueue({
       req: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      cursor: 'w:9',
+      cursor: 'w:4',
       id: 'a.2',
       field: 'src',
       payload: 'second\n',
@@ -501,7 +549,11 @@ describe('S11 a host interrupted between the send and the answer', () => {
     assert.strictEqual(outcomes[0].status, 'saved', outcomes[0].message);
     const sent = setCalls(core);
     assert.strictEqual(sent[1][5], 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'the retry changed the request id');
-    assert.strictEqual(sent[1][7], 'w:9', 'the retry changed the cursor of a request already sent');
+    assert.strictEqual(
+      sent[1][7],
+      'w:4',
+      'the retry sent the outbox cursor instead of the one the request went out at'
+    );
   });
 
   it('does not move the cursor of a sent entry even when the outbox has moved on', async () => {
@@ -544,21 +596,38 @@ describe('S11 a host interrupted between the send and the answer', () => {
   });
 });
 
-describe('S12 two entries found on disk after a restart', () => {
+describe('S12 entries found on disk after a restart', () => {
   let core: FakeCore;
   before(async () => {
     await initWire();
   });
   afterEach(() => core?.dispose());
 
-  function twoEntries(file: string): Outbox {
+  function entriesOnDisk(file: string): Outbox {
     const outbox = new Outbox(file);
     outbox.load();
     outbox.setCursor('w:7');
-    for (const [req, payload] of [
-      ['11111111-1111-1111-1111-111111111111', 'first\n'],
-      ['22222222-2222-2222-2222-222222222222', 'second\n']
-    ]) {
+    /*
+     * THE WRITTEN ORDER AGREES WITH NO SORT IN EITHER DIRECTION. Two
+     * entries could only be ascending or descending, and the second
+     * version of this fixture was descending in both fields -- so a
+     * descending sort still reproduced it. Three entries with ids
+     * 5,9,1 and payloads mike, alpha, zulu are monotonic in neither
+     * field either way, and their creation times descend, so no sort on
+     * any of the three reproduces the written order.
+     */
+    /*
+     * AND THE TIMESTAMPS DISAGREE WITH THE ORDER TOO. Every entry
+     * carrying `createdAt: 0` left a whole family of implementations
+     * alive: a stable sort by creation time reproduces the written order
+     * whenever the times are equal, and would reorder a real queue whose
+     * times are not. Making them descending kills that family here.
+     */
+    for (const [req, payload, createdAt] of [
+      ['55555555-5555-5555-5555-555555555555', 'mike\n', 300],
+      ['99999999-9999-9999-9999-999999999999', 'alpha\n', 200],
+      ['11111111-1111-1111-1111-111111111111', 'zulu\n', 100]
+    ] as Array<[string, string, number]>) {
       outbox.enqueue({
         req,
         cursor: 'w:7',
@@ -566,7 +635,7 @@ describe('S12 two entries found on disk after a restart', () => {
         field: 'src',
         payload,
         state: 'sent',
-        createdAt: 0,
+        createdAt,
         lastError: null
       });
     }
@@ -575,11 +644,12 @@ describe('S12 two entries found on disk after a restart', () => {
 
   it('sends them in the order they were written down', async () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s12-')), 'outbox.json');
-    twoEntries(file);
+    entriesOnDisk(file);
     const r = rig(
       [
-        { match: ['set'], contains: ['first\n'], stdout: wrote(9), rc: 0 },
-        { match: ['set'], contains: ['second\n'], stdout: wrote(10), rc: 0 }
+        { match: ['set'], contains: ['mike\n'], stdout: wrote(9), rc: 0 },
+        { match: ['set'], contains: ['alpha\n'], stdout: wrote(10), rc: 0 },
+        { match: ['set'], contains: ['zulu\n'], stdout: wrote(11), rc: 0 }
       ],
       file
     );
@@ -588,19 +658,23 @@ describe('S12 two entries found on disk after a restart', () => {
     reloaded.load();
     const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
     const outcomes = await saver.retry();
-    assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved']);
+    assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved', 'saved']);
     const bodies = setCalls(core).map((c) => c[3]);
-    assert.deepStrictEqual(bodies, ['first\n', 'second\n'], 'the restart sent them out of order');
+    assert.deepStrictEqual(
+      bodies,
+      ['mike\n', 'alpha\n', 'zulu\n'],
+      'the restart sent them in some order other than the one they were written in'
+    );
     assert.strictEqual(reloaded.pendingCount, 0);
   });
 
   it('holds the second back when the first cannot be resolved', async () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-s12b-')), 'outbox.json');
-    twoEntries(file);
+    entriesOnDisk(file);
     const r = rig(
       [
-        { match: ['set'], contains: ['first\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 },
-        { match: ['set'], contains: ['second\n'], stdout: wrote(10), rc: 0 }
+        { match: ['set'], contains: ['mike\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 },
+        { match: ['set'], contains: ['alpha\n'], stdout: wrote(10), rc: 0 }
       ],
       file
     );
@@ -612,10 +686,10 @@ describe('S12 two entries found on disk after a restart', () => {
     assert.deepStrictEqual(outcomes.map((o) => o.status), ['pending']);
     assert.deepStrictEqual(
       setCalls(core).map((c) => c[3]),
-      ['first\n'],
-      'the second went out past an unresolved first'
+      ['mike\n'],
+      'something went out past an unresolved head'
     );
-    assert.strictEqual(reloaded.pendingCount, 2);
+    assert.strictEqual(reloaded.pendingCount, 3, 'an entry was resolved although the head was not');
   });
 });
 
@@ -789,5 +863,104 @@ describe('a core that does not understand the request says which core it is', ()
     core = r.core;
     const outcome = await r.saver.save('a.2', 'src', 'body\n');
     assert.match(outcome.message, /req-mismatch/);
+  });
+});
+
+describe('two savers over one queue share the queue, not just the lock', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THE FILE IS THE QUEUE AND EACH SAVER HOLDS A COPY OF IT. Taking the
+   * lock in turn is not enough: the second Saver's Outbox was read
+   * before the first one recorded anything, and writing that copy back
+   * ERASES what the first wrote. The entry lost this way is precisely
+   * the one whose outcome nobody knows -- the one the outbox exists for.
+   *
+   * The earlier two-saver cell scripted only successful answers, so
+   * every entry was resolved and removed anyway and the loss was
+   * invisible. Here neither answer resolves anything, so an entry that
+   * disappears can only have been overwritten.
+   */
+  it('does not let one saver write over an entry the other recorded', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-shared-')), 'outbox.json');
+    const r = rig(
+      [
+        { match: ['set'], contains: ['one\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 },
+        { match: ['set'], contains: ['two\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 }
+      ],
+      file
+    );
+    core = r.core;
+
+    /*
+     * Loaded BEFORE the first save records anything, which is what the
+     * extension does whenever a setting changes mid-flight.
+     */
+    const second = new Outbox(file);
+    second.load();
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+
+    /*
+     * BOTH ARE STARTED BEFORE EITHER FINISHES. Awaiting the first and
+     * then calling the second would leave a reload taken BEFORE the lock
+     * indistinguishable from one taken after it -- by then the disk
+     * already holds the first entry either way. Started together, only a
+     * reload that happens after the lock is granted can see it.
+     */
+    const [first, later] = await Promise.all([
+      r.saver.save('a.2', 'src', 'one\n'),
+      other.save('a.2', 'src', 'two\n')
+    ]);
+    assert.strictEqual(first.status, 'pending', first.message);
+    assert.strictEqual(later.status, 'pending', 'the second save went out past an unresolved one');
+
+    const onDisk = new Outbox(file);
+    onDisk.load();
+    assert.deepStrictEqual(
+      onDisk.entries.map((e) => e.payload),
+      ['one\n', 'two\n'],
+      'a saver holding a stale copy of the queue wrote over an entry nobody had resolved'
+    );
+  });
+
+  it('picks up an entry the other saver added, rather than starting from its own copy', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-shared2-')), 'outbox.json');
+    const r = rig(
+      [
+        { match: ['set'], contains: ['one\n'], stdout: '(error unknown (chain-unreadable))\n', rc: 1 },
+        { match: ['set'], contains: ['two\n'], stdout: wrote(11), rc: 0 }
+      ],
+      file
+    );
+    core = r.core;
+
+    const second = new Outbox(file);
+    second.load();
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+
+    await r.saver.save('a.2', 'src', 'one\n');
+    /*
+     * WHAT THE SECOND OPERATION ADDED, not what the whole run contains.
+     * `bodies.includes('one')` was already true because the FIRST save
+     * sent it, so the claim "the head was retried" was satisfied without
+     * the second saver doing anything at all.
+     */
+    const beforeSecond = setCalls(core).length;
+    const later = await other.save('a.2', 'src', 'two\n');
+    assert.strictEqual(
+      later.status,
+      'pending',
+      'the second saver did not see the unresolved entry the first had queued'
+    );
+    const added = setCalls(core).slice(beforeSecond).map((c) => c[3]);
+    assert.deepStrictEqual(
+      added,
+      ['one\n'],
+      'the second operation did not retry the unresolved head, or sent its own body past it'
+    );
   });
 });

@@ -29,6 +29,7 @@ const root = path.join(__dirname, '..');
 const files = [
   ['src/vendor/goeteia/sexpr.mjs', 'out/src/vendor/goeteia/sexpr.mjs'],
   ['src/vendor/goeteia/sexpr-vectors.json', 'out/src/vendor/goeteia/sexpr-vectors.json'],
+  ['src/vendor/goeteia/sexpr-escape-vectors.json', 'out/src/vendor/goeteia/sexpr-escape-vectors.json'],
   ['test/fake-core.js', 'out/test/fake-core.js']
 ];
 

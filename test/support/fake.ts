@@ -140,7 +140,47 @@ export class FakeCore {
     return path.join(this.root, 'outbox.json');
   }
 
+  /*
+   * The process ids this stand-in reported. Every run records its own,
+   * so a cell can ask afterwards whether any of them is still there.
+   */
+  public pidsSeen(): number[] {
+    return this.calls()
+      .map((c) => (c as unknown as { pid?: number }).pid)
+      .filter((p): p is number => typeof p === 'number');
+  }
+
   public dispose(): void {
     fs.rmSync(this.root, { recursive: true, force: true });
   }
+}
+
+/*
+ * WHICH OF THIS STAND-IN'S PROCESSES ARE STILL ALIVE. A caller that
+ * stopped waiting has not necessarily stopped the process -- and that
+ * difference is the whole of what the escalation to SIGKILL buys, so it
+ * needs a witness that is not the child itself. A killed process cannot
+ * write a line saying so.
+ */
+export function childrenStillRunning(core: FakeCore): number[] {
+  const out: number[] = [];
+  for (const pid of core.pidsSeen()) {
+    try {
+      process.kill(pid, 0);
+      out.push(pid);
+    } catch (e) {
+      /*
+       * ONLY ESRCH PROVES ABSENCE. A lookup refused for any other reason
+       * -- EPERM, say -- says nothing about whether the process is
+       * there, and treating it as "gone" would turn the one assertion
+       * this helper exists for into a formality.
+       */
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') {
+        throw new Error(
+          `could not tell whether process ${pid} is still running: ${(e as Error).message}`
+        );
+      }
+    }
+  }
+  return out;
 }

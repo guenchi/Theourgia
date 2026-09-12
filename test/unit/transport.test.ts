@@ -25,7 +25,7 @@ import { LIBRARY_EXTENSIONS } from '../../src/config';
 import { CliTransport, GRACE_MS, SocketTransport, TransportError } from '../../src/transport';
 import { readBlock, stringField } from '../../src/blocks';
 import { clause, headName, initWire, isSym } from '../../src/wire';
-import { FakeCore } from '../support/fake';
+import { FakeCore, childrenStillRunning } from '../support/fake';
 
 describe('T1 an answer and a verdict are separate things', () => {
   let core: FakeCore;
@@ -138,6 +138,29 @@ describe('T3 a core that does not answer is stopped, and noise is not an answer'
     const signals = core.calls().filter((c) => c.event === 'signal');
     assert.ok(signals.length >= 1, 'the child was never asked to stop');
     assert.strictEqual(signals[0].signal, 'SIGTERM', 'the first signal was not the polite one');
+
+    /*
+     * AND THE CHILD IS ACTUALLY GONE. Rejecting after the grace period
+     * while leaving the process running satisfies every assertion above
+     * -- the caller stopped waiting, which is not the same as the core
+     * stopping. SIGKILL cannot be caught, so the only witness is that
+     * the process is no longer there.
+     */
+    assert.ok(core.pidsSeen().length >= 1, 'the stand-in never recorded a process to look for');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const alive = core
+      .calls()
+      .filter((c) => c.event === 'signal')
+      .some((c) => c.signal === 'SIGKILL');
+    assert.ok(
+      !alive,
+      'SIGKILL was caught, which it cannot be -- this stand-in is not the one being tested'
+    );
+    assert.deepStrictEqual(
+      childrenStillRunning(core),
+      [],
+      'the caller was answered but the core it started is still running'
+    );
   });
 
   it('reads stdout with noise on the other stream', async () => {
@@ -260,10 +283,33 @@ describe('T5 stdout arriving in pieces is one answer', () => {
     const wideAt = bytes.indexOf(Buffer.from('中', 'utf8'));
     assert.ok(escapeAt > 0, 'the fixture has no escape to break inside');
     assert.ok(wideAt > 0, 'the fixture has no multi-byte character to break inside');
+    /*
+     * THE BREAK POINTS ARE CHECKED TO BE WHERE THEY CLAIM. A cell whose
+     * name says "inside an escape" and whose arithmetic lands between
+     * two whole characters proves nothing, and nothing else here would
+     * notice: every implementation survives a harmless break.
+     */
+    assert.strictEqual(
+      bytes.subarray(escapeAt, escapeAt + 2).toString('utf8'),
+      '\\n',
+      'the first break is not inside a two-character escape'
+    );
+    assert.strictEqual(
+      bytes.subarray(wideAt, wideAt + 3).toString('utf8'),
+      '中',
+      'the second break is not inside a three-byte character'
+    );
     return [escapeAt + 1, wideAt + 1];
   }
 
-  it('reads a text answer broken inside an escape and inside a character', async () => {
+  /*
+   * A TEXT ANSWER HAS NO ESCAPES IN IT -- the core prints those bytes as
+   * they are -- so the only damaging break available here is inside a
+   * multi-byte character, and this cell says so rather than claiming
+   * both. The escape case belongs to the datum answer below, which is
+   * where a `\n` sequence actually appears on the wire.
+   */
+  it('reads a text answer broken inside a multi-byte character', async () => {
     const stdout = '- a.1  One中\n  - a.2  Two\n';
     core = new FakeCore([
       { match: ['outline'], stdout, rc: 0, chunkAt: [Buffer.from(stdout, 'utf8').indexOf(Buffer.from('中', 'utf8')) + 1] }
