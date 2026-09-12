@@ -6,9 +6,18 @@ from **these files only**. To repeat that:
     sh run-fixtures.sh <output-directory>
 
 with `THEOURGIA_LIBDIR` pointing at a directory holding `theourgia/` (the
-library sources from this delivery) and `igropyr/`. `env.sh` sets the library
-path from that variable; without it the working trees are used and the reading
-is only as stable as they are.
+library sources from this delivery) and `igropyr/`.
+
+**`env.sh` has to be sourced; the runner does not do it for you.** Setting
+only `THEOURGIA_LIBDIR` and running the script gives 85 scripts at `rc=255`
+and `library (theourgia request) not found` -- which reads as everything
+being broken rather than as a variable that was never exported. Sourcing it
+is the whole of the difference:
+
+    . ./env.sh && sh run-fixtures.sh <output-directory>
+
+Without a pinned libdir the working trees are used, and the reading is only
+as stable as they are.
 
 The runner prints three lines you should read rather than skim:
 
@@ -210,6 +219,44 @@ back as the caller's own symbol, so `show me` produced an answer that could not
 be read. The cells check the refusals through the product's own reader rather
 than against a description of the whitelist, so a change to what the wire
 accepts reaches them without anyone updating a copy of it.
+
+## One runner at a time in a fixture directory
+
+The runner classifies every script in the directory it is given, then counts
+the classes back against `ls *.ss`. Two runners in one directory will disagree
+with themselves: a file that appears between the loop and the count makes the
+totals differ, and a file removed while a run is pending makes that run die
+with no output at all.
+
+**Measured, by doing it accidentally.** Two suites were started in the same
+directory while one of them was adding and removing a deliberately-red control
+fixture. It produced two readings that were each plausible and both wrong: a
+fixture at `rc=255` with no output, and a run reporting `62 fixtures, 0
+not-green` that nevertheless exited non-zero. The second was reported as a
+defect in the exit-code gate before the cause was found.
+
+The count-back is what noticed, and that is worth stating precisely, because
+its own comment used to claim something else: **it detects the directory
+changing under the run.** It cannot detect a classifier that drops a file --
+the classifier's last branch catches everything, so no script can fail to be
+classified. A red control for it is a file added mid-run, not a file of some
+unclassifiable kind.
+
+## The tree's reading and this delivery's reading have different shapes
+
+A delivery is self-contained: the library sources sit beside the fixtures, so
+the runner finds twelve libraries in the directory it scans and reports
+`fixtures 62 / libraries 12 / probes 11`.
+
+The repository is not self-contained in that sense and should not be. The
+libraries live at the root and the fixtures under `test/`, with exactly one
+copy of each library -- so a run inside `test/` reports `libraries 0` and a
+smaller script total. **That difference is a fact about the two layouts, not
+a fault in either.**
+
+It is written down because the alternative is worse. Making the two readings
+agree would mean putting a second copy of all twelve libraries under `test/`,
+and nothing would ever shout when the copies diverged.
 
 ## Three defects in the instruments, not in the store
 

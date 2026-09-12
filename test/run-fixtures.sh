@@ -38,8 +38,22 @@ for f in *.ss; do
     printf "RED %-20s rc=%-3s sentinel=%s counters=%s hard=%s\n" "$n" "$rc" "$sent" "$cnt" "$hard"
   fi
 done
-# AND THE CLASSES ARE COUNTED BACK. A classifier that drops a file is
-# silent about it -- which is the whole failure this runner replaced.
+# AND THE CLASSES ARE COUNTED BACK -- WHICH DETECTS THE DIRECTORY
+# CHANGING UNDER THE RUN, not a classifier that drops a file.
+#
+# The classifier cannot drop one: its last branch catches everything, so
+# every script lands in exactly one of the three buckets and the sum
+# always equals the count. What can differ is the DIRECTORY, because the
+# total below is taken after the loop: a file added between the two makes
+# the total larger, a file removed makes it smaller, and a run whose
+# pending script is deleted dies with no output at all.
+#
+# Measured, by running two suites in this directory at once while one of
+# them was adding and removing a control fixture. It produced `85 scripts
+# in the directory, 86 classified` in one direction and a plausible
+# "clean run that exits non-zero" in the other -- the second was reported
+# as a defect in an unrelated gate before the cause was found. ONE RUNNER
+# AT A TIME IN A DIRECTORY.
 total=$(ls *.ss | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
@@ -52,6 +66,17 @@ if [ "$sum" != "$total" ]; then
   exit 1
 fi
 echo "all $total scripts accounted for"
+
+# A COUNT THAT IS PRINTED AND NOT RETURNED IS NOT A CHECK EITHER. `$bad`
+# was incremented, printed, and never reached the exit status, so every
+# caller that tested this runner's exit code was reading a constant: a
+# delivery could be built, pinned and frozen with red fixtures inside it
+# and nothing in the chain would object. The only thing standing between
+# that and a bad delivery was a person reading the number.
+if [ "$bad" != 0 ]; then
+  echo "REFUSING: $bad fixture(s) not green"
+  exit 2
+fi
 
 # A FIXTURE THAT CAN BE KILLED BY AN ANSWER IS NOT A FIXTURE. Rows read
 # answers apart, so a seeded defect that changes an answer's SHAPE makes

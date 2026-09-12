@@ -838,7 +838,24 @@
           "  outline --store " d4b " > " qo " 2> " qt " & "
           "j=0; while [ $j -lt 4000 ] && ! grep -qE 'lock-wait|enter-critical' " qt
           "  2>/dev/null; do j=$((j+1)); done; "
-          "printf x > " gate "; wait; "
+          ;; THE RELEASE IS BOUNDED, BECAUSE THE WAIT ABOVE IS. Both spins
+          ;; give up after a while; this write did not, and a write into a
+          ;; fifo blocks until somebody opens the other end. When a seeded
+          ;; defect stopped the holder from ever reaching its barrier, the
+          ;; spin expired, this line took over, and the shell waited
+          ;; forever -- holding the pipe it had inherited, so the round
+          ;; that started it could not move on either. Measured at one
+          ;; hour fifty minutes.
+          ;;
+          ;; A READER FIRST, SO THE WRITE HAS SOMEWHERE TO GO, and a bound
+          ;; on the whole release so that a fixture which cannot be
+          ;; released still ENDS and reports. Giving up is a row that
+          ;; fails; hanging is a row nobody ever reads.
+          "( head -c 1 " gate " > /dev/null 2>&1 & rp=$!; "
+          "  ( sleep 20; kill $rp 2>/dev/null ) 2>/dev/null & tp=$!; "
+          "  printf x > " gate " 2>/dev/null; "
+          "  wait $rp 2>/dev/null; kill $tp 2>/dev/null ) ; "
+          "wait; "
           "echo READER-WAITED $(grep -c lock-wait " qt "); "
           "echo READER-ENTERED-EARLY $(grep -c enter-critical " qt "); "
           "echo LINES $(wc -l < " qo ")"))))
