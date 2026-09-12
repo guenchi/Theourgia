@@ -63,7 +63,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { PathChain } from '../../src/chain';
-import { OpenDocuments, Publisher, Sidecar, sidecarToDisk } from '../../src/publication';
+import { OpenDocuments, Publisher, Sidecar, UNNUMBERED, sidecarToDisk } from '../../src/publication';
 import { Saving } from '../../src/saving';
 import { RecordingFs } from '../support/recording-fs';
 
@@ -80,6 +80,7 @@ function nothingOpen(): OpenDocuments {
 
 function sidecar(over: Partial<Sidecar> = {}): Sidecar {
   return {
+    ...UNNUMBERED,
     format: 1,
     storeId: 's1',
     blockId: 'a.2',

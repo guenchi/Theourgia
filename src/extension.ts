@@ -431,6 +431,46 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     );
     provider.use(model);
     paint();
+    /*
+     * ⚠️ AND THE QUEUE IS DRAINED, because nothing else was going to.
+     *
+     * A window that starts with entries already on disk -- a save that
+     * was interrupted, work carried in by a takeover, a store that was
+     * unreachable last time -- used to sit on them until the user saved
+     * something else or ran the retry command by hand. The queue's whole
+     * purpose is that unsent work is not lost, and "not lost" reads as
+     * "not sent" to somebody watching their block stay a draft.
+     *
+     * It is scheduled rather than awaited: `rebuild` is called from
+     * activation and from every settings change, and neither should wait
+     * on the store. Failures are reported through the same path a retry
+     * uses; a rejection here must not take the rebuild with it.
+     */
+    const draining = saver;
+    void Promise.resolve().then(async () => {
+      if (draining === null || saver !== draining) {
+        return;
+      }
+      try {
+        await draining.retry();
+      } catch (e) {
+        reportFailure(e);
+      }
+      /*
+       * THE CHECK AFTER THE WAIT LEAVES, rather than wrapping the work
+       * it protects. The two read the same here, because painting is the
+       * last thing this callback does -- and they do not read the same to
+       * the census in `awaiting.test.ts`, which asks whether a guard
+       * STOPS something. A comparison whose branch merely contains the
+       * rest of the body cannot be told apart from one that was quietly
+       * defanged, and that is the very substitution (`return` replaced by
+       * `void asked`) the census was written after.
+       */
+      if (saver !== draining) {
+        return;
+      }
+      paint();
+    });
   }
 
   /*

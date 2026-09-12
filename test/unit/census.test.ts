@@ -97,7 +97,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
   ['outline.test.ts', 48],
-  ['publication.test.ts', 43],
+  ['publication.test.ts', 48],
   ['recovery.test.ts', 28],
   ['real-core.test.ts', 14],
   /*

@@ -39,7 +39,8 @@ import {
   Publisher,
   Sidecar,
   sidecarFromDisk,
-  sidecarToDisk
+  sidecarToDisk,
+  UNNUMBERED
 } from '../../src/publication';
 import { Saving } from '../../src/saving';
 import { RecordingFs } from '../support/recording-fs';
@@ -75,6 +76,7 @@ function published(dir: string, text: string, over: Partial<Sidecar> = {}): stri
   const file = path.join(dir, '1.md');
   fs.writeFileSync(file, text, 'utf8');
   const sidecar: Sidecar = {
+    ...UNNUMBERED,
     format: 1,
     storeId: 's1',
     blockId: 'a.2',

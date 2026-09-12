@@ -122,6 +122,104 @@ export interface Sidecar {
    * (§12.17.3, P2-7)
    */
   bodyHasCrlf: boolean;
+  /*
+   * ⚠️ EVERYTHING BELOW IS §13's RECORD OF WHICH SEND THE STORE
+   * CONFIRMED, AND IT IS DELIBERATELY SEPARATE FROM WHAT THE FILE NOW
+   * HOLDS.
+   *
+   * The fields above answer "what was published"; these answer "which
+   * send was acknowledged, and what is still out". Keeping them apart is
+   * what lets `draft` be a function of persisted inputs rather than of
+   * whatever the queue happens to hold in memory -- and it is what makes
+   * the sequence the reviews kept finding answer correctly: publish X,
+   * save Y and lose the answer, undo to X, save again; when Y's
+   * confirmation arrives, `confirmed` becomes Y and the file holds X, so
+   * the block is a draft by the model rather than by luck of timing.
+   *
+   * NOTHING READS THEM YET. This step adds them and the rule for reading
+   * an older record; the switch-over is one landing of its own, because
+   * a half-switched save path would have two suppliers of one state --
+   * which is the defect this whole section exists to remove.
+   */
+  confirmed: Confirmed | null;
+  /*
+   * The sends that have been written down and not yet settled, by
+   * sequence and request. A file with any of these is not clean however
+   * its bytes compare: something is out there whose outcome nobody
+   * knows.
+   */
+  outstanding: Outstanding[];
+  /*
+   * The highest sequence ever confirmed for this file. It only goes up,
+   * and `reconcile` may drop `confirmed` without touching it -- so a
+   * late answer from an older send cannot re-establish a baseline the
+   * user has just removed. Both the supersede check before sending and
+   * the replacement at settlement use THIS, so the two cannot disagree.
+   */
+  highWater: number;
+  /*
+   * The next sequence to hand out for this file. Taken and persisted
+   * before a send, so that two sends cannot share a number across a
+   * restart.
+   */
+  nextSeq: number;
+  /*
+   * Who wrote this record, by session and by the generation of the
+   * ownership they held. A reader that finds a generation other than the
+   * current owner's is looking at a write by a session that had lost the
+   * block: this cannot prevent that write, but it can stop it being
+   * silent.
+   */
+  writtenBy: WrittenBy | null;
+}
+
+/*
+ * WHICH SEND THE STORE CONFIRMED -- not what the file holds now.
+ */
+export type Confirmed =
+  | {
+      by: 'store' | 'operator';
+      req: string;
+      seq: number;
+      sentDigest: string;
+      rawDigest: string;
+      prefixDigest: string;
+      /*
+       * Null when an operator determined the work had been carried out:
+       * the core says such a determination does not recover the original
+       * execution's event, so there is no position to record.
+       */
+      cursor: string | null;
+    }
+  /*
+   * ⚠️ WHAT A RECORD WRITTEN BEFORE §13 STILL TELLS US.
+   *
+   * My first version read an older sidecar as having NO baseline, on the
+   * grounds that deriving one would invent a request id and a prefix
+   * digest nobody wrote down. That reasoning was right about the
+   * inventing and wrong about the conclusion: `acknowledgedRaw` is a
+   * fact the old build recorded -- the bytes the store took -- and
+   * throwing it away turns every block that was ever saved into a draft
+   * the moment this build runs. I had just written the rule that stops
+   * exactly that for `outstanding`, and then broke it one field along.
+   * The main session caught it.
+   *
+   * So the old fields become a baseline that says only what they said:
+   * which bytes were acknowledged, and where the store stood. It has no
+   * request id because none was recorded, and the type says so rather
+   * than leaving a field empty for somebody to read as one. `seq` is 0,
+   * so the first confirmation this build writes replaces it.
+   */
+  | { by: 'legacy'; seq: 0; rawDigest: string; cursor: string | null };
+
+export interface Outstanding {
+  seq: number;
+  req: string;
+}
+
+export interface WrittenBy {
+  sid: string;
+  generation: number;
 }
 
 /*
@@ -187,9 +285,67 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     cursor: sidecar.cursor,
     'local-only': sidecar.localOnly,
     unresolved: sidecar.unresolved,
-    'body-has-crlf': sidecar.bodyHasCrlf
+    'body-has-crlf': sidecar.bodyHasCrlf,
+    /*
+     * ⚠️ WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
+     * writes must be one this build can read back with the same meaning,
+     * and a field that is only sometimes present is a second shape on
+     * disk. `confirmed` is null until a settlement writes one; the
+     * counters start where `confirmationFrom` says an older record
+     * starts, so a file written now and a file written before §13 are
+     * read the same way.
+     */
+    /*
+     * ⚠️ A LEGACY BASELINE IS NOT WRITTEN BACK. It is what an older
+     * record MEANS, worked out on the way in -- and the fields it was
+     * worked out FROM (`acknowledged-raw`, `cursor`) are written above,
+     * unchanged, so the next read derives it again.
+     *
+     * Writing it would be worse than useless: `confirmed` would then be
+     * present but without the request id and digests a real one has, so
+     * the reader would refuse it and answer null -- and the block would
+     * become a draft, which is the exact failure this baseline exists to
+     * prevent. I wrote the comment saying this and then wrote the code
+     * doing the opposite; the compiler had nothing to say about it.
+     */
+    confirmed:
+      sidecar.confirmed === null || sidecar.confirmed.by === 'legacy'
+        ? null
+        : confirmedToDisk(sidecar.confirmed),
+    outstanding: sidecar.outstanding,
+    'high-water': sidecar.highWater,
+    'next-seq': sidecar.nextSeq,
+    'written-by': sidecar.writtenBy
   };
 }
+
+function confirmedToDisk(confirmed: Exclude<Confirmed, { by: 'legacy' }>): Record<string, unknown> {
+  return {
+    req: confirmed.req,
+    seq: confirmed.seq,
+    'sent-digest': confirmed.sentDigest,
+    'raw-digest': confirmed.rawDigest,
+    'prefix-digest': confirmed.prefixDigest,
+    cursor: confirmed.cursor,
+    by: confirmed.by
+  };
+}
+
+/*
+ * WHAT A FILE THIS BUILD HAS NOT NUMBERED STARTS FROM. One place, so
+ * that a fresh publication and a record read from an older build agree
+ * about where the counters begin.
+ */
+export const UNNUMBERED: Pick<
+  Sidecar,
+  'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'
+> = {
+  confirmed: null,
+  outstanding: [],
+  highWater: 0,
+  nextSeq: 1,
+  writtenBy: null
+};
 
 /*
  * Refuses a record it cannot read rather than repairing it, for the
@@ -249,9 +405,114 @@ export function sidecarFromDisk(text: string): SidecarRead {
       cursor: text_('cursor'),
       localOnly: record['local-only'] === true,
       unresolved: record.unresolved === true,
-      bodyHasCrlf: record['body-has-crlf'] === true
+      bodyHasCrlf: record['body-has-crlf'] === true,
+      ...confirmationFrom(record)
     }
   };
+}
+
+/*
+ * ⚠️ WHAT A RECORD WRITTEN BEFORE §13 MEANS, WRITTEN DOWN RATHER THAN
+ * LEFT TO ARITHMETIC.
+ *
+ * An older sidecar has no `confirmed`, no `outstanding`, no `highWater`
+ * and no `nextSeq`. Every one of those has an answer that is obvious
+ * once stated and wrong if guessed:
+ *
+ * - `highWater` and the absent `confirmed`'s seq are **0**, not null and
+ *   not undefined. Comparisons are `record.seq > highWater`, and `1 >
+ *   null` is true in this language for reasons that have nothing to do
+ *   with sequence numbers -- an answer that is right by accident, which
+ *   this batch has already been caught by once.
+ * - `outstanding` is **empty**. Read as anything else, every block
+ *   written by an older build becomes a draft the moment this one runs.
+ * - `nextSeq` is **1**: the first sequence this build hands out for a
+ *   file it did not number.
+ * - `confirmed` stays **null**. The old fields still say what was
+ *   acknowledged, and the readers that use them are unchanged in this
+ *   step; deriving a `confirmed` from them here would invent a request
+ *   id and a prefix digest that nobody recorded.
+ */
+function confirmationFrom(
+  record: Record<string, unknown>
+): Pick<Sidecar, 'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'> {
+  const held = record.confirmed;
+  const confirmed =
+    typeof held === 'object' && held !== null && !Array.isArray(held)
+      ? readConfirmed(held as Record<string, unknown>)
+      : legacyBaseline(record);
+  const out = Array.isArray(record.outstanding) ? record.outstanding : [];
+  const outstanding: Outstanding[] = [];
+  for (const item of out) {
+    if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+      const entry = item as Record<string, unknown>;
+      if (typeof entry.seq === 'number' && typeof entry.req === 'string') {
+        outstanding.push({ seq: entry.seq, req: entry.req });
+      }
+    }
+  }
+  const wrote = record['written-by'];
+  const writtenBy =
+    typeof wrote === 'object' && wrote !== null && !Array.isArray(wrote)
+      ? readWrittenBy(wrote as Record<string, unknown>)
+      : null;
+  return {
+    confirmed,
+    outstanding,
+    highWater: typeof record['high-water'] === 'number' ? record['high-water'] : 0,
+    nextSeq: typeof record['next-seq'] === 'number' ? record['next-seq'] : 1,
+    writtenBy
+  };
+}
+
+/*
+ * A CONFIRMATION IS ALL OF ITS FIELDS OR NONE OF THEM. A half-read one
+ * would be a baseline naming a send nobody can identify, which is worse
+ * than having none: the absence is handled, the half is believed.
+ */
+function readConfirmed(held: Record<string, unknown>): Confirmed | null {
+  const text = (key: string): string | null =>
+    typeof held[key] === 'string' ? (held[key] as string) : null;
+  const req = text('req');
+  const sentDigest = text('sent-digest');
+  const rawDigest = text('raw-digest');
+  const prefixDigest = text('prefix-digest');
+  const by = held.by;
+  if (
+    req === null ||
+    sentDigest === null ||
+    rawDigest === null ||
+    prefixDigest === null ||
+    typeof held.seq !== 'number' ||
+    (by !== 'store' && by !== 'operator')
+  ) {
+    return null;
+  }
+  return { req, seq: held.seq, sentDigest, rawDigest, prefixDigest, cursor: text('cursor'), by };
+}
+
+/*
+ * THE BASELINE AN OLDER RECORD IMPLIES, AND NOTHING MORE.
+ *
+ * `acknowledged-raw` is the digest of the bytes the store took. If it is
+ * absent the old build never had an answer for this file either, and the
+ * honest reading is that there is no baseline -- the block is a draft,
+ * which is what it was before this build ran too.
+ */
+function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
+  const raw = record['acknowledged-raw'];
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const cursor = record.cursor;
+  return { by: 'legacy', seq: 0, rawDigest: raw, cursor: typeof cursor === 'string' ? cursor : null };
+}
+
+function readWrittenBy(wrote: Record<string, unknown>): WrittenBy | null {
+  if (typeof wrote.sid !== 'string' || typeof wrote.generation !== 'number') {
+    return null;
+  }
+  return { sid: wrote.sid, generation: wrote.generation };
 }
 
 /*
@@ -340,6 +601,95 @@ export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): vo
   files.writeDurably(temporary, `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
   files.rename(temporary, meta);
   files.syncDirectory(path.dirname(meta));
+}
+
+/*
+ * IS THIS FILE HOLDING WORK THE STORE HAS NOT GOT?
+ *
+ * ⚠️ A FUNCTION OF WHAT IS ON DISK, AND OF NOTHING ELSE.
+ *
+ * Four persisted inputs: the file's bytes, its record, who owns the
+ * block, and what the owner's queue still holds for it. Nothing in
+ * memory is an input -- not the Saver, not a map of pending saves, not
+ * whether a drain happens to be running. That is the whole point: the
+ * answer this returns has to be the same for a window that has just
+ * started as for one that has been running all day, because the user is
+ * asking about their file, not about our process.
+ *
+ * ⚠️ THE QUEUE IS AN INPUT, AND IT IS NOT THE SAME AS THE RECORD. The
+ * record's `outstanding` can be lost -- it lives in a file that is
+ * rewritten whole -- while the queue still holds the entry, and the
+ * reverse happens when a takeover carries the entry away. Asking both
+ * and saying so when they disagree is the difference between reporting a
+ * state and guessing one.
+ *
+ * NOTHING CALLS THIS YET. `standingOf` still answers from the older
+ * fields; switching the callers is a landing of its own.
+ */
+export type Cleanliness =
+  | { clean: true }
+  | { clean: false; because: 'never-confirmed' | 'bytes-moved' | 'prefix-moved' | 'still-out' }
+  | { clean: false; because: 'records-disagree'; detail: string };
+
+export interface QueueView {
+  /*
+   * The sequences this file still has entries for in the owner's queue,
+   * in any state that is not terminal.
+   */
+  unsettled: number[];
+}
+
+export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): Cleanliness {
+  const confirmed = sidecar.confirmed;
+  /*
+   * THE TWO RECORDS OF WHAT IS OUT MUST AGREE, and when they do not the
+   * answer is neither "clean" nor "draft" -- it is that this file's
+   * records contradict each other, which is a thing for a person. The
+   * three ways a disagreement is NOT one are named where they arise:
+   * an entry carried away by a takeover (the queue is right to be
+   * missing it), a request that has been retired (the tombstone is the
+   * authority), and an orphan marker from a crash between the two
+   * writes (reconcile clears it).
+   */
+  const recorded = sidecar.outstanding.map((o) => o.seq).sort((a, b) => a - b);
+  const held = [...queue.unsettled].sort((a, b) => a - b);
+  if (recorded.length === 0 && held.length > 0) {
+    return {
+      clean: false,
+      because: 'records-disagree',
+      detail: `the record says nothing is out and the queue holds ${held.join(', ')}`
+    };
+  }
+  if (confirmed === null) {
+    return { clean: false, because: 'never-confirmed' };
+  }
+  if (recorded.length > 0 || held.length > 0) {
+    return { clean: false, because: 'still-out' };
+  }
+  if (digestOfBytes(bytes) !== confirmed.rawDigest) {
+    return { clean: false, because: 'bytes-moved' };
+  }
+  /*
+   * ⚠️ A LEGACY BASELINE IS NOT ASKED A QUESTION IT CANNOT ANSWER. The
+   * older build recorded no prefix digest, so comparing one would make
+   * every upgraded file fail a check about something nobody wrote down.
+   * What guarded the prefix before this build is unchanged and still
+   * guards it; this baseline is replaced by the first confirmation with
+   * a sequence above zero.
+   */
+  if (confirmed.by === 'legacy') {
+    return { clean: true };
+  }
+  /*
+   * AND THE SPLIT HAS TO BE THE ONE THAT WAS SENT. `reconcile` can adopt
+   * a longer heading without touching a byte of the body: the file then
+   * equals what was acknowledged while the text that would be SENT from
+   * it no longer does.
+   */
+  if (digestOfBytes(sidecar.prefix) !== confirmed.prefixDigest) {
+    return { clean: false, because: 'prefix-moved' };
+  }
+  return { clean: true };
 }
 
 export class Publisher {
@@ -448,6 +798,7 @@ export class Publisher {
       return { published: false, because: 'document-open', file };
     }
     const record: Sidecar = {
+      ...UNNUMBERED,
       format: 1,
       storeId: what.storeId,
       blockId: what.blockId,

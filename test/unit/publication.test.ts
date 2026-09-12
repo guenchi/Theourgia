@@ -43,7 +43,10 @@ import {
   sidecarFromDisk,
   sidecarToDisk,
   Sidecar,
-  writeSidecar
+  writeSidecar,
+  UNNUMBERED,
+  cleanliness,
+  digestOfBytes
 } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
 
@@ -62,6 +65,116 @@ function openOn(file: string): OpenDocuments {
 function request(directory: string, text: string, prefix = '## Two\n') {
   return { directory, storeId: 's1', blockId: 'a.2', prefix, text };
 }
+
+/*
+ * D1 WHAT A RECORD WRITTEN BEFORE §13 MEANS TO THIS BUILD.
+ *
+ * ⚠️ THE FIRST VERSION OF THIS RULE MADE EVERY OLD BLOCK A DRAFT.
+ *
+ * §13 keeps "which send the store confirmed" in a `confirmed` record
+ * that older sidecars do not have. I read their absence as "no baseline
+ * at all", reasoning that deriving one would invent a request id and a
+ * prefix digest nobody wrote down. The inventing part was right; the
+ * conclusion was not. `acknowledged-raw` IS a fact the old build
+ * recorded, and discarding it turns every block that was ever saved into
+ * a draft the moment this build runs -- the same failure I had just
+ * written a rule to prevent for `outstanding`, one field along. The main
+ * session caught it.
+ *
+ * So an old record yields a baseline that says only what it said: these
+ * bytes were acknowledged, the store stood here. No request id, because
+ * none was recorded -- and the type says so rather than leaving a field
+ * empty for a reader to take as one.
+ */
+describe('D1 a record from before the send-record still says what it knew', () => {
+  const older = {
+    format: 1,
+    'store-id': '/tmp/store',
+    'block-id': 'a.2',
+    phase: 'published',
+    prefix: '## Two\n',
+    written: 'digest-of-written',
+    previous: null,
+    'acknowledged-raw': digestOfBytes(Buffer.from('## Two\nbody\n', 'utf8')),
+    sent: 'digest-of-sent',
+    cursor: 'w:4',
+    'local-only': false,
+    unresolved: false,
+    'body-has-crlf': false
+  };
+
+  it('reads an acknowledged older record as a baseline, not as none', () => {
+    const read = sidecarFromDisk(JSON.stringify(older));
+    assert.ok(read.read, JSON.stringify(read));
+    const confirmed = (read as { sidecar: Sidecar }).sidecar.confirmed;
+    assert.ok(confirmed !== null, 'an older record that WAS acknowledged was read as having no baseline');
+    assert.strictEqual(confirmed?.by, 'legacy');
+    assert.strictEqual(confirmed?.seq, 0, 'the first confirmation this build writes must replace it');
+    assert.strictEqual(confirmed?.rawDigest, older['acknowledged-raw']);
+    assert.strictEqual(confirmed?.cursor, 'w:4');
+  });
+
+  it('calls an unchanged older block clean', () => {
+    const read = sidecarFromDisk(JSON.stringify(older));
+    assert.ok(read.read);
+    const sidecar = (read as { sidecar: Sidecar }).sidecar;
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), sidecar, { unsettled: [] }),
+      { clean: true },
+      'a block nobody has edited since it was saved became a draft on upgrade'
+    );
+  });
+
+  it('calls an older block that has been edited a draft', () => {
+    const read = sidecarFromDisk(JSON.stringify(older));
+    assert.ok(read.read);
+    const sidecar = (read as { sidecar: Sidecar }).sidecar;
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nedited since\n', 'utf8'), sidecar, { unsettled: [] }),
+      { clean: false, because: 'bytes-moved' }
+    );
+  });
+
+  /*
+   * AND AN OLDER RECORD THAT WAS NEVER ACKNOWLEDGED HAS NO BASELINE --
+   * which is what it had before this build too. Without this row, a
+   * build that manufactured a baseline out of `written` would pass the
+   * rows above.
+   */
+  it('gives an older record that was never acknowledged no baseline at all', () => {
+    const read = sidecarFromDisk(JSON.stringify({ ...older, 'acknowledged-raw': null }));
+    assert.ok(read.read);
+    const sidecar = (read as { sidecar: Sidecar }).sidecar;
+    assert.strictEqual(sidecar.confirmed, null);
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), sidecar, { unsettled: [] }),
+      { clean: false, because: 'never-confirmed' }
+    );
+  });
+
+  /*
+   * ⚠️ AND THE DERIVED BASELINE IS NEVER WRITTEN BACK. If it were, the
+   * next read would find a `confirmed` without a request id, refuse it,
+   * and answer none -- turning the block into a draft by the very route
+   * this baseline exists to close. The fields it is derived FROM are
+   * written, so the derivation happens again.
+   */
+  it('does not write the derived baseline into the record', () => {
+    const read = sidecarFromDisk(JSON.stringify(older));
+    assert.ok(read.read);
+    const written = sidecarToDisk((read as { sidecar: Sidecar }).sidecar);
+    assert.strictEqual(written.confirmed, null, 'a derived baseline was written as a record');
+    assert.strictEqual(written['acknowledged-raw'], older['acknowledged-raw']);
+    assert.strictEqual(written.cursor, 'w:4');
+    /*
+     * AND READING WHAT WE WROTE GIVES THE SAME ANSWER. A record this
+     * build writes must mean to it what the record it read meant.
+     */
+    const again = sidecarFromDisk(`${JSON.stringify(written)}\n`);
+    assert.ok(again.read);
+    assert.strictEqual((again as { sidecar: Sidecar }).sidecar.confirmed?.by, 'legacy');
+  });
+});
 
 describe('C2 a published file is written once and never touched again', () => {
   it('writes each version to its own path', async () => {
@@ -211,7 +324,8 @@ describe('C3 every point a publication can die at is decidable', () => {
   function corpse(dir: string, sidecar: Partial<Sidecar>, fileText: string | null): string {
     const file = path.join(dir, '1.md');
     const full: Sidecar = {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'publishing',
@@ -308,7 +422,8 @@ describe('C3 every point a publication can die at is decidable', () => {
 describe('C15 the record on disk uses the design names and says which shape it is', () => {
   it('writes the hyphenated names the design uses, not this language’s', () => {
     const sidecar: Sidecar = {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'published',
@@ -331,7 +446,8 @@ describe('C15 the record on disk uses the design names and says which shape it i
 
   it('reads back exactly what it wrote', () => {
     const sidecar: Sidecar = {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'publishing',
@@ -370,7 +486,8 @@ describe('C15 the record on disk uses the design names and says which shape it i
    */
   it('keeps unresolved across a read and a write of the record', () => {
     const sidecar: Sidecar = {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'published',
@@ -405,7 +522,8 @@ describe('C3 reconcile is the only way out of a third version', () => {
     const file = path.join(dir, '1.md');
     fs.mkdirSync(dir, { recursive: true });
     const sidecar: Sidecar = {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'publishing',
@@ -532,7 +650,8 @@ describe('C15 unresolved survives everything except reconcile', () => {
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -608,7 +727,8 @@ describe('every publication path asks the same questions', () => {
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -705,7 +825,8 @@ describe('reconciling never writes over the file it is reconciling', () => {
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -782,7 +903,8 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -832,7 +954,8 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -877,7 +1000,8 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -919,7 +1043,8 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -963,7 +1088,8 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, '## Two\nbody\n', 'utf8');
     writeSidecar(files, file, {
-      format: 1,
+    ...UNNUMBERED,
+    format: 1,
       storeId: 's1',
       blockId: 'a.2',
       phase: 'published',
@@ -1016,7 +1142,8 @@ describe('X1c ⑨ what a version is measured against after the store has answere
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -1112,7 +1239,8 @@ describe('review 20 a reconciliation is measured against the text it offered', (
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',
@@ -1246,7 +1374,8 @@ describe('review 21 what the reconciliation action is measured against', () => {
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
-          format: 1,
+    ...UNNUMBERED,
+    format: 1,
           storeId: 's1',
           blockId: 'a.2',
           phase: 'published',

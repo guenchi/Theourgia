@@ -34,7 +34,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Sidecar } from '../../src/publication';
+import { Sidecar, UNNUMBERED } from '../../src/publication';
 import { SaveDocument, Saving } from '../../src/saving';
 import { RecordingFs } from '../support/recording-fs';
 
@@ -44,6 +44,7 @@ function scratch(): string {
 
 function baseline(prefix: string): Sidecar {
   return {
+    ...UNNUMBERED,
     format: 1,
     storeId: 's',
     blockId: 'a.2',

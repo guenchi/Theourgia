@@ -173,26 +173,107 @@ function leaves(statement: ts.Statement): boolean {
   return false;
 }
 
-function guardsIn(fn: ts.Node, src: ts.SourceFile): ts.IfStatement[] {
+/*
+ * ⚠️ AND THE OTHER SHAPE OF THE SAME GUARD: CAPTURE THE THING, COMPARE
+ * THE THING.
+ *
+ * `const mine = saver; await …; if (saver !== mine) return;` guards
+ * exactly what the generation guard guards, and guards it better: §13
+ * settled that the generation says "something changed" while the
+ * identity of the object says "the thing this decision depends on
+ * changed", and a rebuild for an unrelated setting must not cancel work
+ * on a queue that did not move. The first version of this file knew only
+ * the generation shape, so the drain `rebuild` schedules -- which uses
+ * the better one -- had to be written into the exemption table.
+ *
+ * ⚠️ AN EXEMPTION TABLE THAT GROWS WITH CORRECT CODE IS A TRAP. The next
+ * reader takes the table as the list of places that got away with
+ * something, and the right way to write this becomes indistinguishable
+ * from the wrong way. So the shape is recognised here instead, and the
+ * table goes back to holding only what it is for. (The main session
+ * asked for this the moment the row appeared.)
+ */
+function capturedBeforeTheWait(src: ts.SourceFile, before: number): Set<string> {
+  /*
+   * ⚠️ THE CAPTURE IS USUALLY IN THE ENCLOSING FUNCTION, not in the one
+   * that waits: `const mine = saver;` sits in `rebuild` and the compare
+   * happens inside the callback it schedules. My first version looked
+   * only inside the waiting function, found nothing, and asked for an
+   * exemption for code that was already right.
+   *
+   * So every name bound before the wait counts, wherever it was bound.
+   * That admits more comparisons than strictly necessary -- and it
+   * admits them in the safe direction: this census exists to find waits
+   * with NO guard, and the mutation that deletes the comparison still
+   * turns it red.
+   */
+  const names = new Set<string>();
+  const walk = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && n.getStart(src) < before && ts.isIdentifier(n.name)) {
+      names.add(n.name.text);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(src);
+  return names;
+}
+
+/*
+ * ⚠️ A GENERATION COMPARISON COUNTS ONLY IF THE GENERATION WAS READ
+ * BEFORE THE WAIT. Read afterwards it compares the live counter with
+ * itself, which is true however much moved. `generationTaken` carries
+ * that reading in; the identity form does not need it, because
+ * `capturedBeforeTheWait` already refuses a name that was not bound
+ * before the wait.
+ */
+function guardsIn(
+  fn: ts.Node,
+  src: ts.SourceFile,
+  firstWait: number,
+  generationTaken: boolean
+): ts.IfStatement[] {
+  const captured = capturedBeforeTheWait(src, firstWait);
   return within(fn, ts.isIfStatement).filter((s) => {
     const test = s.expression;
-    const compares =
-      ts.isBinaryExpression(test) &&
-      (test.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        test.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) &&
-      [test.left, test.right].some((side) => /\bgeneration\b/.test(side.getText(src)));
-    return compares && leaves(s.thenStatement);
+    if (!ts.isBinaryExpression(test)) {
+      return false;
+    }
+    const equality =
+      test.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      test.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+    if (!equality || !leaves(s.thenStatement)) {
+      return false;
+    }
+    const sides = [test.left, test.right];
+    if (sides.some((side) => /\bgeneration\b/.test(side.getText(src)))) {
+      return generationTaken;
+    }
+    /*
+     * The identity form: both sides are plain names, and one of them was
+     * captured before the wait. Comparing a live binding with the copy
+     * taken beforehand is the whole guard.
+     */
+    return (
+      sides.every((side) => ts.isIdentifier(side)) &&
+      sides.some((side) => captured.has((side as ts.Identifier).text))
+    );
   });
 }
 
-function survey(): Waiting[] {
-  const file = path.join(__dirname, '..', '..', '..', 'src', 'extension.ts');
-  const src = ts.createSourceFile(
-    'extension.ts',
-    fs.readFileSync(file, 'utf8'),
-    ts.ScriptTarget.ES2022,
-    true
-  );
+const EXTENSION = path.join(__dirname, '..', '..', '..', 'src', 'extension.ts');
+
+function extensionText(): string {
+  return fs.readFileSync(EXTENSION, 'utf8');
+}
+
+/*
+ * THE SURVEY READS TEXT IT IS GIVEN, so that a cell can hand it the
+ * shipping file with one guard taken out and read what this census then
+ * says. A census that can only read the tree has no way to show that it
+ * would notice the guard going away.
+ */
+function survey(text: string = extensionText()): Waiting[] {
+  const src = ts.createSourceFile('extension.ts', text, ts.ScriptTarget.ES2022, true);
   const out: Waiting[] = [];
   const visit = (n: ts.Node): void => {
     if (isFunction(n)) {
@@ -203,12 +284,12 @@ function survey(): Waiting[] {
           n,
           (x): x is ts.Identifier => ts.isIdentifier(x) && x.text === 'generation'
         ).some((x) => x.getStart(src) < first);
-        const guards = guardsIn(n, src).filter((g) => g.getStart(src) > first);
+        const guards = guardsIn(n, src, first, taken).filter((g) => g.getStart(src) > first);
         const lastGuard = guards.reduce((at, g) => Math.max(at, g.getEnd()), -1);
         out.push({
           name: nameOf(n, src),
           line: src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1,
-          checked: taken && guards.length > 0,
+          checked: guards.length > 0,
           /*
            * A GUARD PROTECTS WHAT COMES AFTER IT AND NOTHING BEFORE.
            * Waits that happen after the last one resume with nobody
@@ -495,6 +576,57 @@ describe('every wait in the extension host knows what may have changed under it'
       [],
       'these functions resume after a wait without checking the generation, and no reason is ' +
         'written down for them'
+    );
+  });
+
+  /*
+   * ⚠️ THE DRAIN IS CALLED CHECKED BECAUSE OF WHAT IT DOES, NOT BECAUSE
+   * OF WHAT IS WRITTEN ABOUT IT.
+   *
+   * The drain `rebuild` schedules carries the identity form of the
+   * guard: `const draining = saver` before the wait, `saver !== draining`
+   * after it. That shape spent a round in the exemption table -- a table
+   * whose entries mean "this one got away with something" -- until the
+   * main session pointed out that an exemption which grows as the code
+   * gets BETTER teaches the next reader the wrong lesson.
+   *
+   * So the census recognises the shape, and this cell is what stands
+   * behind that recognition: the shipping file is read, the comparison
+   * is taken out of the text, and the census is asked again. If it goes
+   * on calling the drain checked with the guard gone, then it is
+   * recognising the drain rather than the guard, and the row it no
+   * longer needs in the table was doing the work all along.
+   */
+  it('stops calling the drain checked once its identity comparison is taken out', () => {
+    const text = extensionText();
+    const guard = 'if (saver !== draining) {\n        return;\n      }\n      paint();';
+    assert.ok(
+      text.includes(guard),
+      'the drain no longer holds the guard this cell takes out; if it was rewritten, rewrite ' +
+        'this cell against the new shape rather than deleting it'
+    );
+    const drainIn = (over: Waiting[]): Waiting | undefined =>
+      over.find((w) => w.name === 'Promise.resolve().then()');
+
+    const asShipped = drainIn(survey(text));
+    assert.ok(asShipped !== undefined, 'the census did not find the drain in the shipping file');
+    assert.strictEqual(
+      asShipped.checked,
+      true,
+      'the census does not recognise the identity guard the drain carries'
+    );
+
+    const withoutTheGuard = drainIn(survey(text.replace(guard, 'paint();')));
+    assert.ok(
+      withoutTheGuard !== undefined,
+      'the census lost sight of the drain altogether when the guard was removed, so this cell ' +
+        'is no longer reading what it claims to read'
+    );
+    assert.strictEqual(
+      withoutTheGuard.checked,
+      false,
+      'the census still calls the drain checked with its only guard deleted, so it is ' +
+        'recognising the function rather than the guard'
     );
   });
 
