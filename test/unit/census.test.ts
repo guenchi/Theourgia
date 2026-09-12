@@ -100,6 +100,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['publication.test.ts', 43],
   ['recovery.test.ts', 28],
   ['real-core.test.ts', 14],
+  /*
+   * ADDED in round 39: the refusal kinds the core makes, read from the
+   * core, against the table that sorts them.
+   */
+  ['refusals.test.ts', 3],
   ['saver.test.ts', 41],
   ['saving.test.ts', 34],
   ['sequences.test.ts', 15],

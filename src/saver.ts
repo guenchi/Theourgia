@@ -51,7 +51,7 @@ import { Outbox, OutboxEntry } from './outbox';
 import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
-import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
+import { Datum, clauseValue, formatCursor, headName, isSym, readEvent } from './wire';
 
 /*
  * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
@@ -101,7 +101,23 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
  */
 export type Settlement =
   | { verdict: 'confirmed'; cursor: string }
-  | { verdict: 'refused' }
+  /*
+   * ⚠️ SOMEBODY ELSE FINISHED IT, AND SAID WHERE. `(error
+   * resolved-executed (event ("w" . 6)))` is an operator's
+   * determination that the work was carried out: the store HAS the
+   * bytes, and the answer names the record it was written as.
+   *
+   * It arrives through the refusal path and spent a round classified as
+   * a refusal, so nothing was recorded and the block stayed a draft for
+   * ever although the work was done. Before that it was recorded as a
+   * confirmation with an EMPTY cursor -- wrong in the other direction.
+   * It is neither: `confirmed` says this client's write succeeded, and
+   * this one says somebody else's did, which is a different thing to
+   * read in a report and a different thing to chase when something is
+   * wrong. Found by asking the review's own question of the source.
+   */
+  | { verdict: 'settled-elsewhere'; cursor: string }
+  | { verdict: 'refused'; unrecognised?: string }
   | { verdict: 'req-mismatch' };
 
 export type Settle = (req: string, settlement: Settlement) => void;
@@ -141,20 +157,6 @@ function saysNobodyKnows(datum: Datum): boolean {
   return headName(datum) === 'error' && Array.isArray(datum) && datum.length >= 2 && isSym(datum[1], 'unknown');
 }
 
-/*
- * THE STORE HAS A DIFFERENT REQUEST UNDER THAT ID. `(error req-mismatch
- * ("w" . 6))`. Retrying cannot fix it, so it is the one refusal that
- * leaves a mark on the file for somebody to look at.
- */
-function saysTheIdIsTaken(datum: Datum): boolean {
-  return (
-    headName(datum) === 'error' &&
-    Array.isArray(datum) &&
-    datum.length >= 2 &&
-    isSym(datum[1], 'req-mismatch')
-  );
-}
-
 function saysAnOperatorSettledIt(datum: Datum): boolean {
   return (
     headName(datum) === 'error' &&
@@ -162,6 +164,167 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
     datum.length >= 2 &&
     isSym(datum[1], 'resolved-executed')
   );
+}
+
+/*
+ * EVERY ANSWER THAT REACHES A SETTLEMENT, AND WHICH VERDICT IT IS.
+ *
+ * ⚠️ THIS TABLE IS THE CLASSIFIER, not a comment beside one. A rule kept
+ * in somebody's head has no way to notice the next answer that arrives:
+ * `resolved-executed` sat in the refusal branch for a round, and the
+ * cell that covered it asserted only a status and a count -- never the
+ * file, which was the one place the mistake showed.
+ *
+ * WHAT NEVER REACHES HERE, and why keeping the entry is right for each:
+ * a transport error (nothing was sent, or nothing came back); an `ok`
+ * that names no record (the store accepted something this client cannot
+ * carry forward); an `ok` naming a record whose cursor this client
+ * cannot spell (same); a non-zero exit with nothing said (no answer at
+ * all); and `(error unknown ...)` (the core's README is explicit that it
+ * never guesses -- `unknown` is the ABSENCE of a determination). Their
+ * common shape is that nobody knows what happened, and the safe reading
+ * of that is to keep the request and let it be retried.
+ */
+/*
+ * ⚠️ THE NAMES CAME FROM THE CORE, NOT FROM THE CELLS.
+ *
+ * The first version of this table had seven rows and I had drawn them
+ * from the cells that happened to exercise a refusal. Reading the pinned
+ * core instead (`grep "(list 'error '<kind>"` over its sources) found
+ * TWENTY-FIVE kinds, several of them produced on the write path and
+ * therefore reachable by a save. A list of what our own cells have seen
+ * is not a list of what the other side can say.
+ *
+ * Everything below is classified because somebody looked at where the
+ * core produces it. The ones that are not a write's answer at all are in
+ * `NOT_A_WRITES_ANSWER`, each with the function and line that makes it.
+ * A kind in neither list falls to `refused` WITH A MARK, and a cell
+ * reddens on the mark: the core growing a name is a thing to look at,
+ * not a thing to guess about.
+ */
+const REFUSALS: Record<string, 'req-mismatch' | 'settled-elsewhere' | 'refused'> = {
+  /*
+   * The one refusal no retry can settle, and the one that says somebody
+   * else already did the work.
+   */
+  'req-mismatch': 'req-mismatch',
+  'resolved-executed': 'settled-elsewhere',
+  /*
+   * The write did not happen, and the core says why. Each of these is
+   * produced on the write path in the pinned core: `check-expectation`
+   * (no-subject, deleted, changed), `write-outcome->answer` (refused,
+   * not-written), `run-items!` (malformed-intent, receipt-timetable),
+   * `write-batch!` (no-view), `ord-for` (unknown-sibling),
+   * `cursor-unreachable`, and the argument parser (bad-request).
+   */
+  changed: 'refused',
+  'cursor-unreachable': 'refused',
+  'bad-request': 'refused',
+  'malformed-intent': 'refused',
+  'no-subject': 'refused',
+  deleted: 'refused',
+  refused: 'refused',
+  'not-written': 'refused',
+  'receipt-timetable': 'refused',
+  'no-view': 'refused',
+  'unknown-sibling': 'refused',
+  'doc-must-be-top-level': 'refused',
+  /*
+   * Reachable with any verb, and both mean the write did not happen:
+   * the store could not be addressed, or the id names nothing.
+   */
+  'no-store': 'refused',
+  'unknown-id': 'refused',
+  internal: 'refused'
+};
+
+/*
+ * ⚠️ KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
+ * is made in the pinned core (manifest self md5
+ * 0229f9fa246b99986564728d18beefce). The reason is the provenance, not a
+ * guess about intent: if the grep does not find it, the row says so
+ * rather than inventing a story.
+ *
+ * ⚠️ AND THIS TABLE IS A STOPGAP, said here so it is not mistaken for
+ * knowledge. Which refusals a given verb can produce is a fact about the
+ * CORE, and the extension is deducing it by reading someone else's
+ * source. The main session has put it on the core's queue: a
+ * machine-readable table of refusal kinds per verb, generated from the
+ * source and pinned by the core's own cells. When that exists, this list
+ * is derived from it and stops being a judgement of mine.
+ */
+export const NOT_A_WRITES_ANSWER: Record<string, string> = {
+  'already-initialised': 'store-init!, store.ss:2466 -- initialising a store, not writing to one',
+  'foreign-writer': 'store-init!, store.ss:2469 -- as above',
+  'ambiguous-identity': 'match-by-signature, project.ss:579 -- the markdown import path',
+  'position-mismatch': 'match-sections, project.ss:513 -- the markdown import path',
+  'would-delete': 'import-md, project.ss:280 -- the markdown import path',
+  'invalid-candidate': 'publish-validated!, log.ss:3593 -- publication, not a block write',
+  'no-candidate': 'verb-table, rpc.ss:459 -- dispatch, before any verb runs',
+  'unknown-verb': 'rpc-dispatch-parsed, rpc.ss:685 -- dispatch, before any verb runs',
+  'no-such-intent': 'resolve-from, store.ss:2033 -- resolving an intent by name, not writing',
+  unknown:
+    'write-outcome->answer, store.ss:1204 -- it IS a write answer, and it is handled before ' +
+    'classification: `unknown` is the absence of a determination, so the request is kept and ' +
+    'retried rather than settled at all'
+};
+
+export function classifyRefusal(datum: Datum): Settlement {
+  /*
+   * ⚠️ TWO KINDS OF "NOT IN THE TABLE", AND THEY WANT OPPOSITE THINGS.
+   *
+   * A name this build has not seen is still an `(error ...)`, and that
+   * SHAPE is the protocol's word for "the write did not happen" -- so
+   * `refused` is a reading with a reason behind it, not a convenience.
+   * It is marked, and a cell feeds every refusal the real core can
+   * produce through here and fails if any is marked: a core that grows
+   * a new refusal name then reddens the suite, which is where that
+   * belongs, instead of throwing in front of somebody trying to save.
+   * `malformed-intent` was exactly that case -- produced by the core
+   * today, absent from the list I first drew up from the cells.
+   *
+   * An answer that is not an `(error ...)` at all is the other kind:
+   * nothing here knows what it is, and guessing is how this batch's
+   * worst defects began.
+   */
+  /*
+   * ⚠️ AND A USAGE LINE IS AN ANSWER ON THIS PATH TOO. `(usage (set <id>
+   * <field> <value>))` is what a core WITHOUT request tracking says to a
+   * write carrying --req and --cursor: the write did not happen, and the
+   * reason is that the core is the wrong version. It is not an `(error
+   * ...)`, so the first version of this classifier threw on it -- and
+   * the suite went red on the cell that has covered it all along, which
+   * is the whole argument for not throwing at answers that exist.
+   */
+  if (headName(datum) === 'usage') {
+    return { verdict: 'refused' };
+  }
+  if (headName(datum) !== 'error' || !Array.isArray(datum) || datum.length < 2) {
+    throw new Error(
+      'an answer reached the settler that this client cannot classify: it is not a refusal and ' +
+        'was not accepted either'
+    );
+  }
+  const name = isSym(datum[1]) ? (datum[1] as { name: string }).name : '';
+  const known = REFUSALS[name];
+  if (known === 'settled-elsewhere') {
+    const event = clauseValue(datum, 'event');
+    const where = event === undefined ? null : readEvent(event);
+    /*
+     * AND IF IT DID NOT SAY WHERE, IT IS NOT A SETTLEMENT THIS CLIENT
+     * CAN RECORD. The whole point of this verdict is the record it
+     * names; without one there is nothing to write beside the file, and
+     * the honest answer is the refusal it arrived as.
+     */
+    if (where !== null) {
+      return { verdict: 'settled-elsewhere', cursor: formatCursor(where) };
+    }
+    return { verdict: 'refused' };
+  }
+  if (known === 'req-mismatch') {
+    return { verdict: 'req-mismatch' };
+  }
+  return known === 'refused' ? { verdict: 'refused' } : { verdict: 'refused', unrecognised: name };
 }
 
 function describeRefusal(datum: Datum): string {
@@ -607,8 +770,8 @@ export class Saver {
      * the entry is kept. Every other refusal is the store declining this
      * write; the bytes stay a draft and the entry stays with them.
      */
-    const idIsTaken = saysTheIdIsTaken(datum);
-    this.settle(entry.req, idIsTaken ? { verdict: 'req-mismatch' } : { verdict: 'refused' });
+    const settlement = classifyRefusal(datum);
+    this.settle(entry.req, settlement);
     if (saysAnOperatorSettledIt(datum)) {
       return {
         status: 'replayed',
@@ -624,7 +787,7 @@ export class Saver {
       id: entry.id,
       message: describeRefusal(datum),
       answer: datum,
-      ...(idIsTaken ? { keptForAPerson: true as const } : {})
+      ...(settlement.verdict === 'req-mismatch' ? { keptForAPerson: true as const } : {})
     };
   }
 }
