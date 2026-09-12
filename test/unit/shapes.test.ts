@@ -762,169 +762,133 @@ describe('U8 every error answer the core can produce is readable by this client'
  * which is precisely the thing being guarded against.
  */
 describe('every bucket a takeover counts is something the user is told', () => {
-  it('mentions each non-empty bucket', () => {
-    const ledger = emptyLedger();
-    const buckets = Object.keys(ledger).filter((name) => name !== 'observed');
-    assert.ok(buckets.length >= 6, `only ${buckets.length} buckets were found: ${buckets}`);
-    /*
-     * A DISTINCT NUMBER PER BUCKET, so that finding it in the sentence
-     * is evidence about that bucket and not about another one that
-     * happens to hold the same count.
-     */
-    const counts = new Map<string, number>();
-    buckets.forEach((name, at) => {
-      const n = (at + 2) * 7;
-      counts.set(name, n);
-      (ledger as unknown as Record<string, number>)[name] = n;
-    });
-    ledger.observed = [...counts.values()].reduce((a, b) => a + b, 0);
-
-    const text = adoptedNotice('S-dead', ledger, false).text;
-    const missing = buckets.filter((name) => !text.includes(String(counts.get(name))));
-    assert.deepStrictEqual(
-      missing,
-      [],
-      `these buckets hold requests and the user is not told about them: ${missing.join(', ')} -- ` +
-        `the sentence was: ${text}`
-    );
-  });
+  /*
+   * ⚠️ THE WHOLE SENTENCE, NOT A FRAGMENT OF IT.
+   *
+   * These cells used to look for a phrase and, separately, for the
+   * count. An outside judge showed what that lets through: "was not
+   * confirmed as handed over BECAUSE MARKING FAILED" passed, because the
+   * forbidden words were absent while the claim they forbade was back;
+   * so did "0 could not be moved (observed 5)", and so did dropping the
+   * "not" out of "does not do the work twice". A fragment is not a
+   * proposition, and every one of those changed what the user is told.
+   *
+   * So each bucket's sentence is written out here in full and compared
+   * exactly. It is a duplicate of the product's wording and that is the
+   * point: the two copies are written by different people at different
+   * times, and any drift between them is somebody deciding to change
+   * what the user is told. Changing the message means changing this,
+   * where the diff shows a human the old sentence beside the new one.
+   */
+  const SENTENCES: Record<string, (n: number) => string> = {
+    imported: (n) => `${n} unsent request(s) are now in this window's queue.`,
+    skippedDuplicate: (n) => `${n} had already been carried across and were left alone.`,
+    leftOtherStore: (n) =>
+      `${n} belong to other stores and are still there; configure that store and run this ` +
+      'command again to bring them across.',
+    leftUnknownStore: (n) =>
+      `${n} are in a queue from an older version of this extension, which does not record which ` +
+      'store they were written for; this command will not move them into a store it cannot show ' +
+      'they belong to.',
+    unreadableQueue: (n) =>
+      `a usable queue could not be loaded from ${n} of its path(s), and nothing was taken from ` +
+      'them.',
+    failedToMove: (n) =>
+      `${n} could not be moved into this window and are still in that window’s queue; nothing ` +
+      'was lost, and running this command again will try them.',
+    movedButUnmarked: (n) =>
+      `${n} arrived here, and the other window’s copy was not confirmed as handed over, so a ` +
+      'later takeover may carry them again. The store recognises a request it has already ' +
+      'applied by its id and does not do the work twice.',
+    outcomeUnknown: (n) =>
+      `${n} could not be accounted for: this window could not find out whether they arrived. ` +
+      'Look at both queues before deciding anything about them.'
+  };
 
   /*
-   * ⚠️ AND EACH BUCKET ALONE. The cell above fills all of them at once,
-   * and a report that dropped one only when the others were empty
-   * passed it -- measured in review: suppressing the unreadable-queue
-   * sentence whenever nothing was imported hid an unreadable-only
-   * result and satisfied both cells. A bucket has to be reportable on
-   * its own, because on its own is how a user meets it.
+   * A BUCKET WITH NO SENTENCE WRITTEN DOWN FAILS THIS FILE rather than
+   * being skipped by it -- otherwise adding a bucket silently removes it
+   * from every check below.
    */
-  it('mentions a bucket that is the only thing that happened, and says what it means', () => {
-    /*
-     * ⚠️ THE COUNT WITH ITS MEANING, NOT THE DIGIT ALONE. Looking only
-     * for the number passed a build that suppressed a bucket's sentence
-     * and appended "Observed 5" -- measured in review. A number in the
-     * text is not a statement about that bucket.
-     */
-    const meanings: Record<string, RegExp> = {
-      imported: /now in this window's queue/,
-      skippedDuplicate: /already been carried across/,
-      leftOtherStore: /belong to other stores/,
-      leftUnknownStore: /older version of this extension/,
-      unreadableQueue: /usable queue could not be loaded/,
-      failedToMove: /could not be moved/,
-      movedButUnmarked: /arrived here/,
-      outcomeUnknown: /could not be accounted for/
-    };
+  it('has a sentence written down for every bucket the ledger carries', () => {
     const buckets = Object.keys(emptyLedger()).filter((name) => name !== 'observed');
-    /*
-     * AND EVERY BUCKET HAS A MEANING WRITTEN DOWN HERE. A bucket added
-     * without one is not silently skipped by this loop.
-     */
-    const unexplained = buckets.filter((name) => meanings[name] === undefined);
-    assert.deepStrictEqual(unexplained, [], 'these buckets have no sentence to look for');
-    for (const name of buckets) {
+    const missing = buckets.filter((name) => SENTENCES[name] === undefined);
+    assert.deepStrictEqual(missing, [], 'these buckets have no expected sentence');
+    const extra = Object.keys(SENTENCES).filter((name) => !buckets.includes(name));
+    assert.deepStrictEqual(extra, [], 'these sentences are for buckets that no longer exist');
+  });
+
+  it('says exactly that sentence when a bucket is the only thing that happened', () => {
+    for (const [name, sentence] of Object.entries(SENTENCES)) {
       const ledger = emptyLedger();
       (ledger as unknown as Record<string, number>)[name] = 5;
       ledger.observed = 5;
       const text = adoptedNotice('S-dead', ledger, false).text;
-      /*
-       * ⚠️ THE COUNT INSIDE THAT BUCKET'S OWN SENTENCE. Matching the
-       * phrase and looking for the digit anywhere were two independent
-       * assertions, and a build that said "0 could not be moved ...
-       * Observed 5" satisfied both -- measured in review. What has to be
-       * true is that the number belongs to the sentence.
-       */
-      /*
-       * ⚠️ SPLIT ON EVERY SENTENCE ENDING, and require the count where
-       * these sentences actually put it. Splitting on a full stop alone
-       * let "0 could not be moved! Observed 5." pass, and looking for
-       * the digit anywhere in the sentence accepted "0.5". Every one of
-       * these sentences opens with its own number, which is the property
-       * to assert.
-       */
-      const sentence = text
-        .split(/(?<=[.!?])\s+/)
-        .find((part) => meanings[name].test(part));
-      assert.ok(
-        sentence !== undefined,
-        `${name} was the only thing that happened and its sentence is missing: ${text}`
-      );
-      assert.match(
-        sentence ?? '',
-        /(^|\s)5(\s|$|[^\d.])/,
-        `${name}'s sentence does not carry its own count: ${sentence}`
-      );
+      const expected =
+        name === 'imported' || name === 'movedButUnmarked'
+          ? `S-dead: ${sentence(5)} They go out with the next save, or run "theourgia: Retry Pending Saves" to send them now.`
+          : `S-dead: ${sentence(5)}`;
+      assert.strictEqual(text, expected, `the sentence for ${name} is not what it should be`);
     }
   });
 
   /*
-   * ⚠️ AND THE REPEAT GUARANTEE STAYS ATTRIBUTED. The arrival sentence
-   * used to promise that nothing is sent twice, which this layer cannot
-   * know -- the other window's copy is still unmarked, so a later
-   * takeover can carry it again. What is true belongs to the store, and
-   * the cells above check the phrase and the count, not this.
+   * ⚠️ AND THE ADVICE ONLY WHEN SOMETHING IS HERE TO SEND. It was
+   * unconditional, so a report about another store's requests ended by
+   * telling the user they would go out with the next save -- of a queue
+   * that does not hold them.
    */
-  it('does not promise that nothing is sent twice', () => {
-    const ledger = emptyLedger();
-    ledger.movedButUnmarked = 2;
-    ledger.observed = 2;
-    const text = adoptedNotice('S-dead', ledger, false).text;
-    assert.ok(
-      !/nothing is sent twice/i.test(text),
-      `a guarantee this layer cannot make is back in the sentence: ${text}`
-    );
-    assert.match(text, /store recognises a request it has already applied/);
+  it('does not offer to send what is not in this window', () => {
+    for (const name of ['leftOtherStore', 'leftUnknownStore', 'unreadableQueue', 'outcomeUnknown']) {
+      const ledger = emptyLedger();
+      (ledger as unknown as Record<string, number>)[name] = 2;
+      ledger.observed = 2;
+      const text = adoptedNotice('S-dead', ledger, false).text;
+      assert.ok(
+        !/go out with the next save/.test(text),
+        `${name} was offered for sending from a queue that does not hold it: ${text}`
+      );
+    }
   });
 
-  /*
-   * ⚠️ AND IT SAYS THE MARK WAS NOT CONFIRMED, NOT THAT IT FAILED.
-   *
-   * When the destination stored the entry and then threw, the mark was
-   * never ATTEMPTED -- "could not be marked" sends the reader to look at
-   * permissions on a file nothing tried to write. The wording was
-   * corrected in round 29 and NOTHING ASSERTED IT: the main session's
-   * judge reverted the sentence and every cell stayed green. A fix
-   * verified only by the reasoning that produced it is not guarded, and
-   * this is the second time in this batch.
-   */
-  it('says the other window’s copy was not confirmed, not that marking failed', () => {
+  it('says every sentence, and only those, when several buckets carry something', () => {
     const ledger = emptyLedger();
-    ledger.movedButUnmarked = 3;
-    ledger.observed = 3;
+    ledger.imported = 2;
+    ledger.leftOtherStore = 3;
+    ledger.unreadableQueue = 1;
+    ledger.observed = 6;
     const text = adoptedNotice('S-dead', ledger, false).text;
-    assert.match(text, /was not confirmed as handed over/, `the wording is gone: ${text}`);
-    assert.ok(
-      !/could not be marked/.test(text),
-      `a step that was never attempted is described as having failed: ${text}`
+    assert.strictEqual(
+      text,
+      `S-dead: ${SENTENCES.imported(2)} ${SENTENCES.leftOtherStore(3)} ` +
+        `${SENTENCES.unreadableQueue(1)} They go out with the next save, or run ` +
+        '"theourgia: Retry Pending Saves" to send them now.',
+      'the report is not exactly the sentences for the buckets that carry something'
     );
   });
 
   /*
-   * THE TWIN ALONG THE SAME AXIS: with nothing in that bucket, neither
-   * sentence appears. Without it the cell above is satisfied by a report
-   * that always says "not confirmed", which would be telling every user
-   * about bookkeeping that went through perfectly.
+   * AND A TAKEOVER THAT FOUND NOTHING SAYS SO. Every bucket empty is an
+   * answer, not an empty sentence with a window's name in front of it.
    */
-  it('says neither when nothing arrived unconfirmed', () => {
-    const ledger = emptyLedger();
-    ledger.imported = 3;
-    ledger.observed = 3;
-    const text = adoptedNotice('S-dead', ledger, false).text;
-    assert.ok(!/not confirmed as handed over/.test(text), `an empty bucket was recited: ${text}`);
-    assert.ok(!/could not be marked/.test(text), `an empty bucket was recited: ${text}`);
+  it('says so when there was nothing in that window to move', () => {
+    const text = adoptedNotice('S-dead', emptyLedger(), false).text;
+    assert.strictEqual(text, 'S-dead was taken over and there was nothing in it to move.');
   });
 
-  /*
-   * AND AN EMPTY BUCKET IS NOT MENTIONED. Without this the cell above is
-   * satisfied by a report that recites every bucket every time, which
-   * buries the one that matters in five zeroes.
-   */
-  it('says nothing about the buckets that are empty', () => {
+  it('says nothing about a bucket that is empty', () => {
     const ledger = emptyLedger();
     ledger.imported = 3;
     ledger.observed = 3;
     const text = adoptedNotice('S-dead', ledger, false).text;
-    assert.ok(!/could not be read/.test(text), `an empty bucket was recited: ${text}`);
-    assert.ok(!/belong to other stores/.test(text), `an empty bucket was recited: ${text}`);
-    assert.match(text, /3 unsent request/);
+    for (const [name, sentence] of Object.entries(SENTENCES)) {
+      if (name === 'imported') {
+        continue;
+      }
+      assert.ok(
+        !text.includes(sentence(0)) && !text.includes(sentence(3)),
+        `${name} is empty and was recited anyway: ${text}`
+      );
+    }
   });
 });

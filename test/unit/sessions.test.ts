@@ -54,6 +54,26 @@ import { RecordingFs } from '../support/recording-fs';
  * A CONTROL CHARACTER, named rather than typed, so that the source of
  * this file stays readable.
  */
+/*
+ * A DESTINATION THAT BEHAVES LIKE ONE: what it is given, it has.
+ *
+ * ⚠️ THESE FIXTURES USED `{ has: () => false, adopt: () => undefined }`
+ * -- a destination that accepts everything and keeps nothing. Under the
+ * old code that counted as `imported`, so the fixtures were resting on
+ * the very defect this batch then fixed: the import now asks whether the
+ * entry is really there before marking the source as having handed it
+ * over, and a stand-in that always answers no is not a destination.
+ */
+function keeping(): ImportTarget {
+  const held: string[] = [];
+  return {
+    has: (req) => held.includes(req),
+    adopt: (entry) => {
+      held.push(entry.req);
+    }
+  };
+}
+
 const TAB = String.fromCharCode(9);
 const NUL = String.fromCharCode(0);
 
@@ -1342,7 +1362,7 @@ describe('review 24 what a takeover reports as still waiting', () => {
     const moved = won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
+          keeping(),
           'store-b'
         )
       : null;
@@ -1370,7 +1390,7 @@ describe('review 24 what a takeover reports as still waiting', () => {
     const moved = won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
+          keeping(),
           'store-a'
         )
       : null;
@@ -1394,7 +1414,7 @@ describe('review 24 what a takeover reports as still waiting', () => {
     const moved = won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
+          keeping(),
           'store-a'
         )
       : null;
@@ -1445,7 +1465,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
     return won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
+          keeping(),
           store
         )
       : null;
@@ -1661,14 +1681,17 @@ describe('the takeover ledger accounts for everything it saw', () => {
             has: (req) => held.includes(req),
             adopt: (entry) => {
               /*
-               * A DESTINATION THAT REFUSES ONE REQUEST. Something has to
-               * be able to throw here, or `failedToMove` is a bucket no
-               * fixture can fill -- and a conservation law whose sum is
-               * right because a term is always zero is not being tested.
+               * A DESTINATION THAT REFUSES ONE REQUEST AND KEEPS THE
+               * REST. Something has to be able to throw here, or
+               * `failedToMove` is a bucket no fixture can fill -- and a
+               * conservation law whose sum is right because a term is
+               * always zero is not being tested. It must also KEEP what
+               * it takes, or the import is right to say nothing arrived.
                */
               if (entry.req === refuse) {
                 throw new Error('this window will not take that one');
               }
+              held.push(entry.req);
             }
           },
           'store-a'
@@ -1840,7 +1863,7 @@ describe('review 26 what the takeover must still see, and who may take one', () 
     const led = won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
+          keeping(),
           'store-a'
         )
       : emptyLedger();
@@ -2128,30 +2151,46 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     const storage = scratch();
     makeSession(storage, 'S-dead');
     oneRequest(storage, 'S-dead', 'store-a');
-    const stubborn = new (class extends RecordingFs {
-      public writeDurably(file: string, text: string): void {
-        if (file.includes(path.join('S-dead', 'store-a'))) {
-          throw new Error('the source will not take the mark');
-        }
-        super.writeDurably(file, text);
-      }
-    })();
-    const sessions = new Sessions(stubborn, storage);
-    sessions.begin('S-mine', []);
-    const won = await sessions.claim('S-dead');
-    const led = won.claimed
-      ? sessions.importFrom(
-          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: () => false, adopt: () => undefined },
-          'store-a'
-        )
-      : emptyLedger();
+    /*
+     * ⚠️ A DESTINATION THAT ACCEPTS AND KEEPS NOTHING -- deliberately,
+     * because that is the case. It used to be reported as `imported`,
+     * and the source was then marked as having handed the request over:
+     * the report wrong AND the other window's copy saying the work was
+     * rescued. The import asks before it marks now, so this ends as a
+     * request that did not move and the source is left offering it.
+     */
+    const led = await ledgerWith(storage, {
+      has: () => false,
+      adopt: () => undefined
+    });
     assert.strictEqual(
       led.failedToMove,
       1,
       `a destination that kept nothing was reported as having it: ${JSON.stringify(led)}`
     );
+    assert.strictEqual(led.imported, 0);
     assert.strictEqual(led.movedButUnmarked, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * AND THE SOURCE IS LEFT OFFERING IT. Marking a request as handed over
+   * when the destination does not have it is the half that makes the
+   * wrong report unrecoverable.
+   */
+  it('does not mark the source when the destination did not keep it', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    oneRequest(storage, 'S-dead', 'store-a');
+    await ledgerWith(storage, { has: () => false, adopt: () => undefined });
+    const queue = JSON.parse(
+      fs.readFileSync(path.join(storage, 'sessions', 'S-dead', 'store-a', 'outbox.json'), 'utf8')
+    ) as { entries: Array<{ importedBy: unknown }> };
+    assert.strictEqual(
+      queue.entries[0].importedBy,
+      null,
+      'the source was told the request had been carried away by a window that does not have it'
+    );
   });
 
   /*

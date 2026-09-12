@@ -591,16 +591,24 @@ export class Sessions {
       this.files.rename(temporary, file);
     } catch (e) {
       /*
-       * THE OLD RECORD IS STILL THERE AND THE HALF-WRITTEN ONE IS NOT.
-       * Removing the temporary is best effort: failing to remove it must
-       * not hide why the publication failed.
+       * THE OLD RECORD IS STILL THERE. Removing the half-written one is
+       * BEST EFFORT and says so: a failure to remove it must not replace
+       * the reason the publication failed with a second, smaller reason.
+       *
+       * ⚠️ AND THE RESIDUE IS NAMED WHEN IT SURVIVES. The comment here
+       * used to say the half-written one is not there, flatly -- which
+       * is untrue when the removal itself throws, and untrue when the
+       * process stops between the write and the rename. Whoever reads
+       * the failure is the only one who can clear it up, so they are
+       * told where it is.
        */
+      let residue = '';
       try {
         this.files.unlink(temporary);
       } catch (ignored) {
-        /* the reason to report is the rename's, not this one's */
+        residue = ` A half-written record was left at ${temporary}; it is not a session record and can be removed.`;
       }
-      throw e;
+      throw new Error(`${(e as Error).message}${residue}`);
     }
     this.mine = sessionId;
     this.nonce = identity.nonce;
@@ -1327,6 +1335,26 @@ export class Sessions {
         }
         step = 'moving';
         into.adopt({ ...entry });
+        /*
+         * ⚠️ THE DESTINATION IS ASKED BEFORE THE SOURCE IS MARKED.
+         *
+         * On the path where nothing throws, `imported` was counted from
+         * `adopt` having been called -- so a destination that silently
+         * kept nothing was reported as having the request, and the
+         * source was marked as having handed it over. That is the worst
+         * order of the two mistakes: the report is wrong AND the other
+         * window's copy now says the work was rescued. Reproduced in
+         * review.
+         *
+         * Asking first costs one question per entry and makes
+         * `imported` mean what it says. If the answer is no, the source
+         * is NOT marked -- the request stays offered, which is the
+         * recoverable direction.
+         */
+        if (!into.has(entry.req)) {
+          ledger.failedToMove += 1;
+          continue;
+        }
         source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
         ledger.imported += 1;
       } catch (e) {

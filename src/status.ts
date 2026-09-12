@@ -683,9 +683,19 @@ export function adoptedNotice(
    * list guards the second, and a bucket added without a sentence here
    * shows up as an unexplained difference in what the user is told.
    */
-  const parts: string[] = [
-    `${ledger.imported} unsent request(s) are now in this window's queue.`
-  ];
+  /*
+   * ⚠️ THE IMPORTED SENTENCE IS CONDITIONAL LIKE EVERY OTHER. It was
+   * unconditional, so a report about another store's requests opened
+   * with "0 unsent request(s) are now in this window's queue" -- a
+   * sentence about nothing, in front of the one the user needed. The
+   * empty-bucket rule had been written for the others and not for this
+   * one. Found the moment the cells began comparing whole sentences
+   * rather than looking for fragments in them.
+   */
+  const parts: string[] = [];
+  if (ledger.imported > 0) {
+    parts.push(`${ledger.imported} unsent request(s) are now in this window's queue.`);
+  }
   if (ledger.skippedDuplicate > 0) {
     parts.push(`${ledger.skippedDuplicate} had already been carried across and were left alone.`);
   }
@@ -767,7 +777,26 @@ export function adoptedNotice(
         'whether they arrived. Look at both queues before deciding anything about them.'
     );
   }
-  parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);
+  /*
+   * ⚠️ AND THE ADVICE ONLY WHEN THERE IS SOMETHING HERE TO SEND. It was
+   * unconditional, so a report about another store's requests, or about
+   * outcomes nobody could establish, ended by telling the user those
+   * would go out with their next save -- of a queue that does not hold
+   * them. Found in review.
+   */
+  if (ledger.imported > 0 || ledger.movedButUnmarked > 0) {
+    parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);
+  }
+  /*
+   * AND A TAKEOVER THAT FOUND NOTHING SAYS THAT, rather than naming the
+   * window and stopping. Every bucket being empty is an answer.
+   */
+  if (parts.length === 0) {
+    return {
+      level: 'information',
+      text: `${sessionId} was taken over and there was nothing in it to move.`
+    };
+  }
   return { level: 'information', text: `${sessionId}: ${parts.join(' ')}` };
 }
 
