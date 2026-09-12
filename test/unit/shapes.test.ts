@@ -36,6 +36,8 @@ import {
   wrongStoreNotice
 } from '../../src/status';
 import { TransportError } from '../../src/transport';
+import { Client } from '../../src/client';
+import { Says } from '../support/says';
 import { Datum, asInteger, initWire, wire } from '../../src/wire';
 
 describe('an outline line this client cannot read stops the outline', () => {
@@ -147,11 +149,17 @@ describe('a field this client cannot read stops the block', () => {
     assert.strictEqual(block?.fields.get('heading-src'), '## Two\n');
     /*
      * AND IT COMES BACK AS A BigInt, which is what the authority's
-     * reader makes of every integer. Writing this cell is what showed
-     * it: the count-only assertion it replaces was compatible with the
-     * field holding anything at all, including the number 2 that this
-     * one is not.
+     * reader makes of every integer. Both halves are asserted: the
+     * VALUE through `asInteger`, and the REPRESENTATION directly --
+     * `asInteger` answers 2 for the number 2 and for the BigInt 2n
+     * alike, so on its own it says nothing about which arrived, and the
+     * first version of this cell claimed it did.
      */
+    assert.strictEqual(
+      typeof block?.fields.get('level'),
+      'bigint',
+      'the reader no longer returns integers as BigInt; asInteger callers need re-checking'
+    );
     assert.strictEqual(
       asInteger(block?.fields.get('level') as Datum),
       2,
@@ -363,5 +371,76 @@ describe('a retry reports a count that may not exist', () => {
    */
   it('names the store the numbers belong to', () => {
     assert.match(retryNotice('/stores/one', 1, 1, 0).text, /\/stores\/one/);
+  });
+});
+
+/*
+ * A SYMBOL NAME THIS READER WILL NOT DECODE, AND WHOSE BLOCK IS NAMED.
+ *
+ * goeteia 1.7.2 refuses a symbol whose escaped name is numeric --
+ * `\x31;`, the symbol called `1`. The golden table records that name as
+ * readable, which is what the older reader did; the STORE refuses it,
+ * because its wire-safety predicate round-trips a name through
+ * igropyr's writer and `|1|` comes back as the number 1 rather than a
+ * symbol. Reader and store agree; the table is the wider, older
+ * account. That is recorded against the table in
+ * dependency-sexpr.test.ts; this is what it costs HERE, which is the
+ * part a user would meet.
+ *
+ * SO SUCH A DATUM IS NOT PRODUCED INTO A STORE BY THIS CORE AT ALL.
+ * "Should not be produced" is not "cannot arrive": a store written by an
+ * older build, or copied from elsewhere, can hold one. What must not
+ * happen is the answer coming back as a block with a field quietly
+ * missing -- so the refusal has to name the block to go and look at.
+ *
+ * WHEN THE CORE REFUSES THE WRITE ITSELF, this cell should become one
+ * that asks the core to make the name and checks that it will not.
+ */
+describe('a symbol name this reader refuses stops the answer and names the block', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  it('reports a transport error naming the block rather than a block with a field missing', async () => {
+    const says = new Says(
+      '(ok ((id . "a.2") (deleted . #f) (fields (rel . \\x31;)) (position root . 0) (edges)))\n'
+    );
+    const client = new Client(says);
+    let caught: unknown = null;
+    try {
+      await client.request('read', ['a.2']);
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught instanceof TransportError, `threw ${(caught as Error)?.name}`);
+    assert.strictEqual((caught as TransportError).failure, 'unreadable');
+    assert.match(
+      (caught as Error).message,
+      /a\.2/,
+      'the refusal does not name the block whose answer could not be read'
+    );
+  });
+
+  /*
+   * AND THE ORDINARY ESCAPE STILL ARRIVES. Without this the cell above
+   * is satisfied by a client that refuses every escaped symbol name,
+   * which would turn `--store` -- a name the core really does escape --
+   * into an unreadable answer.
+   */
+  it('still reads an escaped symbol name the reader does accept', async () => {
+    const says = new Says('(error unknown-verb \\x2D;-store (verbs init))\n');
+    /*
+     * The exit code is the verdict in this protocol, and the stand-in
+     * reports zero, so this answer is `ok` whatever datum it carries.
+     * What is being asked is only that the escaped name was READ.
+     */
+    const answer = await new Client(says).request('read', ['a.2']);
+    /*
+     * THE DECODED NAME, NOT THE RAW LINE. `text` is the bytes the core
+     * printed and still holds the escape; the decoding this cell is
+     * about is only visible in the datum.
+     */
+    const datum = answer.answers[0] as { name: string }[];
+    assert.strictEqual(datum[2].name, '--store', 'the escaped name did not decode');
   });
 });

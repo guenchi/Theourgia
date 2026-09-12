@@ -734,9 +734,19 @@ describe('an expansion against the real core costs what the stand-in says it cos
       'x'
     ]);
     assert.strictEqual(parent.ok, true, parent.text);
+    /*
+     * THE PARENT IS THE BLOCK THAT WAS JUST INSERTED, AND IT IS AT THE
+     * TOP LEVEL. Taking "the first row that is not the document" can
+     * pick one of the document's own descendants, and moving a block
+     * under its own descendant is refused by a different rule -- so the
+     * cell would pass without the document-placement rule existing.
+     */
     const rows = parseOutline((await store.client.request('outline', [])).text);
-    const under = rows.map((r) => r.id).find((candidate) => candidate !== file);
-    assert.ok(under !== undefined, 'no second top-level block to move the document under');
+    const topLevel = rows.filter((r) => r.depth === 0).map((r) => r.id);
+    const under = topLevel.find((candidate) => candidate !== file);
+    assert.ok(under !== undefined, `no second top-level block among ${topLevel.join(', ')}`);
+    const underBlock = await store.client.request('read', [under as string]);
+    assert.strictEqual(underBlock.ok, true, 'the chosen parent could not be read');
     const moved = await store.client.request('move', [file, under as string]);
     assert.strictEqual(moved.ok, false, `moving a document under ${under} was accepted`);
     assert.match(moved.text, /doc-must-be-top-level/, `move answered ${moved.text}`);

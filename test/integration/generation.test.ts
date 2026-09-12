@@ -136,4 +136,61 @@ describe('a setting that changes while a request is in flight', function () {
       'a store nobody has asked was shown with the previous store\'s conflict count'
     );
   });
+
+  /*
+   * C6 THE COUNT THAT WAS STILL IN FLIGHT. C5 above changes the settings
+   * when nothing is outstanding, so it proves that `rebuild` forgets the
+   * old count -- and nothing more. The check that matters is the one
+   * AFTER the wait: an answer that arrives for the store the user has
+   * just left must be dropped, not painted. Without it the sequence is
+   * `rebuild` clears the count, then the late answer writes store A's
+   * number under store B's name, which is worse than never clearing it
+   * because it looks freshly fetched.
+   *
+   * THE WAIT IS A CORE REQUEST, so the stand-in can hold it open for as
+   * long as the cell needs. That is what makes this one guardable at all
+   * -- the waits inside `openBlock` are editor calls and are not.
+   */
+  it('C6 does not paint a conflict count that arrived for the store the user left', async () => {
+    core = new FakeCore([
+      { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n(orphan "a.9")\n', rc: 0, delayMs: 2500 },
+      { match: ['read'], stdout: `${BLOCK}\n`, rc: 0 },
+      { match: ['outline'], stdout: '', rc: 0 }
+    ]);
+    await useStore(core, `${core.store}-A`);
+    await settle();
+
+    const running = vscode.commands.executeCommand('theourgia.refreshOutline') as Promise<unknown>;
+    await settle(300);
+    await vscode.workspace
+      .getConfiguration('theourgia')
+      .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
+    await running;
+    await settle(300);
+
+    /*
+     * THE REQUEST HAS TO HAVE SUCCEEDED. `refreshConflicts` answers null
+     * when the count could not be fetched at all, so a cell that only
+     * checks for null passes whether the guard works or the request
+     * simply failed -- and a stand-in whose delayed answer never arrived
+     * would look exactly like a guard doing its job. The call is
+     * required to have been made and to have been answered.
+     */
+    const conflictCalls = core.calls().filter((c) => c.coreArgv.includes('conflicts'));
+    assert.ok(conflictCalls.length > 0, 'the conflicts request was never made');
+    assert.ok(
+      conflictCalls.some((c) => c.event === 'answer'),
+      `the delayed request did not answer, so null proves nothing: ${JSON.stringify(
+        conflictCalls.map((c) => c.event)
+      )}`
+    );
+
+    const facts = await currentFacts();
+    assert.strictEqual(facts.store, `${core.store}-B`, 'the settings did not actually change');
+    assert.strictEqual(
+      facts.conflicts,
+      null,
+      'a count fetched for the previous store was painted under the new one'
+    );
+  });
 });

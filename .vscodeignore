@@ -1,5 +1,8 @@
 .vscode-test/**
 node_modules/**
+!node_modules/goeteia/package.json
+!node_modules/goeteia/rt/sexpr.mjs
+!node_modules/goeteia/LICENSE
 out/test/**
 src/**
 test/**

@@ -270,6 +270,17 @@ describe('a queue in a shape this build cannot read is refused, not repaired', (
     assert.ok(said.includes(file), 'the message does not name the file');
     assert.match(said, /no further save will be sent/, 'the message does not say saving has stopped');
     assert.match(said, /move it aside/, 'the message does not say what can be done');
+    /*
+     * AND THAT THE STORE IS NOT WHAT IS BROKEN. An earlier version of
+     * this cell checked that line and the rewrite dropped it, which left
+     * the sentence a user needs most -- their blocks are fine -- covered
+     * by nothing.
+     */
+    assert.match(
+      said,
+      /does not touch the store/,
+      'the message does not say the store itself is unaffected'
+    );
   });
 
   /*

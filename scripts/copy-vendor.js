@@ -15,11 +15,14 @@
  */
 
 /*
- * The compiler emits JavaScript and copies nothing, so the vendored
- * reader and the fake core -- neither of which is TypeScript -- would be
+ * The compiler emits JavaScript and copies nothing, so the golden
+ * tables and the fake core -- none of which is TypeScript -- would be
  * missing from the build output and every run would fail at load. This
  * copies them and reports what it copied, because a copy step that
  * silently copies nothing is how a stale build starts reading green.
+ *
+ * THE READER ITSELF IS NO LONGER COPIED. It arrives as the published
+ * `goeteia` package and is resolved from node_modules at run time.
  */
 
 const fs = require('fs');
@@ -27,9 +30,8 @@ const path = require('path');
 
 const root = path.join(__dirname, '..');
 const files = [
-  ['src/vendor/goeteia/sexpr.mjs', 'out/src/vendor/goeteia/sexpr.mjs'],
-  ['src/vendor/goeteia/sexpr-vectors.json', 'out/src/vendor/goeteia/sexpr-vectors.json'],
-  ['src/vendor/goeteia/sexpr-escape-vectors.json', 'out/src/vendor/goeteia/sexpr-escape-vectors.json'],
+  ['test/fixtures/goeteia/sexpr-vectors.json', 'out/test/fixtures/goeteia/sexpr-vectors.json'],
+  ['test/fixtures/goeteia/sexpr-escape-vectors.json', 'out/test/fixtures/goeteia/sexpr-escape-vectors.json'],
   ['test/fake-core.js', 'out/test/fake-core.js']
 ];
 

@@ -32,8 +32,9 @@ import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { documentPathFor, hasUncommittedWork, markCommitted, writeDocument } from './documents';
 import { Node, StoreModel } from './model';
+import { OpenBuffers } from './open';
 import { Outbox, outboxPathFor } from './outbox';
-import { Saver } from './saver';
+import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
   StatusFacts,
@@ -191,7 +192,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await initWire();
 
   const storage = context.globalStorageUri.fsPath;
-  const open = new Map<string, BlockDocument>();
+  const open = new OpenBuffers<BlockDocument>();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = 'theourgia.showStatus';
   /*
@@ -333,6 +334,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const asked = generation;
     const store = config.store;
+    /*
+     * THE TICKET IS TAKEN BEFORE THE READ, so that two opens of one
+     * block are ordered by when they asked the store rather than by
+     * which of them finished first. See src/open.ts.
+     */
+    const ticket = open.claim();
     let block;
     try {
       block = await model.blockOf(id);
@@ -346,6 +353,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * configured, and everything downstream -- the file name, the store
      * the buffer is tagged with, the saver it would reach -- would be
      * the new one's.
+     *
+     * THIS IS THE ONLY GENERATION CHECK IN THIS FUNCTION, AND THAT IS
+     * DELIBERATE. There used to be five more, after each of the editor
+     * waits below. They could not be guarded: the waits are VS Code
+     * calls, not core requests, so no stand-in core can widen them, and
+     * a configuration change started from inside `onDidOpenTextDocument`
+     * -- which does fire during the first of them -- has not reached
+     * this extension by the time the wait resolves. That was measured,
+     * not assumed. Five checks that nothing could make fail are five
+     * places where a later edit is unguarded while looking guarded, so
+     * they were removed rather than left as decoration.
+     *
+     * WHAT STILL PROTECTS THE USER is not a check here but the store
+     * recorded ON the buffer: a document opened from one store carries
+     * that store's path, and a save into a differently configured store
+     * is refused by name. If the settings change during one of the waits
+     * below, a buffer from the old store is shown -- the wrong answer to
+     * what the user last asked, and nothing worse. Do not add a check
+     * back without a cell that fails when it is removed.
      */
     if (asked !== generation) {
       vscode.window.showWarningMessage(
@@ -390,18 +416,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const document = documentFor(block, store);
     if (hasUncommittedWork(file)) {
       const existing = await vscode.workspace.openTextDocument(uri);
-      if (asked !== generation) {
-        return;
-      }
       await vscode.languages.setTextDocumentLanguage(existing, 'markdown');
-      if (asked !== generation) {
-        return;
-      }
       await vscode.window.showTextDocument(existing, { preview: false });
-      if (asked !== generation) {
+      /*
+       * A NEWER READING MAY HAVE LANDED DURING THOSE THREE WAITS, and it
+       * is the one the buffer was written from. Replacing it with this
+       * older one gives the save path a prefix the buffer no longer
+       * starts with, and a heading that fails to match is not refused --
+       * it is treated as body and written into the block.
+       */
+      if (!open.register(file, document, ticket)) {
         return;
       }
-      open.set(file, document);
       vscode.window.showWarningMessage(
         `theourgia: the file for ${id} holds changes the store does not have, so it was not ` +
           'reloaded. Save it to send them, or delete the file to take the store\'s copy.'
@@ -409,30 +435,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
+    /*
+     * THE CLAIM COMES BEFORE THE WRITE. If a newer reading has already
+     * become the baseline, this one must not put its older text into the
+     * file either -- a file holding one reading while the baseline holds
+     * another makes the next save fail the prefix check, which is at
+     * least visible, but it is still the wrong text in front of the
+     * user.
+     */
+    if (!open.register(file, document, ticket)) {
+      return;
+    }
     writeDocument(file, document);
-    open.set(file, document);
     const opened = await vscode.workspace.openTextDocument(uri);
-    if (asked !== generation) {
-      return;
-    }
-    /*
-     * THE SETTINGS ARE CHECKED AGAIN BEFORE THE EDITOR APPEARS. Opening
-     * a document is another wait, and a store changed during it would
-     * leave a buffer from the old store arriving in front of a user who
-     * has moved on. Nothing is corrupted if it does -- the buffer
-     * remembers its own store and a save into another is refused -- but
-     * showing it is still the wrong answer to what the user last asked.
-     */
     await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
-    /*
-     * AFTER EVERY WAIT, not only after the first one. Opening the
-     * document and setting its language are two more chances for the
-     * settings to change, and a check before them proves nothing about
-     * what is true after them.
-     */
-    if (asked !== generation) {
-      return;
-    }
     await vscode.window.showTextDocument(opened, { preview: false });
   }
 
@@ -475,7 +491,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * no longer matches the prefix -- an ordinary body edit refused
        * for a change nobody made.
        */
-      open.set(file, { ...document, src: split.src, text: document.prefix + split.src });
+      open.revise(file, { ...document, src: split.src, text: document.prefix + split.src });
       /*
        * THE FILE AS IT STANDS IS NOW IN THE STORE, so the next time this
        * block is opened it may be taken from the store again. This is
@@ -519,21 +535,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (active === null) {
         return null;
       }
-      let notice: Notice | null = null;
+      /*
+       * ONE CHECK, AFTER BOTH OUTCOMES. Checking the generation inside
+       * the success path and again inside the catch is two checks, and
+       * only the first can be made to fail by a cell: producing a retry
+       * that BOTH throws and is overtaken by a settings change is not
+       * something this suite can arrange. Collecting the outcome first
+       * and deciding afterwards leaves one check on the single path out,
+       * which the cell that covers the success path also covers.
+       */
+      let outcomes: SaveOutcome[] | null = null;
+      let failure: unknown = null;
       try {
-        const outcomes = await active.retry();
-        if (asked !== generation) {
-          return null;
-        }
-        const stuck = outcomes.filter((o) => o.status === 'pending').length;
-        notice = retryNotice(store, outcomes.length - stuck, outcomes.length, active.pendingCount);
-        show(notice);
+        outcomes = await active.retry();
       } catch (e) {
-        if (asked !== generation) {
-          return null;
-        }
-        reportFailure(e);
+        failure = e;
       }
+      if (asked !== generation) {
+        return null;
+      }
+      if (outcomes === null) {
+        reportFailure(failure);
+        paint();
+        return null;
+      }
+      const stuck = outcomes.filter((o) => o.status === 'pending').length;
+      const notice = retryNotice(store, outcomes.length - stuck, outcomes.length, active.pendingCount);
+      show(notice);
       paint();
       return notice;
     }),

@@ -631,3 +631,4 @@ describe('what the status reports when the settings are unusable', function () {
     assert.strictEqual(facts.pending, 0, 'a readable and empty queue was not reported as empty');
   });
 });
+

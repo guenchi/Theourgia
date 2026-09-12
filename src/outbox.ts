@@ -116,11 +116,16 @@ export class OutboxWriteError extends Error {
  *
  * THE ADVICE DEPENDS ON THE FAULT, which is why the fault is a
  * parameter. A file whose BYTES this build cannot make sense of is
- * repaired by moving that file; a file this build could not REACH --
- * a permission on the directory, a device error -- is not, and telling
- * someone to move a file they cannot read is advice that fails in the
- * same way the read did. One sentence for both cases was a sentence
- * that was wrong in one of them.
+ * repaired by moving that file; a file this build could not REACH is
+ * not, and telling someone to move a file they cannot read is advice
+ * that fails in the same way the read did. One sentence for both cases
+ * was a sentence that was wrong in one of them.
+ *
+ * AND IT DOES NOT NAME THE CAUSE. The first version of this branch said
+ * "a permission or a device error", which is a guess: the cell that
+ * covers it produces EISDIR -- a directory standing where the file
+ * belongs -- which is neither. Everything but ENOENT arrives here, so
+ * the sentence says where to look rather than what is wrong.
  *
  * MOVING THE FILE ASIDE IS OFFERED, NOT DONE, and its cost is stated
  * rather than softened. The queue holds whole requests, including ones
@@ -135,8 +140,8 @@ type OutboxFault = 'unreachable' | 'unreadable';
 function andWhatToDo(file: string, fault: OutboxFault): string {
   const wayBack =
     fault === 'unreachable'
-      ? `Make ${file} readable again -- a permission or a device error stops this client ` +
-        'reading it, and the contents may be intact'
+      ? `Make ${file} readable again -- check the path, its permissions, and the device; ` +
+        'the contents may be intact'
       : `Repair ${file}, or move it aside to carry on with an empty queue`;
   return (
     `. It holds this client's record of saves -- both those whose outcome is not known and ` +

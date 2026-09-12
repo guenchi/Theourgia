@@ -621,12 +621,15 @@ describe('S12 entries found on disk after a restart', () => {
      * carrying `createdAt: 0` left a whole family of implementations
      * alive: a stable sort by creation time reproduces the written order
      * whenever the times are equal, and would reorder a real queue whose
-     * times are not. Making them descending kills that family here.
+     * times are not. The first attempt at this made them DESCENDING --
+     * 300, 200, 100 -- which a descending sort reproduces exactly, so it
+     * killed half the family and the comment claimed it killed all of
+     * it. They are 300, 100, 200: monotonic in neither direction.
      */
     for (const [req, payload, createdAt] of [
       ['55555555-5555-5555-5555-555555555555', 'mike\n', 300],
-      ['99999999-9999-9999-9999-999999999999', 'alpha\n', 200],
-      ['11111111-1111-1111-1111-111111111111', 'zulu\n', 100]
+      ['99999999-9999-9999-9999-999999999999', 'alpha\n', 100],
+      ['11111111-1111-1111-1111-111111111111', 'zulu\n', 200]
     ] as Array<[string, string, number]>) {
       outbox.enqueue({
         req,

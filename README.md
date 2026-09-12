@@ -189,12 +189,35 @@ exists and proves less than its name suggests, or where no cell exists at all.
   establish that the write is a temporary file, a flush and a rename, which is what the
   code does. A writer that truncated the real file in place, or omitted `fsync`, would
   pass them.
-* **Most of the generation checks.** Three places take the settings generation before
-  waiting and check it after — the conflict count, opening a block, and the retry report —
-  and the outline provider keeps its own. Each of the three has a cell (C5, C1 and the
-  retry cell), but `openBlock` checks the generation at six points and only the first is
-  covered: replacing the other five with `false` leaves every editor-hosted cell green.
-  That was measured, not assumed.
+* **Showing a buffer from a store the user has just left.** `openBlock` used to check the
+  settings generation after each of its editor waits as well as after the core read. Those
+  five checks could not be guarded: the waits are VS Code calls, not core requests, so no
+  stand-in core widens them, and a configuration change begun from inside
+  `onDidOpenTextDocument` — which does fire during the first of them — has not reached the
+  extension by the time the wait resolves. That was measured. Rather than leave five
+  guards nothing could make fail, they were removed; what remains is that the buffer
+  carries the store it was read from, so a save into a differently configured store is
+  refused by name. The residue is cosmetic: a buffer from the old store can still appear
+  after the settings change.
+
+  The three generation checks that remain each have a cell that fails when the check is
+  removed — `refreshConflicts` (C6), `openBlock` (C1), the retry report — verified one at
+  a time by replacing each with a condition that is always false. `OutlineProvider` keeps
+  two more comparisons of its own, which those three cells do not speak for.
+
+  **What replaced them is not another check.** Removing the five exposed an older hazard
+  they had been hiding: two opens of one block can overlap, and whichever finished last
+  became the baseline a save is measured against — which has nothing to do with which
+  reading the store answered most recently. A baseline older than the buffer has a prefix
+  the buffer no longer starts with, and a prefix that fails to match is *not* refused: the
+  heading is taken for body and written into the block. Each open now takes a ticket
+  before it reads and cannot register over a newer one (`src/open.ts`). That rule lives
+  outside `activate` precisely so a cell can drive the interleaving the editor cannot be
+  made to produce.
+
+* **What a retry actually displayed.** The retry cells read the notice the command decided
+  on and returned. Whether it reached the screen, and whether the status bar was repainted,
+  is not observed: deleting the call that shows it would leave them passing.
 * **Nested-document visibility.** The tree does not mark a nested document, because the
   core's own handling of the shape is still being decided. The mark is read and carried;
   what the tree should draw for it is not settled.

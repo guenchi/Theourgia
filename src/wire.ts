@@ -17,11 +17,17 @@
 /*
  * The one place this extension turns bytes into data.
  *
- * THE READER IS NOT OURS. It is goeteia's rt/sexpr.mjs, vendored beside
- * this file and held to the golden fixture that igropyr's own writer
- * generated. A fourth implementation of one wire format is how two
- * implementations start disagreeing about what a datum is, and the
- * fixture is the only thing that would notice.
+ * THE READER IS NOT OURS. It is goeteia's `goeteia/sexpr`, taken as a
+ * published dependency and held to the golden tables that igropyr's own
+ * writer generated. A fourth implementation of one wire format is how
+ * two implementations start disagreeing about what a datum is, and the
+ * tables are the only thing that would notice.
+ *
+ * THE TABLES STAY IN THIS TREE even though the reader no longer does.
+ * The package does not ship them, and it should not: a reader checked
+ * against a table it carries itself is checked against nothing. They
+ * live under test/fixtures/goeteia and adjudicate whatever version of
+ * the dependency is installed.
  *
  * IT IS LOADED DYNAMICALLY BECAUSE IT IS AN ES MODULE and an extension
  * host loads this tree as CommonJS. `initWire` is called once during
@@ -36,8 +42,6 @@
  * split anything.
  */
 
-import * as path from 'path';
-import { pathToFileURL } from 'url';
 
 export type Datum = unknown;
 
@@ -80,8 +84,7 @@ export async function initWire(): Promise<SexprApi> {
     return api;
   }
   if (loading === null) {
-    const file = path.join(__dirname, 'vendor', 'goeteia', 'sexpr.mjs');
-    loading = dynamicImport(pathToFileURL(file).href).then((mod: unknown) => {
+    loading = dynamicImport('goeteia/sexpr').then((mod: unknown) => {
       api = mod as SexprApi;
       return api;
     });
