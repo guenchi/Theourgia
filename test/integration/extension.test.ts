@@ -100,6 +100,48 @@ describe('the extension inside an editor', function () {
     assert.deepStrictEqual(missing, [], 'these commands are in the palette and do nothing');
   });
 
+  /*
+   * THE RECOVERY COMMAND REACHES ITS HANDLER, AND CLOSING THE LIST DOES
+   * NOTHING AT ALL.
+   *
+   * The unit cells drive `chooseAndRecover` directly, which is what the
+   * registered handler calls in one line. What only a host can answer is
+   * whether the command exists, whether invoking it arrives there, and
+   * whether the editor's own quick pick -- the one part of this that
+   * cannot be exercised outside a host -- reports a dismissal as the
+   * flow expects.
+   *
+   * ⚠️ AND IT HAS TO DISMISS THE LIST. The first version of this cell
+   * assumed the host would have no other sessions and the flow would
+   * take its first exit. It does not: every earlier run of this suite
+   * left a session directory in the host's storage, so the list opens
+   * and waits on a person -- 180 seconds of it. A cell that waits on a
+   * person is a cell that reports a timeout.
+   */
+  it('runs the recovery command, and dismissing its list does nothing', async () => {
+    const running = vscode.commands.executeCommand('theourgia.otherSessions') as Promise<{
+      did: string;
+      because?: string;
+    }>;
+    await settle(1500);
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+    const outcome = await running;
+    assert.ok(outcome !== undefined, 'the command returned nothing, so it decided nothing');
+    assert.strictEqual(
+      outcome.did,
+      'nothing',
+      `dismissing the list acted on something: ${JSON.stringify(outcome)}`
+    );
+    /*
+     * ⚠️ WHAT THIS CELL DOES NOT ESTABLISH: that nothing moved on disk.
+     * It knows the command's answer and not the host's storage path, and
+     * inventing one would be asserting about a directory chosen by
+     * guesswork. The disk-level claim -- no claim token, no directory
+     * moved -- is made by the unit cells, which create the storage they
+     * then look at.
+     */
+  });
+
   it('opens a block into a markdown buffer holding its heading and body', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);

@@ -60,6 +60,11 @@ export const RECONCILE_BLOCK: CommandName = {
   title: 'theourgia: Reconcile Block'
 };
 
+export const OTHER_SESSIONS: CommandName = {
+  id: 'theourgia.otherSessions',
+  title: 'theourgia: Other Sessions'
+};
+
 /*
  * EVERY COMMAND, so that the cell which compares this with the manifest
  * can say "these two lists are the same" rather than checking the ones
@@ -71,5 +76,6 @@ export const COMMANDS: CommandName[] = [
   OPEN_BLOCK,
   RETRY_OUTBOX,
   SHOW_STATUS,
-  RECONCILE_BLOCK
+  RECONCILE_BLOCK,
+  OTHER_SESSIONS
 ];

@@ -55,6 +55,10 @@
       {
         "command": "theourgia.reconcileBlock",
         "title": "theourgia: Reconcile Block"
+      },
+      {
+        "command": "theourgia.otherSessions",
+        "title": "theourgia: Other Sessions"
       }
     ],
     "menus": {

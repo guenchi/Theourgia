@@ -48,7 +48,7 @@ export interface SuiteLike {
  * editor-hosted suite reports.
  */
 export const EDITOR_CELLS: Array<[string, number]> = [
-  ['extension.test.js', 14],
+  ['extension.test.js', 15],
   ['generation.test.js', 3]
 ];
 

@@ -579,6 +579,102 @@ export function undecidableSessionNotice(
 }
 
 /*
+ * WHAT THE RECOVERY COMMAND SAYS. Every one of these is here rather than
+ * where it is displayed, for the reason the rest of this file exists: a
+ * line composed at the call to the editor is a line no cell can read,
+ * and these are the lines a user acts on.
+ */
+export function noOtherSessionsNotice(): Notice {
+  return {
+    level: 'information',
+    text:
+      'No other window has left anything here. Unsent work from a window that stopped would be ' +
+      'listed by this command; there is none.'
+  };
+}
+
+/*
+ * A TAKEOVER OR A DISCARD THAT WAS TURNED AWAY, BY NAME. Every one of
+ * these reasons is a decision somebody can act on, and "it did not work"
+ * is not.
+ */
+export function refusedTakeoverNotice(
+  sessionId: string,
+  action: 'take-over' | 'force-take-over' | 'discard',
+  because: string
+): Notice {
+  const what = action === 'discard' ? 'discarded' : 'taken over';
+  if (because === 'session-alive') {
+    return {
+      level: 'warning',
+      text: `${sessionId} was not ${what}: that window is still running.`
+    };
+  }
+  if (because === 'already-claimed') {
+    return {
+      level: 'warning',
+      text:
+        `${sessionId} was not ${what}: another window has already taken it over and is still ` +
+        'running. Its work is not lost; it is being sent from there.'
+    };
+  }
+  if (because === 'not-found') {
+    return {
+      level: 'information',
+      text: `${sessionId} was not ${what}: there is nothing of it on this disk any more.`
+    };
+  }
+  return {
+    level: 'warning',
+    text:
+      `${sessionId} was not ${what}: this window cannot tell whether it is still running, and ` +
+      'nothing is taken from a window that might be.'
+  };
+}
+
+/*
+ * WHAT A TAKEOVER MOVED. `skipped` is not a failure: an entry already in
+ * this window's queue is one an earlier takeover carried, and copying it
+ * again would send it twice.
+ */
+export function adoptedNotice(
+  sessionId: string,
+  imported: number,
+  skipped: number,
+  nowhereToPutThem: boolean
+): Notice {
+  if (nowhereToPutThem) {
+    return {
+      level: 'warning',
+      text:
+        `${sessionId} was taken over, and nothing could be moved into this window because no ` +
+        'store is configured here. Set theourgia.store and run the command again.'
+    };
+  }
+  const also = skipped === 0 ? '' : ` ${skipped} were already here and were left alone.`;
+  return {
+    level: 'information',
+    text: `${sessionId} was taken over: ${imported} unsent request(s) moved into this window.${also}`
+  };
+}
+
+/*
+ * AND WHERE THE DISCARDED FILES WENT. The path is in the sentence
+ * because "moved aside" without a destination is indistinguishable from
+ * "deleted" to the person reading it.
+ */
+export function discardedNotice(sessionId: string, trash: string, liveAdopters: string[]): Notice {
+  const open =
+    liveAdopters.length === 0
+      ? ''
+      : ` ${liveAdopters.length} other window(s) still have documents open in it.`;
+  return {
+    level: 'information',
+    text: `${sessionId} was moved to ${trash}. Nothing was deleted.${open}`
+  };
+}
+
+/*
  * WHEN THE STORE ANSWERED AND THE RECORD COULD NOT BE WRITTEN.
  *
  * The request stays in the queue, which is the safe direction -- it can

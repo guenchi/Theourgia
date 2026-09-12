@@ -34,14 +34,17 @@ import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
 import { Outbox, OutboxEntry } from './outbox';
+import { ImportTarget } from './sessions';
 import { activateCore } from './activate';
 import {
   OPEN_BLOCK,
+  OTHER_SESSIONS,
   RECONCILE_BLOCK,
   REFRESH_OUTLINE,
   RETRY_OUTBOX,
   SHOW_STATUS
 } from './commands';
+import { Choice, Chooser, chooseAndRecover } from './recovery';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -756,6 +759,57 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * must not happen is a save that quietly does nothing, because that is
    * indistinguishable from one that worked. (§12.19.4, §12.17.3)
    */
+  /*
+   * THE EDITOR, REDUCED TO THE THREE THINGS THE RECOVERY FLOW NEEDS.
+   * This object is the only part of that flow which cannot be exercised
+   * outside a host, which is why it holds no decision at all: it shows
+   * what it is given and reports what came back.
+   */
+  const editorChooser: Chooser = {
+    async pick<T>(items: Array<Choice<T>>, placeHolder: string): Promise<T | undefined> {
+      const picked = await vscode.window.showQuickPick(
+        items.map((item) => ({
+          label: item.label,
+          description: item.description,
+          detail: item.detail,
+          value: item.value
+        })),
+        { placeHolder }
+      );
+      return picked?.value;
+    },
+    async confirm(text: string, confirmation: string): Promise<boolean> {
+      /*
+       * MODAL, because this is the one question in the extension whose
+       * answer moves somebody's files or sends their requests again. A
+       * notification that can be missed is not a confirmation.
+       */
+      const answer = await vscode.window.showWarningMessage(
+        text,
+        { modal: true },
+        confirmation
+      );
+      return answer === confirmation;
+    },
+    say: show
+  };
+
+  /*
+   * WHERE A TAKEOVER'S ENTRIES GO. Null when no store is configured:
+   * there is then no queue of this window's own to put them in, and the
+   * flow says so rather than dropping them.
+   */
+  function adoptingInto(): ImportTarget | null {
+    const queue = outbox;
+    if (queue === null) {
+      return null;
+    }
+    return {
+      has: (req: string) => queue.find(req) !== undefined,
+      adopt: (entry) => queue.enqueue(entry)
+    };
+  }
+
   async function onSaved(saved: vscode.TextDocument): Promise<void> {
     const file = saved.uri.fsPath;
     const sidecar = publisher.sidecarOf(file);
@@ -826,6 +880,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     vscode.commands.registerCommand(OPEN_BLOCK.id, openBlock),
     vscode.commands.registerCommand(RECONCILE_BLOCK.id, reconcileBlock),
+    /*
+     * ⚠️ THE HANDLER IS ONE LINE ON PURPOSE. Everything this command
+     * decides -- which windows to list, what may be done to one, what
+     * the user is told it costs -- is in src/recovery.ts, where a cell
+     * can drive it. A handler that made any of those decisions here
+     * would be making them where nothing can look.
+     */
+    vscode.commands.registerCommand(OTHER_SESSIONS.id, () =>
+      chooseAndRecover(sessions, editorChooser, adoptingInto())
+    ),
     /*
      * THE SAVER THAT RAN IS THE SAVER THAT IS REPORTED. `saver` is
      * rebuilt whenever the settings change, and a retry is an await --
