@@ -85,7 +85,7 @@ function digestOf(text: string): string {
 export function writeDocument(file: string, document: BlockDocument): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, document.text, 'utf8');
-  markCommitted(file);
+  markCommitted(file, document.text);
 }
 
 /*
@@ -93,10 +93,24 @@ export function writeDocument(file: string, document: BlockDocument): void {
  * it has just been written from the store, and after a save the core
  * confirmed. Never after one it refused.
  */
-export function markCommitted(file: string): void {
+/*
+ * THE TEXT THAT WAS CONFIRMED, NOT THE TEXT THAT IS THERE NOW.
+ *
+ * Reading the file here asked the wrong question. A save is an await,
+ * and a second save can write the buffer to disk while the first is
+ * still in flight: the first one's answer then marked the SECOND one's
+ * bytes as being in the store. The file looked clean and committed
+ * while holding text the store had never seen, so the next open
+ * overwrote it -- work lost with nothing refused and nothing reported.
+ *
+ * The caller knows what it sent, so it passes it. When the bytes on
+ * disk are something else, the digests disagree, `hasUncommittedWork`
+ * answers true, and the file is left alone -- which is the safe
+ * direction and the one this marker exists to take.
+ */
+export function markCommitted(file: string, committed: string): void {
   try {
-    const text = fs.readFileSync(file, 'utf8');
-    fs.writeFileSync(markerFor(file), `${digestOf(text)}\n`, 'utf8');
+    fs.writeFileSync(markerFor(file), `${digestOf(committed)}\n`, 'utf8');
   } catch (e) {
     /*
      * The marker is an optimisation in one direction only: without it

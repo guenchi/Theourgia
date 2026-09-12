@@ -215,6 +215,21 @@ exists and proves less than its name suggests, or where no cell exists at all.
   outside `activate` precisely so a cell can drive the interleaving the editor cannot be
   made to produce.
 
+* **The wiring between `openBlock` and the baseline registry.** `src/open.ts` decides which
+  reading of a block a save is measured against, and its cells drive that rule directly —
+  they are the only guard on it, because the interleavings it exists for cannot be produced
+  through the editor's API. What they do not cover is the *call*: the main path passes its
+  file write as the registry's commit step so that a failed write records no baseline, and
+  moving that write back outside the call would leave every cell in `open.test.ts` green.
+  Inducing a failing write inside the extension host would need the extension's own storage
+  path, which it does not expose.
+
+  That gap is not hypothetical. When `register` was changed to return which kind of event
+  outranked a refusal, the call site's `if (!admission)` kept compiling and stopped firing —
+  every one of those answers is a non-empty string — so a losing open would have gone on
+  writing the file. Replacing the comparison with that truthiness test again leaves all 17
+  editor-hosted cells green. It was caught by reading, which is the only thing guarding it.
+
 * **What a retry actually displayed.** The retry cells read the notice the command decided
   on and returned. Whether it reached the screen, and whether the status bar was repainted,
   is not observed: deleting the call that shows it would leave them passing.

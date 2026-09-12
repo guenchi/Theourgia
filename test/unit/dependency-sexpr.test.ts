@@ -34,6 +34,7 @@ import * as assert from 'assert';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 import { READER, SexprApi, initWire } from '../../src/wire';
 
 /*
@@ -50,6 +51,15 @@ const PINNED_GOETEIA = '1.7.2';
  * this says what the loader actually resolves and reads.
  */
 const READER_DIGEST = '45ed90f1b7c56de5d15e8fbbe6c3afc5';
+
+/*
+ * The compiler rewrites a literal `import()` into `require()` when it
+ * emits CommonJS, and require cannot load an ES module here. The product
+ * builds its import the same way and for the same reason.
+ */
+const dynamicImport = new Function('specifier', 'return import(specifier);') as (
+  specifier: string
+) => Promise<unknown>;
 
 interface ReadProbe {
   name: string;
@@ -313,12 +323,12 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
     const encoder = new TextEncoder();
     for (const row of table.symbols) {
       /*
-       * THE ONE ROW THIS READER DOES NOT AGREE WITH THE TABLE ABOUT,
-       * and it agrees with the store. `\x31;` is the symbol whose name
-       * is `1`, escaped so it is not read as the number, and the table
-       * records it as accepted -- its note calls it the discriminating
-       * partner of the rows that ARE refused, on the ground that "a
-       * reader that refused both is too narrow".
+       * THE ONE ROW THIS READER DOES NOT AGREE WITH, AND THE STORE
+       * DOES. `\x31;` is the symbol whose name is `1`, escaped so it is
+       * not read as the number, and the table records it as accepted --
+       * its note calls it the discriminating partner of the rows that
+       * ARE refused, on the ground that "a reader that refused both is
+       * too narrow".
        *
        * AND THE STORE AT THIS PIN SIDES WITH THE TABLE, WHICH WAS
        * MEASURED RATHER THAN ASSUMED. The core's wire-safety predicate
@@ -332,11 +342,12 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
        * store the thing that refuses. Both were written without
        * measuring.
        *
-       * IT DOES NOT REACH THIS EXTENSION. The core's write predicate
-       * refuses numeric-form names, so no such symbol is produced into
-       * a store; if one arrived anyway the client turns the refusal into
-       * a transport error that names the block, which is pinned by its
-       * own cell rather than left to be discovered.
+       * IT DOES REACH THIS EXTENSION, and that is pinned by a cell that
+       * builds the state with the store itself: `link <a> 1 <b>`, then
+       * a read that fails and names the block. This paragraph said the
+       * opposite until the measurement above was made; it is left
+       * rewritten rather than deleted because the claim it made is the
+       * one a reader would otherwise make again.
        */
       if (row.want.includes('SYMBOL 1')) {
         assert.throws(
@@ -452,6 +463,28 @@ describe('the goeteia reader this build depends on is the one the tables adjudic
    * the same way the product resolves it, and the file that comes back
    * is digested.
    */
+  /*
+   * AND THE MODULE THAT `initWire` ACTUALLY RETURNED IS THAT FILE.
+   *
+   * The cell below digests the file the specifier resolves to, which is
+   * a claim about the specifier and not about the loader: leaving the
+   * exported name alone while pointing the import itself somewhere else
+   * left every cell in this file passing. Node returns one module
+   * instance per resolved URL, so importing the pinned path here and
+   * comparing identity with what the product loaded settles it -- and
+   * it settles it for a byte-identical copy too, which a digest cannot.
+   */
+  it('loaded that module and not another copy of it', async () => {
+    const pinned = (await dynamicImport(
+      pathToFileURL(require.resolve(READER)).href
+    )) as SexprApi;
+    assert.strictEqual(
+      sexpr.read,
+      pinned.read,
+      'the reader in use is not the module the pinned specifier resolves to'
+    );
+  });
+
   it('loads the reader the specifier resolves to, byte for byte', () => {
     /*
      * THE SPECIFIER COMES FROM THE PRODUCT. Writing it out here again

@@ -17,11 +17,11 @@
 /*
  * A transport that answers with bytes the cell chooses.
  *
- * IT EXISTS FOR ANSWERS NO CORE WILL PRODUCE. Some shapes have to be
- * read back even though the store's own write predicate refuses to
- * create them -- a datum that arrived from an older store, or from a
- * peer that is not this core. A stand-in core is still a program being
- * asked to write them; this is the bytes themselves.
+ * IT EXISTS FOR ANSWERS THE BYTES ARE EASIER TO STATE THAN TO CAUSE.
+ * Some shapes take a store and several verbs to produce, and a cell
+ * that only wants to know what this client does with the bytes should
+ * not have to build one. Where the shape's REACHABILITY is the point,
+ * a real store is used instead and this is not a substitute for it.
  */
 
 import { RawResult, Transport } from '../../src/transport';

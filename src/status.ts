@@ -241,3 +241,52 @@ export function retryNotice(
     text: `${resolved} of ${total} resolved for ${store}; ${waiting}.`
   };
 }
+
+/*
+ * A BUFFER WHOSE BASELINE THIS HOST DOES NOT HAVE.
+ *
+ * Saving sends the BODY, which means separating body from front matter
+ * and heading -- and that separation is made against the text the store
+ * last gave for this block. A file that already held changes when it
+ * was opened, written by an older run or by another window, was not
+ * written from anything this host saw: there is no text to measure it
+ * against.
+ *
+ * GUESSING ONE IS THE DANGEROUS ANSWER. Using the reading just taken
+ * from the store splits the user's text against a prefix it never had,
+ * and when that prefix is empty the mismatch is not refused -- the
+ * heading becomes body and is written into the block. So the save is
+ * refused, and the sentence has to say what to do, because refusing
+ * without that leaves the user with a buffer that silently never saves.
+ */
+export function unreconciledNotice(id: string, file: string): Notice {
+  return {
+    level: 'error',
+    text:
+      `${id} was not opened from the store, because ${file} already held changes this ` +
+      'window did not write. Nothing can be sent from it: there is no version to measure ' +
+      'the edit against. Copy anything you want to keep out of that file, delete it, and ' +
+      'open the block again.'
+  };
+}
+
+/*
+ * AN OPEN THAT WAS OVERTAKEN BY A SAVE.
+ *
+ * The rule that decides which reading of a block a save is measured
+ * against admits a confirmed save ahead of every read that began before
+ * it. That is a conservative policy rather than a claim about which is
+ * fresher: a read that started earlier may still have sampled the store
+ * after the save landed, and this refuses it anyway. Refusing is the
+ * safe direction -- nothing is overwritten -- but it leaves the user
+ * without the block they asked for, and a click that does nothing at
+ * all is the one outcome they cannot act on.
+ */
+export function supersededNotice(id: string): Notice {
+  return {
+    level: 'information',
+    text:
+      `${id} was not opened: a save of it was confirmed while it was being read, so what ` +
+      'came back was already out of date. Open it again to get the stored version.'
+  };
+}

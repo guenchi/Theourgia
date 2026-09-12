@@ -76,8 +76,28 @@ describe('a file that is clean may still hold work the store has not got', () =>
     writeDocument(file, document('a.2', 'body\n'));
     fs.writeFileSync(file, '## Two\nedited and accepted\n', 'utf8');
     assert.strictEqual(hasUncommittedWork(file), true);
-    markCommitted(file);
+    markCommitted(file, '## Two\nedited and accepted\n');
     assert.strictEqual(hasUncommittedWork(file), false);
+  });
+
+  /*
+   * THE MARKER RECORDS WHAT THE STORE CONFIRMED, NOT WHAT THE FILE
+   * HOLDS. A save is an await, and a second save can write the buffer to
+   * disk while the first is still in flight. Marking the file's current
+   * bytes credited the second save's text to the first save's answer:
+   * the file then read as clean and committed while holding text the
+   * store had never seen, and the next open overwrote it.
+   */
+  it('does not mark bytes the store never saw as committed', () => {
+    const file = path.join(scratch(), 'a.md');
+    writeDocument(file, document('a.2', 'first\n'));
+    fs.writeFileSync(file, '## Two\nsecond\n', 'utf8');
+    markCommitted(file, '## Two\nfirst\n');
+    assert.strictEqual(
+      hasUncommittedWork(file),
+      true,
+      'a later edit was marked as being in the store because an earlier save was answered'
+    );
   });
 
   it('treats a file it has no record of as holding work', () => {

@@ -44,7 +44,35 @@
 export interface Registered<T> {
   value: T;
   ticket: number;
+  /*
+   * WHICH KIND OF EVENT PUT IT THERE. A registration refused because a
+   * newer READ won needs no explanation: that read is on the screen. One
+   * refused because a SAVE was confirmed leaves nothing in its place, so
+   * the person who asked for the block has to be told why they did not
+   * get it.
+   */
+  from: Outcome;
 }
+
+export type Outcome = 'read' | 'save';
+
+/*
+ * WHETHER THIS REGISTRATION BECAME THE BASELINE, and if not, which kind
+ * of event outranked it -- the answer to a refusal differs, because one
+ * of them is already on the user's screen and the other left nothing in
+ * its place.
+ *
+ * IT IS AN OBJECT SO THAT A TRUTH TEST CANNOT COMPILE INTO A LIE. This
+ * was three strings for one round, and the call site's surviving
+ * `if (!admission)` went on compiling while never once being true --
+ * every one of those answers is a non-empty string, so a losing open
+ * carried on writing the file, and the whole editor-hosted suite stayed
+ * green. A shape whose falsy reading is `admission.admitted` puts that
+ * mistake back where the compiler can see it.
+ */
+export type Admission =
+  | { admitted: true }
+  | { admitted: false; by: Outcome };
 
 export class OpenBuffers<T> {
   private readonly held = new Map<string, Registered<T>>();
@@ -77,16 +105,16 @@ export class OpenBuffers<T> {
    * nothing, and nothing can interleave between the two: `commit` is
    * synchronous and so is this.
    */
-  public register(file: string, value: T, ticket: number, commit?: () => void): boolean {
+  public register(file: string, value: T, ticket: number, commit?: () => void): Admission {
     const held = this.held.get(file);
     if (held !== undefined && held.ticket > ticket) {
-      return false;
+      return { admitted: false, by: held.from };
     }
     if (commit !== undefined) {
       commit();
     }
-    this.held.set(file, { value, ticket });
-    return true;
+    this.held.set(file, { value, ticket, from: 'read' });
+    return { admitted: true };
   }
 
   public get(file: string): T | undefined {
@@ -100,6 +128,14 @@ export class OpenBuffers<T> {
    * ticket -- the highest -- and every open that started earlier is
    * refused when it arrives.
    *
+   * THE COST OF THIS RULE IS STATED RATHER THAN HIDDEN. It is an
+   * admission policy, not a claim about which reading is fresher: a read
+   * that began before a save was confirmed may still have sampled the
+   * store after it, and this refuses that genuinely newer reading. The
+   * refusal is safe -- nothing is overwritten -- but it leaves the user
+   * without the block they asked for, so the refusal says which kind of
+   * event outranked it and the caller tells them to ask again.
+   *
    * AN EARLIER VERSION KEPT THE TICKET THAT WAS ALREADY THERE, on the
    * reasoning that a save reorders nothing. It admitted two sequences.
    * One: a save captures the baseline, a newer open replaces it, and the
@@ -112,6 +148,6 @@ export class OpenBuffers<T> {
    * that began before it.
    */
   public confirmed(file: string, value: T): void {
-    this.held.set(file, { value, ticket: this.claim() });
+    this.held.set(file, { value, ticket: this.claim(), from: 'save' });
   }
 }

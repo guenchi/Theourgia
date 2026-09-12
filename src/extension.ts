@@ -26,6 +26,7 @@
  * put it out of reach too.
  */
 
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { BlockDocument, documentFor, splitDocument } from './blocks';
 import { Client } from './client';
@@ -42,6 +43,8 @@ import {
   nodeTooltip,
   retryNotice,
   saveNotice,
+  supersededNotice,
+  unreconciledNotice,
   statusLine,
   wrongStoreNotice
 } from './status';
@@ -193,6 +196,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const storage = context.globalStorageUri.fsPath;
   const open = new OpenBuffers<BlockDocument>();
+  /*
+   * FILES THIS HOST CANNOT MEASURE A SAVE AGAINST. See the branch in
+   * `openBlock` that finds work it did not write.
+   */
+  const unreconciled = new Set<string>();
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = 'theourgia.showStatus';
   /*
@@ -419,13 +427,27 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await vscode.languages.setTextDocumentLanguage(existing, 'markdown');
       await vscode.window.showTextDocument(existing, { preview: false });
       /*
-       * A NEWER READING MAY HAVE LANDED DURING THOSE THREE WAITS, and it
-       * is the one the buffer was written from. Replacing it with this
-       * older one gives the save path a prefix the buffer no longer
-       * starts with, and a heading that fails to match is not refused --
-       * it is treated as body and written into the block.
+       * THE BASELINE THAT BELONGS TO THESE BYTES, OR NONE AT ALL.
+       *
+       * This branch deliberately keeps the file it found, so the reading
+       * just taken from the store describes bytes that are NOT on disk.
+       * Installing it made the save path split the user's text against a
+       * prefix it never had -- and when the store's prefix is empty, a
+       * mismatch is not refused: the heading is taken for body and sent.
+       *
+       * If this host already holds a baseline for the file, that is the
+       * one the file was written from, and it stays. If it does not --
+       * a restart, another window, a file this version did not write --
+       * then nothing here knows what these bytes were based on, and
+       * there is no honest baseline to install. Saying so is the only
+       * safe answer: guessing one sends the wrong bytes, and installing
+       * none silently would make every save from this buffer vanish
+       * without a word.
        */
-      if (!open.register(file, document, ticket)) {
+      const held = open.get(file);
+      if (held === undefined) {
+        unreconciled.add(file);
+        show(unreconciledNotice(id, file));
         return;
       }
       vscode.window.showWarningMessage(
@@ -443,9 +465,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * least visible, but it is still the wrong text in front of the
      * user.
      */
-    if (!open.register(file, document, ticket, () => writeDocument(file, document))) {
+    /*
+     * COMPARED TO `taken`, NOT TESTED FOR TRUTH. This returns which kind
+     * of event outranked the registration, and every one of those
+     * answers is a non-empty string: `!admission` was false for all of
+     * them, so a losing open went on writing the file. The compiler
+     * accepts that expression, which is why it is written out.
+     */
+    const admission = open.register(file, document, ticket, () =>
+      writeDocument(file, document)
+    );
+    if (admission !== 'taken') {
+      /*
+       * A READ THAT WON IS ALREADY ON THE SCREEN; a save that won left
+       * nothing in its place, and the person who asked for this block
+       * would otherwise see their click do nothing at all.
+       */
+      if (admission === 'superseded-by-save') {
+        show(supersededNotice(id));
+      }
       return;
     }
+    /*
+     * THIS FILE NOW CAME FROM THE STORE, so whatever could not be
+     * reconciled about it before no longer applies.
+     */
+    unreconciled.delete(file);
     const opened = await vscode.workspace.openTextDocument(uri);
     await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
     await vscode.window.showTextDocument(opened, { preview: false });
@@ -453,6 +498,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   async function onSaved(saved: vscode.TextDocument): Promise<void> {
     const file = saved.uri.fsPath;
+    /*
+     * A BUFFER NOBODY CAN MEASURE IS NOT SAVED SILENTLY. Returning here
+     * without a word is what this used to do for any file with no
+     * baseline, which is the same "nothing happened" a successful save
+     * looks like.
+     */
+    if (unreconciled.has(file)) {
+      show(unreconciledNotice(open.get(file)?.id ?? path.basename(file), file));
+      return;
+    }
     const document = open.get(file);
     if (document === undefined || saver === null) {
       return;
@@ -490,7 +545,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * no longer matches the prefix -- an ordinary body edit refused
        * for a change nobody made.
        */
-      open.confirmed(file, { ...document, src: split.src, text: document.prefix + split.src });
+      const stored = { ...document, src: split.src, text: document.prefix + split.src };
+      open.confirmed(file, stored);
       /*
        * THE FILE AS IT STANDS IS NOW IN THE STORE, so the next time this
        * block is opened it may be taken from the store again. This is
@@ -498,7 +554,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * both leave the marker where it was, which is what keeps the file
        * from being overwritten.
        */
-      markCommitted(file);
+      /*
+       * MARKED WITH WHAT WAS SENT. Marking whatever the file holds at
+       * this moment credited a later save's bytes to this one's answer.
+       */
+      markCommitted(file, stored.text);
     }
     show(saveNotice(outcome, split.normalised));
     paint();
