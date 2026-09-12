@@ -32,6 +32,7 @@
 import { RECONCILE_BLOCK, RETRY_OUTBOX } from './commands';
 import { TakeoverLedger } from './sessions';
 import { StructuralMark } from './model';
+import { Unrecorded } from './saving';
 
 export interface StatusFacts {
   store: string;
@@ -78,12 +79,16 @@ export function statusLine(facts: StatusFacts): StatusLine {
     facts.conflicts === null
       ? 'conflicts: unknown, the store could not be asked'
       : facts.conflicts > 0
-        ? `${facts.conflicts} conflict(s) reported by the store`
+        ? say(facts.conflicts, '1 conflict reported by the store', `${facts.conflicts} conflicts reported by the store`)
         : 'no conflicts',
     facts.pending === null
       ? 'the outbox could not be read, so no save will be sent and what it holds is not known'
       : facts.pending > 0
-        ? `${facts.pending} save(s) whose outcome is unknown; run "${RETRY_OUTBOX.title}"`
+        ? say(
+            facts.pending,
+            `1 save whose outcome is unknown; run "${RETRY_OUTBOX.title}"`,
+            `${facts.pending} saves whose outcome is unknown; run "${RETRY_OUTBOX.title}"`
+          )
         : 'nothing waiting to be saved',
     ...(facts.blocked === null ? [] : [`writing is blocked: ${facts.blocked}`])
   ].join('\n');
@@ -507,10 +512,16 @@ export function forceClaimNotice(sessionId: string, pending: number): Notice {
     level: 'warning',
     text:
       `${sessionId} left no record saying which process it was, so this window cannot tell ` +
-      `whether it is still running. It holds ${pending} unsent request(s). Taking it over anyway ` +
-      'is safe to attempt: if that window is in fact still running, each of those requests reaches ' +
-      'the store twice, and the store recognises the second by its request id and answers "already ' +
-      'applied" rather than doing the work again. What it costs is the sending, not the change.'
+      `whether it is still running. It holds ` +
+      say(pending, '1 unsent request', `${pending} unsent requests`) +
+      '. Taking it over anyway is safe to attempt: if that window is in fact still running, ' +
+      say(
+        pending,
+        'that request reaches the store twice',
+        'each of those requests reaches the store twice'
+      ) +
+      ', and the store recognises the second by its request id and answers "already applied" ' +
+      'rather than doing the work again. What it costs is the sending, not the change.'
   };
 }
 
@@ -879,8 +890,21 @@ export function adoptedNotice(
      * and the sentence would have been false about exactly the user
      * whose queue is already in trouble. Found in review.
      */
+    /*
+     * ⚠️ AND THE SAVE'S ATTEMPT IS CONDITIONAL, SO THE COMMAND GOES
+     * FIRST. "The next save will try this window's queue" was still more
+     * than `save` does: it calls `ensureCursor` before it drains, and a
+     * store it cannot reach makes it answer `blocked` without offering
+     * the queue a single request -- while `retry` goes straight at the
+     * queue. So the sentence recommends the route that works, and says
+     * what the other one depends on instead of leaving the reader to
+     * find out. Reproduced in review against the real Saver. Found in
+     * review.
+     */
     parts.push(
-      `The next save will try this window's queue, or run "${RETRY_OUTBOX.title}" to try it now.`
+      `Run "${RETRY_OUTBOX.title}" to try this window's queue now. The next save tries it too, ` +
+        'but only after reaching the store, so a store that cannot be reached leaves the queue ' +
+        'untouched.'
     );
   }
   /*
@@ -901,11 +925,41 @@ export function adoptedNotice(
  * because "moved aside" without a destination is indistinguishable from
  * "deleted" to the person reading it.
  */
+/*
+ * ⚠️ THE STORE CHANGED WHILE THE USER WAS DECIDING.
+ *
+ * The takeover was set up against the queue this window had when the
+ * command started, and by the time it held that queue the window was
+ * writing somewhere else. Nothing was moved, and the sentence says all
+ * three things the user needs: that nothing happened, why, and that the
+ * way forward is to run the command again -- which is true because the
+ * claim is re-enterable by the window holding it.
+ *
+ * IT DOES NOT SAY "TRY AGAIN" AND STOP THERE. A second run against the
+ * new store is not a repeat of the first: it surveys the new store, and
+ * the entries that were declined here are reported as another store's,
+ * still waiting, in that bucket's own sentence.
+ */
+export function storeChangedNotice(sessionId: string): Notice {
+  return {
+    level: 'warning',
+    text:
+      `${sessionId} was not taken over: the store this window writes to changed while you were ` +
+      'deciding, so nothing was moved and nothing was lost. Run the command again to take it ' +
+      'over for the store that is configured now.'
+  };
+}
+
 export function discardedNotice(sessionId: string, trash: string, liveAdopters: string[]): Notice {
   const open =
     liveAdopters.length === 0
       ? ''
-      : ` ${liveAdopters.length} other window(s) still have documents open in it.`;
+      : ' ' +
+        say(
+          liveAdopters.length,
+          '1 other window still has documents open in it.',
+          `${liveAdopters.length} other windows still have documents open in it.`
+        );
   return {
     level: 'information',
     text: `${sessionId} was moved to ${trash}. Nothing was deleted.${open}`
@@ -920,10 +974,7 @@ export function discardedNotice(sessionId: string, trash: string, liveAdopters: 
  * know that the file beside it does not yet say so, because until it
  * does the block will keep being reported as holding unsent work.
  */
-export function unrecordedNotice(
-  file: string,
-  because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed'
-): Notice {
+export function unrecordedNotice(file: string, because: Unrecorded): Notice {
   if (because === 'split-changed') {
     /*
      * ⚠️ NOT "THE HEADING CHANGED". The record can stop producing what

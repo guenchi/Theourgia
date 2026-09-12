@@ -33,7 +33,7 @@ import { documentFor } from './blocks';
 import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
-import { Outbox, OutboxEntry } from './outbox';
+import { Outbox } from './outbox';
 import { activateCore } from './activate';
 import {
   OPEN_BLOCK,
@@ -43,7 +43,8 @@ import {
   RETRY_OUTBOX,
   SHOW_STATUS
 } from './commands';
-import { Choice, Chooser, Destination, chooseAndRecover } from './recovery';
+import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
+import { settlerFor } from './settling';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -368,60 +369,58 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * does not, this answers `undefined` and the old behaviour stands --
      * which is right, because then the file really has moved on.
      */
-    const recovered = (
-      entry: OutboxEntry
-    ): { blockId: string; file: string; rawDigest: string; sentDigest: string } | undefined => {
-      const directory = sessions.directoryFor(sessionId, storeHash(config.store), entry.id);
-      const file = publisher.latestIn(directory);
-      if (file === null) {
-        return undefined;
-      }
-      const digests = saving.recognise(file, entry.payload);
-      return digests === null ? undefined : { blockId: entry.id, file, ...digests };
-    };
-
-    saver = new Saver(client, outbox, (req, cursor) => {
-      const queue = outbox;
-      if (queue === null) {
-        return;
-      }
-      const entry = queue.find(req);
-      const context =
-        entry === undefined ? undefined : pendingSaves.get(entry.id) ?? recovered(entry);
-      if (context === undefined) {
-        /*
-         * NOTHING IN MEMORY AND NOTHING ON DISK SAYS WHICH VERSION THIS
-         * ANSWER IS ABOUT. `recovered` has already looked: the block's
-         * newest version does not hold the body this request sent, so
-         * the user has edited since and the file is a draft, correctly.
-         * The entry is released because the store HAS answered it.
-         * (§12.17.4)
-         */
-        queue.resolve(req, cursor);
-        return;
-      }
-      const recorded = saving.recordAnswer(
-        context.file,
-        {
-          req,
-          cursor: cursor ?? '',
-          rawDigest: context.rawDigest,
-          sentDigest: context.sentDigest,
-          mismatch: false
-        },
-        () => queue.resolve(req, cursor)
-      );
-      if (!recorded.dequeued) {
-        /*
-         * THE ENTRY STAYS. Whatever stopped the record from being
-         * written -- the bytes moved, the file has no record, the answer
-         * is older than one already there -- leaves the request
-         * retryable rather than lost.
-         */
-        show(unrecordedNotice(context.file, recorded.because));
-      }
-      pendingSaves.delete(context.blockId);
-    });
+    /*
+     * ⚠️ THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here.
+     *
+     * The settler below read the module's `outbox` and `config.store`
+     * -- the LIVE ones -- so an answer arriving after the settings
+     * changed was settled against the queue that had replaced this
+     * one. `Outbox.resolve` filters by request id and then writes the
+     * cursor unconditionally: the other store's queue kept its own
+     * entries, took THIS store's cursor, and committed it, while the
+     * request that was actually answered stayed pending in the queue
+     * nobody was looking at any more. Reproduced in the editor suite:
+     * `store A's cursor was painted under store B`. Found in review.
+     *
+     * A Saver belongs to one queue for its whole life -- that is what
+     * `serialise` keys on -- so the settler belongs to that queue too,
+     * and to the store whose directory its blocks are under.
+     */
+    /*
+     * ⚠️ THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here and
+     * handed to the settler.
+     *
+     * The settler read the module's `outbox` and `config.store` -- the
+     * LIVE ones -- so an answer arriving after the settings changed was
+     * settled against the queue that had replaced this one. That queue
+     * kept its own entries, took THIS store's cursor and committed it,
+     * while the request that was actually answered stayed pending in the
+     * queue nobody was looking at any more. Reproduced in the editor
+     * suite: `store A's cursor was painted under store B`.
+     *
+     * A Saver belongs to one queue for its whole life -- that is what
+     * `serialise` keys on -- so the settler belongs to that queue too,
+     * and to the store whose directory its blocks are under. What
+     * decides all of that is in `src/settling.ts`, where a cell can
+     * drive it; this is the wiring and nothing else.
+     */
+    const own = outbox;
+    const ownStore = storeHash(config.store);
+    saver = new Saver(
+      client,
+      own,
+      settlerFor({
+        queue: own,
+        storeHash: ownStore,
+        sessionId,
+        pendingSaves,
+        sessions,
+        publisher,
+        saving,
+        report: show,
+        unrecorded: unrecordedNotice
+      })
+    );
     provider.use(model);
     paint();
   }
@@ -526,11 +525,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      *
      * WHAT STILL PROTECTS THE USER is not a check here but the store
      * recorded ON the buffer: a document opened from one store carries
-     * that store's path, and a save into a differently configured store
-     * is refused by name. If the settings change during one of the waits
-     * below, a buffer from the old store is shown -- the wrong answer to
-     * what the user last asked, and nothing worse. Do not add a check
-     * back without a cell that fails when it is removed.
+     * that store's path.
+     *
+     * ⚠️ AND THE SENTENCE THAT USED TO FOLLOW IS NOT VERIFIED. It said
+     * "a save into a differently configured store is refused by name",
+     * which is what makes showing a buffer from the store the user has
+     * left merely the wrong answer to their last question rather than a
+     * way to write into the wrong place. Asked for the cell that holds
+     * that up, this batch could not find one: `sidecarOf` reads the
+     * `.meta` beside the file and decides nothing about which store is
+     * configured. The claim is left here as a claim, marked, rather than
+     * stated as a fact -- the guard, if it exists, would be on the save
+     * path where the sidecar's directory is compared with the configured
+     * store, and if it does not exist that is a defect on the outline
+     * and editor surface. First item of the next batch.
+     *
+     * Do not add a check back here without a cell that fails when it is
+     * removed.
      */
     if (asked !== generation) {
       vscode.window.showWarningMessage(
@@ -804,15 +815,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * that file, and a save answering in the middle of it wrote its own
    * copy back over the imported entries.
    */
+  /*
+   * ⚠️ AND THE DECISION CARRIES THE GENERATION IT WAS MADE IN.
+   *
+   * This function runs when the command starts; the pickers after it are
+   * awaits, and `rebuild` replaces `saver` and bumps `generation` the
+   * moment theourgia.store changes. So the destination read here can
+   * stop being this window's queue before anything is written to it --
+   * and the entries went in anyway, while the report recommended a
+   * command that acts on the queue that replaced it. Every other place
+   * in this file that waits takes `generation` and checks it after;
+   * this one did not. Traced in review.
+   *
+   * `destinationFor` does the checking, inside the lock, by calling this
+   * closure again. It is a closure and not a snapshot for exactly that
+   * reason: a captured number cannot answer a later question.
+   */
   function adoptingInto(): Destination | null {
-    const active = saver;
-    if (active === null) {
-      return null;
-    }
-    return {
-      storeHash: storeHash(config.store),
-      run: (work) => active.adopt(work)
-    };
+    return destinationFor(() => {
+      const active = saver;
+      if (active === null) {
+        return null;
+      }
+      return {
+        storeHash: storeHash(config.store),
+        generation,
+        adopt: (work) => active.adopt(work)
+      };
+    });
   }
 
   async function onSaved(saved: vscode.TextDocument): Promise<void> {

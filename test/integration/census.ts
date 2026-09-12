@@ -49,7 +49,7 @@ export interface SuiteLike {
  */
 export const EDITOR_CELLS: Array<[string, number]> = [
   ['extension.test.js', 15],
-  ['generation.test.js', 3]
+  ['generation.test.js', 4]
 ];
 
 function baseName(file: string): string {

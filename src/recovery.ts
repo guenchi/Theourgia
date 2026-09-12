@@ -62,6 +62,7 @@ import {
   forceClaimNotice,
   noOtherSessionsNotice,
   refusedTakeoverNotice,
+  storeChangedNotice,
   undecidableSessionNotice
 } from './status';
 
@@ -103,7 +104,9 @@ function counts(row: OtherSession): string {
   const adopters =
     row.liveAdopters.length === 0
       ? ''
-      : `, open in ${row.liveAdopters.length} other window(s)`;
+      : row.liveAdopters.length === 1
+        ? ', open in 1 other window'
+        : `, open in ${row.liveAdopters.length} other windows`;
   return `${drafts}, ${pending}${adopters}`;
 }
 
@@ -184,7 +187,111 @@ function actionsFor(row: OtherSession): Array<Choice<RecoveryAction>> {
  */
 export interface Destination {
   storeHash: string;
-  run<T>(work: (into: ImportTarget) => T): Promise<T>;
+  run<T>(work: (into: ImportTarget) => T): Promise<Adoption<T>>;
+}
+
+/*
+ * ⚠️ AND THE DESTINATION MAY REFUSE, WHICH IS NOT THE SAME AS FAILING.
+ *
+ * `run` used to answer with the work's result and nothing else, so it
+ * had no way to say "I am no longer the queue you were given". It can
+ * stop being that: `adoptingInto` is evaluated when the command starts
+ * and the pickers that follow are awaits, so a user who changes
+ * theourgia.store while the list is open leaves the takeover holding the
+ * PREVIOUS window queue. The entries then went into it, and the report
+ * recommended a command that acts on the CURRENT one -- so the user was
+ * told to retry a queue that does not hold their work, and with the new
+ * store empty they were told nothing was waiting. Traced in review.
+ *
+ * The refusal is a value rather than a throw because it is an answer,
+ * not a fault, and because the report has to distinguish it from an
+ * import that moved nothing.
+ */
+export type Adoption<T> = { ran: true; value: T } | { ran: false; because: 'store-changed' };
+
+/*
+ * WHAT THIS WINDOW'S QUEUE IS, READ AT THE MOMENT OF ASKING.
+ *
+ * It is read through a function rather than taken as a value, and that
+ * is the point: the destination has to be able to ask again LATER,
+ * inside the lock, and anything captured earlier answers about a moment
+ * that has passed.
+ *
+ * THE IDENTITY OF A QUEUE IS ITS STORE. The queue is the file
+ * `<session>/<storeHash>/outbox.json` and its lock is keyed by that
+ * path, so two Savers built over one store are two objects over one
+ * queue -- which is what the extension makes every time any setting
+ * changes. Nothing else about the window belongs here.
+ */
+export interface WindowQueue {
+  storeHash: string;
+  adopt<T>(work: (into: ImportTarget) => T): Promise<T>;
+}
+
+/*
+ * A DESTINATION THAT KNOWS WHEN IT HAS STOPPED BEING ONE.
+ *
+ * ⚠️ THE SECOND READING IS INSIDE THE LOCK, not before it. Between
+ * deciding to import and holding the queue there is a wait -- the lock
+ * may be held by a save in flight -- and that wait is long enough for
+ * the settings to change. A check before `adopt` answers about a moment
+ * that has passed by the time anything is written, which is the same
+ * defect as the one it is repairing, one step smaller.
+ *
+ * ⚠️ AND IT REFUSES RATHER THAN REDIRECTING. The survey that chose these
+ * entries was made against the store hash captured with this
+ * destination; carrying them into a different store's queue would be
+ * making a decision the user never made. Refusing costs the user one
+ * more run of the command, and the claim token is re-enterable by the
+ * window that holds it, so the second run surveys the new store
+ * properly and reports the old store's entries as belonging elsewhere.
+ *
+ * ⚠️ WHAT IS COMPARED IS THE QUEUE'S IDENTITY, NOT A CHANGE COUNTER.
+ *
+ * The first version compared the generation, and that is "something
+ * changed" rather than "the thing I depended on changed". The extension
+ * raises the generation for EVERY theourgia setting -- the actor, the
+ * scheme, the core path, the library directories -- while the queue is
+ * the file `<session>/<storeHash>/outbox.json` and its lock is keyed by
+ * that path. So renaming the actor mid-decision produced a refusal, cost
+ * the user a second run, and told them the store had changed, which was
+ * untrue. The store hash is the quantity the survey depended on, so the
+ * store hash is what is compared -- and A -> B -> A imports, because the
+ * queue really is the same file under the same lock. Measured with a
+ * cell, after a review asked the question. (The generation is still how
+ * the EXTENSION notices it must ask again; it is not a judgement about
+ * what it must ask.)
+ */
+export function destinationFor(now: () => WindowQueue | null): Destination | null {
+  const at = now();
+  if (at === null) {
+    return null;
+  }
+  /*
+   * ⚠️ THE STORE IS COPIED OUT, NOT READ BACK OFF `at` LATER. `now` is
+   * free to answer with the same object every time -- the extension's
+   * builds a fresh one, a stand-in need not -- and then `at.storeHash`
+   * is not what was decided, it is whatever it says NOW, so the
+   * comparison below is a value against itself and passes always. The
+   * cell for the refusal caught it the moment the comparison moved off
+   * the generation and onto this field.
+   *
+   * Two different things are wanted and both have to be here: the store
+   * this takeover was DECIDED for, which is a value and is captured, and
+   * the store this window has NOW, which is a question and is asked.
+   */
+  const decidedFor = at.storeHash;
+  return {
+    storeHash: decidedFor,
+    run: <T>(work: (into: ImportTarget) => T): Promise<Adoption<T>> =>
+      at.adopt((target): Adoption<T> => {
+        const current = now();
+        if (current === null || current.storeHash !== decidedFor) {
+          return { ran: false, because: 'store-changed' };
+        }
+        return { ran: true, value: work(target) };
+      })
+  };
 }
 
 export async function chooseAndRecover(
@@ -297,13 +404,26 @@ async function act(
    * Running the command again with another store configured takes those,
    * because a claim the holder re-enters is not `already-claimed`.
    */
-  const moved = await into.run((target) =>
+  const adoption = await into.run((target) =>
     sessions.importFrom(
       { deadSessionId: row.sessionId, sequence: won.sequence, file: won.token },
       target,
       into.storeHash
     )
   );
+  if (!adoption.ran) {
+    /*
+     * ⚠️ NOTHING WAS MOVED AND NOTHING WAS SPENT. The source queue, its
+     * adoption marks and the claim's sequence are all as they were, and
+     * the token is re-enterable by this window, so running the command
+     * again surveys the store that is configured NOW -- under which the
+     * entries just declined are another store's, and the report says so
+     * in that bucket's own sentence.
+     */
+    chooser.say(storeChangedNotice(row.sessionId));
+    return { did: 'refused', sessionId: row.sessionId, action, because: adoption.because };
+  }
+  const moved = adoption.value;
   chooser.say(adoptedNotice(row.sessionId, moved, false));
   return { did: 'take-over', sessionId: row.sessionId, ledger: moved };
 }

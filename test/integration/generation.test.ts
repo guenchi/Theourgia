@@ -30,7 +30,11 @@
  */
 
 import * as assert from 'assert';
+import { createHash } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
+import { wroteAnswer } from '../support/answers';
 import { FakeCore } from '../support/fake';
 import { StatusFacts } from '../../src/status';
 
@@ -50,6 +54,67 @@ async function useStore(core: FakeCore, store: string): Promise<void> {
   await settings.update('libDirs', [], vscode.ConfigurationTarget.Global);
   await settings.update('store', store, vscode.ConfigurationTarget.Global);
   await settings.update('actor', 'generation-cell', vscode.ConfigurationTarget.Global);
+}
+
+/*
+ * THE DIRECTORY A STORE'S QUEUE LIVES IN.
+ *
+ * ⚠️ THIS IS A SECOND COPY OF THE PRODUCT'S RULE, and it is here rather
+ * than imported because the rule lives inside `activate`, which a cell
+ * cannot reach. What makes the duplicate acceptable is the direction it
+ * fails in: if the extension ever names the directory differently, this
+ * finds NO queue for the store and the cell says so by name -- it cannot
+ * quietly read the wrong directory, because there is no other directory
+ * with this name to read.
+ */
+function namespaceOf(store: string): string {
+  return createHash('sha256').update(store, 'utf8').digest('hex').slice(0, 16);
+}
+
+interface Queue {
+  store: string;
+  cursor: string | null;
+  entries: unknown[];
+}
+
+/*
+ * EVERY QUEUE THIS WINDOW HAS WRITTEN, READ OFF THE DISK.
+ *
+ * The path comes from the launcher through the environment rather than
+ * being rebuilt here: a cell that worked out for itself where the
+ * extension writes would be a second opinion about it, and the reading
+ * that is wrong is the reassuring one -- an empty directory looks
+ * exactly like a queue with nothing in it.
+ */
+function queueFiles(): Queue[] {
+  const storage = process.env.THEOURGIA_TEST_STORAGE;
+  assert.ok(
+    storage !== undefined && storage.length > 0,
+    'THEOURGIA_TEST_STORAGE is not set, so this cell cannot read the queues it is about'
+  );
+  const sessions = path.join(storage as string, 'sessions');
+  if (!fs.existsSync(sessions)) {
+    return [];
+  }
+  const out: Queue[] = [];
+  for (const session of fs.readdirSync(sessions)) {
+    const directory = path.join(sessions, session);
+    if (!fs.statSync(directory).isDirectory()) {
+      continue;
+    }
+    for (const store of fs.readdirSync(directory)) {
+      const file = path.join(directory, store, 'outbox.json');
+      if (!fs.existsSync(file)) {
+        continue;
+      }
+      const held = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+        cursor: string | null;
+        entries: unknown[];
+      };
+      out.push({ store, cursor: held.cursor ?? null, entries: held.entries ?? [] });
+    }
+  }
+  return out;
 }
 
 async function currentFacts(): Promise<StatusFacts> {
@@ -192,5 +257,148 @@ describe('a setting that changes while a request is in flight', function () {
       null,
       'a count fetched for the previous store was painted under the new one'
     );
+  });
+
+  /*
+   * C7 A SAVE THAT ANSWERS AFTER THE USER HAS MOVED ON -- A READING,
+   * TAKEN ON PURPOSE, NOT A GUARD.
+   *
+   * ⚠️ WHY THIS CELL EXISTS AND WHAT IT IS NOT. A census over every wait
+   * in `extension.ts` (test/unit/awaiting.test.ts) found one that does
+   * not check the generation: `onSaved` issues the save to the Saver it
+   * read before the wait, and reports the outcome after it. The main
+   * session ruled that this belongs to the NEXT batch -- it is the save
+   * surface, this batch did not make it worse, and the batch's scope was
+   * closed at kickoff -- and that this round takes a MEASUREMENT rather
+   * than a repair. So this cell asserts what the extension does today,
+   * and will go red when that changes, which is exactly what the next
+   * batch needs from it.
+   *
+   * ⚠️ AND IT ANSWERS WHY C6 ABOVE IS GREEN, which is a different
+   * question from whether this path is safe. C6's stimulus is
+   * `refreshOutline`, whose wait is inside `refreshConflicts` -- and
+   * `refreshConflicts` takes the generation and drops a late answer.
+   * `paint` itself checks nothing: it reads the CURRENT facts every
+   * time. So C6 passes because of the guard in the fetcher, not because
+   * of anything in the painter, and nothing it does touches `onSaved`.
+   * Measured here rather than reasoned about.
+   *
+   * ⚠️ WHAT THIS CELL CANNOT SEE. `show` calls
+   * `vscode.window.showInformationMessage`, and the suite has no way to
+   * read what was shown. The sentence about store A's save is therefore
+   * beyond this reading, and that -- not the status bar -- is where the
+   * exposure is. Said here so that a green run is not mistaken for "the
+   * whole question was put".
+   */
+  it('C7 paints the new store’s facts when a save for the old one answers late', async () => {
+    core = new FakeCore([
+      { match: ['check'], stdout: '(check (writers (("w" (end 1) (torn #f) (integrity ())))) (verdict ok))\n', rc: 0 },
+      { match: ['read'], stdout: `${BLOCK}\n`, rc: 0 },
+      /*
+       * ⚠️ THE SHAPE A REAL CORE ANSWERS WITH, AND NOT ONE WRITTEN HERE.
+       * This cell used to spell its own `(ok ((cursor . "w:2")))`, which
+       * `eventFromWrite` reads as an ok that names no record: the entry
+       * is marked pending and THE SETTLER IS NEVER CALLED. So the first
+       * version measured a save that never settled while its comment
+       * said what a settled one does, and the delivery note repeated it.
+       * The shapes now live in `test/support/answers.ts` and are put to
+       * the product's own reader by a cell in `fsops.test.ts`.
+       */
+      { match: ['set'], stdout: wroteAnswer(2), rc: 0, delayMs: 2500 },
+      { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n', rc: 0 },
+      { match: ['outline'], stdout: '', rc: 0 }
+    ]);
+    await useStore(core, `${core.store}-A`);
+    await settle();
+
+    await vscode.commands.executeCommand('theourgia.openBlock', 'a.2');
+    await settle(500);
+    const editor = vscode.window.activeTextEditor;
+    assert.ok(editor !== undefined, 'the block did not open, so nothing below is about a save');
+    const document = (editor as vscode.TextEditor).document;
+    await (editor as vscode.TextEditor).edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Two\nedited while the store was about to change\n'
+      );
+    });
+    const saving = document.save();
+    await settle(400);
+
+    /*
+     * THE SAVE IS IN FLIGHT. The store is replaced under it, which is
+     * the state the census named.
+     */
+    await vscode.workspace
+      .getConfiguration('theourgia')
+      .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
+    await saving;
+    await settle(2600);
+
+    const sets = core.calls().filter((c) => c.coreArgv.includes('set'));
+    assert.ok(sets.length > 0, 'no save was ever sent, so this cell measured nothing');
+    assert.ok(
+      sets.some((c) => c.event === 'answer'),
+      `the delayed save never answered, so the reading is about a request that did not finish: ${
+        JSON.stringify(sets.map((c) => c.event))
+      }`
+    );
+
+    const facts = await currentFacts();
+    assert.strictEqual(facts.store, `${core.store}-B`, 'the settings did not actually change');
+    /*
+     * THE READING. `paint` recomputes from the current store, the
+     * current queue and the current conflict count, so the numbers on
+     * the status bar are store B's even though the answer that triggered
+     * the painting was store A's. The cursor is B's too -- which is to
+     * say null, because nothing has asked B anything.
+     */
+    assert.strictEqual(
+      facts.conflicts,
+      null,
+      'store A’s conflict count was painted under store B'
+    );
+    assert.strictEqual(facts.cursor, null, 'store A’s cursor was painted under store B');
+
+    /*
+     * ⚠️ AND THE FILES, WHICH IS WHERE THE DEFECT WAS.
+     *
+     * The status bar is recomputed from whatever is configured now, so
+     * it is the wrong instrument for this: it showed nothing wrong while
+     * store A's cursor sat committed in store B's `outbox.json` and
+     * store A's request stayed queued, answered and unsettled, in a
+     * queue nobody was looking at. Two wrong bytes on disk, no wrong
+     * number on screen.
+     *
+     * So both queues are read. A's must have settled -- its entry gone
+     * and its cursor moved to what the answer established -- and B's
+     * must be exactly as it was, which is to say absent: nothing has
+     * ever written to it.
+     */
+    const queues = queueFiles();
+    const a = queues.find((q) => q.store === namespaceOf(`${core.store}-A`));
+    assert.ok(a !== undefined, `store A has no queue file; the queues found were ${
+      JSON.stringify(queues.map((q) => q.store))
+    }`);
+    assert.deepStrictEqual(
+      (a as Queue).entries,
+      [],
+      'the answer settled nothing: store A’s request is still queued, in a queue this window has ' +
+        'stopped looking at'
+    );
+    assert.strictEqual(
+      (a as Queue).cursor,
+      'w:2',
+      'store A’s queue did not take the cursor its own answer established'
+    );
+
+    const b = queues.find((q) => q.store === namespaceOf(`${core.store}-B`));
+    if (b !== undefined) {
+      assert.strictEqual(
+        b.cursor,
+        null,
+        'store B’s queue holds a cursor, and nothing has ever asked store B anything'
+      );
+    }
   });
 });

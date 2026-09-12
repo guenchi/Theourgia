@@ -483,6 +483,70 @@ describe('a queue in a shape this build cannot read is refused, not repaired', (
  * silence; a frozen object raises a TypeError in strict mode at the line
  * that made the attempt.
  */
+/*
+ * ⚠️ A CURSOR IS WHAT AN ANSWER TO ONE OF THIS QUEUE'S REQUESTS SAYS.
+ *
+ * `resolve` filtered by request id and then wrote the cursor whatever
+ * the filter had done -- so a caller holding the wrong queue could
+ * commit another store's position into this file while its own request
+ * stayed unsettled elsewhere. That is exactly what happened: the
+ * extension's settler read the live queue rather than its own, and the
+ * editor suite showed store A's cursor painted under store B.
+ *
+ * The caller was repaired. This is the second layer, and it states the
+ * rule where the writing happens rather than where the calling does.
+ */
+describe('U-cur the cursor moves only for a request this queue was holding', () => {
+  it('moves the cursor when the answer settles an entry that is here', () => {
+    const file = scratch('cursor-mine');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('r1', 'one\n'));
+    queue.resolve('r1', 'w:7');
+    assert.strictEqual(queue.cursor, 'w:7', 'a settled request did not move the cursor');
+    assert.strictEqual(queue.find('r1'), undefined, 'the settled entry is still queued');
+  });
+
+  it('leaves the cursor alone when the request was never in this queue', () => {
+    const file = scratch('cursor-theirs');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('mine', 'one\n'));
+    queue.resolve('mine', 'w:3');
+    assert.strictEqual(queue.cursor, 'w:3');
+
+    queue.resolve('from-another-store', 'v:99');
+    assert.strictEqual(
+      queue.cursor,
+      'w:3',
+      'a cursor arrived for a request this queue never held, and was written anyway'
+    );
+  });
+
+  /*
+   * AND IT SURVIVES A RELOAD, because the damage the caller did was
+   * committed to the file: an in-memory check would pass over a build
+   * that wrote the foreign cursor to disk and only kept the old one in
+   * this object.
+   */
+  it('writes no foreign cursor to the file either', () => {
+    const file = scratch('cursor-disk');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('mine', 'one\n'));
+    queue.resolve('mine', 'w:3');
+    queue.resolve('from-another-store', 'v:99');
+
+    const reread = new Outbox(file);
+    reread.load();
+    assert.strictEqual(
+      reread.cursor,
+      'w:3',
+      'the queue on disk holds a cursor from an answer about somebody else\'s request'
+    );
+  });
+});
+
 describe('U-req the entries the queue hands out cannot be edited', () => {
   it('refuses an assignment to a request id', () => {
     const file = scratch('frozen');

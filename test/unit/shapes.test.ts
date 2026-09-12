@@ -31,6 +31,7 @@ import { parseOutline } from '../../src/outline';
 import {
   FORCE_CLAIM_CONFIRMATION,
   adoptedNotice,
+  discardedNotice,
   forceClaimNotice,
   prefixRefusedNotice,
   retryNotice,
@@ -178,6 +179,70 @@ describe('a field this client cannot read stops the block', () => {
     const conflict = fieldConflict(block?.fields.get('title') as Datum);
     assert.ok(conflict !== null, 'the conflicted field was not read as a conflict');
     assert.deepStrictEqual(conflict?.candidates, ['One', 'Two']);
+  });
+});
+
+/*
+ * ⚠️ AND EVERY OTHER SENTENCE THAT COUNTS SOMETHING, AT ONE.
+ *
+ * A review read the eight takeover sentences at a count of one and found
+ * all eight ungrammatical. The repair was applied to those eight -- and
+ * `conflict(s)`, `save(s)`, `unsent request(s)` and `other window(s)`
+ * went on standing in four other places, because the fix had been made
+ * where the finding pointed rather than everywhere the shape was. These
+ * cells exist so that the sweep has a floor: a sentence that counts
+ * something is read here at one AND at more than one, and `(s)` cannot
+ * come back without going red.
+ */
+describe('every sentence that counts something says it in English at one', () => {
+  const facts = {
+    store: '/tmp/s',
+    actor: 'someone',
+    cursor: 'w:7',
+    conflicts: 0,
+    pending: 0,
+    blocked: null
+  };
+
+  it('counts one conflict and one unresolved save without a parenthesis', () => {
+    const one = statusLine({ ...facts, conflicts: 1, pending: 1 }).tooltip;
+    assert.ok(one.includes('1 conflict reported by the store'), one);
+    assert.ok(one.includes('1 save whose outcome is unknown'), one);
+    const many = statusLine({ ...facts, conflicts: 2, pending: 3 }).tooltip;
+    assert.ok(many.includes('2 conflicts reported by the store'), many);
+    assert.ok(many.includes('3 saves whose outcome is unknown'), many);
+    for (const text of [one, many]) {
+      assert.ok(!/\(s\)/.test(text), `a parenthesised plural is back: ${text}`);
+    }
+  });
+
+  /*
+   * AND THE FORCED-TAKEOVER SENTENCE, whose subject is counted twice --
+   * once as what is at stake and once as what reaches the store twice.
+   * The second is the one a word-level repair would leave behind.
+   */
+  it('says one request is at stake, and that THAT request goes twice', () => {
+    const one = forceClaimNotice('S-norecord', 1).text;
+    assert.ok(one.includes('It holds 1 unsent request.'), one);
+    assert.ok(one.includes('that request reaches the store twice'), one);
+    const many = forceClaimNotice('S-norecord', 4).text;
+    assert.ok(many.includes('It holds 4 unsent requests.'), many);
+    assert.ok(many.includes('each of those requests reaches the store twice'), many);
+    for (const text of [one, many]) {
+      assert.ok(!/\(s\)/.test(text), `a parenthesised plural is back: ${text}`);
+    }
+  });
+
+  it('says one other window HAS documents open, not have', () => {
+    const one = discardedNotice('S-dead', '/tmp/trash', ['W-1']).text;
+    assert.ok(one.endsWith(' 1 other window still has documents open in it.'), one);
+    const many = discardedNotice('S-dead', '/tmp/trash', ['W-1', 'W-2']).text;
+    assert.ok(many.endsWith(' 2 other windows still have documents open in it.'), many);
+    const none = discardedNotice('S-dead', '/tmp/trash', []).text;
+    assert.ok(!/window/.test(none), `a window nobody has open was mentioned: ${none}`);
+    for (const text of [one, many, none]) {
+      assert.ok(!/\(s\)/.test(text), `a parenthesised plural is back: ${text}`);
+    }
   });
 });
 
@@ -863,8 +928,9 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * this is the report agreeing with them.
    */
   const ADVICE =
-    ' The next save will try this window\'s queue, or run "theourgia: Retry Pending Saves" to ' +
-    'try it now.';
+    ' Run "theourgia: Retry Pending Saves" to try this window\'s queue now. The next save tries ' +
+    'it too, but only after reaching the store, so a store that cannot be reached leaves the ' +
+    'queue untouched.';
   const ADVICE_AFTER: Record<string, string> = { imported: ADVICE, movedButUnmarked: ADVICE };
 
   /*
@@ -927,6 +993,15 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * telling the user they would go out with the next save -- of a queue
    * that does not hold them.
    */
+  /*
+   * ⚠️ AND THIS CHECK LOOKED FOR A PHRASE THE PRODUCT NO LONGER SAYS.
+   * It searched for "go out with the next save" -- wording that two
+   * rounds of review have since replaced -- so it passed for any advice
+   * whatsoever, including an advice sentence that should not have been
+   * there at all. It compares against the one string the rest of this
+   * file compares against now, which cannot go stale without the exact
+   * comparisons going red in the same run. Found in review.
+   */
   it('does not offer to send what is not in this window', () => {
     for (const name of ['leftOtherStore', 'leftUnknownStore', 'unreadableQueue', 'outcomeUnknown']) {
       const ledger = emptyLedger();
@@ -934,8 +1009,12 @@ describe('every bucket a takeover counts is something the user is told', () => {
       ledger.observed = 2;
       const text = adoptedNotice('S-dead', ledger, false).text;
       assert.ok(
-        !/go out with the next save/.test(text),
+        !text.includes(ADVICE),
         `${name} was offered for sending from a queue that does not hold it: ${text}`
+      );
+      assert.ok(
+        !/Retry Pending Saves/.test(text),
+        `${name} was told to retry a queue that does not hold it: ${text}`
       );
     }
   });

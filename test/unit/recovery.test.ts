@@ -35,7 +35,15 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Choice, Chooser, Destination, RecoveryAction, chooseAndRecover } from '../../src/recovery';
+import {
+  Choice,
+  Chooser,
+  Destination,
+  RecoveryAction,
+  WindowQueue,
+  chooseAndRecover,
+  destinationFor
+} from '../../src/recovery';
 import { ImportTarget, SessionIdentity, Sessions, systemStartTime } from '../../src/sessions';
 import { Notice } from '../../src/status';
 import { OutboxEntry } from '../../src/outbox';
@@ -175,18 +183,29 @@ class Recorder implements Chooser {
 }
 
 /*
- * A DESTINATION THAT ACCEPTS EVERYTHING AND REMEMBERS IT, standing in
- * for this window's own queue. `run` is where the lock would be, and
- * calling `work` inside it is exactly what the Saver does.
+ * A WINDOW QUEUE THAT ACCEPTS EVERYTHING AND REMEMBERS IT, standing in
+ * for this window's own. `adopt` is where the lock would be, and calling
+ * `work` inside it is exactly what the Saver does.
+ *
+ * ⚠️ THE DESTINATION IS BUILT BY THE PRODUCT, `destinationFor`, and not
+ * by hand here. A fixture that assembles its own destination is a
+ * fixture that cannot see anything `destinationFor` decides -- and what
+ * it decides is whether this is still the window's queue by the time the
+ * lock is held. `queue.generation` is a field the cells move.
  */
-function destination(storeHash = 'h'): { into: Destination; held: OutboxEntry[]; runs: number } {
+function destination(storeHash = 'h'): {
+  into: Destination;
+  held: OutboxEntry[];
+  runs: number;
+  queue: WindowQueue;
+} {
   const held: OutboxEntry[] = [];
   const box = {
     held,
     runs: 0,
-    into: {
+    queue: {
       storeHash,
-      run: async <T>(work: (into: ImportTarget) => T): Promise<T> => {
+      adopt: async <T>(work: (into: ImportTarget) => T): Promise<T> => {
         box.runs += 1;
         return work({
           has: (req: string) => held.some((e) => e.req === req),
@@ -197,7 +216,16 @@ function destination(storeHash = 'h'): { into: Destination; held: OutboxEntry[];
       }
     }
   };
-  return box;
+  const into = destinationFor(() => box.queue);
+  assert.ok(into !== null, 'the product refused to build a destination over a queue that is there');
+  /*
+   * ⚠️ THE SAME OBJECT, NOT A COPY OF IT. Returning `{ ...box, into }`
+   * copied `runs` at the moment of return, so every later increment
+   * landed on an object no cell was holding and the count read 0 for
+   * ever -- caught immediately by the cell that asserts the import went
+   * through the lock.
+   */
+  return Object.assign(box, { into });
 }
 
 function nowhere(): Destination {
@@ -555,14 +583,20 @@ describe('review 22 a takeover moves one store’s work, through one lock', () =
       const saving = saver.save('a.2', 'src', 'body\n').then(() => {
         order.push('save');
       });
-      const recovering = chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), {
+      const through = destinationFor(() => ({
         storeHash: 'h',
-        run: (work) =>
+        adopt: (work) =>
           saver.adopt((into) => {
             order.push('import');
             return work(into);
           })
-      }).then(() => undefined);
+      }));
+      assert.ok(through !== null, 'the product would not build a destination over a real Saver');
+      const recovering = chooseAndRecover(
+        sessions,
+        new Recorder(['S-dead', 'take-over']),
+        through
+      ).then(() => undefined);
       await Promise.all([saving, recovering]);
       assert.deepStrictEqual(
         order,
@@ -668,5 +702,336 @@ describe('review 23 a takeover that moved one store’s work can come back for t
     const outcome = await chooseAndRecover(mine, chooser, destination('store-a').into);
     assert.strictEqual(outcome.did, 'refused', JSON.stringify(outcome));
     assert.match(chooser.said[0].text, /cannot take it from/);
+  });
+});
+
+/*
+ * REVIEW ROUND 34: THE WINDOW THIS WAS DECIDED FOR MAY NOT BE THE WINDOW
+ * IT LANDS IN.
+ *
+ * `adoptingInto` is evaluated when the command starts and the pickers
+ * after it are awaits, so changing theourgia.store while the list is
+ * open leaves the takeover holding the PREVIOUS queue. The entries went
+ * into it, the report recommended a retry -- and the retry command reads
+ * the CURRENT saver, which is a different queue. With the new store
+ * empty the user was told nothing was waiting, over work that had just
+ * been moved somewhere they were not looking. Traced in review against
+ * the source.
+ *
+ * The ruling was to refuse rather than redirect: the survey that chose
+ * these entries was made against the old store's hash, and carrying them
+ * into another store's queue would be making a decision the user never
+ * made.
+ */
+describe('review 34 a destination that has stopped being this window’s queue', () => {
+  function queueAt(storage: string, sessionId: string, storeHash: string, reqs: string[]): void {
+    const dir = path.join(storage, 'sessions', sessionId, storeHash);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: reqs.map((req) => ({
+          req,
+          cursor: 'w:1',
+          id: 'a.1',
+          field: 'src',
+          payload: 'x',
+          state: 'queued',
+          createdAt: 0,
+          lastError: null
+        }))
+      }),
+      'utf8'
+    );
+  }
+
+  /*
+   * A QUEUE WHOSE LOCK IS NOT FREE YET, so a cell can arrange the
+   * settings change to land in the window the defect lives in: after the
+   * destination was built and the import decided, and before the work
+   * runs with the queue in hand.
+   */
+  function slowQueue(initial: string): {
+    now: () => WindowQueue;
+    held: OutboxEntry[];
+    entered: Promise<void>;
+    open(): void;
+    storeHash: string;
+    useStore(hash: string): void;
+  } {
+    /*
+     * ⚠️ EVERY CALL ANSWERS WITH A NEW OBJECT, because the extension's
+     * does: `rebuild` builds a fresh one, and a reference taken earlier
+     * then goes on describing the window that has been replaced.
+     *
+     * A stand-in that handed back ONE object and let the cells move its
+     * fields could not tell those two apart -- reading the captured
+     * reference and asking again inside the lock give the same answer,
+     * whichever the product does. Both halves of that were measured on
+     * the first version: a product that compared the live object
+     * compared a value with itself and refused nothing, and a mutant
+     * that moved the question outside the lock survived. The cells for a
+     * check inside the lock cannot be written over a fixture where
+     * inside and outside look alike.
+     */
+    const held: OutboxEntry[] = [];
+    let announce: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let release: () => void = () => undefined;
+    const free = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const box = {
+      held,
+      entered,
+      storeHash: initial,
+      open: (): void => release(),
+      useStore(hash: string): void {
+        box.storeHash = hash;
+      },
+      now: (): WindowQueue => ({
+        storeHash: box.storeHash,
+        adopt: async <T>(work: (into: ImportTarget) => T): Promise<T> => {
+          announce();
+          await free;
+          return work({
+            has: (req: string) => held.some((e) => e.req === req),
+            adopt: (entry: OutboxEntry) => {
+              held.push(entry);
+            }
+          });
+        }
+      })
+    };
+    return box;
+  }
+
+  it('moves nothing, and says so, when the store changed while the user decided', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+
+    const slow = slowQueue('store-a');
+    const into = destinationFor(slow.now);
+    assert.ok(into !== null);
+    const chooser = new Recorder(['S-dead', 'take-over']);
+    const recovering = chooseAndRecover(sessions, chooser, into);
+    /*
+     * ⚠️ THE CHANGE LANDS WHILE THE LOCK IS BEING TAKEN. This is the
+     * position that decides where the check has to live: a check made
+     * before `adopt` has already answered about a moment that has passed
+     * by the time anything is written. Moving it there leaves this cell
+     * green and the defect alive.
+     */
+    await slow.entered;
+    slow.useStore('store-b');
+    slow.open();
+
+    const outcome = await recovering;
+    assert.strictEqual(outcome.did, 'refused', JSON.stringify(outcome));
+    assert.strictEqual(
+      (outcome as { because: string }).because,
+      'store-changed',
+      JSON.stringify(outcome)
+    );
+    assert.deepStrictEqual(slow.held, [], 'entries went into a queue this window had left');
+    assert.strictEqual(
+      chooser.said[0].text,
+      'S-dead was not taken over: the store this window writes to changed while you were ' +
+        'deciding, so nothing was moved and nothing was lost. Run the command again to take it ' +
+        'over for the store that is configured now.',
+      `the refusal did not say what happened: ${chooser.said[0].text}`
+    );
+  });
+
+  /*
+   * ⚠️ THE TWIN. Without it, a build that refuses EVERY takeover passes
+   * the cell above -- and the same stand-in, with the generation left
+   * alone, has to carry the entries.
+   */
+  it('imports as usual when the store did not change under it', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+
+    const slow = slowQueue('store-a');
+    const into = destinationFor(slow.now);
+    assert.ok(into !== null);
+    const chooser = new Recorder(['S-dead', 'take-over']);
+    const recovering = chooseAndRecover(sessions, chooser, into);
+    await slow.entered;
+    slow.open();
+
+    const outcome = await recovering;
+    assert.strictEqual(outcome.did, 'take-over', JSON.stringify(outcome));
+    assert.deepStrictEqual(slow.held.map((e) => e.req), ['for-a']);
+    assert.ok(
+      !/store this window writes to changed/.test(chooser.said[0].text),
+      `an import that happened was reported as refused: ${chooser.said[0].text}`
+    );
+  });
+
+  /*
+   * ⚠️ THE SETTINGS `rebuild` REACTS TO THAT DO NOT MOVE THE QUEUE --
+   * READ FROM THE MANIFEST, NOT TYPED OUT HERE.
+   *
+   * `rebuild` runs for every theourgia setting and builds a new Saver
+   * each time, but the queue is the file `<session>/<storeHash>/
+   * outbox.json` and its lock is keyed by that path -- so with the store
+   * unchanged the new Saver is a second object over the SAME queue, and
+   * importing through the one this destination holds lands in exactly
+   * the same place. Refusing there costs the user a run and tells them
+   * the store changed, which is untrue.
+   *
+   * ⚠️ AND THE LIST WAS TYPED OUT, AND WAS ALREADY WRONG. It said
+   * actor/scheme/corePath/libDirs and the extension also has
+   * `timeoutMs` and `transport` -- a list written to make sure a new
+   * setting had somewhere it must be added, missing two on the day it
+   * was written. A review found them. So the names come from
+   * `package.json`, which is where a new setting really is added, and
+   * the only thing stated here is which one moves the queue.
+   *
+   * The product cannot tell these apart and neither can this cell: what
+   * reaches `destinationFor` is "rebuilt, store hash the same", once per
+   * name. The row per name is what makes the LIST, not one example, the
+   * thing being maintained.
+   */
+  const MOVES_THE_QUEUE = 'store';
+
+  function settingsFromManifest(): string[] {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf8')
+    ) as { contributes: { configuration: { properties: Record<string, unknown> } } };
+    return Object.keys(manifest.contributes.configuration.properties)
+      .filter((name) => name.startsWith('theourgia.'))
+      .map((name) => name.slice('theourgia.'.length))
+      .sort();
+  }
+
+  const REBUILT_WITHOUT_MOVING_THE_QUEUE = settingsFromManifest().filter(
+    (name) => name !== MOVES_THE_QUEUE
+  );
+
+  /*
+   * THE INSTRUMENT'S FIRST READING, again: a filter that matched nothing
+   * would leave the loop below empty and this section would pass while
+   * testing nothing at all.
+   */
+  it('reads the settings from the manifest, and the one that moves the queue is there', () => {
+    const all = settingsFromManifest();
+    assert.ok(all.includes(MOVES_THE_QUEUE), `theourgia.${MOVES_THE_QUEUE} is not a setting`);
+    assert.ok(
+      REBUILT_WITHOUT_MOVING_THE_QUEUE.length >= 5,
+      `only ${REBUILT_WITHOUT_MOVING_THE_QUEUE.length} settings besides the store: ${all.join(', ')}`
+    );
+  });
+
+  for (const setting of REBUILT_WITHOUT_MOVING_THE_QUEUE) {
+    it(`imports when theourgia.${setting} changed under it and the store did not`, async () => {
+      const storage = scratch();
+      makeSession(storage, 'S-dead');
+      queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+      const sessions = new Sessions(new RecordingFs(), storage);
+      sessions.begin('S-mine', []);
+
+      const slow = slowQueue('store-a');
+      const into = destinationFor(slow.now);
+      assert.ok(into !== null);
+      const chooser = new Recorder(['S-dead', 'take-over']);
+      const recovering = chooseAndRecover(sessions, chooser, into);
+      await slow.entered;
+      slow.open();
+
+      const outcome = await recovering;
+      assert.strictEqual(
+        outcome.did,
+        'take-over',
+        `a takeover was refused although the store is still ${slow.storeHash}: ` +
+          JSON.stringify(outcome)
+      );
+      assert.deepStrictEqual(slow.held.map((e) => e.req), ['for-a']);
+      assert.ok(
+        !/store this window writes to changed/.test(chooser.said[0].text),
+        `changing theourgia.${setting} was reported as a change of store: ${chooser.said[0].text}`
+      );
+    });
+  }
+
+  /*
+   * ⚠️ AND A STORE THAT LEFT AND CAME BACK IS THE SAME QUEUE. A -> B ->
+   * A while the user decides leaves the file, and the lock, exactly
+   * where they were. A change counter calls that the worst case; the
+   * queue's identity calls it no case at all.
+   */
+  it('imports when the store changed away and back again', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+
+    const slow = slowQueue('store-a');
+    const into = destinationFor(slow.now);
+    assert.ok(into !== null);
+    const recovering = chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), into);
+    await slow.entered;
+    slow.useStore('store-b');
+    slow.useStore('store-a');
+    slow.open();
+
+    const outcome = await recovering;
+    assert.strictEqual(outcome.did, 'take-over', JSON.stringify(outcome));
+    assert.deepStrictEqual(slow.held.map((e) => e.req), ['for-a']);
+  });
+
+  /*
+   * ⚠️ AND THE REFUSAL SPENDS NOTHING.
+   *
+   * "Nothing was moved and nothing was lost" is a claim about the source
+   * queue, the adoption marks and the claim sequence, and it is worth
+   * only what a second run can show: running the command again -- with
+   * the store that is configured NOW -- has to survey the whole session
+   * again, take what belongs to the new store, and report the declined
+   * store's entries as another store's, still waiting.
+   */
+  it('leaves the token re-enterable, and the second run reports the old store’s work', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a1', 'for-a2']);
+    queueAt(storage, 'S-dead', 'store-b', ['for-b']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+
+    const slow = slowQueue('store-a');
+    const into = destinationFor(slow.now);
+    assert.ok(into !== null);
+    const first = chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), into);
+    await slow.entered;
+    slow.useStore('store-b');
+    slow.open();
+    assert.strictEqual((await first).did, 'refused');
+
+    const b = destination('store-b');
+    const chooser = new Recorder(['S-dead', 'take-over']);
+    const second = await chooseAndRecover(sessions, chooser, b.into);
+    assert.strictEqual(second.did, 'take-over', JSON.stringify(second));
+    assert.deepStrictEqual(b.held.map((e) => e.req), ['for-b'], 'the second run took the wrong work');
+    assert.strictEqual(
+      (second as { ledger: { leftOtherStore: number } }).ledger.leftOtherStore,
+      2,
+      'the declined store’s entries were not counted as another store’s'
+    );
+    assert.match(
+      chooser.said[0].text,
+      /2 were written for other stores and are still there/,
+      `the second run did not say where the rest are: ${chooser.said[0].text}`
+    );
   });
 });

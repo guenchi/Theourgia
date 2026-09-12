@@ -105,11 +105,20 @@ export type SaveDecision =
  * Whether the outbox entry may now be removed, and if not, why. The
  * entry outlives anything this cannot record. (§12.7.4, C7, C20)
  */
+/*
+ * WHY A RECORD BESIDE THE FILE COULD NOT BE WRITTEN. Named as a type
+ * because three places have to agree on the list: the one that decides,
+ * the one that writes the sentence, and the settler that carries the
+ * one to the other. Spelled out at each of them, a new reason reaches
+ * two of the three.
+ */
+export type Unrecorded = 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed';
+
 export type AnswerRecording =
   | { dequeued: true }
   | {
       dequeued: false;
-      because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed';
+      because: Unrecorded;
     };
 
 /*

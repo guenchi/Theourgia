@@ -329,15 +329,22 @@ export interface TakeoverLedger {
   /*
    * ⚠️ MOVED, AND THE SOURCE STILL SAYS IT IS WAITING.
    *
-   * The entry is in this window's queue and will be sent from here; what
-   * failed is the mark on the OTHER window's copy. Those two outcomes
-   * were one bucket, and the sentence for it said the requests "could
-   * not be moved and are still in that window's queue" -- the opposite
-   * of the truth for this half, about work that had in fact arrived.
-   * Found in review.
+   * The entry is in this window's queue and goes out from here when a
+   * save reaches it; what failed is the mark on the OTHER window's copy.
+   * Those two outcomes were one bucket, and the sentence for it said the
+   * requests "could not be moved and are still in that window's queue"
+   * -- the opposite of the truth for this half, about work that had in
+   * fact arrived. Found in review.
    *
-   * Nothing is sent twice: a later takeover offers them again and the
-   * destination recognises them by request id. What is wrong is only the
+   * ⚠️ AND THIS COMMENT USED TO SAY "NOTHING IS SENT TWICE", which is
+   * the very claim a review had already taken out of the sentence the
+   * user reads: the other window's copy is still unmarked, so a later
+   * takeover into a DIFFERENT queue can carry it again and send it. The
+   * sentence was corrected and this was not, because the correction was
+   * applied where the finding pointed instead of everywhere the claim
+   * was written. What is true belongs one layer down and is stated as
+   * such: the store settles a request it has already applied by its id
+   * and does not do the work again. What is wrong here is only the
    * bookkeeping in the file this window does not own, and the user is
    * told that rather than told their work is stuck.
    */

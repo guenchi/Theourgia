@@ -318,8 +318,34 @@ export class Outbox {
 
   public resolve(req: string, cursor: string | null): void {
     const next = this.copy();
+    const before = next.entries.length;
     next.entries = next.entries.filter((e) => e.req !== req);
-    if (cursor !== null) {
+    /*
+     * ⚠️ THE CURSOR MOVES ONLY IF THIS QUEUE WAS HOLDING THE REQUEST.
+     *
+     * It used to move whenever a cursor was passed, for any request id
+     * at all -- and that is how another store's cursor was committed
+     * into this file: the settler read the live queue rather than its
+     * own, found nothing by that id (because the answer was about a
+     * different store's request), removed nothing, and wrote the cursor
+     * anyway. The window it belonged to kept its entry, unsettled, while
+     * this queue advanced to a position its store has never been in.
+     * Reproduced in the editor suite.
+     *
+     * The caller was repaired; this is the second layer, and it is the
+     * one that states the rule: a cursor is what an answer to one of MY
+     * requests establishes. An answer about a request this queue does
+     * not hold establishes nothing here, and the safe direction is to
+     * leave the cursor where it is -- the next save composes against a
+     * position the store really acknowledged.
+     *
+     * Every caller in the tree answers a request its own queue holds:
+     * both are in the settler, and `drain` sends only `entries[0]` of
+     * this queue. Nothing needs the other behaviour; if something ever
+     * does, it needs to say WHICH store the cursor came from, which is
+     * exactly the fact that went missing here.
+     */
+    if (cursor !== null && next.entries.length !== before) {
       next.cursor = cursor;
     }
     this.commit(next);

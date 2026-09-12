@@ -215,7 +215,26 @@ async function main(): Promise<void> {
       extensionTestsEnv: {
         THEOURGIA_CORE: process.env.THEOURGIA_CORE ?? '',
         THEOURGIA_LIBDIRS: process.env.THEOURGIA_LIBDIRS ?? '',
-        THEOURGIA_SCHEME: process.env.THEOURGIA_SCHEME ?? 'scheme'
+        THEOURGIA_SCHEME: process.env.THEOURGIA_SCHEME ?? 'scheme',
+        /*
+         * ⚠️ WHERE THE QUEUES ARE, FOR THE CELLS THAT HAVE TO READ THE
+         * FILES.
+         *
+         * A cell inside the host can see what the extension REPORTS --
+         * the store, the counts, the sentences -- and that is the wrong
+         * instrument for a defect that writes the wrong bytes into a
+         * queue nobody is looking at. One did: an answer for store A
+         * committed A's cursor into B's `outbox.json` while A's entry
+         * stayed unsettled in A's. Both halves of that are on disk and
+         * neither is in any report.
+         *
+         * This is the path the launcher already computes to empty the
+         * storage between runs, handed to the cells rather than guessed
+         * at by them: a cell that derived it independently would be a
+         * second opinion about where the extension writes, and the one
+         * that was wrong would read an empty directory as a clean queue.
+         */
+        THEOURGIA_TEST_STORAGE: extensionStorage(root, profile)
       }
     });
   } catch (e) {
