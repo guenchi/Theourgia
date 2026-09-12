@@ -48,7 +48,9 @@ export function digestOfBytes(bytes: Buffer | string): string {
  * WHAT THE EXTENSION CAN ASK THE EDITOR. `publish` must refuse when a
  * document is open on the target path, because then the editor is a
  * writer and this is not -- and `FileOps` cannot answer that. It is a
- * parameter for the reason `placeReading` takes one. (§12.13.1)
+ * parameter for the reason the file operations are: this does not
+ * need to know whose editor it is, and saying so is what lets a cell
+ * drive it. (§12.13.1)
  */
 export interface OpenDocuments {
   isOpen(file: string): boolean;
@@ -302,9 +304,9 @@ export function newerEvent(held: string | null, arriving: string): boolean {
 
 export class Publisher {
   /*
-   * `files` is handed in for the reason `placeReading` is handed an
-   * editor: this does not need to know whose file system it is, and
-   * that is what lets a cell count what it did. (§12.20, C2/C10)
+   * `files` and `documents` are both handed in: this does not need to
+   * know whose file system or whose editor it is, and that is what lets
+   * a cell count what it did. (§12.20, C2/C10)
    */
   private readonly files: FileOps;
   private readonly documents: OpenDocuments;

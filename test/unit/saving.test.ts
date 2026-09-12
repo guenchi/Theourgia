@@ -476,3 +476,60 @@ describe('a file whose line endings differ from the record’s prefix', () => {
     }
   });
 });
+
+/*
+ * THE PREFIX IS NORMALISED TOO, AND THAT BRANCH IS LOAD-BEARING.
+ *
+ * ⚠️ A MUTATION SURVIVED HERE. Removing the `sidecar.prefix.replace(...)`
+ * left every cell green, because all three EOL cells above give the
+ * prefix and the body the same line endings -- the shape that needs it
+ * is a prefix with CRLF above a body WITHOUT, and none of them had it.
+ *
+ * THE SHAPE IS REAL, AND IT WAS MEASURED rather than supposed: importing
+ * `---\r\ntitle\r\n---\r\n\nbody\n` into the pinned core gives back
+ * exactly that -- `front` carrying CRLF, `src` carrying none. Without
+ * the branch, the text is normalised while the prefix is not, the
+ * comparison fails, and every save of such a document is refused as
+ * "the heading changed" -- about a change the user did not make.
+ */
+describe('a prefix with CRLF above a body without', () => {
+  it('sends the body when the file was written with the prefix’s line endings', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    /*
+     * As the editor leaves it: one EOL throughout, because that is what
+     * an editor does to a buffer it saves.
+     */
+    const text = '---\r\ntitle: crlf front\r\n---\r\n\r\nthe body\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('---\r\ntitle: crlf front\r\n---\r\n'),
+      bodyHasCrlf: false
+    });
+    assert.ok(
+      decision.send,
+      `a document whose front matter uses CRLF and whose body does not was refused: ${JSON.stringify(decision)}`
+    );
+    if (decision.send) {
+      assert.strictEqual(decision.src, '\nthe body\n', 'the body was not normalised to the block’s own endings');
+      assert.strictEqual(decision.normalised, true);
+    }
+  });
+
+  /*
+   * AND THE REFUSAL STILL WORKS FOR THAT SHAPE. The twin: the fix must
+   * not become "compare a normalised text against a normalised prefix
+   * and therefore never refuse".
+   */
+  it('still refuses when the front matter itself was edited', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '---\r\ntitle: changed by hand\r\n---\r\n\r\nthe body\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('---\r\ntitle: crlf front\r\n---\r\n'),
+      bodyHasCrlf: false
+    });
+    assert.strictEqual(decision.send, false, 'an edited front matter was sent as though it were the body');
+  });
+});

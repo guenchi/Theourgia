@@ -28,6 +28,9 @@ import * as assert from 'assert';
 import * as path from 'path';
 import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
+import { createHash } from 'crypto';
+import { nodeFileOps } from '../../src/fsops';
+import { Sessions } from '../../src/sessions';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
 import { Client } from '../../src/client';
@@ -939,5 +942,86 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
         e instanceof TransportError && e.failure === 'unreadable' && e.message.includes(from),
       'a block carrying an edge name the wire cannot spell was read as an ordinary block'
     );
+  });
+});
+
+/*
+ * ONE SESSION, TWO STORES, AND TWO CURSORS.
+ *
+ * ⚠️ THIS IS THE DEFECT THE WIRING PRODUCED. The queue moved inside the
+ * session -- which is what stops two windows sharing one file -- and a
+ * queue carries ONE cursor. A session spans as many stores as the user
+ * points it at, so after switching, the saver was offering a position
+ * the new store had never issued and every save came back
+ * `cursor-unreachable`. Nothing in the modules could show it: each is
+ * right on its own, and only a second store makes the queue ambiguous.
+ *
+ * THE QUEUE IS THEREFORE PER SESSION AND PER STORE. This cell alternates
+ * between two real stores through one session and requires every save to
+ * land -- with a single queue, the second one fails.
+ */
+describe('a session that writes to two stores keeps their cursors apart', function () {
+  this.timeout(180000);
+  let one: RealStore;
+  let two: RealStore;
+  let pinned: CorePin | undefined;
+
+  before(async () => {
+    pinned = pinCore();
+    one = await RealStore.make('two-stores-a');
+    two = await RealStore.make('two-stores-b');
+    await one.importMarkdown('a.md', '# Doc A\n\n## Block\nfrom a\n');
+    await two.importMarkdown('b.md', '# Doc B\n\n## Block\nfrom b\n');
+  });
+
+  after(() => {
+    try {
+      one?.dispose();
+      two?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  it('lands every save when the session alternates between them', async () => {
+    const sessions = new Sessions(nodeFileOps, one.root);
+    sessions.begin('S-two-stores', [one.store, two.store]);
+    const hash = (store: string): string =>
+      createHash('sha256').update(store, 'utf8').digest('hex').slice(0, 16);
+
+    const saverFor = async (store: RealStore): Promise<Saver> => {
+      const outbox = new Outbox(sessions.outboxPathFor('S-two-stores', hash(store.store)));
+      outbox.load();
+      return new Saver(store.client, outbox);
+    };
+
+    const idOf = async (store: RealStore): Promise<string> => {
+      const outline = await store.client.request('outline', []);
+      for (const line of outline.text.split('\n')) {
+        const at = line.indexOf('- ');
+        if (at > 0) {
+          return line.slice(at + 2).split('  ')[0];
+        }
+      }
+      throw new Error(`no child block in ${outline.text}`);
+    };
+
+    const a = await idOf(one);
+    const b = await idOf(two);
+
+    const first = await (await saverFor(one)).save(a, 'src', 'first into a\n');
+    assert.strictEqual(first.status, 'saved', first.message);
+    const second = await (await saverFor(two)).save(b, 'src', 'first into b\n');
+    assert.strictEqual(
+      second.status,
+      'saved',
+      `the second store refused the save: ${second.message}. With one queue per session the cursor ` +
+        'from the first store is offered to the second, which has never issued it.'
+    );
+    const third = await (await saverFor(one)).save(a, 'src', 'second into a\n');
+    assert.strictEqual(third.status, 'saved', third.message);
+
+    assert.strictEqual((await one.client.request('read', [a, '--md'])).text.includes('second into a'), true);
+    assert.strictEqual((await two.client.request('read', [b, '--md'])).text.includes('first into b'), true);
   });
 });

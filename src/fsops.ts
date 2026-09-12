@@ -28,7 +28,7 @@
  * IT IS A PARAMETER, NOT A HOOK. Nothing here exists for the benefit of
  * a test: a component that writes files genuinely does not need to know
  * that they are Node's files, and saying so in the signature is what
- * makes the recording possible. The editor is handed to `placeReading`
+ * makes the recording possible. The editor is handed to `Publisher`
  * the same way and for the same reason.
  *
  * THE SET IS EXACTLY WHAT IS USED, and it stays that way. A wider

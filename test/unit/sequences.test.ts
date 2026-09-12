@@ -27,6 +27,35 @@
  *
  * S7 IS ELSEWHERE, in two-hosts.test.ts, because it is the one that
  * needs two processes and the one whose answer is "unreachable".
+ *
+ * TWO MODULES WERE RETIRED INTO THIS FILE.
+ *
+ * `src/open.ts` and `src/placing.ts` carried X1c's predecessors -- a
+ * ticket that ordered two overlapping opens, and a step that admitted a
+ * reading, wrote the file and revealed it. Sixteen cells went with them,
+ * and this note is the record of what they covered and what covers it
+ * now, because a suite that merely gets shorter has lost something and
+ * says nothing:
+ *
+ *   - ORDERING TWO OPENS OF ONE BLOCK (open.test.ts: tickets, the
+ *     refusal of an older registration, per-file ordering) -> the chain
+ *     in `src/chain.ts`, which serialises the critical sections rather
+ *     than ordering their results, AND immutable publication, which
+ *     removes the thing they were competing for: a reading no longer
+ *     replaces another reading's baseline, it writes its own. S1 and S4
+ *     below are those cells' subject.
+ *   - A FAILED WRITE MUST RECORD NO BASELINE (open.test.ts) -> the
+ *     three-step record in `Publisher.publish`, and S2 below.
+ *   - A CONFIRMED SAVE OUTRANKS AN EARLIER READ (open.test.ts:
+ *     `confirmed`) -> the sidecar: a save writes `acknowledged-raw`
+ *     against the version it was split from, and a later reading is a
+ *     NEW version rather than a competitor. S3 and S5 below.
+ *   - ADMIT, WRITE, THEN REVEAL (placing.test.ts) -> `publishInto`,
+ *     which is the single door every publication goes through and which
+ *     asks `isOpen` before it writes anything.
+ *   - THE LOSING READING MUST NOT WRITE (placing.test.ts) -> the same
+ *     door: a path the editor holds is refused, and a path it does not
+ *     hold has never been published, so there is nothing to lose.
  */
 
 import * as assert from 'assert';

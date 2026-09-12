@@ -42,6 +42,20 @@ import * as path from 'path';
 
 /*
  * Counted 2026-09-12, after X1c's cells and implementation.
+ *
+ * REMOVED, WITH WHO TOOK OVER THE GROUND:
+ *
+ *   open.test.ts (12) and placing.test.ts (4) went when `src/open.ts`
+ *   and `src/placing.ts` did: X1c's wiring calls neither, and code that
+ *   nothing calls but everything tests reads as maintained. What they
+ *   covered is carried by `src/chain.ts` (ordering the critical
+ *   sections), by immutable publication (a reading writes its own
+ *   version rather than replacing another's baseline), by the sidecar
+ *   (a save is recorded against the version it was split from), and by
+ *   `publishInto` (one door, which asks `isOpen` before writing). The
+ *   sequences themselves are written out at the top of
+ *   sequences.test.ts -- that note is the reason this subtraction is a
+ *   decision and not a loss.
  */
 const AT_LEAST: Array<[string, number]> = [
   ['answering.test.ts', 6],
@@ -54,9 +68,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['durability.test.ts', 18],
   ['fsops.test.ts', 7],
   ['host.test.ts', 8],
-  ['open.test.ts', 12],
   ['outline.test.ts', 40],
-  ['placing.test.ts', 4],
   ['publication.test.ts', 28],
   ['real-core.test.ts', 13],
   ['saver.test.ts', 37],
