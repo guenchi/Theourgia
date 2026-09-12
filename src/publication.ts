@@ -34,6 +34,7 @@
 import { createHash } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
+import { Owners } from './ownership';
 
 /*
  * ONE DIGEST FUNCTION. The sidecar's four digest fields and the draft
@@ -115,6 +116,24 @@ export interface Sidecar {
    * `reconcile`. (§12.9, §12.11.7, C15)
    */
   unresolved: boolean;
+
+  /*
+   * ⚠️ A SEND IS OUT THAT CANNOT WRITE A RECORD. (§13.1, D6)
+   *
+   * A queue entry made before §13 carries a request and bytes and
+   * nothing else: no file, no digests, no sequence number. Its answer
+   * may only touch the queue and the notice -- writing a baseline from
+   * it would mean inventing the provenance the entry never had. But the
+   * send is REAL, and while it is out the block's versions cannot be
+   * called settled either.
+   *
+   * So the migration marks every version of the block, and the mark is
+   * what makes them drafts until the old entry reaches a final verdict.
+   * The mark is written on the record rather than worked out from the
+   * queue, because the queue belongs to one session and the question
+   * "is this file settled" is asked by anyone holding the file.
+   */
+  legacySend: boolean;
   /*
    * Whether the block's own body, as the store gave it, contains CRLF.
    * The save path needs this to decide whether a CRLF file is the
@@ -210,7 +229,24 @@ export type Confirmed =
    * than leaving a field empty for somebody to read as one. `seq` is 0,
    * so the first confirmation this build writes replaces it.
    */
-  | { by: 'legacy'; seq: 0; rawDigest: string; cursor: string | null };
+  | { by: 'legacy'; seq: 0; rawDigest: string; cursor: string | null }
+  /*
+   * ⚠️ THE BASELINE A PUBLICATION ESTABLISHES, WHICH IS NOT A SEND.
+   *
+   * A version published from the store holds bytes the store gave us.
+   * That is a baseline -- these bytes are what the store had -- and it
+   * is emphatically not a confirmation of a send: there is no request,
+   * no sequence number and no sent body, because nothing was sent.
+   *
+   * The first version of this borrowed the `by: 'store'` shape with
+   * `req: ''` and `seq: 0`. An empty request id is a sentence about a
+   * request that does not exist, and this tree has been bitten by the
+   * same shape before -- an absent thing drawn as the reassuring value
+   * (`?? 0`, `catch { return 0 }`). Naming the fourth kind costs one
+   * line and makes the type refuse to compare a `sentDigest` nobody
+   * wrote. (§13.6 (11))
+   */
+  | { by: 'publication'; rawDigest: string; prefixDigest: string; cursor: string | null };
 
 export interface Outstanding {
   seq: number;
@@ -242,7 +278,7 @@ export type Standing =
  */
 export type Acknowledgement =
   | { recorded: true }
-  | { recorded: false; because: 'older-event' | 'no-sidecar' };
+  | { recorded: false; because: 'older-event' | 'no-sidecar' | 'not-ours' };
 
 export interface PublishRequest {
   directory: string;
@@ -250,11 +286,33 @@ export interface PublishRequest {
   blockId: string;
   prefix: string;
   text: string;
+  /*
+   * WHERE THE STORE STOOD WHEN THESE BYTES WERE READ, as far as this
+   * window knows.
+   *
+   * ⚠️ IT IS NOT TAKEN FROM THE READ ITSELF, because the core's answer
+   * to a read carries no position -- only a write's answer does. What
+   * is recorded here is the position this window held for the store at
+   * the moment it published, which can be behind. It is written down
+   * because a baseline with no provenance at all is worse, and it is
+   * described in these words so that nobody later reads it as "the
+   * store was exactly here when it gave us this".
+   */
+  cursor: string | null;
 }
 
 export type PublishOutcome =
   | { published: true; file: string; version: number }
-  | { published: false; because: 'document-open' | 'digest-moved'; file: string | null };
+  | {
+      published: false;
+      /*
+       * `not-ours` IS NOT `digest-moved`. Another window holds this
+       * block's directory: nothing is wrong with the bytes, and the
+       * thing to do is look at that window rather than save again.
+       */
+      because: 'document-open' | 'digest-moved' | 'not-ours';
+      file: string | null;
+    };
 
 /*
  * THE NAMES ON DISK ARE THE DESIGN'S NAMES, NOT THIS LANGUAGE'S.
@@ -286,6 +344,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     'local-only': sidecar.localOnly,
     unresolved: sidecar.unresolved,
     'body-has-crlf': sidecar.bodyHasCrlf,
+    'legacy-send': sidecar.legacySend,
     /*
      * ⚠️ WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
      * writes must be one this build can read back with the same meaning,
@@ -320,6 +379,14 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
 }
 
 function confirmedToDisk(confirmed: Exclude<Confirmed, { by: 'legacy' }>): Record<string, unknown> {
+  if (confirmed.by === 'publication') {
+    return {
+      'raw-digest': confirmed.rawDigest,
+      'prefix-digest': confirmed.prefixDigest,
+      cursor: confirmed.cursor,
+      by: confirmed.by
+    };
+  }
   return {
     req: confirmed.req,
     seq: confirmed.seq,
@@ -336,15 +403,27 @@ function confirmedToDisk(confirmed: Exclude<Confirmed, { by: 'legacy' }>): Recor
  * that a fresh publication and a record read from an older build agree
  * about where the counters begin.
  */
+/*
+ * THE FIRST NUMBER A SEND CAN HAVE. `nextSeq` starts here, so a record
+ * claiming a smaller one was never issued by this build.
+ */
+export const FIRST_SEQ = 1;
+
 export const UNNUMBERED: Pick<
   Sidecar,
-  'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'
+  'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy' | 'legacySend'
 > = {
   confirmed: null,
   outstanding: [],
   highWater: 0,
-  nextSeq: 1,
-  writtenBy: null
+  nextSeq: FIRST_SEQ,
+  writtenBy: null,
+  /*
+   * A RECORD THIS BUILD WRITES HAS NO OLD-FORMAT SEND BEHIND IT. The
+   * mark is put on by the migration, which is the only thing that knows
+   * an entry without a record exists.
+   */
+  legacySend: false
 };
 
 /*
@@ -406,6 +485,7 @@ export function sidecarFromDisk(text: string): SidecarRead {
       localOnly: record['local-only'] === true,
       unresolved: record.unresolved === true,
       bodyHasCrlf: record['body-has-crlf'] === true,
+      legacySend: record['legacy-send'] === true,
       ...confirmationFrom(record)
     }
   };
@@ -437,6 +517,23 @@ function confirmationFrom(
   record: Record<string, unknown>
 ): Pick<Sidecar, 'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'> {
   const held = record.confirmed;
+  /*
+   * ⚠️ `null` HERE DOES NOT MEAN "THIS BUILD SAYS THERE IS NO
+   * BASELINE", and reading it that way costs a block its baseline.
+   *
+   * A derived baseline is deliberately NOT written back -- what goes to
+   * disk is `confirmed: null` beside the fields it was derived FROM --
+   * so the next read has to derive it again. Treating the explicit
+   * `null` as a statement would mean that the first time anything
+   * rewrote an old record, the block it belongs to became a draft. That
+   * is the defect this whole migration exists to avoid, arriving
+   * through the door built to avoid it.
+   *
+   * What separates "no baseline" from "one that has to be derived" is
+   * not the key: it is whether the record carries the fields a
+   * derivation needs, and `local-only` -- the older build's own word
+   * for "this baseline came from the file". `legacyBaseline` asks both.
+   */
   const confirmed =
     typeof held === 'object' && held !== null && !Array.isArray(held)
       ? readConfirmed(held as Record<string, unknown>)
@@ -473,6 +570,14 @@ function confirmationFrom(
 function readConfirmed(held: Record<string, unknown>): Confirmed | null {
   const text = (key: string): string | null =>
     typeof held[key] === 'string' ? (held[key] as string) : null;
+  if (held.by === 'publication') {
+    const raw = text('raw-digest');
+    const prefix = text('prefix-digest');
+    if (raw === null || prefix === null) {
+      return null;
+    }
+    return { by: 'publication', rawDigest: raw, prefixDigest: prefix, cursor: text('cursor') };
+  }
   const req = text('req');
   const sentDigest = text('sent-digest');
   const rawDigest = text('raw-digest');
@@ -500,12 +605,76 @@ function readConfirmed(held: Record<string, unknown>): Confirmed | null {
  * which is what it was before this build ran too.
  */
 function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
+  const cursor = record.cursor;
   const raw = record['acknowledged-raw'];
-  if (typeof raw !== 'string') {
+  if (typeof raw === 'string') {
+    return { by: 'legacy', seq: 0, rawDigest: raw, cursor: typeof cursor === 'string' ? cursor : null };
+  }
+  /*
+   * ⚠️ AND A VERSION THE OLDER BUILD PUBLISHED AND NOBODY SAVED FROM
+   * STILL HAS A BASELINE: `written`. (§13.6, ruled after the trace
+   * below.)
+   *
+   * My first reading made these drafts, on the grounds that nothing had
+   * been acknowledged. That is a sentence about saves and the question
+   * is about bytes: a published version holds exactly what the store
+   * gave, and calling it a draft tells the user they have unsent work
+   * when they have none -- a lie in the direction that costs them a
+   * search.
+   *
+   * ⚠️ IT IS ONLY TRUE WHERE `written` REALLY HOLDS THE STORE'S BYTES,
+   * AND THAT IS A TRACE, NOT A BELIEF. Every place this build assigns
+   * `written`:
+   *
+   *   - `publishInto`, from `publish`: the text came from the store
+   *     (`openBlock` reads the block and publishes it).
+   *   - `publishInto`, from `reconcileBy`'s `take-store-version`: the
+   *     store's text.
+   *   - `publishInto`, from `reconcileBy`'s `prepend-prefix`: the
+   *     USER'S bytes with the store's heading in front. NOT the
+   *     store's.
+   *   - `reconcile`'s `prefix-already-present` path: the FILE's bytes.
+   *     NOT the store's.
+   *
+   * The last two are exactly the two that set `local-only`, which is
+   * the older build's own word for "this baseline came from the file".
+   * So the derivation is allowed only where that word is absent -- and
+   * it is the record's word, not an inference about it.
+   */
+  /*
+   * ⚠️ AND IT ONLY APPLIES TO A RECORD FROM BEFORE §13. Every record
+   * this build writes carries `next-seq`; a record without it was
+   * written by the older one. `confirmed: null` cannot be the signal --
+   * this build writes exactly that for a version it knows has no
+   * baseline, and reading it as "work it out from `written`" would give
+   * a baseline to the user's own bytes.
+   *
+   * ⚠️ UNLIKE THE LEGACY ONE, THIS BASELINE IS WRITTEN BACK. It invents
+   * nothing: every field comes from the record (`written`, `prefix`,
+   * `cursor`), so recording it states what was already there. The
+   * legacy baseline is not written back because it HAS no request, sent
+   * digest or split to record, and writing one would be inventing them.
+   * That is also what makes this trigger safe to lose: after the first
+   * rewrite the baseline is recorded and nothing needs to be derived
+   * again.
+   */
+  if (record['next-seq'] !== undefined) {
     return null;
   }
-  const cursor = record.cursor;
-  return { by: 'legacy', seq: 0, rawDigest: raw, cursor: typeof cursor === 'string' ? cursor : null };
+  if (record['local-only'] === true) {
+    return null;
+  }
+  const written = record.written;
+  const prefix = record.prefix;
+  if (typeof written !== 'string' || typeof prefix !== 'string') {
+    return null;
+  }
+  return {
+    by: 'publication',
+    rawDigest: written,
+    prefixDigest: digestOfBytes(prefix),
+    cursor: typeof cursor === 'string' ? cursor : null
+  };
 }
 
 function readWrittenBy(wrote: Record<string, unknown>): WrittenBy | null {
@@ -628,7 +797,10 @@ export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): vo
  */
 export type Cleanliness =
   | { clean: true }
-  | { clean: false; because: 'never-confirmed' | 'bytes-moved' | 'prefix-moved' | 'still-out' }
+  | {
+      clean: false;
+      because: 'never-confirmed' | 'bytes-moved' | 'prefix-moved' | 'still-out' | 'legacy-send-out';
+    }
   | { clean: false; because: 'records-disagree'; detail: string };
 
 export interface QueueView {
@@ -659,6 +831,19 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
       because: 'records-disagree',
       detail: `the record says nothing is out and the queue holds ${held.join(', ')}`
     };
+  }
+  /*
+   * ⚠️ AN OLD-FORMAT SEND IS OUT, AND IT HAS ITS OWN WORD. (D6)
+   *
+   * It could be folded into `still-out` -- both mean "something is in
+   * flight" -- and then the one thing the user can be told about it
+   * would be lost: this send cannot write a baseline whatever it comes
+   * back as, so the block will need saving again even if it succeeds.
+   * `still-out` reads as "wait", and this one reads as "save it again
+   * once the answer is in". Different sentences, different words.
+   */
+  if (sidecar.legacySend) {
+    return { clean: false, because: 'legacy-send-out' };
   }
   if (confirmed === null) {
     return { clean: false, because: 'never-confirmed' };
@@ -692,6 +877,32 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
   return { clean: true };
 }
 
+/*
+ * WHETHER A CONFIRMATION BECOMES THE BASELINE. (§13.3)
+ *
+ * ⚠️ THE AXIS IS `highWater`, NOT `confirmed.seq`, and that is the whole
+ * reason this is a named function rather than a comparison written at
+ * the one place that needed it. `highWater` only ever rises and
+ * `reconcile` does not touch it; `confirmed.seq` disappears when
+ * `reconcile` removes a baseline, and a late answer for an older send
+ * would then read `4 > 0` and put the removed baseline back -- reading
+ * as clean a file somebody deliberately took the baseline off.
+ *
+ * ⚠️ A DERIVED BASELINE HAS NO SEND NUMBER OF ITS OWN. A legacy record
+ * and a publication both sit at `highWater` 0, so the first real send
+ * replaces them -- and that is a consequence of how they are written,
+ * not a rule this function may assume. It compares the one axis; the
+ * cells state the consequence for each kind of baseline, including the
+ * combination that must NOT replace: a high-water mark above the
+ * arriving send.
+ */
+export function replacesBaseline(highWater: number, arriving: number): boolean {
+  if (!Number.isInteger(arriving) || arriving < FIRST_SEQ) {
+    return false;
+  }
+  return arriving > highWater;
+}
+
 export class Publisher {
   /*
    * `files` and `documents` are both handed in: this does not need to
@@ -700,10 +911,65 @@ export class Publisher {
    */
   private readonly files: FileOps;
   private readonly documents: OpenDocuments;
+  /*
+   * WHO THIS PUBLISHER IS, WHEN IT IS SOMEBODY. (§13, r3-3)
+   *
+   * Every path that writes a record beside a block passes one rule: the
+   * block directory is owned by this session. The rule lives in
+   * `ownership.ts`; what each path DOES when it fails differs, so the
+   * check is made at each of them and the reaction belongs to the path.
+   *
+   * ⚠️ ABSENT MEANS NO CHECK, AND THAT IS A DOOR LEFT OPEN ON PURPOSE:
+   * the cells about publication are about publication, and making every
+   * one of them build a session and take ownership would be measuring
+   * the fixture. What keeps the shipping path honest is the census in
+   * `ownership.test.ts` over `new Publisher(` in `src`.
+   */
+  private readonly ownership?: { owners: Owners; sessionId: string };
 
-  constructor(files: FileOps, documents: OpenDocuments) {
+  constructor(
+    files: FileOps,
+    documents: OpenDocuments,
+    ownership?: { owners: Owners; sessionId: string }
+  ) {
     this.files = files;
     this.documents = documents;
+    this.ownership = ownership;
+  }
+
+  /*
+   * ⚠️ THE RULE IS ONE FUNCTION AND THE REACTIONS ARE MANY. Whether
+   * this session may write beside a file is asked here; what to do when
+   * it may not is the caller's, because "the save is not queued", "the
+   * reconciliation did not happen" and "the record was not written" are
+   * three different sentences to a user.
+   */
+  private mayWrite(file: string): { may: true } | { may: false; because: string } {
+    if (this.ownership === undefined) {
+      return { may: true };
+    }
+    const asked = this.ownership.owners.mayWrite(path.dirname(file), this.ownership.sessionId);
+    return asked.may ? { may: true } : { may: false, because: asked.because };
+  }
+
+  /*
+   * TAKE THE BLOCK DIRECTORY IF NOBODY HOLDS IT. A publication creates
+   * the directory, so there is nothing to own until it does; every
+   * later write asks `mayWrite` instead.
+   */
+  private takeIfUnowned(directory: string): { may: true } | { may: false; because: string } {
+    if (this.ownership === undefined) {
+      return { may: true };
+    }
+    const asked = this.ownership.owners.mayWrite(directory, this.ownership.sessionId);
+    if (asked.may) {
+      return { may: true };
+    }
+    if (asked.because !== 'unowned') {
+      return { may: false, because: asked.because };
+    }
+    const held = this.ownership.owners.take(directory, this.ownership.sessionId, []);
+    return held.held ? { may: true } : { may: false, because: held.because };
   }
 
   private metaOf(file: string): string {
@@ -777,7 +1043,7 @@ export class Publisher {
       previousFile !== null && this.files.exists(previousFile)
         ? digestOfBytes(this.files.readBytes(previousFile))
         : null;
-    return this.publishInto(request.directory, request, previous);
+    return this.publishInto(request.directory, request, previous, { cursor: request.cursor });
   }
 
   /*
@@ -789,9 +1055,29 @@ export class Publisher {
   private publishInto(
     directory: string,
     what: { storeId: string; blockId: string; prefix: string; text: string },
-    previous: string | null
+    previous: string | null,
+    /*
+     * WHETHER THESE BYTES CAME FROM THE STORE. A publication whose text
+     * was read from the store establishes a baseline; one built here --
+     * the user's own bytes with a heading put in front of them -- does
+     * not, and the block stays a draft until a save is confirmed. The
+     * difference is the caller's to state, because only the caller
+     * knows where the text came from.
+     */
+    baseline: { cursor: string | null } | null
   ): PublishOutcome {
     this.files.makeDirectory(directory);
+    /*
+     * ⚠️ A PUBLICATION IS WHERE OWNERSHIP OF A BLOCK BEGINS. There is
+     * nothing to own until the directory exists; every later write asks
+     * `mayWrite`. A directory somebody else holds is refused here, in
+     * the same words as a target the editor has open: nothing is
+     * written and the caller is told.
+     */
+    const ours = this.takeIfUnowned(directory);
+    if (!ours.may) {
+      return { published: false, because: 'not-ours', file: null };
+    }
     const version = this.nextVersion(directory);
     const file = path.join(directory, `${version}.md`);
     if (this.documents.isOpen(file)) {
@@ -806,6 +1092,15 @@ export class Publisher {
       prefix: what.prefix,
       written: digestOfBytes(Buffer.from(what.text, 'utf8')),
       previous,
+      confirmed:
+        baseline === null
+          ? null
+          : {
+              by: 'publication',
+              rawDigest: digestOfBytes(Buffer.from(what.text, 'utf8')),
+              prefixDigest: digestOfBytes(what.prefix),
+              cursor: baseline.cursor
+            },
       acknowledgedRaw: null,
       sent: null,
       cursor: null,
@@ -832,7 +1127,18 @@ export class Publisher {
    * digest with `written` and with `previous`; neither ⇒ the editor
    * wrote a third version. (§12.9)
    */
-  public standingOf(file: string): Standing {
+  /*
+   * ⚠️ THE QUEUE IS AN INPUT, AND WHERE IT IS ABSENT THE ANSWER IS
+   * ABOUT THE FILE ALONE. (§13.3, D2)
+   *
+   * Whether a block is a draft is a pure function of four things: the
+   * bytes, the record beside them, and -- through `outstanding` -- what
+   * the owner's queue still holds. A caller that has no queue to hand
+   * (the judge `Sessions` makes for a listing when it is asked about
+   * one file) gets the answer for an empty one, which is what the
+   * record alone can say.
+   */
+  public standingOf(file: string, queue?: QueueView): Standing {
     const sidecar = this.sidecarOf(file);
     if (sidecar === null) {
       return { kind: 'absent' };
@@ -850,7 +1156,8 @@ export class Publisher {
         ? { kind: 'mid-publication', complete: false }
         : { kind: 'absent' };
     }
-    const digest = digestOfBytes(this.files.readBytes(file));
+    const bytes = this.files.readBytes(file);
+    const digest = digestOfBytes(bytes);
     if (sidecar.phase === 'publishing') {
       if (digest === sidecar.written) {
         return { kind: 'mid-publication', complete: true };
@@ -895,9 +1202,16 @@ export class Publisher {
      * A `local-only` VERSION IS ALWAYS ONE, whatever its digests say:
      * its baseline came from the file rather than from an answer.
      */
-    const baseline = sidecar.acknowledgedRaw ?? sidecar.written;
-    const draft = sidecar.localOnly || digest !== baseline;
-    return { kind: 'published', draft };
+    /*
+     * ⚠️ ONE RULE, ONE PLACE. What a draft is used to be decided here
+     * AND in the listing that scans a session, in two spellings -- and
+     * they disagreed: the listing called every freshly published
+     * version a draft because it compared against `acknowledged-raw`
+     * alone. §13 makes it a pure function of four persistent inputs and
+     * this is now the only caller-facing way in.
+     */
+    const verdict = cleanliness(bytes, sidecar, queue ?? { unsettled: [] });
+    return { kind: 'published', draft: !verdict.clean };
   }
 
   public sidecarOf(file: string): Sidecar | null {
@@ -929,6 +1243,10 @@ export class Publisher {
   public reconcile(file: string, storePrefix: string, storeText: string): Reconciliation {
     const fileText = this.files.readText(file);
     if (fileText.startsWith(storePrefix)) {
+      const ours = this.mayWrite(file);
+      if (!ours.may) {
+        return { reconciled: false, choices: [], storeText, previousText: null, fileText };
+      }
       const sidecar = this.sidecarOf(file);
       if (sidecar !== null) {
         /*
@@ -942,11 +1260,25 @@ export class Publisher {
          * version is marked `local-only`, because this baseline came
          * from the file rather than from an answer. (§12.11.7)
          */
+        /*
+         * ⚠️ AND THE BASELINE GOES WITH IT. `local-only` says this
+         * version's baseline came from the FILE rather than from the
+         * store; a `confirmed` left over from the publication would say
+         * the opposite, in the field that now decides whether the block
+         * is a draft. The two would contradict each other and the
+         * cheerful one would win.
+         *
+         * Found by switching the draft rule onto the pure function: a
+         * reconciled version whose digests happened to agree read as
+         * settled, and the cell that has said otherwise since C6 caught
+         * it. The cell was right; this is where the defect was.
+         */
         this.write(file, {
           ...sidecar,
           prefix: storePrefix,
           written: digestOfBytes(Buffer.from(fileText, 'utf8')),
           phase: 'published',
+          confirmed: null,
           acknowledgedRaw: null,
           localOnly: true,
           unresolved: false
@@ -991,7 +1323,11 @@ export class Publisher {
     storePrefix: string,
     storeText: string,
     offered?: string
-  ): { done: boolean; file: string; because?: 'no-record' | 'file-changed' | 'document-open' } {
+  ): {
+    done: boolean;
+    file: string;
+    because?: 'no-record' | 'file-changed' | 'document-open' | 'not-ours';
+  } {
     const sidecar = this.sidecarOf(file);
     if (sidecar === null) {
       return { done: false, file, because: 'no-record' };
@@ -1030,6 +1366,10 @@ export class Publisher {
      * caller already has for "look again"; an ENOENT escaping from here
      * would leave the command with no answer at all.
      */
+    const ours = this.mayWrite(file);
+    if (!ours.may) {
+      return { done: false, file, because: 'not-ours' };
+    }
     let current: string | null;
     try {
       current = this.files.readText(file);
@@ -1068,7 +1408,8 @@ export class Publisher {
       const outcome = this.publishInto(
         path.dirname(file),
         { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: joined },
-        digestOfBytes(this.files.readBytes(file))
+        digestOfBytes(this.files.readBytes(file)),
+        null
       );
       if (!outcome.published) {
         return { done: false, file, because: 'document-open' };
@@ -1096,7 +1437,16 @@ export class Publisher {
     const outcome = this.publishInto(
       directory,
       { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: storeText },
-      digestOfBytes(this.files.readBytes(file))
+      digestOfBytes(this.files.readBytes(file)),
+      /*
+       * TAKING THE STORE'S VERSION IS READING FROM THE STORE, so it
+       * establishes a baseline the same way `publish` does. The cursor
+       * is not available on this path -- `reconcileBy` is handed the
+       * store's text by a caller that did not carry a position with it
+       * -- so the baseline records the digests and says it has no
+       * position, which is the honest half of what it knows.
+       */
+      { cursor: null }
     );
     if (!outcome.published) {
       return { done: false, file, because: 'document-open' };
@@ -1105,12 +1455,113 @@ export class Publisher {
     return { done: true, file: outcome.file };
   }
 
+  /*
+   * TAKE THE NEXT SEND NUMBER FOR A FILE, AND RECORD IT AS OUT.
+   * (§13.1, I7)
+   *
+   * ⚠️ THE NUMBER IS ON DISK BEFORE ANYTHING IS SENT. Both halves --
+   * `nextSeq` advancing and the number joining `outstanding` -- are one
+   * write, and it is durable. A number handed out and not written down
+   * is a number the next start of this window hands out again, so two
+   * different sends would carry one sequence and the ordering guard
+   * that decides which of them becomes the baseline would be comparing
+   * them by a number they share.
+   *
+   * ⚠️ AND THE FAILURE IS AN ANSWER, NOT AN EXCEPTION. If the record
+   * cannot be written the save has not been accepted: nothing may be
+   * queued and the user has to be told. Throwing from here would reach
+   * the same place, but as "something went wrong in the save handler"
+   * rather than as this particular thing.
+   */
+  public takeSequence(
+    file: string,
+    req: string
+  ):
+    | { taken: true; seq: number }
+    | { taken: false; because: 'no-record' | 'could-not-write' | 'not-ours'; detail?: string } {
+    const ours = this.mayWrite(file);
+    if (!ours.may) {
+      return { taken: false, because: 'not-ours', detail: ours.because };
+    }
+    const sidecar = this.sidecarOf(file);
+    if (sidecar === null) {
+      return { taken: false, because: 'no-record' };
+    }
+    const seq = sidecar.nextSeq;
+    try {
+      this.write(file, {
+        ...sidecar,
+        nextSeq: seq + 1,
+        outstanding: [...sidecar.outstanding, { seq, req }]
+      });
+    } catch (e) {
+      return { taken: false, because: 'could-not-write', detail: String(e) };
+    }
+    return { taken: true, seq };
+  }
+
+  /*
+   * MARK EVERY VERSION OF A BLOCK AS HAVING AN OLD-FORMAT SEND OUT, and
+   * say which records were marked. (D6)
+   *
+   * ⚠️ EVERY VERSION, NOT THE NEWEST. The entry names a block and
+   * carries no file; the answer, when it comes, says nothing about
+   * which version the bytes went from. Marking only the newest would
+   * leave the others reading as settled while a send nobody can
+   * attribute is still out.
+   *
+   * ⚠️ AND IT RETURNS THE SET. Removing the mark later is the entry's
+   * job, and an entry that had to re-derive which records it marked
+   * would be a second supplier of that fact -- the shape this batch
+   * deleted `recovered()` for. The caller puts this list in the entry.
+   */
+  public markLegacySend(directory: string): string[] {
+    const marked: string[] = [];
+    for (const name of this.files.list(directory).filter((n) => /^\d+\.md$/.test(n))) {
+      const file = path.join(directory, name);
+      const ours = this.mayWrite(file);
+      if (!ours.may) {
+        continue;
+      }
+      const sidecar = this.sidecarOf(file);
+      if (sidecar === null) {
+        continue;
+      }
+      this.write(file, { ...sidecar, legacySend: true });
+      marked.push(file);
+    }
+    return marked;
+  }
+
+  /*
+   * TAKE THE MARK OFF ONE RECORD. Which records, and when, is the
+   * settling side's decision -- only a final verdict clears it, and
+   * `unknown` and `req-mismatch` are not final. This is the act, not
+   * the policy.
+   */
+  public clearLegacySend(file: string): boolean {
+    const ours = this.mayWrite(file);
+    if (!ours.may) {
+      return false;
+    }
+    const sidecar = this.sidecarOf(file);
+    if (sidecar === null) {
+      return false;
+    }
+    this.write(file, { ...sidecar, legacySend: false });
+    return true;
+  }
+
   public acknowledge(
     file: string,
     rawDigest: string,
     sentDigest: string,
     cursor: string
   ): Acknowledgement {
+    const ours = this.mayWrite(file);
+    if (!ours.may) {
+      return { recorded: false, because: 'not-ours' };
+    }
     const sidecar = this.sidecarOf(file);
     if (sidecar === null) {
       return { recorded: false, because: 'no-sidecar' };

@@ -37,6 +37,9 @@
  */
 
 import { FileOps, nodeFileOps } from './fsops';
+import { sameWriter } from './cursor';
+import { newerEvent } from './publication';
+import { SendRecord, freezeRecord } from './record';
 import * as path from 'path';
 
 export const OUTBOX_VERSION = 1;
@@ -53,7 +56,18 @@ export const OUTBOX_VERSION = 1;
  * cursor of a request the store has already seen, turning a retry into a
  * different request wearing the first one's id.
  */
-export type EntryState = 'queued' | 'sent' | 'pending';
+/*
+ * ⚠️ `parked` IS NOT `pending`, AND THE DIFFERENCE IS WHO IS WAITING.
+ *
+ * `pending` means the store was asked and could not say what happened:
+ * the answer may still arrive, and nothing past it may go out, because
+ * the next send would compose against a position that may have moved.
+ * `parked` means this send is not going to be made as it stands -- a
+ * later confirmation has overtaken it, or a person has to look at it --
+ * so the queue steps over it and carries on with other blocks. One
+ * stops the queue; the other is stepped over. (§13, r3-4)
+ */
+export type EntryState = 'queued' | 'sent' | 'pending' | 'parked';
 
 export interface OutboxEntry {
   req: string;
@@ -72,6 +86,16 @@ export interface OutboxEntry {
    * should carry. (§12.11.3)
    */
   importedBy: string | null;
+  /*
+   * WHAT THE SAVE WAS ABOUT, once the entry carries it. (§13.1)
+   *
+   * ⚠️ OPTIONAL FOR NOW, AND NOT BECAUSE IT IS OPTIONAL. §13 makes the
+   * entry the record and deletes the map in memory that used to hold
+   * this; entries written before that change have no record, and the
+   * versioned legacy path reads them. The skeleton step declares the
+   * field so §13's cells compile and read red; nothing writes it yet.
+   */
+  record?: SendRecord;
 }
 
 /*
@@ -281,6 +305,48 @@ export class Outbox {
    * removed that way is an edit nobody can find again, and an entry
    * added that way is a request sent with nothing written down.
    */
+  /*
+   * ⚠️ READ BEFORE CHANGING, AND THE REASON LIVES HERE ONLY. (§13, r5-5)
+   *
+   * A mutator used to edit whatever this object last read and write the
+   * whole file back, so anything another writer had put there in
+   * between was overwritten -- not merged, not refused, gone. The queue
+   * is a file two processes reach: a takeover writes into a session's
+   * queue while that session may be waking up.
+   *
+   * This does not make a change atomic. Two writers can still both
+   * read, both change and both write, and the design says so: the
+   * cross-process fence is a named problem this batch does not solve.
+   * What it buys is that a writer cannot erase work it never saw --
+   * the half that was costing entries.
+   *
+   * ⚠️ THE RULE IS WRITTEN ONCE. It used to be repeated at all six call
+   * sites, which is six places for it to drift and six things to edit
+   * when the scope line moves. The call sites say `this.refresh()` and
+   * mean it.
+   *
+   * RE-READ THE FILE, AND LEAVE THIS OBJECT ALONE IF IT CANNOT BE READ.
+   *
+   * ⚠️ `load` IS NOT SAFE TO CALL FROM A MUTATOR ON ITS OWN. When the
+   * read fails it marks the queue unreadable, and the entries this
+   * object was holding stop being counted -- so a save whose WRITE
+   * failed would additionally disappear from "what is still unsent",
+   * which is the one number the durability rule exists to keep true.
+   * The caller wanted a fresher reading, not the loss of the one it
+   * had.
+   */
+  private refresh(): void {
+    const held = this.data;
+    const readable = this.readable;
+    try {
+      this.load();
+    } catch (e) {
+      this.data = held;
+      this.readable = readable;
+      throw e;
+    }
+  }
+
   private commit(next: OutboxFile): void {
     if (!this.readable) {
       throw new OutboxWriteError(
@@ -305,18 +371,38 @@ export class Outbox {
    * and not a logged warning.
    */
   public enqueue(entry: OutboxEntry): void {
+    this.refresh();
     const next = this.copy();
     next.entries.push({ ...entry });
     this.commit(next);
   }
 
+  /*
+   * FORGET WHERE THE STORE STOOD. (§13.3)
+   *
+   * ⚠️ THIS IS NOT `setCursor(null)` AND THE DIFFERENCE IS THE POINT. A
+   * position is set when an answer establishes one; this says the
+   * position we were holding can no longer be vouched for -- an
+   * operator determined the work had been carried out and the core does
+   * not recover where. The next send asks the store rather than
+   * composing against a number nobody stood at.
+   */
+  public clearCursor(): void {
+    this.refresh();
+    const next = this.copy();
+    next.cursor = null;
+    this.commit(next);
+  }
+
   public setCursor(cursor: string): void {
+    this.refresh();
     const next = this.copy();
     next.cursor = cursor;
     this.commit(next);
   }
 
   public resolve(req: string, cursor: string | null): void {
+    this.refresh();
     const next = this.copy();
     const before = next.entries.length;
     next.entries = next.entries.filter((e) => e.req !== req);
@@ -346,7 +432,33 @@ export class Outbox {
      * exactly the fact that went missing here.
      */
     if (cursor !== null && next.entries.length !== before) {
-      next.cursor = cursor;
+      /*
+       * ⚠️ AND IT MOVES THE WAY A LOG MOVES. (§13.3, R10)
+       *
+       * It used to take whatever position the answer carried, with
+       * nothing asked about where this queue already stood. Two things
+       * followed, and both are what a cursor exists to prevent: a late
+       * replay of an older request carries an older position and wound
+       * the queue BACKWARDS to it, so the next save was composed
+       * against a place the store had already moved past; and an answer
+       * from a different writer carries a position in a different
+       * writer's numbering, which is not comparable with this one at
+       * all.
+       *
+       * ⚠️ ACROSS WRITERS THE POSITION IS DROPPED, NOT ADOPTED AND NOT
+       * KEPT. Adopting it writes a number that means nothing here;
+       * keeping the old one asserts a position this answer gives no
+       * reason to believe. Dropping it makes the next send ask the
+       * store, which is the only thing that is true.
+       */
+      const held = next.cursor;
+      if (held === null) {
+        next.cursor = cursor;
+      } else if (!sameWriter(held, cursor)) {
+        next.cursor = null;
+      } else if (newerEvent(held, cursor)) {
+        next.cursor = cursor;
+      }
     }
     this.commit(next);
   }
@@ -366,6 +478,7 @@ export class Outbox {
    * sent.
    */
   public aboutToSend(req: string, cursor: string | null): void {
+    this.refresh();
     const next = this.copy();
     let changed = false;
     for (const entry of next.entries) {
@@ -390,6 +503,7 @@ export class Outbox {
    * trace. (§12.11.3, §12.23)
    */
   public markImported(req: string, token: string): void {
+    this.refresh();
     const next = this.copy();
     let changed = false;
     for (const entry of next.entries) {
@@ -403,7 +517,24 @@ export class Outbox {
     }
   }
 
+  /*
+   * THIS SEND IS NOT GOING OUT AS IT STANDS, AND THE QUEUE CARRIES ON.
+   * (§13, r3-4)
+   */
+  public markParked(req: string, why: string): void {
+    this.refresh();
+    const next = this.copy();
+    for (const entry of next.entries) {
+      if (entry.req === req) {
+        entry.state = 'parked';
+        entry.lastError = why;
+      }
+    }
+    this.commit(next);
+  }
+
   public markPending(req: string, why: string): void {
+    this.refresh();
     const next = this.copy();
     for (const entry of next.entries) {
       if (entry.req === req) {
@@ -514,7 +645,7 @@ function readEntry(item: unknown, at: number): OutboxEntry {
       );
     }
   }
-  if (raw.state !== undefined && !['queued', 'sent', 'pending'].includes(raw.state as string)) {
+  if (raw.state !== undefined && !['queued', 'sent', 'pending', 'parked'].includes(raw.state as string)) {
     throw new OutboxWriteError(`outbox entry ${at} is in a state this build does not know: ${String(raw.state)}`);
   }
   return {
@@ -523,7 +654,14 @@ function readEntry(item: unknown, at: number): OutboxEntry {
     id: raw.id as string,
     field: raw.field as string,
     payload: raw.payload as string,
-    state: raw.state === 'pending' ? 'pending' : raw.state === 'sent' ? 'sent' : 'queued',
+    state:
+      raw.state === 'pending'
+        ? 'pending'
+        : raw.state === 'parked'
+          ? 'parked'
+          : raw.state === 'sent'
+            ? 'sent'
+            : 'queued',
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
     /*
@@ -536,7 +674,78 @@ function readEntry(item: unknown, at: number): OutboxEntry {
      * written and never read back -- the two halves of one field
      * disagreeing, which nothing but a round-trip notices.
      */
-    importedBy: typeof raw.importedBy === 'string' ? (raw.importedBy as string) : null
+    importedBy: typeof raw.importedBy === 'string' ? (raw.importedBy as string) : null,
+    ...readRecord(raw.record, at)
+  };
+}
+
+/*
+ * THE RECORD AN ENTRY CARRIES, READ ALL OF IT OR NONE OF IT.
+ *
+ * ⚠️ ABSENT AND BROKEN ARE DIFFERENT. An entry written before §13 has
+ * no record at all, and that is an ordinary thing with a path of its
+ * own: it is sent and dequeued as before, and its answer may not write
+ * a baseline, because the provenance a baseline needs was never
+ * recorded. An entry whose record is HALF there is a file this build
+ * did not write, and repairing it would mean inventing the missing
+ * half -- so it refuses, the way every other record on disk does.
+ */
+function readRecord(raw: unknown, at: number): { record?: SendRecord } {
+  if (raw === undefined || raw === null) {
+    return {};
+  }
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new OutboxWriteError(`outbox entry ${at} has a record that is not an object`);
+  }
+  const held = raw as Record<string, unknown>;
+  const text = (key: string): string | null =>
+    typeof held[key] === 'string' ? (held[key] as string) : null;
+  const intent = held.intent as Record<string, unknown> | undefined;
+  const missing = [
+    'req',
+    'store',
+    'storeHash',
+    'blockId',
+    'file',
+    'rawDigest',
+    'sentDigest',
+    'prefixDigest'
+  ].filter((key) => text(key) === null);
+  if (missing.length > 0 || typeof held.seq !== 'number') {
+    throw new OutboxWriteError(
+      `outbox entry ${at} carries half a record: ${
+        missing.length > 0 ? `no ${missing.join(', ')}` : 'no seq'
+      }`
+    );
+  }
+  if (
+    typeof intent !== 'object' ||
+    intent === null ||
+    typeof intent.verb !== 'string' ||
+    typeof intent.field !== 'string' ||
+    typeof intent.body !== 'string' ||
+    !(intent.expectation === null || typeof intent.expectation === 'string')
+  ) {
+    throw new OutboxWriteError(`outbox entry ${at} carries a record with no readable intent`);
+  }
+  return {
+    record: freezeRecord({
+      req: text('req') as string,
+      store: text('store') as string,
+      storeHash: text('storeHash') as string,
+      blockId: text('blockId') as string,
+      file: text('file') as string,
+      rawDigest: text('rawDigest') as string,
+      sentDigest: text('sentDigest') as string,
+      prefixDigest: text('prefixDigest') as string,
+      seq: held.seq,
+      intent: {
+        verb: intent.verb,
+        field: intent.field,
+        expectation: intent.expectation as string | null,
+        body: intent.body
+      }
+    })
   };
 }
 

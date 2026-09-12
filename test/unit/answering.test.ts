@@ -45,6 +45,24 @@ import {
 import { Saving } from '../../src/saving';
 import { RecordingFs } from '../support/recording-fs';
 
+/*
+ * WHICH SEND AN ANSWER IS ABOUT, for cells that are not about that.
+ *
+ * §13 records WHICH send the store confirmed, so `recordAnswer` is told
+ * the send's number, the split it was made against, and whether it was
+ * this client's write. These cells are about the ORDER and the refusals
+ * around a record, so they all speak for one ordinary first send; the
+ * cells that are about the number itself say so in their own fixtures.
+ */
+/*
+ * ⚠️ THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
+ * while nothing compared it and became a trap the moment the draft
+ * rule started asking whether the split still matches: every cell in
+ * this file would have read as a draft, for a reason that lived in
+ * the fixture.
+ */
+const SENT_ONCE = { seq: 1, prefixDigest: digestOfBytes(Buffer.from('## Two\n', 'utf8')), by: 'store' as const };
+
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-answer-'));
 }
@@ -111,7 +129,8 @@ describe('C7 the answer is recorded before the entry is removed', () => {
       cursor: 'w:7',
       rawDigest: 'raw',
       sentDigest: 'sent',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,
@@ -146,7 +165,8 @@ describe('C7 the answer is recorded before the entry is removed', () => {
         cursor: 'w:7',
         rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
         sentDigest: bodyDigest(text),
-        mismatch: false
+        mismatch: false,
+        send: SENT_ONCE
       },
       () => files.writeText(queue, '{"entries":[]}')
     );
@@ -187,7 +207,7 @@ describe('C7 the answer is recorded before the entry is removed', () => {
     let dequeued = 0;
     new Saving(new RecordingFs()).recordAnswer(
       file,
-      { req: 'r1', cursor: 'w:7', rawDigest: 'raw', sentDigest: 'sent', mismatch: false },
+      { req: 'r1', cursor: 'w:7', rawDigest: 'raw', sentDigest: 'sent', mismatch: false, send: SENT_ONCE },
       () => {
         dequeued += 1;
       }
@@ -203,7 +223,8 @@ describe('C7 the answer is recorded before the entry is removed', () => {
       cursor: 'w:7',
       rawDigest: 'raw',
       sentDigest: 'sent',
-      mismatch: true
+      mismatch: true,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: false, because: 'req-mismatch' });
   });
@@ -224,14 +245,16 @@ describe('C7 the answer is recorded before the entry is removed', () => {
       cursor: 'w:9',
       rawDigest: raw,
       sentDigest: bodyDigest(text),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     const late = saving.recordAnswer(file, {
       req: 'r1',
       cursor: 'w:4',
       rawDigest: raw,
       sentDigest: 'sent',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       late,
@@ -256,7 +279,8 @@ describe('C20 the answer section gives up rather than describing bytes that move
       cursor: 'w:7',
       rawDigest: 'the digest of some older bytes',
       sentDigest: 'sent',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,
@@ -294,7 +318,8 @@ describe('X1c ⑧ the fields the answer writes into the record', () => {
       cursor: 'w:7',
       rawDigest: 'raw',
       sentDigest: 'sent',
-      mismatch: true
+      mismatch: true,
+      send: SENT_ONCE
     });
     const sidecar = recordOf(file);
     assert.strictEqual(sidecar.unresolved, true, 'the file was left looking ordinary');
@@ -328,7 +353,8 @@ describe('X1c ⑧ the fields the answer writes into the record', () => {
       cursor: 'w:7',
       rawDigest: raw,
       sentDigest: sent,
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: true });
     const sidecar = recordOf(file);
@@ -365,7 +391,8 @@ describe('X1c ⑧ the fields the answer writes into the record', () => {
       cursor: 'w:7',
       rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
       sentDigest: 'sent',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     const after = recordOf(file);
     assert.strictEqual(after.prefix, before.prefix, 'the prefix a save is split against was lost');
@@ -400,7 +427,8 @@ describe('X1c ⑨ a reconciled version after the store answers', () => {
       cursor: 'w:7',
       rawDigest: raw,
       sentDigest: digestOfBytes(Buffer.from('body\n', 'utf8')),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: true });
     const read = sidecarFromDisk(fs.readFileSync(`${file}.meta`, 'utf8'));
@@ -433,7 +461,8 @@ describe('X1c ⑨ a reconciled version after the store answers', () => {
       cursor: 'w:7',
       rawDigest: 'the bytes that were sent, which are not the bytes here',
       sentDigest: 'sent',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: false, because: 'file-moved' });
     const read = sidecarFromDisk(fs.readFileSync(`${file}.meta`, 'utf8'));
@@ -486,7 +515,8 @@ describe('X1c ⑨ matching a retried answer back to the version it was sent from
       cursor: 'w:7',
       rawDigest: found?.rawDigest ?? '',
       sentDigest: found?.sentDigest ?? '',
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: true });
     const standing = new Publisher(new RecordingFs(), { isOpen: () => false }).standingOf(file);
@@ -643,7 +673,8 @@ describe('review 20 an answer is recorded only if the record still produces what
       cursor: 'w:7',
       rawDigest: raw,
       sentDigest: sent,
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,
@@ -674,7 +705,8 @@ describe('review 20 an answer is recorded only if the record still produces what
       cursor: 'w:7',
       rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
       sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(recorded, { dequeued: true });
   });
@@ -694,7 +726,8 @@ describe('review 20 an answer is recorded only if the record still produces what
       cursor: 'w:7',
       rawDigest: 'raw',
       sentDigest: 'sent',
-      mismatch: true
+      mismatch: true,
+      send: SENT_ONCE
     });
     assert.strictEqual(
       files.entries.filter((e) => e.op === 'writeText' && e.file.endsWith('.meta')).length,
@@ -745,7 +778,8 @@ describe('review 21 what the answer is checked against', () => {
       cursor: 'w:7',
       rawDigest: digestOfBytes(Buffer.from(sent, 'utf8')),
       sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,
@@ -772,7 +806,8 @@ describe('review 21 what the answer is checked against', () => {
        * so the save folded it. The record has to reach the same answer.
        */
       sentDigest: digestOfBytes(Buffer.from('body\n', 'utf8')),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,
@@ -796,7 +831,8 @@ describe('review 21 what the answer is checked against', () => {
       cursor: 'w:7',
       rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
       sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(
       recorded,

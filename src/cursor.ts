@@ -116,3 +116,20 @@ export const CURSOR_SHAPE = /^[^:\s]+:(0|[1-9][0-9]*)$/;
 export function isWellFormedCursor(cursor: string): boolean {
   return CURSOR_SHAPE.test(cursor);
 }
+
+/*
+ * WHOSE LOG A POSITION IS IN, AND WHERE IN IT. (§13.3)
+ *
+ * ⚠️ TWO WRITERS' NUMBERS ARE NOT COMPARABLE. A cursor is `writer:n`,
+ * and `n` counts within that writer's log. Reading a different
+ * writer's position as "later" because its number is bigger is reading
+ * two rulers as one.
+ */
+export function writerOf(cursor: string): string {
+  const at = cursor.lastIndexOf(':');
+  return at < 0 ? cursor : cursor.slice(0, at);
+}
+
+export function sameWriter(a: string, b: string): boolean {
+  return writerOf(a) === writerOf(b);
+}

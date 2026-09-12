@@ -39,31 +39,12 @@
  */
 
 import * as path from 'path';
-import { Outbox, OutboxEntry } from './outbox';
+import { Outbox } from './outbox';
 import { Settlement } from './saver';
-import { Publisher, digestOfBytes } from './publication';
+
 import { Saving, Unrecorded } from './saving';
 import { Sessions } from './sessions';
 import { Notice } from './status';
-
-/*
- * WHAT THIS CLIENT REMEMBERS ABOUT A SAVE IT SENT: which block, which
- * file, and the two digests the record beside that file is written
- * against.
- */
-export interface SaveContext {
-  blockId: string;
-  file: string;
-  rawDigest: string;
-  sentDigest: string;
-  /*
-   * ⚠️ WHICH STORE THIS SEND WAS FOR. It is known where the context is
-   * written -- the window has a configured store at the moment it sends
-   * -- and it is the one fact that separates two sends of the same block
-   * with the SAME BYTES, which a digest cannot. See `settlerFor`.
-   */
-  storeHash: string;
-}
 
 /*
  * ⚠️ THE QUEUE AND THE STORE ARE PARAMETERS, and they are the whole
@@ -77,9 +58,7 @@ export interface SettlingParts {
   queue: Outbox;
   storeHash: string;
   sessionId: string;
-  pendingSaves: Map<string, SaveContext>;
   sessions: Sessions;
-  publisher: Publisher;
   saving: Saving;
   /*
    * WHAT TO SAY WHEN THE RECORD COULD NOT BE WRITTEN. The sentence is
@@ -108,10 +87,13 @@ export interface SettlingParts {
  * settler the extension builds comes from `settlerFor`, so the path
  * that ships is always checked.
  */
-export type Settler = ((req: string, settlement: Settlement) => void) & { queue?: Outbox };
+export type Settler = ((req: string, settlement: Settlement) => void) & {
+  queue?: Outbox;
+  storeHash?: string;
+};
 
 export function settlerFor(parts: SettlingParts): Settler {
-  const { queue, storeHash, sessionId, pendingSaves, sessions, publisher, saving } = parts;
+  const { queue, storeHash, sessionId, sessions, saving } = parts;
 
   /*
    * ⚠️ THE QUEUE AND THE STORE HAVE TO BE THE SAME WINDOW'S.
@@ -149,90 +131,21 @@ export function settlerFor(parts: SettlingParts): Settler {
   }
 
   /*
-   * THE FILE AN ANSWER IS ABOUT, WHEN THIS WINDOW NEVER SENT IT.
+   * ⚠️ THERE IS NO SECOND SUPPLIER ANY MORE. (§13.1)
    *
-   * A retry after a restart names a request the queue remembers and this
-   * process does not, so `pendingSaves` is empty for it. The answer used
-   * to be released with nothing written, and that block then reported
-   * unsent work for ever while the store held the bytes.
+   * What an answer is about used to be looked up twice: in a map kept
+   * by block id while the window was up, and -- after a restart, when
+   * that map is empty -- reconstructed from the block's newest version
+   * by `recovered()`. Two derivations of one fact, with their
+   * conditions spelled differently, and they disagreed: a block saved
+   * in store A, the store changed, the same block saved in store B,
+   * and A's answer wrote A's cursor beside store B's file using store
+   * B's digests.
    *
-   * The queue kept what was sent, and the block's own directory says
-   * which versions exist. If the newest one still splits into exactly
-   * the text that went out, these are the bytes the store acknowledged
-   * and the digests come from the file rather than from memory. If it
-   * does not, this answers `undefined` and the old behaviour stands --
-   * which is right, because then the file really has moved on.
-   *
-   * ⚠️ AND IT LOOKS UNDER THE STORE THIS SETTLER BELONGS TO. Read live,
-   * it would look for one store's block under another after a settings
-   * change, find nothing, and treat an answer this client can account
-   * for as one it cannot.
+   * The entry IS the record now. In flight and after a restart the
+   * settler reads the same bytes, because there is only one place the
+   * answer can be read from.
    */
-  const recovered = (entry: OutboxEntry): SaveContext | undefined => {
-    const directory = sessions.directoryFor(sessionId, storeHash, entry.id);
-    const file = publisher.latestIn(directory);
-    if (file === null) {
-      return undefined;
-    }
-    const digests = saving.recognise(file, entry.payload);
-    return digests === null ? undefined : { blockId: entry.id, file, storeHash, ...digests };
-  };
-
-  /*
-   * ⚠️ AND THE CONTEXT IN MEMORY HAS TO BE ABOUT THIS SEND.
-   *
-   * `pendingSaves` lives as long as the window, survives every rebuild,
-   * and is keyed by BLOCK ID -- while what an answer asks is "which
-   * send was this". Those are the same question only while one store
-   * has one save of that block in flight. A review reproduced the rest:
-   * save a block in store A, change the store, save the SAME block in
-   * store B before A answers -- B's context replaces A's under that key
-   * -- and A's answer then wrote A's cursor and acknowledgement beside
-   * STORE B's file, using store B's digests, and deleted the context
-   * store B's own request still needed.
-   *
-   * The queue and the store were already bound. This is the third thing
-   * an answer has to own, and the fact that decides it is on the entry:
-   * `payload` is exactly what this request sent, and `sentDigest` is
-   * what the remembered context was sent for. If they disagree, the
-   * memory is somebody else's and the answer falls back to reading the
-   * block's own versions, which are filed under this settler's store.
-   *
-   * The key cannot simply become the request id: `pendingSaves` is
-   * written before `Saver.save` is called and the id is made inside it,
-   * so the caller does not have one to key by.
-   */
-  /*
-   * ⚠️ TWO DIFFERENT QUESTIONS, BECAUSE ONE OF THEM HAS A BLIND SPOT.
-   *
-   * The digest asks "were these the bytes this send carried". That is
-   * the right question for two sends of one block with different text,
-   * and it is BLIND to the case a review then named: open the same block
-   * in another store and save the SAME bytes, and the digests agree
-   * while the contexts belong to different stores. The answer would take
-   * the other store's context again -- the same poisoned record, reached
-   * through the repair.
-   *
-   * So the store is asked first and the digest second, and they are
-   * different mechanisms rather than two spellings of one: the store
-   * separates sends that differ in where they went, the digest separates
-   * sends that differ in what they carried. A single input can defeat
-   * either alone; nothing in this code defeats both.
-   *
-   * ⚠️ AND WHAT IS STILL INDISTINGUISHABLE, said rather than left to be
-   * found: the same store, the same block, the same bytes, twice in
-   * flight. Those two sends carry identical requests, so settling either
-   * against that context records the same thing about the same file --
-   * which is why this is a repetition rather than a confusion.
-   */
-  const remembered = (entry: OutboxEntry): SaveContext | undefined => {
-    const held = pendingSaves.get(entry.id);
-    if (held === undefined || held.storeHash !== storeHash) {
-      return undefined;
-    }
-    return digestOfBytes(Buffer.from(entry.payload, 'utf8')) === held.sentDigest ? held : undefined;
-  };
-
   const settle: Settler = (req: string, settlement: Settlement): void => {
     /*
      * ⚠️ A REFUSAL IS NOT AN ACKNOWLEDGEMENT, AND USED TO BE RECORDED AS
@@ -254,50 +167,42 @@ export function settlerFor(parts: SettlingParts): Settler {
      * passing `mismatch: false` for every answer.
      */
     const entry = queue.find(req);
-    const mine = entry === undefined ? undefined : remembered(entry);
-    const context = entry === undefined ? undefined : mine ?? recovered(entry);
+    const record = entry?.record;
     const cursor = settlement.verdict === 'confirmed' ? settlement.cursor : null;
-    /*
-     * ⚠️ A PLAIN REFUSAL RELEASES THE REQUEST AND RECORDS NOTHING.
-     *
-     * The store has answered, so the request is not waiting any more and
-     * leaving it queued would make the count of unresolved saves say
-     * something untrue -- and, because a save stops at the first request
-     * it cannot settle, would stop the queue for ever with no way in the
-     * extension to clear it.
-     *
-     * Recording nothing is the other half, and it is what tells the
-     * user: the file's record still has no cursor and no acknowledged
-     * bytes, so the block stays a DRAFT and goes on being reported as
-     * work the store has not got. Writing an acknowledgement here --
-     * which an empty cursor with `mismatch: false` amounted to -- said
-     * the rejected edit had been saved and took it out of every count
-     * that would have shown otherwise.
-     */
     if (settlement.verdict === 'refused') {
-      queue.resolve(req, null);
-      if (entry !== undefined && mine !== undefined && pendingSaves.get(entry.id) === mine) {
-        pendingSaves.delete(entry.id);
+      /*
+       * ⚠️ THE NUMBER COMES OUT AND NOTHING ELSE IS WRITTEN. The store
+       * declined this write, so the bytes are still only in the user's
+       * file and no baseline may be recorded -- and the send is over,
+       * so leaving its number counted as out would keep the block a
+       * draft it can never stop being.
+       *
+       * An entry with no record has no number to release: it was
+       * written before §13 and never took one.
+       */
+      if (record !== undefined) {
+        saving.releaseSend(record.file, record.seq);
       }
+      queue.resolve(req, null);
       return;
     }
-    if (context === undefined) {
-      /*
-       * NOTHING IN MEMORY AND NOTHING ON DISK SAYS WHICH VERSION THIS
-       * ANSWER IS ABOUT. `recovered` has already looked: the block's
-       * newest version does not hold the body this request sent, so the
-       * user has edited since and the file is a draft, correctly. The
-       * entry is released because the store HAS answered it. (§12.17.4)
-       *
-       * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
-       * saying this id names another request; the entry is what a person
-       * will look at, and there is no file to mark.
-       */
-      /*
-       * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
-       * saying this id names another request; the entry is what a person
-       * will look at, and there is no file to mark.
-       */
+    /*
+     * ⚠️ AN ENTRY WITH NO RECORD IS NOT AN ENTRY NOBODY KNOWS ABOUT.
+     *
+     * It is either a request this queue does not hold -- an answer that
+     * belongs somewhere else, and `resolve` will not move the cursor
+     * for one -- or an entry written before §13, which carries a
+     * request and bytes and nothing else. Neither may write a record
+     * beside a file: the first because we do not know which file, the
+     * second because the provenance a baseline needs was never
+     * recorded. The answer moves the queue and the notice, and the
+     * block stays a draft until the user saves it again.
+     *
+     * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
+     * saying this id names another request; the entry is what a person
+     * will look at, and there is no file to mark.
+     */
+    if (record === undefined) {
       if (settlement.verdict === 'req-mismatch') {
         return;
       }
@@ -305,16 +210,42 @@ export function settlerFor(parts: SettlingParts): Settler {
       return;
     }
     const recorded = saving.recordAnswer(
-      context.file,
+      record.file,
       {
         req,
         cursor: cursor ?? '',
-        rawDigest: context.rawDigest,
-        sentDigest: context.sentDigest,
-        mismatch: settlement.verdict === 'req-mismatch'
+        rawDigest: record.rawDigest,
+        sentDigest: record.sentDigest,
+        mismatch: settlement.verdict === 'req-mismatch',
+        /*
+         * WHICH SEND THIS ANSWER IS ABOUT, straight off the record. The
+         * number decides whether this becomes the baseline, the split
+         * says what the send was measured against, and `by` separates
+         * "this client's write landed" from "somebody determined it had
+         * already been carried out" -- which are different things to
+         * read in a report and different things to chase.
+         */
+        send: {
+          seq: record.seq,
+          prefixDigest: record.prefixDigest,
+          by: settlement.verdict === 'executed-by-operator' ? 'operator' : 'store'
+        }
       },
       () => queue.resolve(req, cursor)
     );
+    /*
+     * ⚠️ AND AN OPERATOR'S DETERMINATION LEAVES THE QUEUE WITHOUT A
+     * POSITION. (§13.3)
+     *
+     * Nothing was learned about where the store stands -- the
+     * determination does not recover the execution's event -- so the
+     * position this queue was holding is no longer known to be current.
+     * Clearing it makes the next send ask, which is the only honest
+     * thing to do with a number nobody can vouch for.
+     */
+    if (recorded.dequeued && settlement.verdict === 'executed-by-operator') {
+      queue.clearCursor();
+    }
     if (!recorded.dequeued) {
       /*
        * THE ENTRY STAYS. Whatever stopped the record from being written
@@ -322,28 +253,17 @@ export function settlerFor(parts: SettlingParts): Settler {
        * than one already there -- leaves the request retryable rather
        * than lost.
        */
-      parts.report(parts.unrecorded(context.file, recorded.because));
-    }
-    /*
-     * ⚠️ AND ONLY THE MEMORY THAT WAS OURS IS FORGOTTEN. The key is the
-     * block id, so deleting after a context that came from `recovered`
-     * would throw away whatever another save of the same block is still
-     * waiting to settle -- which is the second half of the defect above,
-     * reached from the other direction.
-     */
-    /*
-     * ⚠️ AND THE TEST IS OBJECT IDENTITY, in both places that delete.
-     * `mine !== undefined` already meant "this context came from the map
-     * and passed both checks", which is the same thing here because
-     * nothing between the two lines waits -- but the OTHER place that
-     * deletes (the save handler's catch) does wait, and was wrong for
-     * exactly that reason. One rule, spelled the same way in both, so
-     * that neither reads as the special case.
-     */
-    if (mine !== undefined && pendingSaves.get(context.blockId) === mine) {
-      pendingSaves.delete(context.blockId);
+      parts.report(parts.unrecorded(record.file, recorded.because));
     }
   };
   settle.queue = queue;
+  /*
+   * ⚠️ AND WHICH STORE, for the same reason the queue is carried: the
+   * Saver has to be able to refuse a record that belongs somewhere
+   * else, and the only binding it holds is this one. A settler built by
+   * `settlerFor` has already checked itself against the queue path for
+   * this session and store.
+   */
+  settle.storeHash = storeHash;
   return settle;
 }

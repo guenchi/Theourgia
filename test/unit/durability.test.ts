@@ -145,10 +145,25 @@ describe('a queue that could not be read is not an empty queue', () => {
     );
   });
 
-  it('will not write to a queue nobody has read', () => {
-    const outbox = new Outbox(scratch('unloaded'));
-    assert.throws(() => outbox.enqueue(entry('33333333-3333-3333-3333-333333333333', 'x\n')), OutboxWriteError);
-  });
+  /*
+   * RETIRED: `will not write to a queue nobody has read`.
+   *
+   * It pinned a FLAG. An object whose `load` had never been called had
+   * `readable` false, and every mutator refused to write. §13 makes
+   * every mutator re-read the file before it changes it -- so there is
+   * no such object any more: the first change reads for itself.
+   *
+   * ⚠️ THE RULE BECAME A STRUCTURE, which is why the flag could go. The
+   * property it protected is asserted directly by its successor:
+   * `reads the file before its first change, even if nobody loaded it`
+   * (mutators.test.ts) -- an object that never loaded, over a file that
+   * already holds entries, and both survive.
+   *
+   * The sibling that guards the other half is untouched and still here:
+   * `will not write over a file it could not read`, above.
+   *
+   * Retired on the main session's ruling, with that successor named.
+   */
 });
 
 describe('a timeout the timer cannot honour is refused where it is read', () => {

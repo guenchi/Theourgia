@@ -416,53 +416,32 @@ describe('every saver the extension builds gets a settler that knows its queue',
  * is read -- the same instrument as the census below, for the same
  * reason.
  */
-describe('nothing forgets a pending save that was not its own', () => {
-  it('guards every delete from pendingSaves with an identity check', () => {
-    for (const name of ['extension.ts', 'settling.ts']) {
-      const file = path.join(__dirname, '..', '..', '..', 'src', name);
-      const src = ts.createSourceFile(
-        name,
-        fs.readFileSync(file, 'utf8'),
-        ts.ScriptTarget.ES2022,
-        true
-      );
-      const deletes: ts.CallExpression[] = [];
-      const walk = (n: ts.Node): void => {
-        if (
-          ts.isCallExpression(n) &&
-          /pendingSaves\.delete$/.test(n.expression.getText(src))
-        ) {
-          deletes.push(n);
-        }
-        ts.forEachChild(n, walk);
-      };
-      walk(src);
-      assert.ok(deletes.length > 0, `${name} no longer deletes from pendingSaves at all`);
-      for (const call of deletes) {
-        /*
-         * THE GUARD IS THE `if` THIS DELETE SITS INSIDE, and it has to
-         * compare something with `pendingSaves.get(...)` -- identity,
-         * not presence. A delete that is not inside such an `if` is the
-         * defect this describe exists for.
-         */
-        let at: ts.Node | undefined = call.parent;
-        let guarded = false;
-        while (at !== undefined && !ts.isFunctionDeclaration(at) && !ts.isArrowFunction(at)) {
-          if (ts.isIfStatement(at) && /pendingSaves\.get\(/.test(at.expression.getText(src))) {
-            guarded = true;
-            break;
-          }
-          at = at.parent;
-        }
-        assert.ok(
-          guarded,
-          `${name}:${src.getLineAndCharacterOfPosition(call.getStart(src)).line + 1} deletes a ` +
-            'pending save without checking that the map still holds the one this code is about'
-        );
-      }
-    }
-  });
-});
+/*
+ * RETIRED: `nothing forgets a pending save that was not its own`.
+ *
+ * It held one cell -- `guards every delete from pendingSaves with an
+ * identity check` -- and its subject no longer exists. §13 makes the
+ * queue entry the record, so there is no map in memory to delete from
+ * and no second supplier of what a save was about; the census said so
+ * itself when it went red, in its own words: "extension.ts no longer
+ * deletes from pendingSaves at all".
+ *
+ * ⚠️ THE RULE IT GUARDED DID NOT RETIRE WITH IT. What it was for was
+ * "an answer must not spend a record that belongs to another save", and
+ * that is now asked one layer down and more strictly:
+ *
+ *   - `keeps no memory of a save outside the queue` (sending.test.ts)
+ *     -- a symbol census: `pendingSaves` and `recovered` appear nowhere
+ *     in `src`, so the shape cannot come back unnoticed.
+ *   - `ignores a context left by a different save of the same block`,
+ *     `... by the same bytes saved into another store` and `leaves the
+ *     later save's context alone when the earlier answer arrives`
+ *     (settling.test.ts) -- each now asserts that the other send's
+ *     ENTRY, on disk, still carries its own record.
+ *
+ * Retired on the main session's ruling, with those named as the
+ * successors.
+ */
 
 /*
  * ⚠️ AND THE ONE EXEMPTION WHOSE ARGUMENT IS ABOUT WHERE THE WRITING

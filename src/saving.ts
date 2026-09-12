@@ -36,6 +36,7 @@ import { FileOps } from './fsops';
 import {
   digestOfBytes,
   newerEvent,
+  replacesBaseline,
   Sidecar,
   sidecarFromDisk,
   sidecarPathOf,
@@ -112,7 +113,22 @@ export type SaveDecision =
  * one to the other. Spelled out at each of them, a new reason reaches
  * two of the three.
  */
-export type Unrecorded = 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed';
+export type Unrecorded =
+  | 'not-acknowledged'
+  | 'req-mismatch'
+  | 'file-moved'
+  | 'split-changed'
+  /*
+   * TWO SENDS CLAIM ONE NUMBER. (§13.3)
+   *
+   * The baseline holds this send's number under a different request, so
+   * the two records disagree about what the number means -- and nothing
+   * here can say which is right. It is a different sentence from
+   * `req-mismatch`, which is the STORE saying an id names another
+   * request: this one is our own two records disagreeing, and the thing
+   * to go and look at is different.
+   */
+  | 'number-taken';
 
 export type AnswerRecording =
   | { dequeued: true }
@@ -420,9 +436,57 @@ export class Saving {
    * is saying it has a different request under that id, which nobody
    * here can resolve by retrying. (§12.9, C7)
    */
+  /*
+   * A SEND IS OVER AND NOTHING ELSE IS RECORDED. (§13.2, R5.6)
+   *
+   * ⚠️ A REFUSAL HAS TO WRITE EXACTLY ONE THING. The store declined the
+   * write, so no baseline may be written -- the bytes are still only in
+   * the user's file. But the send IS over, and leaving its number in
+   * `outstanding` would keep the block a draft it can never stop being:
+   * the same false state as recording an acknowledgement, reached from
+   * the other direction. "Every verdict writes the record or none of
+   * them does" is not one of the choices.
+   */
+  public releaseSend(file: string, seq: number): boolean {
+    const meta = sidecarPathOf(file);
+    if (!this.files.exists(meta)) {
+      return false;
+    }
+    const read = sidecarFromDisk(this.files.readText(meta));
+    if (!read.read) {
+      return false;
+    }
+    writeSidecar(this.files, file, {
+      ...read.sidecar,
+      outstanding: read.sidecar.outstanding.filter((out) => out.seq !== seq)
+    });
+    return true;
+  }
+
   public recordAnswer(
     file: string,
-    answer: { req: string; cursor: string; rawDigest: string; sentDigest: string; mismatch: boolean },
+    answer: {
+      req: string;
+      cursor: string;
+      rawDigest: string;
+      sentDigest: string;
+      mismatch: boolean;
+      /*
+       * WHICH SEND THIS ANSWER IS ABOUT. (§13.3)
+       *
+       * The record beside a file keeps two different things apart: what
+       * the store has CONFIRMED, and what the file now holds. The first
+       * of those is about a send -- its number, the split it was made
+       * against, and whether it was this client's write or an operator's
+       * determination that the work had been carried out.
+       *
+       * It is required rather than optional because every answer is
+       * about some send; a caller that could leave it out would be a
+       * caller whose record says the store confirmed something without
+       * saying what.
+       */
+      send: { seq: number; prefixDigest: string; by: 'store' | 'operator' };
+    },
     dequeue: () => void = () => undefined
   ): AnswerRecording {
     const meta = sidecarPathOf(file);
@@ -438,6 +502,13 @@ export class Saving {
        * THE STORE HAS A DIFFERENT REQUEST UNDER THAT NAME. Nobody here
        * can settle that by retrying, so the entry stays and the file is
        * marked for a person to look at. (§12.9)
+       */
+      /*
+       * ⚠️ AND THE NUMBER STAYS OUT. This send has not settled -- the
+       * store is saying it cannot say what happened to it -- so removing
+       * it from `outstanding` would make the block read as though
+       * nothing were in flight, which is the one thing that is certainly
+       * false here. (§13.2)
        */
       writeSidecar(this.files, file, { ...read.sidecar, unresolved: true });
       return { dequeued: false, because: 'req-mismatch' };
@@ -472,7 +543,7 @@ export class Saving {
        */
       return { dequeued: false, because: 'file-moved' };
     }
-    if (!newerEvent(read.sidecar.cursor, answer.cursor)) {
+    if (answer.send.by !== 'operator' && !newerEvent(read.sidecar.cursor, answer.cursor)) {
       /*
        * A LATE REPLAY IS A DUPLICATE, NOT AN ERROR. The request has been
        * settled; the cursor stays where the newer answer put it, and the
@@ -527,11 +598,81 @@ export class Saving {
      * resolved the conflict, saved, the store took it, and the block
      * went on reporting unsent work with nothing they could do about it.
      */
+    /*
+     * ⚠️ WHICH SEND THE STORE CONFIRMED, AND WHETHER IT REPLACES WHAT
+     * WAS THERE. (§13.3)
+     *
+     * The axis is `highWater`, not the baseline's own number: an answer
+     * for an older send arriving late must not rebuild a baseline that
+     * `reconcile` deliberately took off. `replacesBaseline` states the
+     * comparison in one place.
+     *
+     * An answer for an older send still SETTLES -- its number leaves
+     * `outstanding` and its entry goes -- it just does not become the
+     * baseline. Leaving the number out would keep the block a draft for
+     * ever over a send that has been answered.
+     */
+    const settled = read.sidecar.outstanding.filter((out) => out.seq !== answer.send.seq);
+    const replaces = replacesBaseline(read.sidecar.highWater, answer.send.seq);
+    /*
+     * ⚠️ AND IF THE BASELINE ALREADY HOLDS THIS NUMBER FOR ANOTHER
+     * REQUEST, NOBODY HERE CAN SAY WHICH SEND IT MEANS.
+     *
+     * The number is taken from `nextSeq` and written down before
+     * anything is sent, so one window cannot repeat it. It can still
+     * arrive repeated -- a takeover carries entries numbered against a
+     * record somebody has since replaced, and a stop between taking a
+     * number and writing it down leaves the next start free to hand it
+     * out again. Settling quietly would make one of the two sends
+     * disappear; this marks the record and keeps the entry, which is
+     * what §13 asks for when two of our own records disagree.
+     */
+    const baseline = read.sidecar.confirmed;
+    if (
+      !replaces &&
+      baseline !== null &&
+      baseline.by !== 'legacy' &&
+      baseline.by !== 'publication' &&
+      baseline.seq === answer.send.seq &&
+      baseline.req !== answer.req
+    ) {
+      writeSidecar(this.files, file, { ...read.sidecar, unresolved: true });
+      return { dequeued: false, because: 'number-taken' };
+    }
+    /*
+     * ⚠️ AN OPERATOR'S DETERMINATION HAS NO POSITION TO RECORD. The core
+     * says such a determination does not recover the original
+     * execution's event, so there is no cursor -- and writing the
+     * queue's own position here would be recording where WE stood as
+     * though the store had said it.
+     */
+    const cursor = answer.send.by === 'operator' ? null : answer.cursor;
     writeSidecar(this.files, file, {
       ...read.sidecar,
+      confirmed: replaces
+        ? {
+            by: answer.send.by,
+            req: answer.req,
+            seq: answer.send.seq,
+            sentDigest: answer.sentDigest,
+            rawDigest: answer.rawDigest,
+            prefixDigest: answer.send.prefixDigest,
+            cursor
+          }
+        : read.sidecar.confirmed,
+      highWater: replaces ? answer.send.seq : read.sidecar.highWater,
+      outstanding: settled,
+      /*
+       * ⚠️ THE OLDER FIELDS ARE WRITTEN TOO, and they are a projection
+       * of this same act rather than a second record of it: one write,
+       * one instant, derived from the same answer. They are what the
+       * build before §13 reads, and what this build's own draft listing
+       * still reads until it moves to the pure function. When it does,
+       * these become write-only compatibility and can go.
+       */
       acknowledgedRaw: answer.rawDigest,
       sent: answer.sentDigest,
-      cursor: answer.cursor,
+      cursor: cursor ?? read.sidecar.cursor,
       localOnly: false
     });
     dequeue();

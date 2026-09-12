@@ -46,7 +46,8 @@ import {
   writeSidecar,
   UNNUMBERED,
   cleanliness,
-  digestOfBytes
+  digestOfBytes,
+  replacesBaseline
 } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
 
@@ -62,8 +63,8 @@ function openOn(file: string): OpenDocuments {
   return { isOpen: (f) => path.resolve(f) === path.resolve(file) };
 }
 
-function request(directory: string, text: string, prefix = '## Two\n') {
-  return { directory, storeId: 's1', blockId: 'a.2', prefix, text };
+function request(directory: string, text: string, prefix = '## Two\n', cursor: string | null = null) {
+  return { directory, storeId: 's1', blockId: 'a.2', prefix, text, cursor };
 }
 
 /*
@@ -141,15 +142,66 @@ describe('D1 a record from before the send-record still says what it knew', () =
    * build that manufactured a baseline out of `written` would pass the
    * rows above.
    */
-  it('gives an older record that was never acknowledged no baseline at all', () => {
+  /*
+   * ⚠️ AN OLDER VERSION NOBODY SAVED FROM STILL HAS A BASELINE, AND IT
+   * IS THE PUBLICATION'S. (§13.6, ruled after the trace in
+   * `legacyBaseline`.)
+   *
+   * My first reading called these drafts, on the grounds that nothing
+   * had been acknowledged. That is a sentence about saves, and the
+   * question is about bytes: a published version holds exactly what the
+   * store gave. Calling it a draft tells the user they have unsent work
+   * when they have none -- a lie in the direction that costs them a
+   * search.
+   *
+   * The derivation is allowed only where `written` really holds the
+   * store's bytes, and that is settled by a trace over every assignment
+   * of `written` rather than by believing the field's name. The two
+   * assignments that hold the USER's bytes are exactly the two that set
+   * `local-only`, which is the next cell.
+   */
+  it('gives an older record nobody saved from the baseline its publication established', () => {
     const read = sidecarFromDisk(JSON.stringify({ ...older, 'acknowledged-raw': null }));
     assert.ok(read.read);
     const sidecar = (read as { sidecar: Sidecar }).sidecar;
-    assert.strictEqual(sidecar.confirmed, null);
+    assert.deepStrictEqual(sidecar.confirmed, {
+      by: 'publication',
+      rawDigest: 'digest-of-written',
+      prefixDigest: digestOfBytes('## Two\n'),
+      cursor: 'w:4'
+    });
+  });
+
+  it('gives an older local-only record no baseline at all', () => {
+    const read = sidecarFromDisk(
+      JSON.stringify({ ...older, 'acknowledged-raw': null, 'local-only': true })
+    );
+    assert.ok(read.read);
+    const sidecar = (read as { sidecar: Sidecar }).sidecar;
+    assert.strictEqual(
+      sidecar.confirmed,
+      null,
+      'a version whose baseline the older build built from the FILE was given one from the store'
+    );
     assert.deepStrictEqual(
       cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), sidecar, { unsettled: [] }),
       { clean: false, because: 'never-confirmed' }
     );
+  });
+
+  /*
+   * ⚠️ AND THE DERIVATION IS ONLY FOR RECORDS FROM BEFORE §13. Every
+   * record this build writes carries `next-seq`; `confirmed: null` in
+   * one of those is this build SAYING there is no baseline -- for a
+   * version `reconcile` built out of the user's own bytes, for instance
+   * -- and working one out from `written` would give the user's bytes a
+   * baseline the store never gave them.
+   */
+  it('gives a record of this build’s own no baseline it did not write', () => {
+    const current = { ...older, 'acknowledged-raw': null, confirmed: null, 'next-seq': 1 };
+    const read = sidecarFromDisk(JSON.stringify(current));
+    assert.ok(read.read);
+    assert.strictEqual((read as { sidecar: Sidecar }).sidecar.confirmed, null);
   });
 
   /*
@@ -176,6 +228,454 @@ describe('D1 a record from before the send-record still says what it knew', () =
   });
 });
 
+/*
+ * D5 WHERE A BASELINE MAY COME FROM. (§13.6 (11))
+ *
+ * ⚠️ A PUBLICATION IS NOT A SEND, AND THE TYPE SAYS SO.
+ *
+ * A version published from the store holds bytes the store gave us:
+ * that is a baseline. It is not a confirmation -- no request was made,
+ * no body was sent, no sequence number was taken -- so it is a kind of
+ * its own with only the three things that were true, rather than the
+ * send-shaped record with an empty request id in it. An absent thing
+ * written as a reassuring value is the shape this batch has already
+ * been bitten by twice.
+ *
+ * The other half of the rule is what does NOT establish one: the
+ * version `reconcile` builds out of the user's own bytes with a heading
+ * put in front. The store has never seen those, and a baseline there
+ * would report work the store does not have as settled.
+ */
+describe('D5 only bytes that came from the store make a baseline', () => {
+  it('publishes a baseline that says where the bytes came from', async () => {
+    const dir = scratch();
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const outcome = await publisher.publish(request(dir, '## Two\nbody\n', '## Two\n', 'w:7'));
+    assert.ok(outcome.published);
+    const sidecar = publisher.sidecarOf(outcome.file);
+    assert.deepStrictEqual(sidecar?.confirmed, {
+      by: 'publication',
+      rawDigest: digestOfBytes('## Two\nbody\n'),
+      prefixDigest: digestOfBytes('## Two\n'),
+      cursor: 'w:7'
+    });
+  });
+
+  it('calls a freshly published version clean, and one whose bytes moved a draft', async () => {
+    const dir = scratch();
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const outcome = await publisher.publish(request(dir, '## Two\nbody\n', '## Two\n', 'w:7'));
+    assert.ok(outcome.published);
+    const sidecar = publisher.sidecarOf(outcome.file) as Sidecar;
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), sidecar, { unsettled: [] }),
+      { clean: true }
+    );
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nedited\n', 'utf8'), sidecar, { unsettled: [] }),
+      { clean: false, because: 'bytes-moved' }
+    );
+  });
+
+  it('keeps a publication baseline through a write and a read', () => {
+    const sidecar: Sidecar = {
+      ...UNNUMBERED,
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: 'w',
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false,
+      confirmed: { by: 'publication', rawDigest: 'r', prefixDigest: 'p', cursor: 'w:4' }
+    };
+    const read = sidecarFromDisk(`${JSON.stringify(sidecarToDisk(sidecar))}\n`);
+    assert.ok(read.read);
+    assert.deepStrictEqual((read as { sidecar: Sidecar }).sidecar.confirmed, sidecar.confirmed);
+  });
+
+  /*
+   * ⚠️ ALL OF IT OR NONE OF IT, like every other record this build
+   * reads. Half a baseline would be a comparison against a digest
+   * nobody wrote.
+   */
+  it('refuses a publication baseline that is missing a digest', () => {
+    const written = sidecarToDisk({
+      ...UNNUMBERED,
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: 'w',
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false,
+      confirmed: { by: 'publication', rawDigest: 'r', prefixDigest: 'p', cursor: null }
+    }) as Record<string, unknown>;
+    delete (written.confirmed as Record<string, unknown>)['prefix-digest'];
+    const read = sidecarFromDisk(`${JSON.stringify(written)}\n`);
+    assert.ok(read.read);
+    assert.strictEqual(
+      (read as { sidecar: Sidecar }).sidecar.confirmed,
+      null,
+      'half a baseline was read as a baseline'
+    );
+  });
+
+  it('writes no baseline for a version built from the user’s own bytes', () => {
+    const dir = scratch();
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const file = path.join(dir, '1.md');
+    writeSidecar(new RecordingFs(), file, {
+      ...UNNUMBERED,
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: digestOfBytes('their own words\n'),
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false
+    });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, 'their own words\n', 'utf8');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstore\n');
+    assert.ok(done.done, `the reconciliation did not happen: ${JSON.stringify(done)}`);
+    const made = publisher.sidecarOf(done.file) as Sidecar;
+    assert.strictEqual(made.confirmed, null, 'the user’s own bytes were given a baseline');
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\ntheir own words\n', 'utf8'), made, { unsettled: [] }),
+      { clean: false, because: 'never-confirmed' },
+      'a version the store has never seen was called clean'
+    );
+  });
+});
+
+/*
+ * D4 THE SPLIT IS PART OF THE BASELINE. (§13.3)
+ *
+ * `reconcile` can adopt a different heading without touching a byte of
+ * the file: the bytes then still equal what the store has, while the
+ * text that would be SENT from them -- everything after the prefix --
+ * no longer does. A baseline that recorded only the file's digest would
+ * call that clean.
+ */
+describe('D4 a prefix that moved makes a draft of bytes that did not', () => {
+  function published(dir: string): { publisher: Publisher; file: string } {
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    writeSidecar(new RecordingFs(), file, {
+      ...UNNUMBERED,
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: digestOfBytes('## Two\nbody\n'),
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false,
+      confirmed: {
+        by: 'publication',
+        rawDigest: digestOfBytes('## Two\nbody\n'),
+        prefixDigest: digestOfBytes('## Two\n'),
+        cursor: 'w:7'
+      }
+    });
+    fs.writeFileSync(file, '## Two\nbody\n', 'utf8');
+    return { publisher, file };
+  }
+
+  /*
+   * ⚠️ THE ROUTE CHANGED UNDER THIS CELL, AND THE FINDING IS WORTH MORE
+   * THAN THE CELL WAS.
+   *
+   * It used to reach `prefix-moved` through `reconcile`: adopt a
+   * different heading, touch no byte, and the record still said the
+   * split it was confirmed against. Then `reconcile` was made to clear
+   * `confirmed` when it marks a version `local-only` -- because a
+   * baseline left over from the publication says the store has seen
+   * bytes it has not -- and with that, NO PATH IN THIS BUILD produces a
+   * record whose prefix has moved away from its baseline's. The term is
+   * now defensive: it guards a record some other writer could leave.
+   *
+   * So this asks the question at the two levels where it can still be
+   * answered: the pure function still tells the two apart, and the
+   * product's reconciliation leaves the block a draft -- for the reason
+   * it now has, which is that the baseline went with the heading.
+   */
+  it('tells a moved split from an unmoved one, as a pure function', () => {
+    const held: Sidecar = {
+      ...UNNUMBERED,
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: digestOfBytes('## Two\nbody\n'),
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false,
+      confirmed: {
+        by: 'publication',
+        rawDigest: digestOfBytes('## Two\nbody\n'),
+        prefixDigest: digestOfBytes('## Two\n'),
+        cursor: 'w:7'
+      }
+    };
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), held, { unsettled: [] }),
+      { clean: true },
+      'the split it was confirmed against is the one it has, and it was called a draft'
+    );
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), { ...held, prefix: '## ' }, {
+        unsettled: []
+      }),
+      { clean: false, because: 'prefix-moved' },
+      'the bytes did not move and the split did, and it was called settled'
+    );
+  });
+
+  it('leaves the block a draft when reconcile adopts a different heading', () => {
+    const dir = scratch();
+    const { publisher, file } = published(dir);
+    const done = publisher.reconcile(file, '## ', '## Two\nbody\n');
+    assert.deepStrictEqual(done, { reconciled: true, because: 'prefix-already-present' });
+    const after = publisher.sidecarOf(file) as Sidecar;
+    assert.strictEqual(after.prefix, '## ', 'the reconciliation did not move the prefix');
+    assert.strictEqual(
+      after.confirmed,
+      null,
+      'the baseline survived a reconciliation that declared the version local-only'
+    );
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), after, { unsettled: [] }),
+      { clean: false, because: 'never-confirmed' }
+    );
+  });
+
+  /*
+   * THE TWIN, ALONG THE ONE AXIS: the same reconciliation adopting the
+   * heading the record already has. ⚠️ IT IS STILL A DRAFT, and for the
+   * same reason -- `reconcile` builds the baseline from the FILE, so
+   * the store has not seen it whatever the digests say. What the twin
+   * rules out is a build that told them apart by the prefix rather than
+   * by where the baseline came from.
+   */
+  it('leaves it a draft when the heading it adopted is the one already recorded', () => {
+    const dir = scratch();
+    const { publisher, file } = published(dir);
+    const done = publisher.reconcile(file, '## Two\n', '## Two\nbody\n');
+    assert.deepStrictEqual(done, { reconciled: true, because: 'prefix-already-present' });
+    const after = publisher.sidecarOf(file) as Sidecar;
+    assert.strictEqual(after.prefix, '## Two\n', 'the reconciliation moved a prefix it should not have');
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nbody\n', 'utf8'), after, { unsettled: [] }),
+      { clean: false, because: 'never-confirmed' }
+    );
+  });
+});
+
+describe('D5 which send may replace a baseline', () => {
+  it('lets the first send replace a baseline that has no number of its own', () => {
+    assert.strictEqual(replacesBaseline(0, 1), true);
+  });
+
+  /*
+   * ⚠️ AND THE HIGH-WATER MARK IS WHAT DOES IT. Saying "a derived
+   * baseline is replaced by any send" would be true of every state that
+   * can be reached today and would stop being true the moment one is
+   * reachable where the mark is above the arriving send -- at which
+   * point a late answer for an older send rebuilds a baseline somebody
+   * deliberately removed. The rule compares the one axis.
+   */
+  it('refuses a send that is not above the high-water mark', () => {
+    assert.strictEqual(replacesBaseline(4, 2), false);
+    assert.strictEqual(replacesBaseline(4, 4), false);
+    assert.strictEqual(replacesBaseline(4, 5), true);
+  });
+
+  it('refuses a sequence number no send of this build could have', () => {
+    assert.strictEqual(replacesBaseline(0, 0), false);
+    assert.strictEqual(replacesBaseline(0, -1), false);
+    assert.strictEqual(replacesBaseline(0, 1.5), false);
+  });
+});
+
+/*
+ * D6 A SEND FROM BEFORE §13 IS STILL A SEND.
+ *
+ * An entry written by the older build carries a request and bytes, and
+ * no file, digests or sequence number. Its answer may only move the
+ * queue and the notice: a baseline written from it would be provenance
+ * invented after the fact. But the send is out, and while it is out
+ * none of the block's versions can be called settled -- so the
+ * migration marks them, and the mark is what makes them drafts.
+ *
+ * ⚠️ THE MARK IS ON THE RECORD, NOT WORKED OUT FROM THE QUEUE. The
+ * queue belongs to one session; "is this file settled" is asked by
+ * whoever holds the file.
+ */
+describe('D6 the mark an old-format send leaves on a block', () => {
+  function blockWithVersions(dir: string, versions: number): Publisher {
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    fs.mkdirSync(dir, { recursive: true });
+    for (let n = 1; n <= versions; n += 1) {
+      const file = path.join(dir, `${n}.md`);
+      fs.writeFileSync(file, `## Two\nversion ${n}\n`, 'utf8');
+      writeSidecar(new RecordingFs(), file, {
+        ...UNNUMBERED,
+        format: 1,
+        storeId: 's1',
+        blockId: 'a.2',
+        phase: 'published',
+        prefix: '## Two\n',
+        written: digestOfBytes(`## Two\nversion ${n}\n`),
+        previous: null,
+        acknowledgedRaw: null,
+        sent: null,
+        cursor: null,
+        localOnly: false,
+        unresolved: false,
+        bodyHasCrlf: false,
+        confirmed: {
+          by: 'publication',
+          rawDigest: digestOfBytes(`## Two\nversion ${n}\n`),
+          prefixDigest: digestOfBytes('## Two\n'),
+          cursor: 'w:7'
+        }
+      });
+    }
+    return publisher;
+  }
+
+  it('marks every version of the block, not only the newest', () => {
+    const dir = scratch();
+    const publisher = blockWithVersions(dir, 3);
+    const marked = publisher.markLegacySend(dir);
+    assert.deepStrictEqual(
+      marked.map((f) => path.basename(f)).sort(),
+      ['1.md', '2.md', '3.md'],
+      'the migration did not mark every version'
+    );
+    for (const name of ['1.md', '2.md', '3.md']) {
+      assert.strictEqual(
+        publisher.sidecarOf(path.join(dir, name))?.legacySend,
+        true,
+        `${name} was not marked`
+      );
+    }
+  });
+
+  /*
+   * ⚠️ IT SAYS WHICH RECORDS IT MARKED, so that taking the mark off
+   * again is reading a list rather than deriving one. A second
+   * derivation of the same fact is the shape this batch deleted
+   * `recovered()` for: two derivations spell their conditions
+   * differently and disagree on the day it matters.
+   */
+  it('says which records it marked, so nothing has to work it out again', () => {
+    const dir = scratch();
+    const publisher = blockWithVersions(dir, 2);
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'not a version\n', 'utf8');
+    const marked = publisher.markLegacySend(dir);
+    assert.strictEqual(marked.length, 2, `it marked ${marked.length} records: ${marked.join(', ')}`);
+    assert.ok(
+      marked.every((f) => /\d+\.md$/.test(f)),
+      `something that is not a version was marked: ${marked.join(', ')}`
+    );
+  });
+
+  it('calls a marked block a draft however its bytes stand', () => {
+    const dir = scratch();
+    const publisher = blockWithVersions(dir, 1);
+    const file = path.join(dir, '1.md');
+    const before = publisher.sidecarOf(file) as Sidecar;
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nversion 1\n', 'utf8'), before, { unsettled: [] }),
+      { clean: true },
+      'the block was not clean before the mark, so this cell would pass without it'
+    );
+    publisher.markLegacySend(dir);
+    const after = publisher.sidecarOf(file) as Sidecar;
+    assert.deepStrictEqual(
+      cleanliness(Buffer.from('## Two\nversion 1\n', 'utf8'), after, { unsettled: [] }),
+      { clean: false, because: 'legacy-send-out' }
+    );
+  });
+
+  it('takes the mark off the record it is given and leaves the others', () => {
+    const dir = scratch();
+    const publisher = blockWithVersions(dir, 2);
+    publisher.markLegacySend(dir);
+    assert.strictEqual(publisher.clearLegacySend(path.join(dir, '1.md')), true);
+    assert.strictEqual(publisher.sidecarOf(path.join(dir, '1.md'))?.legacySend, false);
+    assert.strictEqual(
+      publisher.sidecarOf(path.join(dir, '2.md'))?.legacySend,
+      true,
+      'clearing one record cleared another'
+    );
+  });
+
+  it('keeps the mark through a write and a read', () => {
+    const dir = scratch();
+    const publisher = blockWithVersions(dir, 1);
+    publisher.markLegacySend(dir);
+    const file = path.join(dir, '1.md');
+    const sidecar = publisher.sidecarOf(file) as Sidecar;
+    const again = sidecarFromDisk(`${JSON.stringify(sidecarToDisk(sidecar))}\n`);
+    assert.ok(again.read);
+    assert.strictEqual((again as { sidecar: Sidecar }).sidecar.legacySend, true);
+  });
+
+  it('reads a record from before the mark existed as unmarked', () => {
+    const older = {
+      format: 1,
+      'store-id': 's1',
+      'block-id': 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: 'w',
+      previous: null,
+      'acknowledged-raw': 'r',
+      sent: 's',
+      cursor: 'w:4',
+      'local-only': false,
+      unresolved: false,
+      'body-has-crlf': false
+    };
+    const read = sidecarFromDisk(`${JSON.stringify(older)}\n`);
+    assert.ok(read.read);
+    assert.strictEqual((read as { sidecar: Sidecar }).sidecar.legacySend, false);
+  });
+});
+
 describe('C2 a published file is written once and never touched again', () => {
   it('writes each version to its own path', async () => {
     const dir = scratch();
@@ -188,6 +688,8 @@ describe('C2 a published file is written once and never touched again', () => {
     if (first.published && second.published) {
       assert.notStrictEqual(first.file, second.file, 'the second reading replaced the first file');
       assert.strictEqual(second.version, first.version + 1, 'versions do not advance by one');
+    cursor: null
+    cursor: null
     }
   });
 
@@ -221,6 +723,7 @@ describe('C2 a published file is written once and never touched again', () => {
     }
     const written = blockFiles(files);
     assert.strictEqual(written.length, 3, `three readings produced ${written.length} files`);
+    cursor: null
     for (const file of written) {
       const writes = files.countOf('writeText', file) + files.countOf('writeDurably', file);
       assert.strictEqual(
@@ -239,6 +742,7 @@ describe('C2 a published file is written once and never touched again', () => {
       await publisher.publish(request(dir, text));
     }
     assert.deepStrictEqual(files.touched('unlink'), [], 'something was unlinked');
+    cursor: null
     for (const moved of files.touched('rename')) {
       assert.ok(
         !moved.endsWith('.md'),
@@ -282,6 +786,7 @@ describe('C2 a published file is written once and never touched again', () => {
    * path the editor holds -- so the document here is open on the path
    * the publication is about to use.
    */
+    cursor: null
   it('writes nothing when a document is open on the path it would write', async () => {
     const dir = scratch();
     const files = new RecordingFs();
@@ -291,6 +796,8 @@ describe('C2 a published file is written once and never touched again', () => {
     const next = path.join(dir, '2.md');
     const held = new RecordingFs();
     const second = await new Publisher(held, openOn(next)).publish(request(dir, '## Two\ntwo\n'));
+    cursor: null
+    cursor: null
     assert.deepStrictEqual(second, { published: false, because: 'document-open', file: next });
     assert.deepStrictEqual(held.touched('writeText'), [], 'a file was written while the editor had it open');
   });
@@ -321,6 +828,8 @@ describe('C3 every point a publication can die at is decidable', () => {
    * crash cells that produce them for real are in the two-process
    * suite.
    */
+    cursor: null
+    cursor: null
   function corpse(dir: string, sidecar: Partial<Sidecar>, fileText: string | null): string {
     const file = path.join(dir, '1.md');
     const full: Sidecar = {
@@ -773,7 +1282,8 @@ describe('every publication path asks the same questions', () => {
       storeId: 's1',
       blockId: 'a.2',
       prefix: '## Two\n',
-      text: '## Two\nline one\r\nline two\r\n'
+      text: '## Two\nline one\r\nline two\r\n',
+      cursor: null
     });
     assert.ok(published.published);
     if (published.published) {
@@ -792,7 +1302,8 @@ describe('every publication path asks the same questions', () => {
       storeId: 's1',
       blockId: 'a.2',
       prefix: '## Two\r\n',
-      text: '## Two\r\nplain body\n'
+      text: '## Two\r\nplain body\n',
+      cursor: null
     });
     assert.ok(published.published);
     if (published.published) {
@@ -1156,7 +1667,37 @@ describe('X1c ⑨ what a version is measured against after the store has answere
           localOnly: false,
           unresolved: false,
           bodyHasCrlf: false,
-          ...over
+          ...over,
+          /*
+           * ⚠️ THE BASELINE THE PRODUCT WOULD HAVE WRITTEN, worked out
+           * from what this fixture is being asked for.
+           *
+           * `publishInto` records a `by: 'publication'` baseline for
+           * every version made from the store's bytes (D5), and a
+           * settlement replaces it with a `by: 'store'` one naming the
+           * send that was confirmed (§13.3). A fixture that set the
+           * older fields alone modelled a state this build does not
+           * produce -- current counters, no baseline -- which reads as
+           * "never confirmed" and is a draft, and the cells here are
+           * not about that.
+           */
+          confirmed:
+            over.acknowledgedRaw === undefined || over.acknowledgedRaw === null
+              ? {
+                  by: 'publication' as const,
+                  rawDigest: digestOf(text),
+                  prefixDigest: digestOf('## Two\n'),
+                  cursor: null
+                }
+              : {
+                  by: 'store' as const,
+                  req: 'a-request-this-fixture-stands-for',
+                  seq: 1,
+                  sentDigest: over.sent ?? digestOf(text),
+                  rawDigest: over.acknowledgedRaw,
+                  prefixDigest: digestOf(over.prefix ?? '## Two\n'),
+                  cursor: over.cursor ?? null
+                }
         })
       ),
       'utf8'

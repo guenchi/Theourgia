@@ -38,6 +38,7 @@
 import { createHash } from 'crypto';
 import { PathChain } from './chain';
 import { FileOps } from './fsops';
+import { Owners } from './ownership';
 import { OpenDocuments, Publisher } from './publication';
 import { Saving } from './saving';
 import { SessionIdentity, Sessions } from './sessions';
@@ -94,7 +95,18 @@ export function activateCore(deps: CoreDeps): Core {
     identity,
     sessions,
     chain: new PathChain(),
-    publisher: new Publisher(deps.files, deps.documents),
+    /*
+     * ⚠️ THE PUBLISHER THE EXTENSION USES KNOWS WHOSE SESSION IT IS.
+     *
+     * Every path that writes a record beside a block passes the
+     * ownership rule, and the rule needs to know who is asking. The one
+     * `Sessions` makes for a draft scan does not write and is built
+     * without it. (§13, r3-3)
+     */
+    publisher: new Publisher(deps.files, deps.documents, {
+      owners: new Owners(deps.files),
+      sessionId: deps.sessionId
+    }),
     saving: new Saving(deps.files),
     /*
      * ASKED OF `Sessions`, NOT COMPOSED HERE. The listing and the import

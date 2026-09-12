@@ -48,10 +48,11 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { Client } from './client';
 import { Outbox, OutboxEntry } from './outbox';
+import { SendRecord } from './record';
 import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
-import { Datum, clauseValue, formatCursor, headName, isSym, readEvent } from './wire';
+import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
 
 /*
  * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
@@ -116,7 +117,21 @@ export type Settlement =
    * read in a report and a different thing to chase when something is
    * wrong. Found by asking the review's own question of the source.
    */
-  | { verdict: 'settled-elsewhere'; cursor: string }
+  /*
+   * ⚠️ AND IT HAS NO POSITION, WHICH IS THE WHOLE DIFFERENCE FROM
+   * `confirmed`. (§13.2)
+   *
+   * An earlier build read the `(event …)` clause off this answer and
+   * recorded it as the position the store confirmed. The core's own
+   * documentation says an operator's determination does not recover the
+   * original execution's event or bindings -- so that clause, when it is
+   * there at all, is not the position this write landed at, and
+   * recording it as one writes a number nobody stood at. A review
+   * raised it and the design settled it: the determination is recorded,
+   * the position is not, and the next send asks the store where it
+   * stands.
+   */
+  | { verdict: 'executed-by-operator'; note: string }
   | { verdict: 'refused'; unrecognised?: string }
   | { verdict: 'req-mismatch' };
 
@@ -141,11 +156,63 @@ export interface SaveOutcome {
    * more thing to be wrong about; this is the sender saying what it did.
    */
   keptForAPerson?: true;
+  /*
+   * ⚠️ THE ENTRY NEVER REACHED THE QUEUE, AND A NUMBER WAS ALREADY
+   * SPENT ON IT. (§13.1, I7)
+   *
+   * The sequence is taken and written down BEFORE anything is queued,
+   * so that a send can never carry a number nobody recorded. The cost
+   * of that order is this case: if the queue write then fails, the
+   * record beside the file says a send is out and there is no entry
+   * anywhere that could answer for it -- the block becomes a draft it
+   * can never stop being.
+   *
+   * Nothing was sent, so the number can safely be given back, and the
+   * caller that holds the record is the one that can do it. This says
+   * so rather than leaving it to be inferred from `blocked`, which also
+   * means "this store has no cursor" -- a case where the number must
+   * NOT be given back, because the entry IS in the queue.
+   */
+  notQueued?: true;
 }
 
 export interface SaverOptions {
   newRequestId?: () => string;
   now?: () => number;
+  /*
+   * WHAT THE RECORD BESIDE A FILE SAYS ABOUT SENDS THAT HAVE ALREADY
+   * BEEN CONFIRMED. (§13, R8)
+   *
+   * ⚠️ IT IS READ BEFORE EVERY TRANSMISSION, not once when the entry was
+   * made. A queue can sit for a long time -- a store that was
+   * unreachable, a window that was closed, a takeover carrying work in
+   * -- and in that time another window may have saved the same file and
+   * had it confirmed. Sending then would put older bytes over newer
+   * ones, and the answer would arrive carrying a number below the
+   * high-water mark, where it settles without becoming the baseline:
+   * the work would look sent and would not be.
+   *
+   * Absent, no check is made. That is the same deliberate door the bare
+   * settler leaves open for the cells about sending, and the census in
+   * `awaiting.test.ts` keeps the shipping path on the wiring that
+   * passes it.
+   */
+  baselineOf?: (file: string) => { highWater: number } | null;
+  /*
+   * WHETHER THIS REQUEST HAS BEEN RETIRED. (§13, r4-2)
+   *
+   * ⚠️ THE CHECK IS MADE IN FRONT OF THE TRANSMISSION, wherever the
+   * entry came from. Cancelling writes a tombstone rather than removing
+   * an entry, because removing one removes it from ONE queue: the same
+   * request can sit in a dead session's file no takeover has reached,
+   * and the next takeover carries the cancelled work back in.
+   *
+   * ⚠️ AND IT PARKS RATHER THAN DISCARDS. Whoever wrote the tombstone
+   * did the bookkeeping that goes with a cancellation -- releasing the
+   * send's number beside the file. A copy found later has no business
+   * doing that again; what it must do is not send.
+   */
+  retired?: (record: SendRecord) => { known: true; retired: boolean } | { known: false };
 }
 
 /*
@@ -202,13 +269,13 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
  * reddens on the mark: the core growing a name is a thing to look at,
  * not a thing to guess about.
  */
-const REFUSALS: Record<string, 'req-mismatch' | 'settled-elsewhere' | 'refused'> = {
+const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refused'> = {
   /*
    * The one refusal no retry can settle, and the one that says somebody
    * else already did the work.
    */
   'req-mismatch': 'req-mismatch',
-  'resolved-executed': 'settled-elsewhere',
+  'resolved-executed': 'executed-by-operator',
   /*
    * The write did not happen, and the core says why. Each of these is
    * produced on the write path in the pinned core: `check-expectation`
@@ -307,19 +374,16 @@ export function classifyRefusal(datum: Datum): Settlement {
   }
   const name = isSym(datum[1]) ? (datum[1] as { name: string }).name : '';
   const known = REFUSALS[name];
-  if (known === 'settled-elsewhere') {
-    const event = clauseValue(datum, 'event');
-    const where = event === undefined ? null : readEvent(event);
+  if (known === 'executed-by-operator') {
     /*
-     * AND IF IT DID NOT SAY WHERE, IT IS NOT A SETTLEMENT THIS CLIENT
-     * CAN RECORD. The whole point of this verdict is the record it
-     * names; without one there is nothing to write beside the file, and
-     * the honest answer is the refusal it arrived as.
+     * ⚠️ WHETHER IT NAMED A RECORD NO LONGER DECIDES ANYTHING. An
+     * earlier build treated the answer as settleable only when it
+     * carried an `(event …)` clause, and recorded that clause as the
+     * position -- which the core says is not recoverable from an
+     * operator's determination. So the clause is carried as a note for
+     * a person to read and nothing is derived from it.
      */
-    if (where !== null) {
-      return { verdict: 'settled-elsewhere', cursor: formatCursor(where) };
-    }
-    return { verdict: 'refused' };
+    return { verdict: 'executed-by-operator', note: describeRefusal(datum) };
   }
   if (known === 'req-mismatch') {
     return { verdict: 'req-mismatch' };
@@ -362,12 +426,45 @@ function describeRefusal(datum: Datum): string {
  */
 const queues = new Map<string, Promise<void>>();
 
+/*
+ * WHICH ENTRY GOES NEXT. (§13, r3-4)
+ *
+ * ⚠️ STILL ONE AT A TIME. What changes is only which one: a `parked`
+ * entry is stepped over, and so is any entry for a block that has a
+ * parked entry in front of it -- because within a block the order is
+ * what makes a second save mean "and then this". Other blocks carry on.
+ *
+ * ⚠️ AND A `pending` ENTRY IS NOT STEPPED OVER. Nobody knows whether the
+ * store applied it, so nothing may be composed against a position that
+ * may have moved; the loop stops at it, which is the behaviour this
+ * batch inherited and does not change.
+ */
+export function nextRunnable(entries: OutboxEntry[]): OutboxEntry | undefined {
+  const parkedBlocks = new Set<string>();
+  for (const entry of entries) {
+    const block = entry.record?.blockId ?? entry.id;
+    if (entry.state === 'parked') {
+      parkedBlocks.add(block);
+      continue;
+    }
+    if (parkedBlocks.has(block)) {
+      continue;
+    }
+    return entry;
+  }
+  return undefined;
+}
+
 export class Saver {
   private readonly client: Client;
   private readonly outbox: Outbox;
-  private readonly settle: Settle;
+  private readonly settle: Settle & { storeHash?: string };
   private readonly newRequestId: () => string;
   private readonly now: () => number;
+  private readonly baselineOf?: (file: string) => { highWater: number } | null;
+  private readonly retired?: (
+    record: SendRecord
+  ) => { known: true; retired: boolean } | { known: false };
   private bootstrapProblem: string | null = null;
 
   constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions = {}) {
@@ -409,6 +506,8 @@ export class Saver {
     this.settle = settle;
     this.newRequestId = options.newRequestId ?? (() => randomUUID());
     this.now = options.now ?? (() => Date.now());
+    this.baselineOf = options.baselineOf;
+    this.retired = options.retired;
   }
 
   public get pendingCount(): number | null {
@@ -459,6 +558,115 @@ export class Saver {
           status: 'pending' as const,
           req: entry.req,
           id,
+          message: 'the save is queued behind an earlier one whose outcome is unknown',
+          answer: null
+        }
+      );
+    });
+  }
+
+  /*
+   * THE SEND THE RECORD DESCRIBES. (§13.1)
+   *
+   * ⚠️ NOT IMPLEMENTED YET, AND ADDED BESIDE `save` RATHER THAN
+   * REPLACING IT. This is the skeleton step: the signature lands so
+   * that §13's cells compile and can be read as red before the
+   * behaviour exists. Changing `save` in place would take every cell
+   * that calls it with three arguments down with it, and a suite that
+   * does not compile is not a red reading -- it is no reading at all.
+   *
+   * `save` and its cells go when this is implemented, together, with
+   * each retired assertion mapped to a named successor. The name is
+   * `submit` rather than `send` because `send` is already the private
+   * step that puts one entry on the wire, and two methods a letter
+   * apart in one class is a defect waiting for a tired reader.
+   *
+   * What it will do: check `record.store` against the store this Saver
+   * was built for, refuse and report if they differ, put the record in
+   * the queue as the entry itself, bind a cursor to that entry before
+   * its first transmission, and drain.
+   */
+  public submit(record: SendRecord): Promise<SaveOutcome> {
+    return this.serialise(async () => {
+      /*
+       * ⚠️ THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
+       *
+       * The acceptance compared the file's store with this window's
+       * before it made the record. This asks again, of the record and
+       * of the queue it is about to be written into, because a rule
+       * kept at one end has no way to notice a second entrance -- and
+       * this batch has already been bitten by exactly that (the same
+       * repair applied where the finding pointed instead of everywhere
+       * the shape was).
+       *
+       * The binding comes off the settler, which `settlerFor` has
+       * already checked against the queue path for this session and
+       * store. A bare callback carries none, which is the same
+       * deliberate door the queue-identity check leaves open for the
+       * cells about sending -- and the census in `awaiting.test.ts`
+       * keeps the shipping path on `settlerFor`.
+       */
+      const bound = this.settle.storeHash;
+      if (bound !== undefined && bound !== record.storeHash) {
+        return {
+          status: 'blocked' as const,
+          req: record.req,
+          id: record.blockId,
+          message:
+            `this save belongs to ${record.store}, and this queue is for another store; ` +
+            'it has not been queued here',
+          answer: null
+        };
+      }
+      const cursor = await this.ensureCursor();
+      if (cursor === null) {
+        return {
+          status: 'blocked' as const,
+          req: record.req,
+          id: record.blockId,
+          message: this.bootstrapProblem ?? 'this store has no cursor to write against',
+          answer: null
+        };
+      }
+      /*
+       * THE ENTRY IS THE RECORD, plus the lifecycle the queue keeps
+       * around it. `id`, `field` and `payload` are still written for
+       * the sake of a record this build wrote being readable by the one
+       * before it; what SENDS reads the record when there is one.
+       */
+      const entry: OutboxEntry = {
+        req: record.req,
+        cursor,
+        id: record.blockId,
+        field: record.intent.field,
+        payload: record.intent.body,
+        state: 'queued',
+        createdAt: this.now(),
+        lastError: null,
+        importedBy: null,
+        record
+      };
+      try {
+        this.outbox.enqueue(entry);
+      } catch (e) {
+        return {
+          status: 'blocked' as const,
+          req: record.req,
+          id: record.blockId,
+          message:
+            `the save could not be written to the queue at ${this.outbox.path}, so it was not ` +
+            `sent: ${String(e)}`,
+          answer: null,
+          notQueued: true as const
+        };
+      }
+      const outcomes = await this.drain();
+      const mine = outcomes.find((o) => o.req === entry.req);
+      return (
+        mine ?? {
+          status: 'pending' as const,
+          req: entry.req,
+          id: record.blockId,
           message: 'the save is queued behind an earlier one whose outcome is unknown',
           answer: null
         }
@@ -586,7 +794,29 @@ export class Saver {
       if (entries.length === 0) {
         return outcomes;
       }
-      const entry = entries[0];
+      const entry = nextRunnable(entries);
+      if (entry === undefined) {
+        return outcomes;
+      }
+      /*
+       * ⚠️ AND THE BASELINE IS RE-READ BEFORE THIS ONE GOES OUT. (R8)
+       *
+       * Not to count the reads -- to decide. A send whose number is
+       * below what the record beside its file already has confirmed has
+       * been overtaken: transmitting it would put older bytes over
+       * newer ones, and its answer would settle without becoming the
+       * baseline, so the work would look sent and would not be.
+       */
+      const withdrawn = this.hasBeenRetired(entry);
+      if (withdrawn !== null) {
+        this.outbox.markParked(entry.req, withdrawn);
+        continue;
+      }
+      const overtaken = this.hasBeenOvertaken(entry);
+      if (overtaken !== null) {
+        this.outbox.markParked(entry.req, overtaken);
+        continue;
+      }
       /*
        * THE ENTRY IS MARKED AS GOING OUT BEFORE IT GOES OUT, for the
        * same reason it was written down before it was sent: after this
@@ -652,11 +882,65 @@ export class Saver {
     }
   }
 
+  /*
+   * ⚠️ A `sent` ENTRY IS NOT AN EXECUTED ONE. It says this client put
+   * the request on the wire, not that the store applied it -- the whole
+   * reason the queue keeps it. So the check is made for a sent entry
+   * too, on every retry.
+   */
+  /*
+   * ⚠️ AND "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". The question
+   * being decided is whether to SEND; a directory this process may not
+   * search reports everything inside it as absent, and reading that as
+   * "nobody cancelled this" resends cancelled work.
+   */
+  private hasBeenRetired(entry: OutboxEntry): string | null {
+    const record = entry.record;
+    if (record === undefined || this.retired === undefined) {
+      return null;
+    }
+    const asked = this.retired(record);
+    if (!asked.known) {
+      return 'this request could not be checked against the retired ones, so it was not sent';
+    }
+    return asked.retired ? 'this request was retired, so it is not sent' : null;
+  }
+
+  private hasBeenOvertaken(entry: OutboxEntry): string | null {
+    const record = entry.record;
+    if (record === undefined || this.baselineOf === undefined) {
+      return null;
+    }
+    const baseline = this.baselineOf(record.file);
+    if (baseline === null || baseline.highWater <= record.seq) {
+      return null;
+    }
+    return (
+      `a later save of this block has been confirmed since this one was accepted (send ` +
+      `${record.seq}, the record beside the file holds ${baseline.highWater}); it is kept for you ` +
+      'to look at rather than sent'
+    );
+  }
+
   private async send(entry: OutboxEntry): Promise<SaveOutcome> {
+    /*
+     * ⚠️ WHAT GOES ON THE WIRE COMES FROM THE RECORD WHEN THERE IS ONE.
+     *
+     * The entry still carries `id`, `field` and `payload` so that a
+     * queue written by this build can be read by the one before it --
+     * but two places holding the same fact is how this batch lost a
+     * save, so at the moment of use there is one: the record if the
+     * entry has one, and the old fields only for an entry written
+     * before §13, which has no record and takes the legacy path.
+     */
+    const what =
+      entry.record === undefined
+        ? { id: entry.id, field: entry.field, payload: entry.payload }
+        : { id: entry.record.blockId, field: entry.record.intent.field, payload: entry.record.intent.body };
     const args = [
-      entry.id,
-      entry.field,
-      entry.payload,
+      what.id,
+      what.field,
+      what.payload,
       '--req',
       entry.req,
       '--cursor',
@@ -672,7 +956,7 @@ export class Saver {
         return {
           status: 'pending',
           req: entry.req,
-          id: entry.id,
+          id: what.id,
           message: `${e.message}; the save is kept and can be retried${why}`,
           answer: null
         };
@@ -700,7 +984,7 @@ export class Saver {
         return {
           status: 'pending',
           req: entry.req,
-          id: entry.id,
+          id: what.id,
           message:
             'the core accepted the save but did not say which record it wrote, so this client ' +
             'cannot carry the cursor forward; the save is kept and can be retried',
@@ -713,7 +997,7 @@ export class Saver {
         return {
           status: 'pending',
           req: entry.req,
-          id: entry.id,
+          id: what.id,
           message: `the core named the record ${moved}, which is not a cursor the core itself would parse`,
           answer: datum
         };
@@ -722,7 +1006,7 @@ export class Saver {
       return {
         status: isReplay(answer) ? 'replayed' : 'saved',
         req: entry.req,
-        id: entry.id,
+        id: what.id,
         message: isReplay(answer)
           ? 'the store had already applied this request'
           : 'saved',
@@ -744,7 +1028,7 @@ export class Saver {
       return {
         status: 'pending',
         req: entry.req,
-        id: entry.id,
+        id: what.id,
         message:
           `the core exited ${answer.rc} without an answer; the save is kept and can be retried${why}`,
         answer: null
@@ -756,7 +1040,7 @@ export class Saver {
       return {
         status: 'pending',
         req: entry.req,
-        id: entry.id,
+        id: what.id,
         message: 'the store cannot say whether this save ran; it is kept and can be retried',
         answer: datum
       };
@@ -776,7 +1060,7 @@ export class Saver {
       return {
         status: 'replayed',
         req: entry.req,
-        id: entry.id,
+        id: what.id,
         message: 'an operator recorded that this request had already been carried out',
         answer: datum
       };
@@ -784,7 +1068,7 @@ export class Saver {
     return {
       status: 'refused',
       req: entry.req,
-      id: entry.id,
+      id: what.id,
       message: describeRefusal(datum),
       answer: datum,
       ...(settlement.verdict === 'req-mismatch' ? { keptForAPerson: true as const } : {})

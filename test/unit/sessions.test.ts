@@ -550,7 +550,8 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
       storeId: 's1',
       blockId: 'a.2',
       prefix: '## Two\n',
-      text: '## Two\nfrom the store\n'
+      text: '## Two\nfrom the store\n',
+      cursor: null
     });
     assert.ok(published.published);
     /*
@@ -585,7 +586,8 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
       storeId: 's1',
       blockId: 'a.2',
       prefix: '',
-      text: 'no heading at all\n'
+      text: 'no heading at all\n',
+      cursor: null
     });
     assert.ok(published.published);
     if (published.published) {

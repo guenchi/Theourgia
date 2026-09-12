@@ -56,6 +56,7 @@ function load() {
       publication: require(path.join(__dirname, '..', '..', 'src', 'publication.js')),
       saving: require(path.join(__dirname, '..', '..', 'src', 'saving.js')),
       outbox: require(path.join(__dirname, '..', '..', 'src', 'outbox.js')),
+      ownership: require(path.join(__dirname, '..', '..', 'src', 'ownership.js')),
       sessions: require(path.join(__dirname, '..', '..', 'src', 'sessions.js')),
       activate: require(path.join(__dirname, '..', '..', 'src', 'activate.js'))
     };
@@ -167,7 +168,8 @@ async function main() {
             storeId: argument.storeId,
             blockId: argument.blockId,
             prefix: argument.prefix,
-            text: argument.text
+            text: argument.text,
+            cursor: argument.cursor ?? null
           });
           report({ step: 'publish', outcome });
           break;
@@ -274,6 +276,44 @@ async function main() {
             }
           }
           report({ step: 'claim', outcome: await sessions.claim(argument.dead) });
+          break;
+        }
+        case 'takeOwner': {
+          /*
+           * OWNERSHIP OF A BLOCK DIRECTORY, TAKEN FROM A REAL PROCESS.
+           *
+           * The race this exists for cannot happen inside one process:
+           * the scan and the link are synchronous, so two calls in one
+           * host would pass for an implementation that read the highest
+           * generation, thought about it, and then wrote.
+           */
+          const p = load();
+          const owners = new p.ownership.Owners(p.fsops.nodeFileOps);
+          const directory = path.join(storage, argument.directory);
+          p.fsops.nodeFileOps.makeDirectory(directory);
+          if (argument.waitFor) {
+            const gate = path.join(storage, argument.waitFor);
+            fs.writeFileSync(`${gate}.${process.pid}`, 'ready');
+            const deadline = Date.now() + 10000;
+            while (Date.now() < deadline) {
+              if (fs.readdirSync(storage).filter((n) => n.startsWith(path.basename(gate))).length >= 2) {
+                break;
+              }
+            }
+          }
+          report({
+            step: 'takeOwner',
+            outcome: owners.take(directory, argument.as, argument.sidecars ?? [])
+          });
+          break;
+        }
+        case 'ownerOf': {
+          const p = load();
+          const owners = new p.ownership.Owners(p.fsops.nodeFileOps);
+          report({
+            step: 'ownerOf',
+            outcome: owners.ownerOf(path.join(storage, argument.directory))
+          });
           break;
         }
         case 'crash':

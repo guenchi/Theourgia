@@ -44,7 +44,9 @@ import {
   SHOW_STATUS
 } from './commands';
 import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
-import { SaveContext, settlerFor } from './settling';
+import { Acceptance, acceptSave } from './accepting';
+import { settlerFor } from './settling';
+import { Tombstones } from './tombstones';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -256,21 +258,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const saving = core.saving;
 
   const storeHash = core.storeHash;
+  /*
+   * THE REQUESTS NOBODY IS TO SEND AGAIN. Under the storage root, not
+   * under a session: the copies a tombstone is about do not all live in
+   * one session's directory, and discarding a session moves its
+   * directory away.
+   */
+  const tombstones = new Tombstones(storage, files);
 
-  /*
-   * WHAT A SAVE IN FLIGHT IS ABOUT. The Saver's answer names the request
-   * and the cursor; the record beside the file needs the file and the
-   * digests, and only the handler that decided to send knows them.
-   */
-  /*
-   * ⚠️ IT OUTLIVES EVERY REBUILD AND IS KEYED BY BLOCK ID, so an entry
-   * in it may have been written by a send to a different store. What
-   * decides whether it belongs to an answer is inside the context -- the
-   * store it was sent for and the bytes it carried -- and `settlerFor`
-   * asks both. The key cannot be the request id: this is written before
-   * `Saver.save` is called, and the id is made inside it.
-   */
-  const pendingSaves = new Map<string, SaveContext>();
   /*
    * X1c REPLACED THE IN-MEMORY BASELINE. What a save is measured against
    * now lives beside the file, on disk, in `<n>.md.meta` -- so it survives
@@ -421,13 +416,34 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         queue: own,
         storeHash: ownStore,
         sessionId,
-        pendingSaves,
         sessions,
-        publisher,
         saving,
         report: show,
         unrecorded: unrecordedNotice
-      })
+      }),
+      {
+        /*
+         * WHAT THE RECORD BESIDE A FILE HAS ALREADY CONFIRMED, READ
+         * FRESH BEFORE EVERY TRANSMISSION. (R8)
+         *
+         * ⚠️ A FUNCTION RATHER THAN A VALUE, because the point is that
+         * it is read again: another window may have saved this same
+         * file and had it confirmed while this entry sat in the queue.
+         * Handing over a number read now would be handing over the
+         * answer to a question nobody has asked yet.
+         */
+        baselineOf: (file: string) => {
+          const sidecar = publisher.sidecarOf(file);
+          return sidecar === null ? null : { highWater: sidecar.highWater };
+        },
+        /*
+         * WHETHER THIS REQUEST HAS BEEN RETIRED, asked of the storage
+         * root rather than of this session's directory: a tombstone has
+         * to outlive the session whose queue the request was in, and
+         * `discard` moves that directory away.
+         */
+        retired: (record) => tombstones.isRetired(record.storeHash, record.req)
+      }
     );
     provider.use(model);
     paint();
@@ -623,7 +639,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         storeId: store,
         blockId: id,
         prefix: document.prefix,
-        text: document.text
+        text: document.text,
+        cursor: null
       })
     );
 
@@ -914,63 +931,110 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (saver === null) {
       return;
     }
+    /*
+     * ⚠️ THE SAVER IS TAKEN BEFORE THE WAIT AND USED AFTER IT. A
+     * settings change replaces the Saver, the queue and the client; the
+     * save this handler accepted belongs to the one that accepted it,
+     * and the record it made names that queue's store. Reading `saver`
+     * again after the wait would send this file's bytes through
+     * whatever window the user has moved to.
+     */
+    const sending = saver;
 
-    const decision = await chain.run(path.dirname(file), async () =>
-      saving.decide({ file, isDirty: saved.isDirty, getText: () => saved.getText() }, sidecar)
-    );
-    if (!decision.send) {
-      show(refusalNotice(sidecar.blockId, file, decision.refusal));
+    /*
+     * EVERYTHING THE SAVE IS ABOUT IS READ IN HERE, AT ONE INSTANT, on
+     * the chain. `decide` says whether to send; `acceptSave` reads the
+     * store from the file's own record, takes the next sequence number,
+     * writes it down durably, and freezes the lot into a record. After
+     * this callback returns, nothing on the save path reads the
+     * settings, the document or the sidecar again. (§13.1)
+     */
+    const accepted = await chain.run(path.dirname(file), async () => {
+      const decision = saving.decide(
+        { file, isDirty: saved.isDirty, getText: () => saved.getText() },
+        sidecar
+      );
+      if (!decision.send) {
+        return { decision };
+      }
+      return {
+        decision,
+        acceptance: acceptSave({
+          file,
+          sidecar,
+          decision,
+          /*
+           * ⚠️ THE ONE READING OF THE LIVE SETTINGS AFTER THE FIRST
+           * WAIT, and it is here rather than after the callback because
+           * here it cannot change between the check and the record.
+           * `awaiting.test.ts` counts these: one more, one fewer, or
+           * this one moved out of the callback all fail.
+           */
+          queueStore: config.store,
+          storeHash,
+          newRequestId: () => randomUUID(),
+          numbering: publisher
+        })
+      };
+    });
+
+    if (!accepted.decision.send) {
+      show(refusalNotice(sidecar.blockId, file, accepted.decision.refusal));
+      paint();
+      return;
+    }
+    const acceptance = accepted.acceptance as Acceptance;
+    if (!acceptance.accepted) {
+      /*
+       * NOT ACCEPTED, AND EACH REASON IS ITS OWN SENTENCE. Nothing was
+       * queued and nothing was sent, so the user's bytes are still only
+       * in their file -- which is what the block will go on reporting.
+       */
+      show(
+        acceptance.because === 'another-store'
+          ? wrongStoreNotice(sidecar.blockId, acceptance.store, acceptance.configured)
+          : unrecordedNotice(file, 'not-acknowledged')
+      );
       paint();
       return;
     }
 
-    /*
-     * WHAT THIS SAVE IS ABOUT, recorded before it goes, because the
-     * answer names only the request and the Saver's settler needs the
-     * file and the digests to write the record.
-     */
-    const context: SaveContext = {
-      blockId: sidecar.blockId,
-      storeHash: storeHash(config.store),
-      file,
-      rawDigest: decision.rawDigest,
-      sentDigest: decision.sentDigest
-    };
-    pendingSaves.set(sidecar.blockId, context);
-
     let outcome;
     try {
-      outcome = await saver.save(sidecar.blockId, decision.intent.field, decision.src);
+      outcome = await sending.submit(acceptance.record);
     } catch (e) {
-      /*
-       * ⚠️ ONLY THIS SAVE'S OWN MEMORY IS FORGOTTEN.
-       *
-       * The delete was by block id and unconditional, and this line runs
-       * AFTER a wait: save a block in one store, change the store, save
-       * the same block there, and then let this save fail -- and the
-       * entry it removes is the OTHER save's, which is still waiting for
-       * an answer. When that answer came, its file could no longer be
-       * recognised and it was dequeued with nothing recorded: the user's
-       * saved text left as a draft nothing would send again.
-       *
-       * The settler had the same defect and was repaired one round
-       * earlier; this copy survived because the repair was applied where
-       * the finding pointed instead of everywhere the shape was. Found
-       * in review, in the same place I had just looked.
-       */
-      if (pendingSaves.get(sidecar.blockId) === context) {
-        pendingSaves.delete(sidecar.blockId);
-      }
       reportFailure(e);
       paint();
       return;
+    }
+    /*
+     * ⚠️ A NUMBER THAT WAS SPENT ON A SEND THAT NEVER LEFT IS GIVEN
+     * BACK. (§13.1, I7)
+     *
+     * The sequence is taken and written down before anything is queued,
+     * so that no send can carry a number nobody recorded. When the
+     * queue write then fails, nothing was sent -- and leaving the
+     * number in `outstanding` would leave the record saying a send is
+     * out with no entry anywhere that could answer for it: a draft the
+     * block can never stop being.
+     *
+     * ⚠️ NO CELL REACHES THIS LINE. The Saver's half is measured --
+     * `says it was not queued, so the number can be given back` in
+     * `sending.test.ts` -- and this half lives in the save handler,
+     * which only the editor-hosted suite drives and which would need
+     * the queue made unwritable mid-run. It is named here and in the
+     * delivery note rather than left looking like a site that is
+     * covered.
+     */
+    if (outcome.notQueued === true) {
+      saving.releaseSend(acceptance.record.file, acceptance.record.seq);
     }
     /*
      * THE RECORD AND THE REMOVAL BOTH HAPPENED INSIDE THE SETTLER, in
      * that order. Nothing is written here: a second place that wrote the
      * acknowledgement would be a second place for the order to be wrong.
      */
-    show(saveNotice(outcome, decision.normalised));
+    show(saveNotice(outcome, accepted.decision.normalised));
     paint();
   }
 

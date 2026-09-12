@@ -35,9 +35,10 @@
 import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
+import { checkOneComponent } from './paths';
 import { FileOps } from './fsops';
 import { Outbox, OutboxEntry } from './outbox';
-import { Publisher, sidecarFromDisk, sidecarPathOf } from './publication';
+import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
  * WHEN A PID STARTED, as epoch seconds, or null when this platform will
@@ -403,6 +404,25 @@ export function ledgerTotal(ledger: TakeoverLedger): number {
     ledger.movedButUnmarked +
     ledger.outcomeUnknown
   );
+}
+
+
+/*
+ * WHICH OF A STORE'S SENDS ARE STILL OUT FOR ONE FILE. The queue is
+ * read once per store; this picks the file's own sends out of it.
+ *
+ * ⚠️ EVERY ENTRY IN A QUEUE IS UNSETTLED. A settled one is removed, so
+ * there is no state to filter on here -- and adding one would be a
+ * second statement of what "settled" means.
+ */
+function unsettledFor(
+  held: QueueView & { entries?: Array<{ file: string; seq: number }> },
+  file: string
+): QueueView {
+  const mine = (held.entries ?? []).filter(
+    (send) => path.resolve(send.file) === path.resolve(file)
+  );
+  return { unsettled: mine.map((send) => send.seq) };
 }
 
 export class Sessions {
@@ -796,7 +816,7 @@ export class Sessions {
     }
     /*
      * ⚠️ IT MUST BE THE NAME OF A DIRECT CHILD OF THE SESSION'S
-     * DIRECTORY, AND THAT IS CHECKED HERE RATHER THAN AFTERWARDS.
+     * DIRECTORY, AND THAT IS CHECKED BEFORE THE PATH IS COMPOSED.
      *
      * `path.join` resolves `..`, so a store name of `../live/a`
      * addressed a LIVE window's queue -- and a takeover then imported
@@ -804,49 +824,13 @@ export class Sessions {
      * session. Production names are digests and cannot do this; nothing
      * made that a requirement. Found in review.
      *
-     * THE TEST IS WHAT THE NAME MUST BE, not a list of what it must not
-     * contain: `basename` of a single path component is that component,
-     * and of anything carrying a separator it is not. A blocklist is a
-     * guess at the spellings somebody will try; this is the property.
-     * (Ruled by the main session after the review.)
+     * ⚠️ THE RULE ITSELF LIVES IN `paths.ts`. §13's tombstones compose a
+     * store name AND a request id into a path under the storage root,
+     * and the request id comes off another session's queue file -- not
+     * this program's to trust. Two copies of a rule about untrusted
+     * input is one copy that gets repaired and one that does not.
      */
-    /*
-     * ⚠️ ON EVERY PLATFORM'S RULES, NOT ONLY THIS ONE'S. `path.basename`
-     * on POSIX does not treat a backslash as a separator, so `a\\b`
-     * passes here and is a path on Windows -- and these names travel:
-     * the directory is written by whichever window made it and read by
-     * whichever window recovers it. A name that is one component here
-     * and two somewhere else is not a name.
-     */
-    const oneComponent =
-      path.posix.basename(storeHash) === storeHash && path.win32.basename(storeHash) === storeHash;
-    /*
-     * ⚠️ AND NO CONTROL CHARACTER. A NUL cannot occur in a filename on
-     * any platform this runs on, and one in a store name got as far as
-     * the read, where node refuses it -- and the takeover then counted
-     * that as one more queue it could not inspect, reporting a path that
-     * was never there. Found in review.
-     *
-     * ⚠️ WHAT THESE TWO CHECKS ARE, EXACTLY: a name is one path
-     * component under both platforms' rules, and holds no control
-     * character. They are NOT a test of filesystem validity -- a
-     * 256-byte name, `a?b`, or `CON` all pass here and some filesystems
-     * will refuse them -- and they reject a tab, which POSIX allows.
-     * Production names are digests, so neither gap is reachable from
-     * this extension; the point of writing it down is that the next
-     * caller should not read these as "the filesystem will take it".
-     */
-    if (/[\u0000-\u001f]/.test(storeHash)) {
-      throw new Error(
-        `a store name may not contain a control character; got ${JSON.stringify(storeHash)}`
-      );
-    }
-    if (!oneComponent || storeHash === '.' || storeHash === '..') {
-      throw new Error(
-        'a store name must be the name of a single directory inside the session, not a path; ' +
-          `got ${JSON.stringify(storeHash)}`
-      );
-    }
+    checkOneComponent(storeHash, { noun: 'a store name', inside: 'the session' });
     return path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
   }
 
@@ -1543,6 +1527,62 @@ export class Sessions {
 
   public draftsIn(sessionId: string): string[] {
     const out: string[] = [];
+    /*
+     * ⚠️ THE FOURTH INPUT, AND IT IS READ ONCE PER STORE.
+     *
+     * Whether a block is a draft depends on what the owner's queue
+     * still holds for it -- a send that is out and unanswered means the
+     * file cannot be called settled even when its bytes equal the
+     * baseline. The queue is a file, so this scan reads one per store
+     * rather than one per block.
+     *
+     * ⚠️ THE STORE'S NAME COMES OFF THE PATH, NOT FROM HASHING THE
+     * STORE AGAIN. The directory a version lives in IS
+     * `<session>/<storeHash>/<blockId>`, so the name is already there;
+     * recomputing it here would be a second copy of a rule that lives
+     * in `activateCore`, and the two would disagree the day one of them
+     * changes.
+     */
+    const queues = new Map<string, QueueView>();
+    const root = this.sessionDirectory(sessionId);
+    const queueFor = (file: string): QueueView => {
+      const inside = path.relative(root, file).split(path.sep);
+      const storeHash = inside.length >= 2 ? inside[0] : '';
+      if (storeHash.length === 0) {
+        return { unsettled: [] };
+      }
+      const held = queues.get(storeHash);
+      if (held !== undefined) {
+        return unsettledFor(held, file);
+      }
+      const all: QueueView & { entries?: Array<{ file: string; seq: number }> } = {
+        unsettled: []
+      };
+      const sends: Array<{ file: string; seq: number }> = [];
+      try {
+        const queue = new Outbox(this.outboxPathFor(sessionId, storeHash), this.files);
+        queue.load();
+        for (const entry of queue.entries) {
+          if (entry.record !== undefined) {
+            sends.push({ file: entry.record.file, seq: entry.record.seq });
+          }
+        }
+      } catch (e) {
+        /*
+         * ⚠️ A QUEUE THAT WILL NOT READ IS NOT AN EMPTY QUEUE, and the
+         * listing already has a word for a record it cannot read: the
+         * file is LISTED. The same reasoning applies one level up --
+         * what cannot be read cannot be used to call anything settled
+         * -- so an unreadable queue contributes nothing and the files
+         * under it fall back to what their own records say. It is named
+         * here rather than left as a silent catch.
+         */
+        void e;
+      }
+      all.entries = sends;
+      queues.set(storeHash, all);
+      return unsettledFor(all, file);
+    };
     const walk = (directory: string): void => {
       for (const name of this.files.list(directory)) {
         const full = path.join(directory, name);
@@ -1574,7 +1614,7 @@ export class Sessions {
          * and it did: this one called every freshly published version a
          * draft, because it compared only against `acknowledged-raw`.
          */
-        const standing = this.publisher().standingOf(full);
+        const standing = this.publisher().standingOf(full, queueFor(full));
         if (standing.kind === 'third-version' || (standing.kind === 'published' && standing.draft)) {
           out.push(full);
         }

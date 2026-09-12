@@ -67,12 +67,31 @@ import { OpenDocuments, Publisher, Sidecar, UNNUMBERED, sidecarToDisk } from '..
 import { Saving } from '../../src/saving';
 import { RecordingFs } from '../support/recording-fs';
 
+/*
+ * WHICH SEND AN ANSWER IS ABOUT, for cells that are not about that.
+ *
+ * §13 records WHICH send the store confirmed, so `recordAnswer` is told
+ * the send's number, the split it was made against, and whether it was
+ * this client's write. These cells are about the ORDER and the refusals
+ * around a record, so they all speak for one ordinary first send; the
+ * cells that are about the number itself say so in their own fixtures.
+ */
+
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-seq-'));
 }
 
 const digestOf = (text: string): string =>
   require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+/*
+ * ⚠️ THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
+ * while nothing compared it and became a trap the moment the draft
+ * rule started asking whether the split still matches: every cell in
+ * this file would have read as a draft, for a reason that lived in
+ * the fixture.
+ */
+const SENT_ONCE = { seq: 1, prefixDigest: digestOf('## Two\n'), by: 'store' as const };
 
 function nothingOpen(): OpenDocuments {
   return { isOpen: () => false };
@@ -132,8 +151,8 @@ describe('C11/S1 an older reading cannot replace a newer baseline', () => {
   it('gives each reading its own file and its own record', async () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const older = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '', text: 'no heading\n' });
-    const newer = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '## Grown\n', text: '## Grown\nbody\n' });
+    const older = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '', text: 'no heading\n', cursor: null });
+    const newer = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '## Grown\n', text: '## Grown\nbody\n', cursor: null });
     assert.ok(older.published && newer.published);
     if (older.published && newer.published) {
       assert.notStrictEqual(older.file, newer.file, 'the newer reading took the older one’s path');
@@ -239,7 +258,8 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
       storeId: 's1',
       blockId: 'a.2',
       prefix: '## Two\n',
-      text: '## Two\nthe older reading\n'
+      text: '## Two\nthe older reading\n',
+      cursor: null
     });
     assert.strictEqual(fs.readFileSync(file, 'utf8'), saved, 'a late reading overwrote a saved file');
     assert.strictEqual(files.countOf('unlink', file), 0);
@@ -416,7 +436,8 @@ describe('C12 the display ticket takes no part in what is written', () => {
           storeId: 's1',
           blockId: 'a.2',
           prefix: '## Two\n',
-          text
+          text,
+          cursor: null
         });
         if (outcome.published) {
           written.push(`${outcome.version}:${fs.readFileSync(outcome.file, 'utf8')}`);
@@ -483,7 +504,8 @@ describe('C20 what an interruption must not be allowed to do', () => {
       cursor: 'w:4',
       rawDigest: digestOf(text),
       sentDigest: digestOf('body\n'),
-      mismatch: false
+      mismatch: false,
+      send: SENT_ONCE
     });
     assert.deepStrictEqual(late, { dequeued: true }, 'a replay of an already-recorded answer was not settled');
     assert.strictEqual(

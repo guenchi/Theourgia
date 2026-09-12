@@ -80,7 +80,7 @@ const AT_LEAST: Array<[string, number]> = [
    * host, after a review traced a takeover into the queue the window had
    * just stopped using.
    */
-  ['awaiting.test.ts', 7],
+  ['awaiting.test.ts', 6],
   ['blocks.test.ts', 20],
   /*
    * ⚠️ INCLUDING ITSELF. This file was exempt from the inventory check
@@ -93,11 +93,13 @@ const AT_LEAST: Array<[string, number]> = [
   ['cursor.test.ts', 8],
   ['dependency-sexpr.test.ts', 15],
   ['documents.test.ts', 8],
-  ['durability.test.ts', 34],
+  ['durability.test.ts', 33],
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
+  ['mutators.test.ts', 12],
   ['outline.test.ts', 48],
-  ['publication.test.ts', 48],
+  ['ownership.test.ts', 18],
+  ['publication.test.ts', 67],
   ['recovery.test.ts', 28],
   ['real-core.test.ts', 14],
   /*
@@ -107,15 +109,17 @@ const AT_LEAST: Array<[string, number]> = [
   ['refusals.test.ts', 3],
   ['saver.test.ts', 41],
   ['saving.test.ts', 34],
+  ['sending.test.ts', 20],
   ['sequences.test.ts', 15],
   /*
    * ADDED in round 36: the settler moved out of `extension.ts` into
    * `src/settling.ts` so that "which queue, which store" could be
    * driven by a cell at all.
    */
-  ['settling.test.ts', 10],
+  ['settling.test.ts', 23],
   ['sessions.test.ts', 100],
   ['shapes.test.ts', 63],
+  ['tombstones.test.ts', 11],
   ['transport.test.ts', 20],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]

@@ -1009,6 +1009,15 @@ export function unrecordedNotice(file: string, because: Unrecorded): Notice {
         'The request is kept and will be retried; nothing was lost.'
     };
   }
+  if (because === 'number-taken') {
+    return {
+      level: 'warning',
+      text:
+        `The store accepted the save, but the record beside ${file} already holds that send's ` +
+        'number for a different request, so the two disagree about which send it was. The record ' +
+        'is marked and the request is kept: run reconcile on the block to settle it.'
+    };
+  }
   if (because === 'file-moved') {
     return {
       level: 'warning',
