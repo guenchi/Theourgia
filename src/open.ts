@@ -57,22 +57,11 @@ export interface Registered<T> {
 export type Outcome = 'read' | 'save';
 
 /*
- * WHETHER THIS REGISTRATION BECAME THE BASELINE, and if not, which kind
- * of event outranked it -- the answer to a refusal differs, because one
- * of them is already on the user's screen and the other left nothing in
- * its place.
- *
- * IT IS AN OBJECT SO THAT A TRUTH TEST CANNOT COMPILE INTO A LIE. This
- * was three strings for one round, and the call site's surviving
- * `if (!admission)` went on compiling while never once being true --
- * every one of those answers is a non-empty string, so a losing open
- * carried on writing the file, and the whole editor-hosted suite stayed
- * green. A shape whose falsy reading is `admission.admitted` puts that
- * mistake back where the compiler can see it.
+ * `taken` means this registration is now the baseline. The other two say
+ * which kind of event outranked it, because the answer to a refusal
+ * differs: one is already visible to the user, the other is not.
  */
-export type Admission =
-  | { admitted: true }
-  | { admitted: false; by: Outcome };
+export type Admission = 'taken' | 'superseded-by-read' | 'superseded-by-save';
 
 export class OpenBuffers<T> {
   private readonly held = new Map<string, Registered<T>>();
@@ -108,13 +97,13 @@ export class OpenBuffers<T> {
   public register(file: string, value: T, ticket: number, commit?: () => void): Admission {
     const held = this.held.get(file);
     if (held !== undefined && held.ticket > ticket) {
-      return { admitted: false, by: held.from };
+      return held.from === 'save' ? 'superseded-by-save' : 'superseded-by-read';
     }
     if (commit !== undefined) {
       commit();
     }
     this.held.set(file, { value, ticket, from: 'read' });
-    return { admitted: true };
+    return 'taken';
   }
 
   public get(file: string): T | undefined {
