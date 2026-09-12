@@ -50,7 +50,9 @@ import {
   DISCARD_REACH_NOTE,
   ImportTarget,
   OtherSession,
-  Sessions
+  Sessions,
+  TakeoverLedger,
+  emptyLedger
 } from './sessions';
 import {
   FORCE_CLAIM_CONFIRMATION,
@@ -90,7 +92,7 @@ export type RecoveryAction = 'take-over' | 'force-take-over' | 'discard';
  */
 export type RecoveryOutcome =
   | { did: 'nothing'; because: 'no-other-sessions' | 'cancelled' }
-  | { did: 'take-over'; sessionId: string; imported: number; skipped: number }
+  | { did: 'take-over'; sessionId: string; ledger: TakeoverLedger }
   | { did: 'refused'; sessionId: string; action: RecoveryAction; because: string }
   | { did: 'discard'; sessionId: string; trash: string };
 
@@ -255,7 +257,7 @@ async function act(
    * The way out was blocked by the attempt to use it. Found in review.
    */
   if (into === null) {
-    const notice = adoptedNotice(row.sessionId, 0, 0, true);
+    const notice = adoptedNotice(row.sessionId, emptyLedger(), true);
     chooser.say(notice);
     return { did: 'refused', sessionId: row.sessionId, action, because: 'nowhere-to-put-them' };
   }
@@ -302,11 +304,6 @@ async function act(
       into.storeHash
     )
   );
-  chooser.say(adoptedNotice(row.sessionId, moved.imported, moved.skipped, false, moved));
-  return {
-    did: 'take-over',
-    sessionId: row.sessionId,
-    imported: moved.imported,
-    skipped: moved.skipped
-  };
+  chooser.say(adoptedNotice(row.sessionId, moved, false));
+  return { did: 'take-over', sessionId: row.sessionId, ledger: moved };
 }

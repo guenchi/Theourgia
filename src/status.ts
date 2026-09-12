@@ -30,6 +30,7 @@
  * is telling the user the better of the two every time it fails.
  */
 import { RECONCILE_BLOCK, RETRY_OUTBOX } from './commands';
+import { TakeoverLedger } from './sessions';
 import { StructuralMark } from './model';
 
 export interface StatusFacts {
@@ -655,14 +656,8 @@ export function refusedTakeoverNotice(
  */
 export function adoptedNotice(
   sessionId: string,
-  imported: number,
-  skipped: number,
-  nowhereToPutThem: boolean,
-  left: { leftBehind: number; unrouted: number; unreadable: number } = {
-    leftBehind: 0,
-    unrouted: 0,
-    unreadable: 0
-  }
+  ledger: TakeoverLedger,
+  nowhereToPutThem: boolean
 ): Notice {
   if (nowhereToPutThem) {
     /*
@@ -677,52 +672,50 @@ export function adoptedNotice(
         'into, because no store is configured here. Set theourgia.store and run the command again.'
     };
   }
-  const also = skipped === 0 ? '' : ` ${skipped} were already here and were left alone.`;
   /*
-   * ⚠️ AND WHAT WAS NOT TAKEN IS SAID OUT LOUD. A window keeps a queue
-   * per store and this moves one store's; saying only how many arrived
-   * would let the user think the rescue was complete. Running the
-   * command again with the other store configured takes those -- the
-   * claim is re-entrant for the window that holds it.
+   * ⚠️ ONE SENTENCE PER NON-EMPTY BUCKET, AND NO BUCKET WITHOUT ONE.
+   *
+   * The ledger's rule is that everything the takeover saw is in exactly
+   * one bucket; this is the other half of it. A bucket the report did
+   * not mention would be work that vanished between the count and the
+   * user -- the same defect as a count that swallowed it, one step
+   * later. The cell that adds the buckets guards the first half; this
+   * list guards the second, and a bucket added without a sentence here
+   * shows up as an unexplained difference in what the user is told.
    */
-  const rest =
-    left.leftBehind === 0
-      ? ''
-      : ` ${left.leftBehind} more belong to other stores and are still there; configure that ` +
-        'store and run this command again to bring them across.';
-  /*
-   * ⚠️ THE ONES NOTHING CAN ROUTE ARE SAID SEPARATELY, and no advice is
-   * offered for them. They sit in a queue written before stores had
-   * their own directories; nothing can establish which store they were
-   * for, so "configure that store" is an instruction the user cannot
-   * carry out. Telling them to do it anyway is worse than telling them
-   * it cannot be done from here.
-   */
-  /*
-   * ⚠️ "THIS COMMAND CANNOT MOVE THOSE", not "nothing can". The library
-   * underneath will import that queue when asked to take every one --
-   * what it cannot do is say which store the requests were written for,
-   * which is why this command does not ask. The absolute wording was
-   * false of the API and a review said so.
-   */
-  const stranded =
-    left.unrouted === 0
-      ? ''
-      : ` ${left.unrouted} more are in a queue from an older version of this extension, which ` +
+  const parts: string[] = [
+    `${ledger.imported} unsent request(s) are now in this window's queue.`
+  ];
+  if (ledger.skippedDuplicate > 0) {
+    parts.push(`${ledger.skippedDuplicate} had already been carried across and were left alone.`);
+  }
+  if (ledger.leftOtherStore > 0) {
+    parts.push(
+      `${ledger.leftOtherStore} belong to other stores and are still there; configure that store ` +
+        'and run this command again to bring them across.'
+    );
+  }
+  if (ledger.leftUnknownStore > 0) {
+    parts.push(
+      `${ledger.leftUnknownStore} are in a queue from an older version of this extension, which ` +
         'does not record which store they were written for; this command will not move them into ' +
-        'a store it cannot show they belong to.';
-  const broken =
-    left.unreadable === 0
-      ? ''
-      : ` ${left.unreadable} of its queue file(s) could not be read, so what is in them is not ` +
-        'known and nothing was taken from them.';
-  return {
-    level: 'information',
-    text:
-      `${sessionId}: ${imported} unsent request(s) are now in this window's ` +
-      `queue.${also}${rest}${stranded}${broken} They go out with the next save, or run ` +
-      `"${RETRY_OUTBOX.title}" to send them now.`
-  };
+        'a store it cannot show they belong to.'
+    );
+  }
+  if (ledger.unreadableQueue > 0) {
+    parts.push(
+      `${ledger.unreadableQueue} of its queue file(s) could not be read, so what is in them is ` +
+        'not known and nothing was taken from them.'
+    );
+  }
+  if (ledger.malformedEntry > 0) {
+    parts.push(
+      `${ledger.malformedEntry} item(s) in its queues are not requests this build understands ` +
+        'and were left alone.'
+    );
+  }
+  parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);
+  return { level: 'information', text: `${sessionId}: ${parts.join(' ')}` };
 }
 
 /*

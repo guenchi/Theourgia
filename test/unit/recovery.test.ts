@@ -358,12 +358,9 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const outcome = await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), box.into);
     const landed = box.held;
     assert.strictEqual(box.runs, 1, 'the import did not go through the lock the destination owns');
-    assert.deepStrictEqual(outcome, {
-      did: 'take-over',
-      sessionId: 'S-dead',
-      imported: 2,
-      skipped: 0
-    });
+    assert.strictEqual(outcome.did, 'take-over');
+    assert.strictEqual(outcome.did === 'take-over' && outcome.ledger.imported, 2);
+    assert.strictEqual(outcome.did === 'take-over' && outcome.ledger.skippedDuplicate, 0);
     assert.deepStrictEqual(landed.map((e) => e.req).sort(), ['r1', 'r2']);
   });
 
@@ -634,7 +631,7 @@ describe('review 23 a takeover that moved one store’s work can come back for t
      * user believe the rescue was complete; two requests are still in
      * that window's directory.
      */
-    assert.match(said.said[0].text, /2 more belong to other stores/);
+    assert.match(said.said[0].text, /2 belong to other stores/);
 
     /*
      * ⚠️ THE SECOND RUN, WITH THE OTHER STORE CONFIGURED. This used to

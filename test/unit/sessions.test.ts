@@ -35,7 +35,14 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { SessionIdentity, Sessions, StartTimeReader, systemStartTime } from '../../src/sessions';
+import {
+  SessionIdentity,
+  Sessions,
+  StartTimeReader,
+  emptyLedger,
+  ledgerTotal,
+  systemStartTime
+} from '../../src/sessions';
 import { idleProcess } from '../support/host';
 import { Outbox, OutboxEntry } from '../../src/outbox';
 import { Publisher } from '../../src/publication';
@@ -362,7 +369,7 @@ describe('C8 taking over a dead session’s queue', () => {
         target
       );
       assert.strictEqual(imported.imported, 2, 'one request was carried twice, or a different one was dropped');
-      assert.strictEqual(imported.skipped, 1, 'the repeat of one request was not skipped');
+      assert.strictEqual(imported.skippedDuplicate, 1, 'the repeat of one request was not skipped');
       assert.deepStrictEqual(
         taken.map((e) => e.req).sort(),
         ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'],
@@ -1320,7 +1327,7 @@ describe('review 24 what a takeover reports as still waiting', () => {
         )
       : null;
     assert.strictEqual(
-      moved?.leftBehind,
+      moved?.leftOtherStore,
       0,
       'the user was told to go back for a request an earlier run had already brought across'
     );
@@ -1347,8 +1354,8 @@ describe('review 24 what a takeover reports as still waiting', () => {
           'store-a'
         )
       : null;
-    assert.strictEqual(moved?.unreadable, 1, 'an unreadable queue was reported as nothing left');
-    assert.strictEqual(moved?.leftBehind, 0);
+    assert.strictEqual(moved?.unreadableQueue, 1, 'an unreadable queue was reported as nothing left');
+    assert.strictEqual(moved?.leftOtherStore, 0);
   });
 
   /*
@@ -1371,8 +1378,8 @@ describe('review 24 what a takeover reports as still waiting', () => {
           'store-a'
         )
       : null;
-    assert.strictEqual(moved?.unrouted, 2);
-    assert.strictEqual(moved?.leftBehind, 0, 'the unroutable queue was counted as another store’s');
+    assert.strictEqual(moved?.leftUnknownStore, 2);
+    assert.strictEqual(moved?.leftOtherStore, 0, 'the unroutable queue was counted as another store’s');
   });
 });
 
@@ -1436,7 +1443,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
     good(storage, 'S-dead', 'store-a');
     badQueue(storage, 'S-dead', 'store-x', 'null');
     const moved = await takeover(storage, 'store-a');
-    assert.strictEqual(moved?.unreadable, 1);
+    assert.strictEqual(moved?.unreadableQueue, 1);
     assert.strictEqual(moved?.imported, 1);
   });
 
@@ -1453,7 +1460,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
     const moved = await takeover(storage, 'store-a');
     assert.strictEqual(moved?.imported, 0);
     assert.strictEqual(
-      moved?.unreadable,
+      moved?.unreadableQueue,
       1,
       'the queue this takeover was about failed in silence'
     );
@@ -1461,8 +1468,6 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
 
   for (const [what, text] of [
     ['a version this build does not know', '{"version":99,"entries":[]}'],
-    ['an entry that is not an object', '{"entries":[null]}'],
-    ['an entry with no request id', '{"entries":[{"payload":"x"}]}'],
     ['an entries field that is not a list', '{"entries":{}}']
   ] as Array<[string, string]>) {
     it(`counts a queue with ${what} as unreadable rather than empty`, async () => {
@@ -1471,8 +1476,39 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
       good(storage, 'S-dead', 'store-a');
       badQueue(storage, 'S-dead', 'store-x', text);
       const moved = await takeover(storage, 'store-a');
-      assert.strictEqual(moved?.unreadable, 1, `${what} was counted as an empty queue`);
-      assert.strictEqual(moved?.leftBehind, 0);
+      assert.strictEqual(moved?.unreadableQueue, 1, `${what} was counted as an empty queue`);
+      assert.strictEqual(moved?.leftOtherStore, 0);
+    });
+  }
+
+  /*
+   * ⚠️ AND AN ELEMENT THAT IS NOT A REQUEST IS ITS OWN BUCKET, not a
+   * reason to call the whole file unreadable: the file holds the other
+   * requests too, and losing them to tidy the report is the defect this
+   * ledger exists to make impossible.
+   */
+  for (const [what, element] of [
+    ['an element that is not an object', 'null'],
+    ['an element with no request id', '{"payload":"x"}']
+  ] as Array<[string, string]>) {
+    it(`counts ${what} as a malformed item rather than losing the file`, async () => {
+      const storage = scratch();
+      makeSession(storage, 'S-dead');
+      good(storage, 'S-dead', 'store-a');
+      badQueue(
+        storage,
+        'S-dead',
+        'store-x',
+        `{"entries":[${element},{"req":"r2","importedBy":null}]}`
+      );
+      const moved = await takeover(storage, 'store-a');
+      assert.strictEqual(moved?.malformedEntry, 1, `${what} was not counted as a malformed item`);
+      assert.strictEqual(
+        moved?.leftOtherStore,
+        1,
+        'the request beside it was lost when the file was written off'
+      );
+      assert.strictEqual(moved?.unreadableQueue, 0);
     });
   }
 
@@ -1496,7 +1532,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
       })
     );
     const moved = await takeover(storage, 'store-a');
-    assert.strictEqual(moved?.leftBehind, 1, 'a waiting request was counted as already carried away');
+    assert.strictEqual(moved?.leftOtherStore, 1, 'a waiting request was counted as already carried away');
   });
 });
 
@@ -1543,4 +1579,141 @@ describe('review 25 what a session id may be', () => {
     assert.throws(() => sessions.outboxPathFor('S-old', ''), /may not be empty/);
     assert.ok(sessions.outboxPathFor('S-old').endsWith(path.join('S-old', 'outbox.json')));
   });
+});
+
+/*
+ * ⭐ THE CONSERVATION LAW: EVERYTHING A TAKEOVER SAW IS IN EXACTLY ONE
+ * BUCKET.
+ *
+ * Three times in one function a count answered with a smaller, more
+ * comfortable number than the truth -- an unreadable queue as zero, a
+ * queue the loader rejects as empty, the selected queue failing in
+ * silence. Each was fixed where it was found, and the next would have
+ * been fixed the same way, one shape at a time, for ever. ⛔ A cell per
+ * shape cannot catch a shape nobody has thought of.
+ *
+ * So the report is a ledger and this is its law. Anything that goes
+ * uncounted from here on is a DIFFERENCE that goes red, rather than a
+ * number that quietly shrinks -- including in a shape written after this
+ * was, by somebody who never read it.
+ */
+describe('the takeover ledger accounts for everything it saw', () => {
+  function write(storage: string, id: string, where: string, text: string): void {
+    const dir = where === '' ? path.join(storage, 'sessions', id) : path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outbox.json'), text, 'utf8');
+  }
+
+  function request(req: string, importedBy: unknown = null): string {
+    return JSON.stringify({
+      req,
+      cursor: 'w:1',
+      id: 'a.1',
+      field: 'src',
+      payload: 'x',
+      state: 'queued',
+      createdAt: 0,
+      lastError: null,
+      importedBy
+    });
+  }
+
+  /*
+   * ONE FIXTURE PER SHAPE, AND ALL OF THEM AT ONCE. Every bucket is
+   * non-empty in this store, so the sum is not accidentally right
+   * because most of the terms are zero -- which is how a conservation
+   * check passes without conserving anything.
+   */
+  async function ledgerOf(storage: string): Promise<ReturnType<Sessions['importFrom']>> {
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    const held: string[] = ['already-here'];
+    return won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: (req) => held.includes(req), adopt: () => undefined },
+          'store-a'
+        )
+      : emptyLedger();
+  }
+
+  it('adds up, with every bucket carrying something', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    /*
+     * THE QUEUE BEING TAKEN: one to import, one already in the
+     * destination, one an earlier takeover marked.
+     */
+    write(
+      storage,
+      'S-dead',
+      'store-a',
+      `{"entries":[${request('fresh')},${request('already-here')},${request('carried', 'S-dead.claim.1')}]}`
+    );
+    /* ANOTHER STORE'S: one waiting, one not a request. */
+    write(storage, 'S-dead', 'store-b', `{"entries":[${request('other')},null]}`);
+    /* THE ONE WHOSE STORE NOTHING CAN SAY. */
+    write(storage, 'S-dead', '', `{"entries":[${request('old')}]}`);
+    /* AND ONE NOBODY CAN READ. */
+    write(storage, 'S-dead', 'store-x', 'null');
+
+    const led = await ledgerOf(storage);
+    assert.strictEqual(
+      ledgerTotal(led),
+      led.observed,
+      `the ledger does not add up: ${JSON.stringify(led)}`
+    );
+    /*
+     * AND EVERY BUCKET IS CARRYING SOMETHING, so the equality above is
+     * not the sum of mostly zeroes.
+     */
+    assert.ok(led.imported > 0, JSON.stringify(led));
+    assert.ok(led.skippedDuplicate > 1, 'both kinds of "already carried" are not represented');
+    assert.ok(led.leftOtherStore > 0, JSON.stringify(led));
+    assert.ok(led.leftUnknownStore > 0, JSON.stringify(led));
+    assert.ok(led.unreadableQueue > 0, JSON.stringify(led));
+    assert.ok(led.malformedEntry > 0, JSON.stringify(led));
+  });
+
+  /*
+   * AND IT ADDS UP FOR EACH SHAPE ON ITS OWN, so a failure names which
+   * one rather than only that the total moved.
+   */
+  for (const [what, text] of [
+    ['a file that will not parse', '{ not json'],
+    ['a file that parses to null', 'null'],
+    ['a version this build does not know', '{"version":99,"entries":[]}'],
+    ['an entries field that is not a list', '{"entries":{}}'],
+    ['an element that is not an object', '{"entries":[null]}'],
+    ['an element with no request id', '{"entries":[{"payload":"x"}]}'],
+    ['a mark that is not a string', `{"entries":[${JSON.stringify({ req: 'r', importedBy: false })}]}`],
+    ['an empty queue', '{"entries":[]}']
+  ] as Array<[string, string]>) {
+    it(`adds up when another store's queue is ${what}`, async () => {
+      const storage = scratch();
+      makeSession(storage, 'S-dead');
+      write(storage, 'S-dead', 'store-a', `{"entries":[${request('fresh')}]}`);
+      write(storage, 'S-dead', 'store-b', text);
+      const led = await ledgerOf(storage);
+      assert.strictEqual(
+        ledgerTotal(led),
+        led.observed,
+        `${what} is not accounted for: ${JSON.stringify(led)}`
+      );
+    });
+
+    it(`adds up when the queue being taken is ${what}`, async () => {
+      const storage = scratch();
+      makeSession(storage, 'S-dead');
+      write(storage, 'S-dead', 'store-a', text);
+      const led = await ledgerOf(storage);
+      assert.strictEqual(
+        ledgerTotal(led),
+        led.observed,
+        `${what} is not accounted for when it is the one being taken: ${JSON.stringify(led)}`
+      );
+    });
+  }
 });

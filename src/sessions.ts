@@ -242,6 +242,87 @@ export type DiscardOutcome =
       notes: string[];
     };
 
+/*
+ * ⚠️ EVERY REQUEST A TAKEOVER SAW LANDS IN EXACTLY ONE BUCKET, AND THE
+ * BUCKETS ADD UP TO WHAT IT SAW.
+ *
+ * Three times in one function a count answered with a smaller, more
+ * comfortable number than the truth: an unreadable queue counted as
+ * zero, a queue the loader rejects counted as empty, the queue the
+ * takeover was told to take failing in silence. Each was fixed where it
+ * was found, and the next one would have been fixed the same way, one
+ * at a time, for ever -- a cell per shape cannot catch a shape nobody
+ * has thought of.
+ *
+ * So the report is a ledger and the law is conservation: `observed` is
+ * everything this takeover saw, and every one of those things is in
+ * exactly one of the buckets below. A cell adds the buckets and compares
+ * them with `observed`. Anything that goes uncounted from now on is a
+ * DIFFERENCE that goes red, rather than a number that quietly shrinks.
+ *
+ * WHAT ONE "THING" IS: a request, where requests can be seen; a whole
+ * FILE where they cannot, because the contents of a queue nobody can
+ * parse are not observable and pretending to count them would be the
+ * same lie in a new place.
+ */
+export interface TakeoverLedger {
+  /*
+   * Everything this takeover saw. Not everything that exists: a queue it
+   * could not open is one thing seen, whatever is inside it.
+   */
+  observed: number;
+  /* Moved into this window's queue by this run. */
+  imported: number;
+  /*
+   * Already carried away -- found in the destination by this run, or
+   * marked by an earlier takeover. Not lost, and not waiting.
+   */
+  skippedDuplicate: number;
+  /* Waiting, in a queue belonging to a store this run did not take. */
+  leftOtherStore: number;
+  /*
+   * Waiting, in the queue from before stores had their own directories.
+   * Nothing can say which store those were written for.
+   */
+  leftUnknownStore: number;
+  /*
+   * A whole file that could not be trusted -- unparseable, not an
+   * object, a version this build does not know, or an `entries` that is
+   * not a list. One per file.
+   */
+  unreadableQueue: number;
+  /* An element that is not a request, in a file that otherwise read. */
+  malformedEntry: number;
+}
+
+export function emptyLedger(): TakeoverLedger {
+  return {
+    observed: 0,
+    imported: 0,
+    skippedDuplicate: 0,
+    leftOtherStore: 0,
+    leftUnknownStore: 0,
+    unreadableQueue: 0,
+    malformedEntry: 0
+  };
+}
+
+/*
+ * The sum of the buckets. Separate from the interface so that the cell
+ * asserting conservation and the code maintaining it cannot drift: a
+ * bucket added to one and not the other is a compile error here.
+ */
+export function ledgerTotal(ledger: TakeoverLedger): number {
+  return (
+    ledger.imported +
+    ledger.skippedDuplicate +
+    ledger.leftOtherStore +
+    ledger.leftUnknownStore +
+    ledger.unreadableQueue +
+    ledger.malformedEntry
+  );
+}
+
 export class Sessions {
   private readonly files: FileOps;
   private readonly globalStorage: string;
@@ -869,146 +950,107 @@ export class Sessions {
    * for callers that really do mean every queue -- there are none in
    * production, and a cell says so.
    */
-  public importFrom(
-    token: ClaimToken,
-    into: ImportTarget,
-    storeHash?: string
-  ): {
-    imported: number;
-    skipped: number;
-    leftBehind: number;
-    unrouted: number;
-    unreadable: number;
-  } {
+  public importFrom(token: ClaimToken, into: ImportTarget, storeHash?: string): TakeoverLedger {
+    const ledger = emptyLedger();
     if (!this.files.exists(token.file)) {
-      return { imported: 0, skipped: 0, leftBehind: 0, unrouted: 0, unreadable: 0 };
+      return ledger;
     }
-    let imported = 0;
-    let skipped = 0;
     const all = this.outboxPathsFor(token.deadSessionId);
     const queues =
       storeHash === undefined
         ? all
         : [this.outboxPathFor(token.deadSessionId, storeHash)].filter((q) => this.files.exists(q));
-    /*
-     * ⚠️ WHAT WAS NOT EVEN LOOKED AT IS COUNTED SEPARATELY.
-     *
-     * `skipped` means "read and left alone". Requests in a queue this
-     * import did not open -- another store's, or a queue from before
-     * stores had their own directories, whose store nothing here can
-     * establish -- are neither imported nor skipped, and reporting
-     * `skipped: 0` while several sit untouched says the rescue was
-     * complete when it was not. A takeover has to be able to say what it
-     * did not take.
-     */
-    const untouched = all.filter((q) => !queues.includes(q));
-    let leftBehind = 0;
-    let unrouted = 0;
-    let unreadable = 0;
     const legacy = path.join(this.sessionDirectory(token.deadSessionId), 'outbox.json');
-    for (const queue of untouched) {
-      const count = this.entriesIn(queue);
-      if (count === null) {
-        unreadable += 1;
+    for (const queue of all) {
+      if (queues.includes(queue)) {
+        this.importQueue(queue, token, into, ledger);
         continue;
       }
-      /*
-       * ⚠️ A QUEUE FROM BEFORE STORES HAD THEIR OWN DIRECTORIES IS NOT
-       * "ANOTHER STORE'S". Nothing can say which store it was for, so no
-       * configuration reaches it and telling the user to configure that
-       * store is advice they cannot act on. It is counted apart.
-       */
-      if (path.resolve(queue) === path.resolve(legacy)) {
-        unrouted += count;
-        continue;
-      }
-      leftBehind += count;
+      this.surveyQueue(queue, path.resolve(queue) === path.resolve(legacy), ledger);
     }
-    for (const queue of queues) {
-      const outcome = this.importQueue(queue, token, into);
-      imported += outcome.imported;
-      skipped += outcome.skipped;
-      unreadable += outcome.unreadable;
-    }
-    return { imported, skipped, leftBehind, unrouted, unreadable };
+    return ledger;
   }
 
   /*
-   * HOW MANY REQUESTS A QUEUE STILL HAS FOR SOMEBODY, or `null` when it
-   * will not read.
-   *
-   * ⚠️ NULL AND ZERO ARE DIFFERENT ANSWERS. This returned zero for a
-   * queue nobody could parse, so an unreadable file full of somebody's
-   * unsent work was reported as nothing left behind -- the shape this
-   * batch has met six times, an absence drawn as the reassuring answer.
-   *
-   * ⚠️ AND AN ENTRY ALREADY CARRIED AWAY IS NOT STILL WAITING. The count
-   * was of the whole array, so the second run of a takeover advised the
-   * user to go back for a request the first run had already brought
-   * across. `imported-by` is the mark that says it went.
+   * A QUEUE THIS TAKEOVER IS NOT OPENING, counted rather than opened.
+   * Every element is looked at, because a file that holds one thing
+   * which is not a request still holds the others, and saying "the file
+   * is unreadable" would lose them.
    */
-  private entriesIn(queue: string): number | null {
+  private surveyQueue(queue: string, unknownStore: boolean, ledger: TakeoverLedger): void {
+    const elements = this.elementsIn(queue);
+    if (elements === null) {
+      ledger.observed += 1;
+      ledger.unreadableQueue += 1;
+      return;
+    }
+    for (const element of elements) {
+      ledger.observed += 1;
+      if (typeof element !== 'object' || element === null) {
+        ledger.malformedEntry += 1;
+        continue;
+      }
+      const it = element as { req?: unknown; importedBy?: unknown };
+      if (typeof it.req !== 'string') {
+        ledger.malformedEntry += 1;
+        continue;
+      }
+      /*
+       * ONLY A STRING IS A MARK. `Outbox` reads anything else as no mark
+       * at all and WILL import that entry, so treating a `false` as
+       * "already carried away" would leave a waiting request out of the
+       * count of what is waiting.
+       */
+      if (typeof it.importedBy === 'string') {
+        ledger.skippedDuplicate += 1;
+        continue;
+      }
+      if (unknownStore) {
+        ledger.leftUnknownStore += 1;
+        continue;
+      }
+      ledger.leftOtherStore += 1;
+    }
+  }
+
+  /*
+   * THE ELEMENTS OF A QUEUE FILE, or `null` when the file cannot be
+   * trusted at all.
+   *
+   * ⚠️ `null` PARSES AND IS NOT AN OBJECT. A file holding the four bytes
+   * `null` got past the catch and then threw on the first field --
+   * outside it, out of `importFrom`, out of the command -- so the user
+   * saw no answer at all where they should have seen a takeover
+   * reporting an unreadable queue. Found in review.
+   *
+   * A VERSION THIS BUILD DOES NOT KNOW, or an `entries` that is not a
+   * list, is the same answer: the loader would refuse the file, and
+   * counting what could be made of it would report a smaller number as
+   * though it were the truth.
+   */
+  private elementsIn(queue: string): unknown[] | null {
     let parsed: unknown;
     try {
       parsed = JSON.parse(this.files.readText(queue));
     } catch (e) {
       return null;
     }
-    /*
-     * ⚠️ `null` PARSES AND IS NOT AN OBJECT. A file holding the four
-     * bytes `null` got past the catch and then threw on the first field
-     * -- outside it, out of `importFrom`, out of the command -- so the
-     * user saw no answer at all where they should have seen a takeover
-     * reporting an unreadable queue. Found in review.
-     */
     if (typeof parsed !== 'object' || parsed === null) {
       return null;
     }
     const raw = parsed as { version?: unknown; entries?: unknown };
-    /*
-     * A QUEUE THIS BUILD WOULD REFUSE TO LOAD IS NOT AN EMPTY ONE. The
-     * loader turns away a version it does not know; counting such a file
-     * as zero says there is nothing left in something this build cannot
-     * open.
-     */
     if (raw.version !== undefined && raw.version !== OUTBOX_VERSION) {
       return null;
     }
-    if (!Array.isArray(raw.entries)) {
-      return null;
-    }
-    let waiting = 0;
-    for (const entry of raw.entries) {
-      /*
-       * AN ENTRY THAT IS NOT ONE MAKES THE WHOLE FILE UNTRUSTWORTHY.
-       * Filtering it out reported the smaller number as though it were
-       * the truth, over a file the loader itself rejects.
-       */
-      if (typeof entry !== 'object' || entry === null) {
-        return null;
-      }
-      const it = entry as { req?: unknown; importedBy?: unknown };
-      if (typeof it.req !== 'string') {
-        return null;
-      }
-      /*
-       * ONLY A STRING IS A MARK. `Outbox` reads anything else as no mark
-       * at all and WILL import that entry, so treating a `false` or a
-       * `0` as "already carried away" would leave a waiting request out
-       * of the count of what is waiting.
-       */
-      if (typeof it.importedBy !== 'string') {
-        waiting += 1;
-      }
-    }
-    return waiting;
+    return Array.isArray(raw.entries) ? raw.entries : null;
   }
 
   private importQueue(
     queue: string,
     token: ClaimToken,
-    into: ImportTarget
-  ): { imported: number; skipped: number; unreadable: number } {
+    into: ImportTarget,
+    ledger: TakeoverLedger
+  ): void {
     const source = new Outbox(queue, this.files);
     try {
       source.load();
@@ -1026,13 +1068,14 @@ export class Sessions {
        * unreadable; the one it did open could fail in silence. Found in
        * review.
        */
-      return { imported: 0, skipped: 0, unreadable: 1 };
+      ledger.observed += 1;
+      ledger.unreadableQueue += 1;
+      return;
     }
-    let imported = 0;
-    let skipped = 0;
     for (const entry of source.entries) {
+      ledger.observed += 1;
       if (entry.importedBy !== null) {
-        skipped += 1;
+        ledger.skippedDuplicate += 1;
         continue;
       }
       /*
@@ -1041,14 +1084,13 @@ export class Sessions {
        * across several generations belongs once. (C19)
        */
       if (into.has(entry.req)) {
-        skipped += 1;
+        ledger.skippedDuplicate += 1;
         continue;
       }
       into.adopt({ ...entry });
       source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
-      imported += 1;
+      ledger.imported += 1;
     }
-    return { imported, skipped, unreadable: 0 };
   }
 
   public adopt(otherSessionId: string): AdoptOutcome {

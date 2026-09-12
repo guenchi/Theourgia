@@ -30,6 +30,7 @@ import { documentFor, fieldConflict, readBlock } from '../../src/blocks';
 import { parseOutline } from '../../src/outline';
 import {
   FORCE_CLAIM_CONFIRMATION,
+  adoptedNotice,
   forceClaimNotice,
   prefixRefusedNotice,
   retryNotice,
@@ -41,6 +42,7 @@ import {
 import { TransportError } from '../../src/transport';
 import { Client } from '../../src/client';
 import { Says } from '../support/says';
+import { emptyLedger } from '../../src/sessions';
 import {
   assertRuledRefusal,
   ESCAPED_ECHO,
@@ -743,5 +745,62 @@ describe('U8 every error answer the core can produce is readable by this client'
       () => parseAnswers('(error unknown-verb show\\x20;me (verbs init))\n'),
       'the unknown-verb echo was read without complaint'
     );
+  });
+});
+
+/*
+ * ⭐ THE OTHER HALF OF THE CONSERVATION LAW: EVERY BUCKET THE LEDGER
+ * CARRIES REACHES THE USER.
+ *
+ * `sessions.test.ts` asserts that everything a takeover saw is in
+ * exactly one bucket. That guards the count. It says nothing about the
+ * report, and a bucket the report never mentions is work that vanished
+ * between the count and the person -- the same defect one step later.
+ *
+ * ⚠️ THE BUCKETS ARE ENUMERATED FROM THE LEDGER ITSELF, not listed here.
+ * A list written here would be a second place to forget the new bucket,
+ * which is precisely the thing being guarded against.
+ */
+describe('every bucket a takeover counts is something the user is told', () => {
+  it('mentions each non-empty bucket', () => {
+    const ledger = emptyLedger();
+    const buckets = Object.keys(ledger).filter((name) => name !== 'observed');
+    assert.ok(buckets.length >= 6, `only ${buckets.length} buckets were found: ${buckets}`);
+    /*
+     * A DISTINCT NUMBER PER BUCKET, so that finding it in the sentence
+     * is evidence about that bucket and not about another one that
+     * happens to hold the same count.
+     */
+    const counts = new Map<string, number>();
+    buckets.forEach((name, at) => {
+      const n = (at + 2) * 7;
+      counts.set(name, n);
+      (ledger as unknown as Record<string, number>)[name] = n;
+    });
+    ledger.observed = [...counts.values()].reduce((a, b) => a + b, 0);
+
+    const text = adoptedNotice('S-dead', ledger, false).text;
+    const missing = buckets.filter((name) => !text.includes(String(counts.get(name))));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      `these buckets hold requests and the user is not told about them: ${missing.join(', ')} -- ` +
+        `the sentence was: ${text}`
+    );
+  });
+
+  /*
+   * AND AN EMPTY BUCKET IS NOT MENTIONED. Without this the cell above is
+   * satisfied by a report that recites every bucket every time, which
+   * buries the one that matters in five zeroes.
+   */
+  it('says nothing about the buckets that are empty', () => {
+    const ledger = emptyLedger();
+    ledger.imported = 3;
+    ledger.observed = 3;
+    const text = adoptedNotice('S-dead', ledger, false).text;
+    assert.ok(!/could not be read/.test(text), `an empty bucket was recited: ${text}`);
+    assert.ok(!/belong to other stores/.test(text), `an empty bucket was recited: ${text}`);
+    assert.match(text, /3 unsent request/);
   });
 });
