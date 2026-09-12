@@ -36,7 +36,7 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
-import { Outbox, OUTBOX_VERSION, OutboxEntry } from './outbox';
+import { Outbox, OutboxEntry } from './outbox';
 import { Publisher, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
@@ -260,6 +260,20 @@ export type DiscardOutcome =
  * them with `observed`. Anything that goes uncounted from now on is a
  * DIFFERENCE that goes red, rather than a number that quietly shrinks.
  *
+ * ⚠️ WHAT THE LAW DOES NOT SAY, WRITTEN DOWN BECAUSE IT COST A DEFECT:
+ * it governs WHERE what was seen went, and says nothing about whether
+ * anything was seen at all. A takeover that visited no queue at all
+ * satisfies it perfectly -- `observed` is zero and so is every bucket --
+ * and that is exactly what happened when `list` answered `[]` for a
+ * directory it could not read: the queue this takeover was ASKED about
+ * was never opened, and the ledger added up, about nothing.
+ *
+ * Presence is a separate guarantee and has a separate mechanism:
+ * `importFrom` walks the union of the queues it DISCOVERED and the one
+ * it was NAMED, so the thing the caller asked about is seen whatever the
+ * enumeration managed to find. Do not read a balanced ledger as evidence
+ * that everything was looked at.
+ *
  * WHAT ONE "THING" IS: a request, where requests can be seen; a whole
  * FILE where they cannot, because the contents of a queue nobody can
  * parse are not observable and pretending to count them would be the
@@ -291,8 +305,20 @@ export interface TakeoverLedger {
    * not a list. One per file.
    */
   unreadableQueue: number;
-  /* An element that is not a request, in a file that otherwise read. */
-  malformedEntry: number;
+  /*
+   * A request the takeover could not move, because moving it threw --
+   * the destination refused it, or the source could not be marked.
+   *
+   * ⚠️ THIS REPLACES `malformedEntry`, WHICH NOTHING COULD FILL once the
+   * survey and the import agreed about which files are acceptable: the
+   * loader rejects a file holding an element that is not a request, so
+   * such a file is one `unreadableQueue` and never a collection of
+   * individually malformed items. A bucket nothing can ever put anything
+   * into is a report that can never mention it, which is a lie of its
+   * own kind. Reported to the main session as a deviation from the
+   * bucket list it named.
+   */
+  failedToMove: number;
 }
 
 export function emptyLedger(): TakeoverLedger {
@@ -303,14 +329,19 @@ export function emptyLedger(): TakeoverLedger {
     leftOtherStore: 0,
     leftUnknownStore: 0,
     unreadableQueue: 0,
-    malformedEntry: 0
+    failedToMove: 0
   };
 }
 
 /*
- * The sum of the buckets. Separate from the interface so that the cell
- * asserting conservation and the code maintaining it cannot drift: a
- * bucket added to one and not the other is a compile error here.
+ * The sum of the buckets.
+ *
+ * ⚠️ IT IS A HAND-WRITTEN SUM AND THE COMPILER WILL NOT NOTICE A MISSING
+ * TERM. An earlier comment here claimed it would; a review showed that
+ * adding a bucket to the interface and initialising it leaves this
+ * function compiling and quietly short. What notices is a cell that adds
+ * the ledger's OWN KEYS and compares them with this -- the guard exists,
+ * and it is a cell rather than the type system.
  */
 export function ledgerTotal(ledger: TakeoverLedger): number {
   return (
@@ -319,7 +350,7 @@ export function ledgerTotal(ledger: TakeoverLedger): number {
     ledger.leftOtherStore +
     ledger.leftUnknownStore +
     ledger.unreadableQueue +
-    ledger.malformedEntry
+    ledger.failedToMove
   );
 }
 
@@ -474,10 +505,21 @@ export class Sessions {
       nonce: randomUUID(),
       stores
     };
-    this.mine = sessionId;
-    this.nonce = identity.nonce;
+    /*
+     * ⚠️ THE RECORD IS PUBLISHED BEFORE THIS WINDOW CALLS ITSELF BEGUN.
+     *
+     * These two assignments used to come first, so a failure to write
+     * the identity left the object believing it had one: `claim`'s new
+     * guard passed, and it published a token naming a window whose
+     * `session.json` does not exist -- which nobody, including itself,
+     * can judge. Activation propagates the error, so this is about the
+     * API's failure path; an object that says who it is when nothing on
+     * disk agrees is worth closing anyway. Found in review.
+     */
     this.files.makeDirectory(this.sessionDirectory(sessionId));
     this.files.writeText(this.identityFile(sessionId), `${JSON.stringify(identity, null, 2)}\n`);
+    this.mine = sessionId;
+    this.nonce = identity.nonce;
     return identity;
   }
 
@@ -961,7 +1003,26 @@ export class Sessions {
         ? all
         : [this.outboxPathFor(token.deadSessionId, storeHash)].filter((q) => this.files.exists(q));
     const legacy = path.join(this.sessionDirectory(token.deadSessionId), 'outbox.json');
-    for (const queue of all) {
+    /*
+     * ⚠️ THE UNION, BECAUSE THE ENUMERATION CAN COME BACK EMPTY. `list`
+     * answers `[]` for a directory it cannot read, so a selected queue
+     * that plainly exists was never visited and never counted -- an
+     * all-zero ledger over a file full of unsent work. Walking the
+     * discovered paths AND the selected one, without repeating either,
+     * is what makes "everything it saw" include the thing it was asked
+     * about. Found in review.
+     */
+    const seen = new Set<string>();
+    const walk: string[] = [];
+    for (const queue of [...queues, ...all]) {
+      const key = path.resolve(queue);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      walk.push(queue);
+    }
+    for (const queue of walk) {
       if (queues.includes(queue)) {
         this.importQueue(queue, token, into, ledger);
         continue;
@@ -972,36 +1033,37 @@ export class Sessions {
   }
 
   /*
-   * A QUEUE THIS TAKEOVER IS NOT OPENING, counted rather than opened.
-   * Every element is looked at, because a file that holds one thing
-   * which is not a request still holds the others, and saying "the file
-   * is unreadable" would lose them.
+   * A QUEUE THIS TAKEOVER IS NOT OPENING, COUNTED THROUGH THE SAME DOOR
+   * IT WOULD BE OPENED BY.
+   *
+   * ⚠️ IT USED TO HAVE ITS OWN PARSER, and the two disagreed about which
+   * files are acceptable: the survey took `{"cursor":42}` and an entry
+   * carrying only a `req` as ordinary work, while the loader refuses
+   * both. A count of what is waiting that describes files the import
+   * would refuse is a count of something else -- and the advice that
+   * goes with it, "configure that store and run this again", would then
+   * fail. So the survey loads the queue exactly as the import would, and
+   * what it reports is what could actually be recovered. Found in
+   * review.
    */
   private surveyQueue(queue: string, unknownStore: boolean, ledger: TakeoverLedger): void {
-    const elements = this.elementsIn(queue);
-    if (elements === null) {
+    const source = new Outbox(queue, this.files);
+    try {
+      source.load();
+    } catch (e) {
       ledger.observed += 1;
       ledger.unreadableQueue += 1;
       return;
     }
-    for (const element of elements) {
+    for (const entry of source.entries) {
       ledger.observed += 1;
-      if (typeof element !== 'object' || element === null) {
-        ledger.malformedEntry += 1;
-        continue;
-      }
-      const it = element as { req?: unknown; importedBy?: unknown };
-      if (typeof it.req !== 'string') {
-        ledger.malformedEntry += 1;
-        continue;
-      }
       /*
-       * ONLY A STRING IS A MARK. `Outbox` reads anything else as no mark
-       * at all and WILL import that entry, so treating a `false` as
-       * "already carried away" would leave a waiting request out of the
-       * count of what is waiting.
+       * ALREADY CARRIED AWAY BY AN EARLIER TAKEOVER. `Outbox` reads a
+       * mark that is not a string as no mark at all and WILL import that
+       * entry, so this asks the loader's own answer rather than the
+       * bytes.
        */
-      if (typeof it.importedBy === 'string') {
+      if (entry.importedBy !== null) {
         ledger.skippedDuplicate += 1;
         continue;
       }
@@ -1013,37 +1075,6 @@ export class Sessions {
     }
   }
 
-  /*
-   * THE ELEMENTS OF A QUEUE FILE, or `null` when the file cannot be
-   * trusted at all.
-   *
-   * ⚠️ `null` PARSES AND IS NOT AN OBJECT. A file holding the four bytes
-   * `null` got past the catch and then threw on the first field --
-   * outside it, out of `importFrom`, out of the command -- so the user
-   * saw no answer at all where they should have seen a takeover
-   * reporting an unreadable queue. Found in review.
-   *
-   * A VERSION THIS BUILD DOES NOT KNOW, or an `entries` that is not a
-   * list, is the same answer: the loader would refuse the file, and
-   * counting what could be made of it would report a smaller number as
-   * though it were the truth.
-   */
-  private elementsIn(queue: string): unknown[] | null {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(this.files.readText(queue));
-    } catch (e) {
-      return null;
-    }
-    if (typeof parsed !== 'object' || parsed === null) {
-      return null;
-    }
-    const raw = parsed as { version?: unknown; entries?: unknown };
-    if (raw.version !== undefined && raw.version !== OUTBOX_VERSION) {
-      return null;
-    }
-    return Array.isArray(raw.entries) ? raw.entries : null;
-  }
 
   private importQueue(
     queue: string,
@@ -1079,17 +1110,36 @@ export class Sessions {
         continue;
       }
       /*
-       * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
-       * text are two requests and both belong; one request carried
-       * across several generations belongs once. (C19)
+       * ⚠️ A MOVE THAT THROWS IS A BUCKET, NOT AN ESCAPE.
+       *
+       * `observed` was counted first and the three things that can throw
+       * came after it, so a destination that refused an entry, or a
+       * source that could not be marked, left that request in NO bucket
+       * -- and the exception went out through `importFrom`, out of the
+       * command, so the user was told nothing at all, including about
+       * the entries that had already arrived. Found in review with a
+       * failing source mark.
+       *
+       * The request is counted as one this takeover could not move, and
+       * the rest of the queue is still walked: one entry the destination
+       * would not take is not a reason to abandon the others.
        */
-      if (into.has(entry.req)) {
-        ledger.skippedDuplicate += 1;
-        continue;
+      try {
+        /*
+         * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
+         * text are two requests and both belong; one request carried
+         * across several generations belongs once. (C19)
+         */
+        if (into.has(entry.req)) {
+          ledger.skippedDuplicate += 1;
+          continue;
+        }
+        into.adopt({ ...entry });
+        source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
+        ledger.imported += 1;
+      } catch (e) {
+        ledger.failedToMove += 1;
       }
-      into.adopt({ ...entry });
-      source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
-      ledger.imported += 1;
     }
   }
 

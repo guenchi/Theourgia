@@ -790,6 +790,28 @@ describe('every bucket a takeover counts is something the user is told', () => {
   });
 
   /*
+   * ⚠️ AND EACH BUCKET ALONE. The cell above fills all of them at once,
+   * and a report that dropped one only when the others were empty
+   * passed it -- measured in review: suppressing the unreadable-queue
+   * sentence whenever nothing was imported hid an unreadable-only
+   * result and satisfied both cells. A bucket has to be reportable on
+   * its own, because on its own is how a user meets it.
+   */
+  it('mentions a bucket that is the only thing that happened', () => {
+    const buckets = Object.keys(emptyLedger()).filter((name) => name !== 'observed');
+    for (const name of buckets) {
+      const ledger = emptyLedger();
+      (ledger as unknown as Record<string, number>)[name] = 5;
+      ledger.observed = 5;
+      const text = adoptedNotice('S-dead', ledger, false).text;
+      assert.ok(
+        text.includes('5'),
+        `${name} was the only thing that happened and the user was not told: ${text}`
+      );
+    }
+  });
+
+  /*
    * AND AN EMPTY BUCKET IS NOT MENTIONED. Without this the cell above is
    * satisfied by a report that recites every bucket every time, which
    * buries the one that matters in five zeroes.

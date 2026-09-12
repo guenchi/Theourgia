@@ -708,10 +708,10 @@ export function adoptedNotice(
         'not known and nothing was taken from them.'
     );
   }
-  if (ledger.malformedEntry > 0) {
+  if (ledger.failedToMove > 0) {
     parts.push(
-      `${ledger.malformedEntry} item(s) in its queues are not requests this build understands ` +
-        'and were left alone.'
+      `${ledger.failedToMove} could not be moved into this window and are still in that ` +
+        'window’s queue; nothing was lost, and running this command again will try them.'
     );
   }
   parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);

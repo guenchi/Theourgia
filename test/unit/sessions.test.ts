@@ -39,6 +39,7 @@ import {
   SessionIdentity,
   Sessions,
   StartTimeReader,
+  TakeoverLedger,
   emptyLedger,
   ledgerTotal,
   systemStartTime
@@ -1482,16 +1483,21 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
   }
 
   /*
-   * ⚠️ AND AN ELEMENT THAT IS NOT A REQUEST IS ITS OWN BUCKET, not a
-   * reason to call the whole file unreadable: the file holds the other
-   * requests too, and losing them to tidy the report is the defect this
-   * ledger exists to make impossible.
+   * ⚠️ AND AN ELEMENT THAT IS NOT A REQUEST MAKES ITS FILE UNREADABLE --
+   * because the loader says so, and the survey now asks the loader.
+   *
+   * An earlier version of this counted such an element on its own and
+   * called the requests beside it "waiting". A review showed that the
+   * two parsers disagreed: the loader REFUSES that file, so those
+   * requests are not waiting on a configuration, they are waiting on a
+   * repair, and the advice that went with "waiting" would have failed.
+   * The count now describes what could actually be recovered.
    */
   for (const [what, element] of [
     ['an element that is not an object', 'null'],
     ['an element with no request id', '{"payload":"x"}']
   ] as Array<[string, string]>) {
-    it(`counts ${what} as a malformed item rather than losing the file`, async () => {
+    it(`counts a file holding ${what} as one this build cannot read`, async () => {
       const storage = scratch();
       makeSession(storage, 'S-dead');
       good(storage, 'S-dead', 'store-a');
@@ -1502,13 +1508,12 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
         `{"entries":[${element},{"req":"r2","importedBy":null}]}`
       );
       const moved = await takeover(storage, 'store-a');
-      assert.strictEqual(moved?.malformedEntry, 1, `${what} was not counted as a malformed item`);
+      assert.strictEqual(moved?.unreadableQueue, 1, `${what} did not make its file unreadable`);
       assert.strictEqual(
         moved?.leftOtherStore,
-        1,
-        'the request beside it was lost when the file was written off'
+        0,
+        'a request in a file the loader refuses was reported as merely waiting'
       );
-      assert.strictEqual(moved?.unreadableQueue, 0);
     });
   }
 
@@ -1624,7 +1629,7 @@ describe('the takeover ledger accounts for everything it saw', () => {
    * because most of the terms are zero -- which is how a conservation
    * check passes without conserving anything.
    */
-  async function ledgerOf(storage: string): Promise<ReturnType<Sessions['importFrom']>> {
+  async function ledgerOf(storage: string, refuse = ''): Promise<TakeoverLedger> {
     const sessions = new Sessions(new RecordingFs(), storage);
     sessions.begin('S-mine', []);
     const won = await sessions.claim('S-dead');
@@ -1633,7 +1638,20 @@ describe('the takeover ledger accounts for everything it saw', () => {
     return won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: (req) => held.includes(req), adopt: () => undefined },
+          {
+            has: (req) => held.includes(req),
+            adopt: (entry) => {
+              /*
+               * A DESTINATION THAT REFUSES ONE REQUEST. Something has to
+               * be able to throw here, or `failedToMove` is a bucket no
+               * fixture can fill -- and a conservation law whose sum is
+               * right because a term is always zero is not being tested.
+               */
+              if (entry.req === refuse) {
+                throw new Error('this window will not take that one');
+              }
+            }
+          },
           'store-a'
         )
       : emptyLedger();
@@ -1650,20 +1668,34 @@ describe('the takeover ledger accounts for everything it saw', () => {
       storage,
       'S-dead',
       'store-a',
-      `{"entries":[${request('fresh')},${request('already-here')},${request('carried', 'S-dead.claim.1')}]}`
+      `{"entries":[${request('fresh')},${request('already-here')},${request('carried', 'S-dead.claim.1')},${request('refused')}]}`
     );
-    /* ANOTHER STORE'S: one waiting, one not a request. */
-    write(storage, 'S-dead', 'store-b', `{"entries":[${request('other')},null]}`);
+    /* ANOTHER STORE'S, WAITING. */
+    write(storage, 'S-dead', 'store-b', `{"entries":[${request('other')}]}`);
     /* THE ONE WHOSE STORE NOTHING CAN SAY. */
     write(storage, 'S-dead', '', `{"entries":[${request('old')}]}`);
     /* AND ONE NOBODY CAN READ. */
     write(storage, 'S-dead', 'store-x', 'null');
 
-    const led = await ledgerOf(storage);
+    const led = await ledgerOf(storage, 'refused');
     assert.strictEqual(
       ledgerTotal(led),
       led.observed,
       `the ledger does not add up: ${JSON.stringify(led)}`
+    );
+    /*
+     * ⚠️ AND THE SUM IS OF THE LEDGER'S OWN KEYS, not of a list written
+     * here. `ledgerTotal` is a hand-written sum and the compiler will
+     * not notice a missing term -- an earlier comment claimed it would,
+     * and a review showed otherwise. This is what notices.
+     */
+    const byKey = Object.entries(led)
+      .filter(([name]) => name !== 'observed')
+      .reduce((total, [, count]) => total + (count as number), 0);
+    assert.strictEqual(
+      ledgerTotal(led),
+      byKey,
+      'ledgerTotal has forgotten a bucket the ledger carries'
     );
     /*
      * AND EVERY BUCKET IS CARRYING SOMETHING, so the equality above is
@@ -1674,7 +1706,8 @@ describe('the takeover ledger accounts for everything it saw', () => {
     assert.ok(led.leftOtherStore > 0, JSON.stringify(led));
     assert.ok(led.leftUnknownStore > 0, JSON.stringify(led));
     assert.ok(led.unreadableQueue > 0, JSON.stringify(led));
-    assert.ok(led.malformedEntry > 0, JSON.stringify(led));
+    assert.ok(led.unreadableQueue > 0, JSON.stringify(led));
+    assert.ok(led.failedToMove > 0, JSON.stringify(led));
   });
 
   /*
@@ -1716,4 +1749,97 @@ describe('the takeover ledger accounts for everything it saw', () => {
       );
     });
   }
+});
+
+/*
+ * REVIEW ROUND 26: TWO THINGS THE LEDGER'S LAW DOES NOT CATCH BY ITSELF.
+ *
+ * Conservation says everything SEEN is in a bucket. It says nothing
+ * about something never seen, and nothing about a window that believes
+ * it has an identity nothing on disk agrees with.
+ */
+describe('review 26 what the takeover must still see, and who may take one', () => {
+  /*
+   * ⚠️ A DIRECTORY THIS PROCESS CANNOT LIST STILL HAS THE QUEUE IN IT.
+   * `list` answers `[]` for a directory it cannot read, so the selected
+   * queue -- the one the takeover was asked about, which plainly exists
+   * -- was never visited and never counted: an all-zero ledger over a
+   * file full of unsent work. Conservation held perfectly, about
+   * nothing.
+   */
+  it('counts the queue it was asked for even when the directory will not list', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const dir = path.join(storage, 'sessions', 'S-dead', 'store-a');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'r1',
+            cursor: 'w:1',
+            id: 'a.1',
+            field: 'src',
+            payload: 'x',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          }
+        ]
+      }),
+      'utf8'
+    );
+    const blind = new (class extends RecordingFs {
+      public list(directory: string): string[] {
+        return directory.includes('S-dead') ? [] : super.list(directory);
+      }
+    })();
+    const sessions = new Sessions(blind, storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.strictEqual(
+      led.imported,
+      1,
+      `the queue this takeover was asked about was never opened: ${JSON.stringify(led)}`
+    );
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * ⚠️ AND A WINDOW WHOSE IDENTITY WAS NEVER PUBLISHED HAS NOT BEGUN.
+   * The two fields used to be set before the write, so a failure to
+   * publish left the object believing it had an identity: `claim`
+   * proceeded and published a token naming a window whose `session.json`
+   * does not exist -- which nobody, including itself, can ever judge.
+   */
+  it('does not count itself as begun when its identity could not be written', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const refusing = new (class extends RecordingFs {
+      public writeText(file: string, text: string): void {
+        if (file.endsWith('session.json')) {
+          throw new Error('the disk would not take it');
+        }
+        super.writeText(file, text);
+      }
+    })();
+    const sessions = new Sessions(refusing, storage);
+    assert.throws(() => sessions.begin('S-mine', []), /would not take it/);
+    await assert.rejects(
+      () => sessions.claim('S-old'),
+      /before begin/,
+      'a window whose identity was never published took a claim anyway'
+    );
+  });
 });
