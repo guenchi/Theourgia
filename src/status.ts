@@ -703,9 +703,16 @@ export function adoptedNotice(
     );
   }
   if (ledger.unreadableQueue > 0) {
+    /*
+     * ⚠️ "COULD NOT BE INSPECTED", NOT "COULD NOT BE READ". A path under
+     * an ancestry this process cannot search, or one that turns out not
+     * to be a directory, fails the same way as a corrupt queue -- and
+     * saying a FILE could not be read asserts that a file is there,
+     * which none of those establish. Found in review.
+     */
     parts.push(
-      `${ledger.unreadableQueue} of its queue file(s) could not be read, so what is in them is ` +
-        'not known and nothing was taken from them.'
+      `${ledger.unreadableQueue} of its queue path(s) could not be inspected, so whether there is ` +
+        'anything in them is not known and nothing was taken from them.'
     );
   }
   if (ledger.failedToMove > 0) {
@@ -716,15 +723,34 @@ export function adoptedNotice(
   }
   if (ledger.movedButUnmarked > 0) {
     /*
-     * ⚠️ THESE ARRIVED. The sentence for the bucket beside this one says
-     * the opposite, and the two were one bucket until a review pointed
-     * out that it described work which had in fact moved as work the
-     * user should go looking for elsewhere.
+     * ⚠️ THESE ARRIVED -- the destination was asked, not assumed. The
+     * sentence for the bucket beside this one says the opposite, and the
+     * two were one bucket until a review pointed out that it described
+     * work which had in fact moved as work the user should go looking
+     * for elsewhere.
+     *
+     * ⚠️ AND IT NO LONGER PROMISES THAT NOTHING IS SENT TWICE. It did,
+     * and that was more than this code can know: the other window's copy
+     * is still unmarked, so a later takeover into a DIFFERENT queue can
+     * carry it again and send it. What is true is what the store does
+     * with the second one, which is the same guarantee the forced
+     * takeover rests on.
      */
     parts.push(
       `${ledger.movedButUnmarked} arrived here, but the other window’s copy could not be marked ` +
-        'as handed over; they will be offered again by a later takeover and recognised as ' +
-        'already here, so nothing is sent twice.'
+        'as handed over, so a later takeover may carry them again. The store recognises a ' +
+        'request it has already applied by its id and does not do the work twice.'
+    );
+  }
+  if (ledger.outcomeUnknown > 0) {
+    /*
+     * ⚠️ NEITHER ANSWER. The destination could not say whether it has
+     * them, and this window is not going to choose the comfortable one
+     * on its behalf.
+     */
+    parts.push(
+      `${ledger.outcomeUnknown} could not be accounted for: this window could not find out ` +
+        'whether they arrived. Look at both queues before deciding anything about them.'
     );
   }
   parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);

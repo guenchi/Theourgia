@@ -809,9 +809,10 @@ describe('every bucket a takeover counts is something the user is told', () => {
       skippedDuplicate: /already been carried across/,
       leftOtherStore: /belong to other stores/,
       leftUnknownStore: /older version of this extension/,
-      unreadableQueue: /could not be read/,
+      unreadableQueue: /could not be inspected/,
       failedToMove: /could not be moved/,
-      movedButUnmarked: /arrived here/
+      movedButUnmarked: /arrived here/,
+      outcomeUnknown: /could not be accounted for/
     };
     const buckets = Object.keys(emptyLedger()).filter((name) => name !== 'observed');
     /*
@@ -825,12 +826,25 @@ describe('every bucket a takeover counts is something the user is told', () => {
       (ledger as unknown as Record<string, number>)[name] = 5;
       ledger.observed = 5;
       const text = adoptedNotice('S-dead', ledger, false).text;
-      assert.match(
-        text,
-        meanings[name],
+      /*
+       * ⚠️ THE COUNT INSIDE THAT BUCKET'S OWN SENTENCE. Matching the
+       * phrase and looking for the digit anywhere were two independent
+       * assertions, and a build that said "0 could not be moved ...
+       * Observed 5" satisfied both -- measured in review. What has to be
+       * true is that the number belongs to the sentence.
+       */
+      const sentence = text
+        .split(/(?<=\.)\s+/)
+        .find((part) => meanings[name].test(part));
+      assert.ok(
+        sentence !== undefined,
         `${name} was the only thing that happened and its sentence is missing: ${text}`
       );
-      assert.ok(text.includes('5'), `${name} was reported without its count: ${text}`);
+      assert.match(
+        sentence ?? '',
+        /(^|\D)5(\D|$)/,
+        `${name}'s sentence does not carry its own count: ${sentence}`
+      );
     }
   });
 

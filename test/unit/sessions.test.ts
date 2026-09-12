@@ -39,6 +39,7 @@ import {
   SessionIdentity,
   Sessions,
   StartTimeReader,
+  ImportTarget,
   TakeoverLedger,
   emptyLedger,
   ledgerTotal,
@@ -48,6 +49,12 @@ import { idleProcess } from '../support/host';
 import { Outbox, OutboxEntry } from '../../src/outbox';
 import { Publisher } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
+
+/*
+ * A CONTROL CHARACTER, named rather than typed, so that the source of
+ * this file stays readable.
+ */
+const TAB = String.fromCharCode(9);
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-sessions-'));
@@ -1984,10 +1991,16 @@ describe('review 27 a request that arrived is not a request that did not', () =>
    */
   it('refuses a store name that points outside the session', () => {
     const sessions = new Sessions(new RecordingFs(), scratch());
-    for (const bad of ['../live/a', 'a/b', '..', '.']) {
+    /*
+     * ⚠️ A BACKSLASH TOO. `path.basename` on POSIX does not treat it as
+     * a separator, so `a\\b` is one component here and a path on
+     * Windows -- and these directory names travel between windows. The
+     * check asks both platforms' rules.
+     */
+    for (const bad of ['../live/a', 'a/b', '..', '.', 'a\\b', 'a\\..\\live']) {
       assert.throws(
         () => sessions.outboxPathFor('S-dead', bad),
-        /path|empty/,
+        /path|empty|single directory/,
         `${bad} was accepted as a store name`
       );
     }
@@ -2022,5 +2035,176 @@ describe('review 27 a request that arrived is not a request that did not', () =>
       before,
       'a failed second begin left the record neither the old one nor the new one'
     );
+  });
+});
+
+/*
+ * REVIEW ROUND 28: WHERE AN ENTRY ENDED UP IS ASKED, NOT INFERRED.
+ *
+ * "It arrived" used to mean "`adopt` returned without throwing", which
+ * is a different statement. A destination that stored the entry and then
+ * threw was reported as one that refused it; one that returned without
+ * storing anything was reported as having it. Both sentences were then
+ * false, in opposite directions, about somebody's unsent work.
+ */
+describe('review 28 the destination is asked where the entry ended up', () => {
+  function oneRequest(storage: string, id: string, where: string): void {
+    const dir = path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'r1',
+            cursor: 'w:1',
+            id: 'a.1',
+            field: 'src',
+            payload: 'x',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          }
+        ]
+      }),
+      'utf8'
+    );
+  }
+
+  async function ledgerWith(storage: string, into: ImportTarget): Promise<TakeoverLedger> {
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    return won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          into,
+          'store-a'
+        )
+      : emptyLedger();
+  }
+
+  /*
+   * A DESTINATION THAT TOOK IT AND THEN THREW. It has the entry. The old
+   * rule called that "could not be moved", and a user acting on it goes
+   * looking for work that is already here.
+   */
+  it('says it arrived when the destination kept it and then failed', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    oneRequest(storage, 'S-dead', 'store-a');
+    const held: string[] = [];
+    const led = await ledgerWith(storage, {
+      has: (req) => held.includes(req),
+      adopt: (entry) => {
+        held.push(entry.req);
+        throw new Error('stored it, then fell over');
+      }
+    });
+    assert.strictEqual(led.movedButUnmarked, 1, JSON.stringify(led));
+    assert.strictEqual(led.failedToMove, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * AND ONE THAT RETURNED WITHOUT STORING ANYTHING. It does not have the
+   * entry. The old rule called that "arrived here", and a user acting on
+   * it may discard the only copy.
+   */
+  it('says it did not move when the destination returned and kept nothing', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    oneRequest(storage, 'S-dead', 'store-a');
+    const stubborn = new (class extends RecordingFs {
+      public writeDurably(file: string, text: string): void {
+        if (file.includes(path.join('S-dead', 'store-a'))) {
+          throw new Error('the source will not take the mark');
+        }
+        super.writeDurably(file, text);
+      }
+    })();
+    const sessions = new Sessions(stubborn, storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.strictEqual(
+      led.failedToMove,
+      1,
+      `a destination that kept nothing was reported as having it: ${JSON.stringify(led)}`
+    );
+    assert.strictEqual(led.movedButUnmarked, 0);
+  });
+
+  /*
+   * AND WHEN THE DESTINATION CANNOT SAY, NEITHER DOES THIS. An unknown
+   * drawn as one of the two comfortable answers is the shape this batch
+   * has met more often than any other.
+   */
+  it('says it does not know when the destination cannot answer', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    oneRequest(storage, 'S-dead', 'store-a');
+    let asked = 0;
+    const led = await ledgerWith(storage, {
+      has: () => {
+        asked += 1;
+        if (asked > 1) {
+          throw new Error('this window cannot say');
+        }
+        return false;
+      },
+      adopt: () => {
+        throw new Error('and the move fell over');
+      }
+    });
+    assert.strictEqual(led.outcomeUnknown, 1, JSON.stringify(led));
+    assert.strictEqual(led.failedToMove, 0);
+    assert.strictEqual(led.movedButUnmarked, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * AND A STORE NAME THE FILESYSTEM CANNOT HOLD IS REFUSED WHERE NAMES
+   * ARRIVE. A NUL got as far as the read, where node refuses it, and the
+   * takeover counted that as one more queue it could not inspect --
+   * reporting a path that was never there.
+   */
+  it('refuses a store name carrying a control character', () => {
+    const sessions = new Sessions(new RecordingFs(), scratch());
+    assert.throws(() => sessions.outboxPathFor('S-dead', `a${TAB}b`), /control character/);
+    assert.throws(() => sessions.outboxPathFor('S-dead', 'a\nb'), /control character/);
+    assert.ok(sessions.outboxPathFor('S-dead', 'store-a').includes('store-a'));
+  });
+
+  /*
+   * AND A FAILED PUBLICATION LEAVES NOTHING BESIDE THE RECORD. The
+   * temporary file was named after the process alone -- the same name on
+   * every call -- and a failed rename left it there for ever.
+   */
+  it('clears up after itself when the identity cannot be published', () => {
+    const storage = scratch();
+    const refusing = new (class extends RecordingFs {
+      public rename(from: string, to: string): void {
+        if (to.includes('session.json')) {
+          throw new Error('the rename would not go through');
+        }
+        super.rename(from, to);
+      }
+    })();
+    const sessions = new Sessions(refusing, storage);
+    assert.throws(() => sessions.begin('S-mine', []), /would not go through/);
+    const left = fs
+      .readdirSync(path.join(storage, 'sessions', 'S-mine'))
+      .filter((name) => name.includes('.tmp'));
+    assert.deepStrictEqual(left, [], `a failed publication left ${left.join(', ')} behind`);
   });
 });

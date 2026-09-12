@@ -342,6 +342,23 @@ export interface TakeoverLedger {
    * told that rather than told their work is stuck.
    */
   movedButUnmarked: number;
+  /*
+   * ⚠️ THE DESTINATION COULD NOT SAY WHETHER IT HAS IT.
+   *
+   * Whether an entry arrived used to be inferred from `adopt` returning
+   * without throwing, which is not the same statement: a destination
+   * that took the entry and then threw was reported as one that refused
+   * it, and one that returned without storing anything was reported as
+   * having it. Both sentences were then false, in opposite directions,
+   * about somebody's unsent work. Found in review, both reproduced.
+   *
+   * So membership is ASKED of the destination afterwards rather than
+   * inferred -- and when that question cannot be answered either, the
+   * answer is this bucket and not a guess. An unknown drawn as one of
+   * the two comfortable answers is the shape this batch has met more
+   * times than any other.
+   */
+  outcomeUnknown: number;
 }
 
 export function emptyLedger(): TakeoverLedger {
@@ -353,7 +370,8 @@ export function emptyLedger(): TakeoverLedger {
     leftUnknownStore: 0,
     unreadableQueue: 0,
     failedToMove: 0,
-    movedButUnmarked: 0
+    movedButUnmarked: 0,
+    outcomeUnknown: 0
   };
 }
 
@@ -375,7 +393,8 @@ export function ledgerTotal(ledger: TakeoverLedger): number {
     ledger.leftUnknownStore +
     ledger.unreadableQueue +
     ledger.failedToMove +
-    ledger.movedButUnmarked
+    ledger.movedButUnmarked +
+    ledger.outcomeUnknown
   );
 }
 
@@ -552,9 +571,31 @@ export class Sessions {
      */
     this.files.makeDirectory(this.sessionDirectory(sessionId));
     const file = this.identityFile(sessionId);
-    const temporary = `${file}.${process.pid}.tmp`;
+    /*
+     * ⚠️ A NAME NO OTHER WRITER CAN BE USING, AND CLEARED UP IF THE
+     * RENAME DOES NOT HAPPEN. `<file>.<pid>.tmp` is the same name on
+     * every call in one process, so two writers with that pid would
+     * share it; and a failed rename left it lying beside the record for
+     * ever. The claim token has used a uuid for this since it was
+     * written; this did not. Found in review.
+     */
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     this.files.writeDurably(temporary, `${JSON.stringify(identity, null, 2)}\n`);
-    this.files.rename(temporary, file);
+    try {
+      this.files.rename(temporary, file);
+    } catch (e) {
+      /*
+       * THE OLD RECORD IS STILL THERE AND THE HALF-WRITTEN ONE IS NOT.
+       * Removing the temporary is best effort: failing to remove it must
+       * not hide why the publication failed.
+       */
+      try {
+        this.files.unlink(temporary);
+      } catch (ignored) {
+        /* the reason to report is the rename's, not this one's */
+      }
+      throw e;
+    }
     this.mine = sessionId;
     this.nonce = identity.nonce;
     return identity;
@@ -668,16 +709,48 @@ export class Sessions {
       throw new Error('a store name may not be empty; omit the argument for the legacy queue');
     }
     /*
-     * ⚠️ AND IT MAY NOT LEAVE THE SESSION'S DIRECTORY. `path.join`
-     * resolves `..`, so a store name of `../live/a` addressed a LIVE
-     * window's queue -- and a takeover then imported from it and marked
-     * it as carried away by a claim on a different session. Production
-     * names are digests and cannot do this; nothing made that a
-     * requirement. Found in review.
+     * ⚠️ IT MUST BE THE NAME OF A DIRECT CHILD OF THE SESSION'S
+     * DIRECTORY, AND THAT IS CHECKED HERE RATHER THAN AFTERWARDS.
+     *
+     * `path.join` resolves `..`, so a store name of `../live/a`
+     * addressed a LIVE window's queue -- and a takeover then imported
+     * from it and marked it as carried away by a claim on a different
+     * session. Production names are digests and cannot do this; nothing
+     * made that a requirement. Found in review.
+     *
+     * THE TEST IS WHAT THE NAME MUST BE, not a list of what it must not
+     * contain: `basename` of a single path component is that component,
+     * and of anything carrying a separator it is not. A blocklist is a
+     * guess at the spellings somebody will try; this is the property.
+     * (Ruled by the main session after the review.)
      */
-    if (/[\\/]/.test(storeHash) || storeHash === '..' || storeHash === '.') {
+    /*
+     * ⚠️ ON EVERY PLATFORM'S RULES, NOT ONLY THIS ONE'S. `path.basename`
+     * on POSIX does not treat a backslash as a separator, so `a\\b`
+     * passes here and is a path on Windows -- and these names travel:
+     * the directory is written by whichever window made it and read by
+     * whichever window recovers it. A name that is one component here
+     * and two somewhere else is not a name.
+     */
+    const oneComponent =
+      path.posix.basename(storeHash) === storeHash && path.win32.basename(storeHash) === storeHash;
+    /*
+     * ⚠️ AND NO CONTROL CHARACTER. A NUL cannot occur in a filename on
+     * any platform this runs on, and one in a store name got as far as
+     * the read, where node refuses it -- and the takeover then counted
+     * that as one more queue it could not read, reporting a file that
+     * was never there. A name the filesystem cannot hold is refused
+     * where names arrive. Found in review.
+     */
+    if (/[\u0000-\u001f]/.test(storeHash)) {
       throw new Error(
-        `a store name may not contain a path; got ${JSON.stringify(storeHash)}`
+        `a store name may not contain a control character; got ${JSON.stringify(storeHash)}`
+      );
+    }
+    if (!oneComponent || storeHash === '.' || storeHash === '..') {
+      throw new Error(
+        'a store name must be the name of a single directory inside the session, not a path; ' +
+          `got ${JSON.stringify(storeHash)}`
       );
     }
     return path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
@@ -1090,6 +1163,22 @@ export class Sessions {
   }
 
   /*
+   * WHERE AN ENTRY ENDED UP AFTER A MOVE THAT THREW. The destination is
+   * asked; if it cannot answer, nothing here knows, and saying so is the
+   * whole of what can honestly be reported.
+   */
+  private whereItEndedUp(
+    into: ImportTarget,
+    req: string
+  ): 'movedButUnmarked' | 'failedToMove' | 'outcomeUnknown' {
+    try {
+      return into.has(req) ? 'movedButUnmarked' : 'failedToMove';
+    } catch (e) {
+      return 'outcomeUnknown';
+    }
+  }
+
+  /*
    * A QUEUE THIS TAKEOVER IS NOT OPENING, COUNTED THROUGH THE SAME DOOR
    * IT WOULD BE OPENED BY.
    *
@@ -1191,7 +1280,6 @@ export class Sessions {
        * arrived. A user acting on that would go looking for it where it
        * is not.
        */
-      let arrived = false;
       try {
         /*
          * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
@@ -1203,15 +1291,22 @@ export class Sessions {
           continue;
         }
         into.adopt({ ...entry });
-        arrived = true;
         source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
         ledger.imported += 1;
       } catch (e) {
-        if (arrived) {
-          ledger.movedButUnmarked += 1;
-        } else {
-          ledger.failedToMove += 1;
-        }
+        /*
+         * ⚠️ WHETHER IT ARRIVED IS ASKED, NOT INFERRED.
+         *
+         * This used to read "`adopt` returned without throwing", which
+         * is a different statement: a destination that stored the entry
+         * and then threw was reported as one that refused it, and one
+         * that returned without storing anything was reported as having
+         * it -- two sentences, each false, in opposite directions, about
+         * somebody's unsent work. The destination's own answer is the
+         * only evidence there is; when it cannot give one either, that
+         * is a third outcome and not a guess.
+         */
+        ledger[this.whereItEndedUp(into, entry.req)] += 1;
       }
     }
   }
