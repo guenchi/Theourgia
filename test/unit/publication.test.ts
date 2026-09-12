@@ -1218,3 +1218,130 @@ describe('review 20 a reconciliation is measured against the text it offered', (
     assert.strictEqual(done.done, true, JSON.stringify(done));
   });
 });
+
+/*
+ * REVIEW ROUND 21: THE OFFER IS NOT THE BASELINE, AND ONE READ IS NOT
+ * TWO.
+ *
+ * Both of these were mutations that survived the cells above. They are
+ * about the same confusion from two sides: what the action is measured
+ * against, and when it is measured.
+ */
+describe('review 21 what the reconciliation action is measured against', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  /*
+   * THE FILE AND THE BASELINE ARE DIFFERENT TEXTS HERE. Every earlier
+   * fixture set `written` to the digest of the file, so a build that
+   * compared the file with `written` instead of with the offer passed
+   * all of them -- and publishes text the user never saw whenever the
+   * two differ, which is exactly what a stranded third version IS.
+   */
+  function strandedOver(dir: string, fileText: string, baseline: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, fileText, 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf(baseline),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    return file;
+  }
+
+  it('refuses when the file differs from the offer even though it matches the record', () => {
+    const dir = scratch();
+    /*
+     * THE OFFER WAS TAKEN WHEN THE FILE HELD `alpha`; by the time the
+     * user chose, somebody had put the file back to the text the RECORD
+     * describes. A build measuring against the record sees no change and
+     * publishes `beta`, which the user was never shown.
+     */
+    const file = strandedOver(dir, 'alpha\n', 'beta\n');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const offer = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
+    const offered = offer.reconciled ? '' : offer.fileText;
+    assert.strictEqual(offered, 'alpha\n');
+    fs.writeFileSync(file, 'beta\n', 'utf8');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    assert.strictEqual(
+      done.because,
+      'file-changed',
+      'the action was measured against the record rather than against the offer'
+    );
+    assert.strictEqual(fs.existsSync(path.join(dir, '2.md')), false);
+  });
+
+  /*
+   * ⚠️ AND THE CHECK AND THE USE ARE ONE READ. The guard read the file,
+   * then the action read it again; a write landing between them passed
+   * the guard and was published -- the defect the guard exists for, one
+   * step further along. This cannot be staged from outside the call, so
+   * the write is injected into the FileOps between the two reads.
+   */
+  it('publishes the text it checked, even if the file changes between the two reads', () => {
+    const dir = scratch();
+    const file = strandedOver(dir, 'alpha\n', 'alpha\n');
+    let reads = 0;
+    const racing = new (class extends RecordingFs {
+      public readText(target: string): string {
+        const text = super.readText(target);
+        if (target === file) {
+          reads += 1;
+          /*
+           * AFTER THE FIRST READ OF THE FILE, somebody else writes. A
+           * build that reads again gets `beta`; one that kept what it
+           * checked gets `alpha`.
+           */
+          fs.writeFileSync(file, 'beta\n', 'utf8');
+        }
+        return text;
+      }
+    })();
+    const done = new Publisher(racing, nothingOpen()).reconcileBy(
+      file,
+      'prepend-prefix',
+      '## Two\n',
+      '## Two\nstored\n',
+      'alpha\n'
+    );
+    assert.ok(reads >= 1, 'the file was never read, so nothing was raced');
+    assert.strictEqual(done.done, true, `the ordinary path was refused: ${JSON.stringify(done)}`);
+    assert.strictEqual(
+      fs.readFileSync(done.file, 'utf8'),
+      '## Two\nalpha\n',
+      'the version carries bytes that arrived after the check'
+    );
+  });
+
+  /*
+   * AND A FILE THAT WENT AWAY IS A REFUSAL, NOT A THROW. The caller has
+   * a sentence for "look again" and none for an exception; an ENOENT
+   * escaping from here leaves the command with no answer at all.
+   */
+  it('refuses rather than throwing when the file is gone', () => {
+    const dir = scratch();
+    const file = strandedOver(dir, 'alpha\n', 'alpha\n');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    fs.unlinkSync(file);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', 'alpha\n');
+    assert.deepStrictEqual(done, { done: false, file, because: 'file-changed' });
+  });
+});

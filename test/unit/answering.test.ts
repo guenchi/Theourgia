@@ -705,3 +705,101 @@ describe('review 20 an answer is recorded only if the record still produces what
     );
   });
 });
+
+/*
+ * REVIEW ROUND 21: THE ACKNOWLEDGEMENT IS ASSEMBLED FROM ONE READING OF
+ * THE FILE, AND THE REFUSAL IS NOT ABOUT `local-only`.
+ *
+ * Three mutations survived the round-20 cells. Each is here.
+ */
+describe('review 21 what the answer is checked against', () => {
+  /*
+   * ⚠️ ONE BUFFER, TWO QUESTIONS. The digest and the split were two
+   * separate reads, and the writer they are about is another process. A
+   * write landing between them let an acknowledgement be assembled out
+   * of two different versions: the first satisfied the digest, the
+   * second satisfied the split, and neither on its own would have.
+   */
+  it('does not assemble an answer out of two different versions of the file', () => {
+    const dir = scratch();
+    const sent = '## Two\nX\nY\n';
+    const file = published(dir, sent, { prefix: '## Two\nX\n' });
+    const racing = new (class extends RecordingFs {
+      public readBytes(target: string): Buffer {
+        const bytes = super.readBytes(target);
+        if (target === file) {
+          /*
+           * AFTER THE READ THAT THE DIGEST IS TAKEN FROM, somebody
+           * writes a file which the CURRENT record happens to split into
+           * exactly the body that was sent.
+           */
+          fs.writeFileSync(file, '## Two\nX\nX\nY\n', 'utf8');
+        }
+        return bytes;
+      }
+    })();
+    const recorded = new Saving(racing).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: digestOfBytes(Buffer.from(sent, 'utf8')),
+      sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
+      mismatch: false
+    });
+    assert.deepStrictEqual(
+      recorded,
+      { dequeued: false, because: 'split-changed' },
+      'the digest was taken from one version of the file and the body from another'
+    );
+  });
+
+  /*
+   * AND THE SPLIT USES THE SAME RULE THE SEND USED. A build that sliced
+   * the text at `prefix.length` instead of asking `bodyOf` passes every
+   * LF fixture and refuses ordinary CRLF saves the store did accept.
+   */
+  it('splits the way the send did, so a normalised save is still recorded', () => {
+    const dir = scratch();
+    const text = '## Two\r\nbody\r\n';
+    const file = published(dir, text, { prefix: '## Two\n' });
+    const recorded = new Saving(new RecordingFs()).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
+      /*
+       * WHAT WENT OUT WAS NORMALISED: the block's own body has no CRLF,
+       * so the save folded it. The record has to reach the same answer.
+       */
+      sentDigest: digestOfBytes(Buffer.from('body\n', 'utf8')),
+      mismatch: false
+    });
+    assert.deepStrictEqual(
+      recorded,
+      { dequeued: true },
+      'an ordinary normalised save was refused because the record was split by raw length'
+    );
+  });
+
+  /*
+   * AND THE REFUSAL IS NOT ABOUT `local-only`. A build that only checked
+   * the split for reconciled versions passed both fixtures of round 20 --
+   * the refusing one had it set, the accepting one did not -- and let
+   * every ordinary record be acknowledged wrongly.
+   */
+  it('refuses a changed split on an ordinary version too', () => {
+    const dir = scratch();
+    const text = '## Two\nX\nY\n';
+    const file = published(dir, text, { prefix: '## Two\nX\n', localOnly: false });
+    const recorded = new Saving(new RecordingFs()).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
+      sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
+      mismatch: false
+    });
+    assert.deepStrictEqual(
+      recorded,
+      { dequeued: false, because: 'split-changed' },
+      'the check only applies to reconciled versions, so ordinary ones are acknowledged wrongly'
+    );
+  });
+});

@@ -112,21 +112,66 @@ export interface SessionIdentity {
  * not "alive": it is answered when the platform will not say, and the
  * caller errs towards alive and SAYS SO. (§12.21.4, C8/C19)
  */
+/*
+ * ⚠️ THE UNDECIDABLE CASES ARE THREE AND THEY ARE NOT THE SAME NEWS.
+ *
+ * `start-time-unavailable` is a failure to OBSERVE: the pid is there and
+ * this machine could not be asked when it started. Waiting fixes it.
+ * `record-missing` and `record-unreadable` are failures of EVIDENCE: the
+ * window never wrote its identity, or what it wrote will not parse, and
+ * no amount of waiting produces it.
+ *
+ * They were one value. That mattered the moment a way out of the second
+ * kind was offered, because offering it for the first would be offering
+ * to duplicate a request over a reading this machine could have simply
+ * taken again a second later. (§12.9, U-claim)
+ */
 export type Liveness =
   | { alive: true; because: 'identity-matches' | 'identity-matches-permission-denied' }
   | { alive: false; because: 'pid-absent' | 'pid-reused' }
-  | { decidable: false; because: 'start-time-unavailable' };
+  | {
+      decidable: false;
+      because:
+        | 'start-time-unavailable'
+        | 'start-time-unrecorded'
+        | 'liveness-unobtainable'
+        | 'record-missing'
+        | 'record-unreadable';
+    };
 
 /*
  * A session other than this one, as the "other sessions" list shows it.
  * (§12.19.1)
  */
+/*
+ * ⚠️ `identity` IS NULL WHEN THE WINDOW LEFT NO READABLE RECORD, AND THE
+ * ROW IS STILL LISTED.
+ *
+ * It used to be skipped: `others` read the record and moved on when it
+ * would not parse or was not there. So the one state `claim` refuses --
+ * a directory with a queue in it and no record beside it -- was invisible
+ * in the only listing the user has, and they could not even see the
+ * thing they were being refused. A row nobody can see is not a refusal
+ * they can act on. (U-claim)
+ *
+ * `sessionId` is therefore beside `identity` rather than inside it: the
+ * directory's name is known whatever the record says, and inventing an
+ * identity to fill the field would be drawing the unknown as an answer.
+ */
 export interface OtherSession {
-  identity: SessionIdentity;
+  sessionId: string;
+  identity: SessionIdentity | null;
   liveness: Liveness;
   drafts: string[];
   pendingEntries: number;
   liveAdopters: string[];
+  /*
+   * WHETHER AN EXPLICIT FORCED TAKEOVER IS OFFERED FOR THIS ROW. True
+   * only for a record that is MISSING -- see `claim`. The listing is
+   * where the user finds it, so the listing is where it is decided,
+   * once, rather than in whatever draws the row.
+   */
+  forceable: boolean;
 }
 
 export type ClaimOutcome =
@@ -234,7 +279,28 @@ export class Sessions {
   private identityOf(sessionId: string): { known: true; identity: SessionIdentity } | { known: false; because: 'absent' | 'unreadable' } {
     const file = this.identityFile(sessionId);
     if (!this.files.exists(file)) {
-      return { known: false, because: 'absent' };
+      /*
+       * ⚠️ "NOT THERE" AND "CANNOT LOOK" ARE DIFFERENT ANSWERS, and
+       * `exists` gives one word for both: a directory this process may
+       * not search reports every path inside it as absent.
+       *
+       * That matters here more than anywhere else in this file, because
+       * a missing record is the ONE undecidable a forced takeover is
+       * open for -- and its justification is that no amount of waiting
+       * produces the evidence. A permission that could be fixed is
+       * exactly the opposite: waiting, or a chmod, does produce it. So
+       * the directory is listed, which fails when it cannot be searched,
+       * and only a directory this process really can read is allowed to
+       * say the record is absent. Found in review.
+       */
+      const listing = this.files.readDirectory(this.sessionDirectory(sessionId));
+      if (!listing.read) {
+        return { known: false, because: listing.because === 'absent' ? 'absent' : 'unreadable' };
+      }
+      return {
+        known: false,
+        because: listing.names.includes('session.json') ? 'unreadable' : 'absent'
+      };
     }
     let raw: Record<string, unknown>;
     try {
@@ -261,10 +327,21 @@ export class Sessions {
    * The liveness of a session named by id, with "its record cannot be
    * read" answered as cannot-tell rather than as dead.
    */
-  private async livenessOfSession(sessionId: string): Promise<Liveness | null> {
+  /*
+   * ⚠️ IT NO LONGER ANSWERS `null` FOR A MISSING RECORD. `null` meant
+   * "no record at all" and was read at four call sites as "no such
+   * session", which is a different statement: a directory can be there,
+   * with a queue in it, and no record beside it. The absence is now a
+   * named undecidable, and whether there is a directory is asked
+   * separately by whoever cares.
+   */
+  private async livenessOfSession(sessionId: string): Promise<Liveness> {
     const read = this.identityOf(sessionId);
     if (!read.known) {
-      return read.because === 'absent' ? null : { decidable: false, because: 'start-time-unavailable' };
+      return {
+        decidable: false,
+        because: read.because === 'absent' ? 'record-missing' : 'record-unreadable'
+      };
     }
     return this.livenessOf(read.identity);
   }
@@ -335,8 +412,27 @@ export class Sessions {
          */
         permissionDenied = true;
       } else {
-        return { decidable: false, because: 'start-time-unavailable' };
+        /*
+         * ⚠️ ASKING WHETHER THE PID EXISTS FAILED FOR A REASON NOBODY
+         * HERE UNDERSTANDS. That is not the start time being unavailable
+         * -- the start time has not been asked for yet -- and labelling
+         * it so sends the user a sentence about waiting for a reading
+         * this code never took. Found in review.
+         */
+        return { decidable: false, because: 'liveness-unobtainable' };
       }
+    }
+    /*
+     * ⚠️ TWO WAYS TO HAVE NO START TIME, AND THEY ARE DIFFERENT NEWS.
+     * The RECORD may not carry one -- written by an older build, or by a
+     * platform that could not supply it -- in which case no later
+     * attempt will produce it and "try again in a moment" is advice
+     * that cannot work. Or this machine may have failed to read the
+     * running process's, which a later attempt may well answer. They
+     * were one value, and the sentence for it described the second.
+     */
+    if (identity.startedAt === null) {
+      return { decidable: false, because: 'start-time-unrecorded' };
     }
     const same = sameStart(identity.startedAt, this.startTime(identity.pid));
     if (same === null) {
@@ -382,11 +478,13 @@ export class Sessions {
         continue;
       }
       const read = this.identityOf(name);
-      if (!read.known) {
-        continue;
-      }
-      const identity = read.identity;
-      const liveness = await this.livenessOf(identity);
+      const identity = read.known ? read.identity : null;
+      const liveness = read.known
+        ? await this.livenessOf(read.identity)
+        : ({
+            decidable: false,
+            because: read.because === 'absent' ? 'record-missing' : 'record-unreadable'
+          } as Liveness);
       const adopters: string[] = [];
       for (const marker of this.files.list(this.sessionDirectory(name))) {
         if (marker.startsWith('adopted-by.') && !marker.includes('.tmp-')) {
@@ -398,17 +496,44 @@ export class Sessions {
            * omitted because a file would not parse is the wrong way to
            * be wrong.
            */
-          if (state === null || !('alive' in state) || state.alive) {
+          if (!('alive' in state) || state.alive) {
             adopters.push(who);
           }
         }
       }
+      const drafts = this.draftsIn(name);
+      const pendingEntries = this.pendingIn(name);
+      /*
+       * ⚠️ A DIRECTORY WITH NO RECORD IS LISTED ONLY IF THERE IS
+       * SOMETHING IN IT TO RECOVER.
+       *
+       * Every directory under `sessions/` was becoming a row, so an
+       * empty `sessions/junk/` -- left by anything at all -- appeared as
+       * a window nobody can judge, with an explicit takeover offered for
+       * it. Offering an expensive action over nothing teaches the user
+       * to press it, which is the opposite of what a second confirmation
+       * is for.
+       *
+       * ⚠️ IT IS THE ABSENCE OF A RECORD THAT MAKES A DIRECTORY
+       * ANONYMOUS, not the failure to read one. A `session.json` that
+       * will not parse is still a window saying it was here, so that row
+       * is listed whatever it holds -- it is the only trace of it, and
+       * an unreadable record is never forceable anyway. The first
+       * version of this test said `identity === null`, which covers both
+       * and hid the unreadable case from the listing.
+       */
+      const anonymous = !('alive' in liveness) && liveness.because === 'record-missing';
+      if (anonymous && drafts.length === 0 && pendingEntries === 0) {
+        continue;
+      }
       out.push({
+        sessionId: name,
         identity,
         liveness,
-        drafts: this.draftsIn(name),
-        pendingEntries: this.pendingIn(name),
-        liveAdopters: adopters
+        drafts,
+        pendingEntries,
+        liveAdopters: adopters,
+        forceable: !('alive' in liveness) && liveness.because === 'record-missing'
       });
     }
     return out;
@@ -471,7 +596,31 @@ export class Sessions {
    * to pick one, and two callers reading before either writes is the
    * race the token exists to settle. (§12.11.3)
    */
-  public async claim(deadSessionId: string): Promise<ClaimOutcome> {
+  /*
+   * ⚠️ `forced` IS THE WAY OUT OF ONE UNDECIDABLE AND NOT OF THE OTHERS.
+   *
+   * It is open only when the record is MISSING -- a failure of evidence
+   * that waiting cannot repair. It is closed when the start time could
+   * not be obtained, because that is a failure of OBSERVATION on this
+   * machine and a second later the same question may answer itself;
+   * offering to duplicate a request over that would be offering the cost
+   * for nothing. It is closed for a record that will not parse, because
+   * that record may yet be read by a build that understands it, and
+   * because nothing here can tell a corrupt record from one written by a
+   * newer format.
+   *
+   * WHAT IT COSTS, AND WHY IT IS OFFERABLE AT ALL: if that window is in
+   * fact still running, the same request goes to the store twice. The
+   * store answers the second by request identity -- `replay` -- and does
+   * not apply it again, so the cost is the transmission and not the
+   * work. That is the sentence the confirmation has to carry, and it is
+   * in status.ts rather than here.
+   *
+   * IT IS NEVER TAKEN WITHOUT A PERSON ASKING. Nothing in this file
+   * calls it; the command does, after a second confirmation. (C13,
+   * U-claim)
+   */
+  public async claim(deadSessionId: string, forced = false): Promise<ClaimOutcome> {
     /*
      * THE SESSION BEING TAKEN OVER MUST BE JUDGED DEAD, and a record
      * that cannot be read is not a judgement. Treating "unreadable" as
@@ -479,34 +628,44 @@ export class Sessions {
      * still be draining its queue -- which double-sends. (§12.9)
      */
     const liveness = await this.livenessOfSession(deadSessionId);
-    if (liveness !== null) {
-      if (!('alive' in liveness)) {
-        return { claimed: false, because: 'undecidable' };
-      }
+    if ('alive' in liveness) {
       if (liveness.alive) {
         return { claimed: false, because: 'session-alive' };
       }
+    } else if (liveness.because !== 'record-missing') {
+      /*
+       * A RECORD THAT WILL NOT READ, OR A START TIME THIS MACHINE COULD
+       * NOT OBTAIN, IS NOT A JUDGEMENT. Treating either as "no such
+       * session" let a claim proceed against a window that might still
+       * be draining its queue -- which double-sends. (§12.9)
+       */
+      return { claimed: false, because: 'undecidable' };
     } else if (this.files.exists(this.sessionDirectory(deadSessionId))) {
       /*
        * A DIRECTORY WITH NO RECORD AT ALL, AND `discard` REFUSES IT FOR
        * THE SAME REASON THIS DOES.
        *
-       * `null` here means `session.json` is absent -- not unreadable,
-       * which is judged above. A directory that exists without one is a
-       * window in the middle of `begin`: the directory is made first and
-       * the record is written after it, so the gap is real and it is on
-       * the path every window takes. Taking its queue over produces a
-       * second sender for entries the first is still holding, which is
-       * the double-send this whole mechanism exists to prevent.
+       * A directory that exists without a record is a window in the
+       * middle of `begin`: the directory is made first and the record is
+       * written after it, so the gap is real and it is on the path every
+       * window takes. Taking its queue over produces a second sender for
+       * entries the first is still holding, which is the double-send
+       * this whole mechanism exists to prevent.
        *
        * ⚠️ THIS IS NOT SYMMETRIC WITH `discard`'S COST. A refused
        * discard leaves files on disk; a claim that should have been
        * refused sends somebody else's requests a second time. Erring
-       * toward "still running" is the cheap direction here, and the
-       * listing tells the user why the takeover was not offered. (§12.9,
-       * §12.11.3)
+       * toward "still running" is the cheap direction here.
+       *
+       * ⚠️ AND IT IS NOT THE END OF IT. Refusing for ever would strand
+       * the queue of a window whose record was deleted: no sequence of
+       * ordinary claims can ever change that answer. `forced` is the way
+       * out, and the listing names this state so the user can find it.
+       * (U-claim)
        */
-      return { claimed: false, because: 'undecidable' };
+      if (!forced) {
+        return { claimed: false, because: 'undecidable' };
+      }
     } else {
       /*
        * NOTHING OF THAT SESSION IS HERE, NOW. There is no queue to take
@@ -519,11 +678,6 @@ export class Sessions {
       return { claimed: false, because: 'not-found' };
     }
 
-    /*
-     * WHICH TOKENS EXIST. `.tmp-` names are half-written publications and
-     * are not claims: a window that died between writing one and linking
-     * it must not strand the queue. (§12.13.5)
-     */
     const prefix = `${deadSessionId}.claim.`;
     let highest = 0;
     let newest: string | null = null;
@@ -552,7 +706,7 @@ export class Sessions {
        * that is not offered, and the listing says so. (§12.9)
        */
       const state = await this.livenessOfSession(holder);
-      if (state === null || !('alive' in state) || state.alive) {
+      if (!('alive' in state) || state.alive) {
         return { claimed: false, because: 'already-claimed' };
       }
     }
@@ -685,23 +839,22 @@ export class Sessions {
   public async discard(sessionId: string): Promise<DiscardOutcome> {
     const notes = [DISCARD_BACKUP_NOTE, DISCARD_REACH_NOTE];
     const directory = this.sessionDirectory(sessionId);
-    const adopters = (await this.others()).find((o) => o.identity.sessionId === sessionId)?.liveAdopters ?? [];
+    const adopters = (await this.others()).find((o) => o.sessionId === sessionId)?.liveAdopters ?? [];
     /*
      * THE SAME RULE AS `claim`: a record that will not read is not a
      * death certificate, and discarding moves a whole directory.
      */
     const liveness = await this.livenessOfSession(sessionId);
-    if (liveness !== null) {
-      if (!('alive' in liveness)) {
-        return { discarded: false, because: 'undecidable', liveAdopters: adopters, notes };
-      }
+    if ('alive' in liveness) {
       if (liveness.alive) {
         return { discarded: false, because: 'session-alive', liveAdopters: adopters, notes };
       }
     } else if (this.files.exists(this.sessionDirectory(sessionId))) {
       /*
-       * A DIRECTORY WITH NO RECORD AT ALL. There is nothing to judge and
-       * something to lose, so it is not discarded without one.
+       * NOTHING HERE CAN JUDGE IT AND THERE IS SOMETHING TO LOSE -- for
+       * any of the three reasons. Discarding moves a whole directory,
+       * and unlike a takeover there is no cost this window can offer to
+       * pay in exchange: the files would simply be gone.
        */
       return { discarded: false, because: 'undecidable', liveAdopters: adopters, notes };
     }

@@ -71,6 +71,22 @@ export interface FileOps {
    */
   link(existing: string, fresh: string): void;
   list(directory: string): string[];
+  /*
+   * ⚠️ THE HONEST FORM OF `list`, FOR THE ONE CALLER THAT CANNOT AFFORD
+   * ITS ANSWER.
+   *
+   * `list` returns `[]` when it cannot read the directory, which is the
+   * right convenience for a caller asking "what versions are here" -- an
+   * absent directory holds none. It is the wrong answer for a caller
+   * asking "is the record really not there", because a directory this
+   * process may not search reports everything inside it as absent, and
+   * that reading is the one thing an explicit session takeover is opened
+   * by. The two questions needed two primitives rather than one word
+   * meaning both.
+   */
+  readDirectory(directory: string):
+    | { read: true; names: string[] }
+    | { read: false; because: 'absent' | 'unreadable' };
   isDirectory(file: string): boolean;
 }
 
@@ -122,6 +138,20 @@ export const nodeFileOps: FileOps = {
       return fs.readdirSync(directory);
     } catch (e) {
       return [];
+    }
+  },
+  readDirectory: (directory) => {
+    try {
+      return { read: true, names: fs.readdirSync(directory) };
+    } catch (e) {
+      /*
+       * ONLY ENOENT MEANS "NOT THERE". Everything else -- a permission
+       * this process does not have, a path that is not a directory, an
+       * i/o failure -- is this machine being unable to look, and the
+       * conservative reading of that is that nothing here can judge.
+       */
+      const code = (e as NodeJS.ErrnoException).code;
+      return { read: false, because: code === 'ENOENT' ? 'absent' : 'unreadable' };
     }
   },
   isDirectory: (file) => {

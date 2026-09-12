@@ -74,6 +74,17 @@ export interface OutboxEntry {
   importedBy: string | null;
 }
 
+/*
+ * The one place an entry is made unwritable. It is `Object.freeze` and
+ * not a deep freeze: every field of an entry is a string, a number or
+ * null, so there is nothing under them to protect, and a deep freeze
+ * would be a promise this shape does not need and the next field might
+ * quietly break.
+ */
+function freezeEntry(entry: OutboxEntry): OutboxEntry {
+  return Object.freeze(entry);
+}
+
 interface OutboxFile {
   version: number;
   cursor: string | null;
@@ -222,8 +233,30 @@ export class Outbox {
     return this.data.cursor;
   }
 
+  /*
+   * ⚠️ THE ENTRIES COME OUT FROZEN.
+   *
+   * `slice()` copies the ARRAY and hands out the same objects, so a
+   * caller could change an entry's `req` -- and the drain's guard, which
+   * asks whether the request it just sent is still queued, would then
+   * miss and go on sending under a changed identity. No ordinary
+   * settlement renames a request; nothing stopped one either, and an
+   * invariant nothing enforces is a comment.
+   *
+   * FREEZING RATHER THAN COPYING, because a copy lets the change happen
+   * silently and simply loses it. A frozen object throws on assignment
+   * in strict mode -- and every module here is one -- so the attempt
+   * arrives as a TypeError at the line that made it rather than as a
+   * request that quietly went out twice.
+   *
+   * IT IS THE STORED OBJECTS THAT ARE FROZEN. They are replaced, never
+   * edited, by every mutator below: each builds a fresh state through
+   * `copy()` and adopts it only after the disk has changed. Freezing
+   * what is handed out would leave the stored one writable, which is
+   * where the caller's reference points.
+   */
   public get entries(): OutboxEntry[] {
-    return this.data.entries.slice();
+    return this.data.entries.map(freezeEntry);
   }
 
   /*
@@ -235,7 +268,8 @@ export class Outbox {
   }
 
   public find(req: string): OutboxEntry | undefined {
-    return this.data.entries.find((e) => e.req === req);
+    const found = this.data.entries.find((e) => e.req === req);
+    return found === undefined ? undefined : freezeEntry(found);
   }
 
   /*

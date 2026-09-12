@@ -73,7 +73,7 @@ describe('activation leaves a session another window can see', () => {
     second.begin('S-second', ['/stores/one']);
     const others = await second.others();
     assert.deepStrictEqual(
-      others.map((o) => o.identity.sessionId),
+      others.map((o) => o.sessionId),
       ['S-first'],
       'a second window could not see the first, so nothing can ever be recovered from it'
     );

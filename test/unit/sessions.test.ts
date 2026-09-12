@@ -164,12 +164,19 @@ describe('C8 and C19 whether another window is still running', () => {
    * compared, so nothing was verified -- reporting `identity-matches`
    * there claims a check that did not happen.
    */
-  it('cannot tell about a session whose record carries no start time', async () => {
+  /*
+   * ⚠️ AND IT SAYS WHICH OF THE TWO WAYS. A record carrying no start
+   * time and a machine that could not read one were the same value; the
+   * sentence for that value told the user to try again in a moment,
+   * which is advice that cannot work for the first -- no later attempt
+   * produces a number the record never had. Found in review.
+   */
+  it('cannot tell about a session whose record carries no start time, and says which', async () => {
     const idle = idleProcess();
     try {
       const sessions = new Sessions(new RecordingFs(), scratch());
       const answer = await sessions.livenessOf(identity({ pid: idle.pid, startedAt: null }));
-      assert.deepStrictEqual(answer, { decidable: false, because: 'start-time-unavailable' });
+      assert.deepStrictEqual(answer, { decidable: false, because: 'start-time-unrecorded' });
     } finally {
       idle.stop();
     }
@@ -842,4 +849,262 @@ describe('a session whose record cannot be read is not treated as gone', () => {
       );
     });
   }
+});
+
+/*
+ * U-claim: THE WAY OUT OF THE ONE UNDECIDABLE THAT WAITING CANNOT FIX.
+ *
+ * A directory with a queue in it and no `session.json` beside it cannot
+ * be judged: nothing on disk distinguishes a window that died before it
+ * wrote its record from one that is alive and has not written it yet.
+ * `claim` refuses -- correctly -- and a review pointed out that it would
+ * refuse for ever: no sequence of ordinary claims can change that
+ * answer, so that queue is stranded permanently.
+ *
+ * The ruling: keep the refusal, and add an explicit forced takeover the
+ * user asks for, having been told what it costs. It is open ONLY for a
+ * missing record. A start time this machine could not obtain is a
+ * failure to observe rather than a failure of evidence -- the same
+ * question may answer itself a second later, so offering to duplicate a
+ * request over it would be paying the cost for nothing.
+ */
+describe('U-claim taking over a window that left no record', () => {
+  /*
+   * A DIRECTORY WITH A QUEUE AND NO RECORD. The queue matters: without
+   * it the refusal costs nothing and the way out is about nothing.
+   */
+  function recordless(storage: string, id: string): void {
+    fs.mkdirSync(path.join(storage, 'sessions', id, 'h'), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage, 'sessions', id, 'h', 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: [{ req: 'r1', cursor: 'w:1', id: 'a.1', field: 'src', payload: 'x', state: 'queued', createdAt: 0, lastError: null }]
+      }),
+      'utf8'
+    );
+  }
+
+  it('refuses an ordinary claim, as it did before', async () => {
+    const storage = scratch();
+    recordless(storage, 'S-norecord');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    assert.deepStrictEqual(await sessions.claim('S-norecord'), {
+      claimed: false,
+      because: 'undecidable'
+    });
+  });
+
+  it('takes it over when the user asks for it explicitly', async () => {
+    const storage = scratch();
+    recordless(storage, 'S-norecord');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const forced = await sessions.claim('S-norecord', true);
+    assert.strictEqual(forced.claimed, true, JSON.stringify(forced));
+    if (forced.claimed) {
+      assert.strictEqual(
+        fs.readFileSync(forced.token, 'utf8').trim(),
+        'S-mine',
+        'the forced token does not say who holds it'
+      );
+    }
+  });
+
+  /*
+   * ⚠️ AND FORCING IS NOT A WAY PAST THE OTHER REFUSALS. A window that
+   * is provably ALIVE is still refused; so is one whose start time this
+   * machine could not obtain, which is the case that fixes itself.
+   */
+  it('still refuses a window that is running, asked for explicitly or not', async () => {
+    const storage = scratch();
+    const alive = await idleProcess();
+    try {
+      makeSession(storage, 'S-alive', liveIdentity(alive.pid));
+      const sessions = new Sessions(new RecordingFs(), storage);
+      sessions.begin('S-mine', []);
+      assert.deepStrictEqual(await sessions.claim('S-alive', true), {
+        claimed: false,
+        because: 'session-alive'
+      });
+    } finally {
+      alive.stop();
+    }
+  });
+
+  it('still refuses when the start time could not be obtained', async () => {
+    const storage = scratch();
+    const alive = await idleProcess();
+    try {
+      makeSession(storage, 'S-unknown', { pid: alive.pid, startedAt: 1000 });
+      /*
+       * A READER THAT CANNOT ANSWER. The pid is present, so liveness
+       * turns on the start time, and this machine cannot supply it.
+       */
+      const sessions = new Sessions(new RecordingFs(), storage, () => null);
+      sessions.begin('S-mine', []);
+      assert.deepStrictEqual(await sessions.claim('S-unknown', true), {
+        claimed: false,
+        because: 'undecidable'
+      });
+    } finally {
+      alive.stop();
+    }
+  });
+
+  /*
+   * AND THE LISTING IS WHERE THE USER FINDS IT. This row used to be
+   * SKIPPED -- `others` read the record and moved on -- so the one state
+   * being refused was invisible in the only listing there is. A refusal
+   * about something nobody can see is not one anybody can act on.
+   */
+  it('lists the directory it refuses, and says an explicit takeover is open for it', async () => {
+    const storage = scratch();
+    recordless(storage, 'S-norecord');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const listed = await sessions.others();
+    const row = listed.find((o) => o.sessionId === 'S-norecord');
+    assert.ok(row !== undefined, 'the directory being refused is not in the listing at all');
+    assert.strictEqual(row?.identity, null, 'an identity was invented for a window that left none');
+    assert.deepStrictEqual(row?.liveness, { decidable: false, because: 'record-missing' });
+    assert.strictEqual(row?.forceable, true);
+    assert.strictEqual(row?.pendingEntries, 1, 'the listing does not say what is at stake');
+  });
+
+  it('does not offer it for a record that will not parse', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-broken'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'sessions', 'S-broken', 'session.json'), '{"pid":', 'utf8');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const row = (await sessions.others()).find((o) => o.sessionId === 'S-broken');
+    assert.ok(row !== undefined, 'a record that will not parse is not listed either');
+    assert.deepStrictEqual(row?.liveness, { decidable: false, because: 'record-unreadable' });
+    assert.strictEqual(row?.forceable, false, 'forcing was offered for a record nobody has read');
+    assert.deepStrictEqual(await sessions.claim('S-broken', true), {
+      claimed: false,
+      because: 'undecidable'
+    });
+  });
+
+  /*
+   * AND A WINDOW THAT IS SIMPLY DEAD IS STILL LISTED AS SUCH, with no
+   * forced entry -- the ordinary takeover already works for it, and
+   * offering the expensive one beside it would teach the user to press
+   * the expensive one.
+   */
+  it('does not offer it for a window that can be judged dead', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const row = (await sessions.others()).find((o) => o.sessionId === 'S-dead');
+    assert.strictEqual(row?.forceable, false);
+    assert.strictEqual((await sessions.claim('S-dead')).claimed, true);
+  });
+});
+
+/*
+ * REVIEW ROUND 21: THE EXCEPTION IS FOR EVIDENCE THAT CANNOT BE HAD, NOT
+ * FOR A LOOK THAT FAILED.
+ *
+ * A forced takeover is open only where no amount of waiting produces the
+ * record. A directory this process may not search reports every path
+ * inside it as absent -- so a window that is ALIVE, with its record
+ * sitting right there, read as "left no record" and was offered for
+ * takeover. Waiting does fix that one; so does a chmod. Found in review.
+ */
+describe('review 21 a look that failed is not a missing record', () => {
+  /*
+   * THE FAILURE IS INJECTED THROUGH THE FILE OPERATIONS rather than by
+   * changing permissions on disk, because what is being tested is the
+   * decision and not the platform: the shipped adapter turns an
+   * unsearchable directory into exactly this pair of answers.
+   */
+  function unsearchable(directory: string): RecordingFs {
+    return new (class extends RecordingFs {
+      public exists(file: string): boolean {
+        return file.startsWith(directory) && file !== directory ? false : super.exists(file);
+      }
+
+      public readDirectory(
+        target: string
+      ): { read: true; names: string[] } | { read: false; because: 'absent' | 'unreadable' } {
+        return target === directory ? { read: false, because: 'unreadable' } : super.readDirectory(target);
+      }
+    })();
+  }
+
+  it('does not offer a takeover for a directory it could not search', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-locked');
+    const directory = path.join(storage, 'sessions', 'S-locked');
+    const sessions = new Sessions(unsearchable(directory), storage);
+    sessions.begin('S-mine', []);
+    const row = (await sessions.others()).find((o) => o.sessionId === 'S-locked');
+    assert.ok(row !== undefined, 'the directory vanished from the listing entirely');
+    assert.deepStrictEqual(
+      row?.liveness,
+      { decidable: false, because: 'record-unreadable' },
+      'a directory this process cannot search was read as a window that left no record'
+    );
+    assert.strictEqual(row?.forceable, false);
+    assert.deepStrictEqual(await sessions.claim('S-locked', true), {
+      claimed: false,
+      because: 'undecidable'
+    });
+  });
+
+  /*
+   * AND THE GREEN TWIN: a directory this process CAN search, with no
+   * record in it, is still the case the exception exists for.
+   */
+  it('still offers it for a directory it can search that holds no record', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-norecord', 'h'), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage, 'sessions', 'S-norecord', 'h', 'outbox.json'),
+      JSON.stringify({ cursor: null, entries: [{ req: 'r1', cursor: 'w:1', id: 'a.1', field: 'src', payload: 'x', state: 'queued', createdAt: 0, lastError: null }] }),
+      'utf8'
+    );
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const row = (await sessions.others()).find((o) => o.sessionId === 'S-norecord');
+    assert.strictEqual(row?.forceable, true, 'the case the exception exists for stopped working');
+  });
+
+  /*
+   * AND A DIRECTORY WITH NOTHING IN IT IS NOT A WINDOW. Every directory
+   * under `sessions/` was becoming a row, so anything left there was
+   * offered an explicit takeover -- over nothing. Offering the expensive
+   * action where there is nothing at stake teaches the user to press it.
+   */
+  it('does not list an empty directory as a window nobody can judge', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'junk'), { recursive: true });
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    assert.strictEqual(
+      (await sessions.others()).find((o) => o.sessionId === 'junk'),
+      undefined,
+      'a directory holding nothing was offered for takeover'
+    );
+  });
+
+  /*
+   * BUT A RECORD THAT WILL NOT PARSE IS STILL A WINDOW SAYING IT WAS
+   * HERE, and that row is the only trace of it.
+   */
+  it('lists a directory whose record will not parse even when it holds nothing else', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-broken2'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'sessions', 'S-broken2', 'session.json'), '{', 'utf8');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const row = (await sessions.others()).find((o) => o.sessionId === 'S-broken2');
+    assert.ok(row !== undefined, 'the only trace of that window is not in the listing');
+    assert.strictEqual(row?.forceable, false);
+  });
 });

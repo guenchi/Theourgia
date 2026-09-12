@@ -464,3 +464,92 @@ describe('a queue in a shape this build cannot read is refused, not repaired', (
     });
   }
 });
+
+/*
+ * U-req: A REQUEST ID CANNOT BE CHANGED UNDER THE THING THAT IS SENDING
+ * IT.
+ *
+ * `entries` copied the array and handed out the same objects. The
+ * Saver's drain sends the entry at the front and then asks whether the
+ * request it sent is still queued -- and stops if it is, because the
+ * answer could not be recorded. A caller that renamed `req` in between
+ * would make that question miss, and the drain would go on sending under
+ * a changed identity. No ordinary settlement does this; nothing stopped
+ * one either, which was a review's point: an invariant nothing enforces
+ * is a comment.
+ *
+ * THE ATTEMPT HAS TO THROW RATHER THAN BE LOST. Handing out copies would
+ * also stop the drain from missing, and would swallow the write in
+ * silence; a frozen object raises a TypeError in strict mode at the line
+ * that made the attempt.
+ */
+describe('U-req the entries the queue hands out cannot be edited', () => {
+  it('refuses an assignment to a request id', () => {
+    const file = scratch('frozen');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('r1', 'one\n'));
+    const handed = queue.entries[0];
+    assert.throws(
+      () => {
+        (handed as { req: string }).req = 'r2';
+      },
+      TypeError,
+      'the request id was changed under whatever is sending it'
+    );
+    assert.strictEqual(queue.entries[0].req, 'r1', 'the queue kept the changed name');
+  });
+
+  it('refuses an assignment to an entry that came back from find', () => {
+    const file = scratch('frozen-find');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('r1', 'one\n'));
+    const found = queue.find('r1');
+    assert.ok(found !== undefined);
+    assert.throws(() => {
+      (found as unknown as { state: string }).state = 'sent';
+    }, TypeError);
+  });
+
+  /*
+   * AND THE QUEUE ITSELF STILL CHANGES. Freezing what is handed out must
+   * not freeze what the queue does: every mutator builds a fresh state
+   * and adopts it after the disk has changed, and a build that froze the
+   * stored objects in a way those mutators touched would fail here.
+   */
+  it('still lets the queue change the entry it holds', () => {
+    const file = scratch('frozen-mutate');
+    const queue = new Outbox(file);
+    queue.load();
+    queue.enqueue(entry('r1', 'one\n'));
+    assert.strictEqual(queue.entries[0].state, 'queued');
+    queue.aboutToSend('r1', 'w:8');
+    assert.strictEqual(queue.entries[0].state, 'sent', 'the queue could not mark its own entry');
+    assert.strictEqual(queue.entries[0].cursor, 'w:8');
+    queue.markPending('r1', 'no answer');
+    assert.strictEqual(queue.entries[0].state, 'pending');
+    queue.resolve('r1', 'w:9');
+    assert.strictEqual(queue.entries.length, 0, 'the entry could not be removed');
+    assert.strictEqual(queue.cursor, 'w:9');
+  });
+
+  /*
+   * AND IT SURVIVES A REREAD. The entries a fresh Outbox loads from disk
+   * are handed out on the same terms; a build that only froze what it
+   * had added in memory would pass the cells above.
+   */
+  it('hands out frozen entries after loading them from disk', () => {
+    const file = scratch('frozen-reload');
+    const first = new Outbox(file);
+    first.load();
+    first.enqueue(entry('r1', 'one\n'));
+    const second = new Outbox(file);
+    second.load();
+    const handed = second.entries[0];
+    assert.strictEqual(handed.req, 'r1');
+    assert.throws(() => {
+      (handed as { req: string }).req = 'r2';
+    }, TypeError);
+  });
+});

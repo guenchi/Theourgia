@@ -66,7 +66,41 @@ function clause(value: Datum, name: string): Datum[] | null {
  * be legible, and a caller that handed over an already-parsed value
  * would be asking a question that cannot fail.
  */
-export function assertRuledRefusal(text: string, name: string, field: string): void {
+/*
+ * ⚠️ THE SPELLING OF THE POSITION IS A CONSTANT BECAUSE IT IS IN
+ * DISPUTE.
+ *
+ * The first draft of the ruling wrote the position as `(field rel)`; the
+ * core landed `(where relation)` and the main session settled on the
+ * landed spelling, because `where` covers positions a `field` does not
+ * -- the verb position and argument positions are positions too -- and
+ * `relation` is the whole word. Measured here against the shared pin on
+ * 2026-09-12 and reported independently by the session that made the
+ * change.
+ *
+ * IT IS ONE CONSTANT, used by the cells and by the witness alike, so
+ * that a spelling settled somewhere else is one line here and no cell
+ * has to be touched.
+ */
+export interface RuledRefusal {
+  family: string;
+  reason: string;
+  positionTag: string;
+  position: string;
+}
+
+export const RELATION_NAME_REFUSAL: RuledRefusal = {
+  family: 'malformed-intent',
+  reason: 'symbol-not-wire-safe',
+  positionTag: 'where',
+  position: 'relation'
+};
+
+export function assertRuledRefusal(
+  text: string,
+  name: string,
+  shape: RuledRefusal = RELATION_NAME_REFUSAL
+): void {
   let data: Datum[];
   try {
     data = parseAnswers(text.endsWith('\n') ? text : `${text}\n`);
@@ -84,21 +118,24 @@ export function assertRuledRefusal(text: string, name: string, field: string): v
    * one.
    */
   assert.ok(
-    isList(answer) && isSym(answer[1], 'malformed-intent'),
-    `the refusal is not in the malformed-intent family: ${text}`
+    isList(answer) && isSym(answer[1], shape.family),
+    `the refusal is not in the ${shape.family} family: ${text}`
   );
-  const reason = clause(answer, 'symbol-not-wire-safe');
+  const reason = clause(answer, shape.reason);
   assert.ok(reason !== null, `the refusal does not say why: ${text}`);
   /*
    * AND THE POSITION AND THE SPELLING ARE INSIDE THE REASON. Beside it
    * is a different answer: the reason would then be a bare tag and the
    * two clauses would belong to the error rather than to it.
    */
-  const where = clause(reason, 'field');
-  assert.ok(where !== null, `the refusal does not say which position was wrong: ${text}`);
+  const where = clause(reason, shape.positionTag);
   assert.ok(
-    where !== null && where.length === 2 && isSym(where[1], field),
-    `the position is not the symbol ${field}: ${text}`
+    where !== null,
+    `the refusal does not say which position was wrong under the tag \`${shape.positionTag}\`: ${text}`
+  );
+  assert.ok(
+    where !== null && where.length === 2 && isSym(where[1], shape.position),
+    `the position is not the symbol ${shape.position}: ${text}`
   );
   const spelling = clause(reason, 'spelling');
   assert.ok(spelling !== null, `the refusal does not carry the spelling: ${text}`);
@@ -125,7 +162,7 @@ export function assertRuledRefusal(text: string, name: string, field: string): v
  * with the wire reader and runs the assertions above on it.
  */
 export const RULED_EXAMPLE =
-  '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling "1")))';
+  '(error malformed-intent (symbol-not-wire-safe (where relation) (spelling "1")))';
 
 /*
  * AND WHAT THE CORE ANSWERS TODAY, for the negative witness. Measured

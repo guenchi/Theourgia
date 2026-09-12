@@ -479,6 +479,106 @@ export function refusalNotice(
 }
 
 /*
+ * THE SENTENCE A FORCED TAKEOVER HAS TO CARRY, AND THE ANSWER THAT
+ * AUTHORISES IT.
+ *
+ * A window that left no readable record cannot be judged dead, so an
+ * ordinary takeover refuses -- and would refuse for ever, which strands
+ * that queue. The way out is to let the user decide, which means telling
+ * them exactly what they are deciding:
+ *
+ *   - if that window is in fact still running, every request in its
+ *     queue goes to the store a SECOND time;
+ *   - the store settles the second by request identity and answers
+ *     `replay`, so the work is not done twice;
+ *   - what it costs is the transmission, not the change.
+ *
+ * ⚠️ ALL THREE SENTENCES OR NONE. Dropping the second turns a
+ * manageable cost into what reads like data loss and nobody will ever
+ * press it; dropping the first hides that there is a cost at all. The
+ * confirmation word is returned rather than hard-coded at the call site
+ * so that a cell can read what the user was actually asked.
+ */
+export const FORCE_CLAIM_CONFIRMATION = 'Take it over';
+
+export function forceClaimNotice(sessionId: string, pending: number): Notice {
+  return {
+    level: 'warning',
+    text:
+      `${sessionId} left no record saying which process it was, so this window cannot tell ` +
+      `whether it is still running. It holds ${pending} unsent request(s). Taking it over anyway ` +
+      'is safe to attempt: if that window is in fact still running, each of those requests reaches ' +
+      'the store twice, and the store recognises the second by its request id and answers "already ' +
+      'applied" rather than doing the work again. What it costs is the sending, not the change.'
+  };
+}
+
+/*
+ * AND WHAT THE LISTING SAYS ABOUT A ROW NOBODY CAN JUDGE. The three
+ * reasons are not the same news and the sentence has to say which: two
+ * of them are permanent and one of them fixes itself.
+ */
+export function undecidableSessionNotice(
+  sessionId: string,
+  because:
+    | 'start-time-unavailable'
+    | 'start-time-unrecorded'
+    | 'liveness-unobtainable'
+    | 'record-missing'
+    | 'record-unreadable'
+): Notice {
+  if (because === 'start-time-unrecorded') {
+    /*
+     * ⚠️ THIS ONE DOES NOT FIX ITSELF EITHER, and it used to be told to
+     * wait. The record carries no start time -- written by an older
+     * build, or on a platform that could not supply one -- so no later
+     * attempt produces it. Nothing is offered: the window may well be
+     * running, and its pid alone cannot tell us.
+     */
+    return {
+      level: 'warning',
+      text:
+        `${sessionId}: its record does not say when that process started, so whether it is still ` +
+        'running cannot be judged and waiting will not change that. Nothing is taken over ' +
+        'automatically; if you know that window is gone, close this one and reopen it to start ' +
+        'a fresh session.'
+    };
+  }
+  if (because === 'liveness-unobtainable') {
+    return {
+      level: 'information',
+      text:
+        `${sessionId}: asking whether that process is running failed for a reason this window ` +
+        'does not recognise, so nothing is offered for it; try again in a moment.'
+    };
+  }
+  if (because === 'start-time-unavailable') {
+    return {
+      level: 'information',
+      text:
+        `${sessionId}: this machine could not be asked when that process started, so whether it ` +
+        'is still running is not known yet. Nothing is offered for it; try again in a moment.'
+    };
+  }
+  if (because === 'record-unreadable') {
+    return {
+      level: 'warning',
+      text:
+        `${sessionId}: the record beside it will not read, so whether it is still running cannot ` +
+        'be judged. Nothing is taken over automatically; a build that understands that record may ' +
+        'still be able to.'
+    };
+  }
+  return {
+    level: 'warning',
+    text:
+      `${sessionId}: it left no record saying which process it was, so whether it is still running ` +
+      'cannot be judged and no amount of waiting will change that. Its queue can be taken over ' +
+      'explicitly, and you will be told what that costs before anything is sent.'
+  };
+}
+
+/*
  * WHEN THE STORE ANSWERED AND THE RECORD COULD NOT BE WRITTEN.
  *
  * The request stays in the queue, which is the safe direction -- it can
@@ -491,12 +591,19 @@ export function unrecordedNotice(
   because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed'
 ): Notice {
   if (because === 'split-changed') {
+    /*
+     * ⚠️ NOT "THE HEADING CHANGED". The record can stop producing what
+     * was sent for more than one reason -- the heading it splits at, or
+     * what it says the block's own line endings are -- and naming only
+     * the first would be telling the user to look at something that did
+     * not move. Found in review.
+     */
     return {
       level: 'warning',
       text:
-        `The store accepted the save, but what counts as the heading of ${file} changed while it ` +
-        'was in flight, so the record beside it was left alone. The request is kept and will be ' +
-        'retried; nothing was lost.'
+        `The store accepted the save, but the record beside ${file} no longer describes it the ` +
+        'same way, so what was sent is not what that record would send now and it was left alone. ' +
+        'The request is kept and will be retried; nothing was lost.'
     };
   }
   if (because === 'file-moved') {

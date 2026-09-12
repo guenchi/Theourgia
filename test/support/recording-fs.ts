@@ -125,6 +125,13 @@ export class RecordingFs implements FileOps {
     this.inner.link(existing, fresh);
   }
 
+  public readDirectory(
+    directory: string
+  ): { read: true; names: string[] } | { read: false; because: 'absent' | 'unreadable' } {
+    this.record('list', directory);
+    return this.inner.readDirectory(directory);
+  }
+
   public list(directory: string): string[] {
     this.record('list', directory);
     return this.inner.list(directory);

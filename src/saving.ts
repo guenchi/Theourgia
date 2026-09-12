@@ -433,7 +433,28 @@ export class Saving {
       writeSidecar(this.files, file, { ...read.sidecar, unresolved: true });
       return { dequeued: false, because: 'req-mismatch' };
     }
-    const here = this.files.exists(file) ? digestOfBytes(this.files.readBytes(file)) : null;
+    /*
+     * ⚠️ THE FILE IS READ ONCE, AND EVERY QUESTION BELOW IS ASKED OF
+     * THAT ONE BUFFER.
+     *
+     * The digest and the split used to be two separate reads, and the
+     * writer they are about is in another process. A write landing
+     * between them let an acknowledgement be assembled out of two
+     * different versions of the file: the first read satisfied the
+     * digest, the second satisfied the split, and neither version on its
+     * own would have. Reproduced in review, ending in `draft: false`
+     * over a record that would send bytes the store never saw.
+     *
+     * Reading once does not lock anybody out; it makes the two answers
+     * be about the same thing, which is what was missing.
+     */
+    let bytes: Buffer | null;
+    try {
+      bytes = this.files.exists(file) ? this.files.readBytes(file) : null;
+    } catch (e) {
+      bytes = null;
+    }
+    const here = bytes === null ? null : digestOfBytes(bytes);
     if (here !== answer.rawDigest) {
       /*
        * THE BYTES MOVED WHILE THE ANSWER WAS IN FLIGHT. Recording an
@@ -484,10 +505,7 @@ export class Saving {
      * does not, nothing is written and the ENTRY IS KEPT: the request is
      * still retryable, and a retry re-reads this record.
      */
-    const split = bodyOf(
-      this.files.readBytes(file).toString('utf8'),
-      read.sidecar
-    );
+    const split = bodyOf((bytes as Buffer).toString('utf8'), read.sidecar);
     if (split === null || digestOfBytes(Buffer.from(split.body, 'utf8')) !== answer.sentDigest) {
       return { dequeued: false, because: 'split-changed' };
     }

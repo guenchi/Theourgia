@@ -663,7 +663,32 @@ export class Publisher {
      * not forced to invent a value; passing it is what makes the
      * guarantee, and the extension passes it.
      */
-    if (offered !== undefined && this.files.readText(file) !== offered) {
+    /*
+     * ⚠️ ONE READ, AND THE ACTION USES THAT SAME TEXT.
+     *
+     * The first version of this guard read the file, compared it, and
+     * then let `prepend-prefix` read the file AGAIN -- two reads with a
+     * gap between them, and the writer this is protecting against is in
+     * another process, which the chain cannot exclude. A write landing
+     * in that gap passed the guard and was then published: exactly the
+     * defect the guard was added for, one step further along. Found in
+     * review with a reproduction.
+     *
+     * A DISAPPEARING FILE IS `file-changed` AND NOT A THROW. It went
+     * away, which is a thing the user has to be told in the words the
+     * caller already has for "look again"; an ENOENT escaping from here
+     * would leave the command with no answer at all.
+     */
+    let current: string | null;
+    try {
+      current = this.files.readText(file);
+    } catch (e) {
+      current = null;
+    }
+    if (offered !== undefined && current !== offered) {
+      return { done: false, file, because: 'file-changed' };
+    }
+    if (current === null) {
       return { done: false, file, because: 'file-changed' };
     }
     if (action === 'prepend-prefix') {
@@ -684,8 +709,11 @@ export class Publisher {
        * the file rather than from an answer, so the store has not seen
        * it and it counts as a draft until a save is confirmed.
        */
-      const fileText = this.files.readText(file);
-      const joined = fileText.startsWith(storePrefix) ? fileText : `${storePrefix}${fileText}`;
+      /*
+       * THE TEXT THE GUARD ABOVE READ, not another read of the same
+       * path. See the paragraph there.
+       */
+      const joined = current.startsWith(storePrefix) ? current : `${storePrefix}${current}`;
       const outcome = this.publishInto(
         path.dirname(file),
         { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: joined },

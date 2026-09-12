@@ -861,8 +861,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     where: RealStore,
     from: string,
     name: string,
-    to: string,
-    field: string
+    to: string
   ): Promise<void> {
     /*
      * THE STATE IS READ AROUND THIS REQUEST AND NO OTHER. An earlier
@@ -908,8 +907,10 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
       assert.fail(
         `WAITING ON THE CORE (U8), not a regression here: the refusal of the relation name ` +
           `${JSON.stringify(name)} could not be read by this client -- ` +
-          `${(failure as Error).message}. The core still echoes the offending symbol using the ` +
-          'escape it is refusing. When U8 lands, this cell passes with no change to it.'
+          `${(failure as Error).message}. The core this ran against still echoes the offending ` +
+          'symbol using the escape it is refusing. U8 has been ruled and has landed in the core ' +
+          'since this baseline was pinned, so the fix for this red is to re-pin, not to change ' +
+          'anything here.'
       );
       return;
     }
@@ -926,7 +927,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
      * pattern would keep this red for ever, including after the core
      * lands the change.
      */
-    assertRuledRefusal(answer?.text ?? '', name, field);
+    assertRuledRefusal(answer?.text ?? '', name);
   }
   /*
    * A NAME THE WIRE CANNOT CARRY, FROM THE WRITE SIDE.
@@ -985,7 +986,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
      * and its references before and after the one request it makes, so
      * "nothing landed" is about that request and no other.
      */
-    await refusalOf(store, from, '1', to, 'rel');
+    await refusalOf(store, from, '1', to);
   }
 
   it('reports a block whose edge name the wire cannot carry, and names it', async () => {
@@ -1036,7 +1037,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
      * write path that refused the read side and kept the reference would
      * satisfy either alone.
      */
-    await refusalOf(store, from, 'has part', to, 'rel');
+    await refusalOf(store, from, 'has part', to);
   });
 });
 

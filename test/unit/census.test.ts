@@ -74,7 +74,7 @@ import { countRegistered, EDITOR_CELLS, shortfalls } from '../integration/census
  */
 const AT_LEAST: Array<[string, number]> = [
   ['activation.test.ts', 4],
-  ['answering.test.ts', 24],
+  ['answering.test.ts', 27],
   ['blocks.test.ts', 20],
   /*
    * ⚠️ INCLUDING ITSELF. This file was exempt from the inventory check
@@ -87,17 +87,17 @@ const AT_LEAST: Array<[string, number]> = [
   ['cursor.test.ts', 8],
   ['dependency-sexpr.test.ts', 15],
   ['documents.test.ts', 8],
-  ['durability.test.ts', 27],
+  ['durability.test.ts', 31],
   ['fsops.test.ts', 7],
   ['host.test.ts', 8],
   ['outline.test.ts', 48],
-  ['publication.test.ts', 40],
+  ['publication.test.ts', 43],
   ['real-core.test.ts', 14],
   ['saver.test.ts', 41],
   ['saving.test.ts', 34],
   ['sequences.test.ts', 15],
-  ['sessions.test.ts', 40],
-  ['shapes.test.ts', 44],
+  ['sessions.test.ts', 51],
+  ['shapes.test.ts', 53],
   ['transport.test.ts', 20],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]

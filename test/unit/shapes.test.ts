@@ -29,10 +29,13 @@ import * as assert from 'assert';
 import { documentFor, fieldConflict, readBlock } from '../../src/blocks';
 import { parseOutline } from '../../src/outline';
 import {
+  FORCE_CLAIM_CONFIRMATION,
+  forceClaimNotice,
   prefixRefusedNotice,
   retryNotice,
   saveNotice,
   statusLine,
+  undecidableSessionNotice,
   wrongStoreNotice
 } from '../../src/status';
 import { TransportError } from '../../src/transport';
@@ -43,7 +46,7 @@ import {
   ESCAPED_ECHO,
   RULED_EXAMPLE
 } from '../support/refusal-shape';
-import { Datum, asInteger, initWire, parseAnswers, wire } from '../../src/wire';
+import { Datum, asInteger, headName, initWire, parseAnswers, wire } from '../../src/wire';
 
 describe('an outline line this client cannot read stops the outline', () => {
   before(async () => {
@@ -475,7 +478,7 @@ describe('U8 the shape a refusal must come back in', () => {
   });
 
   it('accepts the answer the ruling describes, read with the wire reader', () => {
-    assertRuledRefusal(RULED_EXAMPLE, '1', 'rel');
+    assertRuledRefusal(RULED_EXAMPLE, '1');
   });
 
   /*
@@ -486,12 +489,8 @@ describe('U8 the shape a refusal must come back in', () => {
    * the core.
    */
   it('accepts the same datum written with different spacing', () => {
-    assertRuledRefusal(
-      '(error   malformed-intent\n'.replace('\n', ' ') +
-        '(symbol-not-wire-safe  (field  rel)  (spelling  "1")))',
-      '1',
-      'rel'
-    );
+    assertRuledRefusal('(error   malformed-intent\n'.replace('\n', ' ') +
+        '(symbol-not-wire-safe  (where  relation)  (spelling  "1")))', '1');
   });
 
   /*
@@ -503,9 +502,8 @@ describe('U8 the shape a refusal must come back in', () => {
    */
   it('accepts a spelling written with an escape inside the string', () => {
     assertRuledRefusal(
-      '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling "\\x31;")))',
-      '1',
-      'rel'
+      '(error malformed-intent (symbol-not-wire-safe (where relation) (spelling "\\x31;")))',
+      '1'
     );
   });
 
@@ -520,18 +518,14 @@ describe('U8 the shape a refusal must come back in', () => {
       'the escape this is all about was read without complaint'
     );
     assert.throws(
-      () => assertRuledRefusal(ESCAPED_ECHO, '1', 'rel'),
+      () => assertRuledRefusal(ESCAPED_ECHO, '1'),
       'the shape check accepts the answer it exists to reject'
     );
   });
 
   it('refuses a refusal of a different error family', () => {
     assert.throws(() =>
-      assertRuledRefusal(
-        '(error unrelated-error (symbol-not-wire-safe (field rel) (spelling "1")))',
-        '1',
-        'rel'
-      )
+      assertRuledRefusal('(error unrelated-error (symbol-not-wire-safe (where relation) (spelling "1")))', '1')
     );
   });
 
@@ -542,58 +536,212 @@ describe('U8 the shape a refusal must come back in', () => {
    */
   it('refuses a refusal whose position and spelling sit outside the reason', () => {
     assert.throws(() =>
-      assertRuledRefusal(
-        '(error malformed-intent (symbol-not-wire-safe) (field rel) (spelling "1"))',
-        '1',
-        'rel'
-      )
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe) (where relation) (spelling "1"))', '1')
     );
   });
 
   it('refuses a spelling that is not a string', () => {
     assert.throws(
       () =>
-        assertRuledRefusal(
-          '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling 1)))',
-          '1',
-          'rel'
-        ),
+        assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (where relation) (spelling 1)))', '1'),
       'a number was accepted where the ruling asks for a string'
     );
     assert.throws(
       () =>
-        assertRuledRefusal(
-          '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling |1|)))',
-          '1',
-          'rel'
-        ),
+        assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (where relation) (spelling |1|)))', '1'),
       'a symbol was accepted where the ruling asks for a string'
     );
   });
 
   it('refuses a refusal that names a different spelling', () => {
     assert.throws(() =>
-      assertRuledRefusal(
-        '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling "2")))',
-        '1',
-        'rel'
-      )
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (where relation) (spelling "2")))', '1')
     );
   });
 
   it('refuses a refusal that does not say which position was wrong', () => {
     assert.throws(() =>
-      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (spelling "1")))', '1', 'rel')
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (spelling "1")))', '1')
     );
   });
 
   it('refuses a refusal that names a different position', () => {
     assert.throws(() =>
-      assertRuledRefusal(
-        '(error malformed-intent (symbol-not-wire-safe (field title) (spelling "1")))',
-        '1',
-        'rel'
-      )
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (where verb) (spelling "1")))', '1')
+    );
+  });
+});
+
+/*
+ * U-claim: WHAT THE USER IS TOLD BEFORE A FORCED TAKEOVER.
+ *
+ * The takeover exists because refusing for ever strands a queue. It is
+ * only offerable because its cost is bounded, and it is only safe to
+ * offer if the sentence says what that cost is. Three things have to be
+ * in it: that the other window may still be running, that each request
+ * then reaches the store twice, and that the store settles the second by
+ * request id rather than doing the work again.
+ *
+ * ⚠️ ALL THREE OR NONE. Without the third it reads like data loss and
+ * nobody presses it; without the second it hides that there is a cost.
+ * The sentence is built where a cell can read it for exactly that
+ * reason.
+ */
+describe('U-claim the sentence a forced takeover carries', () => {
+  it('says the window may be running, that requests go twice, and that the store settles them', () => {
+    const text = forceClaimNotice('S-norecord', 3).text;
+    assert.match(text, /S-norecord/, 'the sentence does not say which window');
+    assert.match(text, /3 unsent request/, 'the sentence does not say what is at stake');
+    assert.match(text, /still running/, 'the sentence does not say the window may be alive');
+    assert.match(text, /twice/, 'the sentence does not say the request is sent again');
+    /*
+     * ⚠️ BOTH HALVES OF THE REASSURANCE, separately. A build that kept
+     * the words "already applied" and dropped the explanation -- that
+     * the store recognises the request by its id, and does not do the
+     * work again -- passed a single check for either. What makes the
+     * cost acceptable is the mechanism, not the phrase.
+     */
+    assert.match(
+      text,
+      /request id/i,
+      'the sentence does not say HOW the store settles the second one'
+    );
+    assert.match(
+      text,
+      /rather than doing the work again|not.{0,20}again/i,
+      'the sentence does not say the work is not repeated'
+    );
+  });
+
+  it('asks for a word the user has to choose, not a yes', () => {
+    assert.ok(FORCE_CLAIM_CONFIRMATION.length > 0);
+    assert.ok(
+      /take/i.test(FORCE_CLAIM_CONFIRMATION),
+      `the confirmation does not name the action: ${FORCE_CLAIM_CONFIRMATION}`
+    );
+  });
+
+  /*
+   * AND THE THREE UNDECIDABLE REASONS GET THREE DIFFERENT SENTENCES.
+   * They were one value in the model until this batch, and they are not
+   * the same news: one of them fixes itself and two of them do not.
+   */
+  /*
+   * ⚠️ THE SAME SESSION ID IN ALL THREE. With three different ids the
+   * three sentences differ whatever they say, so a build that gave the
+   * unreadable case the start-time wording passed -- the ids alone made
+   * the strings distinct. Found in review.
+   */
+  it('tells the user which kind of "cannot tell" this is', () => {
+    const waiting = undecidableSessionNotice('S-a', 'start-time-unavailable').text;
+    const unobtainable = undecidableSessionNotice('S-a', 'liveness-unobtainable').text;
+    const unrecorded = undecidableSessionNotice('S-a', 'start-time-unrecorded').text;
+    const missing = undecidableSessionNotice('S-a', 'record-missing').text;
+    const unreadable = undecidableSessionNotice('S-a', 'record-unreadable').text;
+    assert.strictEqual(
+      new Set([waiting, unobtainable, unrecorded, missing, unreadable]).size,
+      5,
+      'two of the five say the same thing, so the user cannot tell them apart'
+    );
+    /*
+     * ⚠️ AND ONLY THE ONES THAT CAN FIX THEMSELVES SAY SO. A record with
+     * no start time in it will never acquire one, and it used to be told
+     * to try again in a moment.
+     */
+    assert.ok(
+      !/try again|moment/i.test(unrecorded),
+      'a record that will never carry a start time was described as something that fixes itself'
+    );
+    assert.match(unobtainable, /try again|moment/i, 'a failed reading does not say it can be retaken');
+    assert.match(waiting, /try again|moment/i, 'the one that fixes itself does not say so');
+    assert.match(missing, /no amount of waiting|explicitly/i, 'the permanent one reads as temporary');
+    assert.ok(
+      !/explicitly/.test(waiting),
+      'a takeover was offered for the reading that fixes itself'
+    );
+    assert.ok(
+      !/explicitly/.test(unreadable),
+      'a takeover was offered for a record nobody has managed to read'
+    );
+    assert.ok(
+      !/try again|moment/i.test(unreadable),
+      'a record that will not parse was described as something that fixes itself'
+    );
+  });
+});
+
+/*
+ * U8, THE WHOLE FAMILY: EVERY ERROR ANSWER CAN BE READ BACK.
+ *
+ * The ruling is not about one message. The data of ANY error answer is
+ * wire-safe by construction, because a refusal describes the intent
+ * rather than echoing it. `symbol-not-wire-safe` was the one that
+ * necessarily broke -- what it refuses is by definition what the writer
+ * cannot spell -- but `unknown-verb` had the same defect from the same
+ * cause, and it was found by the core session applying the rule rather
+ * than by anyone reporting a symptom.
+ *
+ * ⚠️ THIS CELL IS THE CONSUMER SIDE OF THAT CONTRACT, and it is
+ * deliberately degenerate with the core's own: the core checks what it
+ * writes, this checks that what arrives can be read by the reader this
+ * client actually uses. One of them can be wrong without the other
+ * being wrong, which is the whole value of having both.
+ */
+describe('U8 every error answer the core can produce is readable by this client', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  /*
+   * THE ANSWERS ARE WRITTEN OUT RATHER THAN PRODUCED. A cell that asked
+   * a real core would only cover the refusals that core happens to
+   * produce today; these are the shapes the rule is about, including
+   * the two that were broken and the argument position that has not
+   * been needed yet.
+   */
+  const ANSWERS: Array<[string, string]> = [
+    [
+      'a relation name the wire cannot carry',
+      '(error malformed-intent (symbol-not-wire-safe (where relation) (spelling "has part")))'
+    ],
+    [
+      'a verb nobody knows, whose name needs escaping',
+      '(error unknown-verb (spelling "show me") (verbs init insert set))'
+    ],
+    [
+      'an argument position',
+      '(error malformed-intent (symbol-not-wire-safe (where argument) (spelling "1")))'
+    ],
+    ['a refusal with no detail at all', '(error unknown)'],
+    [
+      'a refusal carrying a string with an escape in it',
+      '(error malformed-intent (symbol-not-wire-safe (where relation) (spelling "a\\x31;b")))'
+    ]
+  ];
+
+  for (const [what, answer] of ANSWERS) {
+    it(`reads back the refusal of ${what}`, () => {
+      const read = parseAnswers(`${answer}\n`);
+      assert.strictEqual(read.length, 1, `${answer} did not read back as one datum`);
+      assert.strictEqual(headName(read[0]), 'error', `${answer} did not read back as an error`);
+    });
+  }
+
+  /*
+   * AND THE NEGATIVE WITNESS: the shape the rule forbids -- a refusal
+   * that ECHOES the offending symbol instead of describing it -- is
+   * exactly what this client cannot read. Without it the cells above
+   * pass against a reader that accepts everything, and would say nothing
+   * about the contract.
+   */
+  it('cannot read a refusal that echoes the symbol instead of describing it', () => {
+    assert.throws(
+      () => parseAnswers('(error malformed-intent (symbol-not-wire-safe (link "a.1" \\x31; "a.2")))\n'),
+      'the echo this whole rule is about was read without complaint'
+    );
+    assert.throws(
+      () => parseAnswers('(error unknown-verb show\\x20;me (verbs init))\n'),
+      'the unknown-verb echo was read without complaint'
     );
   });
 });
