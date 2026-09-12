@@ -126,11 +126,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define scratch (test-dir "log18"))
 (define W "wwwlocl0")
@@ -204,6 +247,37 @@
         (pub d 1 (recs 1 2))
         (why (pub d 1 (cat (rec 1 '(put ((kind . section)))) (rec 2 '(put ((kind . other))))))))
       '(divergence (fork 2)))
+;; AND THE FORK ONLY EVER FALLS. It is the LOWEST sequence anyone has
+;; disagreed at, so a second divergence higher up keeps the first.
+(want "a later disagreement keeps the earlier fork"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 3))
+        (why (pub d 1 (cat (rec 1 '(put ((kind . section))))
+                           (rec 2 '(put ((kind . other)))))))
+        (why (pub d 1 (cat (rec 1 '(put ((kind . section))))
+                           (rec 2 '(put ((kind . section))))
+                           (rec 3 '(put ((kind . other))))))))
+      '(divergence (fork 2)))
+;; A MARKER THAT IS THERE AND WILL NOT READ STOPS ITS OWN REPLACEMENT.
+;; The fork is computed from the marker on disk, so reading a damaged one
+;; as "no marker" makes the new disagreement's sequence the whole answer
+;; -- and the fork RISES. Every record between the old fork and the new
+;; one then comes back out of quarantine: bytes the store had set aside
+;; as unattributable become history again, on the strength of a failed
+;; read. Absent and unreadable are different answers.
+(want "a divergence refuses to replace a fork marker it cannot read"
+      (let ((d (fresh!)))
+        (pub d 1 (recs 1 3))
+        (why (pub d 1 (cat (rec 1 '(put ((kind . section))))
+                           (rec 2 '(put ((kind . other)))))))
+        (put! (string-append d "/writers/" M "/quarantine.sexp")
+              (string->utf8 "((format 1) (fork "))
+        (guard (e (#t 'refused))
+          (why (pub d 1 (cat (rec 1 '(put ((kind . section))))
+                             (rec 2 '(put ((kind . section))))
+                             (rec 3 '(put ((kind . other)))))))
+          'replaced))
+      'refused)
 (want "a declared hash that is not the bytes' hash is refused before anything else"
       (why (log-publish! (fresh!) M 1 (recs 1 2) "deadbeef"))
       '(error invalid-candidate sha-mismatch))
@@ -608,4 +682,5 @@
 (printf "\n~a failures\n" bad)
 ;; A run that did not reach here is not a pass. The runner requires this
 ;; line AND a zero failure count: they are two propositions.
+(printf "rows: ~a\n" rows-run)
 (printf "log18 complete\n")

@@ -32,7 +32,8 @@
 ;; string written out here.
 
 (import (chezscheme) (theourgia project) (theourgia store) (theourgia reduce)
-        (theourgia log) (theourgia ffi) (theourgia md) (theourgia rpc))
+        (theourgia log) (theourgia ffi) (theourgia md) (theourgia rpc)
+        (theourgia wire))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -105,11 +106,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define root (test-dir "read1"))
 (define (put! p text)
@@ -293,45 +337,127 @@
       (text-of (answer (id-titled "Beta") "--md"))
       "## Beta\nbody of beta\n\n")
 
-(printf "\n== where the equivalence stops ==\n")
-;; A DOCUMENT NESTED UNDER ANOTHER DOCUMENT is a shape import never
-;; produces and export has no file for: `export-md` writes one file per
-;; TOP-LEVEL document, so a nested one is rendered into its ancestor's
-;; file as a section -- losing its front matter and taking an empty
-;; heading, because a document has no title to make one from. Read
-;; recursively it is still a document and keeps its front matter.
+(printf "\n== a document is a file, and a file is not inside a file ==\n")
+;; The read batch turned this up as a disagreement: read recursively, a
+;; document nested under another keeps its front matter; exported, it is
+;; folded into its ancestor's file as a section, losing the front matter
+;; and taking an empty heading, and it gets no file of its own.
 ;;
-;; The two therefore disagree, and the row below PINS that disagreement
-;; rather than asserting the equivalence I claimed a few rows up. The
-;; claim is true of top-level documents and I wrote it without the
-;; qualifier; this is the qualifier, written so that a change to either
-;; side shows up here instead of quietly widening or narrowing it. What
-;; a nested document should MEAN is not a renderer question.
+;; BOTH READINGS ARE DEFENSIBLE, WHICH IS THE PROBLEM. A state that means
+;; two things is refused at the entrance rather than given two
+;; interpretations -- every later rule would otherwise have to choose one
+;; of them, and they would not all choose the same. So the rows that used
+;; to pin the disagreement now assert that the write never happens.
 (define t2 (fresh-case! (list (cons "outer.md" "# Outer\nouter body\n"))))
 (define d2 (cdr t2))
 (import-md d2 (car t2) "tester")
-(define outer (let loop ((ids (map cadr (state-datum (open-and-reduce d2)))))
-                (cond ((null? ids) (assertion-violation 'outer "no document" d2))
-                      ((eq? 'doc (cdr (assq 'kind (cdr (assq 'fields
-                            (state-read (open-and-reduce d2) (car ids)))))))
-                       (car ids))
-                      (else (loop (cdr ids))))))
-(define nested
-  (let ((a (car (with-store-write d2
+(define (block-of d pred)
+  (let ((st (open-and-reduce d)))
+    (let loop ((ids (map cadr (state-datum st))))
+      (cond ((null? ids) #f)
+            ((pred (cdr (assq 'fields (state-read st (car ids))))) (car ids))
+            (else (loop (cdr ids)))))))
+(define outer (block-of d2 (lambda (fs) (eq? 'doc (cdr (assq 'kind fs))))))
+(define section2 (block-of d2 (lambda (fs) (eq? 'section (cdr (assq 'kind fs))))))
+(define (insert-doc! parent)
+  (car (with-store-write d2
+         (lambda (st v)
+           (list (list 'insert parent #f
+                       (list (cons 'kind 'doc) (cons 'path "inner.md")
+                             (cons 'front "---\nx: y\n---\n") (cons 'src "intro\n")))))
+         "tester")))
+(want "a document under another document is refused"
+      (let ((a (insert-doc! outer))) (list (car a) (cadr a)))
+      '(error doc-must-be-top-level))
+(want "and under a section too"
+      (let ((a (insert-doc! section2))) (list (car a) (cadr a)))
+      '(error doc-must-be-top-level))
+;; TWIN: at the root it is an ordinary write. Without this the rows above
+;; would pass for an implementation that refused every insert of a
+;; document anywhere.
+(want "TWIN: the same document at the root is written"
+      (car (insert-doc! 'root))
+      'ok)
+;; AND MOVING ONE THERE IS THE SAME REFUSAL, which is not the same code
+;; path: a document already at the root can be moved under a section, and
+;; that is the other entrance to the state.
+(want "moving a document under a section is refused"
+      (let* ((inner (block-of d2 (lambda (fs)
+                                   (let ((p (assq 'path fs)))
+                                     (and p (string=? (cdr p) "inner.md"))))))
+             (a (car (with-store-write d2
+                       (lambda (st v) (list (list 'move inner section2 #f)))
+                       "tester"))))
+        (list (car a) (cadr a)))
+      '(error doc-must-be-top-level))
+;; TWIN: a SECTION may of course be moved under a section.
+(want "TWIN: moving a section under a section is not refused"
+      (car (car (with-store-write d2
+                  (lambda (st v) (list (list 'move section2 'root #f)))
+                  "tester")))
+      'ok)
+
+;; AND HISTORY THAT ALREADY HOLDS ONE IS REPORTED, NOT REPAIRED. The
+;; record exists and says what it says; a reader that silently moved the
+;; block would be inventing a history nobody wrote. This one is written
+;; straight into the log, past the verb that would refuse it -- which is
+;; how it arrives in practice too: from a store written before the rule,
+;; or from another store through sync.
+;; A FRESH STORE, BECAUSE THE ROWS ABOVE MOVED THINGS. The refusal rows
+;; left d2 with its section at the root -- true of that store and
+;; nothing to do with this rule, but an expectation written against d2
+;; would be reading the previous rows' side effects. Order between rows
+;; is a criterion nobody declared.
+(define t3 (fresh-case! (list (cons "outer.md" "# Outer\nouter body\n"))))
+(define d3 (cdr t3))
+(import-md d3 (car t3) "tester")
+(define outer3 (block-of d3 (lambda (fs) (eq? 'doc (cdr (assq 'kind fs))))))
+(define section3 (block-of d3 (lambda (fs) (eq? 'section (cdr (assq 'kind fs))))))
+(define inner
+  (let ((a (car (with-store-write d3
                   (lambda (st v)
-                    (list (list 'insert outer #f
-                                (list (cons 'kind 'doc)
-                                      (cons 'path "inner.md")
+                    (list (list 'insert 'root #f
+                                (list (cons 'kind 'doc) (cons 'path "inner.md")
                                       (cons 'front "---\nx: y\n---\n")
                                       (cons 'src "intro\n")))))
                   "tester"))))
     (car (map car (cadr (assq 'state (cdr a)))))))
-(want "read of the nested document keeps its front matter"
-      (text-of (rpc-dispatch d2 (list 'read nested "--md" "--recursive") "tester"))
-      "---\nx: y\n---\nintro\n")
-(want "and its ancestor's export renders it as an empty-titled section instead"
-      (text-of (rpc-dispatch d2 (list 'read outer "--md" "--recursive") "tester"))
-      "# Outer\nouter body\n# \nintro\n")
+(define (append-raw! store writer seq payload)
+  (let ((path (string-append store "/writers/" writer "/000001.sexp")))
+    (call-with-port (open-file-output-port path (file-options no-fail no-truncate))
+      (lambda (o)
+        (set-port-position!
+          o (bytevector-length (call-with-port (open-file-input-port path)
+                                 get-bytevector-all)))
+        (put-bytevector o (encode-record seq (+ 1757300000000 seq) "tester" '()
+                                         (storable-encode payload)))))))
+(want "CONTROL: with the document at the root, nothing is reported"
+      (filter (lambda (c) (eq? (car c) 'nested-document)) (store-conflicts d3))
+      '())
+(want "a record that puts a document under a section is reported"
+      (let* ((w (car (list-sort string<? (store-writers d3))))
+             (next (+ 1 (length (reduce-trace (open-and-reduce d3))))))
+        ;; THE ORD IS A NUMBER. This said `'(0 . 1)`, which no ord ever
+        ;; is -- `ord-between` answers an exact rational or a refusal --
+        ;; and it went unnoticed because the moved block was the only
+        ;; child, so nothing ever compared it. Once the reducer began
+        ;; checking position VALUES, the record was refused and this row
+        ;; reported nothing, which read as the nested-document rule
+        ;; having broken.
+        (append-raw! d3 w next (list 'move inner section3 1))
+        (filter (lambda (c) (eq? (car c) 'nested-document)) (store-conflicts d3)))
+      (list (list 'nested-document inner)))
+;; AND IT IS STILL READ AS THE DOCUMENT IT IS: a file of its own, front
+;; matter intact, rather than folded into its new ancestor's file as a
+;; section with no title. That is the only one of the two readings that
+;; loses nothing.
+(want "and it is still exported as a file of its own"
+      (let ((out (string-append root "/c3/out")))
+        (system (string-append "rm -rf " out "; mkdir -p " out))
+        (export-md d3 out)
+        (list (slurp (string-append out "/inner.md"))
+              (slurp (string-append out "/outer.md"))))
+      (list "---\nx: y\n---\nintro\n" "# Outer\nouter body\n"))
 
 (printf "\n== the options ==\n")
 ;; NEITHER OPTION TAKES A VALUE, and both are stripped before the id is
@@ -351,4 +477,5 @@
       'usage)
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "read1 complete\n")

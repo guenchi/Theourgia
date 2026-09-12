@@ -49,17 +49,28 @@
   (define (children-of rows parent)
     (map caddr (filter (lambda (r) (equal? (car r) parent)) rows)))
 
+  ;; EVERY DOCUMENT IS A FILE, WHEREVER IT SITS. The write path refuses to
+  ;; put one under another block, so a nested document arrives only from
+  ;; history written before that rule or from another store -- and the
+  ;; reader's job is to lose nothing, which means giving it the file its
+  ;; `path` names rather than folding it into an ancestor's as a section
+  ;; with no title and no front matter. It is reported as
+  ;; `nested-documents` by the structure rules at the same time.
   (define (md-tree state)
     (let ((rows (state-outline state)))
-      (map (lambda (id)
-             (cons id (subtree rows state id)))
-           (filter (lambda (id)
-                     (eq? 'doc (kind-of (state-read state id))))
-                   (children-of rows 'root)))))
+      (map (lambda (id) (cons id (subtree rows state id)))
+           (filter (lambda (id) (eq? 'doc (kind-of (state-read state id))))
+                   (map caddr rows)))))
 
+  ;; AND A WALK STOPS AT ONE. The nested document has its own file, so
+  ;; its sections belong there and nowhere else; descending into it would
+  ;; write them twice, once in each file, and a re-import would then make
+  ;; two of everything.
   (define (subtree rows state id)
     (map (lambda (child) (cons child (subtree rows state child)))
-         (children-of rows id)))
+         (filter (lambda (child)
+                   (not (eq? 'doc (kind-of (state-read state child)))))
+                 (children-of rows id))))
 
   ;; ---- export --------------------------------------------------------------
 
@@ -82,7 +93,14 @@
   (define (effective-heading state id)
     (let* ((b (state-read state id))
            (stored (text-field b 'heading-src))
-           (level (or (field b 'level) 1))
+           ;; A LEVEL THAT IS NOT A LEVEL IS TREATED AS ABSENT. This is
+           ;; used as a string length two lines down, so a value of "2"
+           ;; -- which is what the command line produces, because it
+           ;; passes every field value as text -- raised instead of
+           ;; rendering. A reader may refuse to understand a value; it
+           ;; may not fall over on one.
+           (level (let ((v (field b 'level)))
+                    (if (and (integer? v) (exact? v) (> v 0) (< v 7)) v 1)))
            (title (text-field b 'title))
            (parsed (parse-heading stored)))
       (if (and parsed (= (car parsed) level) (string=? (cdr parsed) title))

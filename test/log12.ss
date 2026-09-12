@@ -108,11 +108,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log12work"))
 (define W "wwwx7q2a")
 (define (rec seq ts deps payload)
@@ -199,10 +242,16 @@
 ;; it here unconditionally and silently overrode the rotation row's
 ;; clock, so that row measured a two-millisecond-old segment and
 ;; concluded rotation does not happen.
+;; A SESSION HERE ENDS THE WAY A REQUEST ENDS: append, then the commit
+;; barrier, then release the lock. Durability is per REQUEST now, not per
+;; record -- an append no longer fsyncs -- so a session that stopped
+;; before the barrier would leave its records written and not durable,
+;; and every row below that reads the flush would read its absence.
 (define (with-session/clock ms proc)
   (parameterize ((log-clock (lambda () ms)))
     (let ((s (log-begin d (lambda args 'applied))))
       (let ((out (proc s)))
+        (guard (e (#t (if #f #f))) (session-commit! s))
         (log-end! s)
         out))))
 (define (with-session proc) (with-session/clock fixed-ts proc))
@@ -240,9 +289,10 @@
             "             (r (session-append! s (make-frame (view-revision v) (view-epoch v)\n"
             "                                               (view-writer v) (view-expect-seq v)\n"
             "                                               \"agent:claude\" '() '(put \"w.3\" ())))))\n"
-            "        (log-end! s)\n"
-            "        r))))\n"
-            "(printf \"~s ~s\\n\" (car res) (file-size \"" (wpath 1) "\"))\n"))))
+            "        (let ((c (guard (e (#t 'barrier-failed)) (session-commit! s))))\n"
+            "          (log-end! s)\n"
+            "          (list (car r) c))))))\n"
+            "(printf \"~s ~s\\n\" res (file-size \"" (wpath 1) "\"))\n"))))
 (define (child-says fault)
   (build!)
   (write-child!)
@@ -253,8 +303,8 @@
       (let ((p (open-string-input-port text))) (list (read p) (read p))))))
 
 (printf "== L24(h): the outcomes that only a fault can reach ==\n")
-(want "CONTROL: with nothing armed the child commits and the file grows"
-      (child-says #f) (list 'committed (* 3 R)))
+(want "CONTROL: with nothing armed the child writes and the barrier holds"
+      (child-says #f) (list '(committed committed) (* 3 R)))
 ;; A PARTIAL WRITE IS NOT A FAILED ONE. The bytes that reached the file
 ;; are still there, so a caller that retries would append the record a
 ;; second time -- which is why this outcome is named separately from
@@ -264,15 +314,29 @@
 ;; bytes and then fails, and no fault in section 13's list produces one
 ;; (write-eio-after-partial fails only AFTER its partial). Reported as a
 ;; gap rather than approximated with this one.
+;; AND THE BARRIER HAS SOMETHING TO DO ABOUT THEM. This row expected
+;; `nothing-written` from the commit, which was the reading and also the
+;; defect: the segment entered the barrier's list only where the append
+;; SUCCEEDED, so the bytes a partial write left behind were never flushed
+;; -- while the request they belong to is answered `unknown`, a word
+;; whose whole meaning is "send it again and I will tell you", and which
+;; rests on a resend being able to find them. A segment is covered from
+;; the moment it is written into, not from the moment a write returns.
 (want "a partial write is reported as partial, with the bytes it managed on disk"
       (child-says "write-eio-after-partial@commit:file=000001.sexp")
-      (list 'partial-write 127))
-(want "a log fsync failure is written-fsync-failed, with the bytes on disk"
+      (list '(partial-write committed) 127))
+;; THE FLUSH FAILURE IS THE REQUEST'S, NOT THE RECORD'S. An append no
+;; longer fsyncs -- durability is per request -- so this fault can only
+;; fire at the barrier, and what it says is that the record is written
+;; and nobody can promise it survives. `written-fsync-failed` named a
+;; per-record outcome that no longer exists; the bytes on disk are the
+;; same either way, which is why that half of the reading is unchanged.
+(want "a flush failure is the barrier's, and the record is written but not promised"
       (child-says "fsync-fail@commit:file=000001.sexp")
-      (list 'written-fsync-failed (* 3 R)))
+      (list '(committed barrier-failed) (* 3 R)))
 (want "a short write is retried and still commits"
       (child-says "short-write@commit:file=000001.sexp")
-      (list 'committed (* 3 R)))
+      (list '(committed committed) (* 3 R)))
 
 (printf "== a writer with integrity errors refuses to write ==\n")
 ;; Found by a mutation that survived every other row: ignoring the
@@ -388,9 +452,14 @@
                  (cond ((null? ls) '())
                        ((string=? (op-of (car ls)) "catch-up") (cdr ls))
                        (else (loop (cdr ls))))))))
-(want "the repair truncates, then writes, then flushes, then applies"
+;; THE FLUSH MOVED TO THE END OF THE REQUEST, and that is the whole of
+;; the change: it used to sit between the write and the apply, one per
+;; record. Now it is the request's barrier, after every record and before
+;; the lock is released -- so the order still says "nothing is promised
+;; until it is on disk", it just says it once.
+(want "the repair truncates, then writes, then applies, then flushes"
       (segment-ops l1-trace)
-      '("ftruncate" "write" "fsync" "apply" "unlock"))
+      '("ftruncate" "write" "apply" "fsync" "unlock"))
 (want "and the file is the valid prefix plus the new record, byte for byte"
       (equal? (slurp (wpath 1)) (cat (r 1) (r 2) (rec 3 fixed-ts '() '(put "w.3" ()))))
       #t)
@@ -408,9 +477,9 @@
 ;; skipped entirely -- the session's takeover flush still precedes apply
 ;; and unlock. The events are taken from the append onward and the fsync
 ;; must name the segment that was written.
-(want "write the segment, flush THAT segment, apply, unlock -- in that order"
+(want "write the segment, apply, flush THAT segment, unlock -- in that order"
       (segment-ops i-trace)
-      '("write" "fsync" "apply" "unlock"))
+      '("write" "apply" "fsync" "unlock"))
 
 (printf "== L9 / 4.4: rotation, and sealed segments stay sealed ==\n")
 ;; The age trigger, reached through the clock seam. Without it the row
@@ -530,4 +599,5 @@
       (list 'refused-before-reserve 'view))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log12 complete\n")

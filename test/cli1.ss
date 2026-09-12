@@ -120,11 +120,57 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row's value is being computed --
+;; outside anything that was catching. The file then ends where it
+;; stood, every row below it goes unrun, and the runner sees no `FAIL`
+;; at all: the round scored three such defects as crashes with no
+;; failures, for answers the store had in fact got right and said
+;; plainly.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded `got`.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; still outside it, and a raise there still ends the file.
+;; BOTH HALVES, BECAUSE EITHER CAN RAISE. The first version of this
+;; guarded `got` only, and a row whose EXPECTATION is derived from the
+;; program's own answer -- `(cadr (cadr (datum-of init-run)))`, the store
+;; id that the registry is then required to agree with -- raised while
+;; the expectation was being built and ended the file just the same. Two
+;; sides of one comparison, and only one of them was being asked whether
+;; it could be computed.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
 ;; delivery directory the fixture and cli.ss sit side by side; in the
@@ -206,6 +252,25 @@
 
 (define (code-of r) (car r))
 (define (out-of r) (cadr r))
+;; THE ID THE STORE SAYS IT MADE, not the one a count predicts. Every
+;; record advances the sequence -- a move and a delete as much as an
+;; insert -- so a fixture that counts its inserts names a block that
+;; does not exist as soon as it has done anything else.
+(define (id-of r)
+  (let ((a (datum-of r)))
+    (car (car (cadr (assq 'state (cdr a)))))))
+(define (substring-at? text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) #t)
+            (else (loop (+ i 1)))))))
+(define (lines-of text)
+  (let loop ((cs (string->list text)) (cur '()) (out '()))
+    (cond ((null? cs) (reverse (if (null? cur) out (cons (list->string (reverse cur)) out))))
+          ((char=? (car cs) #\newline)
+           (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+          (else (loop (cdr cs) (cons (car cs) cur) out)))))
 (define (err-of r) (caddr r))
 ;; A CHILD THAT NEVER RAN IS A READING, NOT AN EXCEPTION. An empty
 ;; stdout used to reach `read` as end-of-file and every row that took a
@@ -238,9 +303,14 @@
 ;; THE WRITER'S NAME IS READ OFF THE STORE, not remembered from the init
 ;; answer: every row that builds a block id needs it, and taking it from
 ;; the directory is the same thing a second process would have to do.
+;; THE MARKER HAS TO BE THE TYPE THE CALLERS USE. Every caller does
+;; `(string-append (writer-of d) ".1")` to build a block id, so a symbol
+;; here raised inside the caller instead of reaching a row -- and the
+;; file ended. A string that cannot be a writer's name travels the same
+;; path, reaches the comparison, and makes the row say what it wanted.
 (define (writer-of dir)
   (let ((ws (store-writers dir)))
-    (if (null? ws) 'no-writer (car ws))))
+    (if (null? ws) "no-writer-in-this-store" (car ws))))
 
 (define (files-under dir)
   (let ((listing (string-append scratch "/files.txt")))
@@ -267,7 +337,23 @@
             (car (cadr (datum-of init-run)))
             (car (caddr (datum-of init-run))))
       (list 0 'ok 'store 'writer))
-(define the-writer (cadr (caddr (datum-of init-run))))
+;; A TOP-LEVEL BINDING TAKEN FROM THE PROGRAM'S ANSWER MUST NOT RAISE.
+;; Rows are guarded; this is not, and it runs at the file's top level --
+;; so when `init` answered `(usage (init))` instead, `caddr` raised here
+;; and ended the file, leaving every row below unrun. The guarded row
+;; above had already reported the real failure; this line then threw the
+;; rest of the evidence away.
+;;
+;; THE SUBSTITUTE MUST BE ONE NOTHING MATCHES. Rows downstream build
+;; paths from it and compare them, so a name that cannot be a writer
+;; makes each of them fail and say what it wanted -- which is the report
+;; the file exists to produce.
+(define the-writer
+  (let ((d (datum-of init-run)))
+    (if (and (pair? d) (eq? (car d) 'ok) (= 3 (length d))
+             (pair? (caddr d)) (pair? (cdr (caddr d))))
+        (cadr (caddr d))
+        "NO-WRITER-IN-THE-ANSWER")))
 ;; THE LAYOUT IS SECTION 4.1 EXACTLY, named file by file. A row that
 ;; only checked "the directory is not empty" would pass for a store
 ;; missing the lock, which is the one file that must never be replaced.
@@ -347,6 +433,175 @@
       (string-append "- " Bb "  Beta\n"
                      "orphans:\n"
                      "- " C "  Child\n"))
+
+;; AN ORPHAN IS A ROOT AND ITS SUBTREE IS DRAWN UNDER IT. The row above
+;; has one orphan with nothing beneath it, so it passes equally well on a
+;; printer that lists orphans and stops -- and that printer drops every
+;; grandchild of a deleted block from the only view the command line
+;; offers, while `read` goes on answering for them. A block that is in
+;; the store and absent from the listing is the worst of the three
+;; possible states, because nothing tells the operator to look.
+(define d3b (test-dir "cli1orphans"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home3b"))
+(run d3b "init")
+(run d3b "insert --under root --title A")
+(define oA (string-append (writer-of d3b) ".1"))
+(run d3b (string-append "insert --under " oA " --title B"))
+(define oB (string-append (writer-of d3b) ".2"))
+(run d3b (string-append "insert --under " oB " --title C"))
+(define oC (string-append (writer-of d3b) ".3"))
+(want "CONTROL: three generations, indented by depth"
+      (out-of (run d3b "outline"))
+      (string-append "- " oA "  A\n"
+                     "  - " oB "  B\n"
+                     "    - " oC "  C\n"))
+(want "deleting the top leaves the orphan AND everything under it"
+      (begin (run d3b (string-append "del " oA))
+             (out-of (run d3b "outline")))
+      (string-append "orphans:\n"
+                     "- " oB "  B\n"
+                     "  - " oC "  C\n"))
+;; AND THE GRANDCHILD WAS THERE ALL ALONG, which is what makes its
+;; absence a reporting defect rather than a deletion.
+(want "and the grandchild is still a block the store answers for"
+      (let ((a (datum-of (run d3b (string-append "read " oC)))))
+        (and (pair? a) (car a)))
+      'ok)
+;; TWIN: THE DEPTH LIMIT STILL STOPS WHERE IT SAYS. The orphan is the row
+;; at depth 0, so a limit of one prints it and nothing under it -- the
+;; same rule the top of the tree follows. Without this row the fix above
+;; is also passed by a printer that ignores the limit under orphans.
+(want "TWIN: --depth 1 prints the orphan and not its children"
+      (out-of (run d3b "outline --depth 1"))
+      (string-append "orphans:\n"
+                     "- " oB "  B\n"))
+;; AND ONE NUMBER MEANS ONE THING IN BOTH SECTIONS. An orphan is a root,
+;; so it is a row at depth 0, and `--depth 0` asks for no rows at all.
+;; The orphan section used to print its roots straight through the limit
+;; while the tree above printed none of its own.
+(want "--depth 0 prints nothing, in both sections"
+      (out-of (run d3b "outline --depth 0"))
+      "")
+;; A BLOCK THE TREE ALREADY DREW IS NOT DRAWN AGAIN. A parent chain that
+;; closes on itself through a deleted block makes a block both a
+;; structural conflict and an orphan; `state-outline` relocates a cyclic
+;; row to the top, so the tree has already printed it -- and with it, now,
+;; its whole subtree. Listing it again under `orphans:` said the same
+;; block was in two places, and the walk added for the row above turned
+;; one duplicated row into a duplicated subtree.
+(define d3c (test-dir "cli1cycle"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home3c"))
+(run d3c "init")
+(run d3c "insert --under root --title A")
+(define cA (string-append (writer-of d3c) ".1"))
+(run d3c (string-append "insert --under " cA " --title B"))
+(define cB (string-append (writer-of d3c) ".2"))
+(run d3c (string-append "insert --under " cB " --title C"))
+(define cC (string-append (writer-of d3c) ".3"))
+(run d3c (string-append "move " cA " " cB))
+(run d3c (string-append "del " cA))
+(want "a block the tree drew as a conflict is not repeated under orphans"
+      (out-of (run d3c "outline"))
+      (string-append "- " cB "  B  conflict  orphan\n"
+                     "  - " cC "  C\n"))
+;; AND THE ROW CARRIES BOTH FACTS, because it is the only row left to
+;; carry the second. A block whose parent chain closes on itself is a
+;; conflict; a block whose chain closes through a DELETED ancestor is a
+;; conflict and unreachable from any root. Drawing it once was right;
+;; dropping the second word made those two stores print the same
+;; listing, and only one of them has lost a block from the tree.
+(want "a conflict that is not also an orphan says only the one word"
+      (begin
+        ;; A CYCLE WITH NOTHING DELETED, and the ids are read from the
+        ;; answers rather than counted. This store has already taken a
+        ;; move and a delete, which are records too, so guessing `.4` and
+        ;; `.5` from the insert count named two blocks that do not exist
+        ;; -- and the row then measured a store where nothing had
+        ;; happened.
+        (let ((x (id-of (run d3c "insert --under root --title X"))))
+          (let ((y (id-of (run d3c (string-append "insert --under " x " --title Y")))))
+            (run d3c (string-append "move " x " " y))
+            (let loop ((ls (lines-of (out-of (run d3c "outline")))) (found #f))
+              (cond ((null? ls) found)
+                    ((and (substring-at? (car ls) x) (substring-at? (car ls) "conflict"))
+                     (loop (cdr ls) (not (substring-at? (car ls) "orphan"))))
+                    (else (loop (cdr ls) found)))))))
+      #t)
+
+(printf "== an option's value is not scanned for options ==\n")
+;; A TOKEN THAT SPELLS AN OPTION IS STILL A VALUE WHERE A VALUE BELONGS.
+;; The reader this replaced pulled one option at a time, each pass
+;; searching the whole list, so a value that looked like an option was
+;; found again where it sat. Measured before the fix, on this exact
+;; command:
+;;
+;;     insert --under root --title "--actor" --text body
+;;       answered  ok
+;;       title     "body"
+;;       actor     "--text"
+;;
+;; THE ACTOR IS THE SERIOUS ONE. A record's actor is evidence of who
+;; wrote it; a reader that can be made to take it from a neighbouring
+;; token forges that evidence on a command that reports success. So this
+;; row asserts all three -- the answer, what the block says, and what the
+;; record says -- because any one of them alone passes on some wrong
+;; implementation.
+(define d7 (test-dir "cli1options"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home7"))
+(run d7 "init")
+(want "a title that spells another option is a title, and nothing else moves"
+      (let* ((a (datum-of (run d7 "insert --under root --title '--actor' --text body")))
+             (id (string-append (writer-of d7) ".1")))
+        (list (and (pair? a) (car a))
+              (out-of (run d7 "outline"))
+              (let ((text (out-of (run d7 "log"))))
+                (and (string? text)
+                     (let loop ((i 0))
+                       (cond ((>= (+ i 7) (string-length text)) 'no-actor)
+                             ((string=? (substring text i (+ i 7)) "(actor ")
+                              (let loop2 ((j (+ i 8)) (out '()))
+                                (if (char=? #\" (string-ref text j))
+                                    (list->string (reverse out))
+                                    (loop2 (+ j 1) (cons (string-ref text j) out)))))
+                             (else (loop (+ i 1)))))))))
+      (list 'ok
+            (string-append "- " (writer-of d7) ".1  --actor\n")
+            (or (let ((e (getenv "THEOURGIA_ACTOR"))) (and e (> (string-length e) 0) e))
+                (let ((u (getenv "USER"))) (and u (> (string-length u) 0) u))
+                "cli")))
+;; TWIN: AND AN ORDINARY TITLE STILL WORKS. Without this the row above is
+;; also passed by a reader that stopped recognising `--actor` at all.
+(want "TWIN: --actor is still an option when it is in an option's place"
+      (begin (run d7 "insert --under root --title Plain --actor someone")
+             (let ((text (out-of (run d7 "log"))))
+               (and (string? text)
+                    (let loop ((i 0))
+                      (cond ((> (+ i 7) (string-length text)) #f)
+                            ((string=? (substring text i (+ i 7)) "someone") #t)
+                            (else (loop (+ i 1))))))))
+      #t)
+;; AN OPTION GIVEN TWICE IS A DUPLICATE, not the first or the last one
+;; silently winning. Two spellings of one command must not become one
+;; request, and picking either quietly is how they would.
+(want "the same option twice is refused by name"
+      (datum-of (run d7 "insert --under root --title A --title B"))
+      '(error bad-request duplicate-option "--title"))
+;; AND AN OPTION WITH NOTHING AFTER IT IS MISSING ITS VALUE, which is a
+;; different complaint from "the form is wrong": the caller wrote the
+;; option, so telling them the shape is unrecognised sends them to check
+;; the wrong thing.
+(want "an option at the end of the line is missing its value, by name"
+      (datum-of (run #f (string-append "insert --store " d7 " --under root --title")))
+      '(error bad-request missing-option-value "--title"))
+;; AND THE TOKEN AFTER AN OPTION IS ITS VALUE WHATEVER IT SPELLS, which
+;; is the other half of the same rule and pulls the opposite way. The row
+;; above needs the option to be LAST; put anything after it -- another
+;; option included -- and that thing is the value. Both halves are needed
+;; and they are one decision: what a token means is decided by where it
+;; is, once, and never revised by a later pass looking for a name.
+(want "a following option is taken as the value, not as an option"
+      (datum-of (run #f (string-append "insert --title --store --under root")))
+      '(error no-store "."))
 
 (printf "== P6: errors an agent can act on ==\n")
 (define d6 (test-dir "cli1errors"))
@@ -1002,4 +1257,5 @@
       (list #t 'error 'no-store))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "cli1 complete\n")

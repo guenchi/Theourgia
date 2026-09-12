@@ -89,11 +89,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define scratch (test-dir "adopt1"))
 (define case-n 0)
@@ -150,6 +193,9 @@
     (lambda (o)
       (set-port-position! o (bytevector-length (string->utf8 (slurp p))))
       (put-string o text))))
+(define (put! p bv)
+  (call-with-port (open-file-output-port p (file-options no-fail))
+    (lambda (o) (put-bytevector o bv))))
 (define (records-of d) (length (reduce-trace (open-and-reduce d))))
 ;; SORTED, BECAUSE state-datum ORDERS BY BLOCK ID and a block id starts
 ;; with its writer's generated name. After an adopt the new writer's
@@ -405,22 +451,62 @@
 ;; backup, and is treated the same way.
 (define d6 (fresh-store! '("One" "Two")))
 (define old6 (writer-of d6))
-(define (raise-mark! d writer to)
+;; THE ENTRY SAYS TWO THINGS AND THIS RAISES ONE OF THEM. `authorised`
+;; is leave to write at these positions; `written` is how far records
+;; actually reached the disk. A helper that raised both at once could not
+;; tell the two rollback stories apart, and they have opposite answers.
+(define (raise-field! d writer which to)
   (let* ((path (registry-path))
          (text (slurp path))
          (reg (read (open-string-input-port text)))
          (bumped (map (lambda (e)
-                        (if (and (list? e) (>= (length e) 4) (equal? (caddr e) writer))
-                            (list (car e) (cadr e) (caddr e) to (list-ref e 4))
+                        (if (and (list? e) (= 6 (length e)) (equal? (caddr e) writer))
+                            (if (eq? which 'authorised)
+                                (list (car e) (cadr e) (caddr e) to
+                                      (list-ref e 4) (list-ref e 5))
+                                (list (car e) (cadr e) (caddr e)
+                                      (max to (list-ref e 3)) (list-ref e 4) to))
                             e))
                       reg)))
     (call-with-port (open-file-output-port path (file-options no-fail))
       (lambda (o) (put-bytevector o (string->utf8 (format "~s\n" bumped)))))))
+(define (raise-mark! d writer to) (raise-field! d writer 'written to))
+;; THE REGISTRY WITHOUT ITS GENERATIONS, which is what a crash between
+;; the retirement marker and the generation reservation leaves.
+(define (write-registry-no-gen! d)
+  (let* ((path (registry-path))
+         (reg (read (open-string-input-port (slurp path)))))
+    (call-with-port (open-file-output-port path (file-options no-fail))
+      (lambda (o)
+        (put-bytevector o (string->utf8
+                            (format "~s\n"
+                                    (remp (lambda (e) (and (list? e) (eq? (car e) 'gen)))
+                                          reg))))))))
 ;; THE END OF THE VALID PREFIX, READ BEFORE ANY OF THIS HAPPENS. It is
 ;; the left end of the stretch the rollback loses, and taking it from the
 ;; adopt's own answer afterwards would be asking the thing under test to
 ;; supply the expectation.
 (define end6 (discovery-end-seq (discover-prefix d6 old6 'held-exclusive)))
+;; A RESERVATION NOBODY USED IS NOT A ROLLBACK. `authorised` above the
+;; log's end is what every refusal leaves behind, and what every request
+;; that reserves its range and uses part of it leaves behind. The gate
+;; reads `written`, so a store in that state is healthy and writes on.
+;;
+;; ON ITS OWN STORE, because the rows below count records in d6 and a
+;; write made here would move every one of their numbers.
+(define d6a (fresh-store! '("One" "Two")))
+(define old6a (writer-of d6a))
+(raise-field! d6a old6a 'authorised 9)
+(want "authorised ahead of the log is not a rollback, and the store writes on"
+      (list (adopt-needed? d6a)
+            (car (car (with-store-write d6a
+                        (lambda (st v)
+                          '((insert root #f ((kind . section) (title . "Ok")))))
+                        "t"))))
+      (list #f 'ok))
+;; TWIN: `written` ahead of the log IS one -- records the registry says
+;; reached the disk and the log no longer holds.
+(use-store! d6)
 (raise-mark! d6 old6 9)
 (want "the store is refused, and the reason is that the registry is ahead"
       (let ((a (car (with-store-write d6
@@ -632,5 +718,220 @@
       (begin (use-store! d8) (continue-adopt! d8))
       'nothing-to-do)
 
+;; AND AN ADOPT THAT IS TRIED AGAIN DOES NOT ERASE WHAT THE FIRST ONE
+;; RECORDED. Step 1 writes the whole record, so it has to carry what the
+;; record already said. An adopt that gets as far as that write and no
+;; further leaves a retirement with no successor -- and `adopt-needed?`
+;; answers `retired` for exactly that shape, so the next adopt comes back
+;; through step 1 with a reason of its own that records nothing. Writing
+;; only the new interval replaced the recorded stretch with `()`: the one
+;; place those coordinates still existed, overwritten by the retry of the
+;; adopt that computed them.
+(define d19 (fresh-store! '("One" "Two")))
+(define old19 (writer-of d19))
+(define end19 (discovery-end-seq (discover-prefix d19 old19 'held-exclusive)))
+(raise-mark! d19 old19 9)
+(store-adopt! d19)
+(want "CONTROL: the first adopt recorded the stretch"
+      (car (uncertain-load d19 old19))
+      (list (list old19 end19 9)))
+(want "a retry after a crash between the steps keeps it"
+      (begin
+        ;; the state a crash after step 1 leaves: a marker, no generation,
+        ;; no successor
+        (let ((new19 (car (list-sort string<?
+                            (remp (lambda (w) (string=? w old19)) (store-writers d19))))))
+          (system (string-append "rm -rf " d19 "/writers/" new19)))
+        (put! (string-append d19 "/writers/" old19 "/retired.sexp")
+              (string->utf8
+                (string-append "((format 2) (tx \"tx-crashed-19\") (prefix 1 0 "
+                               (number->string end19) ") (uncertain ((\"" old19 "\" "
+                               (number->string end19) " 9))))\n")))
+        (delete-file (string-append d19 "/writers/" old19 "/uncertain.sexp"))
+        (write-registry-no-gen! d19)
+        (list (car (adopt-needed? d19))
+              (car (store-adopt! d19))
+              (car (uncertain-load d19 old19))))
+      (list 'retired 'adopted (list (list old19 end19 9))))
+
+;; AND AN ADOPT THAT CANNOT READ WHAT IT IS ABOUT TO REPLACE REFUSES.
+;; Step 1 rewrites the retirement record, and the step after it rewrites
+;; the cache -- so an adopt that guessed at either would replace the
+;; history with its guess, and no later successful read could take that
+;; back. The cache is the dangerous one: a stretch that a repair has
+;; since made underivable lives there and nowhere else, so reading an
+;; unreadable cache as empty would take both copies in one adopt.
+(define d20 (fresh-store! '("One" "Two")))
+(define old20 (writer-of d20))
+(raise-mark! d20 old20 9)
+(want "an unreadable cache stops the adopt rather than replacing it"
+      (begin
+        (put! (string-append d20 "/writers/" old20 "/uncertain.sexp")
+              (string->utf8 "((not a"))
+        (guard (e (#t 'refused)) (store-adopt! d20) 'adopted))
+      'refused)
+(want "TWIN: with the cache readable the same adopt goes through"
+      (begin
+        (uncertain-write! d20 old20 '() 'commit)
+        (car (store-adopt! d20)))
+      'adopted)
+
+(printf "\n== the cache is a cache, and the record is the authority ==\n")
+;; `uncertain.sexp` IS DOCUMENTED AS A CACHE -- written so a reader need
+;; not re-derive the set on every call, read for nothing that is not
+;; also derivable, and therefore safe to lose. Three of the five kinds
+;; live up to that: a divergence, a torn tail and an unreadable
+;; beginning are all visible in a writer's own files whenever anyone
+;; cares to look. These two did not. Their coordinates existed at the
+;; moment an adopt held them and nowhere else, so the cache was the only
+;; copy, and a store whose cache was deleted reported itself HEALTHY
+;; about a stretch it could not vouch for -- no interval and no
+;; integrity kind, which is the pair of readings a clean store gives.
+;; A retried request whose positions fell in that stretch was then told
+;; to run a second time.
+;;
+;; SO THE RECORD CARRIES THEM, written into the retirement marker before
+;; the successor's owner exists. The rows below are the three ways the
+;; cache can be lost, and they are three rows rather than one because
+;; they arrive at three different arms of the reconciliation.
+(define d16 (fresh-store! '("One" "Two")))
+(define old16 (writer-of d16))
+;; MEASURED BEFORE THE ADOPT, as everywhere else in this file: the left
+;; end is where the valid prefix ends, and reading it out of the adopt's
+;; own answer afterwards would ask the thing under test for the
+;; expectation.
+(define end16 (discovery-end-seq (discover-prefix d16 old16 'held-exclusive)))
+(raise-mark! d16 old16 9)
+(define u16 (string-append d16 "/writers/" old16 "/uncertain.sexp"))
+(want "CONTROL: the rollback adopt records the stretch, and the store is clean"
+      (list (car (store-adopt! d16)) (uncertain-load d16 old16))
+      (list 'adopted (list (list (list old16 end16 9)) #f)))
+;; AND THE RECORD SAYS SO IN ITS OWN RIGHT. Without this row the three
+;; below could all pass on an implementation that kept a second cache
+;; somewhere else; this is the row that names where the fact lives.
+(want "the retirement record carries the stretch"
+      (let ((text (slurp (string-append d16 "/writers/" old16 "/retired.sexp"))))
+        (and (string? text)
+             (let loop ((xs (read (open-string-input-port text))))
+               (cond ((null? xs) 'no-uncertain-clause)
+                     ((and (pair? (car xs)) (eq? (caar xs) 'uncertain)) (cadr (car xs)))
+                     (else (loop (cdr xs)))))))
+      (list (list old16 end16 9)))
+;; AND IT SURVIVES THE STEP THAT REWRITES THE RECORD. The successor is
+;; backfilled into this same file after the owner is installed, and the
+;; rewrite that did it was built out of the fields somebody remembered
+;; to pass -- so a clause it did not name was dropped, silently, while
+;; every step reported success. The successor being there at all is what
+;; makes this row mean something.
+(want "and the successor was backfilled into the same record without displacing it"
+      (and (retired-successor d16 old16) #t)
+      #t)
+;; ONE: DELETED. The absent arm reports `absent` only when there is
+;; something to be absent FROM, so a store that has forgotten the
+;; stretch reads exactly like a healthy writer that never had one.
+(want "a deleted cache loses neither the stretch nor the report"
+      (begin (delete-file u16) (uncertain-load d16 old16))
+      (list (list (list old16 end16 9)) (list 'uncertain-cache 'absent)))
+;; TWO: TRUNCATED. An empty file is not an empty list; it does not parse
+;; at all, and the store has to say so rather than read it as a claim.
+(want "a truncated cache loses neither the stretch nor the report"
+      (begin (put! u16 (string->utf8 "")) (uncertain-load d16 old16))
+      (list (list (list old16 end16 9)) (list 'uncertain-cache 'unreadable)))
+;; THREE: REWRITTEN AS `()`. The dangerous one, because it is the only
+;; one of the three that is a well-formed cache: it is a positive claim
+;; that nothing about this writer is uncertain, made in the file whose
+;; job is to answer that question.
+(want "a cache rewritten as an empty claim loses neither the stretch nor the report"
+      (begin (put! u16 (string->utf8 "()\n")) (uncertain-load d16 old16))
+      (list (list (list old16 end16 9))
+            (list 'uncertain-cache 'stale (list (list old16 end16 9)))))
+;; AND THE ANSWER A CLIENT GETS, which is what the whole section is for.
+;; A reading of the interval table is not a reading of the write path:
+;; the table could be right and the request still run. The request
+;; declares a cursor inside the lost stretch, so the only correct answer
+;; is that nobody can tell whether it ran.
+(want "and a request whose positions fall in the stretch is refused, not executed"
+      (begin
+        (delete-file u16)
+        (let ((a (car (with-store-write d16
+                        (lambda (st v)
+                          (list (list 'insert 'root #f
+                                      (list (cons 'kind 'section) (cons 'title "Dup")))))
+                        "t"
+                        (make-write-request "t" 'insert (list "root" "Dup")
+                                            "r-lost" (cons old16 end16))))))
+          (list (car a) (cadr a))))
+      (list 'error 'unknown))
+(want "and nothing was written"
+      (titles-of (open-and-reduce d16))
+      '("One" "Two"))
+;; TWIN: THE SAME DELETION ON A STORE THAT NEVER ADOPTED. Without this
+;; the rows above would pass for an implementation that answered
+;; `unknown` whenever the cache was missing, which would stop every
+;; healthy store from taking its first write.
+(define d17 (fresh-store! '()))
+(define old17 (writer-of d17))
+(want "TWIN: a healthy store has no cache to lose and writes anyway"
+      (list (uncertain-load d17 old17)
+            (file-exists? (string-append d17 "/writers/" old17 "/uncertain.sexp"))
+            (car (car (with-store-write d17
+                        (lambda (st v)
+                          (list (list 'insert 'root #f
+                                      (list (cons 'kind 'section) (cons 'title "First")))))
+                        "t"
+                        (make-write-request "t" 'insert (list "root" "First")
+                                            "h-1" (cons old17 0))))))
+      (list '(() #f) #f 'ok))
+;; AND THE OPEN KIND TOO. The identity stretch is the one that cannot be
+;; worked out again from anything: a rollback leaves the registry's mark
+;; and the retired prefix on disk, so its coordinates can be asked for a
+;; second time, while an identity mismatch is a question about a nonce
+;; the store has already replaced. If the record did not carry it, no
+;; recovery could put it back.
+;; AND A RECORD WRITTEN BEFORE THE CLAUSE EXISTED. Every retirement
+;; record on disk when this shipped is format 1 and carries no
+;; `uncertain` clause, and nothing can now say whether the adopt that
+;; wrote it lost a stretch: the registry mark it was measured against is
+;; long gone. Reading the absence as "nothing was lost" is the defect
+;; this batch closes, one version later; so the absence is read as the
+;; widest thing it could mean, and the version number is what makes the
+;; two absences tellable apart.
+(define d18 (fresh-store! '("One" "Two")))
+(define old18 (writer-of d18))
+(define end18 (discovery-end-seq (discover-prefix d18 old18 'held-exclusive)))
+(raise-mark! d18 old18 9)
+(store-adopt! d18)
+(define r18 (string-append d18 "/writers/" old18 "/retired.sexp"))
+(want "CONTROL: the record this version writes says so in its version"
+      (car (read (open-string-input-port (slurp r18))))
+      '(format 2))
+(want "a format 1 record with no clause puts everything above its prefix in doubt"
+      (begin
+        ;; the record the previous version wrote, byte for byte: version 1,
+        ;; no clause at all
+        (put! r18 (string->utf8
+                    (string-append "((format 1) (tx \"t18\") (prefix 1 0 "
+                                   (number->string end18) "))\n")))
+        (delete-file (string-append d18 "/writers/" old18 "/uncertain.sexp"))
+        (car (uncertain-load d18 old18)))
+      (list (list old18 end18 #f)))
+;; TWIN: THE SAME RECORD AT THE NEW VERSION, SAYING THE ADOPT LOST
+;; NOTHING. Without this the row above is also passed by an
+;; implementation that puts every retired writer in doubt for ever,
+;; which would refuse every request on every store that has adopted.
+(want "TWIN: a format 2 record with an empty clause is a claim, not a silence"
+      (begin
+        (put! r18 (string->utf8
+                    (string-append "((format 2) (tx \"t18\") (prefix 1 0 "
+                                   (number->string end18) ") (uncertain ()))\n")))
+        (car (uncertain-load d18 old18)))
+      '())
+(want "the identity stretch survives the same deletion"
+      (begin
+        (delete-file (string-append copy8 "/writers/" new8 "/uncertain.sexp"))
+        (uncertain-load copy8 new8))
+      (list (list (list new8 end8 #f)) (list 'uncertain-cache 'absent)))
+
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "adopt1 complete\n")

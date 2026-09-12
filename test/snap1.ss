@@ -121,11 +121,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define W "wwwlocl0")
 (define V "vvvmirrr")
@@ -380,6 +423,12 @@
           "                             (view-expect-seq v) \"t\" '()\n"
           "                             '(put ((kind . section) (title . \"doomed\")))))))\n"
           "      (note! (list 'append (car r)))\n"
+          ;; A SESSION HOLDS ONE UNCONFIRMED RECORD AT A TIME, so until
+          ;; the reducer has taken this one there is no view and every
+          ;; snapshot below would be refused for `no-view` -- a reason
+          ;; that has nothing to do with the rule these rows are about.
+          ;; A real caller applies as it goes; this one says so.
+          "      (session-applied! s (session-epoch s) (list (cons \"" W5 "\" 2)))\n"
           "      (note! (list 'snapshot-at-2\n"
           "                   (session-snapshot! s (list (session-view s)\n"
           "                                              (list (cons \"" W5 "\" 2)) '()))))\n"
@@ -402,9 +451,12 @@
     (cond ((null? xs) (list 'missing name))
           ((eq? (car (car xs)) name) (cadr (car xs)))
           (else (loop (cdr xs))))))
-(want "CONTROL: the append really did fail its fsync"
+;; THE APPEND SUCCEEDS NOW: it no longer fsyncs, so a flush fault cannot
+;; reach it. What the fault reaches is the barrier the snapshot runs
+;; before it writes a cut -- which is the point of the two rows below.
+(want "CONTROL: the append itself succeeds, because it no longer flushes"
       (list (l8-part 'before-append) (l8-part 'append))
-      (list 2 'written-fsync-failed))
+      (list 2 'committed))
 ;; L8 FIRST BRANCH: generating is refused, and the refusal says the cut
 ;; reaches past what this session can vouch for.
 (want "a cut naming the sequence whose fsync failed is refused"
@@ -422,8 +474,21 @@
 ;; created. If any part of it were adopted the ghost would be in the
 ;; state, so "is the ghost there" separates "discarded entirely" from
 ;; "partly believed". Section 4.5' says not partly.
+;; EVERY HAND-BUILT SNAPSHOT CARRIES THE RECORD ROW, because a snapshot
+;; without it is one the loader now refuses to seed from: the reduction
+;; may have to fold its records again, and a snapshot that brought the
+;; state and not the records would leave it unable to. The rows here are
+;; about whether a snapshot is ADOPTED -- the checksum, the cut, the
+;; segments behind it -- so each needs to get past that refusal first, or
+;; every one of them would be measuring the refusal instead of the thing
+;; it names. An empty history is the right value: these snapshots stand
+;; over a log the fixture wrote by hand, and none of their records
+;; carries a request.
 (define (snap-at! d n cut rows)
-  (snapshot-write! (string-append d "/snap/" (segment-file-name n)) cut rows))
+  (snapshot-write! (string-append d "/snap/" (segment-file-name n)) cut
+                   (if (assq 'request-history rows)
+                       rows
+                       (cons (list 'request-history '()) rows))))
 (define (adopted d)
   (let ((ls (log-open d)))
     (let ((r (list (load-snapshot-cut ls) (load-snapshot-reason ls))))
@@ -485,4 +550,5 @@
       (list #f 'unsupported-cut #f))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "snap1 complete\n")

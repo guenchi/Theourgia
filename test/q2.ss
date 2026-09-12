@@ -132,11 +132,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 
 (define WHO "agent:claude")
@@ -258,52 +301,153 @@
       (let ((es (list (plan-ev two) (ev 16 2 '(set "d" "t" "z")))))
         (membership (cadr es) es))
       'invalid)
-;; A payload still holding `("#%new" k)` names a block an earlier
-;; sub-operation created, so it cannot be compared until that one is in.
-(want "a declared payload still naming a block to be created is undetermined"
-      (let* ((entries (list (cons 0 (list 'insert (list "#%new" 0) "t"))))
-             (es (list (plan-ev entries) (ev 14 0 '(insert "w3kxxxxx.14" "t")))))
+;; A PLAN DECLARES AN INTENT, NOT A RESULT. "Persist the plan before
+;; executing" means the plan says what was MEANT to happen; what it will
+;; look like is not knowable before the earlier sub-operations have
+;; happened -- a second insert under the same parent gets an `ord` that
+;; depends on the first one already being there. So the comparison is not
+;; payload against payload: it is "did this record carry out that
+;; intent", and which payload fields come from the intent is a table, one
+;; row per verb.
+;;
+;; `("#%new" k)` NAMES THE BLOCK SUB-OPERATION k CREATED, bound from the
+;; record that created it -- never from the plan. The id comes from where
+;; that record sits: writer and sequence in base36, the same derivation
+;; the store uses, so sub-operation 0 at sequence 14 makes `w3kxxxxx.e`.
+(define (ins parent . fields)
+  (list 'insert parent #f (if (null? fields) '((kind . section)) (car fields))))
+(define (put-rec parent ord . fields)
+  (list 'put (append (if (null? fields) '((kind . section)) (car fields))
+                     (list (cons 'parent parent) (cons 'ord ord)))))
+(define new-entries
+  (list (cons 0 (ins "root"))
+        (cons 1 (ins (list "#%new" 0)))))
+(want "with the earlier sub-operation in, the marker binds and the record agrees"
+      (let ((es (list (plan-ev new-entries)
+                      (ev 14 0 (put-rec "root" '(0 . 1)))
+                      (ev 15 1 (put-rec "w3kxxxxx.e" '(0 . 2))))))
+        (membership (caddr es) es))
+      'valid)
+;; TWIN: until that record is here there is nothing to bind the marker
+;; to, and the comparison cannot be made -- undetermined, not a verdict.
+(want "TWIN: without it there is nothing to bind, and nothing to compare"
+      (let ((es (list (plan-ev new-entries)
+                      (ev 15 1 (put-rec "w3kxxxxx.e" '(0 . 2))))))
         (membership (cadr es) es))
       'undetermined)
-(want "either way it reaches the answer as unknown, marked or not"
-      (list (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "CHANGED"))) 2)
-            (decide (list (plan-ev two)
-                          (ev 14 0 '(set "b" "t" "x") 'valid-history #t '(plan-mismatch)))
-                    2))
-      (list '(unknown (plan-mismatch ("w3kxxxxx" . 14)))
-            '(unknown (plan-mismatch ("w3kxxxxx" . 14)))))
+;; TWIN: and a record naming some other block is a real disagreement, not
+;; an unbound marker -- otherwise binding would turn every mismatch into
+;; "wait and see".
+(want "TWIN: bound, and naming a different parent, is invalid"
+      (let ((es (list (plan-ev new-entries)
+                      (ev 14 0 (put-rec "root" '(0 . 1)))
+                      (ev 15 1 (put-rec "w3kxxxxx.zz" '(0 . 2))))))
+        (membership (caddr es) es))
+      'invalid)
+;; AND TWO RECORDS AT ONE INDEX BIND NOTHING. They are a contested slot,
+;; reported separately; choosing either would make every payload that
+;; mentions the index depend on which was found first.
+(want "TWIN: a contested index binds nothing"
+      (let ((es (list (plan-ev new-entries)
+                      (ev 14 0 (put-rec "root" '(0 . 1)))
+                      (ev 17 0 (put-rec "root" '(0 . 9)))
+                      (ev 15 1 (put-rec "w3kxxxxx.e" '(0 . 2))))))
+        (membership (cadddr es) es))
+      'undetermined)
 
-(printf "\n== U3b: a record that is there and was never applied ==\n")
-;; IT IS NEITHER ANSWER. Not "no evidence" -- the bytes are in verifiable
-;; history, so the request reached the store. And not a replay either: a
-;; replay tells a client the work is DONE, and nothing here says this
-;; record was ever applied to the state the client will read. Delivery
-;; can stop short of a readable record for reasons that have nothing to
-;; do with this request -- a premise that has not arrived, a writer the
-;; load stopped at.
-(want "a readable record that was never delivered"
-      (decide (list (ev 14 'single '(set "b" "t" "x") 'valid-history #f)) #f)
-      '(unknown (undelivered ("w3kxxxxx" . 14))))
-;; AND THE ANSWER NAMES THE RECORD IT IS ABOUT. A caller that has to
-;; make something durable before repeating the word needs to know which
-;; record the word is about -- it may sit in an earlier segment, or on a
-;; generation since retired -- and deriving it a second time from the
-;; same evidence would be a second supplier of the one fact this rule
-;; established.
-(want "TWIN: the same record, delivered, and the answer names it"
-      (decide (list (ev 14 'single '(set "b" "t" "x"))) #f)
-      '(replay ("w3kxxxxx" . 14)))
-;; AND "NO PLAN WAS DECLARED" DOES NOT MAKE EVIDENCE A COMPLETED SINGLE.
-;; A request with no plan is one sub-operation, so a replay needs exactly
-;; that: an applied record whose actor calls itself `single`. Evidence
-;; that is only a plan record passes every rule above and establishes
-;; nothing about a single execution.
-(want "evidence that is only a plan, asked as a single request"
-      (decide (list (plan-ev two)) #f)
-      '(unknown (no-applied-record)))
-(want "TWIN: the same evidence with the single record beside it"
-      (decide (list (plan-ev two) (ev 14 'single '(set "b" "t" "x"))) #f)
-      '(replay ("w3kxxxxx" . 14)))
+(printf "\n== U3c: which payload fields come from the intent ==\n")
+;; `ord` IS DELIBERATELY OUTSIDE THE TABLE. It is decided by the state at
+;; the time -- which siblings were there -- and a completion months later
+;; must compute it from the siblings it finds, not replay a number from a
+;; state nobody has any more. A record whose `ord` differs from what the
+;; plan would have produced is still that intent carried out.
+(want "a different ord is still the same intent carried out"
+      (intent-produced? (ins "root") (put-rec "root" '(9 . 99)))
+      #t)
+;; TWIN: a field the intent DID name is compared, or the table would be
+;; excusing everything rather than excusing one thing.
+(want "TWIN: a field the intent named, changed, is not"
+      (intent-produced? (ins "root" '((kind . section) (title . "A")))
+                        (put-rec "root" '(0 . 1) '((kind . section) (title . "B"))))
+      #f)
+;; A FIELD THE RECORD CARRIES THAT THE INTENT DID NOT NAME IS NOT THAT
+;; INTENT. Membership asks whether the instantiated payload equals what
+;; the plan declared; a record carrying something nobody asked for is
+;; not what was declared, and calling it so would let a replay hand back
+;; a block with content the caller never requested and say "this is your
+;; request, already done".
+;;
+;; THIS ROW USED TO ASSERT THE OPPOSITE, on the grounds that "the record
+;; always carries `parent` and `ord`, and comparing whole alists would
+;; call every correct execution a mismatch". That reason is true and it
+;; is answered by exempting exactly those two -- the row was wider than
+;; its own argument, and the width was the defect.
+(want "a field the record adds that the intent never named is not that intent"
+      (intent-produced? (ins "root" '((kind . section)))
+                        (put-rec "root" '(0 . 1) '((kind . section) (title . "A"))))
+      #f)
+;; AND THE EXEMPTION IS THE WRITE PATH'S OWN LIST, not a second copy of
+;; it. Whatever the store supplies for every insert must be exempt here,
+;; or the day a third name is added the lagging copy starts calling
+;; correct executions mismatches -- and that failure reports a request
+;; as never having run, which is the one answer that duplicates work.
+;;
+;; THE ROW ITERATES THE LIST rather than naming its members, so adding a
+;; name to the table extends this row without anybody remembering to.
+;;
+;; IT ASKS THE REDUCER, NOT THE MEMBERSHIP RULE. Both read the list, and
+;; only one of them reads it alone: `parent` carries a rule of its own --
+;; it must equal the parent the intent named -- so a record built with a
+;; wrong `parent` is refused for that reason and says nothing about the
+;; exemption. What the reducer does with these names has no second rule
+;; on top: a name in the table is the block's position and never one of
+;; its fields. So that is the side the row reads, and the two sides are
+;; tied together by sharing the definition rather than by this row
+;; checking both.
+(want "no field the store supplies for itself is stored as a field"
+      (map (lambda (name)
+             (let ((r (reduce-empty)))
+               (reduce-apply!
+                 r "wwwlocl0" 1 '()
+                 (list 'put (append '((kind . section) (parent . root) (ord . 0))
+                                    (if (memq name '(parent ord))
+                                        '()
+                                        (list (cons name 7)))))
+                 "t")
+               ;; A READING, NOT AN EXCEPTION. A build that treated `kind`
+               ;; as position would leave no block to look at, and dying
+               ;; here would end the file with no failure count -- which
+               ;; reads exactly like a run nobody made.
+               (let ((bs (state-datum r)))
+                 (if (null? bs)
+                     'no-block
+                     (let ((fields (cadr (assq 'fields (cddr (car bs))))))
+                       (and (assq 'kind fields) (not (assq name fields)) #t))))))
+           store-supplied-fields)
+      (map (lambda (name) #t) store-supplied-fields))
+;; THE OTHER ROWS OF THE TABLE. `move` keeps its id and parent and drops
+;; its ord; `tag` keeps its name and drops the cut, which is the moment
+;; rather than the intent; the rest are carried out verbatim.
+(want "move compares id and parent, not ord"
+      (list (intent-produced? '(move "b" "p" #f) '(move "b" "p" (3 . 7)))
+            (intent-produced? '(move "b" "p" #f) '(move "b" "q" (3 . 7))))
+      '(#t #f))
+(want "tag compares the name, not the cut it bound"
+      (list (intent-produced? '(tag "v1") '(tag "v1" (("w" . 3))))
+            (intent-produced? '(tag "v1") '(tag "v2" (("w" . 3)))))
+      '(#t #f))
+(want "set, del, link and unlink are carried out verbatim"
+      (list (intent-produced? '(set "b" title "A") '(set "b" title "A"))
+            (intent-produced? '(set "b" title "A") '(set "b" title "B"))
+            (intent-produced? '(del "b") '(del "b"))
+            (intent-produced? '(link "a" rel "b") '(link "a" rel "b")))
+      '(#t #f #t #t))
+;; A VERB THE TABLE DOES NOT NAME IS NOT COMPARED LENIENTLY. This build
+;; cannot say which of the payload came from the intent, so it cannot say
+;; the record carried the intent out.
+(want "a verb the table does not name is never called a match"
+      (intent-produced? '(frobnicate "b") '(frobnicate "b"))
+      #f)
 
 (printf "\n== U4: duplicates are found before order is asked ==\n")
 ;; Filtering by order first would silently keep whichever copy sat where
@@ -332,9 +476,12 @@
 (want "a hole is refused, and the present set is named"
       (decide (list (plan-ev three) (ev 14 0 '(set "b" "t" "x")) (ev 16 2 '(set "d" "t" "z"))) 3)
       '(unknown (plan-order (0 2))))
-(want "the whole plan present is a replay"
+;; AND IT NAMES THE LAST SUB-OPERATION -- the furthest point the promise
+;; has to reach, and the record a caller must make durable before
+;; repeating the word.
+(want "the whole plan present is a replay, named at its last sub-operation"
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x")) (ev 15 1 '(set "c" "t" "y"))) 2)
-      '(replay))
+      '(replay ("w3kxxxxx" . 15)))
 ;; A REQUEST OF EXACTLY ONE SUB-OPERATION HAS NO PLAN, and an empty plan
 ;; is itself the whole evidence: both are complete the moment they are
 ;; present.
@@ -343,7 +490,7 @@
 (want "a single record, and an empty plan, are each complete alone"
       (list (decide (list (ev 14 'single '(set "b" "t" "x"))) #f)
             (decide (list (plan-ev '())) 0))
-      (list '(replay ("w3kxxxxx" . 14)) '(replay)))
+      (list '(replay ("w3kxxxxx" . 14)) '(replay ("w3kxxxxx" . 13))))
 ;; A RECORD A RESOLUTION SET ASIDE DID NOT RUN. When a resolution names
 ;; the real execution among contested candidates, the others are marked
 ;; `superseded` -- that mark is the store saying "not this one". Counting
@@ -362,7 +509,7 @@
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))
                     (ev 15 1 '(set "c" "t" "y")))
               2)
-      '(replay))
+      '(replay ("w3kxxxxx" . 15)))
 (want "CONTROL: prefix? tells the two shapes apart"
       (list (prefix? '()) (prefix? '(0)) (prefix? '(0 1 2)) (prefix? '(0 2)) (prefix? '(1)))
       (list #t #t #t #f #f))
@@ -446,4 +593,5 @@
       '(replay ("mirrorzz" . 1)))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "q2 complete\n")

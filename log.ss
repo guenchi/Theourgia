@@ -58,6 +58,9 @@
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
           log-clock registry-path machine-lock-path instance-install!
+          session-durable-seq session-durable-seq-set! session-commit!
+          session-pending-count-set! note-written-for!
+          session-write-started? session-written-events
           store-id-of adopt! continue-adopt! generation-chain-ok? adopt-needed? verify-instance
           log-publish! segment-sha
           registry-inside-store?
@@ -464,6 +467,21 @@
   ;; `deliver` is called per record as (deliver offset seq ts actor deps
   ;; payload) and may return the symbol stop to end the scan early, in
   ;; which case the outcome describes what had been consumed.
+  ;; A DEPENDENCY IS `(<writer> . <seq>)`, and the scheduler reads both
+  ;; halves of every one of them without asking. This says so once.
+  (define (deps-well-formed? deps)
+    (let loop ((ds deps))
+      (cond
+        ((null? ds) #t)
+        ((not (pair? ds)) #f)
+        ((not (and (pair? (car ds))
+                   (string? (car (car ds)))
+                   (integer? (cdr (car ds)))
+                   (exact? (cdr (car ds)))
+                   (>= (cdr (car ds)) 0)))
+         #f)
+        (else (loop (cdr ds))))))
+
   (define (scan-segment bv writer segment expected-seq recoverable-tail? deliver)
     (unless (bytevector? bv)
       (assertion-violation 'scan-segment "not a bytevector" bv))
@@ -508,6 +526,41 @@
                           (list 'integrity
                                 (make-log-error 'frame writer segment start
                                                 (list (cons 'reason 'ts-not-a-number))) last-seq start))
+                         ;; AND THE REST OF THE ENVELOPE, for the same
+                         ;; reason and one field further along. The two
+                         ;; checks above were added when a bad `seq`
+                         ;; escaped replay; `deps` had the identical
+                         ;; problem and was never checked. A record
+                         ;; framed with a correct CRC and `deps` of `(7)`
+                         ;; was accepted by `decode-line`, counted by a
+                         ;; discovery scan, and then raised `7 is not a
+                         ;; pair` INSIDE dependency scheduling -- before
+                         ;; `interpret!`, so the reducer's own refusal to
+                         ;; raise could not help. The scheduler must only
+                         ;; ever be handed a well-formed envelope.
+                         ;; AN ACTOR IS A NAME OR A SIX-ELEMENT ACTOR.
+                         ;; A record written with no request carries the
+                         ;; caller's name as a string; a record belonging
+                         ;; to a request carries the whole actor, which
+                         ;; is a list. Checking for a string alone
+                         ;; rejected every request record in the suite --
+                         ;; the envelope check was stricter than the
+                         ;; format it was meant to describe.
+                         ((not (or (string? (cadddr r)) (pair? (cadddr r))))
+                          (list 'integrity
+                                (make-log-error 'frame writer segment start
+                                                (list (cons 'reason 'actor-malformed)))
+                                last-seq start))
+                         ((not (deps-well-formed? (list-ref r 4)))
+                          (list 'integrity
+                                (make-log-error 'frame writer segment start
+                                                (list (cons 'reason 'deps-malformed)))
+                                last-seq start))
+                         ((not (pair? (list-ref r 5)))
+                          (list 'integrity
+                                (make-log-error 'frame writer segment start
+                                                (list (cons 'reason 'payload-not-a-form)))
+                                last-seq start))
                          ((and expect (not (= seq expect)))
                           (list 'integrity
                                 (make-log-error 'seq writer segment start
@@ -1347,9 +1400,16 @@
   ;; shallow copy is the easy way to break it -- a private root whose
   ;; nested mutable children still belong to committed state.
 
+  ;; `barriered` IS WHAT THE DELIVERY BARRIER ALREADY FLUSHED. A session
+  ;; opened over this load inherits it, so the metadata it would flush on
+  ;; its first append is the metadata the delivery barrier has not
+  ;; already made durable. Without that the two barriers flush the same
+  ;; files twice -- harmless but dishonest, because a case that counts
+  ;; flushes then reads a number that says nothing about how much work
+  ;; the store actually needed.
   (define-record-type load-session
     (fields store (mutable lock) (mutable prefixes) (mutable state)
-            (mutable outcome) (mutable snapshot)))
+            (mutable outcome) (mutable snapshot) (mutable barriered)))
 
   (define (log-open store)
     (open-load store 'acquire-shared))
@@ -1379,7 +1439,7 @@
                    (prefixes (map (lambda (w)
                                     (cons w (discover-prefix store w lock-context)))
                                   writers)))
-              (let ((ls (make-load-session store lock prefixes '() 'open #f)))
+              (let ((ls (make-load-session store lock prefixes '() 'open #f '())))
                 (load-session-snapshot-set! ls (select-snapshot store prefixes))
                 ls)))))))
 
@@ -1453,9 +1513,44 @@
     (fields store lock (mutable load) on-deliver writer
             (mutable epoch) (mutable applied) (mutable revision)
             (mutable ended) (mutable poisoned)
-            (mutable next-seq) (mutable unconfirmed)
+            ;; TWO FRONTIERS WHERE THERE WAS ONE. `next-seq` advances
+            ;; when a record is WRITTEN; `durable-seq` only when a
+            ;; barrier has made it so. They were the same number while
+            ;; every append fsynced, and `durable-seq` below still read
+            ;; `next-seq` with a comment saying the two were the same --
+            ;; a sentence that deferring the fsync makes false in
+            ;; silence, after which a snapshot can name a cut whose
+            ;; records are not on disk.
+            (mutable next-seq) (mutable durable-seq) (mutable unconfirmed)
             (mutable versions) (mutable reset-pending) (mutable rejected)
-            (mutable delivered) (mutable barriered)))
+            (mutable delivered) (mutable barriered)
+            ;; THE SEGMENTS THIS SESSION HAS WRITTEN INTO. The barrier at
+            ;; the end of a request has to cover every one of them, and
+            ;; "the current one" is not the same set: a rotation part way
+            ;; through would leave the earlier segment out of the
+            ;; closure, and the records in it not durable when the word
+            ;; was said.
+            (mutable touched)
+            ;; THE RANGE THIS REQUEST IS AUTHORISED TO WRITE, `(start . end)`
+            ;; or #f. The registry used to be read, raised and rewritten
+            ;; ONCE PER RECORD; that is two more flushes a record, so
+            ;; removing the log's fsync alone left the cost still growing
+            ;; with the number of records. One reservation covers the
+            ;; whole request.
+            (mutable authorised)
+            ;; HOW MANY RECORDS THE REQUEST IN HAND WILL WRITE, so that
+            ;; its first append can reserve the whole range at once. It
+            ;; is a count and not a range: the positions are not known
+            ;; until the first append reaches the point where every check
+            ;; that precedes a reservation has passed.
+            (mutable pending-count)
+            ;; WHETHER THIS SESSION HAS TOUCHED THE LOG, and where it
+            ;; started if it has. A failure that reaches the caller means
+            ;; one thing when bytes were written and the opposite when
+            ;; none were, and nothing else in the session distinguishes
+            ;; them: the sequence counter moves on a reservation, which
+            ;; happens before any byte leaves.
+            start-seq (mutable write-started)))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1475,6 +1570,31 @@
   ;; flush that worked. Opening it asks the question at the only moment
   ;; the answer cannot go stale -- if the file is gone, the open fails
   ;; and the caller fails with it.
+  ;; EVERY SEGMENT THIS OPENS IS ONE WHOSE RECORDS WILL BE DELIVERED, so
+  ;; a failure to open one is a failure to make delivered history
+  ;; durable, and it escapes.
+  ;;
+  ;; IT USED TO SKIP AN OPEN THAT FAILED, on the argument that a segment
+  ;; nobody can open is already an integrity report elsewhere and raising
+  ;; here would take the whole store down for one damaged file. Measured,
+  ;; the argument is about a case that does not arise: a segment that
+  ;; cannot be opened is EXCLUDED from `discovery-segment-ranges` -- it
+  ;; is reported as integrity and its records are not delivered -- so
+  ;; this loop never reaches it.
+  ;;
+  ;; WHAT THE SKIP ACTUALLY COVERED WAS THE TRANSIENT CASE, and covering
+  ;; it was the defect: discovery reads and caches a dying writer's
+  ;; segment, this open then fails, the skip passes, the directory fsync
+  ;; succeeds -- and delivery hands out records from the cached bytes
+  ;; that no flush ever reached. A power cut takes them, and they were
+  ;; promised.
+  (define (flush-readable! path stage)
+    (let ((fd (fd-open path '(read))))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda () (fsync! fd path stage))
+        (lambda () (close-quietly fd)))))
+
   (define (flush-existing! path stage)
     (let ((fd (fd-open path '(read))))
       (dynamic-wind
@@ -1482,20 +1602,38 @@
         (lambda () (fsync! fd path stage))
         (lambda () (close-quietly fd)))))
 
-  (define (takeover-barrier! store prefixes)
+  (define (takeover-barrier! store prefixes . rest)
     (parameterize ((theourgia-stage 'deliver-barrier))
-      (takeover-flush! store prefixes 'deliver-barrier)))
+      (takeover-flush! store prefixes 'deliver-barrier
+                       (if (pair? rest) (car rest) #f))))
 
-  (define (takeover-flush! store prefixes stage)
+  ;; THE BARRIER'S SCOPE IS THE DELIVERY'S SCOPE, and the cut is what
+  ;; decides both. A segment lying entirely at or below the cut
+  ;; contributes no record this delivery will hand out, so there is
+  ;; nothing about it to promise -- and opening it anyway would undo the
+  ;; property the cut exists for: a reader resuming from a cut does not
+  ;; reopen the history below it.
+  ;;
+  ;; Flushing more than is delivered is not merely wasteful here; it is a
+  ;; second rule about what a load covers, and the two would answer
+  ;; differently the first time one of them changed.
+  (define (takeover-flush! store prefixes stage . rest)
+    (let ((cut (if (pair? rest) (car rest) #f)))
+      (takeover-flush-from! store prefixes stage cut)))
+
+  (define (takeover-flush-from! store prefixes stage cut)
     (for-each
       (lambda (entry)
         (let* ((writer (car entry))
                (p (cdr entry))
                (dir (writer-directory store writer))
-               (segs (map car (discovery-segment-ranges p))))
+               (from (let ((e (and cut (assoc writer cut)))) (if e (cdr e) 0)))
+               (segs (map car (filter (lambda (r) (> (caddr r) from))
+                                      (discovery-segment-ranges p)))))
           (unless (null? segs)
             (for-each (lambda (seg)
-                        (flush-file! (string-append dir "/" (segment-file-name seg)) stage))
+                        (flush-readable! (string-append dir "/" (segment-file-name seg))
+                                         stage))
                       segs)
             ;; THE METADATA IS FLUSHED BY THE VERSION BARRIER, not here.
             ;; It is part of the durable frontier for the same reason --
@@ -1546,18 +1684,42 @@
             (guard (e (#t (raise e)))
               (trace-event! 'enter-critical
                             (cons (string-append store "/lock") 'exclusive) #f)
+              ;; THE BARRIER IS NOT RUN HERE ANY MORE. It was this
+              ;; session's, and now it is every delivery's -- `load-deliver!`
+              ;; runs it for readers and for sessions alike, so running it
+              ;; again here would be a second supplier of the same
+              ;; promise, doing the same flushes twice and making a case
+              ;; that counts them read differently for no reason the
+              ;; store cares about.
               (let ((ls (open-load store 'held-exclusive)))
-                (takeover-barrier! store (load-session-prefixes ls))
                 (let* ((local (local-writer-of store ls))
                        (entry (and local (assoc local (load-session-prefixes ls))))
+                       (end (and entry (discovery-end-seq (cdr entry))))
                        (s (make-session store lock ls on-deliver local
                                         0 '() 0 #f #f
-                                        (and entry (+ 1 (discovery-end-seq (cdr entry))))
+                                        (and end (+ 1 end))
+                                        ;; AND DURABLE STARTS EQUAL TO
+                                        ;; WRITTEN, because the delivery
+                                        ;; barrier this load just ran is
+                                        ;; what made the loaded tail
+                                        ;; durable. Starting it at zero
+                                        ;; would refuse every snapshot
+                                        ;; until this session had written
+                                        ;; something of its own.
+                                        (or end 0)
                                         #f
                                         (metadata-versions store)
-                                        #f '() '() '())))
-                  (metadata-barrier! s)
+                                        #f '() '() '() '() #f 1
+                                        (and end (+ end 1)) #f)))
+                  ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
+                  ;; EITHER. Its obligation was "before the first
+                  ;; callback", and the delivery barrier now runs before
+                  ;; every callback of every reader -- so this would be
+                  ;; the same flushes a second time. What the session
+                  ;; inherits instead is the RECORD of them, so its first
+                  ;; append flushes what the delivery barrier did not.
                   (deliver-into! s)
+                  (session-barriered-set! s (load-session-barriered ls))
                   (vector-set! handed-over 0 #t)
                   s)))))
         (lambda ()
@@ -1820,13 +1982,38 @@
     (when (session-ended s)
       (assertion-violation who "this session has ended" (session-store s))))
 
+  (define (session-write-started? s) (session-write-started s))
+
+  ;; THE POSITIONS THIS SESSION ACTUALLY TOOK, so a failure that cannot
+  ;; say what succeeded can at least say where to look. It is derived
+  ;; from the two counters rather than accumulated, because a list that
+  ;; had to be appended to on every append is a second place that can be
+  ;; wrong about the same fact.
+  (define (session-written-events s)
+    (let loop ((n (session-start-seq s)) (out '()))
+      (if (or (not n) (not (session-next-seq s)) (>= n (session-next-seq s)))
+          (reverse out)
+          (loop (+ n 1) (cons (cons (session-writer s) n) out)))))
+
+  ;; EVERY RELEASE HAPPENS EVEN WHEN AN EARLIER ONE FAILS. Three things
+  ;; are being given back here and they are independent: finalising the
+  ;; load, the store's lock, and the store itself. Written in sequence, a
+  ;; raise in the first keeps the lock for the life of the process --
+  ;; and the caller that raised is usually already handling a failure, so
+  ;; the lock is lost exactly when the store is least well.
   (define (log-end! s)
     (check-live! 'log-end! s)
     (session-ended-set! s #t)
-    (let ((ls (session-load s)))
-      (when (eq? (load-outcome ls) 'open) (load-commit! ls)))
-    (lock-release! (session-lock s))
-    (release-store! (session-store s))
+    (dynamic-wind
+      (lambda () (if #f #f))
+      (lambda ()
+        (let ((ls (session-load s)))
+          (when (eq? (load-outcome ls) 'open) (load-commit! ls))))
+      (lambda ()
+        (dynamic-wind
+          (lambda () (if #f #f))
+          (lambda () (lock-release! (session-lock s)))
+          (lambda () (release-store! (session-store s))))))
     'ended)
 
 
@@ -1897,8 +2084,18 @@
                   (session-barriered s)))))
 
   (define (metadata-barrier-staged! s stage)
-    (let* ((store (session-store s))
-           (any (vector #f)))
+    (metadata-flush! (session-store s) stage
+                     (lambda (w name) (last-flushed s w name))
+                     (lambda (w name version) (note-flushed! s w name version))))
+
+  ;; THE SAME FLUSH WITH THE MEMO MADE AN ARGUMENT. A session remembers
+  ;; what it has already flushed, so a barrier it runs twice does the
+  ;; work once; a reader has no session and no memo, and asking it to
+  ;; invent one would be a second place that decides what "already
+  ;; flushed" means. Both callers flush the same files for the same
+  ;; reason; only the remembering differs.
+  (define (metadata-flush! store stage remembered remember!)
+    (let ((any (vector #f)))
       (for-each
         (lambda (w)
           (let ((dir (writer-directory store w))
@@ -1916,9 +2113,9 @@
                 (let ((version (file-version store w name)))
                   (when (and version
                              (not (unreadable-version? version))
-                             (not (equal? version (last-flushed s w name))))
+                             (not (equal? version (remembered w name))))
                     (flush-file! (writer-file store w name) stage)
-                    (note-flushed! s w name version)
+                    (remember! w name version)
                     (vector-set! touched 0 #t))))
               metadata-files)
             ;; The namespace entry as well as the contents: a version
@@ -1942,9 +2139,9 @@
           (let* ((path (string-append store "/" name))
                  (version (and (file-exists? path)
                                (segment-sha (read-whole path)))))
-            (when (and version (not (equal? version (last-flushed s "" name))))
+            (when (and version (not (equal? version (remembered "" name))))
               (flush-file! path stage)
-              (note-flushed! s "" name version)
+              (remember! "" name version)
               (fsync-dir! store stage))))
         '("meta.sexp" "instance.sexp"))
       'barriered))
@@ -2019,6 +2216,12 @@
       (let* ((writer (session-writer s))
              (entry (and writer (assoc writer (load-session-prefixes fresh)))))
         (session-next-seq-set! s (and entry (+ 1 (discovery-end-seq (cdr entry)))))
+        ;; A RELOAD RE-READS THE LOG, AND THE DELIVERY BARRIER RAN OVER
+        ;; IT, so what the reload found is durable. Both frontiers move
+        ;; together here for the same reason they start together at
+        ;; log-begin -- and anything this session had written and not
+        ;; made durable is not in the reload either.
+        (session-durable-seq-set! s (if entry (discovery-end-seq (cdr entry)) 0))
         (session-unconfirmed-set! s #f)
         ;; RESET IS NEEDED WHEN THE REDUCER HAS APPLIED WHAT NO LONGER
         ;; EXISTS. Its state was built from records the new boundary
@@ -2257,10 +2460,22 @@
     (let ((d (read-instance store)))
       (and (list? d) (alist-ref d 'nonce))))
 
+  ;; A STORE ID THAT IS NOT A STRING IS NOT A STORE ID. `format-1?`
+  ;; checks the format field and nothing else, so metadata saying
+  ;; `(store-id 7)` reaches here -- and a registry entry keyed by 7 is
+  ;; one `water-mark-entry?` does not recognise, so `written` is never
+  ;; raised for it and every reservation appends a duplicate. The store
+  ;; would then acknowledge writes with no working rollback witness.
+  ;;
+  ;; "unknown" IS THE SAME ANSWER AS AN ABSENT ID, and deliberately: both
+  ;; are "this metadata does not say", and neither is allowed to become a
+  ;; key of a shape the rest of the file cannot read.
   (define (store-id-of store)
-    (let ((d (guard (e (#t #f))
-               (string->sexpr-extended (utf8->string (read-whole (string-append store "/meta.sexp")))))))
-      (or (alist-ref d 'store-id) "unknown")))
+    (let* ((d (guard (e (#t #f))
+                (string->sexpr-extended
+                  (utf8->string (read-whole (string-append store "/meta.sexp"))))))
+           (id (alist-ref d 'store-id)))
+      (if (string? id) id "unknown")))
 
   ;; ---- the machine registry (section 4.1) -----------------------------------
 
@@ -2310,6 +2525,8 @@
         ((char=? (string-ref path i) #\/) (substring path 0 i))
         (else (loop (- i 1))))))
 
+  ;; EVERY CALLER HOLDS THE MACHINE LOCK, which is what lets this upgrade
+  ;; an old registry in place rather than teach every reader two shapes.
   (define (read-registry)
     (let ((path (registry-path)))
       (trace-event! 'registry-check path #f)
@@ -2321,17 +2538,57 @@
               ((eq? d 'malformed)
                (raise (make-log-error 'registry-malformed #f #f #f
                                       (list (cons 'path path)))))
-              ((list? d) d)
+              ((list? d) (upgraded-registry d))
               (else
                (raise (make-log-error 'registry-malformed #f #f #f
                                       (list (cons 'path path))))))))))
 
-  ;; ENTRIES ARE (store-id instance writer seq state), keyed by the first
-  ;; four; the mark only ever rises. "Only ever rises" is what makes a
-  ;; concurrent reader-modifier safe under the machine lock: two
-  ;; processes that both read 100 and write 101 and 102 cannot lose the
-  ;; larger, because the merge takes the maximum rather than the later
-  ;; write.
+  ;; ONE SHAPE, AND THE OLD ONE IS CONVERTED RATHER THAN TOLERATED. A
+  ;; water mark used to be a single number meaning both "authorised to
+  ;; write here" and "written this far"; they are two facts now and a
+  ;; five-element entry is the moment before anyone noticed. Its
+  ;; `written` is its mark, because that is exactly what the mark meant
+  ;; while the two were the same.
+  ;;
+  ;; IT IS CONVERTED ONCE, NOT READ LENIENTLY EVERY TIME. A format that
+  ;; can be read two ways is a format two readers will eventually
+  ;; disagree about -- and the disagreement would be about whether a
+  ;; store rolled back, which is the question this file exists to answer.
+  ;; Nothing is published yet, so no old dialect has to be kept.
+  (define (upgraded-registry reg)
+    (let ((changed (vector #f)))
+      (let ((next (map (lambda (e)
+                         (if (and (water-mark-entry? e) (= 5 (length e)))
+                             (begin (vector-set! changed 0 #t)
+                                    (append e (list (list-ref e 3))))
+                             e))
+                       reg)))
+        (when (vector-ref changed 0)
+          (write-registry! next))
+        next)))
+
+  ;; A WATER MARK ENTRY, TOLD FROM A GENERATION RECORD BY ITS HEAD. One
+  ;; file holds both; a generation leads with the symbol `gen` and a
+  ;; water mark with a store id, which is a string.
+  (define (water-mark-entry? e)
+    (and (list? e) (>= (length e) 5) (string? (car e))))
+
+  ;; ENTRIES ARE (store-id instance writer authorised state written),
+  ;; keyed by the first three.
+  ;;
+  ;; TWO FACTS, NOT ONE. `authorised` is how far a request has been given
+  ;; leave to write; `written` is how far records actually reached the
+  ;; disk. They were one number while every append reserved its own
+  ;; sequence and flushed it, and splitting them is what lets a request
+  ;; reserve its whole range in one go: a request that reserves five
+  ;; positions and writes two leaves `authorised` above `written`, and
+  ;; that is an ordinary state rather than the rollback the gate is
+  ;; looking for.
+  ;;
+  ;; BOTH ONLY EVER RISE. That is what makes a concurrent
+  ;; reader-modifier safe under the machine lock: two processes that both
+  ;; read 100 and write 101 and 102 cannot lose the larger, because the
+  ;; merge takes the maximum rather than the later write.
   (define (registry-entry reg store-id instance writer)
     (let loop ((es reg))
       (cond
@@ -2343,27 +2600,51 @@
          (car es))
         (else (loop (cdr es))))))
 
-  (define (registry-mark reg store-id instance writer)
+  (define (registry-authorised reg store-id instance writer)
     (let ((e (registry-entry reg store-id instance writer)))
-      (and e (cadddr e))))
+      (and e (list-ref e 3))))
+
+  (define (registry-written reg store-id instance writer)
+    (let ((e (registry-entry reg store-id instance writer)))
+      (and e (list-ref e 5))))
 
   (define (registry-raise reg store-id instance writer seq)
+    (registry-update reg store-id instance writer
+                     (lambda (e) (list store-id instance writer
+                                       (max seq (list-ref e 3))
+                                       (list-ref e 4)
+                                       (list-ref e 5)))
+                     (list store-id instance writer seq 'active 0)))
+
+  ;; HOW FAR RECORDS ACTUALLY REACHED THE DISK, raised by the barrier
+  ;; that made them so and by nothing else. An entry that does not exist
+  ;; yet cannot have written anything, so there is nothing to note.
+  (define (registry-note-written reg store-id instance writer seq)
+    (registry-update reg store-id instance writer
+                     (lambda (e) (list store-id instance writer
+                                       (max seq (list-ref e 3))
+                                       (list-ref e 4)
+                                       (max seq (list-ref e 5))))
+                     #f))
+
+  ;; ONE MERGE, TWO CALLERS. Both raise a number in place and both have
+  ;; to leave every other field of the entry alone; two copies of that
+  ;; walk would drift the first time the entry gained a field.
+  (define (registry-update reg store-id instance writer change absent)
     (let ((found (vector #f)))
       (let ((updated
               (map (lambda (e)
-                     (if (and (list? e) (>= (length e) 4)
+                     (if (and (water-mark-entry? e)
                               (equal? (car e) store-id)
                               (equal? (cadr e) instance)
                               (equal? (caddr e) writer))
-                         (begin (vector-set! found 0 #t)
-                                (list store-id instance writer
-                                      (max seq (cadddr e))
-                                      (if (>= (length e) 5) (list-ref e 4) 'active)))
+                         (begin (vector-set! found 0 #t) (change e))
                          e))
                    reg)))
-        (if (vector-ref found 0)
-            updated
-            (append updated (list (list store-id instance writer seq 'active)))))))
+        (cond
+          ((vector-ref found 0) updated)
+          (absent (append updated (list absent)))
+          (else updated)))))
 
   ;; THE MACHINE LOCK IS TAKEN AFTER THE STORE LOCK, ALWAYS. The order is
   ;; fixed so that two processes touching two stores cannot each hold one
@@ -2866,14 +3147,39 @@
   ;; THE FORK IS MONOTONE. An existing fork at five and a new
   ;; disagreement at eight must not move the marker to eight: that would
   ;; bring five, six and seven back to life.
+  ;; A MARKER THAT IS THERE AND WILL NOT READ STOPS ITS OWN REPLACEMENT.
+  ;; The fork this writes is the LOWEST sequence anyone has disagreed at,
+  ;; so it is computed from the marker already on disk -- and a read
+  ;; failure that answered "no marker" made the new disagreement's
+  ;; sequence the whole answer. The fork would then RISE, and every
+  ;; record between the old fork and the new one comes back out of
+  ;; quarantine: bytes the store had set aside as unattributable become
+  ;; history again, on the strength of a failed read.
+  ;;
+  ;; ABSENT AND UNREADABLE ARE DIFFERENT ANSWERS, which is the same
+  ;; distinction the uncertainty readers had to learn. Absent means there
+  ;; is no earlier fork and `seq` is right; unreadable means the earlier
+  ;; fork exists and is not known, and nothing may be written over it.
   (define (quarantine! store writer seq theirs ours)
     (let* ((path (writer-file store writer "quarantine.sexp"))
-           (existing (and (file-exists? path)
-                          (let ((d (guard (e (#t #f))
-                                     (string->sexpr-extended
-                                       (utf8->string (read-whole path))))))
-                            (and (list? d) (alist-ref d 'fork)))))
-           (fork (if (and existing (integer? existing)) (min existing seq) seq)))
+           (existing
+             (if (not (file-exists? path))
+                 'absent
+                 (let ((d (guard (e (#t 'unreadable))
+                            (string->sexpr-extended
+                              (utf8->string (read-whole path))))))
+                   (if (list? d)
+                       (let ((f (alist-ref d 'fork)))
+                         (if (integer? f) f 'unreadable))
+                       'unreadable))))
+           (fork (cond
+                   ((eq? existing 'absent) seq)
+                   ((eq? existing 'unreadable)
+                    (assertion-violation
+                      'quarantine!
+                      "a fork marker that will not read may not be replaced"
+                      (list writer path)))
+                   (else (min existing seq)))))
       (atomic-write! path
                      (string->utf8
                        (string-append "((format 1) (fork " (number->string fork) ")"
@@ -2962,19 +3268,31 @@
   ;; whole domain is in doubt.
   ;;
   ;; The two adopt-time kinds -- the rollback interval and the
-  ;; identity-mismatch interval -- are NOT derived here. They are
-  ;; persisted by adopt before the successor's owner is installed, which
-  ;; is the only moment their coordinates exist; they arrive in the cache
-  ;; and stay there by the union rule above. This function deriving them
-  ;; would be a second supplier of coordinates only one place can compute.
+  ;; identity-mismatch interval -- are not RECOMPUTED here. Their
+  ;; coordinates exist only at the moment an adopt holds them, and
+  ;; working them out a second time from a store that has since moved on
+  ;; would be a second supplier of a number only one place can compute.
+  ;; They are read back from the retirement record, which is where adopt
+  ;; put them, before the successor's owner existed. That is what makes
+  ;; the cache a cache: every kind in it is now derivable from the
+  ;; records, so deleting it costs a re-derivation and not a fact.
+  ;;
+  ;; THE RECORD IS CONSULTED EVEN WHEN THE PREFIX WILL NOT READ. A
+  ;; writer whose beginning this store cannot read is already wholly in
+  ;; doubt, and the adopt entry adds nothing to `(writer 0 #f)` -- but a
+  ;; record naming a stretch is a fact about the writer either way, and
+  ;; a derivation that returned early would make the two arms disagree
+  ;; about what the store knows.
   (define (uncertain-derived store writer)
-    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive)))
+          (recorded (retired-uncertain store writer)))
       (cond
-        ((not p) (list (list writer 0 #f)))
+        ((not p) (append recorded (list (list writer 0 #f))))
         ((eq? (discovery-origin p) 'incomplete-publication)
-         (list (list writer 0 #f)))
+         (append recorded (list (list writer 0 #f))))
         (else
          (append
+           recorded
            (let ((q (discovery-quarantine p)))
              (if (and q (pair? (cdr q)) (integer? (cadr q)) (exact? (cadr q)))
                  (list (list writer (- (cadr q) 1) #f))
@@ -3507,17 +3825,194 @@
                                    (string-append (machine-id)
                                                   (number->string (wall-clock-ms))))))))
 
-  (define (retired-text tx seg off seq successor lost)
+  ;; FORMAT 2 ALWAYS CARRIES THE STRETCHES, EVEN WHEN THERE ARE NONE,
+  ;; and that is the whole point of the version number. Writing the
+  ;; clause only when it is non-empty makes "no clause" mean two
+  ;; opposite things -- this adopt lost nothing, and this record was
+  ;; written before anyone thought to record it -- and every retirement
+  ;; record on disk today is the second kind. A reader that cannot tell
+  ;; them apart has to guess, and both guesses are wrong somewhere: read
+  ;; as "nothing lost" it repeats the defect this version exists to
+  ;; close, read as "everything in doubt" it condemns every healthy
+  ;; store that ever adopted. The version answers instead of guessing.
+  (define (retired-text tx seg off seq successor lost uncertain)
     (string-append
-      "((format 1) (tx \"" tx "\")"
+      "((format 2) (tx \"" tx "\")"
       " (prefix " (number->string seg) " " (number->string off) " " (number->string seq) ")"
+      " (uncertain " (sexpr->string-extended uncertain) ")"
       (if successor (string-append " (successor \"" successor "\")") "")
       (if lost (string-append " (lost " (sexpr->string-extended lost) ")") "")
       ")\n"))
 
-  (define (step-retirement-prepared! store old tx seg off seq)
+  ;; AMENDING THE RECORD REPLACES ONE CLAUSE AND KEEPS THE REST. The
+  ;; rewrite this replaces rebuilt the record out of the fields the
+  ;; caller remembered to pass, which drops every clause it does not
+  ;; name -- silently, and while reporting success. That was survivable
+  ;; while the only unnamed clause was one nothing ever wrote; it is not
+  ;; survivable now that the record carries a stretch of history no
+  ;; other file can supply.
+  (define (retired-put-clause! store writer . clauses)
+    (let* ((p (writer-file store writer "retired.sexp"))
+           (d (and (file-exists? p)
+                   (guard (e (#t #f))
+                     (string->sexpr-extended (utf8->string (read-whole p)))))))
+      (unless (list? d)
+        (assertion-violation 'retired-put-clause!
+                             "no readable retirement record to amend" writer))
+      (atomic-write!
+        p
+        (string->utf8
+          (string-append
+            (sexpr->string-extended
+              (append (filter (lambda (x)
+                                (not (and (pair? x)
+                                          (exists (lambda (c) (eq? (car x) (car c)))
+                                                  clauses))))
+                              d)
+                      clauses))
+            "\n"))
+        'registry)))
+
+  ;; THE ADOPT-TIME STRETCHES AS THE RECORD HOLDS THEM, read through the
+  ;; same shape test the cache is read through and narrowed to entries
+  ;; about this writer -- the record sits in this writer's directory, so
+  ;; an entry naming another one could only have been put there by hand.
+  ;; A record that cannot be read answers with no entries rather than
+  ;; raising: its unreadability is already an integrity kind of its own,
+  ;; reported where the chain is walked, and raising here would replace
+  ;; that report with a failure at a different address.
+  ;; WHAT A RECORD WITHOUT THE CLAUSE MEANS, decided by its version and
+  ;; not by hope. A format 2 record always carries it, so its absence
+  ;; there is a record somebody edited and the safe reading is the wide
+  ;; one. A format 1 record predates the clause entirely: it may be the
+  ;; retirement of a rollback that lost a stretch nobody wrote down, and
+  ;; nothing on disk can now say whether it was. So everything above its
+  ;; prefix stays in doubt -- open, because there is no top to name --
+  ;; which is the same answer this file gives to every other writer it
+  ;; cannot vouch for.
+  ;;
+  ;; IT COSTS AN UPGRADED STORE SOME `unknown` ANSWERS IT MAY NOT NEED,
+  ;; and that is the right way round: the other reading hands back `ok`
+  ;; for a request that may already have run.
+  (define (retired-legacy-uncertain writer d)
+    (let loop ((xs (if (list? d) d '())))
+      (cond
+        ((null? xs) (list (list writer 0 #f)))
+        ((and (list? (car xs)) (= 4 (length (car xs)))
+              (eq? (caar xs) 'prefix)
+              (for-all (lambda (v) (and (integer? v) (exact? v))) (cdr (car xs))))
+         (list (list writer (list-ref (car xs) 3) #f)))
+        (else (loop (cdr xs))))))
+
+  (define (retired-format d)
+    (let loop ((xs (if (list? d) d '())))
+      (cond
+        ((null? xs) 1)
+        ((and (list? (car xs)) (= 2 (length (car xs)))
+              (eq? (caar xs) 'format)
+              (integer? (cadr (car xs))))
+         (cadr (car xs)))
+        (else (loop (cdr xs))))))
+
+  ;; THE SAME QUESTION ASKED BY SOMETHING ABOUT TO WRITE THE ANSWER
+  ;; DOWN. A reader that cannot read the record answers the widest thing
+  ;; it could mean, which is right for deciding what to vouch for and
+  ;; wrong for deciding what to persist: written down, that guess becomes
+  ;; the record, and no later successful read can take it back. So the
+  ;; mutation path gets a reader that says `unreadable` instead of
+  ;; guessing, and refuses to rewrite a record it could not read.
+  (define (retired-uncertain-strict store writer)
+    (let ((p (writer-file store writer "retired.sexp")))
+      (if (not (file-exists? p))
+          '()
+          (let ((d (guard (e (#t 'unreadable))
+                     (string->sexpr-extended (utf8->string (read-whole p))))))
+            (cond
+              ((eq? d 'unreadable) 'unreadable)
+              ((not (list? d)) 'unreadable)
+              (else
+               (let loop ((xs d))
+                 (cond
+                   ((null? xs) (retired-legacy-uncertain writer d))
+                   ((and (list? (car xs)) (= 2 (length (car xs)))
+                         (eq? (caar xs) 'uncertain)
+                         (list? (cadr (car xs))))
+                    (if (>= (retired-format d) 2)
+                        (filter (lambda (i)
+                                  (and (uncertain-interval? i)
+                                       (string=? (car i) writer)))
+                                (cadr (car xs)))
+                        (append
+                          (filter (lambda (i)
+                                    (and (uncertain-interval? i)
+                                         (string=? (car i) writer)))
+                                  (cadr (car xs)))
+                          (retired-legacy-uncertain writer d))))
+                   (else (loop (cdr xs)))))))))))
+
+  (define (retired-uncertain store writer)
+    (let ((p (writer-file store writer "retired.sexp")))
+      (if (not (file-exists? p))
+          '()
+          (let ((d (guard (e (#t #f))
+                     (string->sexpr-extended (utf8->string (read-whole p))))))
+            (if (not (list? d))
+                (list (list writer 0 #f))
+                (let loop ((xs d))
+                  (cond
+                    ((null? xs) (retired-legacy-uncertain writer d))
+                    ((and (list? (car xs)) (= 2 (length (car xs)))
+                          (eq? (caar xs) 'uncertain)
+                          (list? (cadr (car xs))))
+                     (if (>= (retired-format d) 2)
+                         (filter (lambda (i)
+                                   (and (uncertain-interval? i)
+                                        (string=? (car i) writer)))
+                                 (cadr (car xs)))
+                         ;; A FORMAT 1 RECORD SOMEBODY AMENDED. The
+                         ;; clause it now carries is true and the version
+                         ;; still says the record predates the promise,
+                         ;; so both readings are owed.
+                         (append
+                           (filter (lambda (i)
+                                     (and (uncertain-interval? i)
+                                          (string=? (car i) writer)))
+                                   (cadr (car xs)))
+                           (retired-legacy-uncertain writer d))))
+                    (else (loop (cdr xs))))))))))
+
+  ;; ADDING ONE, AS A UNION. Writing an entry that is already there
+  ;; leaves the record as it was, which is what makes a resume safe to
+  ;; run however many times a crash demands.
+  ;; A WRITER READS THE STRICT ONE. This is the persistence boundary and
+  ;; the rule is the same on both sides of it: a lenient reader answers
+  ;; the widest thing the file could mean, which is right for deciding
+  ;; and wrong for writing down. A one-shot read failure here would put
+  ;; `(writer 0 #f)` into the record for good, and no later successful
+  ;; read could lift it. Recovery amendments go through this, so the
+  ;; strict gate in adopt does not cover them.
+  (define (retired-add-uncertain! store writer interval)
+    (when interval
+      (let ((current (retired-uncertain-strict store writer)))
+        (when (eq? current 'unreadable)
+          (assertion-violation
+            'retired-add-uncertain!
+            "cannot amend a retirement record that will not read" writer))
+        (unless (member interval current)
+          ;; AND THE VERSION GOES UP WITH IT. `current` already carries
+          ;; whatever a format 1 record's absence implied, so writing it
+          ;; down makes the record say for itself what the fallback was
+          ;; saying on its behalf -- and once it says so, the fallback
+          ;; must stop, or the stretch would be counted from two places
+          ;; for ever.
+          (retired-put-clause! store writer
+                               (list 'format 2)
+                               (list 'uncertain
+                                     (append current (list interval))))))))
+
+  (define (step-retirement-prepared! store old tx seg off seq uncertain)
     (atomic-write! (writer-file store old "retired.sexp")
-                   (string->utf8 (retired-text tx seg off seq #f #f))
+                   (string->utf8 (retired-text tx seg off seq #f #f uncertain))
                    'registry)
     tx)
 
@@ -3543,18 +4038,47 @@
   ;; again.
   ;;
   ;; IT ADDS, NEVER REPLACES: an earlier adopt's entry is still true.
-  (define (step-uncertain-prepared! store old reason seq mark)
-    (let ((interval
-            (cond
-              ((eq? reason 'registry-ahead) (and mark (> mark seq) (list old seq mark)))
-              ((eq? reason 'identity) (list old seq #f))
-              (else #f))))
-      (when interval
-        (let ((current (car (uncertain-load store old))))
+  ;;
+  ;; AND IT GOES IN THE RETIREMENT RECORD FIRST. `uncertain.sexp` is
+  ;; documented as a cache whose authority is the records, and for three
+  ;; of the five kinds it is one -- they are re-derivable from a
+  ;; writer's own files at any time. These two were not: their
+  ;; coordinates existed only in the cache, so deleting the cache
+  ;; deleted the history, and the store then reported itself healthy
+  ;; about a stretch it could not vouch for. A request whose positions
+  ;; fell in that stretch was told to run a second time.
+  ;;
+  ;; The record is where they belong: it is written before the
+  ;; successor's owner exists, it is already in the barrier's recovery
+  ;; closure, and it is the file whose absence already means "this
+  ;; generation cannot be trusted". Putting them there does not make a
+  ;; second place that COMPUTES the coordinates -- `adopt-uncertain-interval`
+  ;; is still the only one -- it makes the cache a cache.
+  (define (adopt-uncertain-interval old reason seq mark)
+    (cond
+      ((eq? reason 'registry-ahead) (and mark (> mark seq) (list old seq mark)))
+      ((eq? reason 'identity) (list old seq #f))
+      (else #f)))
+
+  ;; AND THE CACHE WRITE READS THE CACHE, not a derivation of it.
+  ;; `uncertain-load` asks the writer's files again and its derivation
+  ;; answers `(writer 0 #f)` for any failure to read them -- so writing
+  ;; its result back would put that fallback into the cache, where a
+  ;; later adopt's union would find it readable and promote it into the
+  ;; record. The chain is short and every link of it persists: the rule
+  ;; is that nothing crosses into a file except what was already in one.
+  (define (step-uncertain-prepared! store old interval)
+    (when interval
+      (let ((current (uncertain-cached store old)))
+        (when (eq? current 'unreadable)
+          (assertion-violation
+            'step-uncertain-prepared!
+            "cannot amend an uncertainty cache that will not read" old))
+        (let ((have (or current '())))
           (uncertain-write! store old
-                            (if (member interval current)
-                                current
-                                (append current (list interval)))
+                            (if (member interval have)
+                                have
+                                (append have (list interval)))
                             'registry)))))
 
   (define (step-generation-reserved! store store-id instance tx old new)
@@ -3586,11 +4110,13 @@
           (lambda (p) (if #f #f)))))
     (directory-entry-durable! (writer-directory store new) 'registry))
 
-  (define (step-successor-backfilled! store old tx new)
-    (let ((r (retired-of store old)))
-      (atomic-write! (writer-file store old "retired.sexp")
-                     (string->utf8 (retired-text tx (car r) (cadr r) (caddr r) new #f))
-                     'registry)))
+  ;; THE TRANSACTION IS NOT AN ARGUMENT ANY MORE. It was one only
+  ;; because this step used to re-emit the whole record, and re-emitting
+  ;; it is what the amendment above exists to stop: the record already
+  ;; bears its transaction, and a step that restamps it can only ever
+  ;; agree with the record or overwrite it.
+  (define (step-successor-backfilled! store old new)
+    (retired-put-clause! store old (list 'successor new)))
 
   (define (step-transition-complete! store-id instance tx)
     (with-machine-lock
@@ -3678,15 +4204,25 @@
              ((writer-damaged? store writer) (list 'damage))
              (else #f)))))))
 
-  ;; IT ANSWERS WITH THE MARK, NOT WITH A YES. The water mark is the top
-  ;; of the stretch a rollback adopt has to record as uncertain, and this
-  ;; is the one place that reads it -- so answering `#t` here and reading
-  ;; the registry a second time in adopt would be two suppliers of one
-  ;; number, differing the first time anything raised a mark in between.
+  ;; TWO DIFFERENT NUMBERS, AND THE DIFFERENCE IS THE WHOLE POINT.
+  ;;
+  ;; THE TEST IS ON `written`: records that reached the disk and are no
+  ;; longer in the log are a rollback -- history this store was told it
+  ;; had and no longer has. `authorised` above the log's end is not:
+  ;; it is a request that reserved more positions than it used, which
+  ;; every refusal does, and reading that as a rollback would demand an
+  ;; adopt for a store nothing went wrong with.
+  ;;
+  ;; THE ANSWER IS `authorised`, because the caller is an adopt about to
+  ;; record an uncertain stretch and the stretch has to cover every
+  ;; position anyone was given leave to write -- including the ones a
+  ;; lost request reserved and never reached. Answering `#t` and reading
+  ;; the registry again in adopt would be two suppliers of one number.
   (define (registry-ahead-of-log store reg store-id instance writer)
-    (let ((mark (registry-mark reg store-id instance writer))
+    (let ((written (registry-written reg store-id instance writer))
+          (authorised (registry-authorised reg store-id instance writer))
           (p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
-      (and mark p (> mark (discovery-end-seq p)) mark)))
+      (and written p (> written (discovery-end-seq p)) authorised)))
 
   (define (writer-damaged? store writer)
     (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
@@ -3725,7 +4261,7 @@
                 (resume-uncertain! store reg store-id instance old)
                 (step-generation-reserved! store store-id instance tx old new)
                 (step-owner-installed! store new instance tx old)
-                (step-successor-backfilled! store old tx new)
+                (step-successor-backfilled! store old new)
                 (step-transition-complete! store-id instance tx)
                 'resumed)))
         (else
@@ -3750,11 +4286,11 @@
                         ((not (cdr (assq 'owner s)))
                          (resume-uncertain! store reg store-id instance (gen-old g))
                          (step-owner-installed! store (gen-new g) instance tx (gen-old g))
-                         (step-successor-backfilled! store (gen-old g) tx (gen-new g))
+                         (step-successor-backfilled! store (gen-old g) (gen-new g))
                          (step-transition-complete! store-id instance tx)
                          (loop (cdr gs) 'resumed))
                         ((not (cdr (assq 'successor s)))
-                         (step-successor-backfilled! store (gen-old g) tx (gen-new g))
+                         (step-successor-backfilled! store (gen-old g) (gen-new g))
                          (step-transition-complete! store-id instance tx)
                          (loop (cdr gs) 'resumed))
                         (else
@@ -3776,9 +4312,14 @@
   (define (resume-uncertain! store reg store-id instance old)
     (let* ((r (retired-of store old))
            (seq (and r (not (eq? (car r) 'malformed)) (caddr r)))
-           (mark (registry-mark reg store-id instance old)))
+           ;; THE TOP OF THE STRETCH IS `authorised`, as it is in adopt:
+           ;; the entry has to cover every position anyone was given
+           ;; leave to write, not only the ones that reached the disk.
+           (mark (registry-authorised reg store-id instance old)))
       (when (and seq mark (> mark seq))
-        (step-uncertain-prepared! store old 'registry-ahead seq mark))))
+        (let ((interval (adopt-uncertain-interval old 'registry-ahead seq mark)))
+          (retired-add-uncertain! store old interval)
+          (step-uncertain-prepared! store old interval)))))
 
   ;; A retirement marker bearing a transaction the registry has never
   ;; recorded. Only for the local writer: another writer's marker is
@@ -3851,12 +4392,83 @@
                  (seq (or (discovery-end-seq p) 0))
                  (tx (new-transaction-id))
                  (new (derive-writer-id store tx)))
-            (step-retirement-prepared! store old tx seg off seq)
-            (step-uncertain-prepared! store old (car why) seq
-                                      (and (pair? (cdr why)) (cadr why)))
+            (let* ((interval (adopt-uncertain-interval
+                               old (car why) seq
+                               (and (pair? (cdr why)) (cadr why))))
+                   ;; STEP 1 WRITES THE WHOLE RECORD, SO IT HAS TO CARRY
+                   ;; WHAT THE RECORD ALREADY SAID. An adopt that gets as
+                   ;; far as this write and no further leaves a
+                   ;; retirement with no successor -- and `adopt-needed?`
+                   ;; answers `retired` for that, so the next adopt comes
+                   ;; back here with a reason of its own that records
+                   ;; nothing. Writing only the new interval then
+                   ;; replaced a recorded stretch with `()`: the one
+                   ;; place the coordinates still existed, overwritten by
+                   ;; the retry of the very adopt that computed them.
+                   ;;
+                   ;; IT ADDS, NEVER REPLACES -- the same rule the cache
+                   ;; has always followed, applied to the record that is
+                   ;; now the authority. The union is taken over both,
+                   ;; because a legacy record's stretch lives in the
+                   ;; cache and must survive being written down.
+                   ;;
+                   ;; AND IT DOES NOT RE-DERIVE. `uncertain-load` asks the
+                   ;; writer's own files again, and that derivation
+                   ;; answers `(writer 0 #f)` for ANY failure to read
+                   ;; them -- which is right for a reader deciding what
+                   ;; it can vouch for, and wrong here, because here the
+                   ;; answer is written down and becomes permanent. A
+                   ;; transient failure to read a directory would bake an
+                   ;; open stretch into the record for good, and no
+                   ;; repair and no operator's determination could ever
+                   ;; lift it. What is written down is only what is
+                   ;; already written down: the record's own clause and
+                   ;; the cache's contents.
+                   ;; NEITHER SOURCE MAY BE GUESSED AT. If the record
+                   ;; cannot be read, its clause is unknown and writing a
+                   ;; replacement would put a guess where the history
+                   ;; was. If the CACHE cannot be read, it may hold the
+                   ;; only copy of a stretch -- a torn tail that was
+                   ;; repaired lives on in the cache and nowhere else --
+                   ;; and the step after this one overwrites the cache,
+                   ;; so treating it as empty would take both copies at
+                   ;; once. An adopt that cannot read what it is about to
+                   ;; replace refuses; an operator can then repair or
+                   ;; remove the file, and nothing has been lost in the
+                   ;; meantime.
+                   (recorded (retired-uncertain-strict store old))
+                   (cached (uncertain-cached store old))
+                   (ignored
+                     (when (or (eq? recorded 'unreadable) (eq? cached 'unreadable))
+                       (assertion-violation
+                         'adopt!
+                         "cannot adopt while a writer's uncertainty is unreadable"
+                         (list old
+                               (list 'retired (if (eq? recorded 'unreadable)
+                                                  'unreadable 'readable))
+                               (list 'cache (if (eq? cached 'unreadable)
+                                                'unreadable 'readable))))))
+                   (kept (append (if (eq? recorded 'unreadable) '() recorded)
+                                 (if (or (not cached) (eq? cached 'unreadable)) '() cached)))
+                   (carried
+                     (let loop ((xs (if (and interval (not (member interval kept)))
+                                        (append kept (list interval))
+                                        kept))
+                                (out '()))
+                       (cond ((null? xs) out)
+                             ((member (car xs) out) (loop (cdr xs) out))
+                             (else (loop (cdr xs) (append out (list (car xs)))))))))
+              ;; THE STRETCH IS PART OF STEP 1, not a step after it. A
+              ;; crash between the record and a separate entry used to
+              ;; leave a retirement whose lost stretch nothing recorded,
+              ;; and there is no recovery that can recompute the
+              ;; identity kind afterwards -- the mismatched identity is
+              ;; gone by then. One atomic write carries both.
+              (step-retirement-prepared! store old tx seg off seq carried)
+              (step-uncertain-prepared! store old interval))
             (step-generation-reserved! store store-id instance tx old new)
             (step-owner-installed! store new instance tx old)
-            (step-successor-backfilled! store old tx new)
+            (step-successor-backfilled! store old new)
             (step-transition-complete! store-id instance tx)
             (list 'adopted (list 'from old) (list 'to new)
                   (list 'prefix seg off seq) (list 'reason (car why)))))))
@@ -3889,12 +4501,113 @@
                            (- (char->integer c) (char->integer #\0))
                            (+ 10 (- (char->integer c) (char->integer #\a)))))))))))
 
+  (define (authorised? s seq)
+    (let ((a (session-authorised s)))
+      (and a (>= seq (car a)) (<= seq (cdr a)))))
+
+  ;; ONE RESERVATION FOR THE WHOLE REQUEST, AS A SESSION-BOUND
+  ;; AUTHORISATION. Under the machine lock, atomically: the old water
+  ;; mark must be exactly `start - 1` -- anything else is a rollback and
+  ;; is refused -- and it is then raised to `end`.
+  ;;
+  ;; IT BELONGS TO THIS REQUEST AND LAPSES WITH IT. A retry does not
+  ;; inherit it: the authorisation says "these positions are mine to
+  ;; write now", and a later attempt has to ask again against whatever
+  ;; the mark has become.
+  ;;
+  ;; Over-reserving is safe and under-reserving is not: the uncertain
+  ;; interval a rollback records is `(durable, mark]`, so positions that
+  ;; were reserved and never written are already covered by it.
+  (define (session-authorise! s count)
+    (let* ((store (session-store s))
+           (v (session-view s))
+           (start (and v (view-expect-seq v))))
+      (cond
+        ((or (not v) (not (> count 0))) 'nothing-to-authorise)
+        (else
+         (let ((outcome (reserve-range! store (store-id-of store) (instance-nonce store)
+                                        (session-writer s) start (+ start count -1))))
+           (if (eq? outcome 'reserved)
+               (begin (session-authorised-set! s (cons start (+ start count -1)))
+                      'reserved)
+               outcome))))))
+
+  ;; AN EMPTY OR BACKWARD RANGE IS NOT A RESERVATION. `[10, 9]` reserves
+  ;; nothing and then lets a record be written at 10 outside it -- which
+  ;; is the one thing a reservation exists to prevent. It is refused by
+  ;; name rather than treated as a range of zero positions.
+  (define (reserve-range! store store-id instance writer start end)
+    (unless (and (integer? start) (integer? end) (>= end start))
+      (assertion-violation 'reserve-range! "not a range" (list start end)))
+    (reserve-range-locked! store store-id instance writer start end))
+
+  (define (reserve-range-locked! store store-id instance writer start end)
+    (parameterize ((current-machine-home (machine-home)))
+      (with-machine-lock
+        (lambda ()
+          (let* ((reg (read-registry))
+                 (written (registry-written reg store-id instance writer)))
+            (barrier! 'registry-read)
+            (cond
+              ((registry-inside-store?) (list 'registry-inside-store))
+              ((not (generation-chain-ok? store reg store-id instance))
+               (list 'missing-generation))
+              ;; THE CHECK IS AGAINST `written`, AND IT IS AN UPPER BOUND
+              ;; RATHER THAN AN EQUALITY.
+              ;;
+              ;; `written` at or above this request's first position is a
+              ;; rollback: the registry says records reached the disk
+              ;; there and the log does not hold them. That is the
+              ;; refusal, and it is the same one the single water mark
+              ;; used to make.
+              ;;
+              ;; BELOW IT IS NOT AN ERROR. A registry that has never
+              ;; heard of this writer reads 0 while the log already
+              ;; stands at 2 -- every store whose registry was created
+              ;; after its history, and every fixture that builds a log
+              ;; by hand. Demanding equality would refuse all of them.
+              ;;
+              ;; `authorised` CANNOT BE THE TEST at all: a request
+              ;; reserves before it knows how much of its range it will
+              ;; use, and a refusal uses none, so `authorised` stands
+              ;; above the next request's first position and testing
+              ;; against it would let the first refusal in a store stop
+              ;; every write after it.
+              ((>= (or written 0) start)
+               (list 'registry-ahead (or written 0)))
+              (else
+               ;; AND `written` CATCHES UP TO THE LOG WHILE WE ARE HERE.
+               ;; It is raised in a second machine-lock section after the
+               ;; barrier, so a crash between the two leaves records
+               ;; durable and the registry counting fewer of them -- and
+               ;; a restore to an older backup would then not be
+               ;; detected, because the gate compares `written` with the
+               ;; log's end and both would be low. Everything below
+               ;; `start` is in the log and the delivery barrier of this
+               ;; session's own open made it durable, so raising
+               ;; `written` to `start - 1` states a fact rather than a
+               ;; hope.
+               ;;
+               ;; IT ONLY EVER RAISES. A log SHORTER than `written` is
+               ;; the rollback, and it was refused by the arm above; the
+               ;; max here cannot lower the number that would have fired
+               ;; it.
+               (let* ((caught-up (registry-note-written reg store-id instance writer
+                                                        (- start 1)))
+                      (next (registry-raise caught-up store-id instance writer end)))
+                 (trace-event! 'registry-write (registry-path) #f)
+                 (atomic-write! (registry-path)
+                                (string->utf8
+                                  (string-append (sexpr->string-extended next) "\n"))
+                                'registry)
+                 'reserved))))))))
+
   (define (reserve! store store-id instance writer seq)
     (parameterize ((current-machine-home (machine-home)))
       (with-machine-lock
       (lambda ()
         (let* ((reg (read-registry))
-               (mark (registry-mark reg store-id instance writer)))
+               (mark (registry-authorised reg store-id instance writer)))
           (barrier! 'registry-read)
           (cond
             ;; THE GENERATION CHAIN IS RE-CHECKED HERE, in the same
@@ -4054,7 +4767,29 @@
     (unless (and (list? envelope) (= 3 (length envelope)))
       (assertion-violation 'session-snapshot! "envelope must be (view cut rows)" envelope))
     (let ((v (car envelope)) (cut (cadr envelope)) (rows (caddr envelope)))
+      ;; A SNAPSHOT NAMES RECORDS, SO IT MAKES THEM DURABLE FIRST. This
+      ;; session may have appended and not yet reached its request's
+      ;; barrier; the cut it is about to write would then name records
+      ;; that are on no disk, and the refusal below would fire for a
+      ;; reason the caller cannot act on -- its own unflushed tail. The
+      ;; commit is the same one a request runs, so this is not a second
+      ;; way of making things durable, only an earlier moment to run it.
       (cond
+        ;; A SNAPSHOT NAMES RECORDS, SO IT MAKES THEM DURABLE FIRST. This
+        ;; session may have appended and not yet reached its request's
+        ;; barrier; the cut it is about to write would then name records
+        ;; that are on no disk. The commit is the same one a request
+        ;; runs -- not a second way of making things durable, only an
+        ;; earlier moment to run it.
+        ;;
+        ;; AND A COMMIT THAT FAILED IS NOT ITSELF THE REFUSAL. It is an
+        ;; attempt to extend the durable frontier; when it fails the
+        ;; frontier simply has not moved, and the rule that already
+        ;; exists -- a cut may not reach past it -- gives the caller the
+        ;; actionable fact: how far this writer IS durable. Refusing
+        ;; outright would also refuse a cut at records an earlier
+        ;; request made durable, which this failure says nothing about.
+        ((begin (guard (e (#t #f)) (session-commit! s)) #f) #f)
         ((not (view? v)) (list 'refused 'not-a-view))
         ((not (valid-cut? cut)) (list 'refused 'malformed-cut))
         ((not (list? rows)) (list 'refused 'malformed-rows))
@@ -4077,14 +4812,15 @@
         (else #f))))
 
   ;; THE LOCAL WRITER'S DURABLE FRONTIER INCLUDES THIS SESSION'S OWN
-  ;; APPENDS. `next-seq` only advances when an append comes back
-  ;; committed -- that is, fsynced -- so one less than it is the highest
-  ;; sequence this writer has on disk. Reading the frontier from the
-  ;; load alone would stop at what was there when the session opened,
-  ;; and every snapshot taken after a write would be refused.
+  ;; APPENDS, and it is the one the session has made durable -- not the
+  ;; one it has written. While every append fsynced the two were the
+  ;; same number and this read `next-seq`; they are not the same any
+  ;; more, and reading the written frontier here would let a snapshot
+  ;; name a cut whose records are not on disk. That is a snapshot which
+  ;; is internally a lie and which nothing downstream can detect.
   (define (durable-seq s writer)
     (if (and (session-writer s) (string=? writer (session-writer s)))
-        (- (session-next-seq s) 1)
+        (session-durable-seq s)
         (let ((e (assoc writer (load-session-prefixes (session-load s)))))
           (if e (discovery-end-seq (cdr e)) 0))))
 
@@ -4186,10 +4922,31 @@
          (list 'refused-before-reserve 'no-instance))
         ((pair? identity)
          (list 'refused-before-reserve (list 'instance (cadr identity))))
+        ;; A SEQUENCE INSIDE THIS REQUEST'S AUTHORISATION IS ALREADY
+        ;; RESERVED. Going to the registry again would read a mark this
+        ;; session itself raised and refuse the writer its own
+        ;; reservation.
+        ((authorised? s seq) (write-line! s frame line seq target target-path fresh?))
         (else
-         (let ((outcome (reserve! store (store-id-of store) (instance-nonce store)
-                                  writer seq)))
+         ;; THE WHOLE REQUEST'S RANGE, TAKEN AT ITS FIRST APPEND AND NOT
+         ;; BEFORE. Every check above this point -- the instance, the
+         ;; generation chain, integrity, reset -- has to run first: a
+         ;; reservation taken before them would raise `authorised` for a
+         ;; request that is about to be refused for a reason that has
+         ;; nothing to do with the registry, and would report that
+         ;; refusal in the registry's words instead of its own.
+         ;; THE RANGE IS NAMED ONCE. Writing `(+ seq count -1)` in both
+         ;; the reservation and the session's record of it would be two
+         ;; suppliers of one range -- and a mutation that changed only
+         ;; the first left the session believing it was authorised for a
+         ;; stretch the registry had never heard of.
+         (let* ((last (+ seq (session-pending-count s) -1))
+                (outcome (reserve-range! store (store-id-of store) (instance-nonce store)
+                                         writer seq last)))
            (cond
+             ((eq? outcome 'reserved)
+              (session-authorised-set! s (cons seq last))
+              (write-line! s frame line seq target target-path fresh?))
              ((and (pair? outcome) (eq? (car outcome) 'registry-ahead))
               (list 'refused-before-reserve 'registry-ahead))
              ;; A GENERATION THIS INSTANCE OWNS IS GONE FROM THE STORE.
@@ -4338,6 +5095,23 @@
              (fd (fd-open target-path '(write append))))
         (let ((outcome
                 (guard (e (#t 'write-failed))
+                  ;; MARKED BEFORE THE FIRST BYTE, not after the write
+                  ;; returns. What the flag has to answer is "may there
+                  ;; be bytes on the disk", and a write that raises
+                  ;; halfway is the case where the answer is yes and the
+                  ;; return value never arrives.
+                  ;;
+                  ;; AND THE SEGMENT IS COVERED FROM THE SAME MOMENT, for
+                  ;; the same reason. `note-touched!` used to run only
+                  ;; where the append succeeded, so a partial write left
+                  ;; the segment out of the barrier's list: the caller
+                  ;; was told `unknown` -- send it again and I will tell
+                  ;; you whether it ran -- over bytes that no flush had
+                  ;; been asked about. `unknown` is a promise that a
+                  ;; resend will FIND them, and an unflushed byte is one
+                  ;; a resend may not.
+                  (session-write-started-set! s #t)
+                  (note-touched! s target)
                   (write-all! fd line target-path
                               (lambda (n) (vector-set! wrote 0 n)))
                   ;; THE LAST OF ROTATION'S STOPPING POINTS. Section 13'
@@ -4354,20 +5128,130 @@
                  (list 'reserved-not-written seq)
                  (list 'partial-write seq (vector-ref wrote 0))))
             (else
-             (let ((flushed (guard (e (#t #f)) (fsync! fd target-path 'commit) #t)))
-               ;; THE CLOSE MUST NOT REPLACE THE OUTCOME. A close that
-               ;; fails after a durable write would otherwise escape as
-               ;; an exception, losing the fact that the record IS on
-               ;; disk -- and the caller would resubmit it.
+             ;; NO FSYNC HERE ANY MORE. It used to be one per record --
+             ;; ten per `insert` on the real corpus, and on macOS each is
+             ;; fsync plus F_FULLFSYNC at 5 to 20 ms, which is where 43
+             ;; ms a record came from. The unit was wrong, not merely the
+             ;; cost: what the store promises is that a REQUEST is
+             ;; durable when it is answered, and the barrier at the end
+             ;; of the request is where that promise is kept.
+             ;;
+             ;; SO `committed` HERE MEANS WRITTEN, NOT DURABLE, and the
+             ;; two frontiers say which is which: `next-seq` moves now,
+             ;; `durable-seq` when the barrier has covered every segment
+             ;; this session touched. Nothing outside the session can see
+             ;; the difference -- the lock is held -- and nothing inside
+             ;; it answers a caller before the barrier.
+             ;;
+             ;; THE CLOSE MUST NOT REPLACE THE OUTCOME. A close that
+             ;; fails after a write would otherwise escape as an
+             ;; exception, losing the fact that the record IS on disk --
+             ;; and the caller would resubmit it.
+             (begin
                (close-quietly fd)
-               (if (not flushed)
-                   (list 'written-fsync-failed seq)
-                   (begin
-                     (trace-event! 'apply (cons writer seq) #f)
-                     (session-next-seq-set! s (+ 1 seq))
-                     (session-unconfirmed-set! s seq)
-                     (session-revision-set! s (+ 1 (session-revision s)))
-                     (list 'committed seq target))))))))))
+               (trace-event! 'apply (cons writer seq) #f)
+               (session-next-seq-set! s (+ 1 seq))
+               (note-touched! s target)
+               (session-unconfirmed-set! s seq)
+               (session-revision-set! s (+ 1 (session-revision s)))
+               (list 'committed seq target))))))))
+
+  (define (note-touched! s segment)
+    (unless (memv segment (session-touched s))
+      (session-touched-set! s (cons segment (session-touched s)))))
+
+  ;; THE END OF A REQUEST, AND THE ONLY PLACE THE DURABLE FRONTIER MOVES.
+  ;; Every segment this session wrote into goes through the recovery
+  ;; closure; only when all of them have is what was written also
+  ;; durable, and only then may a caller be told so.
+  ;;
+  ;; IT IS NOT CALLED FOR A SESSION THAT WROTE NOTHING. A request refused
+  ;; before it reserved anything has made no promise, and putting the
+  ;; store's whole recovery closure on the way out of every refusal would
+  ;; charge refusals for a promise they do not make.
+  (define (session-commit! s)
+    (let ((segments (session-touched s))
+          (writer (session-writer s)))
+      (if (null? segments)
+          'nothing-written
+          (begin
+            (for-each (lambda (seg)
+                        (run-barrier! (session-store s) writer seg 'commit 'commit))
+                      (list-sort < segments))
+            ;; AND THE REGISTRY LEARNS HOW FAR RECORDS REACHED THE DISK.
+            ;; It is raised HERE and nowhere else: `written` is the one
+            ;; number the rollback gate trusts, so anything that moved it
+            ;; before the barrier would be promising on the barrier's
+            ;; behalf. One machine-lock section for the whole request --
+            ;; a constant, not a cost that grows with the records.
+            (note-written! s (- (session-next-seq s) 1))
+            (session-durable-seq-set! s (- (session-next-seq s) 1))
+            'committed))))
+
+  (define (note-written! s seq)
+    (note-written-for! (session-store s) (session-writer s) seq))
+
+  ;; THE SAME RECONCILIATION WITHOUT A SESSION. A replay answers `ok` for
+  ;; a record an earlier attempt wrote -- and that attempt may have
+  ;; crashed between its barrier and this write, leaving the record
+  ;; durable and the registry counting fewer. The replay flushes the
+  ;; record and says so; if it did not also reconcile, an
+  ;; ACKNOWLEDGED record could afterwards be restored away without the
+  ;; rollback gate noticing, because the gate compares `written` with the
+  ;; log's end and both would be low.
+  ;;
+  ;; It only ever raises, so a replay of an old record cannot lower a
+  ;; frontier a later request established.
+  ;; THE FRONTIER IS RAISED UNDER THE STORE'S REAL NAME OR NOT AT ALL.
+  ;; `store-id-of` answers "unknown" when the metadata will not read and
+  ;; `instance-nonce` answers #f -- both of which are honest for a reader
+  ;; and neither of which is a key. Keyed by one of those, the update
+  ;; matches no entry, and `registry-update` with no `absent` clause
+  ;; returns the registry untouched: the write is acknowledged, the
+  ;; written frontier never moves, and a store later restored to an
+  ;; earlier sequence walks past the rollback check that frontier exists
+  ;; to fail. The acknowledged request then runs a second time, which is
+  ;; the one outcome this whole mechanism exists to prevent.
+  ;;
+  ;; AND AN UPDATE THAT MATCHED NOTHING IS NOT AN UPDATE. Silence there
+  ;; reads exactly like success, so it is made loud: this is a barrier
+  ;; obligation, and an obligation that cannot be discharged has to say
+  ;; so rather than be skipped.
+  (define (note-written-for! store writer seq)
+    ;; A RENDEZVOUS BEFORE THE IDENTITY IS READ, because no fault can
+    ;; reach these two reads. They go through `read-whole`, which opens a
+    ;; Chez port directly rather than the injected `fd-open`, so
+    ;; `open-fail` passes straight over them -- and the state this guard
+    ;; exists for needs the metadata to read at open and fail HERE. A
+    ;; case parks the process at this point, moves the file aside, and
+    ;; releases it.
+    (barrier! 'written-identity-read)
+    (let ((id (store-id-of store))
+          (nonce (instance-nonce store)))
+      (when (or (string=? id "unknown") (not nonce))
+        (assertion-violation
+          'note-written-for!
+          "cannot raise the written frontier without the store's identity"
+          (list store (list 'store-id id) (list 'instance nonce))))
+      (parameterize ((current-machine-home (machine-home)))
+        (with-machine-lock
+          (lambda ()
+            (let* ((reg (read-registry))
+                   (next (registry-note-written reg id nonce writer seq)))
+              (unless (registry-has-entry? next id nonce writer)
+                (assertion-violation
+                  'note-written-for!
+                  "no registry entry to raise the written frontier on"
+                  (list store id nonce writer seq)))
+              (write-registry! next)))))))
+
+  (define (registry-has-entry? reg store-id instance writer)
+    (exists (lambda (e)
+              (and (water-mark-entry? e)
+                   (equal? (car e) store-id)
+                   (equal? (cadr e) instance)
+                   (equal? (caddr e) writer)))
+            reg))
 
   (define (close-quietly fd) (guard (e (#t (if #f #f))) (fd-close fd)))
 
@@ -4519,8 +5403,58 @@
   ;; this a callback that raised left the session open with its lock
   ;; still held -- an exclusive writer waiting on a reader that had
   ;; already given up -- and load-commit! would still accept it.
+  ;; HOLDING A LOCK DOES NOT ESTABLISH DURABILITY. A writer that died left
+  ;; an unflushed tail; another process takes the SHARED lock, reads
+  ;; those bytes out of the page cache, delivers them, and computes a cut
+  ;; over them -- and a power cut then takes them away. The reader has
+  ;; promised a history that never reached the disk, which is the same
+  ;; promise `log-begin` makes with its takeover barrier and which every
+  ;; reader was making without one.
+  ;;
+  ;; BOTH BARRIERS, OR NEITHER. The records are one half; the manifest
+  ;; and the quarantine marker are the other, because they are what admit
+  ;; a segment to a writer's history -- a reader whose manifest is
+  ;; unflushed delivers history a crash can un-admit. A shared-lock
+  ;; reader and an exclusive writer do not coexist, so flushing a dead
+  ;; writer's residue from the read side is safe.
+  ;;
+  ;; A FAILURE ABORTS THE DELIVERY. A reader that cannot make what it is
+  ;; about to deliver durable has nothing it may say about it, and one
+  ;; that skipped the flush and delivered anyway would be the whole
+  ;; defect again with a warning attached.
+  (define (deliver-barrier! ls cut)
+    (let ((store (load-session-store ls)))
+      (takeover-barrier! store (load-session-prefixes ls) cut)
+      (metadata-flush! store 'deliver-barrier
+                       (lambda (w name) (remembered-version ls w name))
+                       (lambda (w name version) (remember-version! ls w name version)))))
+
+  (define (remembered-version ls w name)
+    (let loop ((es (load-session-barriered ls)))
+      (cond ((null? es) #f)
+            ((and (equal? (car (car es)) w) (equal? (cadr (car es)) name))
+             (caddr (car es)))
+            (else (loop (cdr es))))))
+
+  (define (remember-version! ls w name version)
+    (load-session-barriered-set!
+      ls
+      (cons (list w name version)
+            (remp (lambda (e) (and (equal? (car e) w) (equal? (cadr e) name)))
+                  (load-session-barriered ls)))))
+
+  ;; THE FAILURE ESCAPES; IT IS NOT AN OUTCOME TO BE IGNORED. A caller
+  ;; that read a return value would be free not to, and would then go on
+  ;; writing on top of a state whose delivery never happened -- which is
+  ;; worse than the defect this barrier was added for. The load is marked
+  ;; aborted, its lock released, and the condition raised.
   (define (load-deliver! ls cut on-deliver)
     (check-terminal! 'load-deliver! ls)
+    (guard (e (#t (finish-abort! ls 'deliver-barrier-failed) (raise e)))
+      (deliver-barrier! ls cut))
+    (deliver-after-barrier! ls cut on-deliver))
+
+  (define (deliver-after-barrier! ls cut on-deliver)
     (load-session-outcome-set! ls 'delivering)
     (let ((finished (vector #f)))
       (dynamic-wind

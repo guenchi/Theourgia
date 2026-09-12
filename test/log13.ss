@@ -109,11 +109,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log13work"))
 (define W "wwwc3q2a")
 (define home (string-append d "-home"))
@@ -180,8 +223,15 @@
                                    (view-expect-seq v) "agent:claude" '() payload))))
 (define (with-session proc)
   (parameterize ((log-clock (lambda () fixed-ts)))
+    ;; A SESSION HERE ENDS THE WAY A REQUEST ENDS: append, then the
+    ;; commit barrier, then release the lock. Durability is per REQUEST
+    ;; now -- an append no longer fsyncs -- so a session that stopped
+    ;; before the barrier would leave nothing for the rows below to see.
     (let ((s (log-begin d (lambda args 'applied))))
-      (let ((out (proc s))) (log-end! s) out))))
+      (let ((out (proc s)))
+        (guard (e (#t (if #f #f))) (session-commit! s))
+        (log-end! s)
+        out))))
 (define (registry-text) (let ((b (slurp (registry-path)))) (if (bytevector? b) (utf8->string b) b)))
 
 ;; ONE FIELD AT A TIME. The first version rewrote the whole file, so the
@@ -244,7 +294,12 @@
 ;; entirely would have left it green. The sequence is taken from the
 ;; real flock event onward, with the barrier and delivery in between
 ;; dropped by the projection.
-(want "store-lock, catch-up, frame, machine-lock, registry, then the log, then unlock"
+;; THE LOG'S FLUSH MOVED TO THE END OF THE REQUEST. It used to sit
+;; between the write and the apply, one per record; it is now the
+;; request's barrier, after every record and before the lock is
+;; released. The registry's own flush is unmoved: it belongs to the
+;; reservation, which still happens before the write.
+(want "reserve, write, apply, flush, then record how far it reached"
       (let* ((es (events a-trace))
              (from-lock (let loop ((ls es))
                           (cond ((null? ls) '())
@@ -260,7 +315,28 @@
                                                 acc)))))))
         (filter (lambda (x) x) (map step-of before-append)))
       '("store-lock" "catch-up" "frame" "machine-lock" "registry-check" "registry-write"
-        "registry-fsync" "machine-unlock" "write-log" "fsync-log" "apply" "store-unlock"))
+        ;; THREE REGISTRY FLUSHES AND TWO MACHINE-LOCK SECTIONS, and
+        ;; each is a different sentence.
+        ;;
+        ;; The FIRST section reserves: it raises `authorised`, which is
+        ;; leave to write at these positions, and it happens before the
+        ;; write because a record written without leave is a record
+        ;; nothing vouches for.
+        ;;
+        ;; The middle `registry-fsync` is the BARRIER'S: the registry is
+        ;; a row of the recovery closure -- it is what says this machine
+        ;; holds the store at all -- so the barrier flushes it along
+        ;; with the segment.
+        ;;
+        ;; The LAST section records `written`: how far records actually
+        ;; reached the disk. It comes AFTER the flush that made that
+        ;; true, and it is the one number the rollback gate trusts --
+        ;; raising it any earlier would be promising on the barrier's
+        ;; behalf.
+        "registry-fsync" "machine-unlock" "write-log" "apply"
+        "fsync-log" "registry-fsync"
+        "machine-lock" "registry-check" "registry-write" "registry-fsync"
+        "machine-unlock" "store-unlock"))
 ;; THE EXACT ENTRY. Three unrelated substrings are satisfied by a file
 ;; that happens to contain them in any arrangement -- including one that
 ;; recorded the wrong sequence for the wrong writer.
@@ -271,6 +347,18 @@
         (and (list? d*) (= 1 (length d*))
              (equal? (list-head (car d*) 4) (list "c3" nonce W 3))))
       #t)
+
+;; THE FRONTIER IS RAISED ON A REAL ENTRY UNDER THE STORE'S REAL NAME, OR
+;; THE ANSWER SAYS SO. Two guards sit in that one procedure and they are
+;; exercised elsewhere, because neither is reachable from here: the
+;; identity half needs the metadata to read at open and fail at that one
+;; call, which `log15` reaches by parking the process at a rendezvous and
+;; moving the file aside; the entry half needs a path that reconciles
+;; without reserving, which is a resend, and `q7` drives one.
+;;
+;; Named here because this is the section about that number, and a reader
+;; looking for its guards should be told where they are rather than
+;; conclude there are none.
 
 (printf "== L19(b): registry ahead of the log is a rollback ==\n")
 ;; The in-place restore, which is the case nothing inside the store can
@@ -419,19 +507,176 @@
       (list 'raised (* 2 R) 'no-registry))
 
 (printf "== L19(b'): a reservation that outlives its write ==\n")
-;; The mark is raised before the write, so a crash between them leaves
-;; the registry ahead. The next attempt must refuse rather than write a
-;; record whose sequence is already spoken for.
+;; A RESERVATION THAT WENT UNUSED IS ORDINARY NOW, AND IT COST A FORMAT
+;; CHANGE TO MAKE IT SO. The registry entry says two things: `authorised`
+;; is leave to write at these positions, `written` is how far records
+;; actually reached the disk. A crash between the two leaves `authorised`
+;; above the log's end -- and so does every refusal, and so does every
+;; request that reserves its whole range and uses part of it.
+;;
+;; So the next append PROCEEDS. It used to be refused, and that refusal
+;; was never the intent: it was a consequence of the registry holding one
+;; number that had to mean both things at once. A store could be stopped
+;; by a crash that lost nothing.
+;;
+;; WHAT STILL REFUSES IS THE ROW BELOW: `written` above the log's end,
+;; which is history the store was told it had and no longer has. That is
+;; the question this file exists to answer, and it is unchanged.
 (build!)
 (write-child!)
 (system (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=write-eio-first@commit:file=000001.sexp "
                        "scheme --script " child-path " > " child-out " 2>/dev/null"))
-(want "after a reserved-but-unwritten record, the next append is refused"
+(want "a reservation nobody used does not stop the next append"
       (let ((res (with-session (lambda (s) (append-one! s '(put "w.3" ()))))))
-        (list (car res) (cadr res)))
-      (list 'refused-before-reserve 'registry-ahead))
-(want "and the log is still what it was"
-      (len-of (wpath 1)) (* 2 R))
+        (car res))
+      'committed)
+(want "and the record it wrote is there"
+      (len-of (wpath 1)) (* 3 R))
+;; TWIN: and the registry says so -- `authorised` had already been raised
+;; by the attempt that crashed, and `written` caught up only when the
+;; barrier made the record durable. Two facts, and only the second one
+;; moved.
+(want "TWIN: written caught up to the record, and only at the barrier"
+      (let* ((t (registry-text))
+             (d* (guard (e (#t 'unreadable)) (read (open-string-input-port t))))
+             (e (and (list? d*) (pair? d*) (car d*))))
+        (and (list? e) (= 6 (length e)) (list (list-ref e 3) (list-ref e 5))))
+      (list 3 3))
+
+(printf "== one shape, and the old one is converted rather than tolerated ==\n")
+;; A WATER MARK USED TO BE A SINGLE NUMBER meaning both "authorised to
+;; write here" and "written this far". They are two facts now, and a
+;; five-element entry is the moment before anyone noticed. Its `written`
+;; is its mark, because that is exactly what the mark meant while the two
+;; were the same.
+;;
+;; IT IS CONVERTED ONCE, ON THE NEXT LOAD UNDER THE MACHINE LOCK -- not
+;; read leniently for ever. A format that can be read two ways is a
+;; format two readers will eventually disagree about, and the
+;; disagreement would be about whether a store rolled back.
+(build!)
+(with-session (lambda (s) (append-one! s '(put "w.3" ()))))
+(define (put-registry! text)
+  (call-with-port (open-file-output-port (registry-path) (file-options no-fail))
+    (lambda (o) (put-bytevector o (string->utf8 text)))))
+(define five-element
+  (let* ((t (registry-text))
+         (d* (read (open-string-input-port t)))
+         (e (car d*)))
+    (list-head e 5)))
+(want "CONTROL: the entry this fixture just made has six elements"
+      (length (car (read (open-string-input-port (registry-text)))))
+      6)
+;; THE GUARD IS PART OF THE ROW. Without the upgrade every reader of the
+;; sixth field raises on the five-element entry this row plants, and an
+;; unguarded row would end the file there with no failure count -- which
+;; reads exactly like a run nobody made.
+(want "a five element entry is upgraded on the next load, written = its mark"
+      (guard (e (#t (list 'raised)))
+        (put-registry! (format "~s\n" (list five-element)))
+        ;; any load under the machine lock does it; an append is one
+        (with-session (lambda (s) (session-applied! s 0 (list (cons W 3)))
+                                  (append-one! s '(put "w.4" ()))))
+        (let ((e (car (read (open-string-input-port (registry-text))))))
+          (list (length e) (list-ref e 5))))
+      (list 6 4))
+;; TWIN: and the upgrade is what the ROLLBACK GATE then reads. Before it,
+;; `written` would have been missing entirely.
+(want "TWIN: and the upgraded entry still names this store, instance and writer"
+      (let ((e (car (read (open-string-input-port (registry-text))))))
+        (list (list-ref e 0) (list-ref e 2) (list-ref e 4)))
+      (list (list-ref five-element 0) (list-ref five-element 2) 'active))
+
+;; A STORE ID THAT IS NOT A STRING IS NOT A STORE ID. `format-1?` checks
+;; the format field and nothing else, so metadata saying `(store-id 7)`
+;; reaches the registry -- and an entry keyed by 7 is one the water-mark
+;; reader does not recognise, so `written` is never raised for it and
+;; every reservation appends a duplicate. The store would then
+;; acknowledge writes with no working rollback witness.
+;;
+;; "unknown" IS THE SAME ANSWER AS AN ABSENT ID, deliberately: both are
+;; "this metadata does not say", and neither may become a key of a shape
+;; the rest of the file cannot read.
+(build!)
+(want "a store id that is not a string is not used as one"
+      (begin
+        (put! (string-append d "/meta.sexp")
+              (string->utf8 "((format 1) (store-id 7))\n"))
+        (store-id-of d))
+      "unknown")
+(want "TWIN: a string one is used as it stands"
+      (begin
+        (put! (string-append d "/meta.sexp")
+              (string->utf8 "((format 1) (store-id \"real\"))\n"))
+        (store-id-of d))
+      "real")
+;; TWIN: and an absent id answers the same way, which is what makes the
+;; row above a statement about the shape rather than about that one value.
+(want "TWIN: and an absent id answers the same"
+      (begin
+        (put! (string-append d "/meta.sexp") (string->utf8 "((format 1))\n"))
+        (store-id-of d))
+      "unknown")
+;; AND THE ROW IS ABOUT THE SHAPE, SO IT HAS TO ASK ABOUT MORE THAN ONE
+;; WRONG SHAPE. A check written as "not a number" rather than "is a
+;; string" passes the row above and still lets a symbol, a boolean or a
+;; list become a registry key. The empty list is the one that would
+;; survive longest unnoticed: in Scheme it is TRUE, so a guard written
+;; as `(if id id "unknown")` hands it straight back.
+(for-each
+  (lambda (pair)
+    (want (string-append "a store id written as " (car pair) " is not used as one")
+          (begin
+            (put! (string-append d "/meta.sexp")
+                  (string->utf8 (string-append "((format 1) (store-id " (cdr pair) "))\n")))
+            (store-id-of d))
+          "unknown"))
+  (list (cons "a symbol" "sym")
+        (cons "true" "#t")
+        (cons "false" "#f")
+        (cons "the empty list" "()")
+        (cons "a list" "(a b)")
+        (cons "a vector" "#(1 2)")
+        ;; AN IMPROPER PAIR IS NOT A LIST, so a check written as a
+        ;; blacklist of the shapes above -- number, symbol, boolean,
+        ;; list, vector -- lets it through. It is the shape a blacklist
+        ;; reaches last, which is what makes it worth a row.
+        (cons "an improper pair" "(a . b)")
+        (cons "a string beside something else" "(\"s\" . 1)")
+        ;; A CHARACTER AND A BYTEVECTOR are the two remaining datum
+        ;; classes the extended reader can produce, and a blacklist long
+        ;; enough to cover everything above still admits them. The list
+        ;; is here to stop being the thing under test: what is being
+        ;; asked is "is it a string", and the answer must not depend on
+        ;; how many other shapes anyone thought of.
+        ;; THE SYNTAX THIS CODEC DOES NOT HAVE. `#\a` and `#vu8(1 2)`
+        ;; are Scheme, but metadata is read with the extended codec, and
+        ;; that codec RAISES on both -- the guard turns the raise into
+        ;; #f and the answer is "unknown" without the check ever seeing
+        ;; a character or a bytevector. Kept, and labelled for what it
+        ;; actually is: unreadable metadata answers like absent
+        ;; metadata. It is not evidence about either type.
+        (cons "syntax the codec cannot read" "#\\a")))
+;; A BYTEVECTOR, SPELLED THE WAY THIS CODEC SPELLS ONE. `#vu8"AQI="` is
+;; the form that parses, and it is the shape a check written as a
+;; blacklist of the types above reaches last.
+;;
+;; THE STIMULUS IS ASSERTED BEFORE THE ANSWER IS. A row whose input
+;; silently failed to parse would read exactly like a row whose input was
+;; correctly refused -- both say "unknown" -- so this one first requires
+;; that the text really did become a bytevector.
+(want "CONTROL: this text really does parse to a bytevector"
+      (let ((d (guard (e (#t 'raised))
+                 (string->sexpr-extended "((format 1) (store-id #vu8\"AQI=\"))"))))
+        (and (pair? d) (bytevector? (cadr (assq 'store-id d)))))
+      #t)
+(want "a store id written as a bytevector is not used as one"
+      (begin
+        (put! (string-append d "/meta.sexp")
+              (string->utf8 "((format 1) (store-id #vu8\"AQI=\"))\n"))
+        (store-id-of d))
+      "unknown")
+(build!)
 
 (printf "== the nonce is the registry key, so it is verified ==\n")
 ;; Changing the nonce alone -- machine, device and inode all still right
@@ -466,4 +711,5 @@
       'refused)
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log13 complete\n")

@@ -22,10 +22,10 @@
           make-write-request write-request? store-successors store-intervals
           request-verdict)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
-          (rnrs exceptions) (rnrs io ports) (rnrs files)
+          (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
           (theourgia request)
-          (only (theourgia wire) decode-line)
+          (only (theourgia wire) decode-line storable-decode)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
           (only (theourgia log)
                 log-open load-deliver! load-commit!
@@ -42,10 +42,12 @@
                 instance-install! owner-install! writer-directory store-writers
                 store-register!
                 uncertain-load run-barrier! retired-successor retired-of
+                session-commit! session-pending-count-set! note-written-for!
+                session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
-                file-is-directory?)
+                file-is-directory? report-fault?)
           (only (igropyr crypto) sha256 bytevector->hex)
           (theourgia reduce))
 
@@ -68,14 +70,37 @@
         (let ((e (assoc writer cut)))
           (and e (<= seq (cdr e))))))
 
-  (define (deliver-into r cut)
+  ;; ONE PLACE TURNS A STORED RECORD BACK INTO A PAYLOAD, and both paths
+  ;; that read records use it.
+  ;;
+  ;; THE ENCODING WAS ONE-WAY. `storable-encode` is applied when a record
+  ;; is appended; delivery never applied its inverse, so the SAME record
+  ;; reduced two ways: written and reduced in memory it was
+  ;; `(("#%char" 97))`, and read back from disk it was
+  ;; `(("#%quote" ("#%char" 97)))`. Both reduce without complaint, and
+  ;; their state hashes differ -- so a successful write returned a hash
+  ;; that reopening the store immediately contradicted.
+  ;;
+  ;; THE EVIDENCE PATH HAD ITS OWN DECODE and this is now that decode:
+  ;; the same defect was found and fixed once, in one of the two readers,
+  ;; and the other was never searched for. A shared definition is what
+  ;; stops the next reader being written without one.
+  (define (stored->payload x)
+    (guard (e (#t x)) (storable-decode x)))
+
+  ;; A WRITE SESSION'S LOAD CONFIRMS ONLY ITS FINAL CUT. A record this
+  ;; pass applied can be taken back by a later one in the same pass -- a
+  ;; duplicate arriving after it contests its slot -- so a session that
+  ;; answered `applied` as each record went by would be promising about
+  ;; a state the rest of the pass may still change.
+  (define (deliver-into r cut . defer)
     (lambda (writer seg off seq ts actor deps payload)
       (if (not (within? cut writer seq))
           'skipped
-          (let ((answer (reduce-apply! r writer seq deps payload)))
+          (let ((answer (reduce-apply! r writer seq deps (stored->payload payload) actor)))
             (cond
               ((eq? answer 'accepted)
-               (if (applied? r writer seq) 'applied 'pending))
+               (if (and (null? defer) (applied? r writer seq)) 'applied 'pending))
               ;; A record the log delivers twice in one pass is the log's
               ;; business, not a reason to stop the writer: it is already
               ;; in the state, so the honest answer is applied.
@@ -93,9 +118,19 @@
   ;; after the snapshot's cut rather than at the beginning.
   (define (replay store cut)
     (let ((ls (log-open store)))
+      ;; A SNAPSHOT THAT CANNOT BE REBUILT FROM IS NOT A SNAPSHOT. The
+      ;; reduction may have to fold its records again -- a duplicate
+      ;; arriving later contests a slot that was already applied -- and
+      ;; it can only do that from the records it kept. A snapshot
+      ;; written before those were carried has the state and not the
+      ;; records, so seeding from it would leave the reduction unable to
+      ;; answer the one question it is now responsible for. The log is
+      ;; the authority and it is still there; the snapshot is a cache and
+      ;; this is what being a cache means.
       (let* ((rows (and (not cut) (load-snapshot-rows ls)))
-             (r (if rows (rows->state rows) (reduce-empty)))
-             (from (if rows (load-snapshot-cut ls) '())))
+             (usable (and rows (assq 'request-history rows) rows))
+             (r (if usable (rows->state usable) (reduce-empty)))
+             (from (if usable (load-snapshot-cut ls) '())))
         (load-deliver! ls from (deliver-into r cut))
         (load-commit! ls)
         r)))
@@ -414,8 +449,20 @@
                                            ((not whole?) (quote torn))
                                            ((and fork (>= seq fork)) (quote quarantined))
                                            (else placement))))
+                             ;; THE PAYLOAD IS DECODED HERE, ONCE. What a
+                             ;; record holds on disk is the storable
+                             ;; encoding, where a list beginning with a
+                             ;; reserved marker is wrapped in `#%quote` so
+                             ;; that ordinary data can never be mistaken
+                             ;; for a marker. The request layer compares
+                             ;; VALUES -- a plan's declared intent against
+                             ;; what a record did -- and a `("#%new" k)`
+                             ;; it never sees unwrapped is a marker it can
+                             ;; never bind.
                              (cons (list (cons writer seq) actor
-                                         (list-ref r 4) (list-ref r 5) where)
+                                         (list-ref r 4)
+                                         (stored->payload (list-ref r 5))
+                                         where)
                                    out))
                            out)))))))))
 
@@ -460,13 +507,14 @@
   ;; a hang is the failure a suite reports worst. It hung the first time
   ;; this was wired up.
   (define (store-evidence store identity)
-    (evidence-for store identity (reduce-applied-cut (open-and-reduce store))))
+    (let ((state (open-and-reduce store)))
+      (evidence-for store identity (reduce-applied-cut state) (reduce-gates state))))
 
   (define (resolves? payload identity)
     (and (resolution? payload)
          (identity=? (resolution-target payload) identity)))
 
-  (define (evidence-for store identity delivered)
+  (define (evidence-for store identity delivered . marks)
     (let ()
       (let loop ((ws (store-writers store)) (out (quote ())))
         (if (null? ws)
@@ -495,12 +543,27 @@
                                       ;; would run it again.
                                       (or (identity=? (actor-identity actor) identity)
                                           (resolves? (cadddr rec) identity))
+                                      ;; THE MARKS COME FROM THE REDUCTION,
+                                      ;; which is the only place that knows
+                                      ;; them. They were always `()` here,
+                                      ;; so every filter that reads a mark
+                                      ;; was a filter over nothing and the
+                                      ;; cases that exercised them were
+                                      ;; feeding hand-built evidence to a
+                                      ;; supplier the store never fed.
                                       (make-evidence (car rec) actor (caddr rec) (cadddr rec)
                                                      (list-ref rec 4)
                                                      (and (eq? (list-ref rec 4) (quote valid-history))
                                                           (let ((have (assoc (car (car rec)) delivered)))
                                                             (and have (<= (cdr (car rec)) (cdr have)))))
-                                                     (quote ())))))
+                                                     ;; A LIST OF MARKS, because
+                                                     ;; that is what `ev-marked?`
+                                                     ;; reads. The reduction holds
+                                                     ;; one mark per event, so the
+                                                     ;; list is empty or a single.
+                                                     (let ((m (and (pair? marks)
+                                                                   (assoc (car rec) (car marks)))))
+                                                       (if m (list (cdr m)) (quote ())))))))
                              (writer-evidence store (car ws)))))
                     out))))))
 
@@ -543,11 +606,18 @@
            (cyclic (cdr (assq (quote conflicts) structure)))
            (unplaced (cdr (assq (quote unplaced) structure)))
            (orphans (cdr (assq (quote orphans) structure)))
+           (nested (cdr (assq (quote nested-documents) structure)))
            (pending (reduce-pending state)))
       (append
         (map (lambda (id) (list (quote conflict) id (quote cycle))) cyclic)
         (map (lambda (id) (list (quote conflict) id (quote unplaced))) unplaced)
         (map (lambda (id) (list (quote orphan) id)) orphans)
+        ;; A DOCUMENT SOMEWHERE A DOCUMENT MAY NOT BE. The write path
+        ;; refuses to make one, so this is history from before that rule
+        ;; or from another store: something the store holds and cannot
+        ;; show the way its own rules say it should, which is exactly
+        ;; what this verb is for.
+        (map (lambda (id) (list (quote nested-document) id)) nested)
         (apply append
                (map (lambda (rec)
                       (let ((writer (car rec)) (seq (cadr rec)) (deps (caddr rec)))
@@ -963,6 +1033,41 @@
          (list 'error 'changed (list 'current (block-hash state id))))
         (else #f))))
 
+  ;; A DOCUMENT IS A FILE, AND A FILE IS NOT INSIDE ANOTHER FILE. Import
+  ;; never produces a document under a document, and export has no file
+  ;; for one: it writes one file per top-level document, so a nested one
+  ;; is folded into its ancestor's file as a section -- losing its front
+  ;; matter and taking an empty heading, because a document has no title
+  ;; to make one from. Read on its own it is still a document and keeps
+  ;; its front matter.
+  ;;
+  ;; THE TWO READINGS ARE BOTH DEFENSIBLE, WHICH IS THE PROBLEM. A state
+  ;; that means two things is refused at the entrance rather than given
+  ;; two interpretations, because every later rule would then have to
+  ;; choose one and they would not all choose the same.
+  ;; THE PARENT A BLOCK HAS NOW, and whether a block is a document.
+  ;; `nested-document?` asks about a block being DESCRIBED; these two ask
+  ;; about one that already exists, which is what `set` needs.
+  (define (block-parent state id)
+    (let ((b (state-read state id)))
+      (and b (let ((p (assq 'position (cdr b))))
+               (and p (cadr p))))))
+
+  (define (document? state id)
+    (let ((e (assq 'kind (block-fields state id))))
+      (and e (eq? (cdr e) 'doc))))
+
+  (define (nested-document? state parent fields)
+    (and (not (eq? parent 'root))
+         (let ((e (assq 'kind fields)))
+           (and e (eq? (cdr e) 'doc)))))
+
+  ;; The fields a block has now, as an alist, for asking about a block
+  ;; the caller named rather than one it is describing.
+  (define (block-fields state id)
+    (let ((b (state-read state id)))
+      (if b (cdr (assq 'fields b)) '())))
+
   ;; RESOLUTION ANSWERS EITHER A PAYLOAD OR AN ERROR, and it does the
   ;; whole check before the sequence number is reserved: a refusal after
   ;; a reservation leaves a hole in the log that the next open has to
@@ -978,6 +1083,8 @@
              ((and (not (eq? parent 'root)) (not (known? state parent))) (missing parent))
              ((and (not (eq? parent 'root)) (deleted? state parent))
               (list 'error 'deleted parent))
+             ((nested-document? state parent fields)
+              (list 'error 'doc-must-be-top-level (list 'parent parent)))
              (else
               (let ((ord (ord-for state parent after)))
                 (if (and (pair? ord) (memq (car ord) '(error refused)))
@@ -991,10 +1098,33 @@
         ;; record exists, so a tag is never inside the cut it binds.
         ((tag)
          (list 'tag (cadr i) (reduce-applied-cut state)))
+        ;; `set` CAN MAKE A BLOCK INTO A DOCUMENT, and that is the third
+        ;; way to arrive at a shape the other two refuse. `insert` and
+        ;; `move` both ask `nested-document?`; setting `kind` to `doc` on
+        ;; a block that already sits under one reached the same shape
+        ;; without passing either, so the store held a nested document
+        ;; and `conflicts` reported it -- while the README said the write
+        ;; path refuses to create one.
+        ;;
+        ;; A RULE ENFORCED AT TWO OF ITS THREE ENTRANCES is not enforced.
         ((set)
          (let ((id (cadr i)))
            (cond
              ((not (known? state id)) (missing id))
+             ;; ANY NON-ROOT PARENT, not merely a parent that is itself a
+             ;; document. `insert` and `move` refuse a document anywhere
+             ;; but the root; asking only about the immediate parent let
+             ;; `document -> section -> section` be relabelled, and the
+             ;; store then held a nested document by a third route while
+             ;; the other two were shut. A rule stated three ways is a
+             ;; rule with two of them wrong.
+             ((and (eq? (caddr i) 'kind)
+                   (pair? (cdddr i))
+                   (eq? (cadddr i) 'doc)
+                   (let ((pos (block-parent state id)))
+                     (and pos (not (eq? pos 'root)))))
+              (list 'error 'doc-must-be-top-level
+                    (list 'parent (block-parent state id))))
              ((null? (cdddr i)) (list 'set id (caddr i)))
              (else (list 'set id (caddr i) (cadddr i))))))
         ((del)
@@ -1004,6 +1134,8 @@
            (cond
              ((not (known? state id)) (missing id))
              ((and (not (eq? parent 'root)) (not (known? state parent))) (missing parent))
+             ((nested-document? state parent (block-fields state id))
+              (list 'error 'doc-must-be-top-level (list 'parent parent)))
              (else
               (let ((ord (ord-for state parent after)))
                 (if (and (pair? ord) (memq (car ord) '(error refused)))
@@ -1017,7 +1149,11 @@
              ;; dangling; only an id nobody has ever seen is an error.
              ((not (known? state to)) (missing to))
              (else (list (car i) from (caddr i) to)))))
-        (else (list 'error 'unknown-verb (car i))))))
+        ;; SPELLED, FOR THE SAME REASON AS THE OTHER ONE. An intent's verb
+        ;; is whatever the caller wrote, so the refusal that names it must
+        ;; not be the thing that carries it back.
+        (else (list 'error 'unknown-verb
+                    (list 'spelling (datum-spelling (car i))))))))
 
   ;; A REFUSAL AN OPERATOR CANNOT ACT ON IS HALF AN ANSWER. These are
   ;; the reasons where there is one thing to do about it, and saying so
@@ -1031,12 +1167,77 @@
       ((registry-inside-store) 'move-the-registry-outside-the-store)
       (else #f)))
 
+  ;; THE TWO HALVES OF ONE OUTCOME GET TWO ANSWERS, because they state
+  ;; opposite facts. `reserved-not-written` says the log is untouched, so
+  ;; a resend finds no evidence and runs -- which is right, and a plain
+  ;; error says it. The other two leave bytes a later replay may read
+  ;; back as a committed record, and the only word for that is `unknown`:
+  ;; it is the one answer whose protocol is "ask me again". One word for
+  ;; both left a caller holding a term the response table does not
+  ;; define, in the state that most needs a defined one.
+  ;;
+  ;; IT IS ONE FUNCTION BECAUSE THERE ARE TWO CALLERS. The records a
+  ;; caller names and the records the store writes for itself -- the
+  ;; plan, the receipt -- reach the disk the same way and must be
+  ;; answered for the same way; the second of them kept the raw outcome
+  ;; for a while, and a torn receipt was reported in a word the table
+  ;; does not define.
+  ;; AND A REFUSAL IS NOT AN OUTCOME AT ALL. `refused-before-reserve`
+  ;; means the append never started: the store declined it, for a reason
+  ;; the caller can act on -- a registry standing ahead of the log asks
+  ;; for an adopt. Translating that into `unknown` would be true about
+  ;; the disk and useless to the caller, who would re-ask a question
+  ;; already answered. The path that writes a caller's own records has
+  ;; always kept the reason; the path that writes the store's own
+  ;; records reached this helper with every outcome, so a receipt
+  ;; refused for a nameable reason came back as `unknown`.
+  (define (write-outcome->answer outcome seq)
+    (cond
+      ((eq? (car outcome) 'refused-before-reserve)
+       (let ((why (if (pair? (cdr outcome)) (cadr outcome) '())))
+         (append (list 'error 'refused why)
+                 (let ((r (remedy-for why)))
+                   (if r (list (list 'remedy r)) '())))))
+      ((eq? (car outcome) 'reserved-not-written)
+       (list 'error 'not-written (car outcome) (list 'sequence seq)))
+      (else
+       (list 'error 'unknown (list (car outcome) (list 'sequence seq))))))
+
   (define (block-ids-of payload writer seq)
     (case (car payload)
       ((put) (list (block-id writer seq)))
       ((set del move) (list (cadr payload)))
       ((link unlink) (list (cadr payload) (cadddr payload)))
       (else '())))
+
+  ;; COMMITTING AND DESCRIBING ARE TWO ACTS, AND ONLY THE FIRST DECIDES
+  ;; THE ANSWER'S HEAD. Section 7.3 says `ok` means the work is durable;
+  ;; read the other way, an error that is not `unknown` has to mean no
+  ;; record. Building the report runs AFTER the barrier, and any failure
+  ;; in it used to turn a durable write into an error -- so a client
+  ;; retried a write that had already happened, and a `set` gained a
+  ;; second record.
+  ;;
+  ;; MEASURED, BEFORE THIS SPLIT: a relation name that the wire writer
+  ;; will not emit bare made `block-hash` raise while the answer was
+  ;; being assembled. The record was correct and on disk; the caller was
+  ;; told `(error internal ...)`. Records went from three to four.
+  ;;
+  ;; SO THE HASHES ARE A SECTION THAT MAY BE MISSING. `(state unavailable
+  ;; (reason ...))` says the work was done and this part could not be
+  ;; described, which is the truth; an error said something that was not.
+  (define (failure-text e)
+    (cond
+      ((and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) 'sexpr-error))
+       (vector-ref e 1))
+      ((and (condition? e) (message-condition? e)) (condition-message e))
+      (else "unexpected failure")))
+
+  (define (state-section state payload writer seq)
+    (guard (e (#t (list 'state 'unavailable (list 'reason (failure-text e)))))
+      (if (report-fault?)
+          (list 'state 'unavailable (list 'reason "injected report failure"))
+          (list 'state (state-report state (block-ids-of payload writer seq))))))
 
   (define (state-report state ids)
     (map (lambda (id) (cons id (block-hash state id)))
@@ -1151,7 +1352,7 @@
         ((eq? (cadr (car rs)) 'unreadable) (car rs))
         (else (loop (cdr rs))))))
 
-  (define (request-verdict store req delivered)
+  (define (request-verdict store req delivered plan-size . marks)
     (let* ((after (write-request-after req))
            (identity (request-identity after (write-request-req-id req)))
            (fingerprint (request-fingerprint (write-request-who req)
@@ -1165,74 +1366,279 @@
          => (lambda (why) (list 'unknown why)))
         ((cadr successors)
          => (lambda (why) (list 'unknown why)))
+        ;; A REQUEST OF SEVERAL INTENTS IS A BATCH, AND A BATCH IS ASKED
+        ;; THE BATCH'S QUESTION. Its own identity names the receipt; its
+        ;; items live under identities of their own, so the evidence has
+        ;; to be gathered for both and the rules that decide it are the
+        ;; receipt's, not a plan's.
+        (plan-size
+         (batch-verdict
+           (batch-state plan-size
+                        (batch-evidence store identity req plan-size delivered
+                                        (if (pair? marks) (car marks) '()))
+                        fingerprint after (car loaded) #t (car successors))))
         (else
          (request-decision identity fingerprint (write-request-who req) after
-                           (evidence-for store identity delivered)
+                           (evidence-for store identity delivered
+                                         (if (pair? marks) (car marks) '()))
                            (car loaded)
                            #f
                            (car successors))))))
+
+  ;; RESERVING MORE THAN THE REQUEST USES IS ORDINARY, AND IT COST A
+  ;; FORMAT CHANGE TO MAKE IT SO. While the registry held one number,
+  ;; reserving five positions and writing two left that number above the
+  ;; log's end -- which is exactly what the rollback gate reads as
+  ;; history the store was told it had and no longer has. It would have
+  ;; demanded an adopt for a store nothing went wrong with, and any
+  ;; refusal (which writes nothing at all) would have triggered it.
+  ;;
+  ;; The entry now says both things: `authorised` is leave to write,
+  ;; `written` is how far records reached the disk, and the gate reads
+  ;; the second. So a request may reserve its whole range before it knows
+  ;; how much of it it will use.
+  ;;
+  ;; THE REGISTRY IS ASKED ONCE FOR THE WHOLE REQUEST. It used to be read,
+  ;; raised and rewritten per record -- two more flushes each -- so
+  ;; removing the log's own fsync alone left the cost still growing with
+  ;; the number of records. The count is the records this request will
+  ;; write: one per intent, and one more for the receipt when there is a
+  ;; batch.
+  ;;
+  ;; OVER-RESERVING IS SAFE AND UNDER-RESERVING IS NOT: the uncertain
+  ;; interval a rollback records is `(durable, mark]`, so positions
+  ;; reserved and never written are already covered by it, while a
+  ;; position written outside the reservation is one nothing vouches for.
+  ;; IT ANNOUNCES THE COUNT; IT DOES NOT RESERVE. The reservation is
+  ;; taken by the first append, after every check that has to precede
+  ;; one -- the instance, the generation chain, integrity, reset. Taken
+  ;; here it would raise `authorised` for a request about to be refused
+  ;; for a reason that has nothing to do with the registry, and would
+  ;; report that refusal in the registry's words instead of its own.
+  ;;
+  ;; The count is the records this request will write: one per intent,
+  ;; and one more for the receipt when there is a batch.
+  (define (announce-count! s intents)
+    (let ((n (length intents)))
+      (session-pending-count-set! s (if (> n 1) (+ n 1) n))))
+
+  ;; NO SUCCESS IS ANSWERED BEFORE THE BARRIER. A request of two intents
+  ;; whose first was written and whose second was refused must not hand
+  ;; back an `ok` for the first: the caller would take it as durable, and
+  ;; nothing has made it so yet. And a barrier that fails makes the WHOLE
+  ;; request answer one `unknown` -- not an `ok` for the part that got
+  ;; through, because what got through is exactly what nobody can now
+  ;; promise.
+  ;;
+  ;; A REQUEST THAT WROTE NOTHING DOES NOT PASS IT. Nothing it describes
+  ;; is claimed to survive a crash, and putting the store's whole
+  ;; recovery closure on the way out of every refusal would charge
+  ;; refusals for a promise they do not make.
+  ;; IT TAKES A THUNK, AND THAT IS THE WHOLE OF THE FIX. As an argument
+  ;; the answers were computed BEFORE the call, so a raise anywhere in
+  ;; the intent loop unwound past this function and the barrier never
+  ;; ran -- which is the one state in which no honest answer is left to
+  ;; give. `unknown` means "send it again and I will tell you whether it
+  ;; ran", and that promise rests entirely on the records still being
+  ;; there to be found: records on disk with no barrier behind them are
+  ;; records a resend may not see, and not seeing them means doing the
+  ;; work a second time. The barrier is not the tail of the happy path.
+  ;; It is what every exit owes.
+  (define (commit-then s thunk)
+    (let* ((answers (guard (e (#t (vector 'raised e))) (thunk)))
+           (outcome (guard (e (#t 'barrier-failed)) (session-commit! s))))
+      (cond
+        ((eq? outcome 'barrier-failed)
+         (list (list 'error 'unknown (list 'commit-barrier-failed))))
+        ;; THE RAISE IS PASSED ON, BECAUSE SOMEBODY ELSE ALREADY ASKS
+        ;; THIS QUESTION. `with-store-write`'s own guard encloses this
+        ;; call; it tests the same flag, answers the same word, and adds
+        ;; the section this arm could not: the events it wrote. A second
+        ;; arm here was a second supplier of one answer, and the two did
+        ;; not agree.
+        ;;
+        ;; MEASURED, with a reducer made to raise on a receipt payload --
+        ;; the one place a raise reaches here with bytes already on the
+        ;; disk, since `write-line!` catches everything from the moment
+        ;; the flag goes up. With the arm:
+        ;;
+        ;;   (error unknown (interrupted "..."))
+        ;;
+        ;; Without it, through the enclosing guard:
+        ;;
+        ;;   (error unknown (execution-failed "...") (events (("..." . 2))))
+        ;;
+        ;; `unknown` promises that a resend will find the records, and
+        ;; the events are what a caller looks for them by. The flag-down
+        ;; readings were identical either way: the raise travels out.
+        ;;
+        ;; The commit above still runs first, so what this passes on is a
+        ;; failure over a log that has already been flushed.
+        ((vector? answers)
+         (raise (vector-ref answers 1)))
+        (else answers))))
+
+  ;; THE BATCH RULES AND THE REQUEST RULES ANSWER IN DIFFERENT WORDS FOR
+  ;; THE SAME FACTS, so one of them is translated rather than both being
+  ;; understood at every call site. `not-committed` is the batch's way of
+  ;; saying what `execute` says: nothing ran, and the positions it could
+  ;; have occupied are clear.
+  ;;
+  ;; `partial` AND `planned` ARE NOT REFUSALS EITHER, but this path
+  ;; cannot yet act on them: resuming a batch means running the items
+  ;; from k+1 under their own identities, and that is not written. Until
+  ;; it is they are reported as they are rather than quietly re-run from
+  ;; the beginning, which is the one answer that would duplicate work.
+  (define (batch-verdict v)
+    (case (car v)
+      ((not-committed) (list 'execute))
+      ((committed) (list 'replay (caddr v)))
+      (else v)))
+
+  ;; THE RECEIPT AND EVERY ITEM. The receipt is a record of the batch's
+  ;; own identity; each item is a record of `(batch <req> k)`, which is a
+  ;; different identity -- so a scan for one of them finds none of the
+  ;; others, and a batch asked about only its own identity would see a
+  ;; receipt and conclude that nothing had run.
+  (define (batch-evidence store identity req n delivered marks)
+    (append
+      (evidence-for store identity delivered marks)
+      (let loop ((k 0) (out '()))
+        (if (= k n)
+            (apply append (reverse out))
+            (loop (+ k 1)
+                  (cons (evidence-for store
+                                      (cons (car (write-request-after req))
+                                            (list 'batch (write-request-req-id req) k))
+                                      delivered marks)
+                        out))))))
 
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
           (state (reduce-empty)))
       (let ((s (log-begin store (deliver-into state #f))))
-        ;; THE FRONTIER IS REPORTED ONCE DELIVERY IS OVER, not inferred
-        ;; from the per-record answers. A record is answered as it
-        ;; arrives, and a record whose premise has not arrived yet is
-        ;; answered `pending` -- truthfully. But applying a later record
-        ;; can drain it, and nothing goes back to revise the earlier
-        ;; answer. Without this line the session's applied cursor stops
-        ;; at the first such record forever, `predecessor-applied?` stays
-        ;; false, and `session-view` hands back #f: the store cannot be
-        ;; written to at all. It bites exactly when the local writer's
-        ;; own record declares a dep on a writer the load delivers
-        ;; AFTER it, which is decided by nothing more than the two
-        ;; writers' names.
-        (session-applied! s (session-epoch s) (reduce-applied-cut state))
-        ;; THE QUESTION IS ASKED HERE AND NOT BEFORE. Delivery has just
-        ;; finished, so "there is no evidence of this request" is a
-        ;; statement about the store rather than about how far the reader
-        ;; had got -- and the lock has been held throughout, so nothing
-        ;; can arrive between the answer and the act.
-        (let ((verdict (and req (request-verdict store req
-                                                 (reduce-applied-cut state)))))
-          (if (and verdict (not (eq? (car verdict) 'execute)))
-              ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. `log-end!`
-              ;; releases the store's exclusive lock, and the answer to a
-              ;; replay performs a barrier -- so computing it afterwards
-              ;; would certify, outside the lock, a state another session
-              ;; was free to change in between. The guard is what makes
-              ;; that true on the failing path too: a barrier that raises
-              ;; must still end the session.
-              (let ((answer (guard (e (#t (log-end! s) (raise e)))
-                              (request-answer s store verdict))))
-                (log-end! s)
-                (list answer))
-              (let ((answers
-                      (guard (e (#t (log-end! s) (raise e)))
-                        (let ((intents (proc state (session-view s))))
-                          (if (and req (not (= 1 (length intents))))
-                              ;; A REQUEST OF SEVERAL SUB-OPERATIONS NEEDS
-                              ;; A PLAN RECORD AND A RECEIPT BEFORE THE
-                              ;; FIRST OF THEM, and neither is written from
-                              ;; here yet. Writing the records anyway would
-                              ;; give each an actor whose plan-event is #f
-                              ;; -- a sub-operation belonging to no plan --
-                              ;; and a retry would then read a set of
-                              ;; unrelated single requests that happen to
-                              ;; share an id. Refusing names what is
-                              ;; missing; the wrong actor would not.
-                              (list (list 'error 'request-not-single
-                                          (list 'intents (length intents))))
-                              (let ((bad (and req (cursor-unreachable store s req))))
-                                (if bad
-                                    (list bad)
-                                    (run-intents! s state
-                                                  (or (request-actor req actor) actor)
-                                                  intents))))))))
-                (log-end! s)
-                answers))))))
+        ;; THE SESSION IS GIVEN BACK BY THE UNWIND, NOT BY A LINE ON EACH
+        ;; PATH. Written once per exit it got written wrong twice in one
+        ;; sitting: one version raised past every `log-end!` and held the
+        ;; store's exclusive lock for the life of the process, and a
+        ;; later one ended the session inside a handler AND on the way
+        ;; out, so the second call raised `this session has ended` -- a
+        ;; failure manufactured inside the recovery from a failure. One
+        ;; place that cannot be skipped is the only shape that is right
+        ;; by construction.
+        (dynamic-wind
+          (lambda () (if #f #f))
+          (lambda ()
+            ;; A RAISE THAT GOT PAST EVERY INNER GUARD IS STILL AN ANSWER
+            ;; WHEN BYTES WERE WRITTEN. `unknown` is a promise the store
+            ;; can only keep about records that survive -- it means "send
+            ;; it again and I will tell you whether it ran" -- so the
+            ;; barrier runs before the answer is given and a resend will
+            ;; find them.
+            ;;
+            ;; AND IT IS NOT THE ANSWER WHEN NOTHING WAS WRITTEN. There
+            ;; is nothing to promise and nothing for a resend to find,
+            ;; and sending every caller back to re-ask about a request
+            ;; that provably did nothing is how a word meaning "ask me
+            ;; again" stops meaning anything. That request gets the
+            ;; failure it actually had.
+            (guard (e (#t (if (session-write-started? s)
+                              (begin
+                                (guard (inner (#t #f)) (session-commit! s))
+                                (list (list 'error 'unknown
+                                            (list 'execution-failed (failure-text e))
+                                            (list 'events (session-written-events s)))))
+                              (raise e))))
+              ;; THE FRONTIER IS REPORTED ONCE DELIVERY IS OVER, not
+              ;; inferred from the per-record answers. A record is
+              ;; answered as it arrives, and a record whose premise has
+              ;; not arrived yet is answered `pending` -- truthfully. But
+              ;; applying a later record can drain it, and nothing goes
+              ;; back to revise the earlier answer. Without this line the
+              ;; session's applied cursor stops at the first such record
+              ;; forever, `predecessor-applied?` stays false, and
+              ;; `session-view` hands back #f: the store cannot be written
+              ;; to at all. It bites exactly when the local writer's own
+              ;; record declares a dep on a writer the load delivers AFTER
+              ;; it, which is decided by nothing more than the two
+              ;; writers' names.
+              (session-applied! s (session-epoch s) (reduce-applied-cut state))
+              ;; THE QUESTION IS ASKED HERE AND NOT BEFORE. Delivery has
+              ;; just finished, so "there is no evidence of this request"
+              ;; is a statement about the store rather than about how far
+              ;; the reader had got -- and the lock has been held
+              ;; throughout, so nothing can arrive between the answer and
+              ;; the act.
+              ;; THE INTENTS ARE ASKED FOR BEFORE THE VERDICT, because how
+              ;; many of them there are is part of the question: a request
+              ;; of several has a plan, and the rules about a plan's holes
+              ;; do not run for a request that declares none. `proc` only
+              ;; reads the state and answers a list -- it writes nothing,
+              ;; so asking it early costs nothing and changes nothing.
+              (let* ((intents (proc state (session-view s)))
+                     (verdict (and req (request-verdict store req
+                                                        (reduce-applied-cut state)
+                                                        (and (> (length intents) 1)
+                                                             (length intents))
+                                                        (reduce-gates state)))))
+                (if (and verdict (not (eq? (car verdict) 'execute)))
+                    ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. The
+                    ;; unwind releases the store's exclusive lock, and the
+                    ;; answer to a replay performs a barrier -- so
+                    ;; computing it afterwards would certify, outside the
+                    ;; lock, a state another session was free to change in
+                    ;; between.
+                    ;;
+                    ;; AND A BARRIER THAT FAILS HERE IS THE SAME EVENT IT
+                    ;; IS ON THE WRITE PATH, so it gets the same word. A
+                    ;; replay answer IS a promise of durability -- that is
+                    ;; the whole of what a replay tells a client -- so
+                    ;; failing to make it good is `unknown` and not an
+                    ;; internal error. The two paths answered differently
+                    ;; for one fault.
+                    (list (guard (e (#t (list 'error 'unknown
+                                              (list 'replay-barrier-failed
+                                                    (failure-text e)))))
+                            (request-answer s store verdict)))
+                    (commit-then s
+                      (lambda ()
+                        (let ((bad (begin (announce-count! s intents)
+                                          (and req (cursor-unreachable store s req)))))
+                          (cond
+                            (bad (list bad))
+                            ;; A REQUEST OF ONE SUB-OPERATION HAS NO PLAN,
+                            ;; and says so: `single`, no plan event.
+                            ;; A REQUEST OF NOTHING WRITES NOTHING. It is
+                            ;; not a batch of zero items: `write-batch!`
+                            ;; would reserve `[seq, seq-1]` -- an empty
+                            ;; range -- and then append a receipt at
+                            ;; `seq`, outside the reservation it had just
+                            ;; taken. An empty batch reaches this through
+                            ;; the RPC verb, which accepts empty text.
+                            ((null? intents) '())
+                            ((or (not req) (= 1 (length intents)))
+                             (run-intents! s state
+                                           (lambda (n)
+                                             (or (request-actor req 'single #f) actor))
+                                           intents))
+                            ;; SEVERAL INTENTS UNDER ONE REQUEST ARE A
+                            ;; BATCH, AND A BATCH IS NOT ONE REQUEST WITH
+                            ;; SEVERAL SUB-OPERATIONS. Each item is its
+                            ;; own request, under its own identity
+                            ;; `(batch <req> k)`, and what holds them
+                            ;; together is the receipt.
+                            ;;
+                            ;; The plan record is a different level: it
+                            ;; belongs inside an item that expands into
+                            ;; several records of its own. Writing one
+                            ;; batch-level plan would give the items one
+                            ;; identity between them, and a retry could
+                            ;; then only ever say how far the whole batch
+                            ;; got -- never which item.
+                            (else
+                             (write-batch! s state req intents))))))))))
+          (lambda () (guard (e (#t #f)) (log-end! s)))))))
 
   ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a
   ;; name, `store-evidence` finds nothing when the request comes back,
@@ -1270,18 +1676,268 @@
          (list 'error 'cursor-unreachable
                (list 'after after) (list 'writing (cons writer seq)))))))
 
-  (define (request-actor req actor)
+  ;; `sub` IS `single` FOR A REQUEST OF ONE, THE INDEX FOR A PLAN'S
+  ;; sub-operation, and `plan` for the plan record itself; `plan-event`
+  ;; is absent for the first two shapes and the plan's own event id for a
+  ;; sub-operation. A record that called itself `single` while pointing
+  ;; at a plan, or an indexed one pointing at nothing, would be a record
+  ;; whose two statements about where it belongs disagree -- and the Q
+  ;; review found that exact shape reachable through a different door.
+  (define (request-actor req sub plan-event)
     (and req
          (list (write-request-who req)
                (request-identity (write-request-after req)
                                  (write-request-req-id req))
-               'single
+               sub
                (request-fingerprint (write-request-who req)
                                     (write-request-verb req)
                                     (write-request-args req)
                                     (write-request-after req))
-               #f
+               plan-event
                (write-request-after req))))
+
+  ;; A BATCH: ONE RECEIPT, THEN THE ITEMS, EACH ITS OWN REQUEST.
+  ;;
+  ;; THE RECEIPT IS WRITTEN AND MADE DURABLE BEFORE THE FIRST ITEM RUNS,
+  ;; which is what lets a retry say anything at all: without it a crash
+  ;; between two items leaves a set of records and no statement of what
+  ;; the set was supposed to be, so "item 3 is missing" and "there were
+  ;; only three items" are the same picture.
+  ;;
+  ;; ITS ENTRIES ARE COMPUTED BEFORE ANYTHING IS WRITTEN, from the
+  ;; position the session is standing at -- the lock is held, so the
+  ;; sequence numbers are known. Each item's cursor is the position
+  ;; before it: the receipt takes p, item k takes p+1+k, and item k is
+  ;; written against p+k.
+  ;;
+  ;; AND EACH POSITION IS CHECKED BEFORE ITS RECORD IS WRITTEN, not
+  ;; after. The timetable is frozen; a record that would land somewhere
+  ;; else is refused before the deviating record exists, because
+  ;; afterwards the deviation is on disk with a receipt that disagrees
+  ;; with it.
+  (define (write-batch! s state req intents)
+    (let* ((v (session-view s))
+           (writer (and v (view-writer v)))
+           (p (and v (view-expect-seq v))))
+      (if (not v)
+          (let ((why (session-view-refusal s)))
+            (list (if why (list 'error 'no-view why) (list 'error 'no-view))))
+          (let* ((entries (let loop ((k 0) (out '()))
+                            (if (= k (length intents))
+                                (reverse out)
+                                (loop (+ k 1)
+                                      (cons (cons k (cons writer (+ p k))) out)))))
+                 (payload (list 'batch
+                                (write-request-req-id req)
+                                (request-fingerprint (write-request-who req)
+                                                     (write-request-verb req)
+                                                     (write-request-args req)
+                                                     (write-request-after req))
+                                (write-request-after req)
+                                entries))
+                 (answer (append-payload! s state (request-actor req 'plan #f) payload)))
+            (if (eq? (car answer) 'error)
+                (list answer)
+                ;; THE RECEIPT IS MADE DURABLE BEFORE THE FIRST ITEM RUNS.
+                ;; "Persist the receipt before executing any item" is
+                ;; otherwise a false sentence: a crash between the
+                ;; receipt's write and the first item would leave the
+                ;; items on disk and the statement of what they were
+                ;; supposed to be not -- which is the one picture the
+                ;; receipt exists to prevent.
+                (let ((c (guard (e (#t 'barrier-failed)) (session-commit! s))))
+                  (if (eq? c 'barrier-failed)
+                      (list (list 'error 'unknown (list 'receipt-barrier-failed)))
+                      (run-items! s state req intents entries))))))))
+
+  ;; EACH ITEM UNDER ITS OWN IDENTITY, and its actor says `single`
+  ;; because one item of one intent is one sub-operation belonging to no
+  ;; plan. An item that expanded into several records would write its own
+  ;; plan first; nothing does that yet, and when something does it is
+  ;; that item's business and not the batch's.
+  (define (run-items! s state req intents entries)
+    (let loop ((is intents) (k 0) (made '()) (out '()))
+      (if (null? is)
+          (reverse out)
+          (let* ((declared (cdr (assv k entries)))
+                 (v (session-view s))
+                 (at (and v (cons (view-writer v) (view-expect-seq v))))
+                 (raw (car is))
+                 ;; THE SAME CHECK THE OTHER LOOP MAKES, AND IT HAS TO BE
+                 ;; MADE HERE TOO. One DEFINITION of the rule is the thing
+                 ;; worth having; one CALL SITE is not, and insisting on it
+                 ;; left this path -- the tracked batch of several items --
+                 ;; reading `(car raw)` on whatever arrived.
+                 ;;
+                 ;; AND IT MATTERS MORE HERE THAN THERE. The receipt is
+                 ;; already written and committed by the time this loop
+                 ;; runs, so a raise out of it does not merely produce a
+                 ;; worse message: it discards the answers of the items
+                 ;; that already succeeded and leaves the request without
+                 ;; the commit that ends it.
+                 (rs (if (malformed-intent? raw) '() (intent-refs raw)))
+                 (fixed (if (null? rs)
+                            raw
+                            (let ((pa (resolve-from made (car rs)))
+                                  (af (resolve-from made (cadr rs))))
+                              (cond
+                                ((and (pair? pa) (eq? (car pa) 'error)) pa)
+                                ((and (pair? af) (eq? (car af) 'error)) af)
+                                (else (intent-with-refs raw pa af))))))
+                 (answer
+                   (cond
+                     ;; THE REASON DESCRIBES ITSELF, so the intent does not
+                     ;; have to be sent back to explain it -- and a refusal
+                     ;; stops being unreadable to the one reader that needs
+                     ;; it, by construction rather than by remembering to
+                     ;; spell things carefully.
+                     ((intent-reason raw)
+                      => (lambda (why)
+                           (list 'error 'malformed-intent why)))
+                     ((and (pair? fixed) (eq? (car fixed) 'error)) fixed)
+                     ;; THE POSITION IS CHECKED BEFORE THE RECORD EXISTS.
+                     ((not (equal? at (cons (car declared) (+ 1 (cdr declared)))))
+                      (list 'error 'receipt-timetable
+                            (list 'item k) (list 'declared declared) (list 'writing at)))
+                     (else
+                     ;; A RAISE IN ONE SUB-OPERATION IS THAT SUB-OPERATION'S
+                     ;; ANSWER. The loop already stops at the first failed
+                     ;; intent, and stopping with an answer keeps the ones
+                     ;; that succeeded before it -- a raise instead threw
+                     ;; away the whole request's answers, including the
+                     ;; `ok`s for records already on the disk.
+                     ;;
+                     ;; AND IT ASKS THE SAME QUESTION THE OUTER ONE DOES,
+                     ;; because it is reached first and would otherwise
+                     ;; answer on the outer one's behalf. `unknown` is
+                     ;; owed only where bytes may be on the disk; with
+                     ;; none, this hands the failure on rather than
+                     ;; dressing it as a request whose outcome is in
+                     ;; doubt. An inner guard that decided for itself
+                     ;; would make the gate above unreachable.
+                     (guard (e (#t (if (session-write-started? s)
+                                       (list 'error 'unknown
+                                             (list 'interrupted (failure-text e)))
+                                       (raise e))))
+                       (one-intent! s state (item-actor req k declared) fixed))))))
+            (if (eq? (car answer) 'error)
+                (reverse (cons answer out))
+                (loop (cdr is) (+ k 1)
+                      ;; THE ID COMES FROM THE EVENT, NOT FROM THE REPORT.
+                      ;; Which block an insert made is decided by the
+                      ;; record's own coordinates and is knowable the
+                      ;; moment it commits; the hashes beside it are a
+                      ;; description built afterwards, and that
+                      ;; description is allowed to be missing. Reading
+                      ;; the id out of it made a failure to DESCRIBE a
+                      ;; write delete a block: the back-reference then
+                      ;; resolved to nothing, the intent naming it
+                      ;; answered `no-such-intent`, and the caller was
+                      ;; told one of its own blocks had never been asked
+                      ;; for.
+                      (let ((ev (cadr (assq 'events (cdr answer)))))
+                        (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
+                            (cons (cons k (block-id (car (car ev)) (cdr (car ev)))) made)
+                            made))
+                      (cons answer out)))))))
+
+  (define (item-actor req k after)
+    (list (write-request-who req)
+          (cons (car (write-request-after req))
+                (list 'batch (write-request-req-id req) k))
+          'single
+          (request-fingerprint (write-request-who req)
+                               (write-request-verb req)
+                               (write-request-args req)
+                               (write-request-after req))
+          #f
+          after))
+
+  ;; THE PLAN IS WRITTEN AS ONE MORE RECORD, through the same append the
+  ;; sub-operations use, so it takes a position in the log like anything
+  ;; else and the sub-operations can point at it.
+  ;;
+  ;; A PLAN THAT COULD NOT BE WRITTEN STOPS THE REQUEST. Running the
+  ;; sub-operations anyway would leave records whose actors point at a
+  ;; plan that is not there -- and a retry reading them would find a set
+  ;; of records claiming indices in a plan nobody can produce.
+  (define (write-plan-then! s state req intents)
+    (let* ((entries (plan-entries intents))
+           (payload (list 'plan
+                          (write-request-req-id req)
+                          (request-fingerprint (write-request-who req)
+                                               (write-request-verb req)
+                                               (write-request-args req)
+                                               (write-request-after req))
+                          (write-request-after req)
+                          entries))
+           (answer (append-payload! s state (request-actor req 'plan #f) payload)))
+      (if (eq? (car answer) 'error)
+          (list answer)
+          (let ((plan-event (cadr (assq 'event (cdr answer)))))
+            (run-intents! s state
+                          (lambda (n) (request-actor req n plan-event))
+                          intents)))))
+
+  ;; ONE RECORD, NO INTENT BEHIND IT. The plan is not something a caller
+  ;; asked for as a verb; it is the store writing down what it is about
+  ;; to do, so it goes round `resolve` rather than through it.
+  (define (append-payload! s state actor payload)
+    (let ((v (session-view s)))
+      (if (not v)
+          (let ((why (session-view-refusal s)))
+            (if why (list 'error 'no-view why) (list 'error 'no-view)))
+          (let* ((writer (view-writer v))
+                 (seq (view-expect-seq v))
+                 (deps (deps-for-payload state writer payload))
+                 (frame (make-frame (view-revision v) (view-epoch v)
+                                    writer seq actor deps payload))
+                 (outcome (session-append! s frame)))
+            ;; THE SAME THREE WORDS AS EVERY OTHER APPEND. This path
+            ;; writes the records a caller did not ask for by name --
+            ;; the plan, the receipt -- and it answered with the raw
+            ;; outcome, so a receipt whose write tore left the caller
+            ;; holding `(error partial-write ...)`: bytes on the disk
+            ;; and a word that is neither `ok` nor `unknown`, which is
+            ;; exactly the combination the answer vocabulary exists to
+            ;; prevent. The translation is the one `one-intent!` uses,
+            ;; because it is the same question about the same disk.
+            (if (not (eq? (car outcome) 'committed))
+                (write-outcome->answer outcome seq)
+                ;; AND IT IS APPLIED BEFORE THE NEXT APPEND. A session
+                ;; holds one unconfirmed record at a time: until the
+                ;; reducer has taken this one the view is not ready, and
+                ;; the sub-operations that follow would every one of them
+                ;; be refused for a reason that has nothing to do with
+                ;; them.
+                (begin
+                  (reduce-apply! state writer seq deps payload)
+                  (session-applied! s (session-epoch s) (reduce-applied-cut state))
+                  (list 'ok (list 'event (cons writer seq)))))))))
+
+  ;; WHAT THE PLAN DECLARES IS THE INTENT, with every back-reference
+  ;; rewritten as the marker that will be bound from the record that
+  ;; satisfies it. `(from k)` says "the block intent k makes", which is
+  ;; exactly what `("#%new" k)` says -- the first is how a caller writes
+  ;; it inside one batch, the second is how it survives on disk and is
+  ;; read back by someone who was not there.
+  (define (plan-entries intents)
+    (let loop ((is intents) (n 0) (out '()))
+      (if (null? is)
+          (reverse out)
+          (loop (cdr is) (+ n 1)
+                (cons (cons n (declared-intent (car is))) out)))))
+
+  (define (declared-intent intent)
+    (let ((rs (intent-refs intent)))
+      (if (null? rs)
+          (unwrap intent)
+          (intent-with-refs intent (as-marker (car rs)) (as-marker (cadr rs))))))
+
+  (define (as-marker x)
+    (if (and (pair? x) (eq? (car x) 'from))
+        (list "#%new" (cadr x))
+        x))
 
   ;; A VERDICT THAT IS NOT `execute` IS THE ANSWER, and each kind says a
   ;; different thing to a client holding a request it may have sent once
@@ -1324,7 +1980,14 @@
         (assertion-violation 'barrier-for
                              "cannot locate the record a replay would promise"
                              event))
-      (run-barrier! store writer segment 'commit 'commit)))
+      (run-barrier! store writer segment 'commit 'commit)
+      ;; AND THE REGISTRY IS TOLD, because this answer is an
+      ;; acknowledgement. The attempt that first wrote this record may
+      ;; have crashed between its barrier and its own reconciliation,
+      ;; leaving `written` behind it -- and an acknowledged record that
+      ;; the registry does not count is one a restore can take away
+      ;; without the rollback gate noticing.
+      (note-written-for! store writer (cdr event))))
 
   ;; `discovery-segment-ranges` is `((segment first last) ...)`.
   (define (segment-holding p seq)
@@ -1343,10 +2006,31 @@
   ;; THE ALTERNATIVE WAS TWO CALLS, one to make the parents and one to
   ;; make the children, which would take the lock twice and leave a
   ;; state on disk between them that no single import ever intended.
+  ;; A BACK-REFERENCE IS PART OF THE SHAPE TOO. `(from)` reaches `(cadr
+  ;; x)` on a one-element list and raises -- the same defect as an empty
+  ;; intent, one level further in, and not reachable from the intent's
+  ;; own arity because the reference sits INSIDE an argument the arity
+  ;; check has already counted.
+  ;;
+  ;; IT ANSWERS RATHER THAN REFUSES EARLIER, because both loops already
+  ;; treat an error value here as this item's answer: `(from 3)` naming
+  ;; an intent that does not exist is answered the same way, and a
+  ;; malformed one is the same kind of thing said worse.
   (define (resolve-from made x)
     (if (and (pair? x) (eq? (car x) 'from))
-        (let ((e (assv (cadr x) made)))
-          (if e (cdr e) (list 'error 'no-such-intent (cadr x))))
+        (let ((n (proper-length x)))
+          (cond
+            ((or (not n) (not (= n 2)))
+             (list 'error 'malformed-intent
+                   (list 'back-reference-not-a-form
+                         (list 'spelling (datum-spelling x)))))
+            ((not (and (integer? (cadr x)) (exact? (cadr x)) (>= (cadr x) 0)))
+             (list 'error 'malformed-intent
+                   (list 'back-reference-not-an-index
+                         (list 'spelling (datum-spelling (cadr x))))))
+            (else
+             (let ((e (assv (cadr x) made)))
+               (if e (cdr e) (list 'error 'no-such-intent (cadr x)))))))
         x))
 
 ;; BOTH THE PARENT AND THE SIBLING CAN BE A BACK-REFERENCE. A batch that
@@ -1361,19 +2045,256 @@
         ((move) (list (caddr i) (cadddr i)))
         (else '()))))
 
+  ;; THE WRAPPER SURVIVES THE REWRITE. This rewrites an intent's
+  ;; references and used to hand back the bare intent, dropping any
+  ;; `expect` around it -- and it runs for EVERY insert and move, because
+  ;; those are exactly the verbs that have references. So an expectation
+  ;; on a move was never checked: `check-expectation` reads the wrapper,
+  ;; and by then there was none.
+  ;;
+  ;; WHAT THAT COST: `(expect <stale> (set ...))` was refused and
+  ;; `(expect <stale> (move ...))` succeeded. An optimistic caller was
+  ;; told its premise had been checked for one verb and silently not for
+  ;; the other -- which is worse than not offering the check at all,
+  ;; because the caller writes its code as though it had it.
   (define (intent-with-refs intent parent after)
-    (let ((i (unwrap intent)))
-      (case (car i)
-        ((insert) (list 'insert parent after (cadddr i)))
-        ((move) (list 'move (cadr i) parent after))
-        (else i))))
+    (let* ((i (unwrap intent))
+           (rewritten
+             (case (car i)
+               ((insert) (list 'insert parent after (cadddr i)))
+               ((move) (list 'move (cadr i) parent after))
+               (else i))))
+      (if (and (pair? intent) (eq? (car intent) 'expect))
+          (list 'expect (cadr intent) rewritten)
+          rewritten)))
 
-  (define (run-intents! s state actor intents)
+  ;; THE ACTOR IS PER INTENT NOW, because a request of several
+  ;; sub-operations gives each its own index and they all point at one
+  ;; plan. `actor-at` is handed the index and answers what that record
+  ;; should carry; for a write with no request it answers the caller's
+  ;; name, as it always did.
+  ;; AN INTENT THAT IS NOT A FORM IS ANSWERED, NOT RAISED. Every reader
+  ;; below starts with `(car i)`, which raises on anything that is not a
+  ;; pair -- and a raise from in here reaches a caller as
+  ;; `(error internal ...)`, which says nothing about the input that
+  ;; caused it. `theourgia batch` with the text "()" produced exactly
+  ;; that: one empty intent, and an internal error for a malformed
+  ;; request.
+  ;;
+  ;; IT IS CHECKED ONCE, HERE, because this is the first thing to look
+  ;; inside an intent. `resolve` further down answers an intent whose
+  ;; verb it does not KNOW; a second copy of this check beside that one
+  ;; would be a second place for the rule to live and a second place to
+  ;; forget it.
+  ;; THE SHAPE IS CHECKED BEFORE `unwrap`, because `unwrap` is itself a
+  ;; reader: it asks whether the head is `expect`, which raises on
+  ;; anything that is not a pair. A predicate that has to unwrap before
+  ;; it can judge cannot judge the one value it exists to judge.
+  ;; AND THE ARITY IS PART OF THE SHAPE. Checking only the head left
+  ;; every SHORT intent raising: each arm below reaches straight for
+  ;; `(cadr i)` or `(cadddr i)`, so `(insert root)` produced
+  ;; `(error internal (condition "incorrect list structure ~s"))` -- the
+  ;; same defect as the empty intent, one argument further in. A guard
+  ;; that answers for one arity and raises for another is a guard whose
+  ;; comment is wider than the check.
+  ;;
+  ;; THE TABLE IS THE MINIMUM LENGTH EACH VERB READS, and it is beside
+  ;; nothing: the arms that do the reading are the only other place these
+  ;; numbers appear, so this table and those arms have to be changed
+  ;; together. `set` is the one with two lengths -- `(set id value)` and
+  ;; `(set id field value)` -- and three is the shorter.
+  (define intent-arity
+    '((insert . 4) (set . 3) (del . 2) (move . 4)
+      (link . 4) (unlink . 4) (tag . 2)))
+
+  ;; AND THE POSITIONS WHOSE TYPE IS FIXED. Arity alone still lets
+  ;; `(set <id> ((title . "x")))` through -- the right length, the wrong
+  ;; thing in the field position -- and the store then raised where it
+  ;; expected a symbol. A field name and a relation name are the two
+  ;; places a caller writing an intent by hand naturally puts something
+  ;; else, because both read like values.
+  ;;
+  ;; ONLY POSITIONS WITH ONE ADMISSIBLE TYPE ARE LISTED. An id is a
+  ;; string or `root` or a `(from n)` reference depending on the verb,
+  ;; and those already have answers further in; duplicating that
+  ;; judgement here would be a second place for it to live.
+  (define intent-symbol-positions
+    '((set . (2)) (link . (2)) (unlink . (2))))
+
+  ;; THE PAYLOAD IS CHECKED WITH THE REDUCER'S OWN PREDICATE, not with a
+  ;; second copy of its rules living here. `payload-reason` is exported by
+  ;; (theourgia reduce) and is the same procedure the reducer consults
+  ;; before it applies a record -- so "the write path will not append what
+  ;; the reducer cannot apply" is one fact with one owner, and the two
+  ;; cannot drift into disagreeing about a verb's shape.
+  ;;
+  ;; THE FIELD COLLECTION, WHICH IS THE ONE THAT COULD DESTROY A STORE.
+  ;; `insert` carries an alist of fields, and the reducer walks it asking
+  ;; each entry for its `car`. A collection that is not a proper list of
+  ;; pairs headed by symbols therefore raises IN THE REDUCER -- and the
+  ;; write path appends before it reduces, so the record was already
+  ;; durable by then.
+  ;;
+  ;; WHAT THAT COST, MEASURED: `(insert root #f (7))` encoded cleanly,
+  ;; was appended, and then no reader could process it. `outline` and
+  ;; every later `insert` answered an internal error; the store was
+  ;; readable and writable before that one item and neither afterwards.
+  ;; A record that is validly framed and cannot be reduced is the worst
+  ;; thing an append-only store can be made to hold, because nothing
+  ;; downstream can refuse it any more.
+  (define intent-alist-positions '((insert . (3))))
+
+  ;; THE WRITE PATH ASKS THE CALLER'S QUESTION, which is stricter than the
+  ;; reducer's: `parent` and `ord` are legitimate in a record on disk and
+  ;; are never legitimate coming from a caller, because the write path is
+  ;; about to compute them. Same owner, two questions, asked by name.
+  (define (field-alist? x) (not (caller-fields-reason x)))
+
+  ;; AN ID POSITION HOLDS WHAT THAT POSITION MAY HOLD, and the three
+  ;; kinds are not interchangeable.
+  ;;
+  ;; THE FIRST VERSION WAS ONE WIDE PREDICATE -- string, `root`, `#f` or
+  ;; a `(from n)` reference, accepted everywhere -- on the stated ground
+  ;; that the inner layers decide which belongs where. THEY DO NOT.
+  ;; `(del root)`, `(del #f)`, `(del (from 0))` and `(set (from) title
+  ;; "x")` all passed the boundary and then raised in the string-only
+  ;; diagnostic, exactly as `(del 7)` had. The reason I gave for the
+  ;; wide check was a reason I had not measured.
+  ;;
+  ;; BACK-REFERENCES ARE RESOLVED IN TWO POSITIONS ONLY -- an insert's
+  ;; parent and predecessor, and a move's -- because those are the two
+  ;; `intent-refs` rewrites. A `(from n)` anywhere else is never
+  ;; substituted and reaches the reader as a list.
+  (define (plain-id? x) (string? x))
+  (define (parent-id? x)
+    (or (string? x) (eq? x 'root) (and (pair? x) (eq? (car x) 'from))))
+  (define (after-id? x)
+    (or (string? x) (eq? x #f) (and (pair? x) (eq? (car x) 'from))))
+
+  ;; `(<verb> (<position> . <predicate-name>) ...)`, one entry per
+  ;; position whose admissible kinds differ from the others.
+  (define intent-id-positions
+    (list (cons 'insert (list (cons 1 parent-id?) (cons 2 after-id?)))
+          (cons 'move (list (cons 1 plain-id?) (cons 2 parent-id?) (cons 3 after-id?)))
+          (cons 'set (list (cons 1 plain-id?)))
+          (cons 'del (list (cons 1 plain-id?)))
+          (cons 'link (list (cons 1 plain-id?) (cons 3 plain-id?)))
+          (cons 'unlink (list (cons 1 plain-id?) (cons 3 plain-id?)))))
+
+  ;; THEY ANSWER WHICH POSITION, NOT WHETHER. A refusal has to be able to
+  ;; say what it is about, and the only place that knows is the test that
+  ;; failed: a caller told merely `not-an-id` has to guess which of an
+  ;; intent's several id positions was meant. While these answered a
+  ;; boolean, the answer compensated by carrying the whole intent back --
+  ;; which is what made refusals unreadable, because the datum a refusal
+  ;; is about is exactly the datum the wire layer will not carry.
+  ;;
+  ;; #f still means well formed, so every use of these as a test is
+  ;; unchanged; an index is truthy.
+  (define (id-positions-bad? u n)
+    (let ((ps (assq (car u) intent-id-positions)))
+      (and ps n
+           (let loop ((is (cdr ps)))
+             (cond ((null? is) #f)
+                   ((and (> n (car (car is)))
+                         (not ((cdr (car is)) (list-ref u (car (car is))))))
+                    (car (car is)))
+                   (else (loop (cdr is))))))))
+
+  (define (positions-bad? u n table ok?)
+    (let ((ps (assq (car u) table)))
+      (and ps n
+           (let loop ((is (cdr ps)))
+             (cond ((null? is) #f)
+                   ((and (> n (car is)) (not (ok? (list-ref u (car is)))))
+                    (car is))
+                   (else (loop (cdr is))))))))
+
+  (define (proper-length x)
+    (let loop ((y x) (n 0))
+      (cond ((null? y) n)
+            ((pair? y) (loop (cdr y) (+ n 1)))
+            (else #f))))
+
+  ;; -> #f when the intent is well formed, else a REASON.
+  ;;
+  ;; IT ANSWERS A REASON AND NOT A BOOLEAN, and that is not a nicety. The
+  ;; rules below overlap: a caller-supplied `ord` is both a reserved name
+  ;; and -- once the write path appends its own -- a repeated one, and
+  ;; either rule alone refuses it. While this answered a boolean, the
+  ;; refusal said only `(malformed-intent <the intent>)`, so DELETING ANY
+  ;; ONE OF THESE RULES CHANGED NOTHING OBSERVABLE and every one of them
+  ;; survived being removed. The reason was computed and thrown away.
+  ;;
+  ;; TWO RULES THAT CATCH THE SAME INPUT ARE NOT INTERCHANGEABLE when
+  ;; they send an operator to different places: "you used a name the
+  ;; store computes" and "you wrote that key twice" are both true of
+  ;; `((ord . "x"))`, and only the first tells them what to do.
+  (define (intent-reason i)
+    (cond
+      ((not (pair? i))
+       (list 'intent-not-a-form (list 'spelling (datum-spelling i))))
+      ((not (symbol? (car i)))
+       (list 'verb-not-a-symbol (list 'spelling (datum-spelling (car i)))))
+      ;; `expect` wraps an intent and is read as `(expect want intent)`,
+      ;; so it has its own minimum before `unwrap` may be called on it.
+      ;;
+      ;; AND ITS HASH IS CHECKED FOR TYPE, NOT MERELY FOR PRESENCE.
+      ;; `expectation` answers the value it finds, so a wrapper holding
+      ;; #f was indistinguishable from no wrapper at all and the check
+      ;; SILENTLY DID NOT RUN -- `(expect #f (set <id> title "Two"))`
+      ;; wrote. A caller that asks for a premise to be verified and is
+      ;; given no answer either way is worse off than one that never
+      ;; asked, because it will not look again.
+      ((and (eq? (car i) 'expect) (not (proper-length i)))
+       (list 'intent-not-a-proper-list (list 'verb 'expect)))
+      ((and (eq? (car i) 'expect) (< (proper-length i) 3))
+       (list 'expect-too-short (list 'given (- (proper-length i) 1))))
+      ((and (eq? (car i) 'expect) (not (string? (cadr i))))
+       (list 'expectation-not-a-hash
+             (list 'spelling (datum-spelling (cadr i)))))
+      (else
+       (let ((u (unwrap i)))
+         (cond
+           ((not (pair? u))
+            (list 'intent-not-a-form (list 'spelling (datum-spelling u))))
+           ((not (symbol? (car u)))
+            (list 'verb-not-a-symbol (list 'spelling (datum-spelling (car u)))))
+           (else
+            (let ((n (proper-length u))
+                  (need (assq (car u) intent-arity)))
+              (cond
+                ;; AN IMPROPER LIST IS NOT A SHORT ONE. `(set "a" title
+                ;; "x" . junk)` has every argument it needs and is still
+                ;; not a form; answering `too-few-arguments` sends the
+                ;; caller to add an argument, which cannot help. The
+                ;; payload validator already separates these two, and the
+                ;; two validators should not describe the same defect
+                ;; differently.
+                ((not n) (list 'intent-not-a-proper-list (list 'verb (car u))))
+                ((and need (< n (cdr need)))
+                 (list 'too-few-arguments (list 'verb (car u))
+                       (list 'given (- n 1)) (list 'needs (- (cdr need) 1))))
+                ((positions-bad? u n intent-symbol-positions symbol?)
+                 => (lambda (k)
+                      (list 'name-not-a-symbol (list 'argument k)
+                            (list 'spelling (datum-spelling (list-ref u k))))))
+                ((id-positions-bad? u n)
+                 => (lambda (k)
+                      (list 'not-an-id (list 'argument k)
+                            (list 'spelling (datum-spelling (list-ref u k))))))
+                ((and (assq (car u) intent-alist-positions) n (> n 3))
+                 (caller-fields-reason (list-ref u 3)))
+                (else #f)))))))))
+
+  (define (malformed-intent? i) (and (intent-reason i) #t))
+
+  (define (run-intents! s state actor-at intents)
     (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
           (reverse out)
           (let* ((raw (car is))
-                 (rs (intent-refs raw))
+                 (rs (if (malformed-intent? raw) '() (intent-refs raw)))
                  (fixed
                    (if (null? rs)
                        raw
@@ -1383,9 +2304,32 @@
                            ((and (pair? p) (eq? (car p) 'error)) p)
                            ((and (pair? a) (eq? (car a) 'error)) a)
                            (else (intent-with-refs raw p a))))))
-                 (answer (if (and (pair? fixed) (eq? (car fixed) 'error))
-                             fixed
-                             (one-intent! s state actor fixed))))
+                 (answer (cond
+                           ((intent-reason raw)
+                            => (lambda (why)
+                                 (list 'error 'malformed-intent why)))
+                           ((and (pair? fixed) (eq? (car fixed) 'error)) fixed)
+                           (else
+                     ;; A RAISE IN ONE SUB-OPERATION IS THAT SUB-OPERATION'S
+                     ;; ANSWER. The loop already stops at the first failed
+                     ;; intent, and stopping with an answer keeps the ones
+                     ;; that succeeded before it -- a raise instead threw
+                     ;; away the whole request's answers, including the
+                     ;; `ok`s for records already on the disk.
+                     ;;
+                     ;; AND IT ASKS THE SAME QUESTION THE OUTER ONE DOES,
+                     ;; because it is reached first and would otherwise
+                     ;; answer on the outer one's behalf. `unknown` is
+                     ;; owed only where bytes may be on the disk; with
+                     ;; none, this hands the failure on rather than
+                     ;; dressing it as a request whose outcome is in
+                     ;; doubt. An inner guard that decided for itself
+                     ;; would make the gate above unreachable.
+                     (guard (e (#t (if (session-write-started? s)
+                                       (list 'error 'unknown
+                                             (list 'interrupted (failure-text e)))
+                                       (raise e))))
+                       (one-intent! s state (actor-at n) fixed))))))
             ;; A FAILED INTENT STOPS THE REST. Later intents were written
             ;; against a state this one was meant to produce; running them
             ;; anyway asks each to be judged against a history its author
@@ -1393,9 +2337,21 @@
             (if (eq? (car answer) 'error)
                 (reverse (cons answer out))
                 (loop (cdr is) (+ n 1)
-                      (let ((ids (cadr (assq 'state (cdr answer)))))
-                        (if (and (eq? 'insert (car (unwrap fixed))) (pair? ids))
-                            (cons (cons n (car (car ids))) made)
+                      ;; THE ID COMES FROM THE EVENT, NOT FROM THE REPORT.
+                      ;; Which block an insert made is decided by the
+                      ;; record's own coordinates and is knowable the
+                      ;; moment it commits; the hashes beside it are a
+                      ;; description built afterwards, and that
+                      ;; description is allowed to be missing. Reading
+                      ;; the id out of it made a failure to DESCRIBE a
+                      ;; write delete a block: the back-reference then
+                      ;; resolved to nothing, the intent naming it
+                      ;; answered `no-such-intent`, and the caller was
+                      ;; told one of its own blocks had never been asked
+                      ;; for.
+                      (let ((ev (cadr (assq 'events (cdr answer)))))
+                        (if (and (eq? 'insert (car (unwrap fixed))) (pair? ev))
+                            (cons (cons n (block-id (car (car ev)) (cdr (car ev)))) made)
                             made))
                       (cons answer out)))))))
 
@@ -1413,8 +2369,24 @@
               (if bad
                   bad
                   (let ((payload (resolve state writer seq intent)))
-                    (if (eq? (car payload) 'error)
-                        payload
+                    (cond
+                      ((eq? (car payload) 'error) payload)
+                      ;; THE PAYLOAD IS CHECKED, NOT ONLY THE INTENT. The
+                      ;; boundary above judges what the CALLER wrote; this
+                      ;; judges what `resolve` produced from it, which is
+                      ;; the thing about to be appended. They are not the
+                      ;; same value: `(tag 7)` is an intent of the right
+                      ;; length whose payload carries a name no reader can
+                      ;; sort, and it was appended and acknowledged because
+                      ;; only the caller's fields were being examined.
+                      ;;
+                      ;; SAME PREDICATE THE REDUCER USES, so "appended"
+                      ;; and "applicable" cannot come apart.
+                      ((caller-payload-reason payload)
+                       => (lambda (why)
+                            (list 'error 'malformed-intent
+                                  (if (pair? why) why (list why)))))
+                      (else
                         (let* ((deps (deps-for-payload state writer payload))
                                (frame (make-frame (view-revision v) (view-epoch v)
                                                   writer seq actor deps payload))
@@ -1434,23 +2406,16 @@
                           ;; outcome is not known rather than known to
                           ;; be nothing.
                           (if (not (eq? (car outcome) 'committed))
-                              (if (eq? (car outcome) 'refused-before-reserve)
-                                  (let ((why (if (pair? (cdr outcome)) (cadr outcome) '())))
-                                    (append (list 'error 'refused why)
-                                            (let ((r (remedy-for why)))
-                                              (if r (list (list 'remedy r)) '()))))
-                                  (list 'error 'indeterminate (car outcome)
-                                        (list 'sequence seq)))
+                              (write-outcome->answer outcome seq)
                               (begin
                                 (reduce-apply! state writer seq deps payload)
                                 (session-applied! s (session-epoch s)
                                                   (reduce-applied-cut state))
                                 (list 'ok
                                       (list 'events (list (cons writer seq)))
-                                      (list 'state (state-report
-                                                     state (block-ids-of payload writer seq)))
+                                      (state-section state payload writer seq)
                                       (list 'cursor (cons writer seq))
-                                      (list 'replay #f)))))))))))))
+                                      (list 'replay #f))))))))))))))
 
   ;; ---- init ----------------------------------------------------------------
 
@@ -1580,8 +2545,26 @@
                   (map (lambda (p) (list (car p) (cdr p))) d)
                   '()))))
 
+  ;; THE INNER READ CANNOT BE ALLOWED TO KEEP THE OUTER SESSION OPEN. The
+  ;; check holds a shared session for its own scan and opens a second one
+  ;; to reduce the log; a failure in the second used to unwind past the
+  ;; first, leaving its descriptor and its shared lock held for the life
+  ;; of the process -- so a later writer waiting for exclusive access
+  ;; would wait on a session nobody was using.
   (define (store-check store)
-    (let* ((ls (log-open store))
+    (let ((ls (log-open store)))
+      (dynamic-wind
+        (lambda () (if #f #f))
+        (lambda () (store-check-with store ls))
+        ;; `load-commit!` ON A SESSION ALREADY FINISHED IS THE ONE THING
+        ;; THIS MUST NOT TURN INTO A NEW FAILURE, so it is guarded: the
+        ;; inner read may have closed things on its way out, and a
+        ;; cleanup that raised would replace the answer -- or the
+        ;; original failure -- with one manufactured here.
+        (lambda () (guard (e (#t #f)) (load-commit! ls))))))
+
+  (define (store-check-with store ls)
+    (let* ((ignored #f)
            (writers (load-writers ls))
            (prefixes (map (lambda (w) (cons w (load-prefix ls w))) writers))
            (coverage (map (lambda (e)
@@ -1597,9 +2580,17 @@
                                   (if p (map describe-error (discovery-integrity p)) '())))))
                   prefixes))
            (snapshots (check-snapshots store coverage))
+           ;; WHAT THE REDUCTION COULD NOT APPLY IS DAMAGE TOO. The rows
+           ;; above read the bytes -- torn tails, checksums, things the
+           ;; scan can see without understanding them. A record that
+           ;; reads perfectly and contradicts the plan above it is
+           ;; invisible to all of that, and it is the store holding
+           ;; something it cannot show: two records in one slot, or a
+           ;; record whose plan never declared the slot it claims. An
+           ;; operator running `check` on such a store was told `ok`.
+           (notes (reduce-noted (open-and-reduce store)))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
-      (load-commit! ls)
       (list 'check
             (list 'store (or (store-id-of store) 'unknown))
             (list 'writers per-writer)
@@ -1610,7 +2601,9 @@
             ;; from the inside -- which is exactly why it is worth
             ;; saying out loud.
             (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
-            (list 'verdict (if (or damaged? (registry-inside-store?)) 'damaged 'ok)))))
+            (list 'notes notes)
+            (list 'verdict (if (or damaged? (pair? notes) (registry-inside-store?))
+                               'damaged 'ok)))))
 
   ;; A SNAPSHOT THAT CANNOT BE USED IS NOT DAMAGE TO THE STORE -- the log
   ;; still loads and the state is still right, it just has to be rebuilt

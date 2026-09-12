@@ -21,17 +21,20 @@ bytes — the heading line it was written with, then its body.
 
 A file-level block holds almost nothing of its own: its body is the front matter
 and whatever sits above the first heading, which in most documents is nothing at all.
-`--recursive` asks for the subtree instead — the block and every block under it, in
+`--recursive` asks for the subtree instead — the block and every block under it **up
+to a nested document**, which has its own file and is read on its own, in
 document order. With `--md` as well, that is the document: for a **top-level**
 document, the same text `export-md` writes to the file, from the same renderer, so a
 read and a round trip cannot disagree.
 
-The qualifier is real. A document nested under another document is a shape import
-never produces and export has no file for — `export-md` writes one file per
-top-level document, and a nested one is rendered into its ancestor's file as a
-section, losing its front matter and taking an empty heading. Read recursively it is
-still a document and keeps its front matter. The two disagree, and the disagreement
-is about what a nested document *means*, not about the renderer: until that is
+The qualifier is real. A document nested under another document is a shape the
+write path refuses to create — `insert` answers `(error doc-must-be-top-level
+(parent <id>))` — but one can arrive by import or from another machine. When one
+does, `export-md` gives it **its own file**, named by its `path`, and stops the
+ancestor's walk there so its sections are written once rather than twice;
+`conflicts` reports it under `nested-documents`. Read recursively it is still a
+document and keeps its front matter. What is still open is what a nested
+document *means*, not what the renderer does with it: until that is
 settled, only top-level documents round-trip.
 
 A section asked for on its own does not carry the document's front matter, which
@@ -123,6 +126,229 @@ nothing in it prints nothing.
 
 The structural conflicts are read from the same place `outline` reads them, so the two
 cannot disagree; `outline` prints the mark as a fourth column on that row.
+
+## Requests and replay
+
+The block-editing verbs — `insert`, `set`, `move`, `del`, `link`, `unlink` —
+accept a request identity. A client that did not hear the answer can send the
+same request again and be told what happened, rather than having to choose
+between doing the work twice and not doing it at all.
+
+`batch` carries one too, and is covered below. So does `tag <name>`, which
+writes a record — but not `tag` with no argument, which only lists what is
+there. Trackability is a property of the **request**, not of the verb's name.
+
+**Every other request refuses the options** — `(error bad-request
+req-not-tracked <verb>)`. The store-level verbs and the read-only ones have no
+replay to offer, and taking an identity only to drop it would leave a caller
+believing it was protected. Refusing says so.
+
+    theourgia insert --title "One" --req <id> --cursor <writer>:<seq>
+
+**Both options or neither.** `--req` alone is `(error bad-request
+req-without-cursor)` and `--cursor` alone is `(error bad-request
+cursor-without-req)`. Neither is accepted quietly, because a caller who supplied
+one believes it is protected and is not: the id names the request and the cursor
+says where the store stood when the client decided to send it, and the store
+needs both to say anything about a request it cannot find.
+
+A write with neither option behaves exactly as it did before and is not tracked.
+
+**The cursor is `--cursor <writer>:<sequence>`** and is parsed by shape.
+Anything else — no colon, an empty or non-numeric sequence — is `(error
+bad-request malformed-cursor)`. It is spelled `--cursor` and not `--after`
+because `--after` already names the sibling a new block is placed behind, on
+`insert` and `move`; one spelling cannot carry both, because the dispatcher
+must consume the retry cursor before any verb sees its arguments. An id outside the permitted format is `(error bad-request
+malformed-req-id)`.
+
+### What a request is answered with
+
+These are the answer **categories**; each carries further evidence, shown here
+abbreviated as `...`. An RPC `batch` answer is wrapped once more, as
+`(batch (<answer> ...))`.
+
+| Answer | Meaning |
+|---|---|
+| `(ok ...)` | the request had not run; it ran now. |
+| `(ok ... (replay #t) (event (<writer> . <seq>)))` | this exact request has already run. No new record was appended. The event names the record the store is standing behind. |
+| `(error req-mismatch ...)` | that id already names a **different** request. No record was appended. |
+| `(error cursor-unreachable (after (<writer> . <seq>)) (writing ...))` | the cursor names a position the record could not have been written at, so the store cannot reason about where the request would have landed. |
+| `(error resolved-executed ...)` | an operator has recorded a determination for this request, and it says the work was done. |
+| `(error unknown <why>)` | the store cannot tell whether the request ran. It never guesses. |
+
+`unknown` always says why, and the reason is something an operator can act on.
+They fall into three families, and this is not the whole list — the store adds a
+reason wherever it finds a new way to be unsure:
+
+- **history in doubt** — `(range-overlaps (<writer> <from> <to>))`: a stretch the
+  request could have occupied cannot be read, so the store cannot say whether the
+  request is in it.
+- **metadata unreadable** — `(uncertain-cache unreadable)`,
+  `(retirement-unreadable <writer>)`, `(chain-unreadable)`: something the answer
+  depends on could not be read.
+- **evidence that does not add up**, for a batch — `(receipt-absent)`,
+  `(receipt-coverage <i>)`, `(receipt-unlinked <event>)`,
+  `(item-index-missing <event>)`, `(plan-order <indices>)`,
+  `(evidence-names-missing <i>)`: records were found that no correct execution
+  produces, so the store will not guess which story it is looking at.
+
+A store that answered `ok` to any of these would be guessing, and the whole point
+of holding a request id is to not have to.
+
+The question is asked of the **successor chain**, not of one writer. A cursor on
+a writer that has since been retired is measured against the generations that
+succeeded it too, because a request written against a retired cursor could have
+landed on any of them.
+
+### An answer is durable when it is given
+
+A request answered `ok` has already been made durable. The cost is **per
+request, not per record**: a request of nine sub-operations is flushed the same
+number of times as a request of five. A single-intent request runs one barrier;
+a tracked batch runs two, because its receipt is made durable before its items
+are written.
+
+A replay performs the barrier again before repeating the word, because saying
+"that already happened" is the same promise as saying it happened the first
+time.
+
+So a crash cannot leave a client holding an `ok` for a record that is not on
+disk. It can leave a client holding **no** answer, which is what `--req` is for.
+
+### `batch`
+
+Intents are read from standard input, one wrapping list or several top-level
+forms:
+
+    echo '((insert root #f ((kind . section) (title . "One")))
+           (insert (from 0) #f ((kind . section) (title . "Two"))))' \
+      | theourgia batch
+
+A field is a **pair**: `(title . "One")`. Written `(title "One")` the value is
+the list `("One")`, which is a different thing and is stored as one.
+
+An intent is the shape the library takes, not a shorthand, and each verb has
+its own:
+
+    (insert <parent> <predecessor> <fields>)
+    (set    <id> <field> [<value>])          field is a symbol
+    (move   <id> <parent> <predecessor>)
+    (link   <from> <rel> <to>)               rel is a symbol
+    (unlink <from> <rel> <to>)
+    (del    <id>)
+    (tag    <name>)
+
+Any intent with a subject — `set`, `move`, `del`, `link`, `unlink` — may be
+wrapped as `(expect <hash> <intent>)`, which refuses the work if that block's
+hash is no longer the one given. `insert` and `tag` have no subject and answer
+`(error no-subject)` if wrapped. The hash must be a string: a wrapper holding
+anything else is `malformed-intent`, not a wrapper that quietly does nothing.
+
+An item the store will not accept is answered `(error malformed-intent
+(<reason> <what-was-sent>))` for that item — never raised. The reason names the
+rule, because more than one can apply to the same item and they do not send you
+to the same place:
+
+| Reason | |
+|---|---|
+| `intent-not-a-form`, `verb-not-a-symbol` | it is not a form headed by a verb |
+| `too-few-arguments` | shorter than that verb reads |
+| `not-an-id` | a value that could not be an id where one belongs |
+| `name-not-a-symbol` | a field or relation name that is not a symbol |
+| `fields-not-a-list`, `field-entry-not-a-pair`, `field-name-not-a-symbol` | the field collection's shape |
+| `field-name-reserved` | `parent` or `ord`, which the store computes |
+| `field-name-repeated` | the same field name twice |
+| `intent-not-a-proper-list` | the item, or its `expect` wrapper, is not a proper list |
+| `expect-too-short`, `expectation-not-a-hash` | the `expect` wrapper |
+| `title-has-line-terminator`, `title-has-control-character` | a title must be one line |
+| `level-not-a-heading-level` | a `level` that is not 1–6 |
+
+A record the store was going to write but cannot apply is refused the same way,
+with the reason from the reducer's own vocabulary — `id-not-a-string`,
+`tag-name-not-a-string`, `relation-not-a-symbol`, `parent-not-an-id`,
+`ord-not-a-number` — and what is shown is the payload rather than the item.
+
+A form headed by a symbol this build does not know is a different answer,
+`(error unknown-verb <verb>)`: it may be a record shape a newer build writes,
+and calling it malformed would send an operator to repair something that only
+needs a newer binary.
+
+Note that the empty text is a batch of **no** intents, which writes nothing and
+is not an error, while the text `()` is a batch of **one** empty intent, which
+is malformed. They are different requests and are answered differently.
+
+A **tracked** batch of more than one item — one carrying `--req` and `--cursor` —
+writes a **receipt** first and then its items, and each item is its own request
+under an identity derived from the batch's, so a retry can be told not merely
+how far the batch got but exactly which items are on disk. Sending a completed
+one again appends no record and answers `(ok ... (replay #t) (event (<writer>
+. <seq>)))` naming its **last** item: that is the furthest point the promise has
+to reach.
+
+The receipt records, for each item, the cursor that item was written against.
+
+A tracked request of a **single** intent has no receipt — it takes the
+single-record path — but it is still tracked, and repeating it is still a
+replay. A tracked request that produces **no** intent appends nothing at all.
+
+An **untracked** batch has neither a receipt nor replay protection; repeating
+its text does the work again.
+
+What the store can **conclude** about a batch it has partial evidence of. These
+are the classifier's verdicts about what is on disk; nothing resumes a `planned`
+or `partial` batch by itself — that is for the client holding the request:
+
+| State | Meaning |
+|---|---|
+| not committed | the batch provably did not begin. It is safe to execute. |
+| planned | the receipt is there and no item is. |
+| partial | a prefix of the items is on disk and the rest provably did not run. |
+| committed | every item is on disk. |
+| unknown | one of the above cannot be established. |
+
+`partial` is the strongest of these and the store will not claim it lightly: every
+missing item must be clear of every stretch of history in doubt, the writer chain
+must read to its end, and nothing anywhere — including records set aside as
+superseded — may mention an item said to be missing. Failing any of those the
+answer is `unknown` with the reason, never `partial`.
+
+### What the machine registry records
+
+Two frontiers per `(store-id, instance, writer)`, and they are not the same
+fact: how far this store has been given leave to write, and how far its records
+have actually reached the disk. The second is what refuses a store whose history
+has gone backwards — restored from a backup, say — while the first lets a request
+reserve the room it might need before it knows how much of it it will use.
+
+The second can lag behind records that really are durable: a crash between a
+record's flush and the registry's update leaves it low. A replay of such a record
+raises it, which is why answering a replay is a write even though it appends
+nothing.
+
+### Two limits worth knowing
+
+**A retirement record written before this version says less than one written
+after it.** From this version a retirement carries the stretches the adopt could
+not vouch for, and carries them even when there are none — so an absent clause
+means "written by an older build" rather than "nothing was lost". Nothing on disk
+can now say which of those an older record meant, so the older ones are read the
+only safe way: everything above the retired prefix is in doubt, without an upper
+bound.
+
+The cost is real and it is one-directional. A request whose cursor falls in such
+a stretch is answered `unknown` every time it is sent, and an operator's
+`not-executed` resolution cannot release it, because a resolution may only exempt
+a stretch with a top and this one has none. It does not block a replay when
+matching evidence exists, and it does not affect a request on the writer that
+succeeded the retired one. Stores created from this version forward never produce
+the older form.
+
+**A caller that captures a continuation inside its own procedure and re-enters it
+after the write has finished will end the session twice.** The second end raises
+and is suppressed, so no answer is lost, but the store's lock accounting is not
+written to survive that shape. Do not resume a captured continuation out of a
+`with-store-write` procedure.
 
 ## Sync: the `publish` verb
 

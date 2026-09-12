@@ -116,11 +116,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 
 (define scratch (test-dir "log19"))
@@ -599,8 +642,15 @@
 (want "a baseline naming an unreadable record refuses, naming writer and reason"
       (begin (mirror-published!)
              (put! (mpath 1) (damage (recs 1 3) 80))
-             (let ((before (local-size))
-                   (answer (report-baseline M 3)))
+             ;; `let*`, AND THE ORDER IS THE WHOLE ROW. Under `let` the
+             ;; compiler may run `answer` first, and then `before` is read
+             ;; AFTER the call it is supposed to bracket: `(= before
+             ;; (local-size))` compares the size with itself and is true
+             ;; whatever the call did. The row would keep passing while
+             ;; testing nothing. Its sibling in cli3 was found doing
+             ;; exactly this, having flipped on an unrelated edit.
+             (let* ((before (local-size))
+                    (answer (report-baseline M 3)))
                (list answer (= before (local-size)))))
       (list (list 'no-view
                   (list 'baseline-unreadable
@@ -614,4 +664,5 @@
       '(raised))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log19 complete\n")

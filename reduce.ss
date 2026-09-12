@@ -40,8 +40,9 @@
 ;;; the two apart is what lets the same records be reduced from a
 ;;; snapshot and from empty and be checked against each other.
 (library (theourgia reduce)
-  (export reduce-empty reduce-apply! reduce-pending reduce-noted
-          reduce-applied-cut reduce-trace
+  (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
+          reduce-empty reduce-apply! reduce-pending reduce-noted
+          reduce-applied-cut reduce-trace reduce-gates
           state-read state-outline state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags cut-usable? cut-id
           state->rows rows->state
@@ -50,7 +51,11 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
           (rnrs unicode) (rnrs io simple)
-          (only (theourgia wire) sexpr->string-extended)
+          (only (rnrs io ports) call-with-string-output-port)
+          (only (theourgia request) store-supplied-fields
+                request-actor? actor-identity actor-sub
+                actor-plan-event make-evidence request-gates)
+          (only (theourgia wire) sexpr->string-extended wire-safe-symbol?)
           (only (igropyr crypto) sha256 bytevector->hex)
           (only (rnrs bytevectors) string->utf8))
 
@@ -117,7 +122,13 @@
             (mutable applied)
             (mutable pending)
             (mutable trace)
-            (mutable noted)))
+            (mutable noted) (mutable history) (mutable gates)
+            ;; WHETHER ANY REQUEST RECORD HAS EVER BEEN SEEN. Once one
+            ;; has, every later record can move the gates -- an ordinary
+            ;; record changes what is causally available, which is half
+            ;; of what membership reads -- so the question is asked from
+            ;; then on. Before the first one there is nothing to ask.
+            (mutable gated)))
 
   ;; Named blk rather than block so that the record's own accessors do
   ;; not collide with block-id, which is the derivation rule and part of
@@ -131,11 +142,12 @@
             (mutable position)
             (mutable tomb)))
 
-  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '()))
+  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '() '() '() #f))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
   (define (reduce-noted r) (reduction-noted r))
+  (define (reduce-gates r) (reduction-gates r))
   (define (reduce-trace r) (reverse (reduction-trace r)))
   (define (reduce-applied-cut r)
     (list-sort (lambda (x y) (string<? (car x) (car y)))
@@ -143,18 +155,23 @@
 
   ;; A record as this layer receives it: everything the log layer knows
   ;; about one line, with the payload already decoded.
-  (define (make-record writer seq deps payload) (list writer seq deps payload))
-  (define (record-of x) x)
+  (define (make-record writer seq deps payload actor) (list writer seq deps payload actor))
+  (define (record-of x) (list (car x) (cadr x) (caddr x) (cadddr x)))
   (define (rec-writer x) (car x))
   (define (rec-seq x) (cadr x))
   (define (rec-deps x) (caddr x))
   (define (rec-payload x) (cadddr x))
+  (define (rec-actor x) (list-ref x 4))
 
   ;; APPLICABLE MEANS EVERY PREMISE IS IN. Not "the deps have arrived" --
   ;; applied. A record whose deps are merely present but themselves
   ;; pending would be applied against a state that does not contain them.
   (define (applicable? r rec)
-    (let ((applied (reduction-applied r)))
+    (and (not (assoc (cons (rec-writer rec) (rec-seq rec)) (reduction-gates r)))
+         (record-ready? (reduction-applied r) rec)))
+
+  (define (record-ready? applied rec)
+    (let ()
       (define (reached? w s)
         (let ((e (assoc w applied))) (and e (>= (cdr e) s))))
       (and (or (= (rec-seq rec) 1)
@@ -168,7 +185,7 @@
   ;; the log layer delivers each record once, so no caller reaches it
   ;; today, but a reduction that quietly corrupts itself on a repeat is
   ;; not something to leave for the first caller who does.
-  (define (reduce-apply! r writer seq deps payload)
+  (define (reduce-apply! r writer seq deps payload . rest)
     (let ((have (assoc writer (reduction-applied r))))
       (cond
         ((and have (>= (cdr have) seq)) (list 'refused 'already-applied))
@@ -177,10 +194,183 @@
                  (reduction-pending r))
          (list 'refused 'already-pending))
         (else
-         (reduction-pending-set! r (append (reduction-pending r)
-                                           (list (make-record writer seq deps payload))))
-         (drain! r)
+         ;; EVERY RECORD ASKS, ONCE ANY REQUEST RECORD HAS ARRIVED.
+         ;; A narrower test was tried and is wrong: it asked only
+         ;; records that could change what a plan DECLARED, and missed
+         ;; that an ordinary record changes what is causally AVAILABLE --
+         ;; which is the other half of what membership reads. A plan
+         ;; whose own dependency has not arrived is gated `pending-plan`,
+         ;; and when that dependency finally arrives under a plain actor,
+         ;; nothing recomputes. Measured on three records where the plan
+         ;; depends on an ordinary one:
+         ;;
+         ;;   plan, item, ordinary  ->  ("Base")
+         ;;   ordinary, plan, item  ->  ("Base" "Yes")
+         ;;
+         ;; Two orders, two documents -- and not an exotic order either:
+         ;; delivery goes writer by writer in name order, so reopening
+         ;; the store need not repair it.
+         ;;
+         ;; SO THE QUESTION IS ASKED WHENEVER THERE IS ANYTHING TO ASK
+         ;; ABOUT, and it stops being asked only while no request record
+         ;; has ever been seen. The cost is a gate computation per record
+         ;; after that point; it is the price of the answer not depending
+         ;; on arrival order, and no cheaper test has survived being
+         ;; measured.
+         (let* ((actor (and (pair? rest) (car rest)))
+                (rec (make-record writer seq deps payload actor))
+                ;; THE LATCH IS SET BY ANY REQUEST RECORD, INCLUDING THE
+                ;; FIRST. It is restored from a snapshot by asking
+                ;; exactly that -- does any retained record carry a
+                ;; request actor -- so a live reduction that set it on a
+                ;; narrower condition means something different from one
+                ;; resumed out of its own snapshot. Measured: a single
+                ;; valid `single` record left the live latch false and
+                ;; the restored latch true, and the next record was
+                ;; admitted by one and refused by the other. Two
+                ;; reductions over the same records, two documents.
+                (ignored (when (request-actor? actor)
+                           (reduction-gated-set! r #t)))
+                (bears?
+                  (or (reduction-gated r)
+                      (and (pair? payload) (eq? (car payload) 'plan))
+                      (and (request-actor? actor)
+                           (or (and (actor-plan-event actor) #t)
+                               ;; AN INDEXED SLOT POINTING AT NO PLAN is a
+                               ;; record whose two statements about where
+                               ;; it belongs disagree, and the verdict for
+                               ;; it is `plan-mismatch`. Leaving it out of
+                               ;; this test let the FIRST such record be
+                               ;; applied before anything asked.
+                               (and (integer? (actor-sub actor)) #t)
+                               (exists (lambda (old)
+                                         (let ((a (rec-actor old)))
+                                           (and (request-actor? a)
+                                                (equal? (actor-identity a)
+                                                        (actor-identity actor)))))
+                                       (reduction-history r)))))))
+           (reduction-history-set! r (cons rec (reduction-history r)))
+           (if (not bears?)
+               (begin
+                 (reduction-pending-set! r (append (reduction-pending r) (list rec)))
+                 (drain! r))
+               (let* ((gates (history-gates (reverse (reduction-history r))))
+                      (reversed?
+                        (exists (lambda (p)
+                                  (and (not (assoc (car p) (reduction-gates r)))
+                                       (event-applied? r (car p))))
+                                gates)))
+                 (if reversed?
+                     (rebuild-request-state! r gates)
+                     (begin
+                       (reduction-gates-set! r gates)
+                       (reduction-noted-set! r (merge-gate-notes r gates))
+                       (reduction-pending-set! r (append (reduction-pending r) (list rec)))
+                       (drain! r))))))
          'accepted))))
+
+  (define (event-applied? r id)
+    (let ((e (assoc (car id) (reduction-applied r))))
+      (and e (>= (cdr e) (cdr id)))))
+
+  ;; Determine causal availability without applying payloads. This pass
+  ;; includes later duplicates before admission, so record arrival order
+  ;; cannot choose a winner. The second pass reduces only admitted events.
+  ;; WHAT THE RECORDS SAY ABOUT MEMBERSHIP, as a pure function of the
+  ;; set. It folds a skeleton first -- positions only, no payloads --
+  ;; because membership asks which records were causally available to
+  ;; which, and that is answerable before anything is applied. Nothing
+  ;; here depends on the order the records arrived in, which is what
+  ;; makes it safe to call on every record that could change the answer.
+  (define (history-gates records)
+    (let ((skeleton (reduce-empty)))
+      (let loop ((pending records))
+        (let ((ready (filter (lambda (rec) (record-ready? (reduction-applied skeleton) rec)) pending)))
+          (unless (null? ready)
+            (for-each
+              (lambda (rec)
+                (let* ((w (rec-writer rec)) (n (rec-seq rec)) (id (cons w n)))
+                  (reduction-pasts-set! skeleton
+                    (cons (cons id (compute-past skeleton w n (rec-deps rec)))
+                          (reduction-pasts skeleton)))
+                  (reduction-applied-set! skeleton
+                    (cons id (filter (lambda (p) (not (string=? (car p) w)))
+                                     (reduction-applied skeleton))))))
+              ready)
+            (loop (filter (lambda (rec) (not (memq rec ready))) pending)))))
+      (let* ((evidence
+               (filter (lambda (x) x)
+                 (map (lambda (rec)
+                        (let* ((a (rec-actor rec)) (id (cons (rec-writer rec) (rec-seq rec)))
+                               (past (assoc id (reduction-pasts skeleton))))
+                          (and (request-actor? a)
+                               (make-evidence id a (if past (cdr past) (rec-deps rec))
+                                 (rec-payload rec) 'valid-history (and past #t) '())))) records)))
+             (gates (filter (lambda (p) (not (eq? (cdr p) 'valid)))
+                            (request-gates evidence))))
+        gates)))
+
+  (define (gate-notes gates)
+    (map (lambda (p) (list (cdr p) (list 'event (caar p) (cdar p))))
+         (list-sort (lambda (a b) (event<? (car a) (car b))) gates)))
+
+  ;; THE GATE NOTES REPLACE THE GATE NOTES AND NOTHING ELSE. A note is an
+  ;; observation about a record the reduction could not use, and there
+  ;; are two unrelated kinds: what the membership rule gated, and what
+  ;; the interpreter refused -- a malformed payload, a verb this build
+  ;; does not know. Writing the first kind over the whole list threw the
+  ;; second away, and the record it was about had already been
+  ;; interpreted, so nothing would ever say it again. `check` reads these
+  ;; notes to decide `damaged`, so a readable but malformed record could
+  ;; be reported clean by the arrival of an unrelated plan.
+  ;;
+  ;; IT IS NOT VISIBLE IN state-hash. The hash covers blocks; a case
+  ;; comparing two orders by hash alone agrees while the notes differ,
+  ;; which is why the set of notes is compared beside it.
+  (define (merge-gate-notes r gates)
+    (append (filter (lambda (n)
+                      (not (memq (car n) '(plan-mismatch plan-conflict plan-order
+                                           pending-plan req-mismatch))))
+                    (reduction-noted r))
+            (gate-notes gates)))
+
+  ;; FOLDING THE WHOLE SET AGAIN, because there is no other way to take a
+  ;; record back. Nothing here undoes anything: the state is dropped and
+  ;; rebuilt from the records the reduction kept, so there is ONE path
+  ;; from records to state and no second path whose agreement with the
+  ;; first would have to be proved. That is the whole reason this is a
+  ;; rebuild and not a retraction.
+  ;;
+  ;; IT IS NOT AN OPTIMISATION PATH; IT IS THE ONLY PATH. The cost is
+  ;; paid only when a record reverses a membership that was already
+  ;; applied, which is what makes it rare -- see the caller.
+  (define (rebuild-request-state! r gates)
+    (let ((records (reverse (reduction-history r))))
+      (reduction-blocks-set! r '())
+      (reduction-links-set! r '())
+      (reduction-tags-set! r '())
+      (reduction-pasts-set! r '())
+      (reduction-applied-set! r '())
+      (reduction-trace-set! r '())
+      (reduction-pending-set! r records)
+      (reduction-gates-set! r gates)
+      ;; A REBUILD STARTS THE NOTES OVER, and that is the opposite of
+      ;; what the other path must do. The retained records are about to
+      ;; be folded again, so every note the interpreter makes about a
+      ;; record that still reaches it will be made again -- keeping the
+      ;; old ones as well left a malformed record noted twice, and how
+      ;; many times a rebuild has happened is a function of arrival
+      ;; order.
+      ;;
+      ;; NOT EVERY NOTE COMES BACK, and that is correct rather than a
+      ;; loss: a malformed record that depends on one the rebuild now
+      ;; gates never reaches the interpreter, so nothing notes it -- and
+      ;; a reduction built from those records for the first time says
+      ;; the same thing. The
+      ;; other path interprets only the new record, so there the older
+      ;; notes are the only copy and have to be kept.
+      (reduction-noted-set! r (gate-notes gates))
+      (drain! r)))
 
   ;; ONE AT A TIME, AND THEN LOOK AGAIN. Applying a record can make
   ;; another applicable, and that one may sort ahead of records already
@@ -283,9 +473,348 @@
                             (list 'event (car event-id) (cdr event-id))
                             (list 'verb verb))))))
 
+  ;; WHAT A RECORD HAS TO LOOK LIKE FOR THIS REDUCER TO APPLY IT, in one
+  ;; place, answering a REASON rather than a boolean so that whoever
+  ;; refuses can say which part was wrong.
+  ;;
+  ;; IT HAS TWO CALLERS AND THAT IS DELIBERATE. The write path asks it
+  ;; before appending, so a record that cannot be applied is never made
+  ;; durable; this reducer asks it before dispatching, so a record that
+  ;; got onto disk some other way -- written by a different build, synced
+  ;; from another machine, or appended by a version of the write path
+  ;; that did not ask -- is reported and skipped instead of ending the
+  ;; read. One definition, two call sites: the first half alone leaves
+  ;; every store one foreign record away from being unreadable.
+  (define (proper-len x)
+    (let loop ((y x) (n 0))
+      (cond ((null? y) n) ((pair? y) (loop (cdr y) (+ n 1))) (else #f))))
+
+  ;; `parent` AND `ord` ARE THIS REDUCER'S, NOT THE CALLER'S. A `put`
+  ;; carries the block's position as two fields the write path computes,
+  ;; and `do-put!` reads each with `assq` -- which answers the FIRST
+  ;; occurrence. A caller-supplied `ord` therefore came before the
+  ;; computed one and won.
+  ;;
+  ;; WHAT THAT COST, MEASURED: `(insert root #f ((ord . "oops")))` was
+  ;; answered `ok`, the record was appended and acknowledged, and the
+  ;; store then answered an internal error to `outline` and to every
+  ;; later write. It is worse than the collection that could not be
+  ;; walked, because that one at least refused: this one told the caller
+  ;; the work was done.
+  ;;
+  ;; REFUSED RATHER THAN DROPPED. Ignoring a field the caller wrote would
+  ;; make `(ord . 3)` mean nothing at all, silently; a reserved name is a
+  ;; thing to be told about.
+  ;; THE SAME LIST THE MEMBERSHIP RULE EXEMPTS, imported rather than
+  ;; repeated. What makes a name reserved here and exempt there is one
+  ;; fact -- the store supplies it -- so it is written down once.
+  (define reserved-fields store-supplied-fields)
+
+  ;; A REPEATED KEY IS AN OVERRIDE CHANNEL, because every reader here asks
+  ;; `assq`, which answers the FIRST occurrence. That is the same
+  ;; mechanism the reserved names above were abusing -- a second `ord`
+  ;; later in the list is invisible, and a second `title` means the one
+  ;; the caller can see is not the one that applies.
+  (define (duplicate-key alist)
+    (let loop ((ps alist) (seen '()))
+      (cond
+        ((null? ps) #f)
+        ((memq (car (car ps)) seen) (car (car ps)))
+        (else (loop (cdr ps) (cons (car (car ps)) seen))))))
+
+  ;; THE SHAPE ALONE, so that the caller's rule can ask about shape,
+  ;; reserved names and duplicates in the order its remedies make sense.
+  (define (shape-only-reason alist)
+    (cond
+      ((not (proper-len alist)) 'fields-not-a-list)
+      (else
+       (let loop ((ps alist))
+         (cond
+           ((null? ps) #f)
+           ((not (pair? (car ps))) 'field-entry-not-a-pair)
+           ((not (symbol? (car (car ps)))) 'field-name-not-a-symbol)
+           (else (loop (cdr ps))))))))
+
+  (define (field-alist-reason alist)
+    (cond
+      ((not (proper-len alist)) 'fields-not-a-list)
+      (else
+       (let loop ((ps alist))
+         (cond
+           ((null? ps)
+            (and (duplicate-key alist) 'field-name-repeated))
+           ((not (pair? (car ps))) 'field-entry-not-a-pair)
+           ((not (symbol? (car (car ps)))) 'field-name-not-a-symbol)
+           (else (loop (cdr ps))))))))
+
+  ;; SHAPE, THEN RESERVED NAMES, THEN DUPLICATES -- in that order, and the
+  ;; order is the policy. `((ord . 1) (ord . 2))` is both a repeated key
+  ;; and a reserved one, and answering `field-name-repeated` tells the
+  ;; caller to remove one of them; removing one leaves a field they were
+  ;; never allowed to write. The reason that speaks has to be the one
+  ;; whose remedy works.
+
+  ;; THE FIELDS A CALLER MAY WRITE, asked separately from the shape,
+  ;; because the write path checks this BEFORE it appends its own two and
+  ;; the reducer must not: by the time a record is on disk its `parent`
+  ;; and `ord` are this reducer's own and perfectly legitimate.
+  ;; HOW A REFUSED DATUM IS NAMED IN AN ANSWER: as a string, always.
+  ;;
+  ;; An answer travels to a reader that accepts the wire whitelist, and
+  ;; the thing a refusal is about is by definition something that layer
+  ;; would not carry -- a symbol the writer will not emit, a value of a
+  ;; type it does not know. Putting the datum itself into the answer
+  ;; therefore produced a refusal its only reader could not parse:
+  ;; `symbol-not-wire-safe` came back spelled `\x31;` and the client
+  ;; reported a transport error at that byte instead of the reason.
+  ;;
+  ;; A STRING IS IN THE WHITELIST WHATEVER IT HOLDS, so this is safe by
+  ;; construction rather than by a rule someone has to remember: the
+  ;; refusal is readable no matter what was refused.
+  ;; A SYMBOL IS SPELLED BY ITS NAME, not by the syntax that would be
+  ;; needed to write it down again. `write` renders the symbol whose name
+  ;; is "1" as `\x31;`, so a refusal about it said `(spelling "\\x31;")`
+  ;; -- readable, and still not the thing the reader wanted to know.
+  ;; Every other datum keeps `write`, which is what separates the string
+  ;; "abc" from the symbol abc when both could be meant.
+  (define (datum-spelling x)
+    (if (symbol? x)
+        (symbol->string x)
+        (call-with-string-output-port (lambda (port) (write x port)))))
+
+  (define (caller-fields-reason alist)
+    (or (shape-only-reason alist)
+        (let loop ((ps alist))
+          (cond
+            ((null? ps) #f)
+            ((memq (car (car ps)) reserved-fields)
+             (list 'field-name-reserved
+                   (list 'field (datum-spelling (car (car ps))))))
+            (else (loop (cdr ps)))))
+        (let ((d (duplicate-key alist)))
+          (and d (list 'field-name-repeated
+                       (list 'field (datum-spelling d)))))))
+
+  (define (args-reason args n)
+    (let ((k (proper-len args)))
+      (cond ((not k) 'arguments-not-a-list)
+            ((< k n) 'too-few-arguments)
+            (else #f))))
+
+  ;; A POSITION IS A PARENT AND AN ORD, AND BOTH ARE READ AS VALUES.
+  ;; The field collection's SHAPE was checked and its position values were
+  ;; not, so a record carrying `(ord . "oops")` applied cleanly, left no
+  ;; note, and then `state-outline` raised when it came to sort siblings.
+  ;;
+  ;; THE CALLER'S RESERVED-NAME RULE CANNOT PROTECT THIS. That rule stops
+  ;; a caller writing `ord` at all; it says nothing about a record that
+  ;; arrived from another machine or an older build, which is where a
+  ;; position value with the wrong type actually comes from. The write
+  ;; path and the read path need different rules about the same field.
+  ;;
+  ;; AN ORD IS AN EXACT REAL because `ord-between` answers integers and
+  ;; the midpoints between them; a PARENT is `root` or a block id.
+  (define (ord-ok? x) (and (number? x) (real? x) (exact? x)))
+  (define (parent-ok? x) (or (eq? x 'root) (string? x)))
+
+  ;; TWO SITUATIONS, NOT ONE. A `put` may omit either coordinate and the
+  ;; interpreter fills it in; a `move` names both and `do-move!` stores
+  ;; what it is given. Written as one procedure that skipped a #f, this
+  ;; passed `(move <id> root #f)` and `(move <id> #f 0)` -- both applied,
+  ;; left no note, and made the outline raise. The value #f is ABSENT in
+  ;; one form and A WRONG VALUE in the other, and one predicate cannot
+  ;; mean both.
+  (define (move-position-reason parent ord)
+    (cond
+      ((not (parent-ok? parent)) 'parent-not-an-id)
+      ((not (ord-ok? ord)) 'ord-not-a-number)
+      (else #f)))
+
+  ;; FIELDS WHOSE VALUE A READER INTERPRETS, and the type it needs. This
+  ;; is the same finding as ids and relation names, one field further
+  ;; out: `level` is used as a string length when a heading is rendered,
+  ;; so `(set <id> level "2")` -- which is exactly what the command line
+  ;; produces, since it passes every value as text -- applied cleanly and
+  ;; then broke every Markdown read of that block.
+  ;;
+  ;; THE READER IS ALSO MADE TOLERANT, in `effective-heading`, because
+  ;; this rule cannot reach a record that is already on disk or arrived
+  ;; from elsewhere. Refusing to write one and surviving one that exists
+  ;; are two different obligations.
+  ;; A TITLE IS ONE LINE, AND THE STORE HAS TO SAY SO. `outline` prints
+  ;; one row per block as text, so a title carrying a line terminator
+  ;; produced an EXTRA ROW -- one that looked exactly like a real one and
+  ;; carried a well-formed id that no block has. A client reading outline
+  ;; as text saw a block that does not exist. Measured: two records, two
+  ;; blocks, three rows.
+  ;;
+  ;; THE CONTROL CHARACTERS GO WITH IT for the same reason: they are not
+  ;; text a heading can carry, and what a terminal does with them is not
+  ;; something the store should be deciding by accident. TAB is allowed
+  ;; because it is ordinary text in a title.
+  ;;
+  ;; U+0085, U+2028 AND U+2029 ARE LINE TERMINATORS TOO, and are the ones
+  ;; a check written against `#\newline` alone would let through.
+  (define (line-terminator? c)
+    (let ((n (char->integer c)))
+      (or (= n 10) (= n 13) (= n 133) (= n 8232) (= n 8233))))
+
+  (define (control-character? c)
+    (let ((n (char->integer c)))
+      (and (not (= n 9))
+           (or (< n 32) (and (>= n 127) (< n 160))))))
+
+  (define (title-text-reason v)
+    (and (string? v)
+         (let loop ((i 0))
+           (cond
+             ((= i (string-length v)) #f)
+             ((line-terminator? (string-ref v i)) 'title-has-line-terminator)
+             ((control-character? (string-ref v i)) 'title-has-control-character)
+             (else (loop (+ i 1)))))))
+
+  (define (typed-field-reason alist)
+    (let ((e (assq 'level alist)))
+      (and e
+           (not (and (integer? (cdr e)) (exact? (cdr e))
+                     (> (cdr e) 0) (< (cdr e) 7)))
+           'level-not-a-heading-level)))
+
+  ;; THE TITLE RULE IS THE WRITE PATH'S, NOT THE REDUCER'S. A title with
+  ;; a line terminator is a thing this store will not WRITE; a record
+  ;; that already carries one -- from another machine, or a build that
+  ;; had no such rule -- is a record it must still be able to APPLY and
+  ;; show. Putting this in `payload-reason` made the reducer refuse the
+  ;; foreign record instead, so the block disappeared from the listing
+  ;; rather than appearing on one line.
+  ;;
+  ;; SAME SHAPE AS THE RESERVED NAMES: one owner, two questions, asked by
+  ;; name. `payload-reason` answers "can this be applied"; the caller's
+  ;; question is "may this be written", and it is strictly narrower.
+  ;; A SYMBOL THIS STORE WRITES MUST BE ONE THE WIRE WRITER WILL EMIT
+  ;; BARE. A relation name or field name that is not -- a space, a
+  ;; bracket, anything outside ASCII -- is encoded into the record
+  ;; perfectly well as `("#%sym" ...)`, and then the state datum carrying
+  ;; the raw symbol cannot be serialised. That raise happened while the
+  ;; ANSWER was being built, after the record was durable, so the caller
+  ;; was told a write had failed that had in fact succeeded.
+  ;;
+  ;; IT ASKS THE WIRE LAYER RATHER THAN RESTATING ITS RULE. Two copies of
+  ;; "which symbols may be written bare" would drift, and the drift only
+  ;; shows once a record is on disk: `("#%sym" "\u63d0;\u53ca;")` is
+  ;; exactly what a writer that encoded it and a reader that could not
+  ;; apply it leave behind.
+  ;;
+  ;; A NAME FOR PEOPLE BELONGS IN A STRING FIELD. This rule is about the
+  ;; symbols that are part of the record's structure.
+  ;; IT SAYS WHICH SYMBOL, HAVING JUST LOOKED AT IT. This answered the
+  ;; bare word and threw away the one thing it had that the caller could
+  ;; act on -- so the answer carried the whole intent back to make up for
+  ;; it, and the intent contained the symbol the wire layer will not
+  ;; write. A refusal about an unwritable datum was therefore unreadable
+  ;; whenever it was right. Keeping what was found here is what makes the
+  ;; echo unnecessary.
+  (define (symbol-field-reason payload)
+    (define (bad? x) (and (symbol? x) (not (wire-safe-symbol? x))))
+    (define (say where x)
+      (list 'symbol-not-wire-safe (list 'where where)
+            (list 'spelling (datum-spelling x))))
+    (and (pair? payload)
+         (let ((args (cdr payload)))
+           (case (car payload)
+             ((link unlink)
+              (and (pair? (cdr args)) (bad? (cadr args))
+                   (say 'relation (cadr args))))
+             ((set)
+              (and (pair? (cdr args)) (bad? (cadr args))
+                   (say 'field-name (cadr args))))
+             ((put)
+              (and (pair? args)
+                   (let loop ((ps (car args)))
+                     (cond
+                       ((not (pair? ps)) #f)
+                       ((not (pair? (car ps))) #f)
+                       ((bad? (car (car ps))) (say 'field-name (car (car ps))))
+                       ((bad? (cdr (car ps))) (say 'field-value (cdr (car ps))))
+                       (else (loop (cdr ps)))))))
+             (else #f)))))
+
+  (define (caller-payload-reason payload)
+    (or (payload-reason payload)
+        (symbol-field-reason payload)
+        (and (pair? payload)
+             (case (car payload)
+               ((put) (let ((e (assq 'title (car (cdr payload)))))
+                        (and e (title-text-reason (cdr e)))))
+               ((set) (let ((args (cdr payload)))
+                        (and (pair? (cdr args)) (eq? (car (cdr args)) 'title)
+                             (pair? (cdr (cdr args)))
+                             (title-text-reason (car (cdr (cdr args)))))))
+               (else #f)))))
+
+  ;; PRESENCE IS ASKED SEPARATELY FROM VALUE, so a key holding #f is
+  ;; refused while a key that is simply not there is allowed.
+  (define (put-position-reason alist)
+    (let ((p (assq 'parent alist)) (o (assq 'ord alist)))
+      (cond
+        ((and p (not (parent-ok? (cdr p)))) 'parent-not-an-id)
+        ((and o (not (ord-ok? (cdr o)))) 'ord-not-a-number)
+        (else #f))))
+
+  ;; -> #f when this reducer can apply the record, else a reason symbol.
+  (define (payload-reason payload)
+    (cond
+      ((not (pair? payload)) 'payload-not-a-form)
+      ((not (symbol? (car payload))) 'verb-not-a-symbol)
+      (else
+       (let ((args (cdr payload)))
+         (case (car payload)
+           ((put) (or (args-reason args 1)
+                      (field-alist-reason (car args))
+                      (put-position-reason (car args))
+                      (typed-field-reason (car args))))
+           ;; THE TYPES DOWNSTREAM READERS NEED, not merely the arity.
+           ;; A block id is sorted and compared as a string and a tag name
+           ;; is sorted against other tag names, so a number in either
+           ;; position applies cleanly and then breaks the reader --
+           ;; `(set 7 title "x")` breaks the ordering of ids and
+           ;; `(tag 7 ())` breaks tag listing as soon as a second tag
+           ;; exists. Applying without raising is not the same as leaving
+           ;; a state that can be read.
+           ((set) (or (args-reason args 2)
+                      (and (not (string? (car args))) 'id-not-a-string)
+                      (and (not (symbol? (cadr args))) 'field-name-not-a-symbol)
+                      (and (pair? (cddr args))
+                           (typed-field-reason (list (cons (cadr args) (caddr args)))))))
+           ((del) (or (args-reason args 1)
+                      (and (not (string? (car args))) 'id-not-a-string)))
+           ((move) (or (args-reason args 3)
+                       (and (not (string? (car args))) 'id-not-a-string)
+                       (move-position-reason (cadr args) (caddr args))))
+           ((link unlink)
+            (or (args-reason args 3)
+                (and (not (string? (car args))) 'id-not-a-string)
+                (and (not (string? (caddr args))) 'id-not-a-string)
+                (and (not (symbol? (cadr args))) 'relation-not-a-symbol)))
+           ((tag) (or (args-reason args 2)
+                      (and (not (string? (car args))) 'tag-name-not-a-string)))
+           ;; A VERB THIS BUILD DOES NOT KNOW IS NOT MALFORMED. It is
+           ;; answered by the arm below, which says so in its own words;
+           ;; calling it malformed would tell an operator to repair a
+           ;; record that is merely newer than their binary.
+           (else #f))))))
+
+  (define (note-malformed! r event-id reason)
+    (reduction-noted-set!
+      r (append (reduction-noted r)
+                (list (list 'malformed-record
+                            (list 'event (car event-id) (cdr event-id))
+                            (list 'reason reason))))))
+
   (define (interpret! r event-id past payload)
     (cond
-      ((not (pair? payload)) (note-verb! r event-id 'malformed))
+      ((payload-reason payload)
+       => (lambda (reason) (note-malformed! r event-id reason)))
       (else
        (case (car payload)
          ((put) (do-put! r event-id past (cadr payload)))
@@ -304,11 +833,11 @@
            (b (ensure-block! r id)))
       (for-each
         (lambda (pair)
-          (case (car pair)
-            ((parent ord) (if #f #f))
-            (else
-             (blk-fields-set!
-               b (put-field (blk-fields b) (car pair) (cdr pair) event-id past)))))
+          ;; AND THE SAME LIST AGAIN, for the same reason: these are read
+          ;; as the block's position below, not stored as fields.
+          (unless (memq (car pair) store-supplied-fields)
+            (blk-fields-set!
+              b (put-field (blk-fields b) (car pair) (cdr pair) event-id past))))
         alist)
       (let ((parent (let ((e (assq 'parent alist))) (and e (cdr e))))
             (ord (let ((e (assq 'ord alist))) (and e (cdr e)))))
@@ -773,7 +1302,33 @@
               (list-sort string<?
                          (map car (filter (lambda (e)
                                             (not (= 1 (length (blk-position (cdr e))))))
+                                          alive))))
+        ;; A DOCUMENT IS A FILE, AND A FILE IS NOT INSIDE ANOTHER FILE.
+        ;; The write path refuses to put one there, so this arrives only
+        ;; from history written before that rule, or from another store.
+        ;; It is reported rather than repaired: the record exists and
+        ;; says what it says, and a reader that silently moved the block
+        ;; would be inventing a history nobody wrote.
+        ;;
+        ;; What a reader DOES do with it is read it as the document it
+        ;; is -- `md-tree` takes it as a file of its own rather than
+        ;; folding it into an ancestor's, which is the only one of the
+        ;; two readings that loses nothing.
+        (cons 'nested-documents
+              (list-sort string<?
+                         (map car (filter (lambda (e)
+                                            (and (eq? 'doc (blk-kind (cdr e)))
+                                                 (let ((p (settled-parent (cdr e))))
+                                                   (and p (string? p)))))
                                           alive)))))))
+
+  ;; A FIELD THAT IS CONTESTED HAS NO VALUE HERE. Two candidates for
+  ;; `kind` is a conflict a reader is told about separately, and picking
+  ;; one of them to answer a different question would make this rule's
+  ;; verdict depend on which candidate sorted first.
+  (define (blk-kind b)
+    (let ((e (assq 'kind (blk-fields b))))
+      (and e (= 1 (length (cdr e))) (car (car (cdr e))))))
 
   ;; ---- cuts (design 9.3) ----------------------------------------------------
 
@@ -932,6 +1487,10 @@
   (define (state->rows r)
     (append
       (list (list 'applied (reduce-applied-cut r)))
+      (list (list 'request-history
+              (filter (lambda (rec)
+                        (past-covers? (reduce-applied-cut r) (rec-writer rec) (rec-seq rec)))
+                      (reverse (reduction-history r)))))
       (list (list 'pasts (compress-pasts r)))
       (map (lambda (e)
              (let ((b (cdr e)))
@@ -941,6 +1500,14 @@
                            (cons 'position (blk-position b))))))
            (reduction-blocks r))
       (map (lambda (l) (list 'link l)) (reduction-links r))
+      ;; THE NOTES SURVIVE THE SNAPSHOT. They are observations about
+      ;; records the snapshot's cut COVERS -- a record this build could
+      ;; not apply, or a verb it does not know -- and replay skips
+      ;; everything the snapshot covers. Leaving them out meant taking a
+      ;; snapshot silently erased them: `conflicts` went quiet about a
+      ;; damaged record that is still on disk, and the store looked
+      ;; healthier for having been snapshotted.
+      (map (lambda (n) (list 'noted n)) (reduction-noted r))
       (map (lambda (t) (list 'tag (car t) (cdr t))) (reduction-tags r))))
 
   (define (rows->state rows)
@@ -956,6 +1523,21 @@
             ;; reduction thinks nothing has been applied, so the next
             ;; record's premises are unmet and it waits forever.
             ((applied) (reduction-applied-set! r (cadr row)))
+            ;; THE RECORDS COME BACK, and with them the ability to fold
+            ;; them again. A snapshot without this row restores a state
+            ;; and no way to revise it, which is why `replay` refuses to
+            ;; seed from one: the reduction would be carrying an
+            ;; obligation it could not meet.
+            ((request-history)
+             (reduction-history-set! r (reverse (cadr row)))
+             ;; AND THE LATCH COMES BACK WITH THEM. A resumed reduction
+             ;; that forgot it had seen a request record would stop
+             ;; asking, and the first ordinary record after the snapshot
+             ;; would go in unexamined.
+             (reduction-gated-set! r
+               (exists (lambda (rec) (request-actor? (rec-actor rec))) (cadr row))))
+            ((noted)
+             (reduction-noted-set! r (append (reduction-noted r) (list (cadr row)))))
             ((pasts) (reduction-pasts-set! r (expand-pasts (cadr row) cut)))
             ((block)
              (let* ((id (cadr row))

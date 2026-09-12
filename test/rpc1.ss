@@ -27,7 +27,7 @@
 ;; -- and requires the same answer. An implementation that kept a second
 ;; opinion anywhere fails it without anyone having to guess where.
 
-(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia log)
+(import (chezscheme) (only (igropyr sexpr) string->sexpr-extended) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia log)
         (theourgia ffi) (theourgia wire)
         (only (igropyr crypto) sha256 bytevector->hex))
 
@@ -130,11 +130,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
 ;; delivery directory the fixture and cli.ss sit side by side; in the
@@ -264,6 +307,26 @@
             (cadr (rpc-dispatch d1 '(eval "x") "a"))
             (car (cadddr (rpc-dispatch d1 '(eval "x") "a"))))
       (list 'error 'unknown-verb 'verbs))
+;; AND THE VERB IT REFUSES IS SPELLED, NOT SENT BACK. A caller's verb can
+;; be any symbol, and one they got wrong is exactly the kind the wire
+;; writer will not emit: `show me` came back as `show\x20;me` and the
+;; reader that asked the question could not parse the answer to it.
+(want "the refused verb is given as a string"
+      (caddr (rpc-dispatch d1 '(eval "x") "a"))
+      '(spelling "eval"))
+;; THE READER IS THE PRODUCT'S OWN, so a change to the whitelist reaches
+;; this row without anyone remembering to update a copy of it.
+(want "and the whole answer is read the same by the wire reader"
+      (let ((text (call-with-string-output-port
+                    (lambda (port)
+                      (write (rpc-dispatch d1 (list (string->symbol "show me") "x") "a")
+                             port)))))
+        (guard (e (#t (list 'unreadable
+                            (if (and (vector? e) (= 3 (vector-length e)))
+                                (vector-ref e 1) "raised"))))
+          (equal? (string->sexpr-extended text)
+                  (read (open-string-input-port text)))))
+      #t)
 
 (printf "\n== S3: the three kinds of answer, and which is a success ==\n")
 ;; An answer says which of three things it is, so that whoever renders it
@@ -364,5 +427,72 @@
       (list (car (ask d4 'init)) (cadr (ask d4 'init)))
       (list 'error 'already-initialised))
 
+(printf "\n== S9: a request a client may have sent once already ==\n")
+;; `--req` AND `--cursor` ARE STRIPPED BY THE DISPATCHER, once, before
+;; any verb sees its arguments. A verb that had to know about them would
+;; be a verb that could forget -- and the two that write are not the only
+;; ones a client may retry.
+;;
+;; THE CURSOR IS SPELLED `--cursor` AND NOT `--after`, because `--after`
+;; already meant the sibling a new block is placed behind. While the
+;; dispatcher took `--after`, ordinary placement could not be expressed
+;; at all: `insert --title B --after <id>` answered `after-without-req`.
+;; Two meanings cannot share one spelling when the dispatcher has to
+;; consume the option before the verb sees it.
+(define d9 (fresh-store!))
+(ask d9 'init)
+;; THE WRITER'S NAME AND THE CURSOR COME FROM A WRITE THIS FIXTURE MADE,
+;; not from a literal: the name is generated at init, so an expectation
+;; carrying one would be a coin flip.
+(define first-answer (ask d9 'insert "--title" "Zero"))
+(define W9 (car (car (cadr (assq 'events (cdr first-answer))))))
+(define C9 (cdr (cadr (assq 'cursor (cdr first-answer)))))
+(want "CONTROL: the store has a writer and a cursor to write against"
+      (list (string? W9) (integer? C9))
+      '(#t #t))
+(want "a first request is executed"
+      (car (ask d9 'insert "--title" "One" "--req" "r-1"
+                "--cursor" (string-append W9 ":" (number->string C9))))
+      'ok)
+;; THE SAME REQUEST AGAIN IS A REPLAY, and the store says so rather than
+;; inserting a second section.
+(want "the same request again is a replay"
+      (let ((a (ask d9 'insert "--title" "One" "--req" "r-1"
+                    "--cursor" (string-append W9 ":" (number->string C9)))))
+        (list (car a) (cadr a)))
+      '(ok (replay #t)))
+;; BOTH OR NEITHER. A request id with no cursor has nothing to measure
+;; its possible positions from; a cursor with no id names no request.
+;; Either alone is a caller that believes it is protected and is not, so
+;; neither is accepted quietly.
+(want "an id without a cursor is refused"
+      (ask d9 'insert "--title" "Two" "--req" "r-2")
+      '(error bad-request req-without-cursor))
+(want "a cursor without an id is refused"
+      (ask d9 'insert "--title" "Two" "--cursor" (string-append W9 ":" (number->string C9)))
+      '(error bad-request cursor-without-req))
+(want "an id the format does not allow is refused"
+      (ask d9 'insert "--title" "Two" "--req" "not a req id!"
+           "--cursor" (string-append W9 ":" (number->string C9)))
+      '(error bad-request malformed-req-id))
+;; THE CURSOR IS PARSED BY SHAPE AND NEVER THROUGH `read`. The reader
+;; implements the whole of Scheme's numeric syntax, and `#e1e99999999` is
+;; eleven characters asking it to build an integer of ten billion digits:
+;; it does not refuse, it allocates until the machine is gone, and no
+;; check placed after it ever runs.
+(want "a cursor that is not <writer>:<sequence> is refused"
+      (map (lambda (text) (ask d9 'insert "--title" "Two" "--req" "r-3" "--cursor" text))
+           (list "nocolon" (string-append W9 ":") (string-append W9 ":x")
+                 (string-append W9 ":#e1e99999999")))
+      (list '(error bad-request malformed-cursor)
+            '(error bad-request malformed-cursor)
+            '(error bad-request malformed-cursor)
+            '(error bad-request malformed-cursor)))
+;; TWIN: and a write with neither option is untouched by any of this.
+(want "TWIN: a write with no request at all is executed as it always was"
+      (car (ask d9 'insert "--title" "Three"))
+      'ok)
+
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "rpc1 complete\n")

@@ -111,14 +111,55 @@
 ;;; mode as well, (<path> . exclusive) or (<path> . shared), because
 ;;; which lock was taken is not recoverable from the outcome.
 ;;;
-;;; FAULT INJECTION LIVES AT TWO CALL SITES AND NOWHERE ELSE, armed by
-;;; THEOURGIA_FAULT=<name> or <name>:<path-substring>:
+;;; FAULT INJECTION LIVES AT THREE CALL SITES AND NOWHERE ELSE -- the
+;;; write, the flush and the open -- armed by THEOURGIA_FAULT=<name> or
+;;; <name>:<path-substring>:
 ;;;
 ;;;   short-write               the first write offers min(7, n) bytes
 ;;;   eintr-once                the first write is skipped, reporting EINTR
 ;;;   write-eio-after-partial   min(7, n) bytes, then EIO
 ;;;   fsync-fail                fsync reports EIO
 ;;;   no-log-fsync              fsync is SKIPPED and reports success
+;;;   open-fail                 the open reports the errno it is given
+;;;
+;;; THE OPEN IS THERE BECAUSE TWO OF ITS FAILURES ARE REACHABLE FROM A
+;;; FIXTURE AND THE REST ARE NOT. `rm` gives ENOENT and `chmod 000` gives
+;;; EACCES, so a caller that propagated those two and quietly skipped
+;;; every other reason would pass every row a fixture could write --
+;;; while the failure a busy process actually meets, running out of
+;;; descriptors, went untested because nothing could produce it on
+;;; demand. `open-fail@<stage>:file=<sub>:errno=EMFILE` produces it.
+;;;
+;;; THE ERRNO QUALIFIER BELONGS TO THIS FAULT ALONE and is REQUIRED.
+;;; EMFILE, EACCES and ENOENT are accepted by name, and so is any
+;;; positive integer -- because the property this fault exists to test is
+;;; that a caller treats EVERY reason alike, and a qualifier restricted
+;;; to a fixed list would leave "every reason except the ones we thought
+;;; of" untested by construction. Anything else is refused at startup.
+;;;
+;;; IT IS REQUIRED RATHER THAN DEFAULTED. Every possible default is a
+;;; class a fixture can already produce with rm or chmod, so a case that
+;;; MEANT to name a class and misspelled the qualifier would silently run
+;;; as a weaker case that looks identical in the log. Requiring it also
+;;; settles what a path ending in `:errno=...` means: the tail after the
+;;; LAST `:errno=` is the qualifier, so such a path is written by
+;;; appending a real one.
+;;;
+;;; AND IT IS READ FOR open-fail AND NOTHING ELSE. Stripping the tail
+;;; from every fault's argument would change where an existing case
+;;; points: `fsync-fail@commit:file=a:errno=b` is a path substring with a
+;;; colon in it, and a parser that helpfully removed the tail would aim
+;;; that case at `a` instead. A broadened target reads, in a test log,
+;;; exactly like the case that was written.
+;;;
+;;; THE NON-EMPTY CHECK IS ON THE RESULTING SUBSTRING, not on what was
+;;; typed. `file=` alone and `:errno=X` alone both leave a non-empty
+;;; argument and an EMPTY substring -- and an empty substring matches
+;;; every path, which is the one thing a path-scoped fault must never do.
+;;;
+;;; open-fail IS ONE-SHOT WITHIN ITS STAGE, like short-write: the point
+;;; of it is that one open fails, and a persistent one would also take
+;;; out whatever the fixture opens to read the result afterwards.
 ;;;
 ;;; A FLUSH FAULT'S PATH QUALIFIER MAY SAY WHICH KIND OF FLUSH.
 ;;; `dir=<substring>` matches only a directory flush, `file=<substring>`
@@ -135,8 +176,8 @@
 ;;; publish, snapshot, repair, and the caller says which one it is in by
 ;;; parameterizing theourgia-stage.
 ;;;
-;;; TWO CLASSES, AND THE DIFFERENCE IS DELIBERATE. short-write and
-;;; eintr-once are ONE-SHOT within their stage: they model a transient
+;;; TWO CLASSES, AND THE DIFFERENCE IS DELIBERATE. short-write,
+;;; eintr-once and open-fail are ONE-SHOT within their stage: they model a transient
 ;;; event, and a caller that retries must be able to succeed.
 ;;; fsync-fail, no-log-fsync, and write-eio-after-partial once it has
 ;;; delivered its partial are PERSISTENT within their stage: they model
@@ -174,7 +215,10 @@
 ;;;
 ;;; EVERY ONE OF THESE CHANGES WHAT THE SYSCALL DOES rather than lying
 ;;; about what it did. A short write really writes seven bytes; a skipped
-;;; write really writes none; a skipped fsync really does not flush. The
+;;; write really writes none; a skipped fsync really does not flush; a
+;;; failed open really leaves no descriptor open, and raises the same
+;;; condition carrying the same errno field that a real failure raises,
+;;; so a caller has nothing by which to tell the two apart. The
 ;;; rule is the one (igropyr inject) states: a return value may only be
 ;;; replaced when skipping the call leaves the world as if it had failed,
 ;;; because faking "the write failed" after performing the write would
@@ -215,6 +259,7 @@
           path-device-inode
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
+          report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
           unlink! file-create-exclusive! mkdir-p!
@@ -406,6 +451,15 @@
   (define EINTR 4)
   (define EIO 5)
   (define EEXIST 17)
+  ;; THE THREE WAYS AN OPEN FAILS THAT A BARRIER HAS TO SURVIVE,
+  ;; named because an injected fault says which one it is: the file is
+  ;; gone, this process may not read it, or this process has no
+  ;; descriptor left. The first two are reachable from a fixture with
+  ;; rm and chmod; the third is not reachable at all without this seam,
+  ;; which is why the seam exists.
+  (define ENOENT 2)
+  (define EACCES 13)
+  (define EMFILE 24)
   (define F_FULLFSYNC 51)
   (define macos? (eq? platform-os 'macos))
 
@@ -484,8 +538,15 @@
 ;; THE STAGES A DURABILITY POINT MAY BELONG TO, in one place and above
   ;; the two builds, because the checked build and the plain one must
   ;; mean the same thing by a stage name.
+  ;; `report` IS NOT A DURABILITY POINT and is in this list anyway. Every
+  ;; fault is aimed at a stage, and the one thing a case needs to be able
+  ;; to break here is the step that BUILDS THE ANSWER after the record is
+  ;; already durable -- the only place where "committed" and "described"
+  ;; come apart. Leaving it out would mean that step could not be armed,
+  ;; and a step no case can arm reads, in every log, exactly like a step
+  ;; that passed.
   (define known-stages
-    '(deliver-barrier commit registry publish snapshot repair))
+    '(deliver-barrier commit registry publish snapshot repair report))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -551,9 +612,13 @@
      (define (split-kind a)
        (cond
          ((not (string? a)) (values 'file a))
-         ((and (> (string-length a) 5) (string=? (substring a 0 5) "file="))
+         ;; `>=`, NOT `>`. With `>` a bare "file=" is not recognised as a
+         ;; prefix at all and becomes the literal substring "file=" -- a
+         ;; path qualifier that silently aims at nothing in particular
+         ;; instead of being refused for naming nothing.
+         ((and (>= (string-length a) 5) (string=? (substring a 0 5) "file="))
           (values 'file (substring a 5 (string-length a))))
-         ((and (> (string-length a) 4) (string=? (substring a 0 4) "dir="))
+         ((and (>= (string-length a) 4) (string=? (substring a 0 4) "dir="))
           (values 'dir (substring a 4 (string-length a))))
          (else (values 'file a))))
 
@@ -565,6 +630,30 @@
                    (values (string->symbol head) stage arg))
                  (values (string->symbol head) #f #f)))
            (values #f #f #f)))
+
+     ;; A NAME NOTHING IMPLEMENTS IS REFUSED, NOT ARMED. Every selector
+     ;; below compares `fault-name` against a literal, so a misspelling
+     ;; matches none of them -- and the run then announces itself as
+     ;; armed, injects nothing, and passes. That is the worst shape a
+     ;; test failure can take: the case reports success, and the evidence
+     ;; it reports for that success is that a fault was armed.
+     ;; open-fail DOES NOT REACH EVERY READ. It is armed inside
+     ;; `fd-open`, and the parts of the store that read a whole small
+     ;; file -- the metadata, the instance, a retirement marker -- open a
+     ;; Chez port directly instead. A case that wants one of THOSE reads
+     ;; to fail cannot get there with a fault at all; it parks the
+     ;; process at a `barrier!` and moves the file aside. Written down
+     ;; because the obvious next move is to reach for `open-fail`, and it
+     ;; would arm, announce itself, and inject nothing.
+     (define known-faults
+       '(short-write eintr-once write-eio-after-partial write-eio-first
+         fsync-fail no-log-fsync stat-fail open-fail report-fail))
+
+     (define fault-name-checked
+       (when (and fault-name (not (memq fault-name known-faults)))
+         (assertion-violation 'theourgia-ffi
+           "THEOURGIA_FAULT names no fault this build implements"
+           (list fault-spec known-faults))))
 
      (define (theourgia-fault) fault-name)
      (define (theourgia-fault-armed?) (and fault-name #t))
@@ -583,7 +672,83 @@
      (define fault-stage-symbol
        (and (string? fault-stage) (string->symbol fault-stage)))
 
-     (define-values (fault-kind fault-substring) (split-kind fault-arg))
+     ;; AN ERRNO QUALIFIER, FOR THE ONE FAULT THAT NEEDS TO SAY WHICH
+     ;; FAILURE. `open-fail` exists to ask whether a caller treats every
+     ;; reason an open can fail the same way, so the reason is part of
+     ;; the spec: `open-fail@<stage>:file=<sub>:errno=EMFILE`.
+     ;;
+     ;; IT IS READ FOR `open-fail` AND FOR NOTHING ELSE. Stripping it
+     ;; from every fault's argument would silently change what an
+     ;; existing fault points at: `fsync-fail@commit:file=a:errno=b` is a
+     ;; path substring with a colon in it, and a parser that helpfully
+     ;; removed the tail would aim that case at `a` instead -- a
+     ;; broadened target reads, in the test log, exactly like the case
+     ;; that was written.
+     ;;
+     ;; IT IS REQUIRED, AND THE LAST ONE WINS. An optional qualifier
+     ;; needs a default, and every possible default is a failure class a
+     ;; fixture could already produce -- so a case that MEANT to name a
+     ;; class and misspelled the qualifier would run as a weaker case
+     ;; that looks identical in the log. Requiring it also settles the
+     ;; ambiguity a literal path ending in `:errno=...` would otherwise
+     ;; create: the tail after the LAST `:errno=` is the qualifier, so a
+     ;; path that genuinely ends that way is written by appending a real
+     ;; one.
+     ;;
+     ;; It is taken off before the path qualifier is read, because
+     ;; `file=` runs to the end of the string.
+     (define (split-errno a)
+       (let ((n (and (string? a) (string-length a))))
+         (let loop ((k (and n (- n 7))))
+           (cond
+             ((or (not n) (< k 0)) (values a #f))
+             ((string=? (substring a k (+ k 7)) ":errno=")
+              (values (substring a 0 k) (substring a (+ k 7) n)))
+             (else (loop (- k 1)))))))
+
+     (define-values (fault-arg-head fault-errno-text)
+       (if (eq? fault-name 'open-fail)
+           (split-errno fault-arg)
+           (values fault-arg #f)))
+
+     ;; A NAME OR A NUMBER. The three names are the classes a case
+     ;; usually wants; the number is there because the property under
+     ;; test is that the caller treats EVERY reason alike, and a fault
+     ;; that could only produce a fixed list would leave "every reason
+     ;; except the ones we thought of" untested by construction.
+     (define fault-errno
+       (and fault-errno-text
+            (cond ((string=? fault-errno-text "EMFILE") EMFILE)
+                  ((string=? fault-errno-text "EACCES") EACCES)
+                  ((string=? fault-errno-text "ENOENT") ENOENT)
+                  ;; DECIMAL DIGITS, NOT "whatever `string->number`
+                  ;; accepts". That reader takes `24/1` and `#x18` too,
+                  ;; and a spec whose grammar is the whole of Scheme's
+                  ;; numeric syntax is a grammar nobody can check a case
+                  ;; against.
+                  ((and (> (string-length fault-errno-text) 0)
+                        (let loop ((i 0))
+                          (cond ((= i (string-length fault-errno-text)) #t)
+                                ((and (char<=? #\0 (string-ref fault-errno-text i))
+                                      (char<=? (string-ref fault-errno-text i) #\9))
+                                 (loop (+ i 1)))
+                                (else #f))))
+                   (let ((n (string->number fault-errno-text)))
+                     (if (> n 0) n 'unknown)))
+                  (else 'unknown))))
+
+     ;; REFUSED AT STARTUP, like the stage. A missing or unreadable
+     ;; qualifier would otherwise select some failure the case did not
+     ;; ask for, and a run that injects the wrong class reads exactly
+     ;; like a run that injected the right one.
+     (define fault-errno-checked
+       (when (eq? fault-name 'open-fail)
+         (when (or (not fault-errno) (eq? fault-errno 'unknown))
+           (assertion-violation 'theourgia-ffi
+             "open-fail needs :errno=EMFILE|EACCES|ENOENT or a positive integer"
+             fault-spec))))
+
+     (define-values (fault-kind fault-substring) (split-kind fault-arg-head))
 
      (define (in-fault-stage?)
        (eq? (theourgia-stage) fault-stage-symbol))
@@ -598,9 +763,26 @@
      ;; stage says which phase, the substring says which file, and L19
      ;; needs both to tell the log's flush from the registry's inside
      ;; one phase.
+     ;; THE CHECK IS ON WHAT THE MATCHER WILL USE, not on what was
+     ;; typed. `:errno=...` alone, or a bare `file=`, both leave a
+     ;; NON-empty argument and an EMPTY substring -- and an empty
+     ;; substring matches every path, which is the one outcome a
+     ;; path-scoped fault must never have. Checking the argument passed
+     ;; those two through.
+     ;; `dir=` DISTINGUISHES A DIRECTORY FLUSH FROM A FILE'S, and an open
+     ;; is neither -- `open-fault` matches on the path and never consults
+     ;; the kind. Accepting the qualifier and then ignoring it is worse
+     ;; than refusing it: the case reads as aimed at a directory and
+     ;; fires on the first ordinary file whose path contains the string.
+     (define fault-kind-checked
+       (when (and (eq? fault-name 'open-fail) (eq? fault-kind 'dir))
+         (assertion-violation 'theourgia-ffi
+           "open-fail takes file=<substring>; it has no directory to distinguish"
+           fault-spec)))
+
      (define fault-argument-checked
-       (when (memq fault-name '(fsync-fail no-log-fsync))
-         (unless (and (string? fault-arg) (> (string-length fault-arg) 0))
+       (when (memq fault-name '(fsync-fail no-log-fsync open-fail))
+         (unless (and (string? fault-substring) (> (string-length fault-substring) 0))
            (assertion-violation 'theourgia-ffi
                                 "this fault needs a non-empty path substring"
                                 fault-spec))))
@@ -673,6 +855,25 @@
      ;; is a rule no input can exercise: the guarded and unguarded
      ;; versions of a size probe behave identically whenever stat works,
      ;; so the guard survives every mutation unpunished.
+     ;; THE REPORTING STEP, WHICH RUNS AFTER THE RECORD IS DURABLE. It is
+     ;; armed like the others so that a case can ask what the answer says
+     ;; when the report cannot be built -- the one situation in which
+     ;; "committed" and "described" come apart, and the one this store
+     ;; used to answer by calling a durable write an error.
+     ;; THIS ONE NAMES ITS STAGE STATICALLY. Every other fault fires
+     ;; inside a durability call, which parameterizes `theourgia-stage`
+     ;; as it runs; building an answer is not a durability call and is
+     ;; inside no stage at all. So the spec still carries `@report` --
+     ;; refused at startup if absent or unknown, like every other -- and
+     ;; it is compared against the name rather than against a dynamic
+     ;; value that is never set here.
+     (define (report-fault?)
+       (and fault-name
+            (eq? fault-name 'report-fail)
+            (eq? fault-stage-symbol 'report)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) #t)))
+
      (define (stat-fault? path)
        (and fault-name
             (eq? fault-name 'stat-fail)
@@ -680,6 +881,20 @@
             (or (not fault-arg) (fault-path-match? #f path))
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) #t)))
+
+     ;; -> an errno to fail the open with, or #f
+     ;;
+     ;; ONE SHOT, like the others: the barrier opens the segment once,
+     ;; and a fault that fired on every open would also take out the
+     ;; fixture's own reading of the file afterwards.
+     (define (open-fault path)
+       (and fault-name
+            (eq? fault-name 'open-fail)
+            (in-fault-stage?)
+            (fault-path-match? #f path)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done)
+                   fault-errno)))
 
      ;; -> skip | fail | #f
      (define (fsync-fault fd subject kind)
@@ -745,6 +960,8 @@
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
      (define (stat-fault? path) #f)
+     (define (report-fault?) #f)
+     (define (open-fault path) #f)
      (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
      (define no-flock? #f)
@@ -805,6 +1022,22 @@
       (unless (list? flags)
         (assertion-violation 'fd-open "flags must be a list of symbols" flags))
       (when (memq 'create flags) (file-ensure! path))
+      ;; THE INJECTED FAILURE IS RAISED THE WAY A REAL ONE IS, with the
+      ;; same condition and the same errno field, so a caller cannot
+      ;; treat "the fixture asked for this" as a separate case. In a
+      ;; build without injection `open-fault` is the constant #f and this
+      ;; folds away.
+      ;;
+      ;; AND IT STANDS WHERE THE FAILURE IT MODELS WOULD HAPPEN, which is
+      ;; AFTER the create and not before it. Creating is a separate step
+      ;; here, so a real `c-open` that fails on a create-mode open leaves
+      ;; the file behind exactly as this does; injecting before the create
+      ;; would leave the world in a state the failure being modelled never
+      ;; produces. The rule is the one stated at the top of this file: a
+      ;; return value may only be replaced when skipping the call leaves
+      ;; the world as if it had failed.
+      (let ((injected (open-fault path)))
+        (when injected (raise (fs-err 'open path injected))))
       (let ((fd (c-open path (flags->int 'fd-open flags))))
         (when (< fd 0) (fail! 'open path))
         (hashtable-set! fd-paths fd path)

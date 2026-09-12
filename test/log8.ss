@@ -121,11 +121,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log8work"))
 (define A "k3m9x2qa")
 (define (rec seq deps payload)
@@ -259,6 +302,8 @@
       (list (list 1 R 1) (list (list 1 1 1)) '() '(1) 'open #f))
 (readable! 2)
 
+
+
 ;; The same store without the unreadable segment does not complain about
 ;; itself at all -- which is why the row above has to force the question.
 ;; Here the retirement sits ABOVE the fork: the fork wins, and the
@@ -284,13 +329,26 @@
 ;; CONTROL FOR THE INSTRUMENT ITSELF. The two fork rows are negative
 ;; readings: they pass when delivery skips the segment AND when the chmod
 ;; never bit. Segment 2 here is inside the extent and is not the retained
-;; current buffer, so delivery must open it -- and must abort.
+;; current buffer, so delivery must open it -- and must refuse.
+;;
+;; NOTHING IS DELIVERED. This used to hand out record 1 and then fail on
+;; segment 2's read; the barrier now refuses before the first callback,
+;; because a reader may not promise a record it could not flush. The
+;; earlier version had already promised record 1.
 (build!)
 (seg! 1 (r 1)) (seg! 2 (r 2)) (seg! 3 (r 3))
-(want "CONTROL: a segment delivery MUST read, made unreadable, aborts the load"
-      (survey (lambda () (unreadable! 2)))
-      (list (list 3 R 3) (list (list 1 1 1) (list 2 2 2) (list 3 3 3)) '() '(1) 'aborted #f))
+(want "CONTROL: a segment delivery MUST read, made unreadable, stops the load"
+      (guard (e (#t 'raised)) (survey (lambda () (unreadable! 2))))
+      'raised)
 (readable! 2)
+;; TWIN: the same store with nothing made unreadable delivers all three,
+;; so the row above is about the segment and not about the survey.
+(build!)
+(seg! 1 (r 1)) (seg! 2 (r 2)) (seg! 3 (r 3))
+(want "TWIN: undamaged, the same survey delivers all three"
+      (survey)
+      (list (list 3 R 3) (list (list 1 1 1) (list 2 2 2) (list 3 3 3)) '() '(1 2 3) 'open #f))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log8 complete\n")

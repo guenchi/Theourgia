@@ -110,11 +110,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define base (test-dir "log14"))
 (define d (string-append base "/store"))
 ;; THE REGISTRY LIVES OUTSIDE THE STORE. That is the whole reason it can
@@ -216,10 +259,19 @@
         (session-append! s (make-frame (view-revision v) (view-epoch v) (view-writer v)
                                        (view-expect-seq v) "agent:claude" '() payload))
         (list 'no-view #f))))
+;; A SESSION HERE ENDS THE WAY A REQUEST ENDS: append, then the commit
+;; barrier, then release the lock. The barrier is what tells the registry
+;; how far records reached the disk, and `written` is the number the
+;; rollback gate reads -- so a session that stopped before it would leave
+;; the registry saying nothing was ever written, and the restore these
+;; rows are about would go undetected.
 (define (with-session proc)
   (parameterize ((log-clock (lambda () fixed-ts)))
     (let ((s (log-begin d (lambda args 'applied))))
-      (let ((out (proc s))) (log-end! s) out))))
+      (let ((out (proc s)))
+        (guard (e (#t (if #f #f))) (session-commit! s))
+        (log-end! s)
+        out))))
 (define (try-append)
   (parameterize ((log-clock (lambda () fixed-ts)))
     (let ((s (log-begin d (lambda args 'applied))))
@@ -558,4 +610,5 @@
       (list #t #t #t))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log14 complete\n")

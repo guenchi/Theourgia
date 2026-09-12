@@ -140,11 +140,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log11work"))
 ;; Ordered so that lexical order and "which one is local" disagree: if
 ;; delivery ever ordered by anything but the writer id, the b-first
@@ -358,6 +401,56 @@
           (let ((p (open-string-input-port text)))
             (list (read p) (read p)))))
       (list 'no-failure 4))
+
+(printf "\n== and a READER makes the same promise ==\n")
+;; HOLDING A LOCK DOES NOT ESTABLISH DURABILITY. A writer that died left
+;; an unflushed tail; another process takes the SHARED lock, reads those
+;; bytes out of the page cache, delivers them, computes a cut over them
+;; -- and a power cut then takes them away. The reader has promised a
+;; history that never reached the disk. Every reader was making that
+;; promise without a barrier; only `log-begin` had one.
+(define reader-path (string-append d "/reader-child.ss"))
+(define reader-out (string-append d "/reader-child.out"))
+(define (write-reader!)
+  (put! reader-path
+        (string->utf8
+          (string-append
+            "#!chezscheme\n(import (chezscheme) (theourgia log))\n"
+            "(define n 0)\n"
+            "(define outcome\n"
+            ;; A NON-CONDITION IS RAISED HERE, and a handler that called
+            ;; `condition-who` on it would raise again inside the handler
+            ;; -- the child would then print nothing at all, which reads
+            ;; exactly like a child that never ran.
+            "  (guard (e (#t 'raised))\n"
+            "    (let ((ls (log-open \"" d "\")))\n"
+            "      (load-deliver! ls '() (lambda args (set! n (+ n 1)) 'applied))\n"
+            "      'no-failure)))\n"
+            "(printf \"~s ~s\\n\" outcome n)\n"))))
+(define (reader-says fault)
+  (build!)
+  (write-reader!)
+  (system (string-append
+            (if fault (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=" fault " ") "")
+            "scheme --script " reader-path " > " reader-out " 2>/dev/null"))
+  (let ((text (utf8->string (slurp reader-out))))
+    (guard (e (#t (list 'unreadable text)))
+      (let ((p (open-string-input-port text)))
+        (list (read p) (read p))))))
+(want "CONTROL: a reader with nothing armed delivers every record"
+      (reader-says #f)
+      (list 'no-failure 4))
+(want "a reader that cannot flush what it is about to deliver delivers nothing"
+      (reader-says "fsync-fail@deliver-barrier:file=writers")
+      (list 'raised 0))
+;; BOTH BARRIERS, OR NEITHER. The records are one half; the manifest and
+;; the quarantine marker are the other, because they are what admit a
+;; segment to a writer's history -- a reader whose manifest is unflushed
+;; delivers history a crash can un-admit. This is the half that moving
+;; the record barrier alone would not have covered.
+(want "and the same is true of the metadata that admits those records"
+      (reader-says "fsync-fail@deliver-barrier:file=published.sexp")
+      (list 'raised 0))
 
 ;; The child takes the switch from THEOURGIA_TRACE rather than calling
 ;; trace-enable! itself: Chez invokes a library on first REFERENCE, so
@@ -637,4 +730,5 @@
       (list 1 1 #t #t))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log11 complete\n")

@@ -31,6 +31,7 @@
 ;; is the evidence. It is a negative reading, so each use is paired with a
 ;; segment delivery MUST open, made unreadable, which must abort.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
+        (theourgia trace)
         (only (igropyr crypto) sha256 bytevector->hex))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
@@ -112,11 +113,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log9work"))
 (define A "k3m9x2qa")
 (define M "c9xq01mz")
@@ -203,6 +247,15 @@
         (list (if (pair? res) (car res) res)
               (reverse seen)
               (if (pair? o) (car o) o))))))
+;; A ROW ABOUT A SEGMENT NOBODY SHOULD TOUCH HAS TO SURVIVE SOMEBODY
+;; TOUCHING IT. If the barrier reaches below the cut, the segment these
+;; rows have made unopenable raises -- and an uncaught raise would end
+;; the fixture at that row, so every row after it would go unrun and the
+;; whole file would read as a fixture that broke rather than as a
+;; product that flushed too much.
+(define (deliver-or-raised cut . damage)
+  (guard (e (#t 'raised))
+    (apply deliver-with cut damage)))
 (define (ranges-of)
   (let* ((ls (log-open d)) (p (load-prefix ls A)))
     (load-commit! ls)
@@ -221,24 +274,124 @@
 ;; unopened segment can show it.
 (build-three!)
 (want "with the cut in segment 2, segment 1 is never reopened"
-      (deliver-with (list (cons A 3)) (lambda () (unreadable! A 1)))
+      (deliver-or-raised (list (cons A 3)) (lambda () (unreadable! A 1)))
       (list 'delivered '(4 5 6) 'open))
 (readable! A 1)
 (build-three!)
-(want "CONTROL: the segment holding the cut IS opened, and its loss aborts"
-      (deliver-with (list (cons A 3)) (lambda () (unreadable! A 2)))
-      (list 'delivery-failed '() 'aborted))
+;; THE CONTROL FOR THE ROW ABOVE. Segment 1 lies below the cut and is
+;; never touched; segment 2 holds the cut and must be. Losing it stops
+;; the load -- and it stops it at the BARRIER, before any callback,
+;; because a reader may not promise a record it could not flush. The
+;; earlier version delivered nothing either, but only because the read
+;; failed on the first record it tried.
+(want "CONTROL: the segment holding the cut IS opened, and its loss stops the load"
+      (guard (e (#t 'raised))
+        (deliver-with (list (cons A 3)) (lambda () (unreadable! A 2))))
+      'raised)
 (readable! A 2)
+
+;; A POISONED FILE DETECTS A CONSEQUENTIAL ACCESS, NOT AN ACCESS. The
+;; three rows above make a below-cut segment unopenable and then require
+;; the load to succeed -- so they are passed by a barrier that opens
+;; every segment and quietly swallows what it cannot flush. That barrier
+;; is still wrong in the way this fix is about: it reaches below the cut,
+;; and on a HEALTHY store it opens and fsyncs history that the delivery
+;; made no promise about.
+;;
+;; SO THE ROW BELOW READS THE PRODUCT'S OWN TRACE instead of damaging
+;; anything. With tracing on, every fsync writes its subject, so which
+;; segments the barrier touched can be read rather than inferred from
+;; whether something broke.
+;;
+;; The subject is WRITTEN rather than printed as a string, so `read`
+;; gives it back as a symbol; a filter asking `string?` here would
+;; collect nothing, which reads exactly like a barrier that flushed
+;; nothing at all.
+(define (fsync-subjects-of thunk)
+  (let* ((port (open-output-string))
+         (text (parameterize ((current-error-port port))
+                 (trace-enable! #t)
+                 (guard (e (#t (trace-enable! #f) (raise e))) (thunk))
+                 (trace-enable! #f)
+                 (get-output-string port))))
+    (let loop ((i 0) (start 0) (out '()))
+      (cond
+        ((>= i (string-length text)) (reverse out))
+        ((char=? (string-ref text i) #\newline)
+         (let ((datum (guard (e (#t #f))
+                        (read (open-string-input-port (substring text start i))))))
+           (loop (+ i 1) (+ i 1)
+                 (if (and (pair? datum) (eq? (car datum) 'trace)
+                          (eq? (cadr datum) 'fsync) (symbol? (caddr datum)))
+                     (cons (symbol->string (caddr datum)) out)
+                     out))))
+        (else (loop (+ i 1) start out))))))
+(define (seg-path n)
+  (string-append d "/writers/" A "/"
+                 (let ((t (number->string n)))
+                   (string-append (make-string (- 6 (string-length t)) #\0) t))
+                 ".sexp"))
+(build-three!)
+;; THE POSITIVE HALF IS NOT OPTIONAL. "Segment 1 does not appear" is also
+;; what a broken instrument says, and a broken instrument is the more
+;; likely explanation of a list that is missing something. The row
+;; therefore asks for both halves at once: the segment the delivery DID
+;; promise is in the trace, and the one below the cut is not.
+(want "on an undamaged store the barrier flushes above the cut and not below it"
+      (let ((subjects (fsync-subjects-of
+                        (lambda () (deliver-with (list (cons A 3)))))))
+        (list (and (member (seg-path 2) subjects) #t)
+              (and (member (seg-path 3) subjects) #t)
+              (and (member (seg-path 1) subjects) #t)))
+      (list #t #t #f))
+;; TWIN: WITH NO CUT AT ALL, segment 1 IS above the frontier and the same
+;; instrument sees it. Without this row the one above is also passed by
+;; an instrument that never reports segment 1 under any circumstances --
+;; a filter with the wrong path in it, say.
+(build-three!)
+(want "TWIN: with nothing delivered yet, the same instrument does see segment 1"
+      (let ((subjects (fsync-subjects-of (lambda () (deliver-with '())))))
+        (and (member (seg-path 1) subjects) #t))
+      #t)
+;; AND THE BOUNDARY, ON A HEALTHY STORE. The row above uses a cut inside
+;; segment 2, which is one case of "above" and one of "below" -- and the
+;; off-by-one that says `last >= from` instead of `last > from` is
+;; invisible there. It shows itself only when the cut falls exactly on a
+;; segment's LAST sequence, where "the segment ends at the cut" and "the
+;; segment ends above the cut" are the same segment under the two
+;; readings.
+;;
+;; Segments hold 1-2, 3-4 and 5-6, so a cut at 2 is the last sequence of
+;; segment 1 and a cut at 4 is the last sequence of segment 2. Under the
+;; correct rule neither of those segments is flushed; under `>=` each is.
+;; The damaged rows further down cannot see this: they make the extra
+;; segment unopenable, so an implementation that swallowed the failure
+;; would deliver correctly and read as green.
+(for-each
+  (lambda (case)
+    (let ((cut (car case)) (below (cadr case)) (above (caddr case)))
+      (build-three!)
+      (want (string-append "a cut on a segment's last sequence flushes above it and not it, cut "
+                           (number->string cut))
+            (let ((subjects (fsync-subjects-of
+                              (lambda () (deliver-with (list (cons A cut)))))))
+              (list (map (lambda (n) (and (member (seg-path n) subjects) #t)) above)
+                    (map (lambda (n) (and (member (seg-path n) subjects) #t)) below)))
+            (list (map (lambda (n) #t) above)
+                  (map (lambda (n) #f) below)))))
+  (list (list 2 '(1) '(2 3))
+        (list 4 '(1 2) '(3))
+        (list 6 '(1 2 3) '())))
 
 (printf "== C6-2: a cut at a segment's last sequence ==\n")
 (build-three!)
 (want "a cut at the last sequence of segment 1 starts in segment 2"
-      (deliver-with (list (cons A 2)) (lambda () (unreadable! A 1)))
+      (deliver-or-raised (list (cons A 2)) (lambda () (unreadable! A 1)))
       (list 'delivered '(3 4 5 6) 'open))
 (readable! A 1)
 (build-three!)
 (want "a cut at the last sequence of segment 2 starts in segment 3"
-      (deliver-with (list (cons A 4)) (lambda () (unreadable! A 1) (unreadable! A 2)))
+      (deliver-or-raised (list (cons A 4)) (lambda () (unreadable! A 1) (unreadable! A 2)))
       (list 'delivered '(5 6) 'open))
 (readable! A 1) (readable! A 2)
 
@@ -313,4 +466,5 @@
       (deliver-with '()) (list 'delivered '(1) 'open))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log9 complete\n")

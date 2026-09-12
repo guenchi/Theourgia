@@ -1,0 +1,125 @@
+#!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
+;; Revision 4 proposes detecting a repair by the segment's (device,
+;; inode): a repair installs the replacement with rename, which should
+;; change the inode under a path whose name and length can be identical.
+;; Proposing that without measuring it would be a guess.
+(import (chezscheme) (theourgia ffi))
+
+;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
+;; an absolute path under one session's scratchpad. That is green only
+;; while that particular directory happens to still exist: tmp is swept,
+;; and another machine has no such path at all -- so the whole suite
+;; would go red for a reason with nothing to do with the code under test.
+;; THEOURGIA_TEST_ROOT overrides the default; the pid keeps two runs, or
+;; two fixtures, out of each other's way. Directories are left behind
+;; deliberately, as evidence.
+(define (test-dir name)
+  (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+                 (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")))
+         (path (string-append root "/" name "-" (number->string (get-process-id)))))
+    ;; A ROOT THAT DOES NOT SURVIVE THE ROUND TRIP IS REFUSED HERE. Trace
+    ;; lines are written with display and read back as data, and paths go
+    ;; into generated scripts and shell commands unquoted -- so a root
+    ;; with a space or a bracket in it makes the crash device read no
+    ;; events at all and rewrite nothing, which reads exactly like a tree
+    ;; that needed no rewriting. Refusing is the one answer that cannot
+    ;; be mistaken for success.
+    (let loop ((i 0))
+      (when (< i (string-length path))
+        (let ((c (string-ref path i)))
+          (unless (or (char-alphabetic? c) (char-numeric? c)
+                      (memv c '(#\/ #\. #\- #\_)))
+            (assertion-violation 'test-dir
+              "THEOURGIA_TEST_ROOT may use only letters, digits, / . - and _"
+              root)))
+        (loop (+ i 1))))
+    ;; THE SAME CHECK NOW GUARDS A REMOVAL, so it asks for two more
+    ;; things a creation did not need: an absolute path, and no `..`
+    ;; anywhere in it.
+    (unless (and (> (string-length path) 0) (char=? #\/ (string-ref path 0)))
+      (assertion-violation 'test-dir
+        "THEOURGIA_TEST_ROOT must be an absolute path" root))
+    (let loop ((i 0))
+      (when (< (+ i 1) (string-length path))
+        (when (and (char=? #\. (string-ref path i))
+                   (char=? #\. (string-ref path (+ i 1))))
+          (assertion-violation 'test-dir
+            "THEOURGIA_TEST_ROOT may not contain .." root))
+        (loop (+ i 1))))
+    ;; AND THE DIRECTORY IS MADE FRESH, NOT ASSUMED FRESH. The name
+    ;; carries the process id, which reads like a unique name and is not
+    ;; one: the pid space wraps, the scratch root outlives the run, and a
+    ;; directory left by an earlier run holding the same pid is handed to
+    ;; this one already populated. Counted in the default root on
+    ;; 2026-09-11: 4260 leftover directories over 1686 distinct pids, so
+    ;; about one run in twenty inherited an older run's store. It showed
+    ;; up once as a crash -- an init answering already-initialised to a
+    ;; fixture that expected a store id -- and the crash is the harmless
+    ;; form. The form that matters is an assertion passing against data
+    ;; the run did not write. The sibling `-home` goes with it, because
+    ;; the machine registry is keyed by store identity and a stale one
+    ;; makes a fresh store look like a rollback.
+    ;; AND THE LEAF IS NEVER THE ROOT. Removal only ever names
+    ;; <root>/<name>-<pid>; a name that collapsed to nothing would aim it
+    ;; at the scratch root itself, which holds every other run.
+    (unless (and (> (string-length path) (+ 1 (string-length root)))
+                 (string=? root (substring path 0 (string-length root)))
+                 (char=? #\/ (string-ref path (string-length root))))
+      (assertion-violation 'test-dir
+        "the directory must lie strictly inside the root" (list root path)))
+    ;; A CLEAN THAT FAILED MUST NOT READ AS A CLEAN THAT WORKED. If the
+    ;; removal fails -- contents that cannot be unlinked, a busy mount --
+    ;; `mkdir -p` then succeeds on the directory that is already there and
+    ;; hands back exactly the populated directory this is here to
+    ;; prevent. Both commands are checked, and a failure stops the run
+    ;; rather than quietly weakening it.
+    (let ((must! (lambda (command)
+                   (let ((status (system command)))
+                     (unless (eqv? 0 status)
+                       (assertion-violation 'test-dir
+                         "could not prepare the scratch directory"
+                         (list command status)))))))
+      (must! (string-append "rm -rf " path " " path "-home"))
+      (must! (string-append "mkdir -p " path)))
+    path))
+
+(define d (test-dir "inowork"))
+(system (string-append "rm -rf " d "; mkdir -p " d))
+(define seg (string-append d "/000001.sexp"))
+(define repl (string-append d "/tmp-replacement"))
+(define (put p s) (let ((o (open-file-output-port p (file-options no-fail)))) (put-bytevector o (string->utf8 s)) (close-port o)))
+(define (ino p) (let-values (((dev i) (path-device-inode p))) (list dev i)))
+(put seg "AAAA\n")
+(define before (ino seg))
+(printf "before repair:            ~s  size ~a\n" before (file-size seg))
+;; a repair whose bytes differ but whose LENGTH is identical -- the case
+;; where a manifest hash could also be unchanged
+(put repl "BBBB\n")
+(rename-file repl seg)
+(define after (ino seg))
+(printf "after rename-over:        ~s  size ~a\n" after (file-size seg))
+(printf "inode changed:            ~a   <- this is the detection signal\n" (not (equal? before after)))
+;; control: an in-place append must NOT change it, or the signal would
+;; fire on ordinary writing and mean nothing
+(let ((fd (fd-open seg '(read-write append))))
+  (write-all! fd (string->utf8 "CCCC\n")) (fd-close fd))
+(printf "after an ordinary append: ~s\n" (ino seg))
+(printf "inode unchanged by append: ~a   <- control\n" (equal? after (ino seg)))
+
+;; A run that did not reach here is not a pass. The runner requires
+;; this line AND a zero failure count: they are two propositions.
+(printf "inode-detect complete\n")

@@ -114,11 +114,54 @@
     (if n (substring script 0 n) ".")))
 (load (string-append here "/crash.ss"))
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define base (test-dir "log15"))
 (define d (string-append base "/store"))
 (define home (string-append base "/home"))
@@ -188,9 +231,19 @@
             "         (res (session-append! s (make-frame (view-revision v) (view-epoch v)\n"
             "                                             (view-writer v) (view-expect-seq v)\n"
             "                                             \"agent:claude\" '() '(put \"w.3\" ())))))\n"
-            "    (log-end! s)\n"
-            "    (call-with-port (open-file-output-port \"" base "/answer\" (file-options no-fail))\n"
-            "      (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" res)))))))\n"))))
+            ;; THE PROMISE IS THE REQUEST'S, SO THE CHILD MAKES IT THE
+            ;; WAY A REQUEST DOES: append, then the commit barrier, then
+            ;; answer. An append no longer fsyncs -- durability is per
+            ;; request -- so a child that answered before the barrier
+            ;; would be reporting `committed` for a record nothing had
+            ;; promised, and the row below would then be asking a
+            ;; durable-only rewrite to keep something that was never
+            ;; durable.
+            "    (let ((c (guard (e (#t 'barrier-failed)) (session-commit! s))))\n"
+            "      (log-end! s)\n"
+            "      (call-with-port (open-file-output-port \"" base "/answer\" (file-options no-fail))\n"
+            "        (lambda (p) (put-bytevector p (string->utf8\n"
+            "                                        (format \"~s\\n\" (list (car res) c)))))))))\n"))))
 
 ;; Runs the child up to BARRIER, then either kills it or releases it.
 ;; Returns the trace it produced.
@@ -508,5 +561,141 @@
                               (map (lambda (e) (cons (car e) (cadddr e))) entries)))))
       (list #t #t (list (cons "e5" 3) (cons "e6" 3))))
 
+(printf "\n== the written frontier is raised under the store's real name ==\n")
+;; THE ONE READ NO FAULT CAN REACH. Reconciliation keys its registry
+;; update on the store's own metadata and instance files, and both go
+;; through `read-whole`, which opens a Chez port directly rather than the
+;; injected `fd-open` -- so `open-fail` arms, announces itself, and
+;; injects nothing. The state the guard exists for needs those files to
+;; read at open and fail HERE, which is why there is a rendezvous at that
+;; exact point and this section rather than a fault.
+;;
+;; WHAT IT STOPS: keyed by "unknown" or #f the update matches no entry,
+;; the merge returns the registry untouched, the write is acknowledged,
+;; and the frontier never moves -- so a store later restored to an
+;; earlier sequence walks past the rollback check that frontier exists to
+;; fail, and the acknowledged request runs a second time.
+(define id-base (test-dir "log15identity"))
+(define id-fifo (string-append id-base "/fifo"))
+(define id-trace (string-append id-base "/trace"))
+(define id-pid (string-append id-base "/pid"))
+(define id-store (string-append id-base "/s"))
+(define id-child (string-append id-base "/child.ss"))
+(system (string-append "rm -rf " id-base "; mkdir -p " id-store " " id-base "/home"))
+(put! id-child
+      (string->utf8
+        (string-append
+          "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+          "        (theourgia store) (theourgia reduce))\n"
+          "(putenv \"THEOURGIA_HOME\" \"" id-base "/home\")\n"
+          "(store-init! \"" id-store "\")\n"
+          "(define a (guard (e (#t (list 'raised))) \n"
+          "  (with-store-write \"" id-store "\" (lambda (st v)\n"
+          "    '((insert root #f ((kind . section) (title . \"One\"))))))))\n"
+          "(call-with-port (open-file-output-port \"" id-base "/answer\" (file-options no-fail))\n"
+          "  (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" (car a))))))\n")))
+(system (string-append "mkfifo " id-fifo))
+(system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 "
+                       "THEOURGIA_BARRIER=written-identity-read:" id-fifo " "
+                       "scheme --script " id-child " > /dev/null 2> " id-trace
+                       " & echo $! > " id-pid))
+(define id-parked (wait-for-barrier id-trace "written-identity-read" 400))
+(want "CONTROL: the child parks at the read this guard is about"
+      id-parked
+      #t)
+;; The metadata goes away while the child is parked: opening, the
+;; reservation and the segment barrier have all already succeeded.
+(when id-parked
+  (system (string-append "mv " id-store "/meta.sexp " id-base "/meta.aside"))
+  (system (string-append "printf x > " id-fifo)))
+(define id-answered (and id-parked (wait-for-file (string-append id-base "/answer") 400)))
+;; THE ANSWER IS `unknown`, AND THAT IS RIGHT. The record is on the disk
+;; by now -- opening, the reservation and the segment barrier have all
+;; succeeded -- and what failed is the step that records how far records
+;; reached. So the caller is told to ask again, which is the one answer
+;; that is true about a store whose frontier could not be moved. What
+;; matters is that it is not `ok`: an acknowledgement here is the
+;; acknowledgement with nothing behind it.
+(want "a write whose identity read fails is not acknowledged"
+      (and id-answered
+           (let ((t (text-of (string-append id-base "/answer"))))
+             (list (and (crash-has-substring? t "error unknown") #t)
+                   (and (crash-has-substring? t "(ok ") #t))))
+      (list #t #f))
+;; AND IT STOPPED BEFORE THE REGISTRY WAS READ. Without this the row
+;; above is also passed by the other guard in the same procedure -- the
+;; one that refuses when no entry matches -- which runs after
+;; `read-registry` and emits `registry-check`. Two guards, one answer;
+;; only the trace tells them apart.
+(want "and it stopped before reading the registry, which is the other guard's place"
+      (let* ((t (text-of id-trace))
+             (after (let loop ((i 0))
+                      (cond ((> (+ i 24) (string-length t)) "")
+                            ((string=? (substring t i (+ i 24)) "barrier written-identity")
+                             (substring t i (string-length t)))
+                            (else (loop (+ i 1)))))))
+        (crash-has-substring? after "registry-check"))
+      #f)
+(when id-parked
+  (system (string-append "kill -9 $(cat " id-pid ") 2>/dev/null")))
+
+;; THE OTHER ARM OF THE SAME GUARD. It refuses on two conditions -- the
+;; store id unreadable, and the instance nonce absent -- and the rows
+;; above move `meta.sexp`, which only ever exercises the first. A guard
+;; with two arms and a case for one is a guard half of which nothing
+;; would notice the loss of. The file moved is chosen by name rather than
+;; by which read happens first: R6RS does not fix the order in which
+;; those two initialisers are evaluated.
+(define n-base (test-dir "log15instance"))
+(define n-fifo (string-append n-base "/fifo"))
+(define n-trace (string-append n-base "/trace"))
+(define n-pid (string-append n-base "/pid"))
+(define n-store (string-append n-base "/s"))
+(define n-child (string-append n-base "/child.ss"))
+(system (string-append "rm -rf " n-base "; mkdir -p " n-store " " n-base "/home"))
+(put! n-child
+      (string->utf8
+        (string-append
+          "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+          "        (theourgia store) (theourgia reduce))\n"
+          "(putenv \"THEOURGIA_HOME\" \"" n-base "/home\")\n"
+          "(store-init! \"" n-store "\")\n"
+          "(define a (guard (e (#t (list 'raised))) \n"
+          "  (with-store-write \"" n-store "\" (lambda (st v)\n"
+          "    '((insert root #f ((kind . section) (title . \"One\"))))))))\n"
+          "(call-with-port (open-file-output-port \"" n-base "/answer\" (file-options no-fail))\n"
+          "  (lambda (p) (put-bytevector p (string->utf8 (format \"~s\\n\" (car a))))))\n")))
+(system (string-append "mkfifo " n-fifo))
+(system (string-append "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 "
+                       "THEOURGIA_BARRIER=written-identity-read:" n-fifo " "
+                       "scheme --script " n-child " > /dev/null 2> " n-trace
+                       " & echo $! > " n-pid))
+(define n-parked (wait-for-barrier n-trace "written-identity-read" 400))
+(want "CONTROL: the child parks with the metadata left alone"
+      n-parked
+      #t)
+(when n-parked
+  (system (string-append "mv " n-store "/instance.sexp " n-base "/instance.aside"))
+  (system (string-append "printf x > " n-fifo)))
+(define n-answered (and n-parked (wait-for-file (string-append n-base "/answer") 400)))
+(want "an absent instance nonce refuses the same way an unreadable id does"
+      (and n-answered
+           (let ((t (text-of (string-append n-base "/answer"))))
+             (list (and (crash-has-substring? t "error unknown") #t)
+                   (and (crash-has-substring? t "(ok ") #t))))
+      (list #t #f))
+(want "and it too stopped before reading the registry"
+      (let* ((t (text-of n-trace))
+             (after (let loop ((i 0))
+                      (cond ((> (+ i 24) (string-length t)) "")
+                            ((string=? (substring t i (+ i 24)) "barrier written-identity")
+                             (substring t i (string-length t)))
+                            (else (loop (+ i 1)))))))
+        (crash-has-substring? after "registry-check"))
+      #f)
+(when n-parked
+  (system (string-append "kill -9 $(cat " n-pid ") 2>/dev/null")))
+
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log15 complete\n")

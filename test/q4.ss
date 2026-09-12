@@ -38,11 +38,54 @@
 (import (chezscheme) (theourgia request))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define W "w3kxxxxx")
 (define WHO "agent:claude")
@@ -74,10 +117,21 @@
         (deps (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts)))
                   (caddr opts)
                   (list RECEIPT-EVENT)))
+        ;; `single`, WHICH IS WHAT A BATCH ITEM ACTUALLY CARRIES. An
+        ;; item of a batch is its own request; its actor's slot describes
+        ;; that item's OWN internal shape, and an item that is one record
+        ;; is `single` with no plan above it -- `item-actor` in the write
+        ;; path says exactly that. This defaulted to the BATCH index,
+        ;; which is the item's identity's index and not its slot: rule 6
+        ;; above says in so many words that the two answer different
+        ;; questions, and this helper was reading one for the other. It
+        ;; went unnoticed while the batch layer looked only at the
+        ;; identity; it stopped being invisible the moment the layer
+        ;; started asking each item's own request whether it ran.
         (sub (if (and (pair? opts) (pair? (cdr opts)) (pair? (cddr opts))
                       (pair? (cdddr opts)))
                  (cadddr opts)
-                 index)))
+                 'single)))
     ;; The actor carries this item's OWN cursor, the one the receipt
     ;; declared for it -- not the batch's.
     (make-evidence (cons W seq)
@@ -194,7 +248,7 @@
       '(planned))
 (want "the receipt and every item"
       (state 3 (list (receipt-record R) (item 0 14) (item 1 15) (item 2 16)))
-      '(committed (0 1 2)))
+      (list 'committed '(0 1 2) (cons W 16)))
 (want "the receipt and a prefix of the items"
       (state 3 (list (receipt-record R) (item 0 14) (item 1 15)))
       '(partial (0 1)))
@@ -222,7 +276,77 @@
       (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13))
                                                    (cons 1 (cons W 14)))))
                      (item 0 14) (item 1 15)))
-      '(committed (0 1)))
+      (list 'committed '(0 1) (cons W 15)))
+
+(printf "\n== Q12': an intention is not an execution ==\n")
+;; AN ITEM THAT IS SEVERAL RECORDS WRITES ITS OWN PLAN FIRST, and that
+;; plan record carries the ITEM'S identity -- so it carries the item's
+;; index. The index says which item a record belongs to; it does not say
+;; that the item ran. Counting the plan record as the item being present
+;; gives a batch that stopped just after writing its plans the same word
+;; a batch that ran to the end gets, and names a plan record as the
+;; record the promise reaches.
+;;
+;; THE TWO LAYERS DISAGREED, AND THE BATCH LAYER WAS THE WRONG ONE. The
+;; plan layer's `present-indices` already refuses these records, because
+;; `executed-member-set` asks what ran; only the batch layer's version
+;; read the identity and stopped there.
+(want "a plan record is not the item it belongs to"
+      (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14)))))
+                     (item 0 14 'valid-history '() (list RECEIPT-EVENT) 'plan)
+                     (item 1 15 'valid-history '() (list RECEIPT-EVENT) 'plan)))
+      '(unknown (evidence-names-missing 0)))
+;; AND THE ANSWER IS NOT `planned` EITHER. `planned` says the rest
+;; provably did not run, and a plan record naming index 0 is evidence
+;; that something once wrote that index down -- which is exactly the
+;; question `item-naming-missing` asks, and why THAT function must go on
+;; counting plan records while this one must not.
+(want "TWIN: the receipt alone, with nothing naming an index, is still planned"
+      (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14)))))))
+      '(planned))
+;; TWIN: THE SAME RECORDS WITH THE SLOT AN EXECUTION USES. Without this
+;; the row above would pass for an implementation that had stopped
+;; counting items altogether.
+(want "TWIN: the same two items with an execution's slot are committed"
+      (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14)))))
+                     (item 0 14 'valid-history '() (list RECEIPT-EVENT) 'single)
+                     (item 1 15 'valid-history '() (list RECEIPT-EVENT) 'single)))
+      (list 'committed '(0 1) (cons W 15)))
+;; AND AN INDEXED SLOT IS AN EXECUTION TOO -- it is how an item that is
+;; several records names its own sub-operations. A test that admitted
+;; only `single` would refuse every multi-record item.
+;; AN INDEXED SLOT BELONGS TO AN ITEM THAT IS SEVERAL RECORDS, and only
+;; there. An item whose actor carries an index while pointing at no plan
+;; is a record whose two statements about where it belongs disagree --
+;; rule 6 says so -- so the twin for the indexed case is an item that has
+;; a plan of its own and carries it out, not a `single` item wearing an
+;; index. An earlier version of this row asserted the latter, and it
+;; passed only while the batch layer read the identity and stopped.
+(want "TWIN: an item that is several records completes when its plan does"
+      (let* ((ipe (cons W 14))
+             (iplan (list 'plan "b1" FP (cons W 13)
+                          (list (cons 0 (list 'set "b" "t" "x")))))
+             (plan-rec
+               (make-evidence ipe
+                              (list WHO (cons W (list 'batch "b1" 0)) 'plan FP #f (cons W 13))
+                              (list RECEIPT-EVENT) iplan 'valid-history #t '()))
+             (member-rec
+               (make-evidence (cons W 15)
+                              (list WHO (cons W (list 'batch "b1" 0)) 0 FP ipe (cons W 13))
+                              (list RECEIPT-EVENT) (list 'set "b" "t" "x")
+                              'valid-history #t '())))
+        (batch-state 1 (list (receipt-record (receipt (list (cons 0 (cons W 13)))))
+                             plan-rec member-rec)
+                     FP AFTER '() #t '()))
+      (list 'committed '(0) (cons W 15)))
+;; A HALF-PLANNED BATCH: item 0 ran, item 1 only wrote its plan. The
+;; plan record names index 1, so `partial` -- which claims the rest
+;; provably did not run -- is not available.
+(want "an item that only planned does not extend the prefix"
+      (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14)))))
+                     (item 0 14 'valid-history '() (list RECEIPT-EVENT) 'single)
+                     (item 1 15 'valid-history '() (list RECEIPT-EVENT) 'plan)))
+      '(unknown (evidence-names-missing 1)))
 
 (printf "\n== Q12': partial asks for four things, not one ==\n")
 ;; (i) the chain must read to its end, or "there are no records past
@@ -261,14 +385,41 @@
 ;; (iv) every item must name the receipt. One that does not cannot have
 ;; been written by an execution that went through the receipt, and
 ;; counting it would let a stray record finish a batch.
-(want "an item whose dependencies do not name the receipt"
+;; NAMING THE RECEIPT IN `deps` IS ONE OF TWO WAYS TO BE LINKED TO IT,
+;; and on the same writer it is not the one that is used: a record's
+;; dependencies list the OTHER writers it builds on, because the sequence
+;; already says which of two records on one writer came first. So this
+;; item is written on a DIFFERENT writer, where there is no such order to
+;; appeal to and the dependency is the only link there is.
+(define (foreign-item index seq deps)
+  (make-evidence (cons "otherwrt" seq)
+                 (list WHO (cons W (list 'batch "b1" index)) 'single FP #f
+                       (cons "otherwrt" (- seq 1)))
+                 deps (list 'set "b" "t" "x") 'valid-history #t '()))
+;; THE RECEIPT HAS TO HAVE RECORDED THE CURSOR THE ITEM WAS WRITTEN AT,
+;; and for an item on another writer that cursor is on that writer. A
+;; receipt naming this writer for all three while the third item sits on
+;; another is a receipt that contradicts its own batch -- and it is now
+;; caught as one, so these rows carry a receipt that agrees with where
+;; the items actually are.
+(define R-FOREIGN
+  (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14))
+                 (cons 2 (cons "otherwrt" 39)))))
+(want "an item on another writer whose dependencies do not name the receipt"
+      (state 3 (list (receipt-record R-FOREIGN) (item 0 14) (item 1 15)
+                     (foreign-item 2 40 '())))
+      (list 'unknown (list 'receipt-unlinked (cons "otherwrt" 40))))
+(want "TWIN: the same item with the receipt among its dependencies"
+      (state 3 (list (receipt-record R-FOREIGN) (item 0 14) (item 1 15)
+                     (foreign-item 2 40 (list (cons W 99) RECEIPT-EVENT))))
+      (list 'committed '(0 1 2) (cons "otherwrt" 40)))
+;; TWIN: and on the receipt's own writer, after it, the log's order IS
+;; the link -- repeating it in `deps` would be a second supplier of an
+;; ordering the sequence already gives.
+(want "TWIN: an item after the receipt on its own writer needs no dependency"
       (state 3 (list (receipt-record R) (item 0 14) (item 1 15)
                      (item 2 16 'valid-history '() '())))
-      (list 'unknown (list 'receipt-unlinked (cons W 16))))
-(want "TWIN: the same item with the receipt among its dependencies"
-      (state 3 (list (receipt-record R) (item 0 14) (item 1 15)
-                     (item 2 16 'valid-history '() (list (cons W 99) RECEIPT-EVENT))))
-      '(committed (0 1 2)))
+      (list 'committed '(0 1 2) (cons W 16)))
 
 (printf "\n== Q12': planned is partial with k = -1 ==\n")
 ;; "The receipt is durable and items 0..k ran, and the rest provably did
@@ -302,11 +453,20 @@
 ;; whose identity claims 2 and whose slot says `single` is counted by
 ;; nothing: not as present, not as naming a missing index. The retry is
 ;; then told to resume at an index a record already stands at.
-(want "an item whose identity and sub-operation slot disagree"
+;; AN ITEM'S INDEX IS ITS IDENTITY'S, NOT ITS ACTOR'S SLOT. Each item of
+;; a batch is its own request -- `(batch <req> <k>)` -- and its actor's
+;; sub-operation slot describes that item's OWN internal shape: `single`
+;; when it is one record, an index into its own plan when it is several.
+;; The two answer different questions. A record whose identity carries no
+;; index at all cannot say which item it is, and stops the batch.
+(want "an item whose identity carries no index"
       (state 3 (list (receipt-record R) (item 0 14) (item 1 15)
-                     (item 2 16 'valid-history '() (list RECEIPT-EVENT) 'single)))
-      (list 'unknown (list 'item-index-disagrees (cons W 16)
-                           (list 'identity 2) (list 'sub 'single))))
+                     (make-evidence (cons W 16)
+                                    (list WHO (cons W "not-an-item") 'single FP #f
+                                          (cons W 15))
+                                    (list RECEIPT-EVENT) (list 'set "b" "t" "x")
+                                    'valid-history #t '())))
+      (list 'unknown (list 'item-index-missing (cons W 16))))
 ;; A RECEIPT THAT WAS SET ASIDE IS NOT A RECEIPT. It is the record every
 ;; other answer is built on, so a marked one leaves the batch with no
 ;; receipt -- not a quiet fall-back to the next one found.
@@ -354,4 +514,5 @@
       (list 'unknown (list 'batch-duplicate (cons W 20))))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "q4 complete\n")

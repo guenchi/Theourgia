@@ -119,11 +119,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 
 (define W "wwwx7q2a")
 (define V "vvvy8r3b")
@@ -519,9 +562,16 @@
     (let ((text (let ((b (slurp child-out))) (if (bytevector? b) (utf8->string b) ""))))
       (guard (e (#t (list 'unreadable text)))
         (read (open-string-input-port text))))))
-(want "the answer names the outcome and says it is indeterminate, not refused"
+;; A FLUSH FAILURE IS THE REQUEST'S NOW, NOT THE RECORD'S. An append no
+;; longer fsyncs -- durability is per request -- so this fault fires at
+;; the barrier, and what the caller is told is that the whole request's
+;; outcome is not known: the records are written and nobody can promise
+;; they survive. `indeterminate written-fsync-failed` named a per-record
+;; outcome that no longer exists; the fact it conveyed -- not known to be
+;; nothing -- is the same one `unknown` conveys here.
+(want "the answer says the request's outcome is not known, not that it was refused"
       (list (car faulted-answer) (cadr faulted-answer) (caddr faulted-answer))
-      (list 'error 'indeterminate 'written-fsync-failed))
+      (list 'error 'unknown (list 'commit-barrier-failed)))
 ;; AND THE RECORD IS THERE. This is what makes the wording matter: had
 ;; the answer said refused, the caller would not have looked, and the
 ;; block below would be a block nobody believes was written.
@@ -529,6 +579,198 @@
       (list (length (reduce-trace (state-of df)))
             (map cadr (state-datum (state-of df))))
       (list 1 (list (string-append W ".1"))))
+
+(printf "== the word an answer uses is a statement about the disk ==\n")
+;; `ok` MEANS DURABLE AND `unknown` MEANS ASK AGAIN, and everything else
+;; means no record. That makes the word a caller is handed a claim about
+;; the bytes, which is a thing a case can measure: run the request under
+;; a fault, then count the lines the writer's segment holds.
+;;
+;; ONE WORD USED TO COVER TWO OPPOSITE FACTS. `indeterminate` was
+;; answered both when the log was untouched and when a partial write had
+;; left bytes behind -- and the second of those is the state that most
+;; needs a word the response table defines, because a later replay may
+;; read those bytes back as a committed record. `indeterminate` is not
+;; in the table at all, so a caller holding it has no next move.
+;;
+;; A CHILD PROCESS PER FAULT, for the reason the section above gives:
+;; THEOURGIA_INJECT is an expansion-time gate.
+(define (faulted-run fault body)
+  (let* ((d (test-dir (string-append "store1w" (number->string (string-length fault)))))
+         (cp (string-append d "/child.ss"))
+         (co (string-append d "/child.out")))
+    (fresh! d)
+    (put! cp (string->utf8
+               (string-append
+                 "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+                 "        (theourgia store) (theourgia reduce) (theourgia request))\n"
+                 "(putenv \"THEOURGIA_HOME\" \"" d "-home\")\n"
+                 "(define d \"" d "\")\n"
+                 body)))
+    (let ((code (system (string-append
+                          "THEOURGIA_INJECT=on THEOURGIA_FAULT=" fault " "
+                          "scheme --script " cp " > " co " 2>/dev/null"))))
+      (let ((text (let ((b (slurp co))) (if (bytevector? b) (utf8->string b) ""))))
+        (list code
+              (guard (e (#t (list 'unreadable text)))
+                (read (open-string-input-port text)))
+              (length (lines-of-file (string-append d "/writers/" W "/000001.sexp"))))))))
+(define (split-lines text)
+  (let loop ((cs (string->list text)) (cur '()) (out '()))
+    (cond ((null? cs) (reverse (cons (list->string (reverse cur)) out)))
+          ((char=? (car cs) #\newline)
+           (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+          (else (loop (cdr cs) (cons (car cs) cur) out)))))
+(define (has? text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) #t)
+            (else (loop (+ i 1)))))))
+(define (lines-of-file p)
+  (let ((b (slurp p)))
+    (if (not (bytevector? b))
+        '()
+        (let loop ((cs (string->list (utf8->string b))) (cur '()) (out '()))
+          (cond ((null? cs)
+                 (reverse (if (null? cur) out (cons (list->string (reverse cur)) out))))
+                ((char=? (car cs) #\newline)
+                 (loop (cdr cs) '() (cons (list->string (reverse cur)) out)))
+                (else (loop (cdr cs) (cons (car cs) cur) out)))))))
+(define one-write
+  (string-append
+    "(define res (guard (e (#t (list (list 'raised))))\n"
+    "  (with-store-write d (lambda (st v)\n"
+    "    '((insert root #f ((kind . section) (title . \"faulted\"))))))))\n"
+    "(printf \"~s\\n\" (car res))\n"))
+;; A PARTIAL WRITE LEAVES BYTES. The answer has to be the one that sends
+;; the caller back to ask, because the bytes it left may be read back as
+;; a record.
+(let ((r (faulted-run "write-eio-after-partial@commit" one-write)))
+  (want "a partial write answers unknown, and the detail survives in the reason"
+        (list (car (cadr r)) (cadr (cadr r)) (caddr (cadr r)))
+        (list 'error 'unknown (list 'partial-write (list 'sequence 1))))
+  (want "and the bytes it left really are on the disk"
+        (caddr r)
+        1))
+;; AND THE BARRIER WAS ASKED ABOUT THE SEGMENT THOSE BYTES ARE IN.
+;; `unknown` means "send it again and I will tell you whether it ran",
+;; and that promise rests entirely on a resend being able to FIND the
+;; record. The segment used to be added to the barrier's list only where
+;; the append SUCCEEDED, so a partial write answered `unknown` over bytes
+;; no flush had been asked about -- the one combination the word cannot
+;; survive. The count is read from the product's own trace.
+(let* ((d (test-dir "store1cover"))
+       (cp (string-append d "/child.ss"))
+       (co (string-append d "/child.out")))
+  (fresh! d)
+  (put! cp (string->utf8
+             (string-append
+               "#!r6rs\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
+               "        (theourgia store) (theourgia reduce))\n"
+               "(putenv \"THEOURGIA_HOME\" \"" d "-home\")\n"
+               "(with-store-write \"" d "\" (lambda (st v)\n"
+               "  '((insert root #f ((kind . section) (title . \"P\"))))))\n")))
+  (system (string-append
+            "THEOURGIA_INJECT=on THEOURGIA_FAULT=write-eio-after-partial@commit "
+            "THEOURGIA_TRACE=1 scheme --script " cp " > " co " 2>&1"))
+  ;; THE LINE THAT DISCRIMINATES IS THE FSYNC ONE. The segment is named
+  ;; by several trace kinds -- it is copied to be read, and written to --
+  ;; so counting every line that mentions it passes whether or not the
+  ;; barrier ran. Measured: five lines name the segment with the fix and
+  ;; four without, and the missing one is the flush.
+  (want "a partial write is flushed before its answer is given"
+        (let ((text (let ((b (slurp co))) (if (bytevector? b) (utf8->string b) ""))))
+          (and (string? text)
+               (let loop ((ls (split-lines text)) (n 0))
+                 (cond ((null? ls) (> n 0))
+                       ((and (has? (car ls) "trace fsync") (has? (car ls) "000001.sexp"))
+                        (loop (cdr ls) (+ n 1)))
+                       (else (loop (cdr ls) n))))))
+        #t))
+;; TWIN: THE OUTCOME THAT MEANS THE LOG IS UNTOUCHED KEEPS A PLAIN ERROR.
+;; Answering `unknown` here would be no better than the single word it
+;; replaces: it would send every caller to re-ask about a request that
+;; provably wrote nothing, and `unknown` would stop meaning anything.
+(let ((r (faulted-run "write-eio-first@commit" one-write)))
+  (want "TWIN: a reservation that was never written is a plain error"
+        (list (car (cadr r)) (cadr (cadr r)))
+        (list 'error 'not-written))
+  (want "TWIN: and the segment is empty"
+        (caddr r)
+        0))
+;; A RAISE BETWEEN THE FIRST APPEND AND THE BARRIER IS STILL AN ANSWER.
+;; It used to unwind past the commit, so the barrier never ran at all --
+;; and a request answered `unknown` whose records were never made durable
+;; is the one combination that cannot be recovered from: `unknown` tells
+;; the caller to send it again, and a resend that cannot find the records
+;; does the work twice.
+(let ((r (faulted-run "stat-fail@commit" one-write)))
+  ;; A FAULT BEFORE THE FIRST BYTE IS NOT AN OUTCOME IN DOUBT, and this
+  ;; row is where that was got wrong. Three of the four places a raise
+  ;; becomes an answer were gated on "did this session reach an append";
+  ;; the fourth -- the one wrapping the whole intent loop -- answered
+  ;; `unknown` without looking, so every fault that raised anywhere in
+  ;; the loop was reported as a request whose outcome nobody could name.
+  ;; The reading looked like the flag being deliberately conservative. It
+  ;; was a gate nobody had put in.
+  (want "a fault before the first byte is not reported as an outcome in doubt"
+        (list (equal? (cadr r) '(raised)) (caddr r))
+        (list #t 0)))
+;; TWIN: AND A FAILURE BEFORE ANY WRITE WAS ATTEMPTED IS NOT `unknown`.
+;; The two are told apart by whether the session ever reached an append,
+;; not by counting bytes afterwards: a write that raises halfway leaves
+;; bytes and returns no count, so the flag is set before the first byte
+;; and reads "a write was attempted". That makes it deliberately
+;; conservative in one direction -- a fault between the flag and the
+;; write answers `unknown` for a segment that did not grow -- and never
+;; in the other, which is the direction that loses records.
+;;
+;; THIS ROW NEEDS NO INJECTION, which is why it can be here: the caller's
+;; own procedure runs before anything is written, so a failure in it is
+;; the one case where the store provably did nothing.
+(define dg (test-dir "store1gate"))
+(fresh! dg)
+(want "a failure before any append is not dressed as an outcome in doubt"
+      (guard (e (#t 'raised))
+        (with-store-write dg (lambda (st v) (assertion-violation 'case "no")) "t"))
+      'raised)
+;; AND THE SESSION WAS GIVEN BACK ANYWAY. This is the row the unwind
+;; exists for: the store's exclusive lock is held for the whole of
+;; `with-store-write`, and a version that released it only on the paths
+;; that returned would leave it held for the life of the process --
+;; after the one kind of exit that means something went wrong.
+(want "and the store is still writable, so the lock was released on the way out"
+      (list (car (car (with-store-write dg
+                        (lambda (st v) '((insert root #f ((kind . section) (title . "A")))))
+                        "t")))
+            (car (car (with-store-write dg
+                        (lambda (st v) '((insert root #f ((kind . section) (title . "B")))))
+                        "t"))))
+      '(ok ok))
+;; AND A REPLAY'S BARRIER GETS THE SAME WORD THE WRITE PATH'S DOES. A
+;; replay answer IS a promise of durability -- it is the whole of what a
+;; replay tells a client -- so failing to make it good is `unknown`. The
+;; two paths answered differently for one fault: the write path said
+;; `unknown` and the replay raised.
+(define replay-body
+  (string-append
+    ;; THE LOCAL WRITER BY NAME. `(car (store-writers d))` answers
+    ;; whichever name sorts first, and this store has a mirror writer
+    ;; too -- a cursor on the mirror names a writer with no segment,
+    ;; whose whole domain is uncertain, so the request is refused by the
+    ;; range test and never reaches the arm this row is about.
+    "(define W \"" W "\")\n"
+    "(define (send)\n"
+    "  (with-store-write d\n"
+    "    (lambda (st v) '((insert root #f ((kind . section) (title . \"One\")))))\n"
+    "    \"t\" (make-write-request \"t\" 'insert '(\"root\" \"One\") \"r-1\" (cons W 0))))\n"
+    "(send)\n"
+    "(printf \"~s\\n\" (guard (e (#t '(raised))) (car (send))))\n"))
+(let ((r (faulted-run "fsync-fail@commit:file=000001" replay-body)))
+  (want "a replay whose barrier fails answers unknown rather than raising"
+        (list (car (cadr r)) (cadr (cadr r)) (car (caddr (cadr r))))
+        (list 'error 'unknown 'replay-barrier-failed)))
 
 (printf "== P9: a view that has gone stale inside one process ==\n")
 ;; ONE PROCESS, NOT TWO. P4 covers two processes racing for the lock;
@@ -645,4 +887,5 @@
       (list (string-append W ".3") (string-append W ".2") (string-append W ".1")))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "store1 complete\n")

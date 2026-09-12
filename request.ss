@@ -42,15 +42,16 @@
           ev-delivered? ev-marks ev-marked?
           comparison-set executed-member-set historical-set membership
           duplicate-slots plan-conflicts present-indices prefix?
-          request-decision
+          request-decision request-gates plan? store-supplied-fields
           receipt? receipt-req receipt-fingerprint receipt-after
           receipt-entries receipt-item-after receipt-covers?
-          receipt-duplicate batch-item-state batch-state
+          receipt-duplicate batch-item-state batch-state bind-new created-id
+          intent-produced?
           resolution? resolution-target resolution-fingerprint resolution-sub
           resolution-verdict resolution-interval resolution-supersedes
           resolution-evidence resolution-state resolution-problems)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs unicode)
-          (rnrs bytevectors) (rnrs io ports)
+          (rnrs bytevectors) (rnrs io ports) (rnrs exceptions)
           (only (theourgia wire) sexpr->string-extended)
           (only (igropyr crypto) sha256 bytevector->hex))
 
@@ -255,9 +256,30 @@
         ;; segment, or on a generation since retired -- and deriving it a
         ;; second time from the same evidence would be a second supplier
         ;; of the one fact this rule established.
+        ;;
+        ;; FOR A PLAN IT IS THE LAST SUB-OPERATION, which is the last
+        ;; thing the request wrote and therefore the furthest point the
+        ;; promise has to reach. A `replay` with no record named would
+        ;; leave the caller nothing to make durable, and the barrier it
+        ;; is about to run would have to guess.
         ((applied-single records)
          => (lambda (e) (list (quote replay) (ev-event e))))
-        (else (list (quote replay))))))
+        ((last-applied-index records plan-size)
+         => (lambda (e) (list (quote replay) (ev-event e))))
+        ;; AN EMPTY PLAN IS COMPLETE THE MOMENT IT IS PRESENT -- there are
+        ;; no sub-operations to have run -- so the record the promise is
+        ;; about is the plan itself.
+        ((and (eqv? plan-size 0) (plan-record-event records))
+         => (lambda (id) (list (quote replay) id)))
+        (else (list (quote unknown) (list (quote no-applied-record)))))))
+
+  (define (last-applied-index records plan-size)
+    (and plan-size (> plan-size 0)
+         (let loop ((i (- plan-size 1)))
+           (cond
+             ((< i 0) #f)
+             ((applied-index records i) => (lambda (e) e))
+             (else (loop (- i 1)))))))
 
   (define (applied-single evidence)
     (let loop ((es (executed-member-set evidence)))
@@ -710,7 +732,14 @@
       (cond
         ;; 1. UNREADABLE, BROKEN, CONTESTED OR WAITING, receipt included.
         ((receipt-duplicate evidence) => (lambda (why) (list (quote unknown) why)))
-        ((find-unknown evidence) => (lambda (why) (list (quote unknown) why)))
+        ;; READABILITY IS ASKED OF EACH IDENTITY SEPARATELY. `find-unknown`
+        ;; also looks for two records standing in one slot, and a slot is
+        ;; `(plan-event . sub)` -- which every item of a batch shares,
+        ;; because each is a `single` record belonging to no plan. Asked
+        ;; of the whole set at once it calls every batch of more than one
+        ;; item contested. They are not two records in one slot; they are
+        ;; different requests.
+        ((find-unknown-per-identity evidence) => (lambda (why) (list (quote unknown) why)))
         ;; 2. NO RECEIPT. Two very different pictures share this arm and
         ;; they are separated by whether anything ran: with no evidence
         ;; at all the batch provably did not begin, provided its cursor
@@ -759,19 +788,26 @@
         ;; the content.
         ((uncovered-index receipt n)
          => (lambda (i) (list (quote unknown) (list (quote receipt-coverage) i))))
-        ;; 6. A RECORD WHOSE TWO STATEMENTS OF ITS OWN INDEX DISAGREE.
-        ;; An item says which index it is twice: in its identity, which
-        ;; is `(batch <req> <k>)`, and in its actor's sub-operation
-        ;; slot. Every rule below reads the slot, so a record whose
-        ;; identity claims index 2 and whose slot says `single` is
-        ;; counted by nothing -- not as present, not as naming a missing
-        ;; index -- and the retry is told to resume at an index a record
-        ;; already stands at. The identity is the authority, and a
-        ;; disagreement is not resolved in either direction: a record
-        ;; that cannot say which index it is stops the batch.
-        ((index-disagreement items)
-         => (lambda (e) (list (quote unknown) (cons (quote item-index-disagrees) e))))
-        (else (batch-progress receipt n items intervals chain-readable? successors)))))
+        ;; 6. A RECORD THAT CANNOT SAY WHICH ITEM IT IS.
+        ;;
+        ;; AN ITEM'S INDEX IS ITS IDENTITY'S, NOT ITS ACTOR'S SLOT. Each
+        ;; item of a batch is its own request -- `(batch <req> <k>)` --
+        ;; and its actor's sub-operation slot describes that item's OWN
+        ;; internal shape: `single` when it is one record, an index into
+        ;; its own plan when it is several. The two answer different
+        ;; questions and must not be read for each other.
+        ((no-item-index items)
+         => (lambda (e) (list (quote unknown) (list (quote item-index-missing) e))))
+        ((let* ((receipt-ev (find receipt-record? evidence))
+                (who (and receipt-ev (car (ev-actor receipt-ev)))))
+           (find (lambda (e)
+                   (let ((a (ev-actor e)) (i (identity-index e)))
+                     (or (not (equal? (actor-fingerprint a) fingerprint))
+                         (not (equal? (car a) who))
+                         (not (equal? (actor-after a) (receipt-item-after receipt i)))))) items))
+         => (lambda (e) (list 'unknown (list 'item-mismatch (ev-event e)))))
+        (else (batch-progress receipt n items intervals chain-readable? successors
+                              (receipt-event evidence))))))
 
   (define (identity-index e)
     (let ((id (actor-identity (ev-actor e))))
@@ -780,14 +816,80 @@
              (and (list? req) (= 3 (length req)) (eq? (car req) (quote batch))
                   (caddr req))))))
 
-  (define (index-disagreement items)
+  (define (no-item-index items)
     (let loop ((es items))
       (cond
         ((null? es) #f)
-        ((not (equal? (identity-index (car es)) (actor-sub (ev-actor (car es)))))
-         (list (ev-event (car es))
-               (list (quote identity) (identity-index (car es)))
-               (list (quote sub) (actor-sub (ev-actor (car es))))))
+        ((not (identity-index (car es))) (ev-event (car es)))
+        (else (loop (cdr es))))))
+
+  ;; THE BATCH LAYER READS INDICES FROM IDENTITIES, and these are its own
+  ;; versions of the three questions the plan layer asks about
+  ;; sub-operations. They are separate functions and not a flag, because
+  ;; a flag would let one call site ask the wrong question of the wrong
+  ;; layer and still typecheck.
+  ;; A RECORD THAT SAYS WHAT AN ITEM WAS ABOUT TO DO IS NOT THE ITEM. An
+  ;; item that is several records writes its own plan first, and that
+  ;; record carries the item's identity -- so it carries the item's index
+  ;; -- while stating only an intention. Counting it as the item being
+  ;; present gives a batch whose items all stopped just after writing
+  ;; their plans the same word a batch that ran to the end gets:
+  ;; `committed`, naming a plan record as the thing the promise reaches.
+  ;;
+  ;; THE SLOT IS WHAT TELLS THEM APART, and rule 6 above already says why
+  ;; the two are separate questions: the identity says WHICH item a
+  ;; record belongs to, the slot says what the record is within that
+  ;; item. Only this function needs the second question. `item-naming-
+  ;; missing` must keep counting plan records, because its question is
+  ;; whether anything ever wrote an index down -- and an intention is
+  ;; exactly that.
+  ;; AN ITEM IS PRESENT WHEN ITS OWN REQUEST SAYS IT RAN, and the only
+  ;; thing that can say so is the decision function every single request
+  ;; goes through. An earlier fix here asked a narrower question -- is
+  ;; this record an execution rather than a plan -- which closed the case
+  ;; where an item had written nothing but its plan, and left the one
+  ;; where it had written its plan and some of its sub-operations. Both
+  ;; are the same mistake: the batch layer deciding for itself what
+  ;; finishing means, in words of its own, while the layer that owns that
+  ;; question is one call away.
+  ;;
+  ;; SO IT DELEGATES, and a batch is committed only when every item is.
+  ;; The item's plan size comes from its own plan record where it has
+  ;; one; an item with no plan is a single request and answers for itself.
+  (define (item-completion-event items index)
+    (let* ((es (filter (lambda (e) (eqv? (identity-index e) index)) items))
+           (plans (filter (lambda (e) (and (eq? (actor-sub (ev-actor e)) 'plan)
+                                           (plan? (ev-payload e))))
+                          es)))
+      (and (pair? es) (<= (length plans) 1)
+           (let* ((a (ev-actor (car es)))
+                  (size (and (pair? plans) (length (list-ref (ev-payload (car plans)) 4))))
+                  (v (request-decision (actor-identity a) (actor-fingerprint a)
+                                       (car a) (actor-after a) es '() size '())))
+             (and (eq? (car v) 'replay) (cadr v))))))
+
+  (define (item-present-indices items)
+    (list-sort <
+      (filter (lambda (i) (item-completion-event items i))
+        (fold-left (lambda (out e)
+                     (let ((i (identity-index e)))
+                       (if (and i (not (memv i out))) (cons i out) out)))
+                   '() items))))
+
+  (define (item-at items index)
+    (let loop ((es items))
+      (cond
+        ((null? es) #f)
+        ((eqv? (identity-index (car es)) index) (car es))
+        (else (loop (cdr es))))))
+
+  (define (item-naming-missing items present n)
+    (let loop ((es items))
+      (cond
+        ((null? es) #f)
+        ((let ((i (identity-index (car es))))
+           (and i (< i n) (not (memv i present)) i))
+         => (lambda (i) i))
         (else (loop (cdr es))))))
 
   ;; The receipt's own event id, found through the record that carried
@@ -800,15 +902,31 @@
         ((receipt-record? (car es)) (ev-event (car es)))
         (else (loop (cdr es))))))
 
+  ;; NAMING THE RECEIPT IN `deps` IS ONE OF TWO WAYS TO BE LINKED TO IT,
+  ;; and on the same writer it is not the one that is used. A record's
+  ;; dependencies list the OTHER writers it builds on; its own writer is
+  ;; left out on purpose, because the sequence already says which of two
+  ;; records on one writer came first. So an item written after the
+  ;; receipt on the receipt's own writer is linked by the log's order,
+  ;; and repeating that in `deps` would be a second supplier of an
+  ;; ordering the sequence already gives -- one that could disagree with
+  ;; it.
+  ;;
+  ;; An item on ANOTHER writer has no such order to appeal to, and there
+  ;; the dependency is the only link there is.
   (define (unlinked-item items receipt evidence)
     (let ((id (receipt-event evidence)))
       (and id
            (let loop ((es items))
              (cond
                ((null? es) #f)
-               ((not (exists (lambda (d) (equal? d id)) (ev-deps (car es))))
-                (ev-event (car es)))
-               (else (loop (cdr es))))))))
+               ((linked-to? (car es) id) (loop (cdr es)))
+               (else (ev-event (car es))))))))
+
+  (define (linked-to? e id)
+    (or (exists (lambda (d) (and (string=? (car d) (car id)) (>= (cdr d) (cdr id)))) (ev-deps e))
+        (let ((at (ev-event e)))
+          (and (string=? (car at) (car id)) (> (cdr at) (cdr id))))))
 
   ;; COVERAGE IS COMPARED IN BOTH DIRECTIONS. A receipt that lists fewer
   ;; indices than the request leaves items the batch never promised; one
@@ -837,8 +955,8 @@
   ;; invisible to every test that looks at records and visible only to
   ;; the one that looks at intervals. A client reading `planned` starts
   ;; at index 0.
-  (define (batch-progress receipt n items intervals chain-readable? successors)
-    (let ((present (present-indices items)))
+  (define (batch-progress receipt n items intervals chain-readable? successors receipt-id)
+    (let ((present (item-present-indices items)))
       (cond
         ;; A SET THAT IS NOT A PREFIX IS NOT "SOMETHING IS MISSING". The
         ;; items are written in index order, so {0,2} is a set no correct
@@ -846,7 +964,14 @@
         ;; two stories it is looking at.
         ((not (prefix? present))
          (list (quote unknown) (list (quote plan-order) present)))
-        ((= (length present) n) (list (quote committed) present))
+        ;; AND IT NAMES THE RECORD IT IS ABOUT, for the same reason a
+        ;; replay does: a caller that has to make something durable
+        ;; before repeating the word needs to know which record the word
+        ;; is about. For a batch that is the LAST item -- the furthest
+        ;; point the promise has to reach.
+        ((= (length present) n)
+         (list (quote committed) present
+               (if (= n 0) receipt-id (item-completion-event items (- n 1)))))
         ;; PARTIAL IS THE STRONGEST CLAIM HERE and it asks for four
         ;; things, not one. Each missing index must be clear of every
         ;; uncertain stretch AT THE CURSOR THE RECEIPT RECORDED FOR IT;
@@ -858,7 +983,7 @@
         ;; evidence that something once wrote that index down.
         ((not chain-readable?)
          (list (quote unknown) (list (quote chain-unreadable))))
-        ((named-missing-index items present n)
+        ((item-naming-missing items present n)
          => (lambda (i) (list (quote unknown) (list (quote evidence-names-missing) i))))
         ((missing-index-overlap receipt present n intervals successors)
          => (lambda (clash) (list (quote unknown) (list (quote range-overlaps) clash))))
@@ -895,6 +1020,27 @@
          => (lambda (clash) clash))
         (else (loop (+ i 1))))))
 
+  (define (find-unknown-per-identity evidence)
+    (let loop ((groups (group-by-identity evidence)))
+      (cond
+        ((null? groups) #f)
+        ((find-unknown (car groups)) => (lambda (why) why))
+        (else (loop (cdr groups))))))
+
+  (define (group-by-identity evidence)
+    (let loop ((es evidence) (seen (quote ())) (out (quote ())))
+      (cond
+        ((null? es) (reverse out))
+        (else
+         (let ((id (actor-identity (ev-actor (car es)))))
+           (if (exists (lambda (x) (identity=? x id)) seen)
+               (loop (cdr es) seen out)
+               (loop (cdr es) (cons id seen)
+                     (cons (filter (lambda (e)
+                                     (identity=? (actor-identity (ev-actor e)) id))
+                                   evidence)
+                           out))))))))
+
   ;; Rule 1's conditions, each named so an answer can say which one.
   (define (find-unknown evidence)
     (let loop ((es evidence))
@@ -916,6 +1062,10 @@
              (and (ev-delivered? (car es))
                   (eq? (membership (car es) evidence) (quote invalid))))
          (list (quote plan-mismatch) (ev-event (car es))))
+        ((ev-marked? (car es) 'plan-conflict)
+         (list 'plan-conflict (ev-event (car es))))
+        ((ev-marked? (car es) 'pending-plan)
+         (list 'pending (ev-event (car es))))
         ((ev-marked? (car es) (quote plan-order))
          (list (quote plan-order) (ev-event (car es))))
         ((and (ev-delivered? (car es)) (eq? (membership (car es) evidence) (quote undetermined)))
@@ -1058,11 +1208,20 @@
   ;; Dependencies that have not been applied are PENDING, which is not a
   ;; membership question at all.
   (define (membership e evidence)
+    (guard (ex (#t 'invalid)) (membership-checked e evidence)))
+
+  (define (membership-checked e evidence)
     (let ((plan-event (actor-plan-event (ev-actor e))))
       (cond
         ;; a record that belongs to no plan is its own member
         ((not plan-event) 'valid)
         ((not (plan-record-present? plan-event evidence)) 'undetermined)
+        ((let ((p (find (lambda (p) (equal? (ev-event p) plan-event)) evidence)))
+           (or (not (identity=? (actor-identity (ev-actor e)) (actor-identity (ev-actor p))))
+               (not (equal? (actor-fingerprint (ev-actor e)) (actor-fingerprint (ev-actor p))))
+               (not (equal? (car (ev-actor e)) (car (ev-actor p))))
+               (not (equal? (actor-after (ev-actor e)) (actor-after (ev-actor p))))))
+         'invalid)
         ((ev-marked? e 'plan-mismatch) 'invalid)
         (else
          (let ((declared (plan-payload-for plan-event (actor-sub (ev-actor e)) evidence)))
@@ -1073,16 +1232,256 @@
              ;; claiming a slot its plan never had waiting for ever for
              ;; something that already came.
              ((eq? declared 'absent) 'invalid)
-             ((unresolved-new? declared) 'undetermined)
-             ((equal? declared (ev-payload e)) 'valid)
-             (else 'invalid)))))))
+             (else
+              ;; `("#%new" k)` STANDS FOR THE BLOCK SUB-OPERATION k MADE,
+              ;; and it is bound from the record that made it -- never
+              ;; from the plan, which says only what was meant to happen.
+              ;; Until k's record is here and applied there is nothing to
+              ;; bind it to and the comparison cannot be made, which is
+              ;; `undetermined` and not a verdict.
+              (let ((bound (bind-new declared evidence)))
+                (cond
+                  ((eq? bound 'unbound) 'undetermined)
+                  ((intent-produced? bound (ev-payload e)) 'valid)
+                  (else 'invalid))))))))))
+
+  ;; The immutable declaration has a complete, contiguous index set.
+  (define (plan? p)
+    (and (list? p) (= 5 (length p)) (eq? (car p) 'plan)
+         (req-id-ok? (cadr p)) (string? (caddr p)) (event-id? (cadddr p))
+         (list? (list-ref p 4))
+         (let loop ((es (list-ref p 4)) (i 0))
+           (or (null? es)
+               (and (pair? (car es)) (eqv? (caar es) i)
+                    (list? (cdar es)) (pair? (cdar es)) (symbol? (cadar es))
+                    (loop (cdr es) (+ i 1)))))))
+
+  ;; One admission table for reduction and request evidence. Inputs have
+  ;; causal availability (before plan filtering); deps may include their
+  ;; transitive past. Validate each index using only earlier, unique valid
+  ;; bindings, detect duplicates, THEN check execution order.
+  (define (request-gates evidence)
+    (apply append (map identity-gates (group-by-identity evidence))))
+
+  (define (identity-gates es)
+    (let ((statuses '()) (bindings '()))
+      (define (status e)
+        (let ((p (assoc (ev-event e) statuses))) (and p (cdr p))))
+      (define (mark! e why)
+        (set! statuses (cons (cons (ev-event e) why)
+                              (filter (lambda (p) (not (equal? (car p) (ev-event e))))
+                                      statuses))))
+      (define (declaration-ok? e)
+        (let ((p (ev-payload e)) (a (ev-actor e)))
+          (if (not (eq? (actor-sub a) 'plan))
+              (not (and (pair? p) (memq (car p) '(plan batch))))
+              (and (or (plan? p) (receipt? p))
+                   (equal? (cadr p) (cdr (actor-identity a)))
+                   (equal? (caddr p) (actor-fingerprint a))
+                   (equal? (cadddr p) (actor-after a))))))
+      (define (classify-slot! slot)
+        (let ((valid '()))
+          (for-each
+            (lambda (e)
+              (cond
+                ((not (ev-delivered? e)) (mark! e 'pending-plan))
+                ((not (declaration-ok? e)) (mark! e 'plan-mismatch))
+                ((and (integer? (actor-sub (ev-actor e)))
+                      (not (actor-plan-event (ev-actor e))))
+                 (mark! e 'plan-mismatch))
+                ((not (actor-plan-event (ev-actor e)))
+                 (set! valid (cons e valid)))
+                (else
+                 (case (membership e bindings)
+                   ((valid) (set! valid (cons e valid)))
+                   ((invalid) (mark! e 'plan-mismatch))
+                   (else (mark! e 'pending-plan))))))
+            slot)
+          (for-each (lambda (e) (mark! e (if (> (length valid) 1) 'plan-conflict 'valid))) valid)
+          (when (= 1 (length valid)) (set! bindings (cons (car valid) bindings)))))
+      ;; Unindexed records first: the plan must be available to its items.
+      (for-each
+        (lambda (sub)
+          (classify-slot! (filter (lambda (e) (eq? (actor-sub (ev-actor e)) sub)) es)))
+        '(plan single))
+      (let ((indices (list-sort <
+                       (fold-left (lambda (out e)
+                         (let ((i (actor-sub (ev-actor e))))
+                           (if (and (integer? i) (not (memv i out))) (cons i out) out)))
+                         '() es))))
+        (for-each
+          (lambda (i)
+            ;; More than one plan event cannot supply one binding space.
+            (let ((slot (filter (lambda (e) (eqv? (actor-sub (ev-actor e)) i)) es)))
+              (for-each
+                (lambda (pe)
+                  (classify-slot!
+                    (filter (lambda (e) (equal? (actor-plan-event (ev-actor e)) pe)) slot)))
+                (fold-left (lambda (out e)
+                             (let ((pe (actor-plan-event (ev-actor e))))
+                               (if (member pe out) out (cons pe out)))) '() slot))))
+          indices))
+      (for-each
+        (lambda (e)
+          (let* ((a (ev-actor e)) (i (actor-sub a)) (pe (actor-plan-event a)))
+            (when (and (integer? i) (eq? (status e) 'valid))
+              (let ((previous
+                      (filter (lambda (p)
+                        (if (= i 0)
+                            (equal? (ev-event p) pe)
+                            (and (equal? (actor-plan-event (ev-actor p)) pe)
+                                 (eqv? (actor-sub (ev-actor p)) (- i 1))))) es)))
+                (let ((eligible (filter (lambda (p) (eq? (status p) 'valid)) previous)))
+                  (cond
+                    ((null? previous) (mark! e 'plan-order))
+                    ((not (= 1 (length eligible))) (mark! e 'pending-plan))
+                    ((not (linked-to? e (ev-event (car eligible)))) (mark! e 'plan-order))))))))
+        (list-sort (lambda (a b)
+                     (< (if (integer? (actor-sub (ev-actor a))) (actor-sub (ev-actor a)) -1)
+                        (if (integer? (actor-sub (ev-actor b))) (actor-sub (ev-actor b)) -1))) es))
+      statuses))
+
+  ;; ---- did this record come from that intent --------------------------------
+
+  ;; A PLAN DECLARES AN INTENT, NOT A RESULT. "Persist the plan before
+  ;; executing" means the plan says what was meant to happen; what it
+  ;; will look like is not knowable before the earlier sub-operations
+  ;; have happened. So the comparison is not payload against payload.
+  ;;
+  ;; WHICH FIELDS COME FROM THE INTENT IS A TABLE, one row per verb, and
+  ;; the table is the whole of the rule. `ord` is deliberately absent: it
+  ;; is decided by the state at the time -- which siblings were there --
+  ;; and a completion months later must compute it from the siblings it
+  ;; finds, not replay a number from a state nobody has any more. A
+  ;; record whose `ord` differs from what the plan would have produced is
+  ;; still that intent carried out.
+  ;;
+  ;; `after` IS NOT COMPARED EITHER, and for a different reason: it never
+  ;; reaches the payload at all. It is an argument to the ordering, and
+  ;; the only trace it leaves is the `ord` this rule excludes. Listing it
+  ;; would be listing a field the record does not have.
+  (define (intent-produced? intent payload)
+    (and (pair? intent) (pair? payload)
+         (case (car intent)
+           ;; (insert <parent> <after> <fields>) -> (put <fields + parent + ord>)
+           ((insert)
+            (and (eq? (car payload) (quote put))
+                 (let ((got (cadr payload)))
+                   (and (equal? (field-of got (quote parent)) (list-ref intent 1))
+                        (fields-agree? (list-ref intent 3) got)))))
+           ;; (set <id> <field> <value> [<expect>]) -> the same, verbatim
+           ((set) (equal? intent payload))
+           ((del) (equal? intent payload))
+           ((link unlink) (equal? intent payload))
+           ;; (move <id> <parent> <after>) -> (move <id> <parent> <ord>)
+           ((move)
+            (and (eq? (car payload) (quote move))
+                 (equal? (list-ref payload 1) (list-ref intent 1))
+                 (equal? (list-ref payload 2) (list-ref intent 2))))
+           ;; (tag <name>) -> (tag <name> <cut>): the cut is the moment,
+           ;; not the intent.
+           ((tag)
+            (and (eq? (car payload) (quote tag))
+                 (equal? (list-ref payload 1) (list-ref intent 1))))
+           ;; A VERB THE TABLE DOES NOT NAME IS NOT COMPARED LENIENTLY.
+           ;; This build does not know which of its payload came from the
+           ;; intent, so it cannot say the record carried the intent out.
+           (else #f))))
+
+  (define (field-of alist name)
+    (let ((e (assq name alist))) (and e (cdr e))))
+
+  ;; Insert adds only parent and ord. Extra caller fields would execute
+  ;; work the plan did not declare; field presence also distinguishes #f
+  ;; from absence. Ordering of the alist does not matter.
+  ;; THE FIELDS THE STORE PUTS IN EVERY RECORD ITSELF, named once. Three
+  ;; places need this list and they need the same one: the write path
+  ;; refuses a caller who tries to set them, the reduction reads them as
+  ;; position rather than as fields, and membership must not count them
+  ;; against a record for carrying what nobody asked it to carry. Three
+  ;; hand-written copies would agree until the day somebody added a
+  ;; fourth name -- and the one that lagged would start calling correct
+  ;; executions mismatches, which is the failure that reports a request
+  ;; as never having run.
+  (define store-supplied-fields '(parent ord))
+
+  ;; BOTH DIRECTIONS, AND THE ANSWER IS A BOOLEAN. Every field the intent
+  ;; named must be there with the value it named, and every field the
+  ;; record carries must be one the intent named -- except the ones the
+  ;; store supplies for every insert, which no intent ever states.
+  ;;
+  ;; `and`/`for-all` HAND BACK THE LAST VALUE, NOT #t. `memq` answers the
+  ;; tail it found, so this returned `(ord)` to a caller comparing against
+  ;; #t -- true enough to work everywhere the value was only tested, and
+  ;; wrong everywhere it was compared. A predicate answers a boolean.
+  (define (fields-agree? wanted got)
+    (and (for-all (lambda (f)
+                   (let ((at (assq (car f) got))) (and at (equal? (cdr at) (cdr f))))) wanted)
+         (for-all (lambda (f) (or (memq (car f) store-supplied-fields)
+                                  (assq (car f) wanted)))
+                  got)
+         #t))
+
+  ;; THE ID A SUB-OPERATION'S RECORD CREATED, derived from where the
+  ;; record sits rather than carried in it: the store derives a new
+  ;; block's id from its writer and sequence, and a second rule for the
+  ;; same derivation here would be a second supplier of every id.
+  (define (created-id event)
+    (string-append (car event) "." (number->base36 (cdr event))))
+
+  (define base36-digits "0123456789abcdefghijklmnopqrstuvwxyz")
+
+  (define (number->base36 n)
+    (if (= n 0)
+        "0"
+        (let loop ((n n) (acc (quote ())))
+          (if (= n 0)
+              (list->string acc)
+              (loop (div n 36)
+                    (cons (string-ref base36-digits (mod n 36)) acc))))))
+
+  ;; Replace every `("#%new" k)` with the id index k's applied record
+  ;; created, or answer `unbound` if any of them has no such record.
+  (define (bind-new x evidence)
+    (cond
+      ((and (pair? x) (equal? (car x) new-marker) (pair? (cdr x)))
+       (let ((e (applied-index evidence (cadr x))))
+         (if (and e (pair? (ev-payload e)) (eq? (car (ev-payload e)) 'put))
+             (created-id (ev-event e)) (quote unbound))))
+      ((pair? x)
+       (let ((a (bind-new (car x) evidence)))
+         (if (eq? a (quote unbound))
+             (quote unbound)
+             (let ((d (bind-new (cdr x) evidence)))
+               (if (eq? d (quote unbound)) (quote unbound) (cons a d))))))
+      (else x)))
+
+  ;; IT MUST NOT ASK ABOUT MEMBERSHIP, and that is not an optimisation.
+  ;; `membership` is what calls this, through `bind-new`; going back
+  ;; through `executed-member-set` -- which asks `membership` of every
+  ;; record -- would not terminate. It does not need to: what is wanted
+  ;; here is WHERE index k's record sits, and a record's position is not
+  ;; a question about whether its payload matched its plan.
+  ;;
+  ;; TWO RECORDS AT ONE INDEX BIND NOTHING. They are a contested slot,
+  ;; reported separately, and choosing either would make every payload
+  ;; that mentions the index depend on which was found first.
+  (define (applied-index evidence index)
+    (let ((at (filter (lambda (e)
+                        (and (ev-delivered? e)
+                             (eq? (ev-placement e) (quote valid-history))
+                             (not (ev-marked? e (quote superseded)))
+                             (not (ev-marked? e (quote plan-mismatch)))
+                             (eqv? (actor-sub (ev-actor e)) index)))
+                      evidence)))
+      (and (= 1 (length at)) (car at))))
 
   (define (plan-record-present? plan-event evidence)
     (exists (lambda (e)
               (and (ev-delivered? e)
                    (equal? (ev-event e) plan-event)
                    (pair? (ev-payload e))
-                   (eq? (car (ev-payload e)) 'plan)))
+                   (plan? (ev-payload e))))
             evidence))
 
   ;; The payload the plan declared for one index, or `absent`.

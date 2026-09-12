@@ -125,11 +125,54 @@
     path))
 
 (define bad 0)
-(define (want label got expect)
+(define (want-1 label got expect)
   (let ((ok (equal? got expect)))
     (unless ok (set! bad (+ bad 1)))
     (printf "~a ~a -> ~s~a\n" (if ok "ok  " "FAIL") label got
             (if ok "" (format "   WANT ~s" expect)))))
+
+;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE. Rows read an
+;; answer apart, and a seeded defect that changes the answer's SHAPE
+;; makes the accessor raise while the row is being computed -- outside
+;; anything that was catching. The file then ends where it stood, every
+;; row below goes unrun, and the runner sees no `FAIL` at all: a round
+;; scored three such defects as crashes with no failures, for answers
+;; the store had in fact got right and said plainly.
+;;
+;; BOTH SIDES, BECAUSE EITHER CAN RAISE. A row whose EXPECTATION is
+;; derived from the program's own answer raises while the expectation
+;; is built, and ends the file just the same.
+;;
+;; IT IS A MACRO FOR ONE REASON: an argument is evaluated before the
+;; call, so a procedure could not have guarded either side.
+;;
+;; IT DOES NOT COVER EVERYTHING. Top-level definitions between rows are
+;; outside it, and a raise there still ends the file.
+;; HOW MANY ROWS ACTUALLY RAN. A file that ends early still
+;; reports the failures it had already found, so a seeded defect
+;; that kills the file after a few rows is scored as caught while
+;; the rows below it never ran. The count is the only thing that
+;; tells those apart, and it has to be compared against the same
+;; file's count on unmutated code -- there is no static number to
+;; compare it with, because rows are written inside loops and case
+;; tables as well as one at a time.
+(define rows-run 0)
+
+(define-syntax want
+  (syntax-rules ()
+    ((_ label got expect)
+     (begin (set! rows-run (+ rows-run 1))
+            (want-1 label (caught got) (caught expect))))))
+
+(define-syntax caught
+  (syntax-rules ()
+    ((_ e0)
+     (guard (e (#t (list 'RAISED
+                         (if (and (condition? e) (message-condition? e))
+                             (condition-message e)
+                             e))))
+       e0))))
+
 (define d (test-dir "log6work"))
 (define A "k3m9x2qa") (define B "c9xq01mz")
 (define (rec seq deps payload)
@@ -281,31 +324,299 @@
 (want "the quarantined suffix is not delivered even though its bytes are fine"
       (deliver-with '()) (list 'delivered (list (list B 1) (list A 1))))
 
-(printf "== a delivery read failure aborts the WHOLE load ==\n")
-;; The failure must be LATE: failing the first open would let an
-;; ordinary streaming implementation pass.
-;; THE FAILING SEGMENT MUST BE A SEALED ONE. The first attempt made the
-;; HIGHEST segment unreadable, and delivery never noticed: that segment
-;; is the retained current buffer, so it is not re-read at all. Correct
-;; behaviour, wrong fixture -- and it would have read as "the abort path
-;; does not work".
+(printf "== a segment that cannot be flushed is never delivered ==\n")
+;; A SEGMENT DISCOVERY READ AND THE BARRIER CANNOT. The bytes were read
+;; and cached before the file became unreadable, so delivery could hand
+;; them out -- from a cache, with no flush behind them. A power cut would
+;; then take records a reader had already promised.
+;;
+;; THE FAILURE MUST BE LATE, or an implementation that simply stopped at
+;; the first unreadable file would pass; and the failing segment must be
+;; a SEALED one, because the highest segment is the retained current
+;; buffer and is not re-read at all. (The first version of this case made
+;; the highest one unreadable and read as "the abort path does not
+;; work".)
+;;
+;; NOTHING IS DELIVERED AT ALL. This used to deliver some records and
+;; then fail on the read, reporting `delivery-failed`; the barrier now
+;; refuses before the first callback. That is what "delivery implies
+;; durability" requires -- a reader may not hand out a record it could
+;; not flush -- and it is the stronger of the two: the earlier version
+;; had already promised some of them.
 (build!)
 (put! (string-append d "/writers/" A "/000002.sexp") (cat (rec 3 '() '(put "a.3" ()))))
 (put! (string-append d "/writers/" A "/000003.sexp") (cat (rec 4 '() '(put "a.4" ()))))
 (let* ((ls (log-open d)) (seen '()))
   ;; unreadable only after discovery has run, and sealed rather than current
   (system (string-append "chmod 000 " d "/writers/" A "/000002.sexp"))
-  (let ((r (load-deliver! ls '()
-             (lambda (w seg off seq ts actor deps payload)
-               (set! seen (cons (list w seq) seen))))))
+  (let ((r (guard (e (#t 'raised))
+             (load-deliver! ls '()
+               (lambda (w seg off seq ts actor deps payload)
+                 (set! seen (cons (list w seq) seen)))))))
     (system (string-append "chmod 644 " d "/writers/" A "/000002.sexp"))
-    (want "the load reports delivery-failed for that writer"
-          r (list 'delivery-failed A))
-    (want "records WERE provisionally delivered before the failure"
-          (> (length seen) 0) #t)
+    (want "the load fails rather than delivering what it cannot flush"
+          r 'raised)
+    (want "and not one record was handed out"
+          (length seen) 0)
     (want "and the load is aborted, not committed"
           (let ((o (load-outcome ls))) (if (pair? o) (car o) o)) 'aborted)))
 
+
+;; AND THE CASE ONLY THE BARRIER CAN SEE. The row above cannot tell
+;; "the barrier refused" from "the read failed": a sealed segment that
+;; will not open will not be read either, so both stop the load and both
+;; deliver nothing.
+;;
+;; THE HIGHEST SEGMENT IS DIFFERENT. Discovery keeps its bytes as the
+;; retained current buffer, so delivery serves them from memory and never
+;; opens the file -- the read SUCCEEDS whatever the mode bits say. Only
+;; the barrier opens it. With the open skipped, this store hands out
+;; records with no flush behind them and says nothing; a power cut then
+;; takes records a reader had promised.
+;;
+;; (The first version of the row above made this segment unreadable and
+;; read as "the abort path does not work". It was the right stimulus for
+;; the wrong question.)
+;;
+;; THE OUTCOME IS TAGGED. `'raised` as a bare answer cannot be told from
+;; a delivery that happened to return the symbol `raised`, and it says
+;; nothing about WHAT was raised -- any unrelated failure inside the
+;; guarded expression satisfies it just as well. `(returned <v>)` and
+;; `(raised <who>)` are two shapes that cannot be confused, and the
+;; second carries the condition's `who` so the row can say the failure
+;; came from the durability path rather than from anywhere.
+(define (delivery-outcome damage)
+  (let* ((ls (log-open d))
+         (seen '()))
+    (damage)
+    (guard (e (#t (list 'raised
+                        (cond ((and (condition? e) (who-condition? e)) (condition-who e))
+                              ((and (vector? e) (> (vector-length e) 0)) (vector-ref e 0))
+                              (else 'unknown))
+                        (reverse seen))))
+      (let ((r (load-deliver! ls '()
+                 (lambda (w seg off seq ts actor deps payload)
+                   (set! seen (cons (list w seq) seen))))))
+        (list 'returned (if (pair? r) (car r) r) (reverse seen))))))
+;; THE STORE THIS ROW USES, built once and described here so the two
+;; damaged rows and the healthy twin are all talking about the same
+;; three records: A holds a.1 and a.2 in segment 1 and a.3 in segment 2,
+;; and B holds b.1.
+(define (build-with-second-segment!)
+  (build!)
+  (put! (string-append d "/writers/" A "/000002.sexp")
+        (cat (rec 3 '() '(put "a.3" ())))))
+;; TWIN FIRST, so the expectation the damaged rows are measured against
+;; is a reading and not an assumption: undamaged, this store delivers
+;; these exact records. An earlier version asked only for
+;; `(> (length seen) 0)` while its label said "every record" -- which is
+;; passed by a store that delivers one of the four.
+(build-with-second-segment!)
+(define healthy-delivery (delivery-outcome (lambda () (if #f #f))))
+(want "TWIN: undamaged, the store delivers these exact records"
+      healthy-delivery
+      (list 'returned 'delivered
+            (list (list B 1) (list A 1) (list A 2) (list A 3))))
+;; THE SEGMENT DELIVERY READS FROM CACHE IS STILL FLUSHED, OR REFUSED --
+;; and the row is asked TWICE, under two different reasons for the open
+;; to fail. One error class is one branch: a barrier that propagated
+;; permission errors and quietly skipped everything else would pass a
+;; single-class row while leaving the defect exactly where it was.
+(build-with-second-segment!)
+(want "a cached segment whose file cannot be opened stops the delivery (permission)"
+      (delivery-outcome
+        (lambda () (system (string-append "chmod 000 " d "/writers/" A "/000002.sexp"))))
+      (list 'raised 'durable-error '()))
+(system (string-append "chmod 644 " d "/writers/" A "/000002.sexp"))
+;; THE SECOND CLASS IS FREE AND IT IS A DIFFERENT ONE: the file is gone
+;; rather than forbidden. Discovery has already read it, so delivery
+;; would still serve every record from the retained buffer -- which is
+;; what makes this the same question as the row above and not a test
+;; that the reader notices a missing file.
+(build-with-second-segment!)
+(want "a cached segment whose file has been removed stops the delivery (absent)"
+      (delivery-outcome
+        (lambda () (system (string-append "rm -f " d "/writers/" A "/000002.sexp"))))
+      (list 'raised 'durable-error '()))
+
+;; AND THE CLASS OF FAILURE IS NOT ALLOWED TO MATTER. The two rows above
+;; reach the barrier's open by removing the file and by forbidding it --
+;; ENOENT and EACCES. Both are things a fixture can arrange with rm and
+;; chmod, and that is exactly their limitation: an implementation that
+;; propagated those two and quietly skipped anything else would pass both
+;; rows while leaving the defect where it was. Descriptor exhaustion is
+;; the obvious third class, it is the one a busy process actually meets,
+;; and no amount of rm and chmod produces it.
+;;
+;; SO THE ERRNO IS INJECTED. `open-fail@<stage>:file=<sub>:errno=<name>`
+;; fails one open, in one stage, on one file, with a named errno, raising
+;; the same condition a real failure raises. The rows then ask the
+;; question the fixture could not: does this barrier refuse for a reason
+;; it has never seen before?
+;;
+;; A CHILD PROCESS, because THEOURGIA_INJECT is an expansion-time gate
+;; and a fault armed in this file would apply to every open in it.
+(define child6 (string-append d "/child.ss"))
+(define child6-out (string-append d "/child.out"))
+(define (write-child6!)
+  (put! child6
+        (string->utf8
+          (string-append
+            "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
+            "(define seen 0)\n"
+            "(define res\n"
+            "  (guard (e (#t (list 'raised (if (fs-error? e) (fs-error-errno e) 'other))))\n"
+            "    (let* ((ls (log-open \"" d "\"))\n"
+            "           (r (load-deliver! ls '()\n"
+            "                (lambda (w seg off seq ts actor deps payload)\n"
+            "                  (set! seen (+ seen 1))))))\n"
+            "      (list 'returned (if (pair? r) (car r) r)))))\n"
+            "(printf \"~s ~s ~s\\n\" (car res) (cadr res) seen)\n"))))
+;; THE UNARMED RUN CLEARS THE VARIABLES RATHER THAN OMITTING THEM. This
+;; fixture inherits whatever environment it was started in, and the suite
+;; runner exports the injection switch -- so a control that merely
+;; declines to SET the fault would run under whatever the parent had, and
+;; a control that is quietly armed reads as a product that ignored the
+;; fault.
+;;
+;; AND THE CHILD'S EXIT STATUS IS PART OF THE READING. A child that died
+;; before printing leaves an empty file, and an empty file parsed for
+;; three datums gives the same `unreadable` answer as a child that
+;; printed nonsense. The status tells them apart.
+(define (child6-says fault)
+  (build-with-second-segment!)
+  (write-child6!)
+  (let* ((prefix (if fault
+                     (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=" fault " ")
+                     "env -u THEOURGIA_INJECT -u THEOURGIA_FAULT -u THEOURGIA_BARRIER "))
+         (rc (system (string-append prefix "scheme --script " child6
+                                    " > " child6-out " 2>/dev/null")))
+         (text (let ((b (slurp child6-out)))
+                 (if (bytevector? b) (utf8->string b) (if (string? b) b "")))))
+    (if (not (eqv? rc 0))
+        (list 'child-failed rc text)
+        (guard (e (#t (list 'unreadable text)))
+          (let ((p (open-string-input-port text)))
+            (let* ((a (read p)) (b (read p)) (c (read p)))
+              ;; AND NOTHING AFTER THE THREE. Trailing output would mean
+              ;; the child ran further than this row believes it did.
+              (if (eof-object? (read p))
+                  (list a b c)
+                  (list 'trailing-output text))))))))
+;; THE UNARMED TWIN FIRST. It is what says the child runs at all -- an
+;; armed row reading `raised` is also what a child that cannot start
+;; produces, and the two are indistinguishable from the parent.
+(want "CONTROL: with nothing armed the child delivers every record"
+      (child6-says #f)
+      (list 'returned 'delivered 4))
+;; THE CLASSES, ONE ROW EACH. Same aim, same stage, same file -- only the
+;; reason differs, so a barrier that answered differently for one of them
+;; would be saying that some failures to make a promise are acceptable.
+;;
+;; THREE NAMES ARE NOT THE SAME CLAIM AS "ANY REASON". A list of names is
+;; a list, and an implementation that propagated exactly the names on it
+;; and skipped everything else would pass every row here while leaving
+;; the property untested by construction. That is why the qualifier also
+;; takes a NUMBER: the last two rows name classes nothing in this suite
+;; has any other way to reach -- the system-wide descriptor limit, and a
+;; device error -- and they are here to make the list stop being the
+;; thing under test.
+(for-each
+  (lambda (case)
+    (let ((name (car case)) (code (cdr case)))
+      (want (string-append "an open that fails with " name
+                           " refuses the delivery, it does not skip it")
+            (child6-says (string-append "open-fail@deliver-barrier:file=000002.sexp:errno=" name))
+            (list 'raised code 0))))
+  (list (cons "EMFILE" 24)
+        (cons "EACCES" 13)
+        (cons "ENOENT" 2)
+        (cons "23" 23)
+        (cons "5" 5)))
+;; AND THE SEAM ITSELF FIRES. An injection point that is never reached
+;; reads, in every one of the rows above, exactly like a product that
+;; refuses correctly -- both give `raised`. So the witness runs the same
+;; child against an aim that CANNOT match: the same stage and errno, a
+;; file substring no path contains. If the seam were inert this row would
+;; read the same as the three above; it must read like the control.
+(want "WITNESS: aimed at a file that does not exist in this store, nothing is injected"
+      (child6-says "open-fail@deliver-barrier:file=zzzzzz.sexp:errno=EMFILE")
+      (list 'returned 'delivered 4))
+;; AND THE STAGE QUALIFIER IS LOAD-BEARING TOO: the same aim in a stage
+;; this path never enters injects nothing.
+(want "WITNESS: the same aim in another stage injects nothing"
+      (child6-says "open-fail@snapshot:file=000002.sexp:errno=EMFILE")
+      (list 'returned 'delivered 4))
+;; AND THE CONDITION SAYS WHICH OPERATION AND WHICH FILE. Every row above
+;; reads the errno and the callback count, so all of them are satisfied by
+;; a failure that carries the right number and the wrong subject -- a
+;; fault that fired on some other file's open in the same stage, say,
+;; which is precisely the mistake a path qualifier exists to prevent and
+;; the one an armed run is least able to notice. Asking for the operation
+;; and the target makes the aim part of the reading.
+(define aimed (string-append d "/aimed.ss"))
+(define aimed-out (string-append d "/aimed.out"))
+(build-with-second-segment!)
+(put! aimed
+      (string->utf8
+        (string-append
+          "#!chezscheme\n(import (chezscheme) (theourgia ffi))\n"
+          "(define p \"" d "/writers/" A "/000002.sexp\")\n"
+          "(define (try-full)\n"
+          "  (guard (e (#t (if (fs-error? e)\n"
+          "                    (list 'raised (fs-error-op e) (fs-error-target e) (fs-error-errno e))\n"
+          "                    (list 'raised 'not-an-fs-error))))\n"
+          "    (parameterize ((theourgia-stage 'deliver-barrier))\n"
+          "      (let ((fd (fd-open p '(read)))) (fd-close fd) 'opened))))\n"
+          "(printf \"~s\\n\" (try-full))\n")))
+(want "WITNESS: the injected condition names the open, the file aimed at, and the errno"
+      (begin
+        (system (string-append "THEOURGIA_INJECT=on "
+                               "THEOURGIA_FAULT=open-fail@deliver-barrier:file=000002.sexp:errno=EMFILE "
+                               "scheme --script " aimed " > " aimed-out " 2>/dev/null"))
+        (let ((text (let ((b (slurp aimed-out)))
+                      (if (bytevector? b) (utf8->string b) (if (string? b) b "")))))
+          (guard (e (#t (list 'unreadable text)))
+            (read (open-string-input-port text)))))
+      (list 'raised 'open (string-append d "/writers/" A "/000002.sexp") 24))
+
+;; AND THE INJECTION IS SPENT WHEN IT FIRES. Every row above stops at the
+;; first exception, so none of them can tell a one-shot fault from one
+;; that fires on every matching open -- and a persistent one would take
+;; out whatever the process opened next, including a fixture's own read
+;; of the result. The witness opens the same file TWICE in one armed
+;; process: the first open must fail with the errno asked for, and the
+;; second must succeed.
+(define oneshot (string-append d "/oneshot.ss"))
+(define oneshot-out (string-append d "/oneshot.out"))
+(build-with-second-segment!)
+(put! oneshot
+      (string->utf8
+        (string-append
+          "#!chezscheme\n(import (chezscheme) (theourgia ffi))\n"
+          "(define p \"" d "/writers/" A "/000002.sexp\")\n"
+          "(define (try)\n"
+          "  (guard (e (#t (list 'raised (if (fs-error? e) (fs-error-errno e) 'other))))\n"
+          "    (parameterize ((theourgia-stage 'deliver-barrier))\n"
+          "      (let ((fd (fd-open p '(read)))) (fd-close fd) 'opened))))\n"
+          ;; SEQUENCED WITH let*, NOT PASSED AS TWO ARGUMENTS. Chez
+          ;; evaluates arguments right to left, so `(printf "~s ~s" (try)
+          ;; (try))` runs the SECOND call first -- and this row would
+          ;; then read the spent fault as the first open and the fired
+          ;; one as the second, which is exactly the picture it exists to
+          ;; rule out.
+          "(let* ((first (try)) (second (try)))\n"
+          "  (printf \"~s ~s\\n\" first second))\n")))
+(want "WITNESS: an armed open-fault fires once and is then spent"
+      (begin
+        (system (string-append "THEOURGIA_INJECT=on "
+                               "THEOURGIA_FAULT=open-fail@deliver-barrier:file=000002.sexp:errno=EMFILE "
+                               "scheme --script " oneshot " > " oneshot-out " 2>/dev/null"))
+        (let ((text (let ((b (slurp oneshot-out)))
+                      (if (bytevector? b) (utf8->string b) (if (string? b) b "")))))
+          (guard (e (#t (list 'unreadable text)))
+            (let ((p (open-string-input-port text))) (list (read p) (read p))))))
+      (list (list 'raised 24) 'opened))
 
 (printf "== L4: a reader changes nothing ==\n")
 (build!)
@@ -417,4 +728,5 @@
         (reverse seen) (list (list B 1) (list A 2))))
 
 (printf "\n~a failures\n" bad)
+(printf "rows: ~a\n" rows-run)
 (printf "log6 complete\n")

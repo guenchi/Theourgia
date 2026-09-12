@@ -34,13 +34,14 @@
 ;; reach becomes an answer with a name in it; deciding what to do with an
 ;; answer belongs to whoever asked.
 (library (theourgia rpc)
-  (export rpc-dispatch rpc-ok? rpc-verbs
+  (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           count-argument outline-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
           (theourgia store) (theourgia reduce) (theourgia log)
-          (theourgia project) (theourgia md))
+          (only (theourgia request) req-id-ok?)
+          (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
 
@@ -60,11 +61,24 @@
 
   (define (guarded thunk)
     (guard (e ((log-error? e) (describe-log-error e))
+              ;; A THROWN VALUE NEED NOT BE A CONDITION. The sexpr layer
+              ;; raises `#(sexpr-error <message> <position>)`, a vector,
+              ;; so `message-condition?` was false and the answer said
+              ;; "unexpected failure" while the thrown object was
+              ;; carrying the reason all along. This reads it.
+              ;;
+              ;; IT IS A DIAGNOSTIC IMPROVEMENT, NOT A FIX: the next
+              ;; thrown value of some other shape falls back the same
+              ;; way. What stops a caller being told a durable write
+              ;; failed is the split between committing and reporting.
               (#t (list 'error 'internal
                         (list 'condition
-                              (if (message-condition? e)
-                                  (condition-message e)
-                                  "unexpected failure")))))
+                              (cond
+                                ((and (vector? e) (= 3 (vector-length e))
+                                      (eq? (vector-ref e 0) 'sexpr-error))
+                                 (vector-ref e 1))
+                                ((message-condition? e) (condition-message e))
+                                (else "unexpected failure"))))))
       (thunk)))
 
   (define (usage form) (list 'usage form))
@@ -108,28 +122,6 @@
 
   ;; ---- argument shapes ------------------------------------------------------
 
-  ;; OPTIONS ARE PULLED OUT FIRST AND THE REST STAY POSITIONAL, so that a
-  ;; value beginning with a dash is still a value: `set x note --n` takes
-  ;; --n as the note because the option scan has already consumed the
-  ;; options it knows and stops claiming anything after them.
-  (define (take-option args name)
-    (let loop ((xs args) (kept '()) (found #f))
-      (cond
-        ((null? xs) (values found (reverse kept)))
-        ((and (not found) (string=? (car xs) name) (pair? (cdr xs)))
-         (loop (cddr xs) kept (cadr xs)))
-        (else (loop (cdr xs) (cons (car xs) kept) found)))))
-
-  ;; A FLAG TAKES NO VALUE, so it is removed wherever it sits rather
-  ;; than consuming the word after it. `take-option` would take the id as
-  ;; `--md`'s value and leave the option list looking empty.
-  (define (take-flag args name)
-    (let loop ((xs args) (kept '()) (found #f))
-      (cond
-        ((null? xs) (values found (reverse kept)))
-        ((string=? (car xs) name) (loop (cdr xs) kept #t))
-        (else (loop (cdr xs) (cons (car xs) kept) found)))))
-
   ;; A NUMBER FROM A REQUEST IS CHECKED BY SHAPE BEFORE IT IS CONVERTED.
   ;; `string->number` implements the whole of Scheme's numeric syntax, and
   ;; `#e1e99999999` is a request to build an exact integer of ten billion
@@ -152,12 +144,45 @@
 
   ;; ---- rendering ------------------------------------------------------------
 
+  ;; ONE BLOCK, ONE ROW -- WHATEVER THE TITLE CONTAINS. The write path
+  ;; refuses a title carrying a line terminator, but a record from another
+  ;; machine or an older build can hold one, and this listing put it
+  ;; through unchanged: the output then had MORE ROWS THAN BLOCKS, and
+  ;; the extra row looked exactly like a real one. A title reading
+  ;; `"Fake<newline>- zzzzzzzz.9  Phantom"` produced a row for a block
+  ;; that does not exist, and anything reading this output as text
+  ;; believed it. Measured: two records, two blocks, three rows.
+  ;;
+  ;; THE ESCAPE BELONGS TO THIS LISTING AND NOWHERE ELSE. `read` answers
+  ;; the field as it is stored, because a caller asking for the value
+  ;; wants the value; only a line-per-block rendering has a reason to
+  ;; rewrite it. It is applied HERE, at the one procedure both rows go
+  ;; through, rather than at each `put-string` -- there are two of those
+  ;; and the second is the one a later edit forgets.
+  (define (escape-one-line s)
+    (let-values (((out get) (open-string-output-port)))
+      (let loop ((i 0))
+        (if (= i (string-length s))
+            (get)
+            (let* ((c (string-ref s i)) (n (char->integer c)))
+              (cond
+                ((= n 10) (put-string out "\\n"))
+                ((= n 13) (put-string out "\\r"))
+                ((or (= n 133) (= n 8232) (= n 8233)
+                     (and (not (= n 9))
+                          (or (< n 32) (and (>= n 127) (< n 160)))))
+                 (put-string out "\\x")
+                 (put-string out (number->string n 16))
+                 (put-string out ";"))
+                (else (put-char out c)))
+              (loop (+ i 1)))))))
+
   (define (title-of state id)
     (let* ((b (state-read state id))
            (fs (and b (cdr (assq 'fields b))))
            (get (lambda (k) (let ((e (and fs (assq k fs))))
                               (and e (string? (cdr e)) (cdr e))))))
-      (or (get 'title) (get 'path) "")))
+      (escape-one-line (or (get 'title) (get 'path) ""))))
 
   ;; THE OUTLINE IS TEXT, and it is rendered here rather than by whoever
   ;; asked. A caller that received the rows and drew them itself would be
@@ -172,6 +197,14 @@
              (orphans (cdr (assq 'orphans structure))))
         (define (children-of parent)
           (filter (lambda (row) (equal? (car row) parent)) rows))
+        ;; WHAT THE TREE ALREADY DREW. A block can be both a structural
+        ;; conflict and an orphan -- a parent chain that closes on itself
+        ;; through a deleted block is one -- and `state-outline` relocates
+        ;; a cyclic row to the top, so the tree above has already printed
+        ;; it. Printing it again under `orphans:` listed it twice, and
+        ;; walking it there listed its whole subtree twice. A listing says
+        ;; where each block is, once.
+        (define drawn '())
         ;; A DEPTH LIMIT STOPS THE WALK, it does not filter the output: a
         ;; filtered listing still pays to render everything, and on a
         ;; corpus that is the difference between an outline and a dump.
@@ -189,6 +222,7 @@
                     ;; something.
                     (mark (and (= 4 (length row)) (cadddr row))))
                 (when (or (not depth-limit) (< depth depth-limit))
+                  (set! drawn (cons id drawn))
                   (put-string out (make-string (* 2 depth) #\space))
                   (put-string out "- ")
                   (put-string out id)
@@ -197,19 +231,51 @@
                   (when mark
                     (put-string out "  ")
                     (put-string out (symbol->string mark)))
+                  ;; AND IT SAYS SO IF IT IS ALSO AN ORPHAN. A block whose
+                  ;; parent chain closes on itself through a deleted block
+                  ;; is both, and the tree draws it once -- so the row the
+                  ;; tree draws is the only place left to say the second
+                  ;; thing. Without this, a self-cycle and a cycle through
+                  ;; a deleted ancestor print identically, and only the
+                  ;; second leaves the block unreachable from any root.
+                  ;; `conflicts` still reports both facts; this keeps the
+                  ;; listing from being the one view that does not.
+                  (when (member id orphans)
+                    (put-string out "  orphan"))
                   (put-string out "\n")
                   (walk id (+ depth 1)))))
             (children-of parent)))
         (walk 'root 0)
-        (unless (null? orphans)
-          (put-string out "orphans:\n")
-          (for-each (lambda (id)
-                      (put-string out "- ")
-                      (put-string out id)
-                      (put-string out "  ")
-                      (put-string out (title-of state id))
-                      (put-string out "\n"))
-                    orphans))
+        ;; AN ORPHAN IS A ROOT, AND A ROOT IS WALKED. Listing the
+        ;; orphan and stopping there drops everything hanging under it:
+        ;; delete a block and its grandchildren leave the outline
+        ;; altogether, while staying in the store and in `read`. They are
+        ;; not deleted and not unreachable -- they are exactly as
+        ;; reachable as their parent, which this section is printing --
+        ;; so a listing that omits them tells an operator the store has
+        ;; lost blocks it still holds.
+        ;;
+        ;; DEPTH 1, so a limit of one behaves here as it does at the top:
+        ;; the orphan itself is the row at depth 0.
+        ;; AND THE ORPHAN ROW OBEYS THE LIMIT THE TREE OBEYS. An orphan
+        ;; is a root, so it is a row at depth 0 -- and `--depth 0` asks
+        ;; for no rows at all. This section used to print its roots
+        ;; through the limit while the tree above printed none of its
+        ;; own, so one number meant two things in one listing.
+        (let ((left (if (and depth-limit (not (< 0 depth-limit)))
+                        '()
+                        (filter (lambda (id) (not (member id drawn))) orphans))))
+          (unless (null? left)
+            (put-string out "orphans:\n")
+            (for-each (lambda (id)
+                        (set! drawn (cons id drawn))
+                        (put-string out "- ")
+                        (put-string out id)
+                        (put-string out "  ")
+                        (put-string out (title-of state id))
+                        (put-string out "\n")
+                        (walk id 1))
+                      left)))
         (get))))
 
   ;; ---- intents --------------------------------------------------------------
@@ -224,15 +290,16 @@
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
 
-  (define (one-write store actor intent)
-    (let ((answers (with-store-write store (lambda (state view) (list intent)) actor)))
+  (define (one-write store actor intent req)
+    (let ((answers (with-store-write store (lambda (state view) (list intent))
+                                     actor req)))
       (car answers)))
 
-  (define (parse-insert store actor args)
-    (let*-values (((under rest1) (take-option args "--under"))
-                  ((after rest2) (take-option rest1 "--after"))
-                  ((title rest3) (take-option rest2 "--title"))
-                  ((text rest) (take-option rest3 "--text")))
+  (define (parse-insert store actor args req options)
+    (let ((under (argument-option options "--under"))
+          (after (argument-option options "--after"))
+          (title (argument-option options "--title"))
+          (text (argument-option options "--text")) (rest args))
       (cond
         ((not (null? rest)) (usage insert-usage))
         ((not title) (usage insert-usage))
@@ -245,10 +312,11 @@
                           (if (or (not under) (string=? under "root")) 'root under)
                           after
                           (append (list (cons 'kind 'section) (cons 'title title))
-                                  (if text (list (cons 'src text)) '()))))))))
+                                  (if text (list (cons 'src text)) '())))
+                    req)))))
 
-  (define (parse-set store actor args)
-    (let-values (((expect rest) (take-option args "--if-unchanged")))
+  (define (parse-set store actor args req options)
+    (let ((expect (argument-option options "--if-unchanged")) (rest args))
       (let ((intent
               (cond
                 ((= 3 (length rest))
@@ -258,32 +326,34 @@
                 (else #f))))
         (if (not intent)
             (usage '(set <id> <field> <value>))
-            (one-write store actor (if expect (list 'expect expect intent) intent))))))
+            (one-write store actor (if expect (list 'expect expect intent) intent) req)))))
 
-  (define (parse-move store actor args)
-    (let-values (((after rest) (take-option args "--after")))
+  (define (parse-move store actor args req options)
+    (let ((after (argument-option options "--after")) (rest args))
       (if (not (= 2 (length rest)))
           (usage '(move <id> <parent> ["--after" <id>]))
           (one-write store actor
                      (list 'move (car rest)
                            (if (string=? (cadr rest) "root") 'root (cadr rest))
-                           after)))))
+                           after)
+                     req))))
 
-  (define (parse-edge store actor verb args)
+  (define (parse-edge store actor verb args req)
     (if (not (= 3 (length args)))
         (usage (list verb '<from> '<rel> '<to>))
         (one-write store actor
-                   (list verb (car args) (string->symbol (cadr args)) (caddr args)))))
+                   (list verb (car args) (string->symbol (cadr args)) (caddr args))
+                   req)))
 
   ;; A BATCH IS ONE WRITE SESSION. Read as data by whoever holds the
   ;; bytes, handed here as a list of intents; running them one at a time
   ;; through separate sessions would let another writer interleave, and
   ;; the back-references `(from n)` would then point into a history the
   ;; author did not have.
-  (define (run-batch store actor items)
-    (list 'batch (with-store-write store (lambda (state view) items) actor)))
+  (define (run-batch store actor items req)
+    (list 'batch (with-store-write store (lambda (state view) items) actor req)))
 
-  (define (parse-batch store actor args)
+  (define (parse-batch store actor args req)
     (if (not (= 1 (length args)))
         (usage '(batch <intents>))
         (let ((data (guard (e (#t 'unreadable))
@@ -302,7 +372,8 @@
                          (if (and (= 1 (length data)) (list? (car data))
                                   (pair? (car data)) (list? (car (car data))))
                              (car data)
-                             data))))))
+                             data)
+                         req)))))
 
   ;; ---- the verbs ------------------------------------------------------------
 
@@ -313,40 +384,38 @@
   (define (verb-table)
     (list
       (cons 'init
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (null? args))
                   (usage '(init))
                   (guarded (lambda ()
                              (let ((a (store-init! store)))
                                (if (eq? (car a) 'ok) a (cons 'error (cdr a)))))))))
-      (cons 'insert (lambda (store actor args) (guarded (lambda () (parse-insert store actor args)))))
-      (cons 'set (lambda (store actor args) (guarded (lambda () (parse-set store actor args)))))
-      (cons 'move (lambda (store actor args) (guarded (lambda () (parse-move store actor args)))))
+      (cons 'insert (lambda (store actor args req options) (guarded (lambda () (parse-insert store actor args req options)))))
+      (cons 'set (lambda (store actor args req options) (guarded (lambda () (parse-set store actor args req options)))))
+      (cons 'move (lambda (store actor args req options) (guarded (lambda () (parse-move store actor args req options)))))
       (cons 'del
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (= 1 (length args)))
                   (usage '(del <id>))
-                  (guarded (lambda () (one-write store actor (list 'del (car args))))))))
-      (cons 'link (lambda (store actor args) (guarded (lambda () (parse-edge store actor 'link args)))))
-      (cons 'unlink (lambda (store actor args) (guarded (lambda () (parse-edge store actor 'unlink args)))))
-      (cons 'batch (lambda (store actor args) (guarded (lambda () (parse-batch store actor args)))))
+                  (guarded (lambda () (one-write store actor (list 'del (car args)) req))))))
+      (cons 'link (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'link args req)))))
+      (cons 'unlink (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
+      (cons 'batch (lambda (store actor args req options) (guarded (lambda () (parse-batch store actor args req)))))
       (cons 'import-md
-            (lambda (store actor args)
-              (if (not (or (= 1 (length args))
-                           (and (= 2 (length args)) (string=? (cadr args) "--allow-delete"))))
+            (lambda (store actor args req options)
+              (if (not (= 1 (length args)))
                   (usage '(import-md <dir> ["--allow-delete"]))
                   (guarded (lambda ()
                              (list 'import
                                    (import-md store (car args) actor
-                                              (= 2 (length args)))))))))
+                                              (argument-option options "--allow-delete"))))))))
       (cons 'export-md
-            (lambda (store actor args)
-              (if (not (or (= 1 (length args))
-                           (and (= 2 (length args)) (string=? (cadr args) "--with-ids"))))
+            (lambda (store actor args req options)
+              (if (not (= 1 (length args)))
                   (usage '(export-md <dir> ["--with-ids"]))
-                  (guarded (lambda () (export-md store (car args) (= 2 (length args))))))))
+                  (guarded (lambda () (export-md store (car args) (argument-option options "--with-ids")))))))
       (cons 'adopt
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (null? args))
                   (usage '(adopt))
                   (guarded (lambda ()
@@ -355,12 +424,12 @@
                                    (cons 'ok (cdr a))
                                    (cons 'error (cdr a)))))))))
       (cons 'check
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (null? args))
                   (usage '(check))
                   (guarded (lambda () (store-check store))))))
       (cons 'snapshot
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (null? args))
                   (usage '(snapshot))
                   (guarded (lambda ()
@@ -369,7 +438,7 @@
                                    (list 'ok (list 'snapshot (cadr a)) (list 'cut (caddr a)))
                                    (cons 'error (cdr a)))))))))
       (cons 'publish
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (let ((form '(publish <writer> <segment> <file> [<sha256>])))
                 (if (not (or (= 3 (length args)) (= 4 (length args))))
                     (usage form)
@@ -397,8 +466,8 @@
                                           (cons 'error
                                                 (if (eq? (car a) 'error) (cdr a) (list a)))))))))))))))
       (cons 'outline
-            (lambda (store actor args)
-              (let-values (((depth rest) (take-option args "--depth")))
+            (lambda (store actor args req options)
+              (let ((depth (argument-option options "--depth")) (rest args))
                 (cond
                   ((not (null? rest)) (usage '(outline ["--depth" <n>])))
                   ((and depth (not (count-argument depth))) (usage '(outline ["--depth" <n>])))
@@ -420,9 +489,9 @@
       ;; An order-sensitive option list is a component whose meaning
       ;; depends on where it appears.
       (cons 'read
-            (lambda (store actor args)
-              (let*-values (((md? rest1) (take-flag args "--md"))
-                            ((deep? rest) (take-flag rest1 "--recursive")))
+            (lambda (store actor args req options)
+              (let ((md? (argument-option options "--md"))
+                    (deep? (argument-option options "--recursive")) (rest args))
                 (cond
                   ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"])))
                   (md?
@@ -440,10 +509,31 @@
                             ;; reader asking for this block is asking
                             ;; what IT says, not what its heading would
                             ;; look like if the title had since changed.
+                            ;; A FIELD THAT IS NOT TEXT IS NOT TEXT. These
+                            ;; three go straight into `string-append`, and
+                            ;; a value that is not a string raised -- the
+                            ;; caller got `(error internal ...)` for a
+                            ;; record the store had applied happily. A
+                            ;; field can also be UNSETTLED: two concurrent
+                            ;; writes leave a conflict representation
+                            ;; rather than a value, which is ordinary,
+                            ;; correct data and is likewise not a string.
+                            ;; So the reader asks what it has rather than
+                            ;; assuming, in both cases.
+                            ;;
+                            ;; AND A DOCUMENT'S FRONT MATTER IS PART OF
+                            ;; ITS OWN BYTES. The README says a file-level
+                            ;; block's body is the front matter and
+                            ;; whatever sits above the first heading; this
+                            ;; read answered only the latter.
                             (let* ((fs (cdr (assq 'fields b)))
-                                   (head (let ((e (assq 'heading-src fs))) (if e (cdr e) "")))
-                                   (body (let ((e (assq 'src fs))) (if e (cdr e) ""))))
-                              (text (string-append head body)))))))))
+                                   (str (lambda (k)
+                                          (let ((e (assq k fs)))
+                                            (if (and e (string? (cdr e))) (cdr e) ""))))
+                                   (front (str 'front))
+                                   (head (str 'heading-src))
+                                   (body (str 'src)))
+                              (text (string-append front head body)))))))))
                   (deep?
                    (guarded
                      (lambda ()
@@ -459,7 +549,7 @@
                               (b (state-read state (car rest))))
                          (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
       (cons 'refs
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (= 1 (length args)))
                   (usage '(refs <id>))
                   (guarded
@@ -473,14 +563,14 @@
                                         (cadr a)))
                             a)))))))
       (cons 'search
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (= 1 (length args)))
                   (usage '(search <query>))
                   (guarded (lambda ()
                              (items (map (lambda (hit) (cons 'hit hit))
                                          (store-search store (car args)))))))))
       (cons 'log
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (or (null? args) (= 1 (length args))))
                   (usage '(log [<id>]))
                   (guarded
@@ -497,7 +587,7 @@
                                         (cadr a)))
                             a)))))))
       (cons 'tag
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (cond
                 ((null? args)
                  (guarded
@@ -515,10 +605,10 @@
                                                         (caddr t))))
                                              (store-tags store)))))))
                 ((= 1 (length args))
-                 (guarded (lambda () (one-write store actor (list 'tag (car args))))))
+                 (guarded (lambda () (one-write store actor (list 'tag (car args)) req))))
                 (else (usage '(tag [<name>]))))))
       (cons 'diff
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (= 2 (length args)))
                   (usage '(diff <cut> <cut>))
                   (guarded
@@ -526,7 +616,7 @@
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
       (cons 'conflicts
-            (lambda (store actor args)
+            (lambda (store actor args req options)
               (if (not (null? args))
                   (usage '(conflicts))
                   (guarded (lambda () (items (store-conflicts store)))))))))
@@ -545,26 +635,80 @@
   ;; ONE DISPATCH TAKES ONE LOCK, by construction rather than by
   ;; agreement: every verb below calls the same store entry point the
   ;; command line called, and those take the lock once each.
+  ;; WHICH REQUESTS CARRY AN IDENTITY INTO THE WRITE PATH. It is decided
+  ;; here rather than by each handler for the same reason the verb table
+  ;; is a list: a handler that had to declare its own trackability is a
+  ;; handler that can forget to, and forgetting looks exactly like a verb
+  ;; that is not tracked.
+  ;;
+  ;; AND IT IS A PROCEDURE, NOT A LIST, BECAUSE `tag` IS TWO REQUESTS
+  ;; UNDER ONE NAME: `tag <name>` writes a record and `tag` lists what is
+  ;; there. Only the first has anything to replay. A list of verbs got
+  ;; this wrong in both directions at once -- leaving `tag` out refused
+  ;; an identity the write path was already using, and putting it in
+  ;; would go back to accepting one silently on the listing form.
+  (define (tracked-request? verb args)
+    (case verb
+      ((insert set move del link unlink batch) #t)
+      ((tag) (= 1 (length args)))
+      (else #f)))
+
   (define (rpc-dispatch store request . rest)
-    (let ((actor (if (pair? rest) (car rest) "rpc")))
+    (cond
+      ((not (list? request)) '(error bad-request not-a-list))
+      ((null? request) '(error bad-request empty))
+      ((not (symbol? (car request))) '(error bad-request tag-not-a-symbol))
+      ((not (for-all string? (cdr request))) '(error bad-request arguments-not-strings))
+      (else
+       (let ((nodes (parse-arguments (car request) (cdr request))))
+         (if (and (pair? nodes) (eq? (car nodes) 'error)) nodes
+             (rpc-dispatch-parsed store (car request) nodes
+               (if (pair? rest) (car rest) "rpc")))))))
+
+  ;; Parsed nodes are the CLI's internal handoff. All verb arguments and
+  ;; their fingerprint are derived from the same tokenization.
+  (define (rpc-dispatch-parsed store verb nodes actor)
+    (let* ((entry (assq verb verbs))
+           (id (argument-option nodes "--req"))
+           (cursor (argument-option nodes "--cursor"))
+           (after (and cursor (parse-after cursor)))
+           (options (argument-remove nodes '("--req" "--cursor")))
+           (args (argument-positionals options)))
       (cond
-        ((not (list? request))
-         (list 'error 'bad-request 'not-a-list))
-        ((null? request)
-         (list 'error 'bad-request 'empty))
-        ((not (symbol? (car request)))
-         (list 'error 'bad-request 'tag-not-a-symbol))
-        ((not (for-all string? (cdr request)))
-         (list 'error 'bad-request 'arguments-not-strings))
-        (else
-         (let ((entry (assq (car request) verbs)))
-           (cond
-             ((not entry)
-              (list 'error 'unknown-verb (car request) (cons 'verbs (rpc-verbs))))
-             ;; `init` is the one verb that runs where there is no store
-             ;; yet; every other one is asking about a store that has to
-             ;; be there.
-             ((and (not (eq? (car request) 'init)) (no-store? store))
-              => (lambda (answer) answer))
-             (else ((cdr entry) store actor (cdr request)))))))))
+        ;; THE VERB IS SPELLED, NOT SENT BACK. It came from a caller, so it
+        ;; can be any symbol at all -- and a verb a caller got wrong is
+        ;; exactly the kind that is not wire-safe. `show me` came back as
+        ;; `show\x20;me` and the reader that had asked the question could
+        ;; not parse the answer to it. A string carries the same fact and
+        ;; survives the wire whatever it holds.
+        ((not entry)
+         (list 'error 'unknown-verb (list 'spelling (datum-spelling verb))
+               (cons 'verbs (rpc-verbs))))
+        ((or (argument-option options "--store") (argument-option options "--actor"))
+         '(error bad-request transport-option-in-rpc))
+        ((and (not (eq? verb 'init)) (no-store? store)) => (lambda (a) a))
+        ((and id (not after)) '(error bad-request req-without-cursor))
+        ((and id (not (tracked-request? verb args)))
+         (list 'error 'bad-request 'req-not-tracked verb))
+        ((and after (not id)) '(error bad-request cursor-without-req))
+        ((and id (not (req-id-ok? id))) '(error bad-request malformed-req-id))
+        ((eq? after 'malformed) '(error bad-request malformed-cursor))
+        (else ((cdr entry) store actor args
+               (and id (make-write-request actor verb (argument-strings options) id after))
+               options)))))
+
+  ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader
+  ;; implements the whole of Scheme's numeric syntax, and `#e1e99999999`
+  ;; is eleven characters asking it to build an integer of ten billion
+  ;; digits: it does not refuse, it allocates until the machine is gone,
+  ;; and no check placed after it ever runs.
+  (define (parse-after text)
+    (let loop ((i 0))
+      (cond
+        ((= i (string-length text)) 'malformed)
+        ((char=? (string-ref text i) #\:)
+         (let ((w (substring text 0 i))
+               (n (count-argument (substring text (+ i 1) (string-length text)))))
+           (if (and n (> (string-length w) 0)) (cons w n) 'malformed)))
+        (else (loop (+ i 1))))))
 )
