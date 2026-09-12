@@ -237,10 +237,13 @@ function survey(): Waiting[] {
  */
 const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
   openBlock:
-    'argued in the source, at the check itself: the waits after it are editor calls, and a ' +
-    'settings change during them shows a buffer from the store the user has left -- the wrong ' +
-    'answer to what they last asked, and nothing worse, because the document\'s path names that ' +
-    'store and a save into a differently configured one is refused by name. The comment there ' +
+    'the store is captured BEFORE the first wait and every later step uses the captured one: ' +
+    'the publication directory is built from it, so the version and its record are written under ' +
+    'the store the block was read from however the settings move meanwhile. THIS ENTRY USED TO ' +
+    'SAY the later waits were editor calls and therefore wrote nothing -- which is false: one of ' +
+    'them is chain.run(publisher.publish(...)), and it writes a markdown file and a sidecar. An ' +
+    'outside review caught the false premise. What survives is the argument above, which is ' +
+    'about WHICH store the writing goes to rather than about whether there is any. The source ' +
     'asks for a failing cell before a check is added back',
   reconcileBlock:
     'REPORTED, NOT RULED: its check sits before `chain.run` and the confirmation the user may ' +
@@ -248,6 +251,89 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
     'computed from the store the block was read from, which is where the block is -- so this may ' +
     'be right rather than merely unguarded. Raised with the main session as its own surface'
 };
+
+/*
+ * ⚠️ AND THE ONE EXEMPTION WHOSE ARGUMENT IS ABOUT WHERE THE WRITING
+ * GOES, CHECKED WHERE IT CAN BE.
+ *
+ * `openBlock` waits several times after its only generation check, and
+ * one of those waits publishes a file and a record. What makes that
+ * acceptable is that the store is captured BEFORE the first wait and the
+ * publication directory is built from the captured one, so the writing
+ * lands under the store the block was read from.
+ *
+ * ⚠️ THE BEHAVIOURAL CELL FOR THIS DOES NOT EXIST, AND HERE IS WHY,
+ * measured rather than assumed. I wrote one: open a block in store A,
+ * change the store while it is being opened, and assert the version
+ * appears under A and not under B. It passed -- and it passed just as
+ * well with the product mutated to use the LIVE store, because the
+ * unguarded stretch is a few editor calls long and a settings update
+ * cannot be timed into it. A cell that is green whether or not the
+ * defect is present is worse than no cell, so it was deleted rather than
+ * kept as a green row.
+ *
+ * What CAN be checked is the thing the argument actually rests on: that
+ * the directory is built from the captured name. That is a property of
+ * the source, so it is read from the source -- the same instrument, and
+ * the same reason, as the census below.
+ */
+describe('the block being opened is published under the store it was read from', () => {
+  it('builds the publication directory from the store captured before the first wait', () => {
+    const file = path.join(__dirname, '..', '..', '..', 'src', 'extension.ts');
+    const src = ts.createSourceFile(
+      'extension.ts',
+      fs.readFileSync(file, 'utf8'),
+      ts.ScriptTarget.ES2022,
+      true
+    );
+    let openBlock: ts.Node | undefined;
+    const find = (n: ts.Node): void => {
+      if (ts.isFunctionDeclaration(n) && n.name?.getText(src) === 'openBlock') {
+        openBlock = n;
+      }
+      ts.forEachChild(n, find);
+    };
+    find(src);
+    assert.ok(openBlock !== undefined, 'there is no openBlock in extension.ts any more');
+
+    /*
+     * THE CAPTURE, and it has to come before the first wait or it is not
+     * a capture at all.
+     */
+    const waits = waitsIn(openBlock as ts.Node).sort(
+      (a, b) => a.getStart(src) - b.getStart(src)
+    );
+    assert.ok(waits.length > 0, 'openBlock no longer waits, so this cell is about nothing');
+    const captures = within(
+      openBlock as ts.Node,
+      (n): n is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(n) && n.name.getText(src) === 'store'
+    );
+    assert.strictEqual(captures.length, 1, 'openBlock does not capture the store exactly once');
+    assert.ok(
+      captures[0].getStart(src) < waits[0].getStart(src),
+      'the store is captured after openBlock has already waited, so it is not the store the ' +
+        'block was read from'
+    );
+
+    /*
+     * AND THE DIRECTORY IS BUILT FROM IT. `storeHash(config.store)` here
+     * would be the live one -- the defect this exemption's argument
+     * denies -- and it is one token away.
+     */
+    const directories = within(
+      openBlock as ts.Node,
+      (n): n is ts.VariableDeclaration =>
+        ts.isVariableDeclaration(n) && n.name.getText(src) === 'directory'
+    );
+    assert.strictEqual(directories.length, 1, 'openBlock builds more than one directory');
+    const built = directories[0].initializer?.getText(src) ?? '';
+    assert.ok(
+      /storeHash\(\s*store\s*\)/.test(built),
+      `openBlock's publication directory is not built from the captured store: ${built}`
+    );
+  });
+});
 
 describe('every wait in the extension host knows what may have changed under it', () => {
   const waiting = survey();

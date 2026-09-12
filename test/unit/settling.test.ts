@@ -42,7 +42,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Outbox } from '../../src/outbox';
-import { Publisher } from '../../src/publication';
+import { Publisher, digestOfBytes } from '../../src/publication';
 import { Saving } from '../../src/saving';
 import { Sessions } from '../../src/sessions';
 import { SaveContext, settlerFor } from '../../src/settling';
@@ -216,22 +216,308 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ THE TWIN: the same settler, told it belongs to store B, must NOT
-   * find store A's block. Without it, a build that ignores the store
-   * hash entirely -- looking wherever the block happens to be -- passes
-   * the cell above, and that is exactly the build under repair.
+   * ⚠️ AND THE CONTEXT IN MEMORY MUST BE ABOUT THIS REQUEST'S BYTES.
+   *
+   * `pendingSaves` lives for the life of the window, survives every
+   * rebuild, and is keyed by BLOCK ID -- while the question an answer
+   * asks is "which send was this". The two are the same thing only while
+   * one store has one save of that block in flight.
+   *
+   * The sequence a review reproduced: save `a.2` in store A; change the
+   * store; save `a.2` in store B before A answers, which REPLACES the
+   * entry under that key; then A's answer arrives. A's settler finds its
+   * own request in its own queue, takes store B's context, and writes
+   * store A's cursor and acknowledgement beside STORE B's file using
+   * store B's digests -- then deletes the context, leaving B's own
+   * request with nothing to settle it. Queue and store were already
+   * bound correctly; this is the third thing the answer has to own.
+   */
+  it('ignores a context left by a different save of the same block', async () => {
+    const r = rig();
+    const { req } = await queuedBeforeWeStarted(r, A, 'a.2', 'body from A\n');
+    const theirs = await queuedBeforeWeStarted(r, B, 'a.2', 'body from B\n');
+
+    /*
+     * WHAT THE OTHER STORE'S SAVE LEFT UNDER THE SHARED KEY: its file,
+     * its digests, its block -- the same block id, which is the whole
+     * reason it collides.
+     */
+    const pendingSaves = new Map<string, SaveContext>();
+    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), '1.md');
+    const bRecord = r.publisher.sidecarOf(bFile);
+    assert.ok(bRecord !== null, 'the fixture did not publish store B’s version');
+    pendingSaves.set('a.2', {
+      blockId: 'a.2',
+      storeHash: B,
+      file: bFile,
+      rawDigest: 'digest-of-b',
+      sentDigest: 'digest-of-b-body'
+    });
+
+    const settle = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves,
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+
+    settle(req, 'w:2');
+
+    /*
+     * STORE B'S FILE IS UNTOUCHED: no cursor from another store's
+     * answer, no acknowledgement it never received.
+     */
+    const after = r.publisher.sidecarOf(bFile);
+    assert.strictEqual(
+      after?.cursor,
+      null,
+      'store A’s answer put its cursor on store B’s file'
+    );
+    assert.strictEqual(
+      after?.acknowledgedRaw,
+      null,
+      'store A’s answer acknowledged bytes store B sent'
+    );
+
+    /*
+     * AND STORE B'S CONTEXT IS STILL THERE, because nothing has answered
+     * it. Deleting it is how the defect left B's own request with
+     * nothing able to settle it.
+     */
+    assert.ok(
+      pendingSaves.has('a.2'),
+      'the other store’s save lost the record of what it had sent'
+    );
+    assert.ok(theirs.req.length > 0);
+  });
+
+  /*
+   * ⚠️ THE INPUT THE DIGEST IS BLIND TO: THE SAME BYTES, IN ANOTHER
+   * STORE.
+   *
+   * The first repair compared the bytes a send carried, which separates
+   * two sends of one block that differ in their text -- and says nothing
+   * at all about two sends that carry the SAME text to different stores.
+   * Open the block in store B, save it unchanged, and the digests agree
+   * while the contexts do not: store A's answer would take store B's
+   * context again, and write A's cursor and acknowledgement beside B's
+   * file. A review named this while the digest repair was being frozen.
+   *
+   * So the store is compared too -- a different mechanism asking a
+   * different question -- and this row is the one that only the store
+   * comparison can pass.
+   */
+  it('ignores a context left by the same bytes saved into another store', async () => {
+    const r = rig();
+    const same = 'identical body\n';
+    const { req } = await queuedBeforeWeStarted(r, A, 'a.2', same);
+    await queuedBeforeWeStarted(r, B, 'a.2', same);
+
+    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), '1.md');
+    const pendingSaves = new Map<string, SaveContext>();
+    /*
+     * STORE B'S CONTEXT, AND ITS DIGEST IS THE RIGHT ONE FOR STORE A'S
+     * REQUEST TOO -- that is the whole point: the bytes are identical,
+     * so the digest cannot tell these two sends apart.
+     */
+    pendingSaves.set('a.2', {
+      blockId: 'a.2',
+      storeHash: B,
+      file: bFile,
+      rawDigest: digestOfBytes(Buffer.from(`## Two\n${same}`, 'utf8')),
+      sentDigest: digestOfBytes(Buffer.from(same, 'utf8'))
+    });
+
+    const settle = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves,
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+
+    settle(req, 'w:2');
+
+    const after = r.publisher.sidecarOf(bFile);
+    assert.strictEqual(after?.cursor, null, 'store A’s answer put its cursor on store B’s file');
+    assert.strictEqual(
+      after?.acknowledgedRaw,
+      null,
+      'store A’s answer acknowledged bytes store B sent'
+    );
+    assert.ok(
+      pendingSaves.has('a.2'),
+      'store B’s save lost the record of what it had sent'
+    );
+  });
+
+  /*
+   * ⚠️ THE TWIN THAT RULES OUT THE CHEAPER REPAIR: ONE STORE, ONE BLOCK,
+   * TWO SENDS IN FLIGHT.
+   *
+   * Keying the memory by store and block together would make the cell
+   * above pass, and this one would still fail: nothing about the store
+   * separates two saves of the same block in one queue. The fact that
+   * does is on the entry -- the bytes it sent -- so that is what is
+   * compared, and this row is why.
+   *
+   * The second save's context is the one under the key; when the FIRST
+   * answer comes back it must not be spent on it, and the second save
+   * must still have it when its own answer arrives.
+   */
+  it('leaves the later save’s context alone when the earlier answer arrives', async () => {
+    const r = rig();
+    const first = await queuedBeforeWeStarted(r, A, 'a.2', 'first body\n');
+    const queue = r.queueOf(A);
+    /*
+     * A SECOND SEND OF THE SAME BLOCK, into the same queue, still
+     * unanswered -- and the context in memory is ITS one, because it
+     * wrote under the shared key last.
+     */
+    queue.enqueue({
+      req: 'req-second',
+      cursor: 'w:1',
+      id: 'a.2',
+      field: 'src',
+      payload: 'second body\n',
+      state: 'sent',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
+    const pendingSaves = new Map<string, SaveContext>();
+    pendingSaves.set('a.2', {
+      blockId: 'a.2',
+      storeHash: A,
+      file: first.file,
+      rawDigest: 'digest-of-the-second-raw',
+      sentDigest: digestOfBytes(Buffer.from('second body\n', 'utf8'))
+    });
+
+    const settle = settlerFor({
+      queue: r.queueOf(A),
+      storeHash: A,
+      sessionId: 'S-mine',
+      pendingSaves,
+      sessions: r.sessions,
+      publisher: r.publisher,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+    });
+
+    settle(first.req, 'w:2');
+
+    assert.ok(
+      pendingSaves.has('a.2'),
+      'the earlier answer spent the later save’s record of what it had sent'
+    );
+    assert.strictEqual(
+      pendingSaves.get('a.2')?.sentDigest,
+      digestOfBytes(Buffer.from('second body\n', 'utf8')),
+      'the memory under that key is no longer the later save’s'
+    );
+    const after = r.queueOf(A);
+    assert.strictEqual(after.find(first.req), undefined, 'the answered request was not settled');
+    assert.ok(
+      after.find('req-second') !== undefined,
+      'the unanswered second send was removed by the first answer'
+    );
+  });
+
+  /*
+   * ⚠️ AND A QUEUE THAT IS NOT THIS STORE'S IS REFUSED AT CONSTRUCTION.
+   *
+   * The move that made this module drivable also made it callable with
+   * any pair: told store B while holding store A's queue, a settler
+   * acknowledges B's matching file and removes A's request -- the very
+   * defect the module exists to repair, through its own front door. A
+   * review raised it about the move itself, so the pairing is checked
+   * where it can be: the queue's path is what the session builds for
+   * that store, or this is not that queue.
+   */
+  it('refuses a queue that is not the one this session keeps for that store', async () => {
+    const r = rig();
+    await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    const queueA = r.queueOf(A);
+    assert.throws(
+      () =>
+        settlerFor({
+          queue: queueA,
+          storeHash: B,
+          sessionId: 'S-mine',
+          pendingSaves: new Map<string, SaveContext>(),
+          sessions: r.sessions,
+          publisher: r.publisher,
+          saving: r.saving,
+          report: (notice) => r.said.push(notice),
+          unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+        }),
+      /is not the queue this session keeps for that store/,
+      'a settler was built over another store’s queue'
+    );
+  });
+
+  /*
+   * AND THE PAIRING THAT IS RIGHT IS ACCEPTED -- without this the check
+   * above passes for a build that refuses everything, which would stop
+   * every save in the extension.
+   */
+  it('accepts the queue this session keeps for that store', async () => {
+    const r = rig();
+    await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    assert.doesNotThrow(() =>
+      settlerFor({
+        queue: r.queueOf(A),
+        storeHash: A,
+        sessionId: 'S-mine',
+        pendingSaves: new Map<string, SaveContext>(),
+        sessions: r.sessions,
+        publisher: r.publisher,
+        saving: r.saving,
+        report: (notice) => r.said.push(notice),
+        unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
+      })
+    );
+  });
+
+  /*
+   * ⚠️ THE TWIN FOR THE STORE THE BLOCKS ARE FILED UNDER. The pairing
+   * check above forbids the inconsistent combination at construction, so
+   * this drives the same question through a queue that IS store B's:
+   * a settler for store B must not find store A's block.
    */
   it('does not find a block filed under another store', async () => {
     const r = rig();
     const { req } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
     /*
-     * The queue is still A's -- the request has to be findable, or this
-     * would be measuring an empty queue -- and only the store is wrong,
-     * which is the one thing under test.
+     * Store B's own queue, holding a request for the same block id and
+     * the same bytes. Only the store differs, which is the one thing
+     * under test.
      */
-    const queueA = r.queueOf(A);
+    const queueB = r.queueOf(B);
+    queueB.enqueue({
+      req,
+      cursor: 'w:1',
+      id: 'a.2',
+      field: 'src',
+      payload: 'body\n',
+      state: 'sent',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
     const settle = settlerFor({
-      queue: queueA,
+      queue: r.queueOf(B),
       storeHash: B,
       sessionId: 'S-mine',
       pendingSaves: new Map<string, SaveContext>(),
@@ -272,7 +558,14 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * about" outcome, and it is what makes the cell above discriminating
      * rather than a check that anything at all happened.
      */
-    const after = r.queueOf(A);
-    assert.strictEqual(after.find(req), undefined, 'the answered request was not released');
+    /*
+     * AND THE ENTRY IS RELEASED FROM THE QUEUE THAT HELD IT -- store
+     * B's -- because the store HAS answered it. That is the documented
+     * "nothing says which version this is about" outcome, and asserting
+     * it is what keeps the cell above from passing for a build that
+     * simply does nothing.
+     */
+    const afterB = r.queueOf(B);
+    assert.strictEqual(afterB.find(req), undefined, 'the answered request was not released');
   });
 });

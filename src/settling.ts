@@ -38,8 +38,9 @@
  * reason. `rebuild` now does the wiring and nothing else.
  */
 
+import * as path from 'path';
 import { Outbox, OutboxEntry } from './outbox';
-import { Publisher } from './publication';
+import { Publisher, digestOfBytes } from './publication';
 import { Saving, Unrecorded } from './saving';
 import { Sessions } from './sessions';
 import { Notice } from './status';
@@ -54,6 +55,13 @@ export interface SaveContext {
   file: string;
   rawDigest: string;
   sentDigest: string;
+  /*
+   * ⚠️ WHICH STORE THIS SEND WAS FOR. It is known where the context is
+   * written -- the window has a configured store at the moment it sends
+   * -- and it is the one fact that separates two sends of the same block
+   * with the SAME BYTES, which a digest cannot. See `settlerFor`.
+   */
+  storeHash: string;
 }
 
 /*
@@ -87,6 +95,41 @@ export function settlerFor(parts: SettlingParts): Settler {
   const { queue, storeHash, sessionId, pendingSaves, sessions, publisher, saving } = parts;
 
   /*
+   * ⚠️ THE QUEUE AND THE STORE HAVE TO BE THE SAME WINDOW'S.
+   *
+   * Moving this out of `extension.ts` bought a place a cell can drive --
+   * and created an interface that will accept any queue with any store
+   * hash. Told store B while holding store A's queue, a settler
+   * acknowledges B's matching file and removes A's request: the defect
+   * this module exists to repair, now reachable through its own front
+   * door. A review pointed that out about the move itself.
+   *
+   * The pairing is checkable from here, so it is checked here rather
+   * than trusted: the queue's own path is what `outboxPathFor` builds
+   * from the session and the store. The wiring in `rebuild` pairs them
+   * correctly today; this is what makes that a property of the code
+   * rather than of who happened to write the call.
+   *
+   * ⚠️ WHAT THIS CANNOT CHECK, said plainly: that the queue is not a
+   * STALE copy, and that the settler is only ever called inside
+   * `Saver.serialise`, which reloads the file after taking the lock.
+   * Both are properties of when it is called, not of what it was built
+   * with, and a settler over a stale queue writes back a copy that
+   * erases whatever another instance enqueued meanwhile. The caller
+   * that guarantees it is `Saver`, which owns the lock and hands the
+   * settler its answers; nothing else may call the returned function.
+   * Reported for the next batch.
+   */
+  const belongs = sessions.outboxPathFor(sessionId, storeHash);
+  if (path.resolve(queue.path) !== path.resolve(belongs)) {
+    throw new Error(
+      `a settler was built over ${queue.path}, which is not the queue this session keeps for ` +
+        `that store (${belongs}); the answers it settles would be recorded against another ` +
+        'store\'s files'
+    );
+  }
+
+  /*
    * THE FILE AN ANSWER IS ABOUT, WHEN THIS WINDOW NEVER SENT IT.
    *
    * A retry after a restart names a request the queue remembers and this
@@ -113,12 +156,68 @@ export function settlerFor(parts: SettlingParts): Settler {
       return undefined;
     }
     const digests = saving.recognise(file, entry.payload);
-    return digests === null ? undefined : { blockId: entry.id, file, ...digests };
+    return digests === null ? undefined : { blockId: entry.id, file, storeHash, ...digests };
+  };
+
+  /*
+   * ⚠️ AND THE CONTEXT IN MEMORY HAS TO BE ABOUT THIS SEND.
+   *
+   * `pendingSaves` lives as long as the window, survives every rebuild,
+   * and is keyed by BLOCK ID -- while what an answer asks is "which
+   * send was this". Those are the same question only while one store
+   * has one save of that block in flight. A review reproduced the rest:
+   * save a block in store A, change the store, save the SAME block in
+   * store B before A answers -- B's context replaces A's under that key
+   * -- and A's answer then wrote A's cursor and acknowledgement beside
+   * STORE B's file, using store B's digests, and deleted the context
+   * store B's own request still needed.
+   *
+   * The queue and the store were already bound. This is the third thing
+   * an answer has to own, and the fact that decides it is on the entry:
+   * `payload` is exactly what this request sent, and `sentDigest` is
+   * what the remembered context was sent for. If they disagree, the
+   * memory is somebody else's and the answer falls back to reading the
+   * block's own versions, which are filed under this settler's store.
+   *
+   * The key cannot simply become the request id: `pendingSaves` is
+   * written before `Saver.save` is called and the id is made inside it,
+   * so the caller does not have one to key by.
+   */
+  /*
+   * ⚠️ TWO DIFFERENT QUESTIONS, BECAUSE ONE OF THEM HAS A BLIND SPOT.
+   *
+   * The digest asks "were these the bytes this send carried". That is
+   * the right question for two sends of one block with different text,
+   * and it is BLIND to the case a review then named: open the same block
+   * in another store and save the SAME bytes, and the digests agree
+   * while the contexts belong to different stores. The answer would take
+   * the other store's context again -- the same poisoned record, reached
+   * through the repair.
+   *
+   * So the store is asked first and the digest second, and they are
+   * different mechanisms rather than two spellings of one: the store
+   * separates sends that differ in where they went, the digest separates
+   * sends that differ in what they carried. A single input can defeat
+   * either alone; nothing in this code defeats both.
+   *
+   * ⚠️ AND WHAT IS STILL INDISTINGUISHABLE, said rather than left to be
+   * found: the same store, the same block, the same bytes, twice in
+   * flight. Those two sends carry identical requests, so settling either
+   * against that context records the same thing about the same file --
+   * which is why this is a repetition rather than a confusion.
+   */
+  const remembered = (entry: OutboxEntry): SaveContext | undefined => {
+    const held = pendingSaves.get(entry.id);
+    if (held === undefined || held.storeHash !== storeHash) {
+      return undefined;
+    }
+    return digestOfBytes(Buffer.from(entry.payload, 'utf8')) === held.sentDigest ? held : undefined;
   };
 
   return (req: string, cursor: string | null): void => {
     const entry = queue.find(req);
-    const context = entry === undefined ? undefined : pendingSaves.get(entry.id) ?? recovered(entry);
+    const mine = entry === undefined ? undefined : remembered(entry);
+    const context = entry === undefined ? undefined : mine ?? recovered(entry);
     if (context === undefined) {
       /*
        * NOTHING IN MEMORY AND NOTHING ON DISK SAYS WHICH VERSION THIS
@@ -150,6 +249,15 @@ export function settlerFor(parts: SettlingParts): Settler {
        */
       parts.report(parts.unrecorded(context.file, recorded.because));
     }
-    pendingSaves.delete(context.blockId);
+    /*
+     * ⚠️ AND ONLY THE MEMORY THAT WAS OURS IS FORGOTTEN. The key is the
+     * block id, so deleting after a context that came from `recovered`
+     * would throw away whatever another save of the same block is still
+     * waiting to settle -- which is the second half of the defect above,
+     * reached from the other direction.
+     */
+    if (mine !== undefined) {
+      pendingSaves.delete(context.blockId);
+    }
   };
 }

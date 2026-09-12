@@ -44,7 +44,7 @@ import {
   SHOW_STATUS
 } from './commands';
 import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
-import { settlerFor } from './settling';
+import { SaveContext, settlerFor } from './settling';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -262,7 +262,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * and the cursor; the record beside the file needs the file and the
    * digests, and only the handler that decided to send knows them.
    */
-  const pendingSaves = new Map<string, { blockId: string; file: string; rawDigest: string; sentDigest: string }>();
+  /*
+   * ⚠️ IT OUTLIVES EVERY REBUILD AND IS KEYED BY BLOCK ID, so an entry
+   * in it may have been written by a send to a different store. What
+   * decides whether it belongs to an answer is inside the context -- the
+   * store it was sent for and the bytes it carried -- and `settlerFor`
+   * asks both. The key cannot be the request id: this is written before
+   * `Saver.save` is called, and the id is made inside it.
+   */
+  const pendingSaves = new Map<string, SaveContext>();
   /*
    * X1c REPLACED THE IN-MEMORY BASELINE. What a save is measured against
    * now lives beside the file, on disk, in `<n>.md.meta` -- so it survives
@@ -883,6 +891,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     pendingSaves.set(sidecar.blockId, {
       blockId: sidecar.blockId,
+      storeHash: storeHash(config.store),
       file,
       rawDigest: decision.rawDigest,
       sentDigest: decision.sentDigest
