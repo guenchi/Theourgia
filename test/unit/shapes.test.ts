@@ -854,10 +854,17 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * could be read as the requests the sentence before them is about --
    * the ones nobody could account for, or the ones carried across on an
    * earlier run. What is in this window's queue is not ambiguous.
+   *
+   * ⚠️ AND IT PROMISES AN ATTEMPT, NOT AN OUTCOME. Naming the place let
+   * the verb overstate: a save stops at the first request it cannot
+   * settle, so "everything ... goes out with the next save" was false
+   * for any window that already holds an unresolved one. The behaviour
+   * that sentence contradicted has cells of its own in `saver.test.ts`;
+   * this is the report agreeing with them.
    */
   const ADVICE =
-    ' Everything now in this window\'s queue goes out with the next save, or run "theourgia: ' +
-    'Retry Pending Saves" to send it now.';
+    ' The next save will try this window\'s queue, or run "theourgia: Retry Pending Saves" to ' +
+    'try it now.';
   const ADVICE_AFTER: Record<string, string> = { imported: ADVICE, movedButUnmarked: ADVICE };
 
   /*

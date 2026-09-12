@@ -862,14 +862,25 @@ export function adoptedNotice(
      * those turn out to have arrived"; and after the sentence about
      * requests carried across on an earlier run, where "arrived" does
      * not say arrived WHERE, or WHEN. A description picks its referent
-     * out of the paragraph and can lose. A place cannot: what is in this
-     * window's queue is exactly what the next save sends, and every
-     * reading the two sentences above invite is about something that is
+     * out of the paragraph and can lose. A place cannot: every reading
+     * the two sentences above invite is about something that is
      * somewhere else. Found in review.
+     *
+     * ⚠️ AND IT SAYS WHAT IS TRIED, NOT WHAT IS ACHIEVED. Naming the
+     * place fixed the subject and then let the verb overstate:
+     * "everything now in this window's queue goes out with the next
+     * save" is a promise this layer cannot keep. A save works through
+     * the queue from the front and STOPS at the first request it cannot
+     * settle -- deliberately, so that nothing goes out past an
+     * unresolved one, and `saver.test.ts` pins that in "holds everything
+     * behind an entry nobody can resolve" and "carries on past a settled
+     * entry and stops at one that was kept". So a window that already
+     * holds an unresolved request takes the imported ones no further,
+     * and the sentence would have been false about exactly the user
+     * whose queue is already in trouble. Found in review.
      */
     parts.push(
-      `Everything now in this window's queue goes out with the next save, or run ` +
-        `"${RETRY_OUTBOX.title}" to send it now.`
+      `The next save will try this window's queue, or run "${RETRY_OUTBOX.title}" to try it now.`
     );
   }
   /*
