@@ -302,6 +302,46 @@ export function newerEvent(held: string | null, arriving: string): boolean {
   return Number.isFinite(seq) && Number.isFinite(heldSeq) && seq >= heldSeq;
 }
 
+/*
+ * WHERE A VERSION'S RECORD LIVES. One spelling, because a reader that
+ * looked somewhere else than the writer is the shape this batch has
+ * already met twice -- once with a field name and once with a queue
+ * path, both of which read as "there is nothing there".
+ */
+export function sidecarPathOf(file: string): string {
+  return `${file}.meta`;
+}
+
+/*
+ * THE ONLY WAY A RECORD IS WRITTEN, AND IT IS NEVER TRUNCATED.
+ *
+ * `writeText` opens for writing, which empties the file first: a process
+ * stopped in that window leaves a record nothing can read, and an
+ * unreadable record makes its file count as absent -- it vanishes from
+ * the draft listing, so surviving work becomes invisible through its own
+ * bookkeeping. A temporary file renamed into place is either the old
+ * record or the new one and never neither.
+ *
+ * THE BYTES ARE ON THE DEVICE BEFORE THE RENAME, and the directory entry
+ * after it, for the reason the outbox does the same: a rename decides
+ * what a reader sees and says nothing about what survives a machine
+ * losing power.
+ *
+ * ⚠️ IT IS A FUNCTION RATHER THAN A METHOD BECAUSE IT HAS TWO CALLERS.
+ * `saving.ts` wrote the record with a bare `writeText` -- the exact
+ * truncation this paragraph forbids -- while the comment explaining why
+ * that is unsafe sat in this file, on the other implementation. A rule
+ * stated in one place and enforced in one of two is a rule half the code
+ * does not have.
+ */
+export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): void {
+  const meta = sidecarPathOf(file);
+  const temporary = `${meta}.${process.pid}.tmp`;
+  files.writeDurably(temporary, `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
+  files.rename(temporary, meta);
+  files.syncDirectory(path.dirname(meta));
+}
+
 export class Publisher {
   /*
    * `files` and `documents` are both handed in: this does not need to
@@ -317,7 +357,7 @@ export class Publisher {
   }
 
   private metaOf(file: string): string {
-    return `${file}.meta`;
+    return sidecarPathOf(file);
   }
 
   private nextVersion(directory: string): number {
@@ -326,6 +366,20 @@ export class Publisher {
       n += 1;
     }
     return n;
+  }
+
+  /*
+   * THE NEWEST VERSION IN A DIRECTORY, or `null` when there is none.
+   *
+   * ⚠️ IT IS PUBLIC BECAUSE AN ANSWER CAN OUTLIVE THE WINDOW THAT SENT
+   * IT. A retry after a restart names a request and no file; the only
+   * thing that can say which file it was about is the block's own
+   * directory, and the newest version in it is the one a save was sent
+   * from. Whether that version is really the one is not decided here --
+   * `saving.recognise` decides it by comparing the bytes.
+   */
+  public latestIn(directory: string): string | null {
+    return this.latestFile(directory);
   }
 
   private latestFile(directory: string): string | null {
@@ -342,25 +396,11 @@ export class Publisher {
   }
 
   /*
-   * THE RECORD IS REPLACED, NEVER TRUNCATED IN PLACE.
-   *
-   * `writeText` opens for writing, which empties the file first: a
-   * process that stops there leaves a record nothing can read -- and an
-   * unreadable record made `standingOf` answer `absent` and `draftsIn`
-   * skip the file, so surviving work became invisible. A temporary file
-   * renamed into place is either the old record or the new one.
-   *
-   * THE BYTES ARE ON THE DEVICE BEFORE THE RENAME, and the directory
-   * entry after it, for the reason the outbox does the same: a rename
-   * decides what a reader sees and says nothing about what survives a
-   * machine losing power.
+   * Every record this class writes goes through `writeSidecar`, which
+   * says why it is a rename and not a write.
    */
   private write(file: string, sidecar: Sidecar): void {
-    const meta = this.metaOf(file);
-    const temporary = `${meta}.${process.pid}.tmp`;
-    this.files.writeDurably(temporary, `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
-    this.files.rename(temporary, meta);
-    this.files.syncDirectory(path.dirname(meta));
+    writeSidecar(this.files, file, sidecar);
   }
 
   /*
@@ -483,11 +523,23 @@ export class Publisher {
      * made every version a draft from the moment it was written, before
      * the user had touched it. (§12.19.2's own rule names both digests.)
      *
+     * ⚠️ BUT `written` STOPS BEING THE BASELINE THE MOMENT THE STORE
+     * ANSWERS. Accepting EITHER digest for ever hid a real unsent edit:
+     * publish, edit the body, save, and the store now holds the new
+     * body; type the ORIGINAL text back in and the file matches
+     * `written` again, so the block reported nothing pending while the
+     * store held something else. The bytes in the file differ from the
+     * bytes the store has -- that is a draft, and it is the one a user
+     * is least likely to suspect, because they got there by undoing.
+     *
+     * So `acknowledged-raw` REPLACES `written` once it exists, rather
+     * than joining it.
+     *
      * A `local-only` VERSION IS ALWAYS ONE, whatever its digests say:
      * its baseline came from the file rather than from an answer.
      */
-    const draft =
-      sidecar.localOnly || (digest !== sidecar.acknowledgedRaw && digest !== sidecar.written);
+    const baseline = sidecar.acknowledgedRaw ?? sidecar.written;
+    const draft = sidecar.localOnly || digest !== baseline;
     return { kind: 'published', draft };
   }
 

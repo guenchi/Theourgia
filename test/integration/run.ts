@@ -34,6 +34,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
@@ -63,8 +64,46 @@ function resolveExecutable(reported: string): string {
   );
 }
 
+/*
+ * WHERE THE TEST HOST'S PROFILE GOES, AND WHY IT IS NOT SIMPLY BESIDE
+ * THE REPOSITORY.
+ *
+ * The editor puts a unix socket inside the profile -- `1.13-main.sock`
+ * -- and a unix socket path is limited to about 104 bytes. Measured: a
+ * checkout at /Users/<u>/Workshop/theourgia-vsc gives a 75-byte socket
+ * path and works; the same code run from a git worktree under a
+ * session's scratchpad gave `listen EINVAL: invalid argument ...
+ * 1.13-main.sock` and the run died before a single cell, reported only
+ * as `Test run failed with code 1`.
+ *
+ * So the candidates are tried shortest-first and the chosen one is
+ * checked, with a sentence that says what is wrong. A limit that shows
+ * up as EINVAL from inside the editor is a limit nobody will diagnose
+ * from here.
+ */
+const SOCKET_ALLOWANCE = 24;
+const SOCKET_LIMIT = 104;
+
+function chooseProfile(root: string): string {
+  const candidates = [
+    path.resolve(root, '.vscode-test', 'user-data'),
+    path.join(os.tmpdir(), 'theourgia-vsc-test-profile')
+  ];
+  for (const candidate of candidates) {
+    if (candidate.length + SOCKET_ALLOWANCE <= SOCKET_LIMIT) {
+      return candidate;
+    }
+  }
+  throw new Error(
+    `no place for the test host's profile is short enough: the editor puts a socket inside it and ` +
+      `the path may not exceed about ${SOCKET_LIMIT} bytes. Tried ${candidates.join(' and ')}. ` +
+      'Run from a shorter path, or set TMPDIR to one.'
+  );
+}
+
 async function main(): Promise<void> {
   const root = path.resolve(__dirname, '..', '..', '..');
+  const profile = chooseProfile(root);
   try {
     const reported = await downloadAndUnzipVSCode();
     const executable = resolveExecutable(reported);
@@ -72,7 +111,34 @@ async function main(): Promise<void> {
       vscodeExecutablePath: executable,
       extensionDevelopmentPath: root,
       extensionTestsPath: path.resolve(__dirname, 'index'),
-      launchArgs: ['--disable-extensions', '--disable-gpu', '--no-sandbox'],
+      /*
+       * ⚠️ ITS OWN USER DATA DIRECTORY, AND ITS OWN EXTENSIONS
+       * DIRECTORY.
+       *
+       * Without them the test host tries to claim the same instance as
+       * whatever VS Code the developer has open, and refuses to start:
+       * `Running extension tests from the command line is currently only
+       * supported if no other instance of Code is running`. That is not
+       * a failing cell and it is not a passing one -- it is the suite
+       * not running at all, on a machine where somebody is working,
+       * which is every machine this is ever run on. A suite that can
+       * only be run by closing the editor is a suite that stops being
+       * run.
+       *
+       * The directory is beside the downloaded editor rather than in the
+       * repository, and is deliberately NOT cleaned between runs: a
+       * fresh profile costs a first-run window every time, and nothing
+       * these cells assert depends on what is in it.
+       */
+      launchArgs: [
+        '--disable-extensions',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--user-data-dir',
+        profile,
+        '--extensions-dir',
+        path.join(profile, 'extensions')
+      ],
       extensionTestsEnv: {
         THEOURGIA_CORE: process.env.THEOURGIA_CORE ?? '',
         THEOURGIA_LIBDIRS: process.env.THEOURGIA_LIBDIRS ?? '',

@@ -48,6 +48,7 @@ function report(entry) {
  * do exactly that, and they must not depend on the product existing.
  */
 let product = null;
+let core = null;
 function load() {
   if (product === null) {
     product = {
@@ -55,7 +56,8 @@ function load() {
       publication: require(path.join(__dirname, '..', '..', 'src', 'publication.js')),
       saving: require(path.join(__dirname, '..', '..', 'src', 'saving.js')),
       outbox: require(path.join(__dirname, '..', '..', 'src', 'outbox.js')),
-      sessions: require(path.join(__dirname, '..', '..', 'src', 'sessions.js'))
+      sessions: require(path.join(__dirname, '..', '..', 'src', 'sessions.js')),
+      activate: require(path.join(__dirname, '..', '..', 'src', 'activate.js'))
     };
   }
   return product;
@@ -122,10 +124,28 @@ async function main() {
           report({ step: 'sleep', ms: argument });
           break;
         case 'beginSession': {
+          /*
+           * ⚠️ THROUGH THE PRODUCT'S OWN ENTRY, AND NOTHING ELSE.
+           *
+           * This used to call `sessions.begin()` directly -- one step,
+           * innocuous-looking, and the extension did not do it. Every
+           * two-process cell therefore had a `session.json` that the
+           * real thing never wrote, and the missing wiring was invisible
+           * for as long as the harness kept covering for it.
+           *
+           * Whatever `activateCore` forgets, this forgets too. That is
+           * the only arrangement in which these cells say anything about
+           * the extension.
+           */
           const p = load();
-          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
-          const identity = sessions.begin(argument.sessionId, argument.stores || []);
-          report({ step: 'beginSession', identity });
+          core = p.activate.activateCore({
+            files: p.fsops.nodeFileOps,
+            globalStorage: storage,
+            documents: { isOpen: () => false },
+            stores: argument.stores || [],
+            sessionId: argument.sessionId
+          });
+          report({ step: 'beginSession', identity: core.identity });
           break;
         }
         case 'publish': {
@@ -174,8 +194,11 @@ async function main() {
         }
         case 'enqueue': {
           const p = load();
-          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
-          const outbox = new p.outbox.Outbox(sessions.outboxPathFor(argument.sessionId));
+          const sessions = core ? core.sessions : new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const queue = core
+            ? core.outboxPath(argument.store || '/stores/one')
+            : sessions.outboxPathFor(argument.sessionId);
+          const outbox = new p.outbox.Outbox(queue);
           outbox.load();
           outbox.setCursor('w:7');
           outbox.enqueue({
@@ -189,19 +212,26 @@ async function main() {
             lastError: null,
             importedBy: null
           });
-          report({ step: 'enqueue', file: sessions.outboxPathFor(argument.sessionId), count: outbox.entries.length });
+          report({ step: 'enqueue', file: queue, count: outbox.entries.length });
           break;
         }
         case 'countQueue': {
           const p = load();
           const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
-          const outbox = new p.outbox.Outbox(sessions.outboxPathFor(argument));
-          let count = -1;
-          try {
-            outbox.load();
-            count = outbox.entries.length;
-          } catch (e) {
-            count = -1;
+          /*
+           * COUNTED THE WAY THE LISTING COUNTS, across every store this
+           * session holds a queue for -- asking one hard-coded path is
+           * how a real queue read as empty.
+           */
+          let count = 0;
+          for (const file of sessions.outboxPathsFor(argument)) {
+            const outbox = new p.outbox.Outbox(file);
+            try {
+              outbox.load();
+              count += outbox.entries.length;
+            } catch (e) {
+              count += 1;
+            }
           }
           report({ step: 'countQueue', sessionId: argument, count });
           break;

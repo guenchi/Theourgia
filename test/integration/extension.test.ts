@@ -81,16 +81,23 @@ describe('the extension inside an editor', function () {
     store?.dispose();
   });
 
-  it('registers the commands it contributes', async () => {
+  /*
+   * THE LIST COMES FROM THE MANIFEST THE HOST LOADED, not from a list
+   * written here. A list written here is silent about the command
+   * somebody added and never registered, and that silence is what let a
+   * refusal tell the user to run "Reconcile Block" for as long as it
+   * did: nothing declared it, nothing registered it, and this cell --
+   * naming four commands, all of which were fine -- passed.
+   */
+  it('registers every command its manifest declares', async () => {
+    const extension = vscode.extensions.getExtension('theourgia.theourgia');
+    const declared = (
+      extension?.packageJSON?.contributes?.commands as Array<{ command: string }> | undefined
+    )?.map((c) => c.command);
+    assert.ok(declared !== undefined && declared.length > 0, 'the manifest declares no commands');
     const commands = await vscode.commands.getCommands(true);
-    for (const name of [
-      'theourgia.refreshOutline',
-      'theourgia.openBlock',
-      'theourgia.retryOutbox',
-      'theourgia.showStatus'
-    ]) {
-      assert.ok(commands.includes(name), `${name} was not registered`);
-    }
+    const missing = declared.filter((name) => !commands.includes(name));
+    assert.deepStrictEqual(missing, [], 'these commands are in the palette and do nothing');
   });
 
   it('opens a block into a markdown buffer holding its heading and body', async () => {

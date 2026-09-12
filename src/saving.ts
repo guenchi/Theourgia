@@ -33,7 +33,14 @@
  */
 
 import { FileOps } from './fsops';
-import { digestOfBytes, newerEvent, Sidecar, sidecarFromDisk, sidecarToDisk } from './publication';
+import {
+  digestOfBytes,
+  newerEvent,
+  Sidecar,
+  sidecarFromDisk,
+  sidecarPathOf,
+  writeSidecar
+} from './publication';
 
 export interface SaveDocument {
   file: string;
@@ -101,6 +108,68 @@ export type SaveDecision =
 export type AnswerRecording =
   | { dequeued: true }
   | { dequeued: false; because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' };
+
+/*
+ * CRLF FOLDED TO LF. Comparing two texts for equality of CONTENT rather
+ * than of line endings is what this is for; it is never used on bytes
+ * that are about to be sent, because what goes out keeps the block's own
+ * line endings.
+ */
+function foldEol(text: string): string {
+  return text.replace(/\r\n/g, '\n');
+}
+
+/*
+ * WHERE A POSITION IN THE FOLDED TEXT FALLS IN THE ORIGINAL.
+ *
+ * Folding is not length-preserving, so an index into the folded text
+ * cannot be used on the original: slicing at it cuts a CRLF in half for
+ * every line ending before it. This walks the original one character --
+ * or one CRLF pair -- at a time, counting folded characters, and returns
+ * the index in the ORIGINAL at which that many have gone by. `null`
+ * means the text ran out first, which only happens when the caller did
+ * not check that the folded text begins with the folded prefix.
+ */
+function prefixEndOf(text: string, folded: number): number | null {
+  let at = 0;
+  let counted = 0;
+  while (counted < folded) {
+    if (at >= text.length) {
+      return null;
+    }
+    at += text[at] === '\r' && text[at + 1] === '\n' ? 2 : 1;
+    counted += 1;
+  }
+  return at;
+}
+
+/*
+ * THE BODY A TEXT WOULD SEND, GIVEN THE RECORD BESIDE IT, or `null` when
+ * it does not begin with the heading that record was split from.
+ *
+ * IT IS ONE FUNCTION BECAUSE THERE ARE TWO CALLERS. `decide` asks it
+ * about a buffer being saved; `recognise` asks it about a file on disk,
+ * to find out whether that file holds the body a request already sent.
+ * A second copy of this split would be a second place for the EOL
+ * handling to be subtly different, and the two answers would then
+ * disagree about what was sent -- which is unobservable from either
+ * side.
+ *
+ * AND WHETHER THE BODY WAS NORMALISED IS ABOUT THE BODY. It was computed
+ * from the whole snapshot, so a document whose heading used CRLF and
+ * whose body did not announced a normalisation that never touched a byte
+ * of what was sent.
+ */
+function bodyOf(text: string, sidecar: Sidecar): { body: string; normalised: boolean } | null {
+  const wanted = foldEol(sidecar.prefix);
+  const end = foldEol(text).startsWith(wanted) ? prefixEndOf(text, wanted.length) : null;
+  if (end === null) {
+    return null;
+  }
+  const body = text.slice(end);
+  const normalised = !sidecar.bodyHasCrlf && body.includes('\r\n');
+  return { body: normalised ? foldEol(body) : body, normalised };
+}
 
 export class Saving {
   private readonly files: FileOps;
@@ -196,14 +265,37 @@ export class Saving {
      * CRLF is sent verbatim; the prefix's line endings say nothing
      * about the body's.
      */
-    const normalised = !sidecar.bodyHasCrlf && snapshot.includes('\r\n');
-    const text = normalised ? snapshot.replace(/\r\n/g, '\n') : snapshot;
-    const prefix = normalised ? sidecar.prefix.replace(/\r\n/g, '\n') : sidecar.prefix;
-
-    if (!text.startsWith(prefix)) {
+    /*
+     * ⚠️ AND THE COMPARISON IS ALWAYS EOL-AGNOSTIC, WHICH IT WAS NOT.
+     * Normalising only when the block's own body had no CRLF left two
+     * shapes refusing a save as "the heading changed" when the user had
+     * changed nothing:
+     *
+     *   - the record holds a CRLF prefix (the version was published
+     *     while the editor was writing CRLF) and the buffer is now LF:
+     *     `bodyHasCrlf` is false but the snapshot has no CRLF either, so
+     *     nothing is normalised and a CRLF prefix is compared with LF
+     *     text;
+     *   - `bodyHasCrlf` is true, so normalisation is off by rule, and
+     *     the buffer's line endings differ from the record's in either
+     *     direction.
+     *
+     * A heading's line endings are the editor's business, not the
+     * user's: they are not something anybody typed, so they cannot be
+     * the evidence that the heading was edited. The comparison is made
+     * on both sides with CRLF folded to LF, always.
+     *
+     * THE BODY IS THEN CUT OUT OF THE ORIGINAL TEXT, not out of the
+     * folded one, so a block whose stored body really does use CRLF is
+     * still sent verbatim. `prefixEndOf` walks the original counting
+     * folded characters, which is the only way to turn a position in one
+     * into a position in the other.
+     */
+    const split = bodyOf(snapshot, sidecar);
+    if (split === null) {
       return { send: false, refusal: { because: 'prefix-changed', prefix: sidecar.prefix } };
     }
-    const src = text.slice(prefix.length);
+    const { body: src, normalised } = split;
     return {
       send: true,
       src,
@@ -211,6 +303,76 @@ export class Saving {
       sentDigest: digestOfBytes(Buffer.from(src, 'utf8')),
       normalised,
       intent: { verb: 'set', field: 'src', expectation: null }
+    };
+  }
+
+  /*
+   * X1c ⑨: AN ANSWER TO A REQUEST THIS WINDOW DID NOT SEND.
+   *
+   * A retry after a restart carries a request the queue remembers and
+   * this process does not: nothing in memory says which file it was
+   * about, so the answer was released and NOTHING WAS RECORDED. The
+   * store had the bytes and the record beside the file went on saying it
+   * did not, so that block reported unsent work for ever -- and saving
+   * it again would send bytes the store already has under a new request.
+   * The comment that described this called it "the file is judged a
+   * draft by its digests", which is true and is the defect.
+   *
+   * IT CAN BE RECOVERED WITHOUT GUESSING. The queue kept the text that
+   * was sent. If the file still splits -- against its own recorded
+   * heading -- into exactly that text, then these bytes are the bytes
+   * the store acknowledged, and the digests can be computed from what is
+   * here rather than remembered. If it does not, the user has edited
+   * since, and the answer is `null`: the caller then does what it did
+   * before, which is the safe direction.
+   *
+   * ⚠️ IT DOES NOT WRITE. Recording goes through `recordAnswer` like
+   * every other acknowledgement, so the order -- record first, entry
+   * second -- stays in one place. A function that both recognised and
+   * recorded would be a second critical section. (§12.7.4, C7)
+   */
+  public recognise(file: string, sentText: string): { rawDigest: string; sentDigest: string } | null {
+    const meta = sidecarPathOf(file);
+    if (!this.files.exists(meta) || !this.files.exists(file)) {
+      return null;
+    }
+    /*
+     * EVERY READ HERE IS GUARDED, because this runs inside the settler.
+     * A throw from it would escape into the Saver's answer handling,
+     * where the request has been answered and the entry has not been
+     * removed -- and the one thing this function must not do is turn a
+     * question it could not answer into a failure of the save it was
+     * asked about. `null` means "cannot say", which is what the caller
+     * already knows how to do.
+     */
+    let read;
+    try {
+      read = sidecarFromDisk(this.files.readText(meta));
+    } catch (e) {
+      return null;
+    }
+    if (!read.read || read.sidecar.phase !== 'published' || read.sidecar.unresolved) {
+      return null;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = this.files.readBytes(file);
+    } catch (e) {
+      return null;
+    }
+    let text: string;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (e) {
+      return null;
+    }
+    const split = bodyOf(text, read.sidecar);
+    if (split === null || split.body !== sentText) {
+      return null;
+    }
+    return {
+      rawDigest: digestOfBytes(bytes),
+      sentDigest: digestOfBytes(Buffer.from(sentText, 'utf8'))
     };
   }
 
@@ -236,7 +398,7 @@ export class Saving {
     answer: { req: string; cursor: string; rawDigest: string; sentDigest: string; mismatch: boolean },
     dequeue: () => void = () => undefined
   ): AnswerRecording {
-    const meta = `${file}.meta`;
+    const meta = sidecarPathOf(file);
     if (!this.files.exists(meta)) {
       return { dequeued: false, because: 'not-acknowledged' };
     }
@@ -250,10 +412,7 @@ export class Saving {
        * can settle that by retrying, so the entry stays and the file is
        * marked for a person to look at. (§12.9)
        */
-      this.files.writeText(
-        meta,
-        `${JSON.stringify(sidecarToDisk({ ...read.sidecar, unresolved: true }), null, 2)}\n`
-      );
+      writeSidecar(this.files, file, { ...read.sidecar, unresolved: true });
       return { dequeued: false, because: 'req-mismatch' };
     }
     const here = this.files.exists(file) ? digestOfBytes(this.files.readBytes(file)) : null;
@@ -279,19 +438,28 @@ export class Saving {
      * that dequeued afterwards would put the order in a second place,
      * and nothing could observe which happened first.
      */
-    this.files.writeText(
-      meta,
-      `${JSON.stringify(
-        sidecarToDisk({
-          ...read.sidecar,
-          acknowledgedRaw: answer.rawDigest,
-          sent: answer.sentDigest,
-          cursor: answer.cursor
-        }),
-        null,
-        2
-      )}\n`
-    );
+    /*
+     * THROUGH THE SAME DOOR AS EVERY OTHER RECORD. This was a bare
+     * `writeText` -- a truncating rewrite of the one file that says what
+     * this version was based on, with the paragraph forbidding exactly
+     * that sitting on the other implementation in publication.ts.
+     */
+    /*
+     * AND `local-only` IS CLEARED, BECAUSE IT IS NO LONGER TRUE. It says
+     * the baseline came from the file rather than from an answer and the
+     * store has therefore never seen these bytes -- which an
+     * acknowledgement of them is precisely the refutation of. Leaving it
+     * set made every reconciled version a draft for ever: the user
+     * resolved the conflict, saved, the store took it, and the block
+     * went on reporting unsent work with nothing they could do about it.
+     */
+    writeSidecar(this.files, file, {
+      ...read.sidecar,
+      acknowledgedRaw: answer.rawDigest,
+      sent: answer.sentDigest,
+      cursor: answer.cursor,
+      localOnly: false
+    });
     dequeue();
     return { dequeued: true };
   }

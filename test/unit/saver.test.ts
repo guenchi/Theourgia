@@ -21,6 +21,21 @@
  */
 
 import * as assert from 'assert';
+
+/*
+ * SETTLING, FOR CELLS THAT ARE NOT ABOUT THE ORDER.
+ *
+ * The Saver no longer removes an answered entry itself: whoever builds
+ * one has to say what settling means, because the order -- write the
+ * record beside the file, THEN remove the request -- has to live in one
+ * named place and the Saver is not it. These cells are about sending and
+ * retrying rather than about that order, so they settle the plain way;
+ * the cells that ARE about it are in answering.test.ts, where settling
+ * goes through `Saving.recordAnswer`.
+ */
+function settling(outbox: Outbox): (req: string, cursor: string | null) => void {
+  return (req, cursor) => outbox.resolve(req, cursor);
+}
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -48,7 +63,7 @@ function rig(calls: ScriptedCall[], outboxFile?: string): Rig {
   const outbox = new Outbox(outboxFile ?? core.outboxFile());
   outbox.load();
   const client = new Client(new CliTransport(core.config(), core.env()));
-  return { core, outbox, saver: new Saver(client, outbox) };
+  return { core, outbox, saver: new Saver(client, outbox, settling(outbox)) };
 }
 
 function setCalls(core: FakeCore): string[][] {
@@ -125,7 +140,7 @@ describe('S1 a save is one set, carrying a request id and a cursor', () => {
      */
     outbox.setCursor('w:7');
     fs.chmodSync(blocked, 0o500);
-    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox);
+    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox));
     try {
       await assert.rejects(
         () => saver.save('a.2', 'src', 'body\n'),
@@ -164,7 +179,7 @@ describe('S1 a save is one set, carrying a request id and a cursor', () => {
     core = core0;
     const outbox = new Outbox(core0.outboxFile());
     outbox.load();
-    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox);
+    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox));
     const outcome = await saver.save('a.2', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'blocked');
     assert.match(outcome.message, /writers/);
@@ -245,7 +260,7 @@ describe('S4 an unanswered save is kept and retried as the same request', () => 
     assert.strictEqual(kept.cursor, 'w:7');
     assert.strictEqual(kept.state, 'pending');
 
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted);
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted));
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'saved');
     const sent = setCalls(core);
@@ -268,7 +283,8 @@ describe('S4 an unanswered save is kept and retried as the same request', () => 
     core = r.core;
     const saver = new Saver(
       new Client(new CliTransport(r.core.config({ timeoutMs: 250 }), r.core.env())),
-      r.outbox
+      r.outbox,
+      settling(r.outbox)
     );
     const outcome = await saver.save('a.2', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'pending');
@@ -427,7 +443,7 @@ describe('S9 the cursor survives a restart and is not asked for twice', () => {
     const restarted = new Outbox(file);
     restarted.load();
     assert.strictEqual(restarted.cursor, 'w:9');
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted);
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted));
     const outcome = await saver.save('a.2', 'src', 'two\n');
     assert.strictEqual(outcome.status, 'saved', outcome.message);
 
@@ -465,7 +481,8 @@ describe('S10 the entry is on disk at the moment the core sees the request', () 
     outbox.load();
     const saver = new Saver(
       new Client(new CliTransport(core0.config(), core0.env(outboxFile))),
-      outbox
+      outbox,
+      settling(outbox)
     );
     const outcome = await saver.save('a.2', 'src', 'body2\n');
     assert.strictEqual(outcome.status, 'saved');
@@ -545,7 +562,7 @@ describe('S11 a host interrupted between the send and the answer', () => {
     assert.strictEqual(reloaded.entries[0].state, 'sent');
     assert.strictEqual(reloaded.cursor, 'w:9', 'the cursor was not persisted');
 
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
     const outcomes = await saver.retry();
     assert.strictEqual(outcomes[0].status, 'saved', outcomes[0].message);
     const sent = setCalls(core);
@@ -663,7 +680,7 @@ describe('S12 entries found on disk after a restart', () => {
     core = r.core;
     const reloaded = new Outbox(file);
     reloaded.load();
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
     const outcomes = await saver.retry();
     assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved', 'saved']);
     const bodies = setCalls(core).map((c) => c[3]);
@@ -688,7 +705,7 @@ describe('S12 entries found on disk after a restart', () => {
     core = r.core;
     const reloaded = new Outbox(file);
     reloaded.load();
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded);
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
     const outcomes = await saver.retry();
     assert.deepStrictEqual(outcomes.map((o) => o.status), ['pending']);
     assert.deepStrictEqual(
@@ -753,7 +770,7 @@ describe('two savers over one queue are still one request at a time', () => {
 
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
 
     const first = r.saver.save('a.2', 'src', 'one\n');
     const later = other.save('a.2', 'src', 'two\n');
@@ -909,7 +926,7 @@ describe('two savers over one queue share the queue, not just the lock', () => {
      */
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
 
     /*
      * BOTH ARE STARTED BEFORE EITHER FINISHES. Awaiting the first and
@@ -947,7 +964,7 @@ describe('two savers over one queue share the queue, not just the lock', () => {
 
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second);
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
 
     await r.saver.save('a.2', 'src', 'one\n');
     /*
@@ -969,5 +986,141 @@ describe('two savers over one queue share the queue, not just the lock', () => {
       ['one\n'],
       'the second operation did not retry the unresolved head, or sent its own body past it'
     );
+  });
+});
+
+/*
+ * X1c: A DRAIN THAT CANNOT END.
+ *
+ * `drain` walks the queue from the front and stops at the first entry
+ * whose outcome is unknown. It has no other way to stop: it takes
+ * `entries[0]`, sends it, and loops unless the answer was `pending`. The
+ * entry is expected to be gone by then -- the settler removes it -- and
+ * NOTHING CHECKS THAT IT WENT.
+ *
+ * The settler is allowed not to remove it. That is deliberate and it is
+ * the safe direction: `recordAnswer` keeps the entry when the record
+ * beside the file could not be written, so the request stays retryable
+ * rather than being lost. But then the store has answered, the outcome
+ * is not `pending`, and the same entry is at the front of the queue
+ * again -- for ever, sending the same request to the store on every
+ * turn, inside a command the user is awaiting.
+ *
+ * ⚠️ HOW THIS SHOWED UP IS WHY IT IS WORTH SAYING: as `Timeout of
+ * 180000ms exceeded` in an editor-hosted cell, three runs out of three,
+ * with nothing naming the queue. A hang is the failure a suite reports
+ * worst.
+ */
+describe('X1c a save stops when the answer could not be recorded', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * THE SCRIPT ANSWERS `ok` MORE TIMES THAN A CORRECT BUILD NEEDS, and
+   * only then something the Saver must treat as `pending`. A correct
+   * build sends once; a looping one sends until the `ok` answers run
+   * out. Either way the cell ends, and the COUNT is what tells them
+   * apart -- a hang proves nothing a reader can act on.
+   *
+   * ⚠️ THE FIRST VERSION OF THIS CELL MEASURED ONLY THE RETRY, after a
+   * `save` had already driven the entry into `pending` by exhausting the
+   * script. It passed against the looping build. The loop happens inside
+   * the FIRST call, so that is the call the count has to be about.
+   */
+  function okThenUnknown(): FakeCore {
+    return new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: wrote(8), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(9), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(10), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(11), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(12), rc: 0, once: true },
+      { match: ['set'], stdout: '(error unknown "no")\n', rc: 0 }
+    ]);
+  }
+
+  it('sends the request once and gives up rather than sending it again for ever', async () => {
+    core = okThenUnknown();
+    const outbox = new Outbox(core.outboxFile());
+    outbox.load();
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    /*
+     * A SETTLER THAT RECORDS NOTHING AND REMOVES NOTHING -- which is
+     * what `recordAnswer` does when the bytes under the file moved while
+     * the answer was in flight. Keeping the entry is deliberate; sending
+     * it again for ever is not.
+     */
+    const saver = new Saver(client, outbox, () => undefined);
+    const outcome = await saver.save('a.2', 'src', 'body\n');
+    const sent = setCalls(core).length;
+    assert.strictEqual(
+      sent,
+      1,
+      `one save sent the same request ${sent} times: the drain does not end when the answer ` +
+        'cannot be recorded, so the store is asked again on every turn inside a command the user ' +
+        'is awaiting'
+    );
+    /*
+     * AND THE ENTRY IS STILL THERE, which is the whole reason the
+     * settler may decline. A build that ended the loop by dropping the
+     * request would satisfy the count and lose the save.
+     */
+    assert.strictEqual(outbox.entries.length, 1, 'the request was dropped to end the loop');
+    /*
+     * AND IT IS REPORTED AS UNRESOLVED. "Saved" about a queue that still
+     * holds the request would make the sentence after a retry disagree
+     * with the count in the status bar.
+     */
+    assert.strictEqual(outcome.status, 'pending', `the save reported ${outcome.status}`);
+    assert.strictEqual(outbox.entries[0].state, 'pending', 'the entry does not say it needs attention');
+  });
+
+  /*
+   * WHAT THIS ONE IS THE ONLY EVIDENCE FOR: that `retry` reaches the
+   * same guard. It shares `drain` with the cell above and does NOT add a
+   * second red -- measured: with the guard disabled this cell stays
+   * green, because by then the first call has already driven the entry
+   * into `pending`. It is here because `retry` is a separate entry point
+   * and a later build that gave it a loop of its own would be caught
+   * here and nowhere else.
+   */
+  it('retries it once more and stops again, rather than spinning', async () => {
+    core = okThenUnknown();
+    const outbox = new Outbox(core.outboxFile());
+    outbox.load();
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const saver = new Saver(client, outbox, () => undefined);
+    await saver.save('a.2', 'src', 'body\n');
+    const before = setCalls(core).length;
+    const outcomes = await saver.retry();
+    const sent = setCalls(core).length - before;
+    assert.strictEqual(sent, 1, `a retry sent the same request ${sent} times`);
+    assert.strictEqual(outcomes.length, 1);
+    assert.strictEqual(outcomes[0].status, 'pending');
+  });
+
+  /*
+   * THE GREEN TWIN. A build that stopped after every send would satisfy
+   * both cells above and would never drain a queue: two entries, a
+   * settler that does remove them, and both go out in one call.
+   */
+  it('still drains a queue whose answers are recorded', async () => {
+    core = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: wrote(8), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(9), rc: 0, once: true },
+      { match: ['set'], stdout: '(error unknown "no")\n', rc: 0 }
+    ]);
+    const outbox = new Outbox(core.outboxFile());
+    outbox.load();
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const saver = new Saver(client, outbox, settling(outbox));
+    assert.strictEqual((await saver.save('a.2', 'src', 'one\n')).status, 'saved');
+    assert.strictEqual((await saver.save('a.3', 'src', 'two\n')).status, 'saved');
+    assert.strictEqual(outbox.entries.length, 0, 'the queue was not drained');
+    assert.strictEqual(setCalls(core).length, 2);
   });
 });

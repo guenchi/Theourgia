@@ -68,6 +68,13 @@ export function aside(stderr: string): string {
 
 export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked';
 
+/*
+ * What to do with an entry the store has answered. It is handed in
+ * rather than assumed, so that the one place which decides the order --
+ * record first, remove second -- is the one the caller names.
+ */
+export type Settle = (req: string, cursor: string | null) => void;
+
 export interface SaveOutcome {
   status: SaveStatus;
   req: string;
@@ -137,13 +144,15 @@ const queues = new Map<string, Promise<void>>();
 export class Saver {
   private readonly client: Client;
   private readonly outbox: Outbox;
+  private readonly settle: Settle;
   private readonly newRequestId: () => string;
   private readonly now: () => number;
   private bootstrapProblem: string | null = null;
 
-  constructor(client: Client, outbox: Outbox, options: SaverOptions = {}) {
+  constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions = {}) {
     this.client = client;
     this.outbox = outbox;
+    this.settle = settle;
     this.newRequestId = options.newRequestId ?? (() => randomUUID());
     this.now = options.now ?? (() => Date.now());
   }
@@ -305,8 +314,48 @@ export class Saver {
       this.outbox.aboutToSend(entry.req, this.outbox.cursor);
       const current = this.outbox.find(entry.req) ?? entry;
       const outcome = await this.send(current);
+      /*
+       * ⚠️ AND IT STOPS IF THE ENTRY IS STILL HERE.
+       *
+       * This loop had exactly one way out: an answer of `pending`. It
+       * took `entries[0]`, sent it, and went round again on the
+       * assumption that the entry was gone by then -- and NOTHING
+       * CHECKED THAT IT WENT. The settler is allowed to decline: when
+       * the record beside the file cannot be written, `recordAnswer`
+       * KEEPS the entry so the request stays retryable rather than being
+       * lost, which is the safe direction and is deliberate. But then
+       * the store has answered, the outcome is not `pending`, and the
+       * same entry is at the front of the queue again -- so the same
+       * request goes to the store on every turn, for ever, inside a
+       * command the user is awaiting.
+       *
+       * MEASURED, NOT SUPPOSED: with a settler that records nothing, a
+       * single `save` sent the same request five times and stopped only
+       * because the scripted core ran out of `ok` answers. A real store
+       * does not run out.
+       *
+       * THE ENTRY IS MARKED PENDING AND THE OUTCOME SAYS SO, because
+       * "saved" would be a report that the work is done about a queue
+       * that still holds it -- the count in the status bar and the
+       * sentence after a retry would disagree with each other.
+       */
       outcomes.push(outcome);
+      /*
+       * AN ANSWER OF `pending` IS ALREADY A REASON TO STOP, AND IT HAS
+       * ITS OWN SENTENCE. `send` keeps the entry in that case too, so
+       * the check below would be true here as well -- and would replace
+       * a message naming what went wrong ("the core exited 255 without
+       * saying why") with a general one. Three cells caught that.
+       */
       if (outcome.status === 'pending') {
+        return outcomes;
+      }
+      if (this.outbox.find(entry.req) !== undefined) {
+        const why =
+          'the store answered and the answer could not be recorded beside the file; the request ' +
+          'is kept';
+        this.outbox.markPending(entry.req, why);
+        outcomes[outcomes.length - 1] = { ...outcome, status: 'pending', message: why };
         return outcomes;
       }
     }
@@ -378,7 +427,7 @@ export class Saver {
           answer: datum
         };
       }
-      this.outbox.resolve(entry.req, moved);
+      this.settle(entry.req, moved);
       return {
         status: isReplay(answer) ? 'replayed' : 'saved',
         req: entry.req,
@@ -422,7 +471,7 @@ export class Saver {
       };
     }
 
-    this.outbox.resolve(entry.req, null);
+    this.settle(entry.req, null);
     if (saysAnOperatorSettledIt(datum)) {
       return {
         status: 'replayed',

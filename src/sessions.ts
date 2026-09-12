@@ -37,7 +37,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
 import { Outbox, OutboxEntry } from './outbox';
-import { Publisher, sidecarFromDisk } from './publication';
+import { Publisher, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
  * WHEN A PID STARTED, as epoch seconds, or null when this platform will
@@ -131,7 +131,7 @@ export interface OtherSession {
 
 export type ClaimOutcome =
   | { claimed: true; token: string; sequence: number }
-  | { claimed: false; because: 'already-claimed' | 'session-alive' | 'undecidable' };
+  | { claimed: false; because: 'already-claimed' | 'session-alive' | 'undecidable' | 'not-found' };
 
 /*
  * Which claim an import belongs to. Importing is tied to the token that
@@ -414,17 +414,48 @@ export class Sessions {
     return out;
   }
 
+  /*
+   * EVERY QUEUE THIS SESSION HOLDS, ACROSS ALL ITS STORES.
+   *
+   * ⚠️ THIS READ `<session>/outbox.json` WHILE PRODUCTION WROTE
+   * `<session>/<store-hash>/outbox.json`. The writer moved when the
+   * cursor turned out to belong to a store; the readers did not, so a
+   * real queue with real entries was counted as zero and an import
+   * carried nothing. Both halves of a path have to move together --
+   * this is the second time in one batch that a writer moved without
+   * its readers.
+   */
+  public outboxPathsFor(sessionId: string): string[] {
+    const out: string[] = [];
+    const session = this.sessionDirectory(sessionId);
+    const legacy = path.join(session, 'outbox.json');
+    if (this.files.exists(legacy)) {
+      out.push(legacy);
+    }
+    for (const name of this.files.list(session)) {
+      const candidate = path.join(session, name, 'outbox.json');
+      if (this.files.isDirectory(path.join(session, name)) && this.files.exists(candidate)) {
+        out.push(candidate);
+      }
+    }
+    return out;
+  }
+
   private pendingIn(sessionId: string): number {
-    const file = this.outboxPathFor(sessionId);
-    if (!this.files.exists(file)) {
-      return 0;
+    let total = 0;
+    for (const file of this.outboxPathsFor(sessionId)) {
+      try {
+        const raw = JSON.parse(this.files.readText(file)) as { entries?: unknown[] };
+        total += Array.isArray(raw.entries) ? raw.entries.length : 0;
+      } catch (e) {
+        /*
+         * A QUEUE THIS BUILD CANNOT READ IS NOT AN EMPTY ONE, and the
+         * listing says so by counting it as work rather than as nothing.
+         */
+        total += 1;
+      }
     }
-    try {
-      const raw = JSON.parse(this.files.readText(file)) as { entries?: unknown[] };
-      return Array.isArray(raw.entries) ? raw.entries.length : 0;
-    } catch (e) {
-      return 0;
-    }
+    return total;
   }
 
   /*
@@ -455,6 +486,35 @@ export class Sessions {
       if (liveness.alive) {
         return { claimed: false, because: 'session-alive' };
       }
+    } else if (this.files.exists(this.sessionDirectory(deadSessionId))) {
+      /*
+       * A DIRECTORY WITH NO RECORD AT ALL, AND `discard` REFUSES IT FOR
+       * THE SAME REASON THIS DOES.
+       *
+       * `null` here means `session.json` is absent -- not unreadable,
+       * which is judged above. A directory that exists without one is a
+       * window in the middle of `begin`: the directory is made first and
+       * the record is written after it, so the gap is real and it is on
+       * the path every window takes. Taking its queue over produces a
+       * second sender for entries the first is still holding, which is
+       * the double-send this whole mechanism exists to prevent.
+       *
+       * ⚠️ THIS IS NOT SYMMETRIC WITH `discard`'S COST. A refused
+       * discard leaves files on disk; a claim that should have been
+       * refused sends somebody else's requests a second time. Erring
+       * toward "still running" is the cheap direction here, and the
+       * listing tells the user why the takeover was not offered. (§12.9,
+       * §12.11.3)
+       */
+      return { claimed: false, because: 'undecidable' };
+    } else {
+      /*
+       * NOTHING OF THAT SESSION IS HERE. There is no queue to take over
+       * and no record to judge, so a token would name a session this
+       * disk has never seen. `discard` answers `not-found` for the same
+       * state, in the same words.
+       */
+      return { claimed: false, because: 'not-found' };
     }
 
     /*
@@ -534,7 +594,22 @@ export class Sessions {
     if (!this.files.exists(token.file)) {
       return { imported: 0, skipped: 0 };
     }
-    const source = new Outbox(this.outboxPathFor(token.deadSessionId), this.files);
+    let imported = 0;
+    let skipped = 0;
+    for (const queue of this.outboxPathsFor(token.deadSessionId)) {
+      const outcome = this.importQueue(queue, token, into);
+      imported += outcome.imported;
+      skipped += outcome.skipped;
+    }
+    return { imported, skipped };
+  }
+
+  private importQueue(
+    queue: string,
+    token: ClaimToken,
+    into: ImportTarget
+  ): { imported: number; skipped: number } {
+    const source = new Outbox(queue, this.files);
     try {
       source.load();
     } catch (e) {
@@ -675,7 +750,7 @@ export class Sessions {
         if (!name.endsWith('.md')) {
           continue;
         }
-        const meta = `${full}.meta`;
+        const meta = sidecarPathOf(full);
         if (!this.files.exists(meta)) {
           continue;
         }

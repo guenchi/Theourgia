@@ -26,28 +26,37 @@
  * put it out of reach too.
  */
 
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { documentFor } from './blocks';
 import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
-import { Outbox } from './outbox';
-import { Publisher } from './publication';
-import { Saving } from './saving';
-import { Sessions } from './sessions';
-import { PathChain } from './chain';
+import { Outbox, OutboxEntry } from './outbox';
+import { activateCore } from './activate';
+import {
+  OPEN_BLOCK,
+  RECONCILE_BLOCK,
+  REFRESH_OUTLINE,
+  RETRY_OUTBOX,
+  SHOW_STATUS
+} from './commands';
 import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
   StatusFacts,
   nodeTooltip,
+  notABlockNotice,
+  reconcileChoiceNotice,
+  reconcileUnfinishedNotice,
+  reconciledNotice,
   retryNotice,
   refusalNotice,
   saveNotice,
   unreconciledNotice,
+  unrecordedNotice,
   statusLine,
   wrongStoreNotice
 } from './status';
@@ -119,7 +128,7 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
       item.tooltip = tooltip;
     }
     item.command = {
-      command: 'theourgia.openBlock',
+      command: OPEN_BLOCK.id,
       title: 'Open Block',
       arguments: [node.id]
     };
@@ -186,6 +195,18 @@ function show(notice: Notice): void {
   }
 }
 
+/*
+ * ONE LINE OF A TEXT, FOR A LIST THAT HAS ROOM FOR ONE LINE. It is an
+ * excerpt and says so when it cuts, because a truncation the reader
+ * cannot see is an excerpt they will take for the whole thing -- and
+ * they are choosing between texts on the strength of it.
+ */
+function firstLine(text: string): string {
+  const line = text.split('\n', 1)[0].replace(/\r$/, '');
+  const head = line.length > 80 ? line.slice(0, 80) : line;
+  return head === text ? head : `${head}...`;
+}
+
 function reportFailure(e: unknown): void {
   if (e instanceof TransportError) {
     vscode.window.showErrorMessage(`theourgia: ${e.message}`);
@@ -207,28 +228,37 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * them here is ordering all of their writers. The id is made once, at
    * activation, and never reused. (§12.9)
    */
+  /*
+   * ONE ENTRY POINT, SHARED WITH THE HARNESS. Everything activation does
+   * that is not about VS Code lives in `activateCore`, so a cell that
+   * sets up a session cannot do a step the extension forgets -- which is
+   * exactly how "the extension never called `begin`" survived: the
+   * harness called it instead. (src/activate.ts)
+   */
   const files = nodeFileOps;
-  const sessions = new Sessions(files, storage);
-  const sessionId = randomUUID();
-  const chain = new PathChain();
-  const publisher = new Publisher(files, {
-    /*
-     * THE EDITOR IS ASKED DIRECTLY. `publish` refuses a path the editor
-     * has open, because then the editor is a writer and this is not.
-     * (§12.13.1)
-     */
-    isOpen: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file)
+  const core = activateCore({
+    files,
+    globalStorage: storage,
+    documents: {
+      isOpen: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file)
+    },
+    stores: [],
+    sessionId: randomUUID()
   });
-  const saving = new Saving(files);
+  const sessions = core.sessions;
+  const sessionId = core.sessionId;
+  const chain = core.chain;
+  const publisher = core.publisher;
+  const saving = core.saving;
+
+  const storeHash = core.storeHash;
 
   /*
-   * ONE DIRECTORY PER STORE INSIDE THE SESSION, named by a digest of the
-   * store's path so that two stores with the same block id do not share
-   * a place. (§12.9)
+   * WHAT A SAVE IN FLIGHT IS ABOUT. The Saver's answer names the request
+   * and the cursor; the record beside the file needs the file and the
+   * digests, and only the handler that decided to send knows them.
    */
-  function storeHash(store: string): string {
-    return createHash('sha256').update(store, 'utf8').digest('hex').slice(0, 16);
-  }
+  const pendingSaves = new Map<string, { blockId: string; file: string; rawDigest: string; sentDigest: string }>();
   /*
    * X1c REPLACED THE IN-MEMORY BASELINE. What a save is measured against
    * now lives beside the file, on disk, in `<n>.meta` -- so it survives
@@ -303,13 +333,92 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * numbered, would be two windows writing one file again. (§12.9,
      * C16)
      */
-    outbox = new Outbox(sessions.outboxPathFor(sessionId, storeHash(config.store)), files);
+    outbox = new Outbox(core.outboxPath(config.store), files);
     try {
       outbox.load();
     } catch (e) {
       reportFailure(e);
     }
-    saver = new Saver(client, outbox);
+    /*
+     * SETTLING GOES THROUGH THE RECORD.
+     *
+     * The Saver no longer removes an answered entry; this says what
+     * settling one means here, and it means: write the acknowledgement
+     * beside the file FIRST, and remove the request only if that
+     * succeeded. A build that removed it first and then failed to write
+     * has destroyed its own means of retrying -- the request gone, the
+     * store's answer unrecorded. `recordAnswer` performs both, in that
+     * order, so the order exists in one place.
+     */
+    /*
+     * X1c ⑨: THE FILE AN ANSWER IS ABOUT, WHEN THIS WINDOW NEVER SENT IT.
+     *
+     * A retry after a restart names a request the queue remembers and
+     * this process does not, so `pendingSaves` is empty for it. The
+     * answer used to be released with nothing written, and that block
+     * then reported unsent work for ever while the store held the bytes.
+     *
+     * The queue kept what was sent, and the block's own directory says
+     * which versions exist. If the newest one still splits into exactly
+     * the text that went out, these are the bytes the store acknowledged
+     * and the digests come from the file rather than from memory. If it
+     * does not, this answers `undefined` and the old behaviour stands --
+     * which is right, because then the file really has moved on.
+     */
+    const recovered = (
+      entry: OutboxEntry
+    ): { blockId: string; file: string; rawDigest: string; sentDigest: string } | undefined => {
+      const directory = sessions.directoryFor(sessionId, storeHash(config.store), entry.id);
+      const file = publisher.latestIn(directory);
+      if (file === null) {
+        return undefined;
+      }
+      const digests = saving.recognise(file, entry.payload);
+      return digests === null ? undefined : { blockId: entry.id, file, ...digests };
+    };
+
+    saver = new Saver(client, outbox, (req, cursor) => {
+      const queue = outbox;
+      if (queue === null) {
+        return;
+      }
+      const entry = queue.find(req);
+      const context =
+        entry === undefined ? undefined : pendingSaves.get(entry.id) ?? recovered(entry);
+      if (context === undefined) {
+        /*
+         * NOTHING IN MEMORY AND NOTHING ON DISK SAYS WHICH VERSION THIS
+         * ANSWER IS ABOUT. `recovered` has already looked: the block's
+         * newest version does not hold the body this request sent, so
+         * the user has edited since and the file is a draft, correctly.
+         * The entry is released because the store HAS answered it.
+         * (§12.17.4)
+         */
+        queue.resolve(req, cursor);
+        return;
+      }
+      const recorded = saving.recordAnswer(
+        context.file,
+        {
+          req,
+          cursor: cursor ?? '',
+          rawDigest: context.rawDigest,
+          sentDigest: context.sentDigest,
+          mismatch: false
+        },
+        () => queue.resolve(req, cursor)
+      );
+      if (!recorded.dequeued) {
+        /*
+         * THE ENTRY STAYS. Whatever stopped the record from being
+         * written -- the bytes moved, the file has no record, the answer
+         * is older than one already there -- leaves the request
+         * retryable rather than lost.
+         */
+        show(unrecordedNotice(context.file, recorded.because));
+      }
+      pendingSaves.delete(context.blockId);
+    });
     provider.use(model);
     paint();
   }
@@ -474,6 +583,137 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   /*
+   * X1c: THE WAY OUT THE REFUSALS NAME.
+   *
+   * Two refusals -- a file holding a third version, and a store that
+   * reports a different request under this save's name -- tell the user
+   * to run this. Before it existed those sentences named a command that
+   * was in no manifest and no registration, so the only advice the
+   * extension gave led to an empty palette; the name is now one
+   * constant, read by both the sentence and the registration.
+   *
+   * NOTHING HERE REWRITES OR REMOVES THE FILE THE USER IS LOOKING AT.
+   * Both actions publish a NEW version and leave the old one alone,
+   * because that file is the only copy of what they typed. (§12.15
+   * 结构一, §12.11.7)
+   *
+   * IT TAKES AN OPTIONAL PATH so that it can be reached from somewhere
+   * other than the active editor, and answers with the notice it showed
+   * rather than only showing it: a message that is displayed and not
+   * returned is a message no cell can read.
+   *
+   * THE THIRD TEXT IS NOT OFFERED AS A CHOICE, deliberately. The
+   * reconciliation reports the version published before this one
+   * because the user is choosing with it in view, but there is no action
+   * that produces it -- it is already on disk beside the file, under its
+   * own number, and this extension deletes nothing. A viewer that shows
+   * the three side by side is not in this batch.
+   */
+  async function reconcileBlock(target?: string): Promise<Notice | null> {
+    const file = target ?? vscode.window.activeTextEditor?.document.uri.fsPath;
+    if (file === undefined) {
+      const notice = notABlockNotice('no file');
+      show(notice);
+      return notice;
+    }
+    const sidecar = publisher.sidecarOf(file);
+    if (sidecar === null) {
+      const notice = notABlockNotice(file);
+      show(notice);
+      return notice;
+    }
+    if (sidecar.storeId !== config.store) {
+      const notice = wrongStoreNotice(sidecar.blockId, sidecar.storeId, config.store);
+      show(notice);
+      return notice;
+    }
+    if (model === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return null;
+    }
+    const asked = generation;
+    let block;
+    try {
+      block = await model.blockOf(sidecar.blockId);
+    } catch (e) {
+      reportFailure(e);
+      return null;
+    }
+    /*
+     * THE SAME CHECK `openBlock` MAKES, for the same reason: the store
+     * this reading came from is the store that was configured when it
+     * was asked, and reconciling against a different one would write a
+     * baseline from a store this block does not belong to.
+     */
+    if (asked !== generation) {
+      vscode.window.showWarningMessage(
+        `theourgia: the store setting changed while ${sidecar.blockId} was being read, so nothing ` +
+          'was reconciled.'
+      );
+      return null;
+    }
+    if (block === null) {
+      vscode.window.showWarningMessage(`theourgia: the store has no block ${sidecar.blockId}.`);
+      return null;
+    }
+    const document = documentFor(block, config.store);
+    const directory = path.dirname(file);
+    /*
+     * ON THE CHAIN, because it reads the file and may publish beside it,
+     * and a save arriving for this block has to wait rather than
+     * interleave with it. (§12.11.1)
+     */
+    const outcome = await chain.run(directory, async () =>
+      publisher.reconcile(file, document.prefix, document.text)
+    );
+    if (outcome.reconciled) {
+      const notice = reconciledNotice(sidecar.blockId, path.basename(file));
+      show(notice);
+      paint();
+      return notice;
+    }
+    /*
+     * THE PICK IS SHOWN OUTSIDE THE CHAIN. It waits on a human, and a
+     * critical section held across that wait blocks every save of this
+     * block for as long as the user leaves the list open. The action
+     * runs on the chain when it comes back.
+     */
+    const items = outcome.choices.map((action) => ({
+      action,
+      label:
+        action === 'prepend-prefix'
+          ? 'Keep my text, with the block heading in front of it'
+          : "Take the store's version",
+      detail:
+        action === 'prepend-prefix'
+          ? firstLine(outcome.fileText)
+          : firstLine(outcome.storeText)
+    }));
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: `${sidecar.blockId}: ${file} holds a version neither this window nor the store wrote`
+    });
+    if (picked === undefined) {
+      return null;
+    }
+    const done = await chain.run(directory, async () =>
+      publisher.reconcileBy(file, picked.action, document.prefix, document.text)
+    );
+    if (!done.done) {
+      const notice = reconcileUnfinishedNotice(file);
+      show(notice);
+      paint();
+      return notice;
+    }
+    const opened = await vscode.workspace.openTextDocument(vscode.Uri.file(done.file));
+    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
+    await vscode.window.showTextDocument(opened, { preview: false });
+    const notice = reconcileChoiceNotice(sidecar.blockId, picked.action, path.basename(done.file));
+    show(notice);
+    paint();
+    return notice;
+  }
+
+  /*
    * X1c: WHAT A SAVE DOES, AND WHAT IT REFUSES.
    *
    * The record beside the file decides: it carries the prefix this save
@@ -514,34 +754,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
 
+    /*
+     * WHAT THIS SAVE IS ABOUT, recorded before it goes, because the
+     * answer names only the request and the Saver's settler needs the
+     * file and the digests to write the record.
+     */
+    pendingSaves.set(sidecar.blockId, {
+      blockId: sidecar.blockId,
+      file,
+      rawDigest: decision.rawDigest,
+      sentDigest: decision.sentDigest
+    });
+
     let outcome;
     try {
       outcome = await saver.save(sidecar.blockId, decision.intent.field, decision.src);
     } catch (e) {
+      pendingSaves.delete(sidecar.blockId);
       reportFailure(e);
       paint();
       return;
     }
-
-    if (outcome.status === 'saved' || outcome.status === 'replayed') {
-      /*
-       * THE RECORD IS WRITTEN BEFORE THE ENTRY GOES, and both happen
-       * inside `recordAnswer` so that the order is in one place. The
-       * queue is already empty of this request by the time we get here
-       * -- `Saver` removes it -- so the callback is the identity; what
-       * `recordAnswer` still decides is whether the acknowledgement
-       * describes the bytes that are actually in the file. (§12.7.4)
-       */
-      await chain.run(path.dirname(file), async () =>
-        saving.recordAnswer(file, {
-          req: outcome.req,
-          cursor: outbox?.cursor ?? '',
-          rawDigest: decision.rawDigest,
-          sentDigest: decision.sentDigest,
-          mismatch: false
-        })
-      );
-    }
+    /*
+     * THE RECORD AND THE REMOVAL BOTH HAPPENED INSIDE THE SETTLER, in
+     * that order. Nothing is written here: a second place that wrote the
+     * acknowledgement would be a second place for the order to be wrong.
+     */
     show(saveNotice(outcome, decision.normalised));
     paint();
   }
@@ -549,11 +787,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     status,
     vscode.window.registerTreeDataProvider('theourgiaOutline', provider),
-    vscode.commands.registerCommand('theourgia.refreshOutline', async () => {
+    vscode.commands.registerCommand(REFRESH_OUTLINE.id, async () => {
       provider.refresh();
       await refreshConflicts();
     }),
-    vscode.commands.registerCommand('theourgia.openBlock', openBlock),
+    vscode.commands.registerCommand(OPEN_BLOCK.id, openBlock),
+    vscode.commands.registerCommand(RECONCILE_BLOCK.id, reconcileBlock),
     /*
      * THE SAVER THAT RAN IS THE SAVER THAT IS REPORTED. `saver` is
      * rebuilt whenever the settings change, and a retry is an await --
@@ -569,7 +808,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * read, and what it would be wrong about is which store the numbers
      * belong to.
      */
-    vscode.commands.registerCommand('theourgia.retryOutbox', async () => {
+    vscode.commands.registerCommand(RETRY_OUTBOX.id, async () => {
       const active = saver;
       const store = config.store;
       const asked = generation;
@@ -606,7 +845,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       paint();
       return notice;
     }),
-    vscode.commands.registerCommand('theourgia.showStatus', async (options?: { ask?: boolean }) => {
+    vscode.commands.registerCommand(SHOW_STATUS.id, async (options?: { ask?: boolean }) => {
       if (options?.ask !== false) {
         await refreshConflicts();
       }

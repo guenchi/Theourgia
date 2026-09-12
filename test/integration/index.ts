@@ -25,8 +25,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import Mocha = require('mocha');
+import { shortfalls } from './census';
 
-export function run(): Promise<void> {
+export async function run(): Promise<void> {
   const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 120000 });
   const here = __dirname;
   const files = fs.readdirSync(here).filter((f) => f.endsWith('.test.js'));
@@ -35,6 +36,18 @@ export function run(): Promise<void> {
   }
   for (const file of files) {
     mocha.addFile(path.join(here, file));
+  }
+  /*
+   * THE CELLS ARE COUNTED BEFORE THEY ARE RUN. A suite that lost its
+   * cells finishes with no failures, which reads exactly like a pass;
+   * refusing to start says something different from a failing cell, and
+   * that is the point. Counting needs the files loaded, which is what
+   * `loadFilesAsync` does -- `mocha.run` would do it too, and too late.
+   */
+  await mocha.loadFilesAsync();
+  const problems = shortfalls(mocha.suite, files);
+  if (problems.length > 0) {
+    return Promise.reject(new Error(`the editor-hosted suite is not whole:\n${problems.join('\n')}`));
   }
   return new Promise((resolve, reject) => {
     mocha.run((failures) => {

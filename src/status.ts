@@ -29,6 +29,7 @@
  * draws the same thing for "none" and "the question could not be put"
  * is telling the user the better of the two every time it fails.
  */
+import { RECONCILE_BLOCK, RETRY_OUTBOX } from './commands';
 import { StructuralMark } from './model';
 
 export interface StatusFacts {
@@ -81,7 +82,7 @@ export function statusLine(facts: StatusFacts): StatusLine {
     facts.pending === null
       ? 'the outbox could not be read, so no save will be sent and what it holds is not known'
       : facts.pending > 0
-        ? `${facts.pending} save(s) whose outcome is unknown; run "theourgia: Retry Pending Saves"`
+        ? `${facts.pending} save(s) whose outcome is unknown; run "${RETRY_OUTBOX.title}"`
         : 'nothing waiting to be saved',
     ...(facts.blocked === null ? [] : [`writing is blocked: ${facts.blocked}`])
   ].join('\n');
@@ -271,6 +272,79 @@ export function unreconciledNotice(id: string, file: string): Notice {
 }
 
 /*
+ * WHAT RECONCILIATION SAYS WHEN IT IS OVER.
+ *
+ * The command is offered by a refusal, so its own outcome has to be
+ * legible on the same terms: the user is told which text is now the
+ * baseline and, when a new version was published, which file holds it.
+ * A command that silently succeeds is indistinguishable from one that
+ * silently did nothing, and this one is reached only by users who have
+ * already been told something went wrong.
+ */
+export function reconciledNotice(id: string, file: string): Notice {
+  return {
+    level: 'information',
+    text:
+      `${id} is reconciled: ${file} already began with the block's heading, so what is there is ` +
+      'now the baseline. The body counts as work the store has not seen, and saving sends it.'
+  };
+}
+
+/*
+ * THE CHOICE WAS MADE AND A NEW VERSION CARRIES IT. Neither action
+ * rewrites or removes the file the user was looking at -- that file is
+ * the only copy of what they typed -- so the sentence has to name the
+ * new file, or they will keep editing the old one and wonder why
+ * nothing is sent.
+ */
+export function reconcileChoiceNotice(
+  id: string,
+  action: 'prepend-prefix' | 'take-store-version',
+  file: string
+): Notice {
+  if (action === 'prepend-prefix') {
+    return {
+      level: 'information',
+      text:
+        `${id}: your text was kept and the block's heading put in front of it, in ${file}. The ` +
+        'file you were editing is untouched; edit and save the new one.'
+    };
+  }
+  return {
+    level: 'information',
+    text:
+      `${id}: the store's version was published as ${file}. The file you were editing is ` +
+      'untouched, so nothing you wrote was lost; edit and save the new one.'
+  };
+}
+
+/*
+ * THE CHOICE COULD NOT BE CARRIED OUT. `reconcileBy` answers `done:
+ * false` when the record beside the file is missing or when the editor
+ * holds the path the new version would take -- neither of which the
+ * user can guess from a command that simply returns.
+ */
+export function reconcileUnfinishedNotice(file: string): Notice {
+  return {
+    level: 'warning',
+    text:
+      `${file} was left exactly as it is: the new version could not be published. Close any other ` +
+      'window holding this block and run the command again.'
+  };
+}
+
+/*
+ * THE COMMAND WAS RUN ON SOMETHING THAT IS NOT A BLOCK FILE. Saying so
+ * is the whole answer; there is nothing here to repair.
+ */
+export function notABlockNotice(file: string): Notice {
+  return {
+    level: 'warning',
+    text: `${file} is not a block file opened by this window, so there is nothing to reconcile.`
+  };
+}
+
+/*
  * AN OPEN THAT WAS OVERTAKEN BY A SAVE.
  *
  * The rule that decides which reading of a block a save is measured
@@ -367,7 +441,7 @@ export function refusalNotice(
         level: 'error',
         text:
           `${id} was not sent: ${file} holds a version neither this window nor the store wrote, so ` +
-          'there is nothing to measure the edit against. Run "theourgia: Reconcile Block" to choose ' +
+          `there is nothing to measure the edit against. Run "${RECONCILE_BLOCK.title}" to choose ` +
           'what to keep.'
       };
     case 'no-sidecar':
@@ -383,4 +457,41 @@ export function refusalNotice(
         text: `${refusal.file} is not a block file; nothing was sent.`
       };
   }
+}
+
+/*
+ * WHEN THE STORE ANSWERED AND THE RECORD COULD NOT BE WRITTEN.
+ *
+ * The request stays in the queue, which is the safe direction -- it can
+ * be retried and the store will answer `replay` -- but the user has to
+ * know that the file beside it does not yet say so, because until it
+ * does the block will keep being reported as holding unsent work.
+ */
+export function unrecordedNotice(
+  file: string,
+  because: 'not-acknowledged' | 'req-mismatch' | 'file-moved'
+): Notice {
+  if (because === 'file-moved') {
+    return {
+      level: 'warning',
+      text:
+        `The store accepted the save, but ${file} has changed since it was sent, so the record ` +
+        'beside it was left alone. The request is kept and will be retried; save again when you ' +
+        'are ready.'
+    };
+  }
+  if (because === 'req-mismatch') {
+    return {
+      level: 'error',
+      text:
+        `The store reports a different request under this save's name. ${file} is left as it is ` +
+        `and the request is kept; run "${RECONCILE_BLOCK.title}" to see what the store has.`
+    };
+  }
+  return {
+    level: 'warning',
+    text:
+      `The store answered, but the record beside ${file} could not be written, so this window ` +
+      'still counts the save as unsent. The request is kept and will be retried.'
+  };
 }

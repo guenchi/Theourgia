@@ -37,7 +37,14 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { OpenDocuments, Publisher, sidecarFromDisk, sidecarToDisk, Sidecar } from '../../src/publication';
+import {
+  OpenDocuments,
+  Publisher,
+  sidecarFromDisk,
+  sidecarToDisk,
+  Sidecar,
+  writeSidecar
+} from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
 
 function scratch(): string {
@@ -741,5 +748,339 @@ describe('reconciling never writes over the file it is reconciling', () => {
       '## Two\nno heading at all\n',
       'the new version does not carry the prefix and the user’s bytes'
     );
+  });
+});
+
+/*
+ * X1c ⑧: THE PARTS OF RECONCILIATION AND OF THE RECORD THAT NO CELL WAS
+ * WATCHING.
+ *
+ * Each of these was a mutation that survived a whole green suite. They
+ * are collected here rather than folded into the cells above because
+ * what they have in common is the shape, not the subject: every one of
+ * them is a value that is COMPUTED and then never looked at, so the
+ * build that drops it and the build that keeps it produce the same
+ * answers to every question the suite was asking.
+ */
+describe('X1c ⑧ what reconciliation computes and what the record keeps', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  /*
+   * TWO VERSIONS, THE SECOND STRANDED. The third text the user is shown
+   * is the version published BEFORE the one they are looking at, so a
+   * fixture with one version cannot tell whether it is produced: `null`
+   * is the right answer there, and it is also the answer a build that
+   * never looks gives.
+   */
+  function strandedSecond(dir: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '1.md'), '## Two\nthe version before\n', 'utf8');
+    const file = path.join(dir, '2.md');
+    fs.writeFileSync(file, 'no heading at all\n', 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('no heading at all\n'),
+          previous: digestOf('## Two\nthe version before\n'),
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    return file;
+  }
+
+  it('shows the version published before this one as the third text', () => {
+    const file = strandedSecond(scratch());
+    const offer = new Publisher(new RecordingFs(), nothingOpen()).reconcile(
+      file,
+      '## Two\n',
+      '## Two\nthe store version\n'
+    );
+    assert.strictEqual(offer.reconciled, false);
+    if (!offer.reconciled) {
+      /*
+       * ALL THREE ARE DIFFERENT FROM EACH OTHER. A build that filled the
+       * third slot with either of the other two would satisfy "it is not
+       * null", and the user would be choosing with one of their options
+       * shown twice.
+       */
+      assert.strictEqual(offer.previousText, '## Two\nthe version before\n');
+      assert.notStrictEqual(offer.previousText, offer.fileText);
+      assert.notStrictEqual(offer.previousText, offer.storeText);
+    }
+  });
+
+  it('says there is no third text when this is the first version', () => {
+    const dir = scratch();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, 'no heading at all\n', 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('no heading at all\n'),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    const offer = new Publisher(new RecordingFs(), nothingOpen()).reconcile(
+      file,
+      '## Two\n',
+      '## Two\nthe store version\n'
+    );
+    assert.strictEqual(offer.reconciled, false);
+    if (!offer.reconciled) {
+      assert.strictEqual(offer.previousText, null, 'a text was offered that no version holds');
+    }
+  });
+
+  /*
+   * `local-only` IS WHAT MAKES A RECONCILED BASELINE A DRAFT. The
+   * baseline came from the file rather than from an answer, so the store
+   * has never seen those bytes; without the flag the digests agree with
+   * each other and the version reads as saved. A mutation that dropped
+   * it left every cell green -- and left the user's work reported as
+   * already in the store.
+   */
+  it('marks a baseline it took from the file as one the store has never seen', () => {
+    const dir = scratch();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, '## Two\nwhat the user typed\n', 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('## Two\nwhat the user typed\n'),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    assert.deepStrictEqual(publisher.reconcile(file, '## Two\n', '## Two\nthe store version\n'), {
+      reconciled: true,
+      because: 'prefix-already-present'
+    });
+    const sidecar = publisher.sidecarOf(file);
+    assert.ok(sidecar !== null);
+    assert.strictEqual(sidecar?.localOnly, true, 'work the store has never seen was recorded as sent');
+    const standing = publisher.standingOf(file);
+    assert.strictEqual(
+      standing.kind === 'published' && standing.draft,
+      true,
+      'the reconciled version was not reported as holding a draft'
+    );
+  });
+
+  it('marks the version it makes from the user’s bytes the same way', () => {
+    const dir = scratch();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, 'no heading at all\n', 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('no heading at all\n'),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n');
+    assert.ok(done.done);
+    assert.strictEqual(
+      publisher.sidecarOf(done.file)?.localOnly,
+      true,
+      'bytes only this window has were recorded as bytes the store has'
+    );
+  });
+
+  /*
+   * THE DIRECTORY ENTRY IS FLUSHED AFTER THE RENAME.
+   *
+   * A rename decides what a reader sees and says nothing about what
+   * survives a machine losing power: the bytes are durable before the
+   * rename, and the NAME is durable only once the directory itself is
+   * flushed. Dropping that call changes no answer any other cell asks,
+   * which is why the mutation survived -- the loss is only visible after
+   * a power cut, and by then nothing is left to ask.
+   */
+  it('flushes the directory after the rename that publishes a record', () => {
+    const dir = scratch();
+    const files = new RecordingFs();
+    const file = path.join(dir, '1.md');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, '## Two\nbody\n', 'utf8');
+    writeSidecar(files, file, {
+      format: 1,
+      storeId: 's1',
+      blockId: 'a.2',
+      phase: 'published',
+      prefix: '## Two\n',
+      written: digestOf('## Two\nbody\n'),
+      previous: null,
+      acknowledgedRaw: null,
+      sent: null,
+      cursor: null,
+      localOnly: false,
+      unresolved: false,
+      bodyHasCrlf: false
+    });
+    const renameAt = files.entries.findIndex(
+      (e) => e.op === 'rename' && e.file === `${file}.meta`
+    );
+    const flushAt = files.entries.findIndex(
+      (e) => e.op === 'syncDirectory' && path.resolve(e.file) === path.resolve(dir)
+    );
+    assert.ok(renameAt >= 0, 'the record was not published by a rename');
+    assert.ok(flushAt >= 0, 'the directory holding the record was never flushed');
+    /*
+     * AND IN THAT ORDER. Flushing the directory before the rename
+     * flushes an entry that does not name the new record yet, which is
+     * the same as not flushing at all.
+     */
+    assert.ok(flushAt > renameAt, 'the directory was flushed before the name it had to make durable');
+  });
+});
+
+/*
+ * X1c ⑨: THE DRAFT THAT GOT THERE BY UNDOING.
+ *
+ * A version is published, the user edits the body and saves, the store
+ * takes it. Then they type the ORIGINAL text back in. The file now holds
+ * bytes the store does not have -- an unsent edit -- but it matches
+ * `written`, which was being accepted as a baseline for ever alongside
+ * `acknowledged-raw`. The block reported nothing pending, which is the
+ * worst way to be wrong about a draft: silence, arrived at by undoing.
+ */
+describe('X1c ⑨ what a version is measured against after the store has answered', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  function versionAt(dir: string, text: string, over: Partial<Sidecar>): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, text, 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('## Two\nas published\n'),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: false,
+          bodyHasCrlf: false,
+          ...over
+        })
+      ),
+      'utf8'
+    );
+    return file;
+  }
+
+  const publisher = (): Publisher => new Publisher(new RecordingFs(), nothingOpen());
+
+  function draftOf(file: string): boolean {
+    const standing = publisher().standingOf(file);
+    assert.strictEqual(standing.kind, 'published', `the file is ${standing.kind}, not published`);
+    return standing.kind === 'published' && standing.draft;
+  }
+
+  it('reports work the store has not got when the file is put back to the published text', () => {
+    /*
+     * THE STORE HOLDS THE EDITED BODY -- that is what `acknowledged-raw`
+     * records -- and the file holds the text it was published with.
+     * Those are different bytes, so there is something to send.
+     */
+    const file = versionAt(scratch(), '## Two\nas published\n', {
+      acknowledgedRaw: digestOf('## Two\nthe edit that was sent\n'),
+      sent: digestOf('the edit that was sent\n'),
+      cursor: 'w:3'
+    });
+    assert.strictEqual(
+      draftOf(file),
+      true,
+      'the file was put back to its published text and the block reported nothing pending'
+    );
+  });
+
+  /*
+   * THE TWO TWINS THAT STOP THAT FROM BEING SATISFIED BY "EVERYTHING IS
+   * A DRAFT". A version nobody has saved yet is measured against
+   * `written`; one whose bytes the store has acknowledged is not a draft
+   * at all.
+   */
+  it('does not call a version a draft before anything has been saved from it', () => {
+    const file = versionAt(scratch(), '## Two\nas published\n', {});
+    assert.strictEqual(draftOf(file), false, 'a freshly published version was reported as unsent work');
+  });
+
+  it('does not call a version a draft when its bytes are the ones the store took', () => {
+    const text = '## Two\nthe edit that was sent\n';
+    const file = versionAt(scratch(), text, {
+      acknowledgedRaw: digestOf(text),
+      sent: digestOf('the edit that was sent\n'),
+      cursor: 'w:3'
+    });
+    assert.strictEqual(draftOf(file), false, 'the bytes the store acknowledged were reported as unsent');
   });
 });

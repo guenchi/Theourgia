@@ -25,6 +25,22 @@
  */
 
 import * as assert from 'assert';
+import { assertRuledRefusal } from '../support/refusal-shape';
+
+/*
+ * SETTLING, FOR CELLS THAT ARE NOT ABOUT THE ORDER.
+ *
+ * The Saver no longer removes an answered entry itself: whoever builds
+ * one has to say what settling means, because the order -- write the
+ * record beside the file, THEN remove the request -- has to live in one
+ * named place and the Saver is not it. These cells are about sending and
+ * retrying rather than about that order, so they settle the plain way;
+ * the cells that ARE about it are in answering.test.ts, where settling
+ * goes through `Saving.recordAnswer`.
+ */
+function settling(outbox: Outbox): (req: string, cursor: string | null) => void {
+  return (req, cursor) => outbox.resolve(req, cursor);
+}
 import * as path from 'path';
 import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
@@ -41,7 +57,6 @@ import { Saver } from '../../src/saver';
 import { LosesTheAnswer } from '../support/lossy';
 import { clause, clauseValue, initWire, readEvent } from '../../src/wire';
 import { CorePin, RealStore, checkCorePin, pinCore } from '../support/real-core';
-import { TransportError } from '../../src/transport';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
 
@@ -191,7 +206,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      */
     const counting = new Counting(new CliTransport(store.config));
     const spy = new SpawnSpy();
-    const saver = new Saver(new Client(counting), outbox);
+    const saver = new Saver(new Client(counting), outbox, settling(outbox));
 
     const split = splitDocument(document, `${document.headingSrc}body2\n`);
     assert.strictEqual(split.ok, true);
@@ -256,7 +271,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
     const id = await idOfSection(store, 'Three  spaced');
     const outbox = new Outbox(path.join(store.root, 'outbox-replay.json'));
     outbox.load();
-    const saver = new Saver(store.client, outbox);
+    const saver = new Saver(store.client, outbox, settling(outbox));
 
     /*
      * The cursor the first request will carry has to be read before it
@@ -404,7 +419,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       new CliTransport(store.config),
       (verb) => verb === 'set'
     );
-    const blind = new Saver(new Client(losing), outbox);
+    const blind = new Saver(new Client(losing), outbox, settling(outbox));
     const lost = await blind.save(id, 'src', 'written but unheard\n');
     assert.strictEqual(lost.status, 'pending', lost.message);
     assert.strictEqual(outbox.pendingCount, 1, 'the unheard save was dropped');
@@ -441,7 +456,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       'the retry carries a different cursor, so it is a different request wearing the same name'
     );
 
-    const saver = new Saver(store.client, reloaded);
+    const saver = new Saver(store.client, reloaded, settling(reloaded));
     const outcomes = await saver.retry();
     assert.strictEqual(outcomes.length, 1);
     assert.strictEqual(
@@ -493,7 +508,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       'the client did not carry the record the replay named into its cursor'
     );
     const counting = new Counting(new CliTransport(store.config));
-    const next = new Saver(new Client(counting), reloaded);
+    const next = new Saver(new Client(counting), reloaded, settling(reloaded));
     const second = await next.save(id, 'src', 'and then this\n');
     assert.strictEqual(second.status, 'saved', second.message);
     const sent = counting.sent.find((c) => c[0] === 'set');
@@ -518,12 +533,12 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     outbox.load();
 
     const losing = new LosesTheAnswer(new CliTransport(store.config), (verb) => verb === 'set');
-    const blind = new Saver(new Client(losing), outbox);
+    const blind = new Saver(new Client(losing), outbox, settling(outbox));
     const lost = await blind.save(id, 'src', 'unheard again\n');
     assert.strictEqual(lost.status, 'pending', lost.message);
 
     const counting = new Counting(new CliTransport(store.config));
-    const saver = new Saver(new Client(counting), outbox);
+    const saver = new Saver(new Client(counting), outbox, settling(outbox));
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'replayed', retried[0].message);
 
@@ -794,23 +809,83 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
   });
 
   /*
-   * A NAME THE WIRE CANNOT CARRY, measured rather than supposed. The
-   * widened reader accepts every escape a conforming writer emits, but a
-   * SYMBOL still has to be a bare symbol after decoding -- a space, a
-   * parenthesis and a non-ASCII character are all refused. The core
-   * currently lets such a name into the store:
+   * ⚠️ THESE TWO CELLS ARE RED UNTIL THE CORE LANDS U8. That is
+   * deliberate and it is not a defect in this extension.
+   *
+   * WHAT WAS MEASURED against pin 9ecbd88e on 2026-09-12: the core now
+   * refuses a relation name the wire cannot carry, and nothing lands --
    *
    *   $ theourgia link <a> "has part" <b>
-   *   (error internal (condition "unexpected failure"))     <- and rc 0
+   *   (error malformed-intent (symbol-not-wire-safe (link "<a>" has\x20;part "<b>")))
    *   $ theourgia refs <b>
-   *   (ref (from "<a>") (rel has\x20;part) (via link))      <- it landed
+   *   (ref (from "<a>") (rel has-part) (via link))     <- only the ordinary one
    *
-   * so the answer says one thing and the store says another. Until the
-   * write path refuses it (queued for the core), the block that owns
-   * that edge cannot be read back by this client at all -- and this
-   * pins that it FAILS LOUDLY, naming the block, rather than coming back
-   * as a block with no edges.
+   * -- but the refusal echoes the offending symbol back USING THE VERY
+   * ESCAPE IT IS REFUSING, so this client cannot read the answer that is
+   * about it: what reaches the user is "the core's answer to link could
+   * not be read at line 1: bad token @65". A refusal nobody can read is
+   * a refusal nobody can act on, and it is unreadable precisely because
+   * its reason is "this cannot be read".
+   *
+   * THE RULING (U8, theourgia main session, Q2): the data of any error
+   * answer is wire-safe BY CONSTRUCTION. A refusal does not echo the raw
+   * intent; it describes it -- `(symbol-not-wire-safe (field rel)
+   * (spelling "1"))`, with the offending name given as a STRING. The
+   * whole `malformed-intent` family becomes position-plus-string.
+   *
+   * SO THE EXPECTATION HERE IS THE RULED SHAPE, NOT TODAY'S. These cells
+   * assert that the refusal comes back readable, as `ok: false`, naming
+   * the field and carrying the spelling. Until the core lands it they
+   * FAIL, and they say in their own failure text that they are waiting
+   * on the core rather than reporting a regression. They are not skipped
+   * and not special-cased: a cell that tolerated both shapes would go on
+   * passing after the change and would stop being evidence of anything.
+   *
+   * ⚠️ SO THIS SUITE IS NOT ALL-GREEN BY DESIGN. "0 failing" is not the
+   * gate for this delivery; "exactly these two, by these names" is.
+   *
+   * READING A STORE THAT ALREADY HOLDS SUCH AN EDGE is covered
+   * separately, by the byte-level twin in shapes.test.ts -- a store
+   * written before this rule, or imported from elsewhere, can still
+   * carry one, and this client must report it by name rather than as a
+   * block with no edges. That coverage does not depend on U8.
    */
+
+  /*
+   * THE REFUSAL, AS U8 RULES IT. Split out because both cells ask the
+   * same question of a different unspellable name, and a second copy of
+   * these assertions would be a second place for them to drift from the
+   * ruling.
+   */
+  async function refusalOf(
+    where: RealStore,
+    from: string,
+    name: string,
+    to: string,
+    field: string
+  ): Promise<void> {
+    let answer;
+    try {
+      answer = await where.client.request('link', [from, name, to]);
+    } catch (e) {
+      assert.fail(
+        `WAITING ON THE CORE (U8), not a regression here: the refusal of the relation name ` +
+          `${JSON.stringify(name)} could not be read by this client -- ${(e as Error).message}. ` +
+          'The core still echoes the offending symbol using the escape it is refusing. When U8 ' +
+          'lands, this cell passes with no change to it.'
+      );
+      return;
+    }
+    assert.strictEqual(answer.ok, false, `a name the wire cannot carry was accepted: ${answer.text}`);
+    /*
+     * THE ASSERTIONS LIVE IN test/support/refusal-shape.ts, and a
+     * witness in shapes.test.ts runs the same ones against the ruling's
+     * written-out example. A red cell's expectation is checked by
+     * nothing: without that witness a typo in the pattern would keep
+     * this red for ever, including after the core lands the change.
+     */
+    assertRuledRefusal(answer.text, name, field);
+  }
   /*
    * AND A NAME THE STORE ACCEPTS THAT THIS READER WILL NOT READ.
    *
@@ -866,14 +941,25 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     const before = await store.client.request('read', [from]);
     assert.strictEqual(before.ok, true, 'the block was unreadable before the numeric name');
 
-    await store.client.request('link', [from, '1', to]);
-
-    await assert.rejects(
-      () => store.client.request('read', [from]),
-      (e: unknown) =>
-        e instanceof TransportError && e.failure === 'unreadable' && e.message.includes(from),
-      'a block carrying a numeric-form edge name was read as an ordinary block'
+    /*
+     * NOTHING LANDED, AND THAT IS TRUE TODAY. It is asserted BEFORE the
+     * refusal's shape so that it is not lost behind the red below: the
+     * user's data depends on this half, and it does not depend on U8.
+     */
+    await store.client.request('link', [from, '1', to]).catch(() => undefined);
+    const after = await store.client.request('read', [from]);
+    assert.strictEqual(after.ok, true, 'the refused link left the block unreadable');
+    assert.strictEqual(
+      after.text.includes('x31'),
+      false,
+      `a name the write path refused is in the block anyway: ${after.text}`
     );
+    assert.ok(after.text.includes('has-part'), `the ordinary edge went too: ${after.text}`);
+
+    /*
+     * AND THE REFUSAL IS LEGIBLE -- red until U8 lands.
+     */
+    await refusalOf(store, from, '1', to, 'rel');
   }
 
   it('reports a block whose edge name the wire cannot carry, and names it', async () => {
@@ -918,30 +1004,33 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     const readBefore = await store.client.request('read', [from]);
     assert.strictEqual(readBefore.ok, true, 'a block with an ordinary edge was already unreadable');
 
-    await store.client.request('link', [from, 'has part', to]);
     /*
-     * The answer is not asserted: the core currently reports an internal
-     * error for a write that lands, which is the defect queued against
-     * it. What this cell is about is what the store then holds.
+     * NOTHING LANDED, on either side of the edge, and that is true
+     * today. Both queries are asked because a write path that refused
+     * the read side and kept the reference would satisfy one of them
+     * alone. This half does not depend on U8, so it is asserted first.
      */
-    /*
-     * `refs` of the other block carries the same unspellable name, so it
-     * is unreadable too -- and it names ITS subject, which is the block
-     * whose references were asked for.
-     */
-    await assert.rejects(
-      () => store.client.request('refs', [to]),
-      (e: unknown) =>
-        e instanceof TransportError && e.failure === 'unreadable' && e.message.includes(to),
-      'the reference query came back as an ordinary answer'
+    await store.client.request('link', [from, 'has part', to]).catch(() => undefined);
+    const refsAfter = await store.client.request('refs', [to]);
+    assert.strictEqual(refsAfter.ok, true, 'the refused link left the references unreadable');
+    assert.strictEqual(
+      refsAfter.text.includes('x20'),
+      false,
+      `a name the write path refused is in the references anyway: ${refsAfter.text}`
     );
+    const readAfter = await store.client.request('read', [from]);
+    assert.strictEqual(readAfter.ok, true, 'the refused link left the block unreadable');
+    assert.strictEqual(
+      readAfter.text.includes('x20'),
+      false,
+      `a name the write path refused is in the block anyway: ${readAfter.text}`
+    );
+    assert.ok(readAfter.text.includes('has-part'), `the ordinary edge went too: ${readAfter.text}`);
 
-    await assert.rejects(
-      () => store.client.request('read', [from]),
-      (e: unknown) =>
-        e instanceof TransportError && e.failure === 'unreadable' && e.message.includes(from),
-      'a block carrying an edge name the wire cannot spell was read as an ordinary block'
-    );
+    /*
+     * AND THE REFUSAL IS LEGIBLE -- red until U8 lands.
+     */
+    await refusalOf(store, from, 'has part', to, 'rel');
   });
 });
 
@@ -992,7 +1081,7 @@ describe('a session that writes to two stores keeps their cursors apart', functi
     const saverFor = async (store: RealStore): Promise<Saver> => {
       const outbox = new Outbox(sessions.outboxPathFor('S-two-stores', hash(store.store)));
       outbox.load();
-      return new Saver(store.client, outbox);
+      return new Saver(store.client, outbox, settling(outbox));
     };
 
     const idOf = async (store: RealStore): Promise<string> => {

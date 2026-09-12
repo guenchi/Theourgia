@@ -533,3 +533,170 @@ describe('a prefix with CRLF above a body without', () => {
     assert.strictEqual(decision.send, false, 'an edited front matter was sent as though it were the body');
   });
 });
+
+/*
+ * X1c ⑨: THE HEADING DID NOT CHANGE; ITS LINE ENDINGS DID.
+ *
+ * A save is split against the prefix recorded when the version was
+ * published. That comparison was byte-exact on line endings except in
+ * one case, and two ordinary shapes were therefore refused as "the front
+ * matter or heading changed" -- by the extension, about a change the
+ * user had not made, with no way to act on the message.
+ *
+ * A heading's line endings are the editor's business: nobody types them,
+ * so they cannot be the evidence that somebody edited the heading.
+ */
+describe('X1c ⑨ line endings in the heading are not an edit to the heading', () => {
+  function onDisk(dir: string, text: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, text, 'utf8');
+    return file;
+  }
+
+  /*
+   * SHAPE ONE: the record holds a CRLF prefix -- the version was
+   * published while the editor was writing CRLF -- and the buffer is now
+   * LF. `bodyHasCrlf` is false, but the snapshot holds no CRLF either,
+   * so nothing was normalised and a CRLF prefix was compared with LF
+   * text.
+   */
+  it('sends the body when the record’s heading is CRLF and the buffer is LF', () => {
+    const dir = scratch();
+    const text = '## Two\nbody\n';
+    const file = onDisk(dir, text);
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      baseline('## Two\r\n')
+    );
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\n');
+    }
+  });
+
+  /*
+   * SHAPE TWO: the block's own body really does use CRLF, so
+   * normalisation is off by rule -- and then the buffer's heading and
+   * the record's heading differed in their line endings in either
+   * direction.
+   */
+  it('sends the body verbatim when the block uses CRLF and the record’s heading is LF', () => {
+    const dir = scratch();
+    const text = '## Two\r\nbody\r\nmore\r\n';
+    const file = onDisk(dir, text);
+    const sidecar = { ...baseline('## Two\n'), bodyHasCrlf: true };
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), sidecar);
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      /*
+       * VERBATIM. The block's body uses CRLF, so folding it would be
+       * this extension rewriting the user's text on its way out.
+       */
+      assert.strictEqual(decision.src, 'body\r\nmore\r\n');
+      assert.strictEqual(decision.normalised, false);
+    }
+  });
+
+  it('sends the body verbatim when the block uses CRLF and the record’s heading does too', () => {
+    const dir = scratch();
+    const text = '## Two\r\nbody\r\n';
+    const file = onDisk(dir, text);
+    const sidecar = { ...baseline('## Two\r\n'), bodyHasCrlf: true };
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), sidecar);
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\r\n');
+    }
+  });
+
+  /*
+   * THE CUT IS MADE IN THE ORIGINAL TEXT. Folding is not
+   * length-preserving: an index into the folded text used on the
+   * original cuts a CRLF in half once for every line ending before it,
+   * which shows up as a body beginning with a stray newline. A
+   * multi-line heading is the shape where that is visible.
+   */
+  it('cuts the body at the right place when the heading has several CRLF lines', () => {
+    const dir = scratch();
+    const text = '---\r\ntitle: t\r\n---\r\n\r\n## Two\r\nbody\r\n';
+    const file = onDisk(dir, text);
+    const sidecar = { ...baseline('---\n title: t\n'), bodyHasCrlf: true };
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      { ...sidecar, prefix: '---\ntitle: t\n---\n\n## Two\n' }
+    );
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\r\n', 'the body was cut at an index from the folded text');
+    }
+  });
+
+  /*
+   * AND THE NORMALISATION REPORTED IS ABOUT THE BODY. It was computed
+   * from the whole snapshot, so a document whose heading used CRLF and
+   * whose body did not announced a normalisation that never touched a
+   * byte of what was sent.
+   */
+  it('does not announce a normalisation when only the heading had CRLF', () => {
+    const dir = scratch();
+    const text = '## Two\r\nbody\n';
+    const file = onDisk(dir, text);
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      baseline('## Two\n')
+    );
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\n');
+      assert.strictEqual(decision.normalised, false, 'a normalisation was announced that did nothing');
+    }
+  });
+
+  it('does announce one when the body itself had CRLF and the block’s does not', () => {
+    const dir = scratch();
+    const text = '## Two\nbody\r\nmore\r\n';
+    const file = onDisk(dir, text);
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      baseline('## Two\n')
+    );
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\nmore\n');
+      assert.strictEqual(decision.normalised, true);
+    }
+  });
+
+  /*
+   * THE GREEN TWIN'S OPPOSITE: A HEADING THE USER REALLY DID EDIT IS
+   * STILL REFUSED. Without this the whole section is satisfied by a
+   * build that stopped comparing the prefix at all, which is the one
+   * change that would pass every cell above and send a body split at the
+   * wrong place.
+   */
+  it('still refuses when the heading’s text changed and only its text changed', () => {
+    const dir = scratch();
+    const text = '## Three\nbody\n';
+    const file = onDisk(dir, text);
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      baseline('## Two\n')
+    );
+    assert.deepStrictEqual(decision, {
+      send: false,
+      refusal: { because: 'prefix-changed', prefix: '## Two\n' }
+    });
+  });
+
+  it('still refuses when the heading is gone entirely', () => {
+    const dir = scratch();
+    const text = 'body with no heading at all\n';
+    const file = onDisk(dir, text);
+    const decision = new Saving(new RecordingFs()).decide(
+      document(file, [text]),
+      baseline('## Two\r\n')
+    );
+    assert.strictEqual(decision.send, false, 'a buffer with no heading was split against one');
+  });
+});

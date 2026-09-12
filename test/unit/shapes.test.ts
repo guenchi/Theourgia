@@ -38,7 +38,12 @@ import {
 import { TransportError } from '../../src/transport';
 import { Client } from '../../src/client';
 import { Says } from '../support/says';
-import { Datum, asInteger, initWire, wire } from '../../src/wire';
+import {
+  assertRuledRefusal,
+  ESCAPED_ECHO,
+  RULED_EXAMPLE
+} from '../support/refusal-shape';
+import { Datum, asInteger, initWire, parseAnswers, wire } from '../../src/wire';
 
 describe('an outline line this client cannot read stops the outline', () => {
   before(async () => {
@@ -447,5 +452,69 @@ describe('a symbol name this reader refuses stops the answer and names the block
      */
     const datum = answer.answers[0] as { name: string }[];
     assert.strictEqual(datum[2].name, '--store', 'the escaped name did not decode');
+  });
+});
+
+/*
+ * U8: THE WITNESS FOR A RED CELL'S EXPECTATION.
+ *
+ * Two cells in real-core.test.ts are red on purpose: they assert the
+ * shape the main session ruled for a refusal, and the core has not
+ * landed it yet. A red cell's expectation is checked by NOTHING -- a
+ * stray bracket or a wrong field name keeps it red for ever, and the day
+ * the core changes, the cell goes on failing while still looking like it
+ * is waiting. That has happened in this tree before.
+ *
+ * So the same assertions are run here against the ruling's own example,
+ * with no core involved. This cell passing is the only evidence that the
+ * red over there is about the core and not about a typo in the pattern.
+ */
+describe('U8 the shape a refusal must come back in', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  it('accepts the answer the ruling describes, and reads it with the wire reader', () => {
+    /*
+     * READ FIRST. The point of U8 is that the answer PARSES; asserting
+     * on a string the reader would refuse would be checking the wrong
+     * property with the right words.
+     */
+    const read = parseAnswers(`${RULED_EXAMPLE}\n`);
+    assert.strictEqual(read.length, 1, 'the ruled answer did not read back as one datum');
+    assertRuledRefusal(RULED_EXAMPLE, '1', 'rel');
+  });
+
+  /*
+   * AND THE NEGATIVE WITNESS: what the core answers TODAY must not
+   * satisfy it. Without this the assertions could be vacuous -- a set of
+   * patterns that everything matches would pass the cell above and would
+   * make the red cells green against the unchanged core.
+   */
+  it('refuses the escaped echo the core answers today', () => {
+    assert.throws(
+      () => parseAnswers(`${ESCAPED_ECHO}\n`),
+      'the escape this is all about was read without complaint'
+    );
+    assert.throws(
+      () => assertRuledRefusal(ESCAPED_ECHO, '1', 'rel'),
+      'the shape check accepts the answer it exists to reject'
+    );
+  });
+
+  /*
+   * AND IT IS ABOUT THE SPELLING BEING A STRING, not about the name
+   * appearing somewhere. A bare symbol is exactly what U8 rules out.
+   */
+  it('refuses a spelling given as a symbol rather than a string', () => {
+    assert.throws(() =>
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (field rel) (spelling 1)))', '1', 'rel')
+    );
+  });
+
+  it('refuses a refusal that does not say which position was wrong', () => {
+    assert.throws(() =>
+      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (spelling "1")))', '1', 'rel')
+    );
   });
 });

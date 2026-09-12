@@ -579,6 +579,89 @@ describe('C8 the claim token is complete when it is visible', () => {
   });
 });
 
+/*
+ * X1c ⑧: WHAT IS IN THE TOKEN, not only that one exists.
+ *
+ * The cells above count tokens and compare sequence numbers, and every
+ * one of them passes whatever the file contains. But the CONTENT is what
+ * the next window reads to decide whether the holder is still running:
+ * `claim` reads the token, judges that name's liveness, and refuses with
+ * `already-claimed` when it cannot show the holder is gone. A token
+ * naming the wrong window -- or nothing -- makes that judgement about
+ * somebody else, and the two wrong answers are both bad: a name that
+ * reads as dead strands nothing and double-sends, a name that reads as
+ * alive strands the queue for ever.
+ */
+describe('X1c ⑧ the claim token names the window that took it', () => {
+  it('writes the claiming session’s own id into the token', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const answer = await sessions.claim('S-old');
+    assert.ok(answer.claimed, JSON.stringify(answer));
+    if (answer.claimed) {
+      assert.strictEqual(
+        fs.readFileSync(answer.token, 'utf8').trim(),
+        'S-mine',
+        'the token does not say which window holds the claim'
+      );
+    }
+  });
+
+  /*
+   * AND THE NAME IS READ BACK BY THE MECHANISM THAT DEPENDS ON IT. This
+   * is the half a content check alone cannot give: a second, LIVE window
+   * holding the token must make a third window refuse. Reading the file
+   * proves what was written; this proves the written name is what the
+   * refusal is computed from.
+   */
+  it('refuses a second takeover because the token’s holder is still running', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const holder = new Sessions(new RecordingFs(), storage);
+    holder.begin('S-holder', []);
+    const won = await holder.claim('S-old');
+    assert.ok(won.claimed);
+
+    const next = new Sessions(new RecordingFs(), storage);
+    next.begin('S-next', []);
+    assert.deepStrictEqual(
+      await next.claim('S-old'),
+      { claimed: false, because: 'already-claimed' },
+      'a queue whose holder is still running was taken over a second time'
+    );
+  });
+
+  /*
+   * THE GREEN TWIN OF THAT REFUSAL: when the token names a window that
+   * is GONE, the next one carries on. Without this the cell above is
+   * satisfied by a build that refuses every second claim regardless of
+   * what the token says, which is the stranded queue the sequence
+   * numbers exist to prevent.
+   */
+  it('carries on when the token names a window that has died', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const holder = new Sessions(new RecordingFs(), storage);
+    holder.begin('S-holder', []);
+    assert.ok((await holder.claim('S-old')).claimed);
+    makeSession(storage, 'S-holder', { pid: 999999, startedAt: 1000 });
+
+    const next = new Sessions(new RecordingFs(), storage);
+    next.begin('S-next', []);
+    const second = await next.claim('S-old');
+    assert.ok(second.claimed, 'the queue was stranded although its holder is gone');
+    if (second.claimed) {
+      assert.strictEqual(
+        fs.readFileSync(second.token, 'utf8').trim(),
+        'S-next',
+        'the new token still names the window that died'
+      );
+    }
+  });
+});
+
 describe('C10 what the confirmation says, and what discarding touches', () => {
   it('carries both fixed sentences with the answer', async () => {
     const storage = scratch();
@@ -651,6 +734,81 @@ describe('C20 adopting a directory that is discarded underneath it', () => {
  * green, because every existing cell wrote a well-formed record. A fix
  * verified only by the reasoning that produced it is not guarded.
  */
+/*
+ * X1c ⑤: A DIRECTORY WITH NO RECORD IN IT IS NOT A DEAD SESSION EITHER.
+ *
+ * `discard` already refused this: a directory with no `session.json` is
+ * something to lose with nothing to judge it by. `claim` did not, and
+ * the asymmetry ran the wrong way -- a refused discard leaves files on
+ * disk, while a claim that should have been refused produces a SECOND
+ * sender for requests the first window is still holding.
+ *
+ * THE GAP IS ON THE PATH EVERY WINDOW TAKES, not an exotic one:
+ * `begin` makes the directory and then writes the record, so a window
+ * starting up is in exactly this state for as long as that takes.
+ */
+describe('X1c ⑤ a session directory with no record is not a dead session', () => {
+  it('refuses to take over a directory that holds no record at all', async () => {
+    const storage = scratch();
+    /*
+     * A QUEUE IS IN IT, so the refusal cannot be explained away as "there
+     * was nothing there anyway" -- this is the shape where claiming
+     * costs something.
+     */
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-starting', 'h'), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage, 'sessions', 'S-starting', 'h', 'outbox.json'),
+      JSON.stringify({ cursor: null, entries: [{ req: 'r1', blockId: 'a.1', field: 'src', text: 'x' }] }),
+      'utf8'
+    );
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    assert.deepStrictEqual(
+      await sessions.claim('S-starting'),
+      { claimed: false, because: 'undecidable' },
+      'a window that had made its directory and not yet written its record was taken for dead'
+    );
+  });
+
+  it('writes no token when it refuses, so the next attempt is not told it is claimed', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-starting'), { recursive: true });
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    await sessions.claim('S-starting');
+    const left = fs
+      .readdirSync(path.join(storage, 'sessions'))
+      .filter((name) => name.startsWith('S-starting.claim.'));
+    assert.deepStrictEqual(left, [], 'a refused claim left a token behind');
+  });
+
+  /*
+   * AND THE OTHER HALF: a session id nothing on this disk has ever seen
+   * is `not-found`, the word `discard` uses for it, rather than a token
+   * naming a session that does not exist.
+   */
+  it('answers not-found for a session that was never here', async () => {
+    const storage = scratch();
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    assert.deepStrictEqual(await sessions.claim('S-never'), { claimed: false, because: 'not-found' });
+  });
+
+  /*
+   * THE GREEN TWIN. A rule that refuses is only worth having if the
+   * thing it is meant to allow still goes through: a dead session WITH a
+   * record is claimed, on the same disk, by the same code.
+   */
+  it('still takes over a dead session that did write a record', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const answer = await sessions.claim('S-old');
+    assert.strictEqual(answer.claimed, true, 'the refusal took the ordinary takeover with it');
+  });
+});
+
 describe('a session whose record cannot be read is not treated as gone', () => {
   for (const [what, contents] of [
     ['half-written', '{"sessionId":"S-broken","pid":'],
