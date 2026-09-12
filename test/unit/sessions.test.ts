@@ -55,6 +55,7 @@ import { RecordingFs } from '../support/recording-fs';
  * this file stays readable.
  */
 const TAB = String.fromCharCode(9);
+const NUL = String.fromCharCode(0);
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-sessions-'));
@@ -2114,6 +2115,15 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    * entry. The old rule called that "arrived here", and a user acting on
    * it may discard the only copy.
    */
+  /*
+   * ⚠️ WHAT THIS ESTABLISHES, AND WHAT IT CANNOT. It is about the
+   * classification AFTER something threw: the source mark is made to
+   * fail, and the question is whether a destination that kept nothing is
+   * then reported as having it. When NOTHING throws, a destination that
+   * silently keeps nothing is reported as `imported` -- and no ledger
+   * can know otherwise, because the only evidence is the destination's
+   * own answer and it was never asked for one. Named in review.
+   */
   it('says it did not move when the destination returned and kept nothing', async () => {
     const storage = scratch();
     makeSession(storage, 'S-dead');
@@ -2180,6 +2190,13 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    */
   it('refuses a store name carrying a control character', () => {
     const sessions = new Sessions(new RecordingFs(), scratch());
+    /*
+     * ⚠️ NUL FIRST, because it is the one this guard was written for --
+     * a check that rejected only tab and newline would pass this cell
+     * while admitting the character that reached the read. Found in
+     * review.
+     */
+    assert.throws(() => sessions.outboxPathFor('S-dead', `a${NUL}b`), /control character/);
     assert.throws(() => sessions.outboxPathFor('S-dead', `a${TAB}b`), /control character/);
     assert.throws(() => sessions.outboxPathFor('S-dead', 'a\nb'), /control character/);
     assert.ok(sessions.outboxPathFor('S-dead', 'store-a').includes('store-a'));
@@ -2190,6 +2207,54 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    * temporary file was named after the process alone -- the same name on
    * every call -- and a failed rename left it there for ever.
    */
+  /*
+   * ⚠️ AND A WRITE THAT FAILS PART-WAY LEAVES NOTHING EITHER. The write
+   * was outside the cleanup, so a partial one left the temporary beside
+   * the record -- the same leak the rename's cleanup was added for, a
+   * step earlier. The cell only injected a rename failure and passed.
+   */
+  it('clears up after itself when the identity cannot even be written', () => {
+    const storage = scratch();
+    const refusing = new (class extends RecordingFs {
+      public writeDurably(file: string, text: string): void {
+        if (file.includes('session.json')) {
+          super.writeDurably(file, text);
+          throw new Error('the write fell over after touching it');
+        }
+        super.writeDurably(file, text);
+      }
+    })();
+    const sessions = new Sessions(refusing, storage);
+    assert.throws(() => sessions.begin('S-mine', []), /fell over/);
+    const left = fs
+      .readdirSync(path.join(storage, 'sessions', 'S-mine'))
+      .filter((name) => name.includes('.tmp'));
+    assert.deepStrictEqual(left, [], `a failed write left ${left.join(', ')} behind`);
+  });
+
+  /*
+   * AND THE TEMPORARY NAME IS NOT SHARED BY TWO WRITERS. It was
+   * `<file>.<pid>.tmp` -- the same name on every call in one process --
+   * so two of them would write over each other's half-made record.
+   */
+  it('gives each publication its own temporary name', () => {
+    const storage = scratch();
+    const names: string[] = [];
+    const watching = new (class extends RecordingFs {
+      public writeDurably(file: string, text: string): void {
+        if (file.includes('session.json')) {
+          names.push(file);
+        }
+        super.writeDurably(file, text);
+      }
+    })();
+    const sessions = new Sessions(watching, storage);
+    sessions.begin('S-mine', []);
+    sessions.begin('S-mine', ['/stores/one']);
+    assert.strictEqual(names.length, 2, 'the record was not published twice');
+    assert.notStrictEqual(names[0], names[1], 'two publications shared one temporary name');
+  });
+
   it('clears up after itself when the identity cannot be published', () => {
     const storage = scratch();
     const refusing = new (class extends RecordingFs {
@@ -2206,5 +2271,80 @@ describe('review 28 the destination is asked where the entry ended up', () => {
       .readdirSync(path.join(storage, 'sessions', 'S-mine'))
       .filter((name) => name.includes('.tmp'));
     assert.deepStrictEqual(left, [], `a failed publication left ${left.join(', ')} behind`);
+  });
+});
+
+
+/*
+ * REVIEW ROUND 29: PRESENCE AFTERWARDS DOES NOT SAY WHO PUT IT THERE.
+ */
+describe('review 29 an entry that was already there is not one that arrived', () => {
+  function oneRequest(storage: string, id: string, where: string): void {
+    const dir = path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'r1',
+            cursor: 'w:1',
+            id: 'a.1',
+            field: 'src',
+            payload: 'x',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          }
+        ]
+      }),
+      'utf8'
+    );
+  }
+
+  /*
+   * ⚠️ THE FIRST QUESTION THROWS AND A LATER ONE ANSWERS "YES". Nothing
+   * was adopted in this attempt -- the entry was already there. Calling
+   * that an arrival told the user their work had just been rescued by a
+   * takeover that moved nothing.
+   */
+  it('calls it a duplicate when the first question threw and it was there all along', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    oneRequest(storage, 'S-dead', 'store-a');
+    let asked = 0;
+    let adopted = 0;
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed);
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          {
+            has: () => {
+              asked += 1;
+              if (asked === 1) {
+                throw new Error('this window could not look just then');
+              }
+              return true;
+            },
+            adopt: () => {
+              adopted += 1;
+            }
+          },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.strictEqual(adopted, 0, 'the fixture adopted something, so this is a different case');
+    assert.strictEqual(
+      led.skippedDuplicate,
+      1,
+      `an entry nothing moved was reported as having arrived: ${JSON.stringify(led)}`
+    );
+    assert.strictEqual(led.movedButUnmarked, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
   });
 });

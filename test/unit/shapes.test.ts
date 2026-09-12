@@ -809,7 +809,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
       skippedDuplicate: /already been carried across/,
       leftOtherStore: /belong to other stores/,
       leftUnknownStore: /older version of this extension/,
-      unreadableQueue: /could not be inspected/,
+      unreadableQueue: /usable queue could not be loaded/,
       failedToMove: /could not be moved/,
       movedButUnmarked: /arrived here/,
       outcomeUnknown: /could not be accounted for/
@@ -833,8 +833,16 @@ describe('every bucket a takeover counts is something the user is told', () => {
        * Observed 5" satisfied both -- measured in review. What has to be
        * true is that the number belongs to the sentence.
        */
+      /*
+       * ⚠️ SPLIT ON EVERY SENTENCE ENDING, and require the count where
+       * these sentences actually put it. Splitting on a full stop alone
+       * let "0 could not be moved! Observed 5." pass, and looking for
+       * the digit anywhere in the sentence accepted "0.5". Every one of
+       * these sentences opens with its own number, which is the property
+       * to assert.
+       */
       const sentence = text
-        .split(/(?<=\.)\s+/)
+        .split(/(?<=[.!?])\s+/)
         .find((part) => meanings[name].test(part));
       assert.ok(
         sentence !== undefined,
@@ -842,10 +850,29 @@ describe('every bucket a takeover counts is something the user is told', () => {
       );
       assert.match(
         sentence ?? '',
-        /(^|\D)5(\D|$)/,
+        /(^|\s)5(\s|$|[^\d.])/,
         `${name}'s sentence does not carry its own count: ${sentence}`
       );
     }
+  });
+
+  /*
+   * ⚠️ AND THE REPEAT GUARANTEE STAYS ATTRIBUTED. The arrival sentence
+   * used to promise that nothing is sent twice, which this layer cannot
+   * know -- the other window's copy is still unmarked, so a later
+   * takeover can carry it again. What is true belongs to the store, and
+   * the cells above check the phrase and the count, not this.
+   */
+  it('does not promise that nothing is sent twice', () => {
+    const ledger = emptyLedger();
+    ledger.movedButUnmarked = 2;
+    ledger.observed = 2;
+    const text = adoptedNotice('S-dead', ledger, false).text;
+    assert.ok(
+      !/nothing is sent twice/i.test(text),
+      `a guarantee this layer cannot make is back in the sentence: ${text}`
+    );
+    assert.match(text, /store recognises a request it has already applied/);
   });
 
   /*

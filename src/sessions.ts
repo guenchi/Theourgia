@@ -580,8 +580,14 @@ export class Sessions {
      * written; this did not. Found in review.
      */
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-    this.files.writeDurably(temporary, `${JSON.stringify(identity, null, 2)}\n`);
     try {
+      /*
+       * ⚠️ THE WRITE IS INSIDE THE CLEANUP TOO. It was outside, so a
+       * write that created some bytes and then threw left the temporary
+       * beside the record -- the same leak the rename's cleanup was
+       * added for, one step earlier. Found in review.
+       */
+      this.files.writeDurably(temporary, `${JSON.stringify(identity, null, 2)}\n`);
       this.files.rename(temporary, file);
     } catch (e) {
       /*
@@ -738,9 +744,17 @@ export class Sessions {
      * ⚠️ AND NO CONTROL CHARACTER. A NUL cannot occur in a filename on
      * any platform this runs on, and one in a store name got as far as
      * the read, where node refuses it -- and the takeover then counted
-     * that as one more queue it could not read, reporting a file that
-     * was never there. A name the filesystem cannot hold is refused
-     * where names arrive. Found in review.
+     * that as one more queue it could not inspect, reporting a path that
+     * was never there. Found in review.
+     *
+     * ⚠️ WHAT THESE TWO CHECKS ARE, EXACTLY: a name is one path
+     * component under both platforms' rules, and holds no control
+     * character. They are NOT a test of filesystem validity -- a
+     * 256-byte name, `a?b`, or `CON` all pass here and some filesystems
+     * will refuse them -- and they reject a tab, which POSIX allows.
+     * Production names are digests, so neither gap is reachable from
+     * this extension; the point of writing it down is that the next
+     * caller should not read these as "the filesystem will take it".
      */
     if (/[\u0000-\u001f]/.test(storeHash)) {
       throw new Error(
@@ -1169,13 +1183,25 @@ export class Sessions {
    */
   private whereItEndedUp(
     into: ImportTarget,
-    req: string
-  ): 'movedButUnmarked' | 'failedToMove' | 'outcomeUnknown' {
+    req: string,
+    step: 'asking' | 'moving'
+  ): 'movedButUnmarked' | 'failedToMove' | 'skippedDuplicate' | 'outcomeUnknown' {
+    let there: boolean;
     try {
-      return into.has(req) ? 'movedButUnmarked' : 'failedToMove';
+      there = into.has(req);
     } catch (e) {
       return 'outcomeUnknown';
     }
+    if (!there) {
+      return 'failedToMove';
+    }
+    /*
+     * IT IS THERE. Whether this attempt PUT it there is a different
+     * question, and the step that failed is what answers it: a failure
+     * before anything was adopted means it was already present, which is
+     * a duplicate and not an arrival.
+     */
+    return step === 'moving' ? 'movedButUnmarked' : 'skippedDuplicate';
   }
 
   /*
@@ -1280,6 +1306,15 @@ export class Sessions {
        * arrived. A user acting on that would go looking for it where it
        * is not.
        */
+      /*
+       * ⚠️ WHICH STEP FAILED IS KEPT, because presence afterwards does
+       * not say who put it there. The first question can throw and a
+       * later one answer "yes" -- and that was reported as "it arrived",
+       * over an attempt in which nothing was ever adopted. The entry was
+       * already there; that is a duplicate, not a delivery. Found in
+       * review.
+       */
+      let step: 'asking' | 'moving' = 'asking';
       try {
         /*
          * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
@@ -1290,6 +1325,7 @@ export class Sessions {
           ledger.skippedDuplicate += 1;
           continue;
         }
+        step = 'moving';
         into.adopt({ ...entry });
         source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
         ledger.imported += 1;
@@ -1306,7 +1342,7 @@ export class Sessions {
          * only evidence there is; when it cannot give one either, that
          * is a third outcome and not a guess.
          */
-        ledger[this.whereItEndedUp(into, entry.req)] += 1;
+        ledger[this.whereItEndedUp(into, entry.req, step)] += 1;
       }
     }
   }

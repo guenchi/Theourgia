@@ -710,9 +710,17 @@ export function adoptedNotice(
      * saying a FILE could not be read asserts that a file is there,
      * which none of those establish. Found in review.
      */
+    /*
+     * ⚠️ AND THE SENTENCE FITS BOTH WAYS A PATH CAN FAIL. "Could not be
+     * inspected" overstates a file that WAS opened and read and whose
+     * contents did not validate; "could not be read" overstated a path
+     * that holds no file at all. What is true of both, and is what the
+     * user needs, is that no queue could be loaded from there and
+     * nothing was taken. Found in review.
+     */
     parts.push(
-      `${ledger.unreadableQueue} of its queue path(s) could not be inspected, so whether there is ` +
-        'anything in them is not known and nothing was taken from them.'
+      `a usable queue could not be loaded from ${ledger.unreadableQueue} of its path(s), and ` +
+        'nothing was taken from them.'
     );
   }
   if (ledger.failedToMove > 0) {
@@ -736,10 +744,16 @@ export function adoptedNotice(
      * with the second one, which is the same guarantee the forced
      * takeover rests on.
      */
+    /*
+     * ⚠️ "WAS NOT CONFIRMED", NOT "COULD NOT BE MARKED". When the
+     * destination stored the entry and then threw, the mark was never
+     * ATTEMPTED -- saying it failed sends the reader to look at
+     * permissions on a file nothing tried to write. Found in review.
+     */
     parts.push(
-      `${ledger.movedButUnmarked} arrived here, but the other window’s copy could not be marked ` +
-        'as handed over, so a later takeover may carry them again. The store recognises a ' +
-        'request it has already applied by its id and does not do the work twice.'
+      `${ledger.movedButUnmarked} arrived here, and the other window’s copy was not confirmed as ` +
+        'handed over, so a later takeover may carry them again. The store recognises a request ' +
+        'it has already applied by its id and does not do the work twice.'
     );
   }
   if (ledger.outcomeUnknown > 0) {
