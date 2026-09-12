@@ -418,6 +418,25 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     reloaded.load();
     assert.strictEqual(reloaded.pendingCount, 1);
     assert.strictEqual(reloaded.entries[0].payload, 'written but unheard\n');
+    /*
+     * C14: THE SAME REQUEST, NOT AN EQUIVALENT ONE. A build that minted
+     * a fresh id and cursor for the retry would reach the store with a
+     * request it has never seen, and the store would apply the body a
+     * SECOND time -- the log length below would still be checked, but
+     * only after the damage. What makes the retry safe is that the
+     * identity survived the restart, so it is asserted here rather than
+     * inferred from the answer.
+     */
+    assert.strictEqual(
+      reloaded.entries[0].req,
+      outbox.entries[0].req,
+      'the retry carries a different request id than the one the store applied'
+    );
+    assert.strictEqual(
+      reloaded.entries[0].cursor,
+      outbox.entries[0].cursor,
+      'the retry carries a different cursor, so it is a different request wearing the same name'
+    );
 
     const saver = new Saver(store.client, reloaded);
     const outcomes = await saver.retry();

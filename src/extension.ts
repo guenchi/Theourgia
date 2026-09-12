@@ -34,6 +34,7 @@ import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './co
 import { documentPathFor, hasUncommittedWork, markCommitted, writeDocument } from './documents';
 import { Node, StoreModel } from './model';
 import { OpenBuffers } from './open';
+import { placeReading } from './placing';
 import { Outbox, outboxPathFor } from './outbox';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -466,22 +467,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * user.
      */
     /*
-     * COMPARED TO `taken`, NOT TESTED FOR TRUTH. This returns which kind
-     * of event outranked the registration, and every one of those
-     * answers is a non-empty string: `!admission` was false for all of
-     * them, so a losing open went on writing the file. The compiler
-     * accepts that expression, which is why it is written out.
+     * THE CLAIM, THE WRITE AND THE OPENING ARE ONE STEP, and it lives in
+     * placing.ts where a cell can drive it. What is left here is the
+     * part that is genuinely about this extension: which editor, and
+     * what to say when the reading was overtaken.
      */
-    const admission = open.register(file, document, ticket, () =>
-      writeDocument(file, document)
+    const placement = await placeReading(
+      open,
+      file,
+      document,
+      ticket,
+      () => writeDocument(file, document),
+      {
+        openDocument: () => Promise.resolve(vscode.workspace.openTextDocument(uri)),
+        setLanguage: (d: vscode.TextDocument) =>
+          Promise.resolve(vscode.languages.setTextDocumentLanguage(d, 'markdown')),
+        reveal: (d: vscode.TextDocument) =>
+          Promise.resolve(vscode.window.showTextDocument(d, { preview: false }))
+      }
     );
-    if (admission !== 'taken') {
+    if (!placement.placed) {
       /*
        * A READ THAT WON IS ALREADY ON THE SCREEN; a save that won left
        * nothing in its place, and the person who asked for this block
        * would otherwise see their click do nothing at all.
        */
-      if (admission === 'superseded-by-save') {
+      if (placement.by === 'save') {
         show(supersededNotice(id));
       }
       return;
@@ -491,9 +502,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * reconciled about it before no longer applies.
      */
     unreconciled.delete(file);
-    const opened = await vscode.workspace.openTextDocument(uri);
-    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
-    await vscode.window.showTextDocument(opened, { preview: false });
   }
 
   async function onSaved(saved: vscode.TextDocument): Promise<void> {

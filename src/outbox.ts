@@ -36,7 +36,7 @@
  * fsync.
  */
 
-import * as fs from 'fs';
+import { FileOps, nodeFileOps } from './fsops';
 import * as path from 'path';
 
 export const OUTBOX_VERSION = 1;
@@ -73,28 +73,13 @@ interface OutboxFile {
 }
 
 /*
- * A DIRECTORY THAT CANNOT BE SYNCED IS NOT A FAILED WRITE. Some file
- * systems refuse to open a directory for this, and the bytes are already
- * down; failing the save at that point would report an error about a
- * record that had in fact been written.
+ * THE DIRECTORY SYNC MOVED TO `fsops`, with the reason it swallows a
+ * failure: some file systems refuse to open a directory for it, and the
+ * bytes are already down -- failing the save there would report an
+ * error about a record that had in fact been written. It lives with the
+ * other operations now so that what this process did to a path can be
+ * counted in one place.
  */
-function syncDirectory(directory: string): void {
-  let handle: number | null = null;
-  try {
-    handle = fs.openSync(directory, 'r');
-    fs.fsyncSync(handle);
-  } catch (e) {
-    return;
-  } finally {
-    if (handle !== null) {
-      try {
-        fs.closeSync(handle);
-      } catch (ignored) {
-        return;
-      }
-    }
-  }
-}
 
 function emptyFile(): OutboxFile {
   return { version: OUTBOX_VERSION, cursor: null, entries: [] };
@@ -153,11 +138,13 @@ function andWhatToDo(file: string, fault: OutboxFault): string {
 
 export class Outbox {
   private readonly file: string;
+  private readonly files: FileOps;
   private data: OutboxFile;
   private readable: boolean;
 
-  constructor(file: string) {
+  constructor(file: string, files: FileOps = nodeFileOps) {
     this.file = file;
+    this.files = files;
     this.data = emptyFile();
     /*
      * NOT READABLE UNTIL IT HAS BEEN READ. A queue that was never loaded
@@ -188,7 +175,7 @@ export class Outbox {
   public load(): void {
     let text: string;
     try {
-      text = fs.readFileSync(this.file, 'utf8');
+      text = this.files.readText(this.file);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
         this.data = emptyFile();
@@ -355,24 +342,18 @@ export class Outbox {
   private write(next: OutboxFile): void {
     const directory = path.dirname(this.file);
     try {
-      fs.mkdirSync(directory, { recursive: true });
+      this.files.makeDirectory(directory);
     } catch (e) {
       throw new OutboxWriteError(`the outbox directory ${directory} could not be made: ${String(e)}`);
     }
     const temporary = `${this.file}.${process.pid}.tmp`;
     try {
-      const handle = fs.openSync(temporary, 'w');
-      try {
-        fs.writeFileSync(handle, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-        fs.fsyncSync(handle);
-      } finally {
-        fs.closeSync(handle);
-      }
-      fs.renameSync(temporary, this.file);
-      syncDirectory(directory);
+      this.files.writeDurably(temporary, `${JSON.stringify(next, null, 2)}\n`);
+      this.files.rename(temporary, this.file);
+      this.files.syncDirectory(directory);
     } catch (e) {
       try {
-        fs.unlinkSync(temporary);
+        this.files.unlink(temporary);
       } catch (ignored) {
         /*
          * The temporary file is only litter; the failure to report is

@@ -215,20 +215,20 @@ exists and proves less than its name suggests, or where no cell exists at all.
   outside `activate` precisely so a cell can drive the interleaving the editor cannot be
   made to produce.
 
-* **The wiring between `openBlock` and the baseline registry.** `src/open.ts` decides which
-  reading of a block a save is measured against, and its cells drive that rule directly —
-  they are the only guard on it, because the interleavings it exists for cannot be produced
-  through the editor's API. What they do not cover is the *call*: the main path passes its
-  file write as the registry's commit step so that a failed write records no baseline, and
-  moving that write back outside the call would leave every cell in `open.test.ts` green.
-  Inducing a failing write inside the extension host would need the extension's own storage
-  path, which it does not expose.
+* **The three lines that hand VS Code to the placement step.** `src/open.ts` decides which
+  reading of a block a save is measured against and `src/placing.ts` acts on that decision;
+  both are driven directly by cells, because the interleavings they exist for cannot be
+  produced through the editor's API. What is left uncovered is the adapter: the three
+  closures in `openBlock` that forward `openTextDocument`, `setTextDocumentLanguage` and
+  `showTextDocument`. A cell hands `placeReading` three functions of its own, so nothing
+  checks that the real ones are wired to the right VS Code calls.
 
-  That gap is not hypothetical. When `register` was changed to return which kind of event
-  outranked a refusal, the call site's `if (!admission)` kept compiling and stopped firing —
-  every one of those answers is a non-empty string — so a losing open would have gone on
-  writing the file. Replacing the comparison with that truthiness test again leaves all 17
-  editor-hosted cells green. It was caught by reading, which is the only thing guarding it.
+  This shape is why that separation exists. For one round the decision was acted on inside
+  `activate`, and when `register` stopped returning a boolean the call site's
+  `if (!admission)` kept compiling and stopped firing — every answer was a non-empty string,
+  so a losing open would have gone on writing the file, with all 17 editor-hosted cells
+  green. It was caught by reading. The answer is now an object whose falsy reading is a
+  field, so the compiler finds that mistake, and the step it guards has its own cells.
 
 * **What a retry actually displayed.** The retry cells read the notice the command decided
   on and returned. Whether it reached the screen, and whether the status bar was repainted,

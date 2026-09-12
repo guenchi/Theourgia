@@ -38,10 +38,10 @@ describe('the newest reading of a block is the one a save is measured against', 
     const open = new OpenBuffers<string>();
     const older = open.claim();
     const newer = open.claim();
-    assert.strictEqual(open.register('/f', 'newer', newer), 'taken');
-    assert.strictEqual(
+    assert.deepStrictEqual(open.register('/f', 'newer', newer), { admitted: true });
+    assert.deepStrictEqual(
       open.register('/f', 'older', older),
-      'superseded-by-read',
+      { admitted: false, by: 'read' },
       'an open that started first was allowed to overwrite a later reading'
     );
     assert.strictEqual(open.get('/f'), 'newer', 'the stale reading became the baseline');
@@ -51,8 +51,8 @@ describe('the newest reading of a block is the one a save is measured against', 
     const open = new OpenBuffers<string>();
     const older = open.claim();
     const newer = open.claim();
-    assert.strictEqual(open.register('/f', 'older', older), 'taken');
-    assert.strictEqual(open.register('/f', 'newer', newer), 'taken');
+    assert.deepStrictEqual(open.register('/f', 'older', older), { admitted: true });
+    assert.deepStrictEqual(open.register('/f', 'newer', newer), { admitted: true });
     assert.strictEqual(open.get('/f'), 'newer', 'a newer reading was refused');
   });
 
@@ -66,8 +66,8 @@ describe('the newest reading of a block is the one a save is measured against', 
     const open = new OpenBuffers<string>();
     const first = open.claim();
     const second = open.claim();
-    assert.strictEqual(open.register('/b', 'b', second), 'taken');
-    assert.strictEqual(open.register('/a', 'a', first), 'taken');
+    assert.deepStrictEqual(open.register('/b', 'b', second), { admitted: true });
+    assert.deepStrictEqual(open.register('/a', 'a', first), { admitted: true });
     assert.strictEqual(open.get('/a'), 'a');
     assert.strictEqual(open.get('/b'), 'b');
   });
@@ -75,8 +75,8 @@ describe('the newest reading of a block is the one a save is measured against', 
   it('re-registers the same ticket, which is one open finishing once', () => {
     const open = new OpenBuffers<string>();
     const ticket = open.claim();
-    assert.strictEqual(open.register('/f', 'one', ticket), 'taken');
-    assert.strictEqual(open.register('/f', 'two', ticket), 'taken', 'one open could not revise itself');
+    assert.deepStrictEqual(open.register('/f', 'one', ticket), { admitted: true });
+    assert.deepStrictEqual(open.register('/f', 'two', ticket), { admitted: true }, 'one open could not revise itself');
   });
 
   /*
@@ -91,9 +91,9 @@ describe('the newest reading of a block is the one a save is measured against', 
     const started = open.claim();
     open.register('/f', 'read', started);
     open.confirmed('/f', 'saved');
-    assert.strictEqual(
+    assert.deepStrictEqual(
       open.register('/f', 'the older read, arriving late', started),
-      'superseded-by-save',
+      { admitted: false, by: 'save' },
       'a read that began before the save was confirmed overwrote what the store accepted'
     );
     assert.strictEqual(open.get('/f'), 'saved');
@@ -112,9 +112,9 @@ describe('the newest reading of a block is the one a save is measured against', 
     open.register('/f', 'first', first);
     const during = open.claim();
     open.confirmed('/f', 'saved');
-    assert.strictEqual(
+    assert.deepStrictEqual(
       open.register('/f', 'read during the save', during),
-      'superseded-by-save',
+      { admitted: false, by: 'save' },
       'the refusal did not say a save was what outranked it'
     );
     assert.strictEqual(open.get('/f'), 'saved');
@@ -129,7 +129,7 @@ describe('the newest reading of a block is the one a save is measured against', 
     const open = new OpenBuffers<string>();
     open.confirmed('/f', 'saved');
     const after = open.claim();
-    assert.strictEqual(open.register('/f', 'read afterwards', after), 'taken');
+    assert.deepStrictEqual(open.register('/f', 'read afterwards', after), { admitted: true });
     assert.strictEqual(open.get('/f'), 'read afterwards');
   });
 
@@ -185,7 +185,7 @@ describe('the newest reading of a block is the one a save is measured against', 
   it('records the baseline when the write it admitted succeeds', () => {
     const open = new OpenBuffers<string>();
     let wrote = 0;
-    assert.strictEqual(open.register('/f', 'written', open.claim(), () => { wrote += 1; }), 'taken');
+    assert.deepStrictEqual(open.register('/f', 'written', open.claim(), () => { wrote += 1; }), { admitted: true });
     assert.strictEqual(wrote, 1, 'the write was not run');
     assert.strictEqual(open.get('/f'), 'written');
   });
@@ -200,9 +200,9 @@ describe('the newest reading of a block is the one a save is measured against', 
     const older = open.claim();
     open.register('/f', 'newer', open.claim());
     let wrote = 0;
-    assert.strictEqual(
+    assert.deepStrictEqual(
       open.register('/f', 'older', older, () => { wrote += 1; }),
-      'superseded-by-read'
+      { admitted: false, by: 'read' }
     );
     assert.strictEqual(wrote, 0, 'a losing open wrote its older text to the file');
   });

@@ -57,11 +57,35 @@ export interface Registered<T> {
 export type Outcome = 'read' | 'save';
 
 /*
- * `taken` means this registration is now the baseline. The other two say
- * which kind of event outranked it, because the answer to a refusal
- * differs: one is already visible to the user, the other is not.
+ * WHETHER THIS REGISTRATION BECAME THE BASELINE, and if not, which kind
+ * of event outranked it -- the answer to a refusal differs, because one
+ * of them is already on the user's screen and the other left nothing in
+ * its place.
+ *
+ * IT IS AN OBJECT BECAUSE A STRING UNION MADE THE MISTAKE INVISIBLE.
+ * For one round this was three strings, and the call site's surviving
+ * `if (!admission)` went on compiling while never once being true --
+ * every one of those answers is a non-empty string, so a losing open
+ * carried on writing the file, and the whole editor-hosted suite stayed
+ * green.
+ *
+ * WHAT THE OBJECT BUYS IS NARROWER THAN IT LOOKS, AND THIS WAS
+ * MEASURED. `if (!x)` on an object union still compiles: an object is
+ * always truthy, and TypeScript does not object. What fails to compile
+ * is the REFUSAL BRANCH -- it reads `admission.by`, which under that
+ * wrong narrowing is `never`. So the compiler catches it here only
+ * because the branch uses the discriminant, and a caller that merely
+ * returned early would get no warning at all. The guard that does not
+ * depend on how the caller is written is in placing.ts's cells: two of
+ * them fail on that mutation.
+ *
+ * The first version of this comment claimed the shape alone put the
+ * mistake where the compiler could see it. It does not, and that claim
+ * had already been passed on as a fact before it was checked.
  */
-export type Admission = 'taken' | 'superseded-by-read' | 'superseded-by-save';
+export type Admission =
+  | { admitted: true }
+  | { admitted: false; by: Outcome };
 
 export class OpenBuffers<T> {
   private readonly held = new Map<string, Registered<T>>();
@@ -97,13 +121,13 @@ export class OpenBuffers<T> {
   public register(file: string, value: T, ticket: number, commit?: () => void): Admission {
     const held = this.held.get(file);
     if (held !== undefined && held.ticket > ticket) {
-      return held.from === 'save' ? 'superseded-by-save' : 'superseded-by-read';
+      return { admitted: false, by: held.from };
     }
     if (commit !== undefined) {
       commit();
     }
     this.held.set(file, { value, ticket, from: 'read' });
-    return 'taken';
+    return { admitted: true };
   }
 
   public get(file: string): T | undefined {

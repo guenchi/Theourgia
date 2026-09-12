@@ -32,7 +32,8 @@ const root = path.join(__dirname, '..');
 const files = [
   ['test/fixtures/goeteia/sexpr-vectors.json', 'out/test/fixtures/goeteia/sexpr-vectors.json'],
   ['test/fixtures/goeteia/sexpr-escape-vectors.json', 'out/test/fixtures/goeteia/sexpr-escape-vectors.json'],
-  ['test/fake-core.js', 'out/test/fake-core.js']
+  ['test/fake-core.js', 'out/test/fake-core.js'],
+  ['test/support/host-child.js', 'out/test/support/host-child.js']
 ];
 
 let copied = 0;

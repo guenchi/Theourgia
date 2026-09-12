@@ -31,7 +31,7 @@
  */
 
 import { createHash } from 'crypto';
-import * as fs from 'fs';
+import { FileOps, nodeFileOps } from './fsops';
 import * as path from 'path';
 import { BlockDocument } from './blocks';
 import { namespaceFor } from './outbox';
@@ -82,10 +82,10 @@ function digestOf(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-export function writeDocument(file: string, document: BlockDocument): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, document.text, 'utf8');
-  markCommitted(file, document.text);
+export function writeDocument(file: string, document: BlockDocument, files: FileOps = nodeFileOps): void {
+  files.makeDirectory(path.dirname(file));
+  files.writeText(file, document.text);
+  markCommitted(file, document.text, files);
 }
 
 /*
@@ -108,9 +108,9 @@ export function writeDocument(file: string, document: BlockDocument): void {
  * answers true, and the file is left alone -- which is the safe
  * direction and the one this marker exists to take.
  */
-export function markCommitted(file: string, committed: string): void {
+export function markCommitted(file: string, committed: string, files: FileOps = nodeFileOps): void {
   try {
-    fs.writeFileSync(markerFor(file), `${digestOf(committed)}\n`, 'utf8');
+    files.writeText(markerFor(file), `${digestOf(committed)}\n`);
   } catch (e) {
     /*
      * The marker is an optimisation in one direction only: without it
@@ -121,16 +121,16 @@ export function markCommitted(file: string, committed: string): void {
   }
 }
 
-export function hasUncommittedWork(file: string): boolean {
+export function hasUncommittedWork(file: string, files: FileOps = nodeFileOps): boolean {
   let text: string;
   try {
-    text = fs.readFileSync(file, 'utf8');
+    text = files.readText(file);
   } catch (e) {
     return false;
   }
   let marker: string;
   try {
-    marker = fs.readFileSync(markerFor(file), 'utf8').trim();
+    marker = files.readText(markerFor(file)).trim();
   } catch (e) {
     /*
      * A file with no marker was written by something this version does
