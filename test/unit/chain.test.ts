@@ -148,8 +148,23 @@ describe('C18 the queue is keyed by the resolved path', () => {
     const log: string[] = [];
     const first = section(log, 'first');
     const second = section(log, 'second');
+    /*
+     * THE SPELLINGS ARE WRITTEN OUT, NOT BUILT WITH `path.join`.
+     *
+     * The first version of this cell made the second spelling with
+     * `path.join('/s', 'dir', 'sub', '..', 'a.md')` -- which normalises
+     * `sub/..` away as it builds, so both arguments were the SAME
+     * STRING and the cell said nothing at all about resolution. Removing
+     * every `path.resolve` from the chain left all six of these passing;
+     * that was measured, after a reviewer pointed at it.
+     *
+     * The two assertions below are the fixture's own guard: the strings
+     * must differ and must name one file. Without them this cell can
+     * quietly go back to testing nothing.
+     */
     const plain = '/s/dir/a.md';
-    const roundabout = path.join('/s', 'dir', 'sub', '..', 'a.md');
+    const roundabout = '/s/dir/sub/../a.md';
+    assert.notStrictEqual(plain, roundabout, 'the two spellings are the same string, so nothing is being tested');
     assert.strictEqual(path.resolve(plain), path.resolve(roundabout), 'the two spellings are not one file');
 
     const a = chain.run(plain, first.work);

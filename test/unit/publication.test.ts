@@ -77,32 +77,73 @@ describe('C2 a published file is written once and never touched again', () => {
    * in place would still leave a consistent final state -- this is what
    * tells them apart.
    */
-  it('never writes a path it has written before', async () => {
+  /*
+   * THE RULE IS ABOUT THE BLOCK FILES. `<n>.md` is written once and
+   * never moved; its record `<n>.meta` is REPLACED three times, and is
+   * replaced by writing a temporary file and renaming it -- which is
+   * what stops a stopped process from leaving a record nothing can
+   * read. Saying "nothing is ever renamed" would forbid the very thing
+   * that makes the record recoverable, so the cells name the paths the
+   * rule covers. (§12.23, §12.7.3)
+   */
+  function blockFiles(files: RecordingFs): string[] {
+    return Array.from(new Set(files.touched('writeText').concat(files.touched('writeDurably')))).filter(
+      (f) => f.endsWith('.md')
+    );
+  }
+
+  it('never writes a block file it has written before', async () => {
     const dir = scratch();
     const files = new RecordingFs();
     const publisher = new Publisher(files, nothingOpen());
     for (const text of ['## Two\none\n', '## Two\ntwo\n', '## Two\nthree\n']) {
       await publisher.publish(request(dir, text));
     }
-    for (const file of new Set(files.touched('writeText').concat(files.touched('writeDurably')))) {
-      const writes =
-        files.countOf('writeText', file) + files.countOf('writeDurably', file);
-      assert.ok(
-        writes <= 1 || file.endsWith('.meta'),
-        `${file} was written ${writes} times by the extension; publication is supposed to be immutable`
+    const written = blockFiles(files);
+    assert.strictEqual(written.length, 3, `three readings produced ${written.length} files`);
+    for (const file of written) {
+      const writes = files.countOf('writeText', file) + files.countOf('writeDurably', file);
+      assert.strictEqual(
+        writes,
+        1,
+        `${file} was written ${writes} times; publication is supposed to be immutable`
       );
     }
   });
 
-  it('never unlinks or renames anything it published', async () => {
+  it('never unlinks or renames a block file', async () => {
     const dir = scratch();
     const files = new RecordingFs();
     const publisher = new Publisher(files, nothingOpen());
     for (const text of ['## Two\none\n', '## Two\ntwo\n']) {
       await publisher.publish(request(dir, text));
     }
-    assert.deepStrictEqual(files.touched('unlink'), [], 'a published path was unlinked');
-    assert.deepStrictEqual(files.touched('rename'), [], 'a published path was renamed');
+    assert.deepStrictEqual(files.touched('unlink'), [], 'something was unlinked');
+    for (const moved of files.touched('rename')) {
+      assert.ok(
+        !moved.endsWith('.md'),
+        `${moved} was renamed; only a record’s temporary file may be`
+      );
+    }
+  });
+
+  /*
+   * AND THE RECORD IS REPLACED, NOT EMPTIED. A process stopped inside an
+   * in-place rewrite leaves a record nothing can read, and an unreadable
+   * record made this file count as absent and vanish from the draft
+   * listing -- surviving work made invisible by its own bookkeeping.
+   */
+  it('replaces the record through a temporary file rather than truncating it', async () => {
+    const dir = scratch();
+    const files = new RecordingFs();
+    await new Publisher(files, nothingOpen()).publish(request(dir, '## Two\none\n'));
+    const meta = files.touched('rename').filter((f) => f.endsWith('.meta'));
+    assert.ok(meta.length > 0, 'the record was written in place, so a stopped process leaves it unreadable');
+    assert.strictEqual(
+      files.countOf('writeText', meta[0]),
+      0,
+      'the record path was opened for writing directly, which empties it first'
+    );
   });
 
   /*
@@ -175,6 +216,7 @@ describe('C3 every point a publication can die at is decidable', () => {
       cursor: null,
       localOnly: false,
       unresolved: false,
+      bodyHasCrlf: false,
       ...sidecar
     };
     fs.mkdirSync(dir, { recursive: true });
@@ -270,7 +312,8 @@ describe('C15 the record on disk uses the design names and says which shape it i
       sent: 's',
       cursor: 'w:7',
       localOnly: true,
-      unresolved: false
+      unresolved: false,
+      bodyHasCrlf: false
     };
     const onDisk = sidecarToDisk(sidecar);
     assert.ok('acknowledged-raw' in onDisk, 'the record does not use the name the design gave it');
@@ -292,7 +335,8 @@ describe('C15 the record on disk uses the design names and says which shape it i
       sent: null,
       cursor: null,
       localOnly: false,
-      unresolved: true
+      unresolved: true,
+      bodyHasCrlf: false
     };
     const read = sidecarFromDisk(JSON.stringify(sidecarToDisk(sidecar)));
     assert.deepStrictEqual(read, { read: true, sidecar });
@@ -330,7 +374,8 @@ describe('C15 the record on disk uses the design names and says which shape it i
       sent: 's',
       cursor: 'w:7',
       localOnly: false,
-      unresolved: true
+      unresolved: true,
+      bodyHasCrlf: false
     };
     const round = sidecarFromDisk(JSON.stringify(sidecarToDisk(sidecar)));
     assert.ok(round.read);
@@ -364,7 +409,8 @@ describe('C3 reconcile is the only way out of a third version', () => {
       sent: null,
       cursor: null,
       localOnly: false,
-      unresolved: true
+      unresolved: true,
+      bodyHasCrlf: false
     };
     fs.writeFileSync(`${file}.meta`, JSON.stringify(sidecarToDisk(sidecar)), 'utf8');
     fs.writeFileSync(file, fileText, 'utf8');
@@ -490,7 +536,8 @@ describe('C15 unresolved survives everything except reconcile', () => {
           sent: null,
           cursor: 'w:7',
           localOnly: false,
-          unresolved: true
+          unresolved: true,
+          bodyHasCrlf: false
         })
       ),
       'utf8'
@@ -527,6 +574,172 @@ describe('C15 unresolved survives everything except reconcile', () => {
       restarted.sidecarOf(file)?.unresolved,
       true,
       'a restart cleared the flag, which re-arms the overwrite it exists to prevent'
+    );
+  });
+});
+
+/*
+ * P2-6 and P2-7, both found by review: a second publication path that
+ * skipped a check, and a question answered from the wrong evidence.
+ */
+describe('every publication path asks the same questions', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  /*
+   * THE STORE-VERSION BRANCH OF `reconcileBy` PUBLISHES TOO, and for one
+   * round it wrote without asking whether the editor had the target
+   * open -- the same requirement, missing from the second of two copies
+   * of the sequence. Both now go through one door.
+   */
+  it('refuses to take the store’s version onto a path the editor has open', () => {
+    const dir = scratch();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, 'no heading at all\n', 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf('no heading at all\n'),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    const files = new RecordingFs();
+    const done = new Publisher(files, openOn(path.join(dir, '2.md'))).reconcileBy(
+      file,
+      'take-store-version',
+      '## Two\n',
+      '## Two\nthe store version\n'
+    );
+    assert.strictEqual(done.done, false, 'a version was published onto a path the editor had open');
+    assert.deepStrictEqual(
+      files.touched('writeText').filter((f) => f.endsWith('.md')),
+      [],
+      'a block file was written while the editor had it open'
+    );
+  });
+
+  /*
+   * WHETHER THE BODY USES CRLF IS A FACT ABOUT THE BLOCK, recorded when
+   * it is published. Asking the PREFIX instead normalised a block whose
+   * stored body really did contain CRLF, on every save, even when the
+   * user had changed nothing.
+   */
+  it('records whether the block’s own body uses CRLF', async () => {
+    const dir = scratch();
+    const published = await new Publisher(new RecordingFs(), nothingOpen()).publish({
+      directory: dir,
+      storeId: 's1',
+      blockId: 'a.2',
+      prefix: '## Two\n',
+      text: '## Two\nline one\r\nline two\r\n'
+    });
+    assert.ok(published.published);
+    if (published.published) {
+      assert.strictEqual(
+        new Publisher(new RecordingFs(), nothingOpen()).sidecarOf(published.file)?.bodyHasCrlf,
+        true,
+        'the record does not say the block’s body uses CRLF, so a save will normalise it away'
+      );
+    }
+  });
+
+  it('records a body with no carriage returns as having none', async () => {
+    const dir = scratch();
+    const published = await new Publisher(new RecordingFs(), nothingOpen()).publish({
+      directory: dir,
+      storeId: 's1',
+      blockId: 'a.2',
+      prefix: '## Two\r\n',
+      text: '## Two\r\nplain body\n'
+    });
+    assert.ok(published.published);
+    if (published.published) {
+      assert.strictEqual(
+        new Publisher(new RecordingFs(), nothingOpen()).sidecarOf(published.file)?.bodyHasCrlf,
+        false,
+        'a CRLF heading was taken as evidence about the body'
+      );
+    }
+  });
+});
+
+/*
+ * P1-3: the draft's only copy is never written over.
+ *
+ * ⚠️ THIS FIX ALSO HAD NO CELL UNTIL A MUTATION SURVIVED. Putting the
+ * truncating rewrite back left every existing cell green -- they checked
+ * that the user's bytes were still THERE, which they are right up until
+ * the process stops halfway through replacing them.
+ */
+describe('reconciling never writes over the file it is reconciling', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  function strandedAt(dir: string, fileText: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, fileText, 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf(fileText),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    return file;
+  }
+
+  it('puts the prefix in front of the user’s bytes in a NEW version', () => {
+    const dir = scratch();
+    const file = strandedAt(dir, 'no heading at all\n');
+    const files = new RecordingFs();
+    const done = new Publisher(files, nothingOpen()).reconcileBy(
+      file,
+      'prepend-prefix',
+      '## Two\n',
+      '## Two\nthe store version\n'
+    );
+    assert.ok(done.done);
+    assert.notStrictEqual(done.file, file, 'the user’s only copy was written over');
+    assert.strictEqual(
+      files.countOf('writeText', file) + files.countOf('writeDurably', file),
+      0,
+      'the file holding the draft was opened for writing, which empties it first'
+    );
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'no heading at all\n', 'the draft was changed');
+    assert.strictEqual(
+      fs.readFileSync(done.file, 'utf8'),
+      '## Two\nno heading at all\n',
+      'the new version does not carry the prefix and the user’s bytes'
     );
   });
 });

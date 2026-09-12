@@ -64,6 +64,14 @@ export interface OutboxEntry {
   state: EntryState;
   createdAt: number;
   lastError: string | null;
+  /*
+   * WHICH TAKEOVER CARRIED THIS ENTRY AWAY, named by the claim token
+   * that won it. A dead session's queue may be taken over across several
+   * generations, and "already imported" has to say by WHOM -- otherwise
+   * a later generation cannot tell an entry it should skip from one it
+   * should carry. (§12.11.3)
+   */
+  importedBy: string | null;
 }
 
 interface OutboxFile {
@@ -315,6 +323,26 @@ export class Outbox {
     }
   }
 
+  /*
+   * Records that a takeover has carried this entry into another
+   * session's queue. The entry stays here: it is the only trace of what
+   * that window was doing, and nothing in this batch deletes such a
+   * trace. (§12.11.3, §12.23)
+   */
+  public markImported(req: string, token: string): void {
+    const next = this.copy();
+    let changed = false;
+    for (const entry of next.entries) {
+      if (entry.req === req && entry.importedBy === null) {
+        entry.importedBy = token;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.commit(next);
+    }
+  }
+
   public markPending(req: string, why: string): void {
     const next = this.copy();
     for (const entry of next.entries) {
@@ -437,7 +465,18 @@ function readEntry(item: unknown, at: number): OutboxEntry {
     payload: raw.payload as string,
     state: raw.state === 'pending' ? 'pending' : raw.state === 'sent' ? 'sent' : 'queued',
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
-    lastError: typeof raw.lastError === 'string' ? raw.lastError : null
+    lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
+    /*
+     * ⚠️ THE KEY IS THIS FILE'S CONVENTION, NOT THE SIDECAR'S. The
+     * queue has always written its fields under the names the code uses
+     * (`lastError`, `createdAt`), because it serialises the record
+     * directly; the sidecar, which is new, spells its keys the way §12
+     * does and has an explicit mapping for it. Reading `imported-by`
+     * here while the writer emitted `importedBy` meant the mark was
+     * written and never read back -- the two halves of one field
+     * disagreeing, which nothing but a round-trip notices.
+     */
+    importedBy: typeof raw.importedBy === 'string' ? (raw.importedBy as string) : null
   };
 }
 

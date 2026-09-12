@@ -35,8 +35,10 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { SessionIdentity, Sessions, StartTimeReader } from '../../src/sessions';
+import { SessionIdentity, Sessions, StartTimeReader, systemStartTime } from '../../src/sessions';
 import { idleProcess } from '../support/host';
+import { Outbox, OutboxEntry } from '../../src/outbox';
+import { Publisher } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
 
 function scratch(): string {
@@ -57,6 +59,19 @@ function makeSession(storage: string, sessionId: string, over: Partial<SessionId
     JSON.stringify({ sessionId, pid: 999999, startedAt: 1000, nonce: 'n', stores: [], ...over }),
     'utf8'
   );
+}
+
+/*
+ * THE REAL START TIME OF A REAL PROCESS.
+ *
+ * ⚠️ These fixtures used `startedAt: null` to mean "this one is alive",
+ * which worked only because the comparison answered `true` when nothing
+ * was recorded -- the very defect a reviewer found. The cells were
+ * therefore agreeing with it rather than catching it. A live session
+ * now records the start time the platform actually reports.
+ */
+function liveIdentity(pid: number): { pid: number; startedAt: number | null } {
+  return { pid, startedAt: systemStartTime(pid) };
 }
 
 function identity(over: Partial<SessionIdentity> = {}): SessionIdentity {
@@ -81,8 +96,8 @@ describe('C8 and C19 whether another window is still running', () => {
     const idle = idleProcess();
     try {
       const sessions = new Sessions(new RecordingFs(), scratch());
-      const started = await sessions.livenessOf(identity({ pid: idle.pid, startedAt: null }));
-      assert.ok('alive' in started);
+      const started = await sessions.livenessOf(identity(liveIdentity(idle.pid)));
+      assert.deepStrictEqual(started, { alive: true, because: 'identity-matches' });
     } finally {
       idle.stop();
     }
@@ -128,7 +143,7 @@ describe('C8 and C19 whether another window is still running', () => {
 
   it('calls permission-denied alive when the start time does match', async () => {
     const sessions = new Sessions(new RecordingFs(), scratch());
-    const real = await sessions.livenessOf(identity({ pid: 1, startedAt: null }));
+    const real = await sessions.livenessOf(identity(liveIdentity(1)));
     assert.ok('alive' in real && real.alive, 'pid 1 with a matching identity was not called alive');
     assert.strictEqual(
       'alive' in real && real.alive && real.because,
@@ -144,6 +159,22 @@ describe('C8 and C19 whether another window is still running', () => {
    * two is how a build either stops offering recovery for ever or
    * double-sends. (§12.21.4)
    */
+  /*
+   * AND A RECORD WITH NO START TIME IS THE SAME ANSWER. Nothing was
+   * compared, so nothing was verified -- reporting `identity-matches`
+   * there claims a check that did not happen.
+   */
+  it('cannot tell about a session whose record carries no start time', async () => {
+    const idle = idleProcess();
+    try {
+      const sessions = new Sessions(new RecordingFs(), scratch());
+      const answer = await sessions.livenessOf(identity({ pid: idle.pid, startedAt: null }));
+      assert.deepStrictEqual(answer, { decidable: false, because: 'start-time-unavailable' });
+    } finally {
+      idle.stop();
+    }
+  });
+
   it('answers that it cannot tell when the start time is unavailable', async () => {
     /*
      * THE PLATFORM IS THE PARAMETER. On a machine where `ps` works this
@@ -183,7 +214,7 @@ describe('C8 taking over a dead session’s queue', () => {
     const idle = idleProcess();
     try {
       const storage = scratch();
-      makeSession(storage, 'S-alive', { pid: idle.pid, startedAt: null });
+      makeSession(storage, 'S-alive', liveIdentity(idle.pid));
       const sessions = new Sessions(new RecordingFs(), storage);
       const answer = await sessions.claim('S-alive');
       assert.deepStrictEqual(answer, { claimed: false, because: 'session-alive' });
@@ -198,21 +229,78 @@ describe('C8 taking over a dead session’s queue', () => {
    * legitimate requests and must both be applied, while one request
    * carried across several generations of takeover must be applied once.
    */
+  /*
+   * WITH ENTRIES THAT ACTUALLY EXIST.
+   *
+   * ⚠️ The first version created NO entries and asserted
+   * `imported >= 0`, which is true of every number this can return -- a
+   * cell about deduplication with nothing to deduplicate.
+   *
+   * The dead queue holds three: two carrying the SAME request (one
+   * request that was retried) and one carrying a DIFFERENT request with
+   * the SAME payload. Deduplication is by request, so two arrive -- an
+   * implementation comparing payloads would drop a legitimate save.
+   */
   it('skips an entry whose request is already here, and keeps one that only looks alike', async () => {
     const storage = scratch();
     const sessions = new Sessions(new RecordingFs(), storage);
     makeSession(storage, 'S-old');
     sessions.begin('S-mine', []);
+
+    const dead = new Outbox(sessions.outboxPathFor('S-old'));
+    dead.load();
+    dead.setCursor('w:7');
+    const entry = (req: string, payload: string): OutboxEntry => ({
+      req,
+      cursor: 'w:7',
+      id: 'a.2',
+      field: 'src',
+      payload,
+      state: 'sent',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
+    dead.enqueue(entry('11111111-1111-1111-1111-111111111111', 'same text\n'));
+    dead.enqueue(entry('11111111-1111-1111-1111-111111111111', 'same text\n'));
+    dead.enqueue(entry('22222222-2222-2222-2222-222222222222', 'same text\n'));
+
+    const taken: OutboxEntry[] = [];
+    const target = {
+      has: (req: string) => taken.some((e) => e.req === req),
+      adopt: (e: OutboxEntry) => {
+        taken.push(e);
+      }
+    };
+
     const token = await sessions.claim('S-old');
     assert.ok(token.claimed, JSON.stringify(token));
     if (token.claimed) {
-      const imported = sessions.importFrom({
-        deadSessionId: 'S-old',
-        sequence: token.sequence,
-        file: token.token
-      });
-      assert.ok(imported.imported >= 0);
+      const imported = sessions.importFrom(
+        { deadSessionId: 'S-old', sequence: token.sequence, file: token.token },
+        target
+      );
+      assert.strictEqual(imported.imported, 2, 'one request was carried twice, or a different one was dropped');
+      assert.strictEqual(imported.skipped, 1, 'the repeat of one request was not skipped');
+      assert.deepStrictEqual(
+        taken.map((e) => e.req).sort(),
+        ['11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222'],
+        'deduplication was by payload, so a legitimate second save was lost'
+      );
     }
+
+    /*
+     * AND THE SOURCE RECORDS WHICH TAKEOVER CARRIED THEM, so a later
+     * generation can tell what to skip. The entries stay: they are that
+     * window's only trace of what it was doing.
+     */
+    const after = new Outbox(sessions.outboxPathFor('S-old'));
+    after.load();
+    assert.strictEqual(after.entries.length, 3, 'the source queue was emptied');
+    assert.ok(
+      after.entries.some((e) => e.importedBy !== null),
+      'the source does not record which takeover carried its entries'
+    );
   });
 });
 
@@ -244,7 +332,7 @@ describe('C10 nothing is deleted, and discarding is the user’s decision', () =
     const idle = idleProcess();
     try {
       const storage = scratch();
-      makeSession(storage, 'S-alive', { pid: idle.pid, startedAt: null });
+      makeSession(storage, 'S-alive', liveIdentity(idle.pid));
       const sessions = new Sessions(new RecordingFs(), storage);
       const answer = await sessions.discard('S-alive');
       assert.strictEqual(answer.discarded, false);
@@ -284,12 +372,47 @@ describe('C10 nothing is deleted, and discarding is the user’s decision', () =
     assert.deepStrictEqual(files.touched('unlink'), [], 'discarding deleted something');
   });
 
+  /*
+   * WITH AN ADOPTER THAT EXISTS.
+   *
+   * ⚠️ The first version created none and asserted the answer was an
+   * array -- true of `[]`, which is what an implementation that never
+   * looked would also return. The warning only means something when
+   * there is something to warn about.
+   */
   it('names the windows that still have documents open, for the confirmation to show', async () => {
-    const storage2 = scratch();
-    const sessions = new Sessions(new RecordingFs(), storage2);
-    makeSession(storage2, 'S-dead-with-adopters');
+    const storage = scratch();
+    makeSession(storage, 'S-dead-with-adopters');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-still-open', []);
+    const adopted = sessions.adopt('S-dead-with-adopters');
+    assert.ok(adopted.adopted, `the adopter could not be recorded: ${JSON.stringify(adopted)}`);
+
     const answer = await sessions.discard('S-dead-with-adopters');
-    assert.ok(Array.isArray(answer.liveAdopters), 'the confirmation has nothing to warn with');
+    assert.deepStrictEqual(
+      answer.liveAdopters,
+      ['S-still-open'],
+      'the confirmation does not name the window that still has documents open'
+    );
+  });
+
+  /*
+   * AND A DEAD ADOPTER IS NOT A WARNING. The twin: without it the cell
+   * above passes for an implementation that lists every marker it finds,
+   * which would warn about windows that closed months ago.
+   */
+  it('does not warn about an adopter that is no longer running', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead-with-adopters');
+    makeSession(storage, 'S-long-gone', { pid: 999999, startedAt: 1000 });
+    const sessions = new Sessions(new RecordingFs(), storage);
+    fs.writeFileSync(
+      path.join(storage, 'sessions', 'S-dead-with-adopters', 'adopted-by.S-long-gone'),
+      'S-long-gone',
+      'utf8'
+    );
+    const answer = await sessions.discard('S-dead-with-adopters');
+    assert.deepStrictEqual(answer.liveAdopters, [], 'a window that has exited was reported as still open');
   });
 });
 
@@ -300,9 +423,33 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
    * outbox entry at all, and a scan that started from the queue would
    * report nothing to recover. (§12.17.4, C6)
    */
-  it('finds a file whose bytes the store never acknowledged', () => {
-    const sessions = new Sessions(new RecordingFs(), scratch());
-    assert.ok(Array.isArray(sessions.draftsIn('S-mine')));
+  it('finds a file whose bytes the store never acknowledged', async () => {
+    const storage = scratch();
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const directory = sessions.directoryFor('S-mine', 'st', 'a.2');
+    const published = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({
+      directory,
+      storeId: 's1',
+      blockId: 'a.2',
+      prefix: '## Two\n',
+      text: '## Two\nfrom the store\n'
+    });
+    assert.ok(published.published);
+    /*
+     * A VERSION AS PUBLISHED IS NOT A DRAFT -- it holds what the store
+     * gave. Editing it makes one, and that is the state a window killed
+     * after a save but before it was sent leaves behind.
+     */
+    assert.deepStrictEqual(sessions.draftsIn('S-mine'), [], 'a freshly published version was listed as a draft');
+    if (published.published) {
+      fs.writeFileSync(published.file, '## Two\nedited and never sent\n', 'utf8');
+      assert.deepStrictEqual(
+        sessions.draftsIn('S-mine'),
+        [published.file],
+        'an edit the store never saw was not listed'
+      );
+    }
   });
 
   /*
@@ -310,9 +457,33 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
    * digests say: the store has not seen it, because it was established
    * from the file rather than from an answer. (§12.19.2, C12)
    */
-  it('counts a local-only version as a draft even when its digests agree', () => {
-    const sessions = new Sessions(new RecordingFs(), scratch());
-    assert.ok(Array.isArray(sessions.draftsIn('S-local-only')));
+  it('counts a local-only version as a draft even when its digests agree', async () => {
+    const storage = scratch();
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const directory = sessions.directoryFor('S-mine', 'st', 'a.2');
+    const publisher = new Publisher(new RecordingFs(), { isOpen: () => false });
+    const published = await publisher.publish({
+      directory,
+      storeId: 's1',
+      blockId: 'a.2',
+      prefix: '',
+      text: 'no heading at all\n'
+    });
+    assert.ok(published.published);
+    if (published.published) {
+      /*
+       * `reconcile` builds the baseline from the file, so the store has
+       * not seen it -- the digests agree with each other and with
+       * nothing the store said.
+       */
+      publisher.reconcile(published.file, '', 'no heading at all\n');
+      assert.deepStrictEqual(
+        sessions.draftsIn('S-mine'),
+        [published.file],
+        'a baseline built from the file was treated as one the store had confirmed'
+      );
+    }
   });
 });
 
@@ -470,4 +641,47 @@ describe('C20 adopting a directory that is discarded underneath it', () => {
       'adopting re-created a directory the user had discarded'
     );
   });
+});
+
+/*
+ * P1-4: a record that will not read is not a death certificate.
+ *
+ * ⚠️ THE FIX HAD NO CELL UNTIL A MUTATION SURVIVED. Collapsing
+ * "unreadable" back into "no such session" left every existing cell
+ * green, because every existing cell wrote a well-formed record. A fix
+ * verified only by the reasoning that produced it is not guarded.
+ */
+describe('a session whose record cannot be read is not treated as gone', () => {
+  for (const [what, contents] of [
+    ['half-written', '{"sessionId":"S-broken","pid":'],
+    ['empty', ''],
+    ['without a pid', '{"sessionId":"S-broken"}']
+  ] as Array<[string, string]>) {
+    it(`refuses to take over a session whose record is ${what}`, async () => {
+      const storage = scratch();
+      fs.mkdirSync(path.join(storage, 'sessions', 'S-broken'), { recursive: true });
+      fs.writeFileSync(path.join(storage, 'sessions', 'S-broken', 'session.json'), contents, 'utf8');
+      const sessions = new Sessions(new RecordingFs(), storage);
+      sessions.begin('S-mine', []);
+      assert.deepStrictEqual(
+        await sessions.claim('S-broken'),
+        { claimed: false, because: 'undecidable' },
+        'a window whose record could not be read was taken for one that never existed'
+      );
+    });
+
+    it(`refuses to discard a session whose record is ${what}`, async () => {
+      const storage = scratch();
+      fs.mkdirSync(path.join(storage, 'sessions', 'S-broken'), { recursive: true });
+      fs.writeFileSync(path.join(storage, 'sessions', 'S-broken', 'session.json'), contents, 'utf8');
+      const sessions = new Sessions(new RecordingFs(), storage);
+      const answer = await sessions.discard('S-broken');
+      assert.strictEqual(answer.discarded, false);
+      assert.strictEqual(answer.discarded === false && answer.because, 'undecidable');
+      assert.ok(
+        fs.existsSync(path.join(storage, 'sessions', 'S-broken')),
+        'a session nobody could judge was moved to the trash'
+      );
+    });
+  }
 });

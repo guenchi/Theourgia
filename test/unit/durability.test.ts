@@ -43,7 +43,8 @@ function entry(req: string, payload: string): OutboxEntry {
     payload,
     state: 'queued',
     createdAt: 0,
-    lastError: null
+    lastError: null,
+    importedBy: null
   };
 }
 

@@ -180,18 +180,30 @@ export class Saving {
     if (decoded !== snapshot) {
       return { send: false, refusal: { because: 'disk-differs-from-snapshot' } };
     }
-    if (!snapshot.startsWith(sidecar.prefix)) {
+    /*
+     * THE LINE ENDINGS ARE SETTLED BEFORE THE PREFIX IS COMPARED.
+     *
+     * ⚠️ THIS ORDER WAS WRONG AND THE EDITOR CELLS FOUND IT. Comparing
+     * first meant a buffer the editor writes as CRLF never matched a
+     * prefix the store gave as LF, so every save of such a file was
+     * refused as "the heading changed" -- by the extension, about a
+     * change the user had not made. §12.17.3 puts the EOL handling
+     * first for exactly this reason: the comparison and the split both
+     * happen on the normalised text.
+     *
+     * WHETHER TO NORMALISE IS THE BLOCK'S OWN FACT, recorded when the
+     * version was published. A block whose stored body really did use
+     * CRLF is sent verbatim; the prefix's line endings say nothing
+     * about the body's.
+     */
+    const normalised = !sidecar.bodyHasCrlf && snapshot.includes('\r\n');
+    const text = normalised ? snapshot.replace(/\r\n/g, '\n') : snapshot;
+    const prefix = normalised ? sidecar.prefix.replace(/\r\n/g, '\n') : sidecar.prefix;
+
+    if (!text.startsWith(prefix)) {
       return { send: false, refusal: { because: 'prefix-changed', prefix: sidecar.prefix } };
     }
-
-    const body = snapshot.slice(sidecar.prefix.length);
-    /*
-     * A BLOCK THAT HOLDS NO CARRIAGE RETURN, IN A FILE THAT USES THEM,
-     * is sent as LF and the user is told. The block's own bytes decide:
-     * one that really contains CRLF is sent verbatim. (§12.17.3)
-     */
-    const normalised = body.includes('\r\n') && !sidecar.prefix.includes('\r');
-    const src = normalised ? body.replace(/\r\n/g, '\n') : body;
+    const src = text.slice(prefix.length);
     return {
       send: true,
       src,

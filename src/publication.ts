@@ -113,6 +113,13 @@ export interface Sidecar {
    * `reconcile`. (§12.9, §12.11.7, C15)
    */
   unresolved: boolean;
+  /*
+   * Whether the block's own body, as the store gave it, contains CRLF.
+   * The save path needs this to decide whether a CRLF file is the
+   * editor's doing or the block's; the prefix cannot answer it.
+   * (§12.17.3, P2-7)
+   */
+  bodyHasCrlf: boolean;
 }
 
 /*
@@ -177,7 +184,8 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     sent: sidecar.sent,
     cursor: sidecar.cursor,
     'local-only': sidecar.localOnly,
-    unresolved: sidecar.unresolved
+    unresolved: sidecar.unresolved,
+    'body-has-crlf': sidecar.bodyHasCrlf
   };
 }
 
@@ -238,7 +246,8 @@ export function sidecarFromDisk(text: string): SidecarRead {
       sent: text_('sent'),
       cursor: text_('cursor'),
       localOnly: record['local-only'] === true,
-      unresolved: record.unresolved === true
+      unresolved: record.unresolved === true,
+      bodyHasCrlf: record['body-has-crlf'] === true
     }
   };
 }
@@ -330,8 +339,26 @@ export class Publisher {
     }
   }
 
+  /*
+   * THE RECORD IS REPLACED, NEVER TRUNCATED IN PLACE.
+   *
+   * `writeText` opens for writing, which empties the file first: a
+   * process that stops there leaves a record nothing can read -- and an
+   * unreadable record made `standingOf` answer `absent` and `draftsIn`
+   * skip the file, so surviving work became invisible. A temporary file
+   * renamed into place is either the old record or the new one.
+   *
+   * THE BYTES ARE ON THE DEVICE BEFORE THE RENAME, and the directory
+   * entry after it, for the reason the outbox does the same: a rename
+   * decides what a reader sees and says nothing about what survives a
+   * machine losing power.
+   */
   private write(file: string, sidecar: Sidecar): void {
-    this.files.writeText(this.metaOf(file), `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
+    const meta = this.metaOf(file);
+    const temporary = `${meta}.${process.pid}.tmp`;
+    this.files.writeDurably(temporary, `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
+    this.files.rename(temporary, meta);
+    this.files.syncDirectory(path.dirname(meta));
   }
 
   /*
@@ -344,45 +371,58 @@ export class Publisher {
     this.files.makeDirectory(request.directory);
     const version = this.nextVersion(request.directory);
     const file = path.join(request.directory, `${version}.md`);
-
-    /*
-     * THE EDITOR IS THE ONLY OTHER WRITER, and it writes only documents
-     * it has open. A fresh version's path is one nothing has opened, so
-     * this can only be true of a path handed in deliberately -- and then
-     * the answer is to show what is there, not to write. (§12.13.1)
-     */
     if (this.documents.isOpen(file)) {
       return { published: false, because: 'document-open', file };
     }
-
     const previousFile = this.latestFile(request.directory);
     const previous =
       previousFile !== null && this.files.exists(previousFile)
         ? digestOfBytes(this.files.readBytes(previousFile))
         : null;
+    return this.publishInto(request.directory, request, previous);
+  }
 
-    const target = digestOfBytes(Buffer.from(request.text, 'utf8'));
+  /*
+   * THE ONE PLACE A VERSION IS WRITTEN. Both `publish` and the
+   * store-version branch of `reconcileBy` come here, so the refusal for
+   * an open target and the three-step record exist once. (§12.13.1,
+   * §12.15 结构一)
+   */
+  private publishInto(
+    directory: string,
+    what: { storeId: string; blockId: string; prefix: string; text: string },
+    previous: string | null
+  ): PublishOutcome {
+    this.files.makeDirectory(directory);
+    const version = this.nextVersion(directory);
+    const file = path.join(directory, `${version}.md`);
+    if (this.documents.isOpen(file)) {
+      return { published: false, because: 'document-open', file };
+    }
     const record: Sidecar = {
       format: 1,
-      storeId: request.storeId,
-      blockId: request.blockId,
+      storeId: what.storeId,
+      blockId: what.blockId,
       phase: 'publishing',
-      prefix: request.prefix,
-      written: target,
+      prefix: what.prefix,
+      written: digestOfBytes(Buffer.from(what.text, 'utf8')),
       previous,
       acknowledgedRaw: null,
       sent: null,
       cursor: null,
       localOnly: false,
-      unresolved: false
+      unresolved: false,
+      /*
+       * WHETHER THE BLOCK ITSELF HOLDS CARRIAGE RETURNS, recorded when
+       * it is written rather than guessed later from the prefix. The
+       * prefix's line endings say nothing about the body's, and a save
+       * that guessed from them normalised a block whose stored body
+       * really did contain CRLF. (§12.17.3, P2-7)
+       */
+      bodyHasCrlf: what.text.slice(what.prefix.length).includes('\r\n')
     };
-    /*
-     * RECORD FIRST, FILE SECOND, RECORD AGAIN. Each of the three points
-     * a death can land on is decidable afterwards, which is what
-     * `standingOf` reads. (§12.7.3)
-     */
     this.write(file, record);
-    this.files.writeText(file, request.text);
+    this.files.writeText(file, what.text);
     this.write(file, { ...record, phase: 'published' });
     return { published: true, file, version };
   }
@@ -434,7 +474,18 @@ export class Publisher {
      * `reconcile` built locally is always one: the store has never seen
      * it. (§12.13.2, §12.19.2)
      */
-    const draft = sidecar.localOnly || sidecar.acknowledgedRaw === null || digest !== sidecar.acknowledgedRaw;
+    /*
+     * A FRESHLY PUBLISHED VERSION IS NOT A DRAFT. It holds exactly the
+     * bytes the store gave, which is what `written` records -- there is
+     * no work pending in it. Judging only against `acknowledged-raw`
+     * made every version a draft from the moment it was written, before
+     * the user had touched it. (§12.19.2's own rule names both digests.)
+     *
+     * A `local-only` VERSION IS ALWAYS ONE, whatever its digests say:
+     * its baseline came from the file rather than from an answer.
+     */
+    const draft =
+      sidecar.localOnly || (digest !== sidecar.acknowledgedRaw && digest !== sidecar.written);
     return { kind: 'published', draft };
   }
 
@@ -470,6 +521,11 @@ export class Publisher {
       const sidecar = this.sidecarOf(file);
       if (sidecar !== null) {
         /*
+         * ONLY THE RECORD CHANGES HERE. The bytes are already what the
+         * user wants; what was missing was a baseline to measure a save
+         * against, and `local-only` says the store has not seen them.
+         */
+        /*
          * THE BASELINE IS WHAT IS THERE. The body becomes work the store
          * has not got, which is a draft and is saveable -- and the
          * version is marked `local-only`, because this baseline came
@@ -487,13 +543,27 @@ export class Publisher {
       }
       return { reconciled: true, because: 'prefix-already-present' };
     }
-    const sidecar = this.sidecarOf(file);
-    const previousFile = sidecar?.previous;
+    /*
+     * THE THIRD TEXT IS THE VERSION BEFORE THIS ONE, if it is still on
+     * disk. The user is choosing between three things and can only do
+     * that if they are shown three things; `null` here meant the offer
+     * named a text it never produced.
+     */
+    const directory = path.dirname(file);
+    const versions = this.files
+      .list(directory)
+      .filter((name) => /^\d+\.md$/.test(name))
+      .map((name) => Number(name.slice(0, -3)))
+      .sort((a, b) => a - b);
+    const mine = Number(path.basename(file).slice(0, -3));
+    const before = versions.filter((n) => n < mine).pop();
+    const previousText =
+      before === undefined ? null : this.files.readText(path.join(directory, `${before}.md`));
     return {
       reconciled: false,
       choices: ['prepend-prefix', 'take-store-version'],
       storeText,
-      previousText: previousFile === undefined ? null : null,
+      previousText,
       fileText
     };
   }
@@ -516,52 +586,62 @@ export class Publisher {
     }
     if (action === 'prepend-prefix') {
       /*
-       * THE USER'S BYTES ARE KEPT AND THE PREFIX IS PUT IN FRONT OF
-       * THEM. The file is one the editor may have open, so this is the
-       * one place the extension writes an existing path -- and it does
-       * it because the user asked for exactly this. (§12.11.7)
+       * THE USER'S BYTES ARE KEPT AND A NEW VERSION CARRIES THEM WITH
+       * THE PREFIX IN FRONT.
+       *
+       * ⚠️ THE FILE IS NOT REWRITTEN. An earlier version of this read
+       * the file and wrote the joined text back over it -- over the only
+       * copy of a draft, through a truncating write, on a path the
+       * editor may have open and which is not on the chain. A process
+       * stopped there leaves zero bytes where the user's work was. The
+       * rule that publication is immutable is not suspended because the
+       * user authorised the content; it is exactly what makes the
+       * authorisation safe. (§12.15 结构一, §12.11.7)
+       *
+       * The new version is marked `local-only`: its baseline came from
+       * the file rather than from an answer, so the store has not seen
+       * it and it counts as a draft until a save is confirmed.
        */
       const fileText = this.files.readText(file);
       const joined = fileText.startsWith(storePrefix) ? fileText : `${storePrefix}${fileText}`;
-      this.files.writeText(file, joined);
-      this.write(file, {
-        ...sidecar,
-        prefix: storePrefix,
-        written: digestOfBytes(Buffer.from(joined, 'utf8')),
-        phase: 'published',
-        acknowledgedRaw: null,
-        localOnly: true,
-        unresolved: false
-      });
-      return { done: true, file };
+      const outcome = this.publishInto(
+        path.dirname(file),
+        { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: joined },
+        digestOfBytes(this.files.readBytes(file))
+      );
+      if (!outcome.published) {
+        return { done: false, file };
+      }
+      const fresh = this.sidecarOf(outcome.file);
+      if (fresh !== null) {
+        this.write(outcome.file, { ...fresh, localOnly: true });
+      }
+      this.write(file, { ...sidecar, unresolved: false });
+      return { done: true, file: outcome.file };
     }
     /*
-     * TAKING THE STORE'S VERSION PUBLISHES A NEW ONE. The file the user
-     * had stays exactly where it is: this extension deletes nothing, and
-     * the bytes they typed are the only copy of them. (§12.23)
+     * TAKING THE STORE'S VERSION PUBLISHES A NEW ONE, THROUGH THE SAME
+     * DOOR. The file the user had stays exactly where it is: this
+     * extension deletes nothing, and the bytes they typed are the only
+     * copy of them. (§12.23)
+     *
+     * IT GOES THROUGH `publishInto` rather than repeating the three
+     * steps, because the refusal for a path the editor has open belongs
+     * to every publication and a second copy of the sequence is a second
+     * place for that check to be missing -- which is exactly what it
+     * was. (§12.13.1)
      */
     const directory = path.dirname(file);
-    const version = this.nextVersion(directory);
-    const fresh = path.join(directory, `${version}.md`);
-    const record: Sidecar = {
-      format: 1,
-      storeId: sidecar.storeId,
-      blockId: sidecar.blockId,
-      phase: 'publishing',
-      prefix: storePrefix,
-      written: digestOfBytes(Buffer.from(storeText, 'utf8')),
-      previous: digestOfBytes(this.files.readBytes(file)),
-      acknowledgedRaw: null,
-      sent: null,
-      cursor: null,
-      localOnly: false,
-      unresolved: false
-    };
-    this.write(fresh, record);
-    this.files.writeText(fresh, storeText);
-    this.write(fresh, { ...record, phase: 'published' });
+    const outcome = this.publishInto(
+      directory,
+      { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: storeText },
+      digestOfBytes(this.files.readBytes(file))
+    );
+    if (!outcome.published) {
+      return { done: false, file };
+    }
     this.write(file, { ...sidecar, unresolved: false });
-    return { done: true, file: fresh };
+    return { done: true, file: outcome.file };
   }
 
   public acknowledge(
@@ -582,7 +662,19 @@ export class Publisher {
      * answer arriving for some other version of this block says nothing
      * about the third version sitting in the file. (§12.11.7, C15)
      */
-    this.write(file, { ...sidecar, acknowledgedRaw: rawDigest, sent: sentDigest, cursor });
+    /*
+     * AND THE STORE HAS NOW SEEN IT. `local-only` said the baseline was
+     * built here rather than taken from an answer; an answer has just
+     * arrived for these bytes, so it no longer holds -- leaving it set
+     * would keep a confirmed version listed as unsent for ever.
+     */
+    this.write(file, {
+      ...sidecar,
+      acknowledgedRaw: rawDigest,
+      sent: sentDigest,
+      cursor,
+      localOnly: false
+    });
     return { recorded: true };
   }
 }

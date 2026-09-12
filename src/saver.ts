@@ -185,7 +185,8 @@ export class Saver {
         payload,
         state: 'queued',
         createdAt: this.now(),
-        lastError: null
+        lastError: null,
+        importedBy: null
       };
       this.outbox.enqueue(entry);
       const outcomes = await this.drain();

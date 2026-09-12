@@ -290,3 +290,97 @@ export function supersededNotice(id: string): Notice {
       'came back was already out of date. Open it again to get the stored version.'
   };
 }
+
+/*
+ * WHAT A REFUSED SAVE SAYS, ONE SENTENCE PER REASON.
+ *
+ * Eight refusals reach here and they need eight different things from
+ * the user: one waits for the next keystroke, one wants the file's
+ * encoding changed, one wants a heading put back, one wants a command
+ * run. A single "could not save" would leave all of them looking like
+ * the same dead end -- and the silent version of it looks exactly like
+ * a save that worked, which is the failure this whole batch exists to
+ * remove. (§12.17.3, §12.13.4, §12.11.7)
+ */
+export function refusalNotice(
+  id: string,
+  file: string,
+  refusal:
+    | { because: 'document-dirty' }
+    | { because: 'byte-order-mark' }
+    | { because: 'not-utf8' }
+    | { because: 'disk-differs-from-snapshot' }
+    | { because: 'prefix-changed'; prefix: string }
+    | { because: 'no-sidecar' }
+    | { because: 'unresolved' }
+    | { because: 'publication-incomplete' }
+    | { because: 'outside-session'; file: string }
+): Notice {
+  switch (refusal.because) {
+    case 'document-dirty':
+      /*
+       * NOT AN ERROR AT ALL. The user carried on typing after the save,
+       * so the next one will take the newer text. Saying nothing here
+       * would be the silent case; saying it loudly would be noise.
+       */
+      return {
+        level: 'none',
+        text: `${id} was edited again while it was being saved; the next save will send it.`
+      };
+    case 'byte-order-mark':
+      return {
+        level: 'warning',
+        text:
+          `${id} was not sent: ${file} begins with a byte-order mark, and this batch stores block ` +
+          'text as UTF-8 without one. Save the file as UTF-8 and try again.'
+      };
+    case 'not-utf8':
+      return {
+        level: 'warning',
+        text:
+          `${id} was not sent: ${file} is not UTF-8. Save the file as UTF-8 -- the store keeps block ` +
+          'text in that encoding and nothing here guesses another.'
+      };
+    case 'disk-differs-from-snapshot':
+      return {
+        level: 'warning',
+        text:
+          `${id} was not sent this time: what is on disk is not yet what the editor holds. Nothing ` +
+          'was changed; saving again will send it.'
+      };
+    case 'prefix-changed':
+      return {
+        level: 'warning',
+        text:
+          `${id} was not sent: the front matter or heading changed. This batch sends only the body, ` +
+          'so nothing went out and the file still holds what you wrote.'
+      };
+    case 'publication-incomplete':
+      return {
+        level: 'warning',
+        text:
+          `${id} was not sent: its file and the record beside it do not yet describe one another. ` +
+          'Open the block again to publish a fresh version.'
+      };
+    case 'unresolved':
+      return {
+        level: 'error',
+        text:
+          `${id} was not sent: ${file} holds a version neither this window nor the store wrote, so ` +
+          'there is nothing to measure the edit against. Run "theourgia: Reconcile Block" to choose ' +
+          'what to keep.'
+      };
+    case 'no-sidecar':
+      return {
+        level: 'error',
+        text:
+          `${id} was not sent: there is no record beside ${file} saying what it was based on. Open ` +
+          'the block again to publish a version this window knows.'
+      };
+    case 'outside-session':
+      return {
+        level: 'none',
+        text: `${refusal.file} is not a block file; nothing was sent.`
+      };
+  }
+}

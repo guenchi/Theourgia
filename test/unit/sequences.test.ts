@@ -63,6 +63,7 @@ function sidecar(over: Partial<Sidecar> = {}): Sidecar {
     cursor: null,
     localOnly: false,
     unresolved: false,
+    bodyHasCrlf: false,
     ...over
   };
 }
@@ -88,6 +89,15 @@ describe('C11/S1 an older reading cannot replace a newer baseline', () => {
    * own record, so an older one cannot become the newer one's baseline;
    * there is nothing to replace. The chain keeps the two publications
    * from interleaving at all.
+   *
+   * AN EDITOR-HOSTED CELL WAS RETIRED FOR THIS. `opens the same block
+   * into the same document the second time` required one block to reach
+   * one document, which was true while the file was rewritten in place
+   * and is false now -- the second open publishes the next version. Its
+   * sequence is recorded here rather than lost with it: open, open
+   * again, and the FIRST version's bytes must be unchanged. The cell
+   * that replaced it asserts exactly that, and so does the second half
+   * of this one.
    */
   it('gives each reading its own file and its own record', async () => {
     const dir = scratch();

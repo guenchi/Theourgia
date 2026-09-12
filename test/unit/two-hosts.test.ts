@@ -39,9 +39,9 @@ function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-two-'));
 }
 
-function publishStep(directory: string, text: string) {
+function publishStep(sessionId: string, text: string, prefix = '## Two\n') {
   return {
-    publish: { directory, storeId: 's1', blockId: 'a.2', prefix: '## Two\n', text }
+    publish: { sessionId, storeId: 's1', blockId: 'a.2', prefix, text }
   };
 }
 
@@ -53,11 +53,11 @@ describe('C1 two windows keep one block in two files', function () {
     const [a, b] = await Promise.all([
       runHost({
         storage,
-        steps: [{ beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } }, publishStep('S-a/st/a.2', '## Two\nfrom A\n')]
+        steps: [{ beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } }, publishStep('S-a', '## Two\nfrom A\n')]
       }),
       runHost({
         storage,
-        steps: [{ beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } }, publishStep('S-b/st/a.2', '## Two\nfrom B\n')]
+        steps: [{ beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } }, publishStep('S-b', '## Two\nfrom B\n')]
       })
     ]);
     const fileOf = (r: typeof a): string | undefined => {
@@ -73,41 +73,59 @@ describe('C1 two windows keep one block in two files', function () {
   });
 
   /*
-   * C11/S7: the trigger that used to destroy work. A holds a baseline
-   * with an empty prefix; the store grows a heading; B publishes that
-   * version; A saves. With a shared file, A's save sent heading-as-body.
-   * Here the assertion is structural -- the two never wrote the same
-   * path, so the sequence has nowhere to happen.
+   * C11/S7: the trigger that used to destroy work, run for real.
+   *
+   * ⚠️ THE FIRST VERSION NEVER SAVED. It published into paths it made up
+   * outside the sessions tree and then asserted that two directories
+   * existed -- which they did, holding nothing but `session.json`. The
+   * sequence S7 names is: A holds an empty-prefix baseline, the store
+   * grows a heading, B publishes that, and A SAVES. Without the save
+   * there is no sequence, only two directories.
    */
   it('reproduces S7 and finds it has nowhere to happen', async () => {
     const storage = scratch();
-    await runHost({
+    const a = await runHost({
       storage,
       steps: [
         { beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } },
-        publishStep('S-a/st/a.2', 'no heading at all\n')
+        publishStep('S-a', 'no heading at all\n', ''),
+        { save: { sessionId: 'S-a', blockId: 'a.2', name: '1.md', text: 'no heading at all\n' } }
       ]
     });
-    await runHost({
+    const b = await runHost({
       storage,
       steps: [
         { beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } },
-        publishStep('S-b/st/a.2', '## Grown A Heading\nbody\n')
+        publishStep('S-b', '## Grown A Heading\nbody\n', '## Grown A Heading\n'),
+        { save: { sessionId: 'S-b', blockId: 'a.2', name: '1.md', text: '## Grown A Heading\nbody\n' } }
       ]
     });
 
-    const sessionsDir = path.join(storage, 'sessions');
-    const perSession = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : [];
-    assert.ok(perSession.length >= 2, `the two windows did not get their own directories: ${perSession.join(', ')}`);
+    const decisionOf = (r: typeof a): { send?: boolean; src?: string } =>
+      (r.steps.find((s) => s.step === 'save')?.decision ?? {}) as { send?: boolean; src?: string };
+    const fromA = decisionOf(a);
+    const fromB = decisionOf(b);
 
-    const filesUnder = (session: string): string[] => {
+    assert.strictEqual(fromA.send, true, `A sent nothing: ${JSON.stringify(a.steps)}`);
+    assert.strictEqual(fromB.send, true, `B sent nothing: ${JSON.stringify(b.steps)}`);
+    /*
+     * THE PAYLOAD IS THE WHOLE POINT. In the shape that lost work, A's
+     * save was split against a baseline B had replaced, so A sent the
+     * heading as part of the body. Each window here measures against its
+     * own record, so A sends its own body and B sends its own.
+     */
+    assert.strictEqual(fromA.src, 'no heading at all\n', 'A sent bytes measured against another window');
+    assert.strictEqual(fromB.src, 'body\n', 'B sent its heading as part of the body');
+
+    const sessionsDir = path.join(storage, 'sessions');
+    const blockFiles = (session: string): string[] => {
       const out: string[] = [];
       const walk = (dir: string): void => {
         for (const name of fs.readdirSync(dir)) {
           const full = path.join(dir, name);
           if (fs.statSync(full).isDirectory()) {
             walk(full);
-          } else {
+          } else if (name.endsWith('.md')) {
             out.push(path.relative(path.join(sessionsDir, session), full));
           }
         }
@@ -115,12 +133,20 @@ describe('C1 two windows keep one block in two files', function () {
       walk(path.join(sessionsDir, session));
       return out;
     };
-    const a = new Set(filesUnder(perSession[0]));
-    const b = filesUnder(perSession[1]);
-    assert.ok(
-      b.length > 0 && a.size > 0,
-      'one of the sessions wrote nothing, so this proves nothing about sharing'
-    );
+    const mine = blockFiles('S-a');
+    const theirs = blockFiles('S-b');
+    assert.ok(mine.length > 0 && theirs.length > 0, 'one of the windows wrote no block file');
+    /*
+     * AND THE TWO NEVER TOUCHED ONE PATH -- which is why the sequence has
+     * nowhere to happen rather than being guarded against.
+     */
+    const absolute = (session: string, rel: string): string => path.join(sessionsDir, session, rel);
+    for (const rel of mine) {
+      assert.ok(
+        !theirs.map((t) => absolute('S-b', t)).includes(absolute('S-a', rel)),
+        'the two windows wrote the same path'
+      );
+    }
   });
 });
 
@@ -131,39 +157,110 @@ describe('C16 the sessions are separate past their names', function () {
    * THE IMPLEMENTATION C16 NAMES: one shared queue with a global
    * numbering. It passes C1 -- the block FILES are in separate
    * directories -- while both windows send each other's saves.
+   *
+   * ⚠️ THE FIRST VERSION OF THIS CELL ENQUEUED NOTHING and asserted
+   * `queues.length === 0 || queues.length >= 1`, which is true of every
+   * number. Each window now puts a request in its own queue and the
+   * other window's count is required not to move.
    */
-  it('gives each session its own queue', async () => {
+  it('gives each session its own queue, and neither sees the other’s entries', async () => {
     const storage = scratch();
-    await Promise.all([
-      runHost({ storage, steps: [{ beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } }] }),
-      runHost({ storage, steps: [{ beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } }] })
-    ]);
-    const sessionsDir = path.join(storage, 'sessions');
-    assert.ok(fs.existsSync(sessionsDir), 'no session directories were made');
-    const queues = fs
-      .readdirSync(sessionsDir)
-      .map((s) => path.join(sessionsDir, s, 'outbox.json'))
-      .filter((f) => fs.existsSync(f));
+    await runHost({
+      storage,
+      steps: [
+        { beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } },
+        { enqueue: { sessionId: 'S-a', req: 'aaaaaaaa-0000-0000-0000-000000000001', payload: 'from A\n' } },
+        { countQueue: 'S-a' }
+      ]
+    });
+    const b = await runHost({
+      storage,
+      steps: [
+        { beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } },
+        { enqueue: { sessionId: 'S-b', req: 'bbbbbbbb-0000-0000-0000-000000000002', payload: 'from B\n' } },
+        { countQueue: 'S-b' },
+        { countQueue: 'S-a' }
+      ]
+    });
+
+    const counts = b.steps.filter((s) => s.step === 'countQueue') as Array<{ sessionId: string; count: number }>;
+    const mine = counts.find((c) => c.sessionId === 'S-b');
+    const theirs = counts.find((c) => c.sessionId === 'S-a');
+    assert.strictEqual(mine?.count, 1, `B's own queue holds ${mine?.count}: ${JSON.stringify(b.steps)}`);
+    assert.strictEqual(
+      theirs?.count,
+      1,
+      'B changed the other window’s queue, so the two share one'
+    );
     assert.ok(
       !fs.existsSync(path.join(storage, 'outbox.json')),
       'there is a queue outside the sessions, so the two windows share one'
     );
-    assert.ok(queues.length === 0 || queues.length >= 1, 'queues are not per session');
   });
 
+  /*
+   * AND STARTING UP CONSUMES NOTHING. C13 asks for this and the first
+   * version of the cell only checked that the old directory still
+   * existed -- which it did before startup too.
+   */
   it('does not consume another session’s entries just by starting up', async () => {
     const storage = scratch();
-    await runHost({ storage, steps: [{ beginSession: { sessionId: 'S-old', stores: ['/stores/one'] } }] });
-    const before = JSON.stringify(
-      fs.existsSync(path.join(storage, 'sessions')) ? fs.readdirSync(path.join(storage, 'sessions')) : []
+    await runHost({
+      storage,
+      steps: [
+        { beginSession: { sessionId: 'S-old', stores: ['/stores/one'] } },
+        { enqueue: { sessionId: 'S-old', req: 'cccccccc-0000-0000-0000-000000000003', payload: 'unsent\n' } }
+      ]
+    });
+    const fresh = await runHost({
+      storage,
+      steps: [
+        { beginSession: { sessionId: 'S-new', stores: ['/stores/one'] } },
+        { drafts: 'S-new' },
+        { countQueue: 'S-old' }
+      ]
+    });
+    const left = fresh.steps.find((s) => s.step === 'countQueue') as { count: number } | undefined;
+    assert.strictEqual(
+      left?.count,
+      1,
+      `starting a window changed the dead session's queue: ${JSON.stringify(fresh.steps)}`
     );
-    await runHost({ storage, steps: [{ beginSession: { sessionId: 'S-new', stores: ['/stores/one'] } }, { drafts: 'S-new' }] });
-    const after = fs.existsSync(path.join(storage, 'sessions'))
-      ? fs.readdirSync(path.join(storage, 'sessions'))
-      : [];
-    assert.ok(
-      after.includes('S-old') || before.includes('S-old'),
-      'starting a new window removed the old session’s directory'
+  });
+});
+
+/*
+ * C8 contention, across two processes.
+ *
+ * ⚠️ THE FIRST VERSION RAN BOTH CLAIMS IN ONE PROCESS, where the scan
+ * and the link are one synchronous stretch and never overlap -- so a
+ * read-then-write publication with a window between them would have
+ * passed. These two hosts wait at a rendezvous until both are ready and
+ * then race.
+ */
+describe('C8 two windows racing for one claim', function () {
+  this.timeout(120000);
+
+  it('lets exactly one of two processes take the token', async () => {
+    const storage = scratch();
+    fs.mkdirSync(path.join(storage, 'sessions', 'S-old'), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage, 'sessions', 'S-old', 'session.json'),
+      JSON.stringify({ sessionId: 'S-old', pid: 999999, startedAt: 1000, nonce: 'n', stores: [] }),
+      'utf8'
+    );
+
+    const [a, b] = await Promise.all([
+      runHost({ storage, steps: [{ claim: { dead: 'S-old', as: 'S-a', waitFor: 'gate' } }] }),
+      runHost({ storage, steps: [{ claim: { dead: 'S-old', as: 'S-b', waitFor: 'gate' } }] })
+    ]);
+    const outcomeOf = (r: typeof a): { claimed?: boolean } =>
+      (r.steps.find((s) => s.step === 'claim')?.outcome ?? {}) as { claimed?: boolean };
+    const won = [outcomeOf(a), outcomeOf(b)].filter((o) => o.claimed === true).length;
+    assert.strictEqual(
+      won,
+      1,
+      `${won} of two processes took the same claim: ${JSON.stringify([a.steps, b.steps])}`
     );
   });
 });
@@ -175,6 +272,10 @@ describe('C16 the sessions are separate past their names', function () {
  * BY HAND, which is the right way to test the classifier and the wrong
  * way to test that the states occur. These kill a real process at each
  * of the three points and ask the classifier what it finds.
+ *
+ * ⚠️ THESE THREE WERE ONCE DELETED BY A REWRITE OF THIS FILE and the
+ * suite stayed green -- a shorter file looks tidier and the missing
+ * guard does not announce itself. Counting the cells is what found it.
  */
 describe('C3 a publication interrupted for real', function () {
   this.timeout(120000);
@@ -186,7 +287,7 @@ describe('C3 a publication interrupted for real', function () {
         { beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } },
         {
           publish: {
-            directory: 'S-a/st/a.2',
+            sessionId: 'S-a',
             storeId: 's1',
             blockId: 'a.2',
             prefix: '## Two\n',
@@ -198,36 +299,40 @@ describe('C3 a publication interrupted for real', function () {
     });
   }
 
-  it('dies after the record is written and leaves a file that can be republished', async () => {
+  async function standingAfter(storage: string): Promise<{ kind?: string; complete?: boolean }> {
+    const after = await runHost({
+      storage,
+      steps: [{ standingOf: { sessionId: 'S-a', blockId: 'a.2', name: '1.md' } }]
+    });
+    return (after.steps.find((s) => s.step === 'standingOf')?.standing ?? {}) as {
+      kind?: string;
+      complete?: boolean;
+    };
+  }
+
+  it('dies after the record is written and leaves a publication that can be repeated', async () => {
     const storage = scratch();
     const result = await publishAndDie(storage, 1);
     assert.strictEqual(result.code, 9, `the host did not die inside the publication: ${JSON.stringify(result.steps)}`);
-    const after = await runHost({ storage, steps: [{ standingOf: 'S-a/st/a.2/1.md' }] });
-    const standing = after.steps.find((s) => s.step === 'standingOf')?.standing as
-      | { kind?: string; complete?: boolean }
-      | undefined;
-    assert.strictEqual(standing?.kind, 'mid-publication');
-    assert.strictEqual(standing?.complete, false, 'a file that was never written was taken for a finished one');
+    const standing = await standingAfter(storage);
+    assert.strictEqual(standing.kind, 'mid-publication');
+    assert.strictEqual(standing.complete, false, 'a write that never happened was taken for a finished one');
   });
 
   it('dies after the file is written and leaves a publication that only needs finishing', async () => {
     const storage = scratch();
     const result = await publishAndDie(storage, 2);
     assert.strictEqual(result.code, 9, `the host did not die inside the publication: ${JSON.stringify(result.steps)}`);
-    const after = await runHost({ storage, steps: [{ standingOf: 'S-a/st/a.2/1.md' }] });
-    const standing = after.steps.find((s) => s.step === 'standingOf')?.standing as
-      | { kind?: string; complete?: boolean }
-      | undefined;
-    assert.strictEqual(standing?.kind, 'mid-publication');
-    assert.strictEqual(standing?.complete, true, 'a finished write was taken for one that never happened');
+    const standing = await standingAfter(storage);
+    assert.strictEqual(standing.kind, 'mid-publication');
+    assert.strictEqual(standing.complete, true, 'a finished write was taken for one that never happened');
   });
 
   it('leaves nothing at all when it dies before the record is written', async () => {
     const storage = scratch();
     const result = await publishAndDie(storage, 0);
     assert.strictEqual(result.code, 9, `the host did not die inside the publication: ${JSON.stringify(result.steps)}`);
-    const after = await runHost({ storage, steps: [{ standingOf: 'S-a/st/a.2/1.md' }] });
-    const standing = after.steps.find((s) => s.step === 'standingOf')?.standing as { kind?: string } | undefined;
-    assert.strictEqual(standing?.kind, 'absent');
+    const standing = await standingAfter(storage);
+    assert.strictEqual(standing.kind, 'absent');
   });
 });

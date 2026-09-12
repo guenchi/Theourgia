@@ -25,6 +25,7 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { StoreModel } from '../../src/model';
 import { stringField } from '../../src/blocks';
@@ -102,28 +103,45 @@ describe('the extension inside an editor', function () {
     assert.strictEqual(editor?.document.getText(), '## Two\nbody\n\n');
   });
 
-  it('opens the same block into the same document the second time', async () => {
+  /*
+   * X1c REPLACED THIS CELL'S SUBJECT.
+   *
+   * It used to require that opening a block twice reached ONE document,
+   * because the file was rewritten in place from the store. Publication
+   * is immutable now: a second open publishes `<n+1>.md` and shows that,
+   * and the version that was there stays exactly as it was. That is not
+   * a regression -- it is the property that removes the whole class of
+   * "another reading replaced my baseline" (S1, S4), because there is
+   * nothing to replace.
+   *
+   * THE SEQUENCE THE OLD CELL GUARDED is now covered by two things: the
+   * note in sequences.test.ts under S1, and the assertion below that the
+   * earlier version is untouched -- which is the part that actually
+   * mattered about "one block, one document".
+   */
+  it('publishes a new version the second time and leaves the first alone', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
     await settle();
-    const first = vscode.window.activeTextEditor?.document.uri.toString();
-    /*
-     * IT HAS TO BE A DOCUMENT, AND IT HAS TO BE THIS BLOCK'S. Comparing
-     * two optional URIs without that is satisfied by two `undefined`s --
-     * an open that did nothing at all -- and by the same unrelated
-     * editor being left active twice.
-     */
+    const first = vscode.window.activeTextEditor?.document.uri.fsPath;
     assert.ok(first !== undefined, 'the first open put nothing in front of the user');
+    const firstBytes = fs.readFileSync(first as string, 'utf8');
+
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await settle();
+    const second = vscode.window.activeTextEditor?.document.uri.fsPath;
+    assert.ok(second !== undefined, 'the second open put nothing in front of the user');
+    assert.notStrictEqual(second, first, 'the second reading was written over the first');
+    assert.strictEqual(
+      fs.readFileSync(first as string, 'utf8'),
+      firstBytes,
+      'opening the block again changed the version that was already there'
+    );
     assert.strictEqual(
       vscode.window.activeTextEditor?.document.getText(),
       '## Two\nbody\n\n',
-      'the editor left active is not the block that was asked for'
+      'the second version does not hold the block'
     );
-    await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
-    const second = vscode.window.activeTextEditor?.document.uri.toString();
-    assert.ok(second !== undefined, 'the second open put nothing in front of the user');
-    assert.strictEqual(first, second, 'one block reached two buffers');
   });
 
   it('opens two different blocks into two different documents', async () => {

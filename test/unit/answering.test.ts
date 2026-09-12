@@ -66,6 +66,7 @@ function published(dir: string, text: string, over: Partial<Sidecar> = {}): stri
     cursor: null,
     localOnly: false,
     unresolved: false,
+    bodyHasCrlf: false,
     ...over
   };
   fs.writeFileSync(`${file}.meta`, JSON.stringify(sidecarToDisk(sidecar)), 'utf8');

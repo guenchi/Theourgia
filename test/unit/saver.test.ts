@@ -534,7 +534,8 @@ describe('S11 a host interrupted between the send and the answer', () => {
       payload: 'second\n',
       state: 'sent',
       createdAt: 0,
-      lastError: null
+      lastError: null,
+      importedBy: null
     });
     interrupted.setCursor('w:9');
 
@@ -569,7 +570,8 @@ describe('S11 a host interrupted between the send and the answer', () => {
       payload: 'x\n',
       state: 'sent',
       createdAt: 0,
-      lastError: null
+      lastError: null,
+      importedBy: null
     });
     outbox.setCursor('w:40');
     outbox.aboutToSend('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'w:40');
@@ -588,7 +590,8 @@ describe('S11 a host interrupted between the send and the answer', () => {
       payload: 'x\n',
       state: 'queued',
       createdAt: 0,
-      lastError: null
+      lastError: null,
+      importedBy: null
     });
     outbox.aboutToSend('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', 'w:40');
     assert.strictEqual(outbox.entries[0].cursor, 'w:40');
@@ -639,7 +642,8 @@ describe('S12 entries found on disk after a restart', () => {
         payload,
         state: 'sent',
         createdAt,
-        lastError: null
+        lastError: null,
+        importedBy: null
       });
     }
     return outbox;

@@ -26,25 +26,27 @@
  * put it out of reach too.
  */
 
+import { createHash, randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { BlockDocument, documentFor, splitDocument } from './blocks';
+import { documentFor } from './blocks';
 import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
-import { documentPathFor, hasUncommittedWork, markCommitted, writeDocument } from './documents';
 import { Node, StoreModel } from './model';
-import { OpenBuffers } from './open';
-import { placeReading } from './placing';
-import { Outbox, outboxPathFor } from './outbox';
+import { Outbox } from './outbox';
+import { Publisher } from './publication';
+import { Saving } from './saving';
+import { Sessions } from './sessions';
+import { PathChain } from './chain';
+import { nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
   StatusFacts,
-  prefixRefusedNotice,
   nodeTooltip,
   retryNotice,
+  refusalNotice,
   saveNotice,
-  supersededNotice,
   unreconciledNotice,
   statusLine,
   wrongStoreNotice
@@ -196,12 +198,43 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await initWire();
 
   const storage = context.globalStorageUri.fsPath;
-  const open = new OpenBuffers<BlockDocument>();
+
   /*
-   * FILES THIS HOST CANNOT MEASURE A SAVE AGAINST. See the branch in
-   * `openBlock` that finds work it did not write.
+   * X1c: THE FILES BELONG TO THIS WINDOW AND TO NOTHING ELSE.
+   *
+   * A session directory per extension host is what makes the in-process
+   * chain sufficient: no other process writes these paths, so ordering
+   * them here is ordering all of their writers. The id is made once, at
+   * activation, and never reused. (§12.9)
    */
-  const unreconciled = new Set<string>();
+  const files = nodeFileOps;
+  const sessions = new Sessions(files, storage);
+  const sessionId = randomUUID();
+  const chain = new PathChain();
+  const publisher = new Publisher(files, {
+    /*
+     * THE EDITOR IS ASKED DIRECTLY. `publish` refuses a path the editor
+     * has open, because then the editor is a writer and this is not.
+     * (§12.13.1)
+     */
+    isOpen: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file)
+  });
+  const saving = new Saving(files);
+
+  /*
+   * ONE DIRECTORY PER STORE INSIDE THE SESSION, named by a digest of the
+   * store's path so that two stores with the same block id do not share
+   * a place. (§12.9)
+   */
+  function storeHash(store: string): string {
+    return createHash('sha256').update(store, 'utf8').digest('hex').slice(0, 16);
+  }
+  /*
+   * X1c REPLACED THE IN-MEMORY BASELINE. What a save is measured against
+   * now lives beside the file, on disk, in `<n>.meta` -- so it survives
+   * a restart, and two readings of one block cannot describe each other.
+   * The ordering that used to be done with tickets is done by the chain.
+   */
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = 'theourgia.showStatus';
   /*
@@ -264,7 +297,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     client = Client.fromConfig(config);
     model = new StoreModel(client);
-    outbox = new Outbox(outboxPathFor(storage, config.store));
+    /*
+     * THE QUEUE IS THIS SESSION'S. One writer -- this process -- so it
+     * needs no lock; a queue outside the sessions, however it were
+     * numbered, would be two windows writing one file again. (§12.9,
+     * C16)
+     */
+    outbox = new Outbox(sessions.outboxPathFor(sessionId, storeHash(config.store)), files);
     try {
       outbox.load();
     } catch (e) {
@@ -348,7 +387,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * block are ordered by when they asked the store rather than by
      * which of them finished first. See src/open.ts.
      */
-    const ticket = open.claim();
     let block;
     try {
       block = await model.blockOf(id);
@@ -392,183 +430,119 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showWarningMessage(`theourgia: the store has no block ${id}.`);
       return;
     }
-    const file = documentPathFor(storage, store, id);
-    const uri = vscode.Uri.file(file);
-
     /*
-     * A BUFFER WITH UNSAVED WORK IN IT IS NOT OVERWRITTEN, and the
-     * baseline it is measured against is not moved either. Opening a
-     * block again is how a user comes back to it, not how they discard
-     * what they have typed -- and moving the baseline under a dirty
-     * buffer would be worse than losing the text: the heading check
-     * would then compare the user's edits against a heading they never
-     * saw, and a save could go out carrying the wrong body.
+     * X1c: THE BLOCK'S VERSIONS LIVE UNDER THIS SESSION'S DIRECTORY, and
+     * opening it publishes the next one. Nothing here rewrites a file
+     * and nothing here deletes one: a reading from the store becomes
+     * `<n+1>.md` with its own record, and what was there stays. That is
+     * why "another reading replaced my baseline" has nowhere to happen
+     * rather than being guarded against. (§12.9, §12.15 结构一)
      */
-    const alreadyOpen = vscode.workspace.textDocuments.find(
-      (d) => d.uri.fsPath === file && d.isDirty
-    );
-    if (alreadyOpen !== undefined) {
-      await vscode.window.showTextDocument(alreadyOpen, { preview: false });
-      vscode.window.showInformationMessage(
-        `theourgia: ${id} is already open with unsaved changes, so it was not reloaded from the store.`
-      );
-      return;
-    }
-
-    /*
-     * AND A FILE THAT IS CLEAN MAY STILL HOLD WORK. A save the core
-     * refused wrote the file to disk before this extension heard the
-     * refusal, so the buffer is clean while holding text the store does
-     * not have -- and another editor window, which this host cannot see
-     * at all, leaves the same trace. Neither is visible in `isDirty`.
-     */
+    const directory = sessions.directoryFor(sessionId, storeHash(store), id);
     const document = documentFor(block, store);
-    if (hasUncommittedWork(file)) {
-      const existing = await vscode.workspace.openTextDocument(uri);
-      await vscode.languages.setTextDocumentLanguage(existing, 'markdown');
-      await vscode.window.showTextDocument(existing, { preview: false });
+
+    /*
+     * THE PUBLICATION AND EVERYTHING THAT READS IT ARE ON ONE CHAIN,
+     * keyed by the directory these versions share, so a save arriving
+     * for this block waits rather than interleaving. (§12.11.1)
+     */
+    const outcome = await chain.run(directory, async () =>
+      publisher.publish({
+        directory,
+        storeId: store,
+        blockId: id,
+        prefix: document.prefix,
+        text: document.text
+      })
+    );
+
+    if (!outcome.published) {
       /*
-       * THE BASELINE THAT BELONGS TO THESE BYTES, OR NONE AT ALL.
-       *
-       * This branch deliberately keeps the file it found, so the reading
-       * just taken from the store describes bytes that are NOT on disk.
-       * Installing it made the save path split the user's text against a
-       * prefix it never had -- and when the store's prefix is empty, a
-       * mismatch is not refused: the heading is taken for body and sent.
-       *
-       * If this host already holds a baseline for the file, that is the
-       * one the file was written from, and it stays. If it does not --
-       * a restart, another window, a file this version did not write --
-       * then nothing here knows what these bytes were based on, and
-       * there is no honest baseline to install. Saying so is the only
-       * safe answer: guessing one sends the wrong bytes, and installing
-       * none silently would make every save from this buffer vanish
-       * without a word.
+       * The editor holds the path this would have written. Showing what
+       * is there is the answer; writing is not. (§12.13.1)
        */
-      const held = open.get(file);
-      if (held === undefined) {
-        unreconciled.add(file);
-        show(unreconciledNotice(id, file));
-        return;
+      if (outcome.file !== null) {
+        const already = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
+        await vscode.window.showTextDocument(already, { preview: false });
       }
-      vscode.window.showWarningMessage(
-        `theourgia: the file for ${id} holds changes the store does not have, so it was not ` +
-          'reloaded. Save it to send them, or delete the file to take the store\'s copy.'
-      );
       return;
     }
 
-    /*
-     * THE CLAIM COMES BEFORE THE WRITE. If a newer reading has already
-     * become the baseline, this one must not put its older text into the
-     * file either -- a file holding one reading while the baseline holds
-     * another makes the next save fail the prefix check, which is at
-     * least visible, but it is still the wrong text in front of the
-     * user.
-     */
-    /*
-     * THE CLAIM, THE WRITE AND THE OPENING ARE ONE STEP, and it lives in
-     * placing.ts where a cell can drive it. What is left here is the
-     * part that is genuinely about this extension: which editor, and
-     * what to say when the reading was overtaken.
-     */
-    const placement = await placeReading(
-      open,
-      file,
-      document,
-      ticket,
-      () => writeDocument(file, document),
-      {
-        openDocument: () => Promise.resolve(vscode.workspace.openTextDocument(uri)),
-        setLanguage: (d: vscode.TextDocument) =>
-          Promise.resolve(vscode.languages.setTextDocumentLanguage(d, 'markdown')),
-        reveal: (d: vscode.TextDocument) =>
-          Promise.resolve(vscode.window.showTextDocument(d, { preview: false }))
-      }
-    );
-    if (!placement.placed) {
-      /*
-       * A READ THAT WON IS ALREADY ON THE SCREEN; a save that won left
-       * nothing in its place, and the person who asked for this block
-       * would otherwise see their click do nothing at all.
-       */
-      if (placement.by === 'save') {
-        show(supersededNotice(id));
-      }
-      return;
-    }
-    /*
-     * THIS FILE NOW CAME FROM THE STORE, so whatever could not be
-     * reconciled about it before no longer applies.
-     */
-    unreconciled.delete(file);
+    const opened = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
+    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
+    await vscode.window.showTextDocument(opened, { preview: false });
   }
 
+  /*
+   * X1c: WHAT A SAVE DOES, AND WHAT IT REFUSES.
+   *
+   * The record beside the file decides: it carries the prefix this save
+   * is split against and whether the block's own body used CRLF. A file
+   * with no record, or one whose publication never finished, or one
+   * holding a third version, is refused BY NAME -- the one thing that
+   * must not happen is a save that quietly does nothing, because that is
+   * indistinguishable from one that worked. (§12.19.4, §12.17.3)
+   */
   async function onSaved(saved: vscode.TextDocument): Promise<void> {
     const file = saved.uri.fsPath;
-    /*
-     * A BUFFER NOBODY CAN MEASURE IS NOT SAVED SILENTLY. Returning here
-     * without a word is what this used to do for any file with no
-     * baseline, which is the same "nothing happened" a successful save
-     * looks like.
-     */
-    if (unreconciled.has(file)) {
-      show(unreconciledNotice(open.get(file)?.id ?? path.basename(file), file));
+    const sidecar = publisher.sidecarOf(file);
+    if (sidecar === null) {
+      /*
+       * NOT OURS. A file the user saved somewhere else is not a block,
+       * and this handler leaves it entirely alone. (§12.13.4)
+       */
+      if (!file.startsWith(sessions.directoryFor(sessionId, '', '').replace(/\/+$/, ''))) {
+        return;
+      }
+      show(unreconciledNotice(path.basename(file), file));
       return;
     }
-    const document = open.get(file);
-    if (document === undefined || saver === null) {
+    if (sidecar.storeId !== config.store) {
+      show(wrongStoreNotice(sidecar.blockId, sidecar.storeId, config.store));
       return;
     }
-    if (document.store !== config.store) {
-      show(wrongStoreNotice(document.id, document.store, config.store));
+    if (saver === null) {
       return;
     }
-    const split = splitDocument(document, saved.getText());
-    if (!split.ok) {
-      show(prefixRefusedNotice(document.id, document.front.length > 0, document.headingSrc.length > 0));
+
+    const decision = await chain.run(path.dirname(file), async () =>
+      saving.decide({ file, isDirty: saved.isDirty, getText: () => saved.getText() }, sidecar)
+    );
+    if (!decision.send) {
+      show(refusalNotice(sidecar.blockId, file, decision.refusal));
+      paint();
       return;
     }
+
     let outcome;
     try {
-      outcome = await saver.save(document.id, 'src', split.src);
+      outcome = await saver.save(sidecar.blockId, decision.intent.field, decision.src);
     } catch (e) {
       reportFailure(e);
       paint();
       return;
     }
+
     if (outcome.status === 'saved' || outcome.status === 'replayed') {
       /*
-       * THE BLOCK THIS BUFFER IS COMPARED AGAINST MOVES WITH THE SAVE.
-       * Without this the next save would still be measured against the
-       * body the block had when it was opened, and the heading check
-       * would be right only by accident.
+       * THE RECORD IS WRITTEN BEFORE THE ENTRY GOES, and both happen
+       * inside `recordAnswer` so that the order is in one place. The
+       * queue is already empty of this request by the time we get here
+       * -- `Saver` removes it -- so the callback is the identity; what
+       * `recordAnswer` still decides is whether the acknowledgement
+       * describes the bytes that are actually in the file. (§12.7.4)
        */
-      /*
-       * THE WHOLE PREFIX, NOT JUST THE HEADING. Rebuilding the baseline
-       * from `headingSrc + src` drops the front matter, and the next
-       * save is then measured against a text the buffer never held: with
-       * an empty body the baseline contains no carriage return, so a
-       * CRLF buffer gets normalised whole and its untouched front matter
-       * no longer matches the prefix -- an ordinary body edit refused
-       * for a change nobody made.
-       */
-      const stored = { ...document, src: split.src, text: document.prefix + split.src };
-      open.confirmed(file, stored);
-      /*
-       * THE FILE AS IT STANDS IS NOW IN THE STORE, so the next time this
-       * block is opened it may be taken from the store again. This is
-       * the only place that is true; a refusal and an unresolved save
-       * both leave the marker where it was, which is what keeps the file
-       * from being overwritten.
-       */
-      /*
-       * MARKED WITH WHAT WAS SENT. Marking whatever the file holds at
-       * this moment credited a later save's bytes to this one's answer.
-       */
-      markCommitted(file, stored.text);
+      await chain.run(path.dirname(file), async () =>
+        saving.recordAnswer(file, {
+          req: outcome.req,
+          cursor: outbox?.cursor ?? '',
+          rawDigest: decision.rawDigest,
+          sentDigest: decision.sentDigest,
+          mismatch: false
+        })
+      );
     }
-    show(saveNotice(outcome, split.normalised));
+    show(saveNotice(outcome, decision.normalised));
     paint();
   }
 

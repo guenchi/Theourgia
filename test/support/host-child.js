@@ -53,6 +53,8 @@ function load() {
     product = {
       fsops: require(path.join(__dirname, '..', '..', 'src', 'fsops.js')),
       publication: require(path.join(__dirname, '..', '..', 'src', 'publication.js')),
+      saving: require(path.join(__dirname, '..', '..', 'src', 'saving.js')),
+      outbox: require(path.join(__dirname, '..', '..', 'src', 'outbox.js')),
       sessions: require(path.join(__dirname, '..', '..', 'src', 'sessions.js'))
     };
   }
@@ -133,8 +135,15 @@ async function main() {
               ? p.fsops.nodeFileOps
               : crashingOps(p.fsops.nodeFileOps, argument.crashAfterWrites);
           const publisher = new p.publication.Publisher(ops, { isOpen: () => false });
+          /*
+           * THE PATH COMES FROM `Sessions`, NOT FROM THE CELL. A cell
+           * that composed the directory itself published outside the
+           * sessions tree, so the very separation it was about never
+           * happened.
+           */
+          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
           const outcome = await publisher.publish({
-            directory: path.join(storage, argument.directory),
+            directory: sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
             storeId: argument.storeId,
             blockId: argument.blockId,
             prefix: argument.prefix,
@@ -146,7 +155,15 @@ async function main() {
         case 'standingOf': {
           const p = load();
           const publisher = new p.publication.Publisher(p.fsops.nodeFileOps, { isOpen: () => false });
-          report({ step: 'standingOf', standing: publisher.standingOf(path.join(storage, argument)) });
+          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const where =
+            typeof argument === 'string'
+              ? path.join(storage, argument)
+              : path.join(
+                  sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
+                  argument.name
+                );
+          report({ step: 'standingOf', standing: publisher.standingOf(where) });
           break;
         }
         case 'drafts': {
@@ -155,10 +172,78 @@ async function main() {
           report({ step: 'drafts', drafts: sessions.draftsIn(argument) });
           break;
         }
+        case 'enqueue': {
+          const p = load();
+          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const outbox = new p.outbox.Outbox(sessions.outboxPathFor(argument.sessionId));
+          outbox.load();
+          outbox.setCursor('w:7');
+          outbox.enqueue({
+            req: argument.req,
+            cursor: 'w:7',
+            id: argument.id || 'a.2',
+            field: 'src',
+            payload: argument.payload,
+            state: 'sent',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          });
+          report({ step: 'enqueue', file: sessions.outboxPathFor(argument.sessionId), count: outbox.entries.length });
+          break;
+        }
+        case 'countQueue': {
+          const p = load();
+          const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const outbox = new p.outbox.Outbox(sessions.outboxPathFor(argument));
+          let count = -1;
+          try {
+            outbox.load();
+            count = outbox.entries.length;
+          } catch (e) {
+            count = -1;
+          }
+          report({ step: 'countQueue', sessionId: argument, count });
+          break;
+        }
+        case 'save': {
+          const p = load();
+          const saving = new p.saving.Saving(p.fsops.nodeFileOps);
+          const sessions2 = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const file = path.join(
+            sessions2.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
+            argument.name
+          );
+          const publisher = new p.publication.Publisher(p.fsops.nodeFileOps, { isOpen: () => false });
+          const decision = saving.decide(
+            { file, isDirty: false, getText: () => argument.text },
+            publisher.sidecarOf(file)
+          );
+          report({ step: 'save', decision });
+          break;
+        }
         case 'claim': {
           const p = load();
           const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
-          report({ step: 'claim', outcome: await sessions.claim(argument) });
+          sessions.begin(argument.as, []);
+          if (argument.waitFor) {
+            /*
+             * A RENDEZVOUS FILE, so two processes can be made to reach
+             * the scan-then-link section together. Within one process
+             * the section never overlaps -- it is synchronous -- so a
+             * cell that ran both claims there would pass for a broken
+             * read-then-write publication.
+             */
+            const gate = path.join(storage, argument.waitFor);
+            fs.writeFileSync(`${gate}.${process.pid}`, 'ready');
+            const deadline = Date.now() + 10000;
+            while (Date.now() < deadline) {
+              if (fs.readdirSync(storage).filter((n) => n.startsWith(path.basename(gate))).length >= 2) {
+                break;
+              }
+            }
+          }
+          report({ step: 'claim', outcome: await sessions.claim(argument.dead) });
           break;
         }
         case 'crash':

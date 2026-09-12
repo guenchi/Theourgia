@@ -36,7 +36,8 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
-import { digestOfBytes, sidecarFromDisk } from './publication';
+import { Outbox, OutboxEntry } from './outbox';
+import { Publisher, sidecarFromDisk } from './publication';
 
 /*
  * WHEN A PID STARTED, as epoch seconds, or null when this platform will
@@ -73,10 +74,20 @@ export const systemStartTime: StartTimeReader = (pid) => {
  * may have been rounded the other way. (§12.13.5)
  */
 function sameStart(recorded: number | null, now: number | null): boolean | null {
-  if (recorded === null) {
-    return true;
-  }
-  if (now === null) {
+  /*
+   * NO RECORDED START TIME IS NOT A MATCH.
+   *
+   * This returned `true` for a session whose `session.json` carried no
+   * start time, so such a session was reported `identity-matches` --
+   * an answer that claims the identity was checked when nothing was
+   * compared. The rule says the third answer: cannot tell.
+   *
+   * ⚠️ AND SEVERAL FIXTURES ENDORSED THE MISTAKE. Cells that wanted a
+   * live session wrote `startedAt: null` because it was the easy way to
+   * make the comparison pass -- so the cells agreed with the defect
+   * instead of catching it. They now record a real start time.
+   */
+  if (recorded === null || now === null) {
     return null;
   }
   return Math.abs(recorded - now) <= 1;
@@ -128,6 +139,17 @@ export type ClaimOutcome =
  * sequence number, and an import that named only the dead session could
  * not tell the two apart. (§12.11.3, C8)
  */
+/*
+ * WHERE IMPORTED ENTRIES GO. It is the adopting session's own queue,
+ * reached through whatever holds it -- the `Saver`'s serial chain in the
+ * extension, a plain `Outbox` in a cell -- so that an import cannot race
+ * a save that is already in flight. (§12.11.3, P1-1)
+ */
+export interface ImportTarget {
+  has(req: string): boolean;
+  adopt(entry: OutboxEntry): void;
+}
+
 export interface ClaimToken {
   deadSessionId: string;
   sequence: number;
@@ -199,23 +221,52 @@ export class Sessions {
     return path.join(this.sessionDirectory(sessionId), 'session.json');
   }
 
-  private identityOf(sessionId: string): SessionIdentity | null {
+  /*
+   * THREE ANSWERS, BECAUSE "ABSENT" AND "UNREADABLE" ARE NOT THE SAME.
+   *
+   * A missing `session.json` means there is no such session. A file
+   * that will not parse, or that carries no pid, means there IS one and
+   * this window cannot tell whose -- it may be being written right now,
+   * or a read may have failed. Collapsing the two into `null` made
+   * `claim` and `discard` skip the liveness check entirely and act on a
+   * session that might be running. (§12.21.4, C19)
+   */
+  private identityOf(sessionId: string): { known: true; identity: SessionIdentity } | { known: false; because: 'absent' | 'unreadable' } {
     const file = this.identityFile(sessionId);
     if (!this.files.exists(file)) {
-      return null;
+      return { known: false, because: 'absent' };
     }
+    let raw: Record<string, unknown>;
     try {
-      const raw = JSON.parse(this.files.readText(file)) as Record<string, unknown>;
-      return {
+      raw = JSON.parse(this.files.readText(file)) as Record<string, unknown>;
+    } catch (e) {
+      return { known: false, because: 'unreadable' };
+    }
+    if (typeof raw !== 'object' || raw === null || !Number.isFinite(Number(raw.pid))) {
+      return { known: false, because: 'unreadable' };
+    }
+    return {
+      known: true,
+      identity: {
         sessionId,
         pid: Number(raw.pid),
         startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : null,
         nonce: String(raw.nonce ?? ''),
         stores: Array.isArray(raw.stores) ? (raw.stores as string[]) : []
-      };
-    } catch (e) {
-      return null;
+      }
+    };
+  }
+
+  /*
+   * The liveness of a session named by id, with "its record cannot be
+   * read" answered as cannot-tell rather than as dead.
+   */
+  private async livenessOfSession(sessionId: string): Promise<Liveness | null> {
+    const read = this.identityOf(sessionId);
+    if (!read.known) {
+      return read.because === 'absent' ? null : { decidable: false, because: 'start-time-unavailable' };
     }
+    return this.livenessOf(read.identity);
   }
 
   /*
@@ -301,13 +352,27 @@ export class Sessions {
   }
 
   /*
-   * `sessions/<session-id>/outbox.json`. One writer, this process, so no
-   * lock is needed for it -- which is the whole reason the queue moved
-   * inside the session. A queue outside them, however it were numbered,
-   * would be two windows writing one file again. (§12.9, C16)
+   * `sessions/<session-id>/<store-hash>/outbox.json`. One writer -- this
+   * process -- so it needs no lock, which is the whole reason the queue
+   * moved inside the session. A queue outside them, however it were
+   * numbered, would be two windows writing one file again. (§12.9, C16)
+   *
+   * ⚠️ AND ONE PER STORE, WHICH §12.9's WORDING DOES NOT SAY. A queue
+   * carries a cursor, and a cursor belongs to one store: with a single
+   * queue per session, switching the store left the saver holding a
+   * position the new store had never issued, and every save came back
+   * `cursor-unreachable`. That was measured in the editor, not
+   * reasoned about -- the modules are correct on their own and only the
+   * wiring could show it.
+   *
+   * `storeHash` is optional so that the older one-per-session shape
+   * remains addressable for a session's listing, where the store is not
+   * known.
    */
-  public outboxPathFor(sessionId: string): string {
-    return path.join(this.sessionDirectory(sessionId), 'outbox.json');
+  public outboxPathFor(sessionId: string, storeHash?: string): string {
+    return storeHash === undefined
+      ? path.join(this.sessionDirectory(sessionId), 'outbox.json')
+      : path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
   }
 
   public async others(): Promise<OtherSession[]> {
@@ -316,21 +381,25 @@ export class Sessions {
       if (name === this.mine || !this.files.isDirectory(this.sessionDirectory(name))) {
         continue;
       }
-      const identity = this.identityOf(name);
-      if (identity === null) {
+      const read = this.identityOf(name);
+      if (!read.known) {
         continue;
       }
+      const identity = read.identity;
       const liveness = await this.livenessOf(identity);
       const adopters: string[] = [];
       for (const marker of this.files.list(this.sessionDirectory(name))) {
-        if (marker.startsWith('adopted-by.')) {
+        if (marker.startsWith('adopted-by.') && !marker.includes('.tmp-')) {
           const who = marker.slice('adopted-by.'.length);
-          const theirs = this.identityOf(who);
-          if (theirs !== null) {
-            const state = await this.livenessOf(theirs);
-            if (!('alive' in state) || state.alive) {
-              adopters.push(who);
-            }
+          const state = await this.livenessOfSession(who);
+          /*
+           * AN ADOPTER THIS WINDOW CANNOT JUDGE COUNTS AS PRESENT. The
+           * list warns the user before a discard, and a warning that is
+           * omitted because a file would not parse is the wrong way to
+           * be wrong.
+           */
+          if (state === null || !('alive' in state) || state.alive) {
+            adopters.push(who);
           }
         }
       }
@@ -372,9 +441,14 @@ export class Sessions {
    * race the token exists to settle. (§12.11.3)
    */
   public async claim(deadSessionId: string): Promise<ClaimOutcome> {
-    const identity = this.identityOf(deadSessionId);
-    if (identity !== null) {
-      const liveness = await this.livenessOf(identity);
+    /*
+     * THE SESSION BEING TAKEN OVER MUST BE JUDGED DEAD, and a record
+     * that cannot be read is not a judgement. Treating "unreadable" as
+     * "no such session" let a claim proceed against a window that might
+     * still be draining its queue -- which double-sends. (§12.9)
+     */
+    const liveness = await this.livenessOfSession(deadSessionId);
+    if (liveness !== null) {
       if (!('alive' in liveness)) {
         return { claimed: false, because: 'undecidable' };
       }
@@ -409,18 +483,14 @@ export class Sessions {
        * the queue. (§12.11.3)
        */
       const holder = this.files.readText(path.join(this.sessionsRoot(), newest)).trim();
-      const theirs = this.identityOf(holder);
       /*
        * A HOLDER THIS WINDOW CANNOT IDENTIFY COUNTS AS RUNNING. Erring
        * the other way means taking over a queue somebody may still be
        * draining, which double-sends; erring this way costs a takeover
        * that is not offered, and the listing says so. (§12.9)
        */
-      if (theirs === null) {
-        return { claimed: false, because: 'already-claimed' };
-      }
-      const state = await this.livenessOf(theirs);
-      if (!('alive' in state) || state.alive) {
+      const state = await this.livenessOfSession(holder);
+      if (state === null || !('alive' in state) || state.alive) {
         return { claimed: false, because: 'already-claimed' };
       }
     }
@@ -443,51 +513,61 @@ export class Sessions {
    * any whose `req` is already present, and marks them `imported-by` in
    * the source. Never started without a user asking. (§12.11.3, C13)
    */
-  public importFrom(token: ClaimToken): { imported: number; skipped: number } {
-    const source = this.outboxPathFor(token.deadSessionId);
-    if (!this.files.exists(source) || this.mine === null) {
+  /*
+   * TAKING OVER A DEAD SESSION'S QUEUE, THROUGH THE QUEUE'S OWN CODE.
+   *
+   * ⚠️ AN EARLIER VERSION READ AND WROTE THE QUEUE FILE HERE. That threw
+   * away everything `Outbox` exists for: a destination it could not
+   * parse became `[]` and was then written over; the write truncated the
+   * real queue before replacing it, so a stop in between destroyed the
+   * adopting session's own entries; and it bypassed the serialisation,
+   * so a save already in flight wrote its own idea of the queue back
+   * afterwards and the imported entries vanished. A second
+   * implementation of a thing that took a dozen rounds to get right is
+   * not a shortcut. (§12.11.3)
+   *
+   * THE IMPORT IS TIED TO THE TOKEN THAT WAS WON, and the source entries
+   * are marked with it, so which generation of takeover carried an entry
+   * is recorded rather than guessed. (§12.11.3, P2-5)
+   */
+  public importFrom(token: ClaimToken, into: ImportTarget): { imported: number; skipped: number } {
+    if (!this.files.exists(token.file)) {
       return { imported: 0, skipped: 0 };
     }
-    const readQueue = (file: string): Array<Record<string, unknown>> => {
-      if (!this.files.exists(file)) {
-        return [];
-      }
-      try {
-        const raw = JSON.parse(this.files.readText(file)) as { entries?: unknown[] };
-        return Array.isArray(raw.entries) ? (raw.entries as Array<Record<string, unknown>>) : [];
-      } catch (e) {
-        return [];
-      }
-    };
-    const theirs = readQueue(source);
-    const target = this.outboxPathFor(this.mine);
-    const ours = readQueue(target);
-    /*
-     * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT. Two saves of the same
-     * text are two requests and both belong; one request carried across
-     * several generations of takeover belongs once. (§12.11.3, C19)
-     */
-    const have = new Set(ours.map((e) => String(e.req)));
+    const source = new Outbox(this.outboxPathFor(token.deadSessionId), this.files);
+    try {
+      source.load();
+    } catch (e) {
+      /*
+       * A SOURCE THAT WILL NOT READ IS LEFT ALONE. It holds the only
+       * record of that window's unsent work, and a takeover that
+       * repaired it would write over exactly what it came to rescue.
+       */
+      return { imported: 0, skipped: 0 };
+    }
     let imported = 0;
     let skipped = 0;
-    for (const entry of theirs) {
-      if (have.has(String(entry.req))) {
+    for (const entry of source.entries) {
+      if (entry.importedBy !== null) {
         skipped += 1;
         continue;
       }
-      ours.push({ ...entry, 'imported-from': token.deadSessionId });
-      have.add(String(entry.req));
+      /*
+       * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
+       * text are two requests and both belong; one request carried
+       * across several generations belongs once. (C19)
+       */
+      if (into.has(entry.req)) {
+        skipped += 1;
+        continue;
+      }
+      into.adopt({ ...entry });
+      source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
       imported += 1;
     }
-    this.files.writeDurably(target, `${JSON.stringify({ version: 1, cursor: null, entries: ours }, null, 2)}\n`);
     return { imported, skipped };
   }
 
-  /*
-   * `adopted-by.<sid>`, created once with `link`. Display and save
-   * routing only: it never decides whether anything may be written.
-   * (§12.19.3, C9)
-   */
   public adopt(otherSessionId: string): AdoptOutcome {
     const directory = this.sessionDirectory(otherSessionId);
     if (!this.files.exists(directory)) {
@@ -502,7 +582,14 @@ export class Sessions {
     if (this.files.exists(marker)) {
       return { adopted: false, because: 'already-adopted-by-this-session' };
     }
-    const temporary = `${marker}.tmp-${randomUUID()}`;
+    /*
+     * THE TEMPORARY NAME IS NOT A MARKER NAME. Calling it
+     * `adopted-by.<sid>.tmp-…` put it inside the prefix the listing
+     * scans, so the half-written file was reported as a second window
+     * with documents open -- a warning about a window that does not
+     * exist, in the confirmation a user reads before discarding.
+     */
+    const temporary = path.join(directory, `.tmp-adopt-${randomUUID()}`);
     this.files.writeDurably(temporary, `${this.mine ?? 'unnamed'}\n`);
     try {
       this.files.link(temporary, marker);
@@ -521,16 +608,25 @@ export class Sessions {
   public async discard(sessionId: string): Promise<DiscardOutcome> {
     const notes = [DISCARD_BACKUP_NOTE, DISCARD_REACH_NOTE];
     const directory = this.sessionDirectory(sessionId);
-    const identity = this.identityOf(sessionId);
-    const adopters = identity === null ? [] : (await this.others()).find((o) => o.identity.sessionId === sessionId)?.liveAdopters ?? [];
-    if (identity !== null) {
-      const liveness = await this.livenessOf(identity);
+    const adopters = (await this.others()).find((o) => o.identity.sessionId === sessionId)?.liveAdopters ?? [];
+    /*
+     * THE SAME RULE AS `claim`: a record that will not read is not a
+     * death certificate, and discarding moves a whole directory.
+     */
+    const liveness = await this.livenessOfSession(sessionId);
+    if (liveness !== null) {
       if (!('alive' in liveness)) {
         return { discarded: false, because: 'undecidable', liveAdopters: adopters, notes };
       }
       if (liveness.alive) {
         return { discarded: false, because: 'session-alive', liveAdopters: adopters, notes };
       }
+    } else if (this.files.exists(this.sessionDirectory(sessionId))) {
+      /*
+       * A DIRECTORY WITH NO RECORD AT ALL. There is nothing to judge and
+       * something to lose, so it is not discarded without one.
+       */
+      return { discarded: false, because: 'undecidable', liveAdopters: adopters, notes };
     }
     if (!this.files.exists(directory)) {
       return { discarded: false, because: 'not-found', liveAdopters: adopters, notes };
@@ -558,6 +654,15 @@ export class Sessions {
    * `reconcile` established that baseline here rather than from the
    * store, so the store has never seen it. (§12.19.2, §12.13.2)
    */
+  /*
+   * The judge of what a file on disk is. It is made here rather than
+   * held, because nothing in a session listing has an editor to offer
+   * it -- and it never publishes.
+   */
+  private publisher(): Publisher {
+    return new Publisher(this.files, { isOpen: () => false });
+  }
+
   public draftsIn(sessionId: string): string[] {
     const out: string[] = [];
     const walk = (directory: string): void => {
@@ -574,17 +679,25 @@ export class Sessions {
         if (!this.files.exists(meta)) {
           continue;
         }
-        const read = sidecarFromDisk(this.files.readText(meta));
-        if (!read.read) {
+        /*
+         * ⚠️ A RECORD THAT WILL NOT READ IS LISTED, NOT SKIPPED. Skipping
+         * it hid exactly the files that most need looking at: a window
+         * stopped mid-write leaves an unreadable record beside bytes
+         * nobody has sent, and a scan that passed over them made
+         * surviving work invisible.
+         */
+        if (!sidecarFromDisk(this.files.readText(meta)).read) {
+          out.push(full);
           continue;
         }
-        const digest = digestOfBytes(this.files.readBytes(full));
         /*
-         * A `local-only` VERSION IS ALWAYS A DRAFT: its baseline came
-         * from the file rather than from an answer, so the store has
-         * never seen it whatever the digests say. (§12.19.2)
+         * THE SAME RULE AS `standingOf`, ASKED OF IT. A second copy of
+         * "what is a draft" is a second answer waiting to disagree --
+         * and it did: this one called every freshly published version a
+         * draft, because it compared only against `acknowledged-raw`.
          */
-        if (read.sidecar.localOnly || read.sidecar.acknowledgedRaw !== digest) {
+        const standing = this.publisher().standingOf(full);
+        if (standing.kind === 'third-version' || (standing.kind === 'published' && standing.draft)) {
           out.push(full);
         }
       }

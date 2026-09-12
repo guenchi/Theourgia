@@ -55,7 +55,8 @@ function baseline(prefix: string): Sidecar {
     sent: null,
     cursor: null,
     localOnly: false,
-    unresolved: false
+    unresolved: false,
+    bodyHasCrlf: false
   };
 }
 
@@ -365,5 +366,113 @@ describe('C5 autosave sends once per completed save, and only when clean', () =>
       }
     }
     assert.strictEqual(sends, 2, 'a save was sent for a document that had been edited since');
+  });
+});
+
+/*
+ * P2-7 at the save: the block's own recorded fact decides, not the
+ * prefix's line endings.
+ */
+describe('a block whose body really uses CRLF is sent as it is', () => {
+  it('does not normalise a body the store gave with carriage returns', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '## Two\nline one\r\nline two\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('## Two\n'),
+      bodyHasCrlf: true
+    });
+    assert.ok(decision.send, JSON.stringify(decision));
+    if (decision.send) {
+      assert.strictEqual(decision.normalised, false, 'a block that really uses CRLF was normalised');
+      assert.strictEqual(decision.src, 'line one\r\nline two\r\n', 'the carriage returns were stripped');
+    }
+  });
+
+  it('still normalises a body the store gave without them', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '## Two\nline one\r\nline two\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('## Two\n'),
+      bodyHasCrlf: false
+    });
+    assert.ok(decision.send);
+    if (decision.send) {
+      assert.strictEqual(decision.normalised, true);
+      assert.strictEqual(decision.src, 'line one\nline two\n');
+    }
+  });
+});
+
+/*
+ * THE PREFIX AND THE BODY CAN USE DIFFERENT LINE ENDINGS, and until an
+ * editor-hosted cell failed, nothing here said so.
+ *
+ * ⚠️ EVERY FIXTURE ABOVE GIVES THE PREFIX AND THE BODY THE SAME EOL, so
+ * the ordering defect -- comparing the prefix before normalising --
+ * was invisible to all twenty of them. In the editor it refused every
+ * save of a CRLF buffer as "the heading changed", about a change the
+ * user had not made. The difference has to be IN the fixture.
+ */
+describe('a file whose line endings differ from the record’s prefix', () => {
+  it('normalises before comparing, so an LF prefix matches a CRLF buffer', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '## Two\r\nbody\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('## Two\n'),
+      bodyHasCrlf: false
+    });
+    assert.ok(
+      decision.send,
+      `a CRLF buffer under an LF prefix was refused: ${JSON.stringify(decision)}`
+    );
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\n');
+      assert.strictEqual(decision.normalised, true);
+    }
+  });
+
+  /*
+   * AND THE REFUSAL STILL FIRES FOR A REAL CHANGE. The twin: without it
+   * the fix above could be "never refuse a prefix mismatch".
+   */
+  it('still refuses when the heading itself was changed, CRLF or not', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '## Renamed\r\nbody\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('## Two\n'),
+      bodyHasCrlf: false
+    });
+    assert.deepStrictEqual(decision, {
+      send: false,
+      refusal: { because: 'prefix-changed', prefix: '## Two\n' }
+    });
+  });
+
+  /*
+   * AND A BLOCK WHOSE OWN BODY USES CRLF KEEPS IT, with a CRLF prefix
+   * too -- the shape the front-matter document in the editor suite has.
+   */
+  it('sends a CRLF body verbatim when the record says the block uses CRLF', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    const text = '---\r\ntitle: t\r\n---\r\n\r\nthe body\r\n';
+    fs.writeFileSync(file, text, 'utf8');
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), {
+      ...baseline('---\r\ntitle: t\r\n---\r\n'),
+      bodyHasCrlf: true
+    });
+    assert.ok(decision.send, JSON.stringify(decision));
+    if (decision.send) {
+      assert.strictEqual(decision.src, '\r\nthe body\r\n');
+      assert.strictEqual(decision.normalised, false);
+    }
   });
 });
