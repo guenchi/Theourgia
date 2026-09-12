@@ -98,7 +98,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['saving.test.ts', 34],
   ['sequences.test.ts', 15],
   ['sessions.test.ts', 99],
-  ['shapes.test.ts', 57],
+  ['shapes.test.ts', 59],
   ['transport.test.ts', 20],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]

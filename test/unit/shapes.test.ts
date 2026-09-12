@@ -876,6 +876,44 @@ describe('every bucket a takeover counts is something the user is told', () => {
   });
 
   /*
+   * ⚠️ AND IT SAYS THE MARK WAS NOT CONFIRMED, NOT THAT IT FAILED.
+   *
+   * When the destination stored the entry and then threw, the mark was
+   * never ATTEMPTED -- "could not be marked" sends the reader to look at
+   * permissions on a file nothing tried to write. The wording was
+   * corrected in round 29 and NOTHING ASSERTED IT: the main session's
+   * judge reverted the sentence and every cell stayed green. A fix
+   * verified only by the reasoning that produced it is not guarded, and
+   * this is the second time in this batch.
+   */
+  it('says the other window’s copy was not confirmed, not that marking failed', () => {
+    const ledger = emptyLedger();
+    ledger.movedButUnmarked = 3;
+    ledger.observed = 3;
+    const text = adoptedNotice('S-dead', ledger, false).text;
+    assert.match(text, /was not confirmed as handed over/, `the wording is gone: ${text}`);
+    assert.ok(
+      !/could not be marked/.test(text),
+      `a step that was never attempted is described as having failed: ${text}`
+    );
+  });
+
+  /*
+   * THE TWIN ALONG THE SAME AXIS: with nothing in that bucket, neither
+   * sentence appears. Without it the cell above is satisfied by a report
+   * that always says "not confirmed", which would be telling every user
+   * about bookkeeping that went through perfectly.
+   */
+  it('says neither when nothing arrived unconfirmed', () => {
+    const ledger = emptyLedger();
+    ledger.imported = 3;
+    ledger.observed = 3;
+    const text = adoptedNotice('S-dead', ledger, false).text;
+    assert.ok(!/not confirmed as handed over/.test(text), `an empty bucket was recited: ${text}`);
+    assert.ok(!/could not be marked/.test(text), `an empty bucket was recited: ${text}`);
+  });
+
+  /*
    * AND AN EMPTY BUCKET IS NOT MENTIONED. Without this the cell above is
    * satisfied by a report that recites every bucket every time, which
    * buries the one that matters in five zeroes.
