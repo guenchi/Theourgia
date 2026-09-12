@@ -285,10 +285,15 @@ async function act(
   }
   /*
    * WINNING THE TOKEN IS NOT THE TAKEOVER. The entries have to be
-   * copied, and they are copied through whatever holds this window's own
-   * queue so that the import cannot race a save in flight. With nowhere
-   * to put them -- no store configured -- the token is still won and the
-   * user is told nothing moved.
+   * copied, and they are copied inside `Saver.adopt` -- the section that
+   * also holds saves of this window's own queue -- so the import cannot
+   * race one in flight.
+   *
+   * ⚠️ AND ONE TAKEOVER NEED NOT FINISH THE JOB. The token names a
+   * SESSION and that session may have a queue per store; this moves the
+   * one belonging to the destination's store and says how many it left.
+   * Running the command again with another store configured takes those,
+   * because a claim the holder re-enters is not `already-claimed`.
    */
   const moved = await into.run((target) =>
     sessions.importFrom(
@@ -297,7 +302,9 @@ async function act(
       into.storeHash
     )
   );
-  chooser.say(adoptedNotice(row.sessionId, moved.imported, moved.skipped, false));
+  chooser.say(
+    adoptedNotice(row.sessionId, moved.imported, moved.skipped, false, moved.leftBehind)
+  );
   return {
     did: 'take-over',
     sessionId: row.sessionId,

@@ -620,8 +620,9 @@ export function refusedTakeoverNotice(
     return {
       level: 'warning',
       text:
-        `${sessionId} was not ${what}: another window holds the takeover and is still running. ` +
-        'Nothing here can move its work while that is true.'
+        `${sessionId} was not ${what}: the takeover is held by a window this one cannot take it ` +
+        'from -- either still running, or one this window cannot judge. Nothing here can move its ' +
+        'work while that is true.'
     };
   }
   if (because === 'not-found') {
@@ -656,22 +657,40 @@ export function adoptedNotice(
   sessionId: string,
   imported: number,
   skipped: number,
-  nowhereToPutThem: boolean
+  nowhereToPutThem: boolean,
+  leftBehind = 0
 ): Notice {
   if (nowhereToPutThem) {
+    /*
+     * ⚠️ NOTHING WAS TAKEN OVER. This used to say it was: the command
+     * claimed first and found out afterwards. It refuses before taking a
+     * token now, so the sentence has to say that too.
+     */
     return {
       level: 'warning',
       text:
-        `${sessionId} was taken over, and nothing could be moved into this window because no ` +
-        'store is configured here. Set theourgia.store and run the command again.'
+        `${sessionId} was not taken over: there is no queue in this window to move its requests ` +
+        'into, because no store is configured here. Set theourgia.store and run the command again.'
     };
   }
-  const also = skipped === 0 ? '' : ` ${skipped} were left where they were.`;
+  const also = skipped === 0 ? '' : ` ${skipped} were already here and were left alone.`;
+  /*
+   * ⚠️ AND WHAT WAS NOT TAKEN IS SAID OUT LOUD. A window keeps a queue
+   * per store and this moves one store's; saying only how many arrived
+   * would let the user think the rescue was complete. Running the
+   * command again with the other store configured takes those -- the
+   * claim is re-entrant for the window that holds it.
+   */
+  const rest =
+    leftBehind === 0
+      ? ''
+      : ` ${leftBehind} more belong to other stores and are still there; configure that store and ` +
+        'run this command again to bring them across.';
   return {
     level: 'information',
     text:
-      `${sessionId} was taken over: ${imported} unsent request(s) are now in this window's ` +
-      `queue.${also} They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`
+      `${sessionId}: ${imported} unsent request(s) are now in this window's queue.${also}${rest} ` +
+      `They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`
   };
 }
 

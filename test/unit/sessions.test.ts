@@ -207,14 +207,66 @@ describe('C8 taking over a dead session’s queue', () => {
     assert.strictEqual(first.claimed && first.sequence, 1);
   });
 
+  /*
+   * ⚠️ THE SECOND CLAIM IS A SECOND WINDOW'S. The fixture used to take
+   * both claims from one `Sessions`, which is not what the name says and
+   * is not the case the refusal exists for: `already-claimed` stops a
+   * SECOND window sending what a first is still draining. One window
+   * re-entering its own claim is the cell below.
+   */
   it('refuses when the newest claimant is still running', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const first = new Sessions(new RecordingFs(), storage);
+    first.begin('S-taker', []);
+    assert.ok((await first.claim('S-old')).claimed);
+    const second = new Sessions(new RecordingFs(), storage);
+    second.begin('S-other', []);
+    assert.deepStrictEqual(await second.claim('S-old'), {
+      claimed: false,
+      because: 'already-claimed'
+    });
+  });
+
+  /*
+   * ⚠️ AND THE WINDOW THAT HOLDS A CLAIM RE-ENTERS IT.
+   *
+   * The token names a dead SESSION, and that session may have a queue
+   * per store -- so one takeover cannot finish the job. Rescuing the
+   * first store's requests took the token and the second store's were
+   * then refused, by this window, to this window, for ever. The same
+   * wall stood in front of every other way a takeover can stop halfway:
+   * an import that threw after moving some entries, or one that found
+   * the destination unreadable. Found in review, each reproduced.
+   */
+  it('lets the window that holds a claim take it up again', async () => {
     const storage = scratch();
     makeSession(storage, 'S-old');
     const sessions = new Sessions(new RecordingFs(), storage);
     sessions.begin('S-taker', []);
-    await sessions.claim('S-old');
+    const first = await sessions.claim('S-old');
+    assert.ok(first.claimed, JSON.stringify(first));
     const again = await sessions.claim('S-old');
-    assert.deepStrictEqual(again, { claimed: false, because: 'already-claimed' });
+    assert.ok(again.claimed, `a window could not take up its own claim: ${JSON.stringify(again)}`);
+    if (first.claimed && again.claimed) {
+      /*
+       * THE SAME TOKEN AND THE SAME NUMBER. A new number would say a new
+       * generation had taken over, and the entries the first pass marked
+       * would then look as though a different claimant had carried them.
+       */
+      assert.strictEqual(again.sequence, first.sequence);
+      assert.strictEqual(again.token, first.token);
+    }
+    /*
+     * COUNTED THE WAY `claim` COUNTS. A `.tmp-` name is the half of a
+     * publication that was written before the link, and `claim` skips
+     * those when it looks for the newest token -- a cell using a
+     * different rule would be measuring something the product does not.
+     */
+    const tokens = fs
+      .readdirSync(path.join(storage, 'sessions'))
+      .filter((name) => name.startsWith('S-old.claim.') && !name.includes('.tmp-'));
+    assert.strictEqual(tokens.length, 1, `re-entering minted a second token: ${tokens.join(', ')}`);
   });
 
   it('refuses to offer a takeover of a session that is alive', async () => {

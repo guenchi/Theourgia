@@ -30,6 +30,29 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
   block from two machines will not be told; the store still records both records.
 * No cache. Every view asks the core.
 
+### Recovering another window's unsent work: where it stops
+
+`theourgia: Other Sessions` lists the windows that left something behind and
+offers to take it over or to discard it. Four limits are deliberate, and each
+of them is a decision rather than an oversight:
+
+* **One store per takeover.** A window keeps a queue per store, because a queue
+  carries one cursor and a cursor belongs to one store. A takeover moves the queue
+  belonging to the store this window has configured, says how many requests it
+  left in the others, and can be run again with a different store configured —
+  the claim is re-entered by the window that holds it. What it will not do is
+  move another store's requests into this one's queue, which would send them to a
+  store the user never named.
+* **A queue from before stores had their own directories is left alone.** Nothing
+  can establish which store it was for, and guessing would be the cross-store
+  write above. It is counted among what was left behind and named in the message.
+* **The destination is checked for existence before the claim, and read after
+  it.** A queue that turns out to be unreadable therefore takes the token before
+  it fails. Repairing it and running the command again works, because the claim is
+  re-entrant.
+* **Changing `theourgia.store` while the list is open** leaves the entries in the
+  store that was configured when the command started.
+
 ## Settings
 
 | Setting | What it is |
@@ -177,6 +200,12 @@ the export, this copy goes and a dependency takes its place.
 
 Recorded here rather than left to be rediscovered. Each of these is a place where a cell
 exists and proves less than its name suggests, or where no cell exists at all.
+
+* **The test host's own storage.** The editor-hosted runner empties the extension's
+  `globalStorage` under its profile before every start, and refuses to start if it
+  could not. That guard follows symbolic links in the profile path and treats a
+  directory it cannot read as absent. It is a harness pointed at a directory it
+  created itself; it is not hardened against a profile somebody else prepared.
 
 * **A save the *core* refused.** The editor-hosted cell named for a refused save exercises
   a refusal this client makes: a changed heading is turned away by `splitDocument` before

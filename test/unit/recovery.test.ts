@@ -40,6 +40,18 @@ import { ImportTarget, SessionIdentity, Sessions, systemStartTime } from '../../
 import { Notice } from '../../src/status';
 import { OutboxEntry } from '../../src/outbox';
 import { RecordingFs } from '../support/recording-fs';
+import { Client } from '../../src/client';
+import { CliTransport } from '../../src/transport';
+import { Outbox } from '../../src/outbox';
+import { Saver } from '../../src/saver';
+import { FakeCore } from '../support/fake';
+import { initWire } from '../../src/wire';
+
+const CHECK =
+  '(check (store "s") (writers (("w" (end 7) (torn #f) (integrity ())))) (snapshots ()) ' +
+  '(registry outside-store) (verdict ok))\n';
+const WROTE =
+  '(ok (events (("w" . 8))) (state (("a.2" . "hhh"))) (cursor ("w" . 8)) (replay #f))\n';
 import { idleProcess } from '../support/host';
 
 function scratch(): string {
@@ -90,7 +102,7 @@ class Recorder implements Chooser {
   public readonly confirmations: Array<{ text: string; word: string }> = [];
   public readonly said: Notice[] = [];
   public readonly picks: unknown[];
-  private readonly agrees: boolean[];
+  public readonly agrees: boolean[];
 
   public constructor(picks: unknown[], agrees: boolean[] = []) {
     this.picks = picks;
@@ -148,6 +160,17 @@ class Recorder implements Chooser {
       `the flow asked ${this.confirmations.length} confirmations and not ${confirmations}`
     );
     assert.strictEqual(this.picks.length, 0, 'the script named choices the flow never offered');
+    /*
+     * ⚠️ THE CONFIRMATION ANSWERS TOO. `asked` checked only that the
+     * picks were consumed, so a script carrying an answer to a question
+     * the flow never asked still passed -- while the comment above says
+     * every scripted answer had to be asked for. A review said so.
+     */
+    assert.strictEqual(
+      this.agrees.length,
+      0,
+      'the script answered a confirmation the flow never asked'
+    );
   }
 }
 
@@ -182,6 +205,10 @@ function nowhere(): Destination {
 }
 
 describe('U-recover the command that shows another window’s unsent work', () => {
+  before(async () => {
+    await initWire();
+  });
+
   it('says so, and does nothing, when there is no other window', async () => {
     const storage = scratch();
     const sessions = new Sessions(new RecordingFs(), storage);
@@ -492,45 +519,157 @@ describe('review 22 a takeover moves one store’s work, through one lock', () =
   });
 
   /*
-   * AND THE IMPORT HAPPENS INSIDE THE LOCK THE DESTINATION OWNS. The
-   * destination used to be a bare queue object, written to outside
-   * whatever serialises that file: a save answering in the middle wrote
-   * its own copy back over the imported entries, while the source was
-   * already marked as having handed them over -- so the bytes survived
-   * and nothing ever offered them again.
+   * AND THE IMPORT HAPPENS INSIDE THE SECTION THAT HOLDS SAVES OF THIS
+   * WINDOW'S OWN QUEUE.
+   *
+   * ⚠️ THE FIRST VERSION OF THIS CELL SUPPLIED ITS OWN `run` AND WATCHED
+   * ITS OWN FLAG. It passed with `Saver.adopt` replaced by an
+   * implementation that threw -- it was testing the stand-in, not the
+   * thing the stand-in stands for. A review found that. This one builds
+   * a real `Saver`, starts a save that cannot answer yet, and requires
+   * the import to wait for it: the property is "one at a time over one
+   * queue file", and only a real `Saver` has it.
    */
-  it('asks the destination to run the import rather than writing to it', async () => {
+  it('waits for a save already in flight over the same queue', async () => {
     const storage = scratch();
     makeSession(storage, 'S-dead');
-    withQueue(storage, 'S-dead', ['r1']);
+    withQueue(storage, 'S-dead', ['from-the-dead']);
     const sessions = new Sessions(new RecordingFs(), storage);
     sessions.begin('S-mine', []);
-    const box = destination();
-    let insideWhenAdopted = false;
-    const watching: Destination = {
-      storeHash: box.into.storeHash,
-      run: async (work) => {
-        let inside = true;
-        try {
-          return await box.into.run((target) =>
-            work({
-              has: target.has,
-              adopt: (entry) => {
-                insideWhenAdopted = inside;
-                target.adopt(entry);
-              }
-            })
-          );
-        } finally {
-          inside = false;
-        }
-      }
-    };
-    await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), watching);
-    assert.strictEqual(
-      insideWhenAdopted,
-      true,
-      'an entry was adopted outside the section the destination opened for it'
+
+    /*
+     * A CORE THAT ANSWERS THE SAVE ONLY WHEN THIS CELL LETS IT. Until
+     * then the Saver holds its section, and anything else over that file
+     * has to wait.
+     */
+    const core = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: WROTE, rc: 0, delayMs: 400 }
+    ]);
+    try {
+      const outbox = new Outbox(core.outboxFile());
+      outbox.load();
+      const saver = new Saver(
+        new Client(new CliTransport(core.config(), core.env())),
+        outbox,
+        (req, cursor) => outbox.resolve(req, cursor)
+      );
+      const order: string[] = [];
+      const saving = saver.save('a.2', 'src', 'body\n').then(() => {
+        order.push('save');
+      });
+      const recovering = chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), {
+        storeHash: 'h',
+        run: (work) =>
+          saver.adopt((into) => {
+            order.push('import');
+            return work(into);
+          })
+      }).then(() => undefined);
+      await Promise.all([saving, recovering]);
+      assert.deepStrictEqual(
+        order,
+        ['save', 'import'],
+        'the import ran while a save over the same queue was still in flight'
+      );
+      assert.ok(
+        outbox.entries.some((e) => e.req === 'from-the-dead'),
+        'the imported request is not in this window’s queue'
+      );
+    } finally {
+      core.dispose();
+    }
+  });
+
+});
+
+/*
+ * REVIEW ROUND 23: ONE TAKEOVER NEED NOT FINISH THE JOB, AND MUST NOT
+ * BLOCK THE REST.
+ *
+ * The token names a dead SESSION; that session keeps a queue per store.
+ * Narrowing the import to the destination's store -- which stopped one
+ * store's requests being sent to another -- made the first takeover take
+ * a session-wide token and the second store's work unreachable behind
+ * it, refused to this window by this window. Found in review.
+ */
+describe('review 23 a takeover that moved one store’s work can come back for the rest', () => {
+  function queueAt(storage: string, sessionId: string, storeHash: string, reqs: string[]): void {
+    const dir = path.join(storage, 'sessions', sessionId, storeHash);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: reqs.map((req) => ({
+          req,
+          cursor: 'w:1',
+          id: 'a.1',
+          field: 'src',
+          payload: 'x',
+          state: 'queued',
+          createdAt: 0,
+          lastError: null
+        }))
+      }),
+      'utf8'
     );
+  }
+
+  it('takes the other store’s requests on a second run, and says they are waiting on the first', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+    queueAt(storage, 'S-dead', 'store-b', ['for-b1', 'for-b2']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+
+    const a = destination('store-a');
+    const said = new Recorder(['S-dead', 'take-over']);
+    const first = await chooseAndRecover(sessions, said, a.into);
+    assert.strictEqual(first.did, 'take-over', JSON.stringify(first));
+    assert.deepStrictEqual(a.held.map((e) => e.req), ['for-a']);
+    /*
+     * AND IT SAYS WHAT IT LEFT. Reporting only what arrived lets the
+     * user believe the rescue was complete; two requests are still in
+     * that window's directory.
+     */
+    assert.match(said.said[0].text, /2 more belong to other stores/);
+
+    /*
+     * ⚠️ THE SECOND RUN, WITH THE OTHER STORE CONFIGURED. This used to
+     * be refused as `already-claimed` -- by this window, to this window,
+     * with no way round it.
+     */
+    const b = destination('store-b');
+    const second = await chooseAndRecover(sessions, new Recorder(['S-dead', 'take-over']), b.into);
+    assert.strictEqual(
+      second.did,
+      'take-over',
+      `the other store's work was unreachable behind this window's own claim: ${JSON.stringify(second)}`
+    );
+    assert.deepStrictEqual(b.held.map((e) => e.req).sort(), ['for-b1', 'for-b2']);
+  });
+
+  /*
+   * AND THE GREEN TWIN'S OPPOSITE: another window's live claim is still
+   * refused. Without it, re-entering is satisfied by a build that let
+   * anybody take anybody's claim, which is the double-send the whole
+   * token exists to prevent.
+   */
+  it('still refuses a takeover another running window holds', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueAt(storage, 'S-dead', 'store-a', ['for-a']);
+    const holder = new Sessions(new RecordingFs(), storage);
+    holder.begin('S-holder', []);
+    assert.ok((await holder.claim('S-dead')).claimed);
+
+    const mine = new Sessions(new RecordingFs(), storage);
+    mine.begin('S-mine', []);
+    const chooser = new Recorder(['S-dead', 'take-over']);
+    const outcome = await chooseAndRecover(mine, chooser, destination('store-a').into);
+    assert.strictEqual(outcome.did, 'refused', JSON.stringify(outcome));
+    assert.match(chooser.said[0].text, /cannot take it from/);
   });
 });

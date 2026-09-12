@@ -700,6 +700,34 @@ export class Sessions {
        */
       const holder = this.files.readText(path.join(this.sessionsRoot(), newest)).trim();
       /*
+       * ⚠️ A CLAIM THIS WINDOW ALREADY HOLDS IS RE-ENTERED, NOT REFUSED.
+       *
+       * The token names a dead SESSION and that session may have a queue
+       * per store, so one takeover cannot finish the job: rescuing the
+       * first store's requests took the token, and the second store's
+       * were then refused as `already-claimed` -- by this window, to
+       * this window, for ever. The same wall stood in front of every
+       * other way a takeover can stop halfway: an import that threw
+       * after moving some entries, or one that found the destination
+       * queue unreadable, left this window holding a claim over work it
+       * had not moved and no way to try again. Found in review, with
+       * each of those reproduced.
+       *
+       * Re-entering is safe in the way the refusal is meant to be:
+       * `already-claimed` exists to stop a SECOND window sending what a
+       * first is still draining, and this window is not a second one. It
+       * keeps the sequence it already has rather than taking another,
+       * because a new number would say a new generation took over.
+       * (§12.11.3)
+       */
+      if (this.mine !== null && holder === this.mine) {
+        return {
+          claimed: true,
+          token: path.join(this.sessionsRoot(), newest),
+          sequence: highest
+        };
+      }
+      /*
        * A HOLDER THIS WINDOW CANNOT IDENTIFY COUNTS AS RUNNING. Erring
        * the other way means taking over a queue somebody may still be
        * draining, which double-sends; erring this way costs a takeover
@@ -768,22 +796,52 @@ export class Sessions {
     token: ClaimToken,
     into: ImportTarget,
     storeHash?: string
-  ): { imported: number; skipped: number } {
+  ): { imported: number; skipped: number; leftBehind: number } {
     if (!this.files.exists(token.file)) {
-      return { imported: 0, skipped: 0 };
+      return { imported: 0, skipped: 0, leftBehind: 0 };
     }
     let imported = 0;
     let skipped = 0;
+    const all = this.outboxPathsFor(token.deadSessionId);
     const queues =
       storeHash === undefined
-        ? this.outboxPathsFor(token.deadSessionId)
+        ? all
         : [this.outboxPathFor(token.deadSessionId, storeHash)].filter((q) => this.files.exists(q));
+    /*
+     * ⚠️ WHAT WAS NOT EVEN LOOKED AT IS COUNTED SEPARATELY.
+     *
+     * `skipped` means "read and left alone". Requests in a queue this
+     * import did not open -- another store's, or a queue from before
+     * stores had their own directories, whose store nothing here can
+     * establish -- are neither imported nor skipped, and reporting
+     * `skipped: 0` while several sit untouched says the rescue was
+     * complete when it was not. A takeover has to be able to say what it
+     * did not take.
+     */
+    const untouched = all.filter((q) => !queues.includes(q));
+    let leftBehind = 0;
+    for (const queue of untouched) {
+      leftBehind += this.entriesIn(queue);
+    }
     for (const queue of queues) {
       const outcome = this.importQueue(queue, token, into);
       imported += outcome.imported;
       skipped += outcome.skipped;
     }
-    return { imported, skipped };
+    return { imported, skipped, leftBehind };
+  }
+
+  /*
+   * How many requests a queue file holds, or none when it will not read.
+   * A queue nobody can parse is left for a build that can.
+   */
+  private entriesIn(queue: string): number {
+    try {
+      const raw = JSON.parse(this.files.readText(queue)) as { entries?: unknown[] };
+      return Array.isArray(raw.entries) ? raw.entries.length : 0;
+    } catch (e) {
+      return 0;
+    }
   }
 
   private importQueue(
