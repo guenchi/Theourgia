@@ -61,6 +61,12 @@ describe('X1c the commands the extension offers', () => {
    * Checking only the direction that happened to fail last time is how
    * a list stops shouting.
    */
+  /*
+   * ⚠️ IT COMPARES THE MANIFEST WITH THE SOURCE TABLE. It does not look
+   * at registrations: removing the reconcile registration from
+   * activation leaves this green, and the editor-hosted cell is what
+   * catches that.
+   */
   it('declares in the manifest exactly the commands the source names', () => {
     const declared = manifestCommands()
       .map((c) => `${c.command} :: ${c.title}`)
@@ -126,20 +132,41 @@ describe('X1c the commands the extension offers', () => {
    * defect had. commands.ts is where the spellings live, so it is the
    * one file allowed to hold them.
    */
+  /*
+   * ⚠️ IT FLAGS ANY SPELLED-OUT TITLE, NOT ONLY A DECLARED ONE. The
+   * first version only complained about strings that were already in
+   * COMMANDS, so a literal naming a command that does NOT exist -- which
+   * is the defect this whole file is about -- walked straight past it.
+   * Found in review.
+   *
+   * AND IT WALKS THE WHOLE OF src. The first version read only the
+   * immediate children, so a title written inside a subdirectory was
+   * invisible to it.
+   */
   it('holds every command title in one file and no other', () => {
-    const titles = new Set(COMMANDS.map((c) => c.title));
     const offenders: string[] = [];
-    for (const name of fs.readdirSync(path.join(root, 'src'))) {
-      if (!name.endsWith('.ts') || name === 'commands.ts') {
-        continue;
-      }
-      const source = fs.readFileSync(path.join(root, 'src', name), 'utf8');
-      for (const match of source.matchAll(/theourgia: [A-Z][A-Za-z ]*/g)) {
-        if (titles.has(match[0].trimEnd())) {
-          offenders.push(`${name}: ${match[0].trimEnd()}`);
+    const walk = (directory: string, shown: string): void => {
+      for (const name of fs.readdirSync(directory)) {
+        const full = path.join(directory, name);
+        if (fs.statSync(full).isDirectory()) {
+          walk(full, `${shown}${name}/`);
+          continue;
+        }
+        if (!name.endsWith('.ts') || `${shown}${name}` === 'commands.ts') {
+          continue;
+        }
+        const source = fs.readFileSync(full, 'utf8');
+        for (const match of source.matchAll(/theourgia: [A-Z][A-Za-z ]*/g)) {
+          offenders.push(`${shown}${name}: ${match[0].trimEnd()}`);
         }
       }
-    }
-    assert.deepStrictEqual(offenders, [], 'a command title is spelled out away from commands.ts');
+    };
+    walk(path.join(root, 'src'), '');
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      'a command title is spelled out away from commands.ts; if it names a command that does not ' +
+        'exist, that is the defect this file is about'
+    );
   });
 });

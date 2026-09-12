@@ -509,10 +509,12 @@ export class Sessions {
       return { claimed: false, because: 'undecidable' };
     } else {
       /*
-       * NOTHING OF THAT SESSION IS HERE. There is no queue to take over
-       * and no record to judge, so a token would name a session this
-       * disk has never seen. `discard` answers `not-found` for the same
-       * state, in the same words.
+       * NOTHING OF THAT SESSION IS HERE, NOW. There is no queue to take
+       * over and no record to judge, so a token would name a directory
+       * that is not there. It does NOT say the session never existed --
+       * it may have been discarded, and sibling claim tokens for it may
+       * still be lying beside it. `discard` answers `not-found` for the
+       * same state, in the same words.
        */
       return { claimed: false, because: 'not-found' };
     }

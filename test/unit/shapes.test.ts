@@ -474,22 +474,45 @@ describe('U8 the shape a refusal must come back in', () => {
     await initWire();
   });
 
-  it('accepts the answer the ruling describes, and reads it with the wire reader', () => {
-    /*
-     * READ FIRST. The point of U8 is that the answer PARSES; asserting
-     * on a string the reader would refuse would be checking the wrong
-     * property with the right words.
-     */
-    const read = parseAnswers(`${RULED_EXAMPLE}\n`);
-    assert.strictEqual(read.length, 1, 'the ruled answer did not read back as one datum');
+  it('accepts the answer the ruling describes, read with the wire reader', () => {
     assertRuledRefusal(RULED_EXAMPLE, '1', 'rel');
   });
 
   /*
-   * AND THE NEGATIVE WITNESS: what the core answers TODAY must not
-   * satisfy it. Without this the assertions could be vacuous -- a set of
-   * patterns that everything matches would pass the cell above and would
-   * make the red cells green against the unchanged core.
+   * AND IT IS ABOUT THE DATUM, NOT ABOUT ITS SPACING. The first version
+   * of this check matched substrings, so the same answer written with an
+   * extra space failed -- which would have kept the red cells red after
+   * the core landed the change, for a reason that has nothing to do with
+   * the core.
+   */
+  it('accepts the same datum written with different spacing', () => {
+    assertRuledRefusal(
+      '(error   malformed-intent\n'.replace('\n', ' ') +
+        '(symbol-not-wire-safe  (field  rel)  (spelling  "1")))',
+      '1',
+      'rel'
+    );
+  });
+
+  /*
+   * AND A STRING IS A STRING HOWEVER IT WAS SPELLED. `"\x31;"` decodes
+   * to "1" and carries the spelling as a string, which is what the
+   * ruling asks for. The first version banned every hex escape outright
+   * and rejected this -- "wire-safe" is a property of the datum, not a
+   * prohibition on escape sequences inside strings.
+   */
+  it('accepts a spelling written with an escape inside the string', () => {
+    assertRuledRefusal(
+      '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling "\\x31;")))',
+      '1',
+      'rel'
+    );
+  });
+
+  /*
+   * THE NEGATIVE WITNESSES. Without them the assertions could be
+   * vacuous -- a check everything satisfies would pass the cells above
+   * and would make the red cells green against the unchanged core.
    */
   it('refuses the escaped echo the core answers today', () => {
     assert.throws(
@@ -502,19 +525,75 @@ describe('U8 the shape a refusal must come back in', () => {
     );
   });
 
-  /*
-   * AND IT IS ABOUT THE SPELLING BEING A STRING, not about the name
-   * appearing somewhere. A bare symbol is exactly what U8 rules out.
-   */
-  it('refuses a spelling given as a symbol rather than a string', () => {
+  it('refuses a refusal of a different error family', () => {
     assert.throws(() =>
-      assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (field rel) (spelling 1)))', '1', 'rel')
+      assertRuledRefusal(
+        '(error unrelated-error (symbol-not-wire-safe (field rel) (spelling "1")))',
+        '1',
+        'rel'
+      )
+    );
+  });
+
+  /*
+   * AND THE POSITION AND THE SPELLING HAVE TO BE INSIDE THE REASON.
+   * Beside it, they belong to the error and the reason is a bare tag --
+   * a different answer, which independent substring matches accepted.
+   */
+  it('refuses a refusal whose position and spelling sit outside the reason', () => {
+    assert.throws(() =>
+      assertRuledRefusal(
+        '(error malformed-intent (symbol-not-wire-safe) (field rel) (spelling "1"))',
+        '1',
+        'rel'
+      )
+    );
+  });
+
+  it('refuses a spelling that is not a string', () => {
+    assert.throws(
+      () =>
+        assertRuledRefusal(
+          '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling 1)))',
+          '1',
+          'rel'
+        ),
+      'a number was accepted where the ruling asks for a string'
+    );
+    assert.throws(
+      () =>
+        assertRuledRefusal(
+          '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling |1|)))',
+          '1',
+          'rel'
+        ),
+      'a symbol was accepted where the ruling asks for a string'
+    );
+  });
+
+  it('refuses a refusal that names a different spelling', () => {
+    assert.throws(() =>
+      assertRuledRefusal(
+        '(error malformed-intent (symbol-not-wire-safe (field rel) (spelling "2")))',
+        '1',
+        'rel'
+      )
     );
   });
 
   it('refuses a refusal that does not say which position was wrong', () => {
     assert.throws(() =>
       assertRuledRefusal('(error malformed-intent (symbol-not-wire-safe (spelling "1")))', '1', 'rel')
+    );
+  });
+
+  it('refuses a refusal that names a different position', () => {
+    assert.throws(() =>
+      assertRuledRefusal(
+        '(error malformed-intent (symbol-not-wire-safe (field title) (spelling "1")))',
+        '1',
+        'rel'
+      )
     );
   });
 });

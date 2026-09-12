@@ -74,8 +74,14 @@ import { countRegistered, EDITOR_CELLS, shortfalls } from '../integration/census
  */
 const AT_LEAST: Array<[string, number]> = [
   ['activation.test.ts', 4],
-  ['answering.test.ts', 21],
+  ['answering.test.ts', 24],
   ['blocks.test.ts', 20],
+  /*
+   * ⚠️ INCLUDING ITSELF. This file was exempt from the inventory check
+   * and had no floor, so deleting its own cells was the one shortening
+   * nothing here would have said a word about.
+   */
+  ['census.test.ts', 17],
   ['chain.test.ts', 6],
   ['commands.test.ts', 5],
   ['cursor.test.ts', 8],
@@ -85,13 +91,13 @@ const AT_LEAST: Array<[string, number]> = [
   ['fsops.test.ts', 7],
   ['host.test.ts', 8],
   ['outline.test.ts', 48],
-  ['publication.test.ts', 36],
+  ['publication.test.ts', 40],
   ['real-core.test.ts', 14],
-  ['saver.test.ts', 40],
-  ['saving.test.ts', 33],
+  ['saver.test.ts', 41],
+  ['saving.test.ts', 34],
   ['sequences.test.ts', 15],
   ['sessions.test.ts', 40],
-  ['shapes.test.ts', 38],
+  ['shapes.test.ts', 44],
   ['transport.test.ts', 20],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]
@@ -217,9 +223,13 @@ describe('no suite quietly gets shorter', function () {
    * Those files `require('vscode')`, so the dry run above cannot load
    * them and they had no guard at all -- a whole editor suite could go
    * and the run would report no failures. The count is therefore taken
-   * inside the host, by the harness, before it runs anything; what is
-   * checked here is the counting itself, against trees a real run would
-   * be a poor way to produce.
+   * inside the host, by the harness, before it runs anything.
+   *
+   * ⚠️ WHAT IS CHECKED HERE IS THE COUNTING, NOT THAT THE HARNESS CALLS
+   * IT. Removing the `shortfalls` call from test/integration/index.ts
+   * leaves every cell below green; only a run inside an editor would
+   * notice. These cells exist because the counting cannot otherwise be
+   * exercised at all, not because they cover the wiring.
    */
   it('counts an editor-hosted suite by the cells it registers, not the ones it writes', () => {
     const tree = {
@@ -261,6 +271,45 @@ describe('no suite quietly gets shorter', function () {
    * version that complains about everything, which would be removed
    * within a day -- and then nothing would be counted at all.
    */
+  /*
+   * ⚠️ A LISTED SUITE THAT REGISTERS NOTHING AT ALL. The negative cell
+   * above exercises 1 against 14; nothing exercised 0 against 14, and a
+   * guard written `found > 0 && found < expected` therefore passed every
+   * cell here while silently accepting a file whose every cell was
+   * deleted -- which is the one thing this exists to catch. Found in
+   * review as a surviving mutation.
+   */
+  it('says so when a listed editor-hosted suite registers nothing at all', () => {
+    const tree = { tests: [], suites: [] };
+    const said = shortfalls(tree, [], [['extension.test.js', 14]]);
+    assert.strictEqual(said.length, 1, JSON.stringify(said));
+    assert.ok(said[0].includes('registers 0 cells'), said[0]);
+  });
+
+  /*
+   * AND GROWTH IS NOT A SHORTFALL. A guard written with `!==` passes
+   * every other cell here and turns adding a cell into a failure, which
+   * is how a guard gets removed.
+   */
+  it('says nothing when a suite grew past its floor', () => {
+    const tree = {
+      tests: [{ file: '/x/extension.test.js' }, { file: '/x/extension.test.js' }],
+      suites: []
+    };
+    assert.deepStrictEqual(shortfalls(tree, ['extension.test.js'], [['extension.test.js', 1]]), []);
+  });
+
+  /*
+   * AND THE FILE NAME IS TAKEN THE SAME WAY ON EITHER SEPARATOR. Mocha
+   * reports whatever path the platform gave it; a basename that only
+   * knows `/` counts every Windows file under its full path and every
+   * floor then reads as zero.
+   */
+  it('takes the file name from a Windows path too', () => {
+    const tree = { tests: [{ file: 'C:\\x\\out\\extension.test.js' }], suites: [] };
+    assert.strictEqual(countRegistered(tree).get('extension.test.js'), 1);
+  });
+
   it('says nothing when every loaded suite is there and counted', () => {
     const tree = {
       tests: [{ file: '/x/extension.test.js' }, { file: '/x/extension.test.js' }],
@@ -280,6 +329,12 @@ describe('no suite quietly gets shorter', function () {
    * ACTUALLY LOADS. The cells above check the counting; this checks the
    * table, which is the part that goes stale.
    */
+  /*
+   * ⚠️ IN ONE DIRECTION ONLY: every source file has a number. It does
+   * not reject a number for a file that no longer exists, and it
+   * compares source names rather than the compiled files the harness
+   * actually loads.
+   */
   it('has a number for every editor-hosted suite that exists', () => {
     const listed = new Set(EDITOR_CELLS.map(([name]) => name.replace(/\.js$/, '.ts')));
     const missing = fs
@@ -290,7 +345,6 @@ describe('no suite quietly gets shorter', function () {
 
   it('has a number for every unit suite that exists', () => {
     const listed = new Set(AT_LEAST.map(([name]) => name));
-    listed.add('census.test.ts');
     const missing = fs
       .readdirSync(path.join(root, 'test', 'unit'))
       .filter((name) => name.endsWith('.test.ts') && !listed.has(name));

@@ -49,6 +49,21 @@ function scratch(): string {
 }
 
 /*
+ * THE DIGEST OF THE BODY THAT WENT OUT.
+ *
+ * ⚠️ THESE FIXTURES USED THE STRING 'sent'. That is not a digest of
+ * anything, and it describes a world that cannot happen: a save whose
+ * sent body has no relation to the file it came from. The cells passed
+ * because nothing compared it with anything -- and the check that the
+ * record still splits the file into the body that was sent, which a
+ * review found missing, is exactly the comparison a made-up value hides.
+ * A fixture has to describe a state the product can actually be in.
+ */
+function bodyDigest(text: string, prefix = '## Two\n'): string {
+  return digestOfBytes(Buffer.from(text.slice(prefix.length), 'utf8'));
+}
+
+/*
  * A PUBLISHED FILE WITH ITS RECORD BESIDE IT. The first version of these
  * cells wrote only the file, so every one of them was answered
  * `not-acknowledged` before it reached the branch it names -- red, but
@@ -128,7 +143,7 @@ describe('C7 the answer is recorded before the entry is removed', () => {
         req: 'r1',
         cursor: 'w:7',
         rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
-        sentDigest: 'sent',
+        sentDigest: bodyDigest(text),
         mismatch: false
       },
       () => files.writeText(queue, '{"entries":[]}')
@@ -202,7 +217,13 @@ describe('C7 the answer is recorded before the entry is removed', () => {
     const file = published(dir, text);
     const raw = digestOfBytes(Buffer.from(text, 'utf8'));
     const saving = new Saving(new RecordingFs());
-    saving.recordAnswer(file, { req: 'r2', cursor: 'w:9', rawDigest: raw, sentDigest: 'sent', mismatch: false });
+    saving.recordAnswer(file, {
+      req: 'r2',
+      cursor: 'w:9',
+      rawDigest: raw,
+      sentDigest: bodyDigest(text),
+      mismatch: false
+    });
     const late = saving.recordAnswer(file, {
       req: 'r1',
       cursor: 'w:4',
@@ -568,5 +589,119 @@ describe('X1c ⑨ recognising cannot fail the answer it is asked about', () => {
       }
     })();
     assert.strictEqual(new Saving(throwing).recognise(file, 'body\n'), null);
+  });
+});
+
+/*
+ * REVIEW ROUND 20: THE RECORD MUST STILL SPLIT THE FILE THE WAY THE SEND
+ * DID.
+ *
+ * The digest check in `recordAnswer` says the BYTES have not moved. It
+ * says nothing about the PREFIX -- which lives in the same record and
+ * can be changed by something else while the answer is in flight.
+ * `reconcile` adopting a longer heading does exactly that and leaves the
+ * file's bytes untouched.
+ *
+ * The sequence, from the review, with a reproduction: the file holds
+ * `P + X + Y` and the record says the prefix is `P`, so the save sends
+ * `X + Y`. While that answer is outstanding the prefix becomes `P + X`.
+ * The answer arrives, the whole-file digest still matches, the
+ * acknowledgement is recorded and `local-only` cleared -- so the version
+ * reads as fully sent while a save under the record as it now stands
+ * would send `Y`, which the store has never seen. Work the user can no
+ * longer see is pending.
+ */
+describe('review 20 an answer is recorded only if the record still produces what was sent', () => {
+  it('declines when the heading grew while the answer was in flight', () => {
+    const dir = scratch();
+    const text = '## Two\nX\nY\n';
+    const file = published(dir, text, { localOnly: true });
+    const raw = digestOfBytes(Buffer.from(text, 'utf8'));
+    const sent = digestOfBytes(Buffer.from('X\nY\n', 'utf8'));
+
+    /*
+     * THE PREFIX CHANGES AND THE BYTES DO NOT. That is the whole point:
+     * every digest of the file is still what it was.
+     */
+    const before = sidecarFromDisk(fs.readFileSync(`${file}.meta`, 'utf8'));
+    assert.ok(before.read);
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(sidecarToDisk({ ...(before.read ? before.sidecar : ({} as Sidecar)), prefix: '## Two\nX\n' })),
+      'utf8'
+    );
+    assert.strictEqual(
+      digestOfBytes(fs.readFileSync(file)),
+      raw,
+      'the fixture moved the bytes, so it is not about the prefix any more'
+    );
+
+    const recorded = new Saving(new RecordingFs()).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: raw,
+      sentDigest: sent,
+      mismatch: false
+    });
+    assert.deepStrictEqual(
+      recorded,
+      { dequeued: false, because: 'split-changed' },
+      'an acknowledgement of X+Y was recorded against a record that now sends only Y'
+    );
+    /*
+     * AND THE RECORD IS UNTOUCHED, so the block still reports the work
+     * the store has not got.
+     */
+    const after = sidecarFromDisk(fs.readFileSync(`${file}.meta`, 'utf8'));
+    assert.ok(after.read);
+    assert.strictEqual(after.read && after.sidecar.acknowledgedRaw, null);
+    assert.strictEqual(after.read && after.sidecar.localOnly, true, 'local-only was cleared anyway');
+  });
+
+  /*
+   * THE GREEN TWIN. Without it the check above is satisfied by a build
+   * that declines every answer, which loses every acknowledgement there
+   * is.
+   */
+  it('records the answer when the record still produces exactly what was sent', () => {
+    const dir = scratch();
+    const text = '## Two\nX\nY\n';
+    const file = published(dir, text);
+    const recorded = new Saving(new RecordingFs()).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: digestOfBytes(Buffer.from(text, 'utf8')),
+      sentDigest: digestOfBytes(Buffer.from('X\nY\n', 'utf8')),
+      mismatch: false
+    });
+    assert.deepStrictEqual(recorded, { dequeued: true });
+  });
+
+  /*
+   * AND THE MISMATCH BRANCH WRITES ATOMICALLY TOO. Restoring the
+   * truncating write in that one branch survived every cell: the
+   * mismatch cells read the fields the write produced and never looked
+   * at how it was made.
+   */
+  it('replaces the record through a rename when it marks a mismatch', () => {
+    const dir = scratch();
+    const file = published(dir, '## Two\nbody\n');
+    const files = new RecordingFs();
+    new Saving(files).recordAnswer(file, {
+      req: 'r1',
+      cursor: 'w:7',
+      rawDigest: 'raw',
+      sentDigest: 'sent',
+      mismatch: true
+    });
+    assert.strictEqual(
+      files.entries.filter((e) => e.op === 'writeText' && e.file.endsWith('.meta')).length,
+      0,
+      'the record was opened for writing directly, which empties it first'
+    );
+    assert.ok(
+      files.entries.some((e) => e.op === 'rename' && e.file.endsWith('.meta')),
+      'the record was not published by a rename'
+    );
   });
 });

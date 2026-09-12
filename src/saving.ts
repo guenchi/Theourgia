@@ -107,7 +107,10 @@ export type SaveDecision =
  */
 export type AnswerRecording =
   | { dequeued: true }
-  | { dequeued: false; because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' };
+  | {
+      dequeued: false;
+      because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed';
+    };
 
 /*
  * CRLF FOLDED TO LF. Comparing two texts for equality of CONTENT rather
@@ -332,8 +335,23 @@ export class Saving {
    * recorded would be a second critical section. (§12.7.4, C7)
    */
   public recognise(file: string, sentText: string): { rawDigest: string; sentDigest: string } | null {
+    /*
+     * ⚠️ THE EXISTENCE PROBES ARE GUARDED TOO. They sat outside the
+     * `try` below, and `FileOps.exists` is an interface: an
+     * implementation that reports a permission failure by throwing would
+     * escape from here into the settler, where the request has been
+     * answered and the entry has not been removed. The shipped adapter
+     * uses `fs.existsSync`, which ordinarily returns false instead --
+     * but this function's whole contract is that it answers "cannot
+     * say" rather than failing the save it was asked about, and a
+     * contract that holds only for one implementation is not one.
+     */
     const meta = sidecarPathOf(file);
-    if (!this.files.exists(meta) || !this.files.exists(file)) {
+    try {
+      if (!this.files.exists(meta) || !this.files.exists(file)) {
+        return null;
+      }
+    } catch (e) {
       return null;
     }
     /*
@@ -444,6 +462,35 @@ export class Saving {
      * this version was based on, with the paragraph forbidding exactly
      * that sitting on the other implementation in publication.ts.
      */
+    /*
+     * ⚠️ AND THE RECORD MUST STILL SPLIT THE FILE THE WAY THE SEND DID.
+     *
+     * The digest above says the BYTES have not moved. It says nothing
+     * about the PREFIX, and the prefix lives in this same record and can
+     * be changed by something else while the answer is in flight --
+     * `reconcile` adopting a longer heading does exactly that, and
+     * leaves the file's bytes untouched.
+     *
+     * The sequence, found in review with a reproduction: the file holds
+     * `P + X + Y` and the record says the prefix is `P`, so a save sends
+     * `X + Y`. While that answer is outstanding, a reconciliation adopts
+     * `P + X` as the prefix. The answer arrives; the whole-file digest
+     * still matches; the acknowledgement is recorded and `local-only`
+     * cleared, so the version reads as fully sent -- while a save under
+     * the record as it now stands would send `Y`, which the store has
+     * never seen. Work the user can no longer see is pending.
+     *
+     * So the record is asked to produce the body that went out. If it
+     * does not, nothing is written and the ENTRY IS KEPT: the request is
+     * still retryable, and a retry re-reads this record.
+     */
+    const split = bodyOf(
+      this.files.readBytes(file).toString('utf8'),
+      read.sidecar
+    );
+    if (split === null || digestOfBytes(Buffer.from(split.body, 'utf8')) !== answer.sentDigest) {
+      return { dequeued: false, because: 'split-changed' };
+    }
     /*
      * AND `local-only` IS CLEARED, BECAUSE IT IS NO LONGER TRUE. It says
      * the baseline came from the file rather than from an answer and the

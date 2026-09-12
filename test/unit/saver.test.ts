@@ -1104,12 +1104,20 @@ describe('X1c a save stops when the answer could not be recorded', () => {
 
   /*
    * THE GREEN TWIN. A build that stopped after every send would satisfy
-   * both cells above and would never drain a queue: two entries, a
-   * settler that does remove them, and both go out in one call.
+   * both cells above and would never drain a queue.
+   *
+   * ⚠️ AND IT HAS TO BE ONE CALL OVER TWO QUEUED ENTRIES. The first
+   * version did two awaited saves, each of which began with an empty
+   * queue -- so it passed a drain that returns after every single
+   * normally settled request, which is exactly the build it exists to
+   * rule out. Found in review. The entries are queued first, against a
+   * core that answers nothing, and then one retry has to carry both.
    */
-  it('still drains a queue whose answers are recorded', async () => {
+  it('still drains a queue of two entries in one call when the answers are recorded', async () => {
     core = new FakeCore([
       { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: '(error unknown "not yet")\n', rc: 0, once: true },
+      { match: ['set'], stdout: '(error unknown "not yet")\n', rc: 0, once: true },
       { match: ['set'], stdout: wrote(8), rc: 0, once: true },
       { match: ['set'], stdout: wrote(9), rc: 0, once: true },
       { match: ['set'], stdout: '(error unknown "no")\n', rc: 0 }
@@ -1118,9 +1126,66 @@ describe('X1c a save stops when the answer could not be recorded', () => {
     outbox.load();
     const client = new Client(new CliTransport(core.config(), core.env()));
     const saver = new Saver(client, outbox, settling(outbox));
-    assert.strictEqual((await saver.save('a.2', 'src', 'one\n')).status, 'saved');
-    assert.strictEqual((await saver.save('a.3', 'src', 'two\n')).status, 'saved');
+    /*
+     * TWO ENTRIES IN THE QUEUE AND NEITHER SETTLED. `unknown` is the one
+     * answer that means "ask again", so both saves leave their entry
+     * behind without the store having applied anything.
+     */
+    assert.strictEqual((await saver.save('a.2', 'src', 'one\n')).status, 'pending');
+    assert.strictEqual((await saver.save('a.3', 'src', 'two\n')).status, 'pending');
+    assert.strictEqual(outbox.entries.length, 2, 'the queue did not hold two entries to drain');
+
+    const before = setCalls(core).length;
+    const outcomes = await saver.retry();
+    assert.strictEqual(
+      setCalls(core).length - before,
+      2,
+      'one retry did not carry both entries: a drain that returns after every settled request ' +
+        'would leave the second waiting for ever'
+    );
+    assert.strictEqual(outcomes.length, 2);
     assert.strictEqual(outbox.entries.length, 0, 'the queue was not drained');
-    assert.strictEqual(setCalls(core).length, 2);
+  });
+
+  /*
+   * AND A MIXED QUEUE: the first answer is recorded and its entry goes,
+   * the second is not and its entry stays. The drain must carry on past
+   * the first and stop at the second, which is the boundary the guard
+   * changes and which neither cell above reaches.
+   */
+  it('carries on past a settled entry and stops at one that was kept', async () => {
+    core = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: '(error unknown "not yet")\n', rc: 0, once: true },
+      { match: ['set'], stdout: '(error unknown "not yet")\n', rc: 0, once: true },
+      { match: ['set'], stdout: wrote(8), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(9), rc: 0, once: true },
+      { match: ['set'], stdout: wrote(10), rc: 0, once: true },
+      { match: ['set'], stdout: '(error unknown "no")\n', rc: 0 }
+    ]);
+    const outbox = new Outbox(core.outboxFile());
+    outbox.load();
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    let settled = 0;
+    const saver = new Saver(client, outbox, (req, cursor) => {
+      /*
+       * THE FIRST ANSWER IS RECORDED, THE SECOND IS NOT -- which is what
+       * `recordAnswer` does when the record beside the second file
+       * cannot be written.
+       */
+      settled += 1;
+      if (settled === 1) {
+        outbox.resolve(req, cursor);
+      }
+    });
+    await saver.save('a.2', 'src', 'one\n');
+    await saver.save('a.3', 'src', 'two\n');
+    assert.strictEqual(outbox.entries.length, 2);
+
+    const before = setCalls(core).length;
+    const outcomes = await saver.retry();
+    assert.strictEqual(setCalls(core).length - before, 2, 'the drain stopped at the settled entry');
+    assert.strictEqual(outbox.entries.length, 1, 'the kept entry was removed after all');
+    assert.strictEqual(outcomes[outcomes.length - 1].status, 'pending');
   });
 });

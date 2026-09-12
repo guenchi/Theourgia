@@ -50,7 +50,7 @@ import { Sessions } from '../../src/sessions';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
 import { Client } from '../../src/client';
-import { CliTransport } from '../../src/transport';
+import { CliTransport, TransportError } from '../../src/transport';
 import { Counting } from '../support/counting';
 import { SpawnSpy } from '../support/spawn-spy';
 import { Saver } from '../../src/saver';
@@ -864,48 +864,87 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     to: string,
     field: string
   ): Promise<void> {
+    /*
+     * THE STATE IS READ AROUND THIS REQUEST AND NO OTHER. An earlier
+     * version checked the state first and then made a SECOND write whose
+     * effect nothing looked at, so "nothing landed" was established
+     * about a different request than the one whose refusal is asserted.
+     */
+    const before = [
+      (await where.client.request('read', [from])).text,
+      (await where.client.request('refs', [to])).text
+    ];
     let answer;
+    let failure: unknown = null;
     try {
       answer = await where.client.request('link', [from, name, to]);
     } catch (e) {
+      failure = e;
+    }
+    /*
+     * NOTHING LANDED, WHOLE AND UNCHANGED, not "the escape is absent".
+     * A wrongly stored but readable relation passes an absence check and
+     * fails this one.
+     */
+    const after = [
+      (await where.client.request('read', [from])).text,
+      (await where.client.request('refs', [to])).text
+    ];
+    assert.deepStrictEqual(after, before, 'the refused write changed the store');
+
+    if (failure !== null) {
+      /*
+       * ⚠️ ONLY ONE FAILURE MEANS "WAITING ON THE CORE". Diagnosing
+       * every exception this way would label a timeout, a missing
+       * library or any other transport regression as an upstream wait --
+       * and a gate that accepts these two cells by name would then be
+       * hiding a new defect behind a sentence saying there is none.
+       */
+      const unreadable =
+        failure instanceof TransportError && (failure as TransportError).failure === 'unreadable';
+      if (!unreadable) {
+        throw failure;
+      }
       assert.fail(
         `WAITING ON THE CORE (U8), not a regression here: the refusal of the relation name ` +
-          `${JSON.stringify(name)} could not be read by this client -- ${(e as Error).message}. ` +
-          'The core still echoes the offending symbol using the escape it is refusing. When U8 ' +
-          'lands, this cell passes with no change to it.'
+          `${JSON.stringify(name)} could not be read by this client -- ` +
+          `${(failure as Error).message}. The core still echoes the offending symbol using the ` +
+          'escape it is refusing. When U8 lands, this cell passes with no change to it.'
       );
       return;
     }
-    assert.strictEqual(answer.ok, false, `a name the wire cannot carry was accepted: ${answer.text}`);
+    assert.strictEqual(
+      answer?.ok,
+      false,
+      `a name the wire cannot carry was accepted: ${answer?.text}`
+    );
     /*
      * THE ASSERTIONS LIVE IN test/support/refusal-shape.ts, and a
      * witness in shapes.test.ts runs the same ones against the ruling's
-     * written-out example. A red cell's expectation is checked by
-     * nothing: without that witness a typo in the pattern would keep
-     * this red for ever, including after the core lands the change.
+     * written-out example and against nine near misses. A red cell's
+     * expectation is checked by nothing: without that witness a wrong
+     * pattern would keep this red for ever, including after the core
+     * lands the change.
      */
-    assertRuledRefusal(answer.text, name, field);
+    assertRuledRefusal(answer?.text ?? '', name, field);
   }
   /*
-   * AND A NAME THE STORE ACCEPTS THAT THIS READER WILL NOT READ.
+   * A NAME THE WIRE CANNOT CARRY, FROM THE WRITE SIDE.
    *
-   * MEASURED, NOT ASSUMED. `wire-safe-symbol?` answering false does not
-   * refuse a write: `storable-encode` stores the wrapped form
-   * `("#%sym" "1")` instead, and `read` prints the name back escaped as
-   * `\x31;`. goeteia 1.7.2 refuses that escape, so an ordinary `link`
-   * is enough to make a block this client cannot read. The byte-level
-   * twin of this cell is in shapes.test.ts; this one builds the state
-   * with the store itself, which is the only evidence that the state is
-   * reachable at all.
+   * ⚠️ THIS PARAGRAPH DESCRIBED THE OLD CORE AND IS KEPT AS HISTORY
+   * RATHER THAN AS A STATEMENT ABOUT THE ONE UNDER TEST. It used to say
+   * that `wire-safe-symbol?` answering false did NOT refuse a write --
+   * `storable-encode` stored the wrapped form `("#%sym" "1")` and `read`
+   * printed the name back escaped as `\x31;`, so an ordinary `link` was
+   * enough to make a block this client could not read -- and that the
+   * answer to `link` was therefore not asserted. Both sentences are now
+   * false of the core: the write is refused and nothing lands. What is
+   * asserted below is the refusal, in the shape U8 rules for it.
    *
-   * THE ANSWER TO `link` IS NOT ASSERTED. This core reports an internal
-   * error for a write that lands -- the defect this batch has already
-   * queued against it -- so what the cell is about is what the store
-   * then holds.
-   *
-   * WHEN THE WRITE PATH REFUSES THESE NAMES, the expectation here
-   * becomes the refusal, and the byte-level twin keeps this behaviour
-   * for stores written before that change.
+   * READING A STORE THAT ALREADY HOLDS SUCH AN EDGE is the behaviour
+   * that paragraph was protecting, and it is still needed for stores
+   * written before the rule or imported from elsewhere. It lives in the
+   * byte-level twin in shapes.test.ts.
    */
   it('reports a block whose edge name the store accepts and this reader refuses', async () => {
     /*
@@ -942,22 +981,9 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     assert.strictEqual(before.ok, true, 'the block was unreadable before the numeric name');
 
     /*
-     * NOTHING LANDED, AND THAT IS TRUE TODAY. It is asserted BEFORE the
-     * refusal's shape so that it is not lost behind the red below: the
-     * user's data depends on this half, and it does not depend on U8.
-     */
-    await store.client.request('link', [from, '1', to]).catch(() => undefined);
-    const after = await store.client.request('read', [from]);
-    assert.strictEqual(after.ok, true, 'the refused link left the block unreadable');
-    assert.strictEqual(
-      after.text.includes('x31'),
-      false,
-      `a name the write path refused is in the block anyway: ${after.text}`
-    );
-    assert.ok(after.text.includes('has-part'), `the ordinary edge went too: ${after.text}`);
-
-    /*
-     * AND THE REFUSAL IS LEGIBLE -- red until U8 lands.
+     * THE REFUSAL, AND THE STATE AROUND IT. `refusalOf` reads the block
+     * and its references before and after the one request it makes, so
+     * "nothing landed" is about that request and no other.
      */
     await refusalOf(store, from, '1', to, 'rel');
   }
@@ -1005,30 +1031,10 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
     assert.strictEqual(readBefore.ok, true, 'a block with an ordinary edge was already unreadable');
 
     /*
-     * NOTHING LANDED, on either side of the edge, and that is true
-     * today. Both queries are asked because a write path that refused
-     * the read side and kept the reference would satisfy one of them
-     * alone. This half does not depend on U8, so it is asserted first.
-     */
-    await store.client.request('link', [from, 'has part', to]).catch(() => undefined);
-    const refsAfter = await store.client.request('refs', [to]);
-    assert.strictEqual(refsAfter.ok, true, 'the refused link left the references unreadable');
-    assert.strictEqual(
-      refsAfter.text.includes('x20'),
-      false,
-      `a name the write path refused is in the references anyway: ${refsAfter.text}`
-    );
-    const readAfter = await store.client.request('read', [from]);
-    assert.strictEqual(readAfter.ok, true, 'the refused link left the block unreadable');
-    assert.strictEqual(
-      readAfter.text.includes('x20'),
-      false,
-      `a name the write path refused is in the block anyway: ${readAfter.text}`
-    );
-    assert.ok(readAfter.text.includes('has-part'), `the ordinary edge went too: ${readAfter.text}`);
-
-    /*
-     * AND THE REFUSAL IS LEGIBLE -- red until U8 lands.
+     * THE REFUSAL, AND THE STATE AROUND IT. Both the block and the
+     * references are compared whole across the one request, because a
+     * write path that refused the read side and kept the reference would
+     * satisfy either alone.
      */
     await refusalOf(store, from, 'has part', to, 'rel');
   });

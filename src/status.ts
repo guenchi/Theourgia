@@ -319,6 +319,25 @@ export function reconcileChoiceNotice(
 }
 
 /*
+ * THE FILE MOVED WHILE THE USER WAS CHOOSING.
+ *
+ * The three texts were shown, and by the time a choice came back one of
+ * them was no longer what is on disk. Carrying the choice out anyway
+ * publishes bytes the user was never shown while telling them their own
+ * were kept, so nothing is done and the offer is withdrawn by name. It
+ * is not an error: another window is allowed to write, and this is what
+ * that looks like from here.
+ */
+export function reconcileStaleNotice(file: string): Notice {
+  return {
+    level: 'warning',
+    text:
+      `Nothing was done: ${file} changed while you were choosing, so what you picked is no longer ` +
+      'what is there. Run the command again to see the current texts.'
+  };
+}
+
+/*
  * THE CHOICE COULD NOT BE CARRIED OUT. `reconcileBy` answers `done:
  * false` when the record beside the file is missing or when the editor
  * holds the path the new version would take -- neither of which the
@@ -469,8 +488,17 @@ export function refusalNotice(
  */
 export function unrecordedNotice(
   file: string,
-  because: 'not-acknowledged' | 'req-mismatch' | 'file-moved'
+  because: 'not-acknowledged' | 'req-mismatch' | 'file-moved' | 'split-changed'
 ): Notice {
+  if (because === 'split-changed') {
+    return {
+      level: 'warning',
+      text:
+        `The store accepted the save, but what counts as the heading of ${file} changed while it ` +
+        'was in flight, so the record beside it was left alone. The request is kept and will be ' +
+        'retried; nothing was lost.'
+    };
+  }
   if (because === 'file-moved') {
     return {
       level: 'warning',

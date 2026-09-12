@@ -72,6 +72,15 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
  * What to do with an entry the store has answered. It is handed in
  * rather than assumed, so that the one place which decides the order --
  * record first, remove second -- is the one the caller names.
+ *
+ * ⚠️ IT MAKES THE CHOICE EXPLICIT; IT DOES NOT ENFORCE THE ORDER. Any
+ * caller can pass `(req, cursor) => outbox.resolve(req, cursor)` and
+ * remove the entry with nothing recorded -- the cells in this file do
+ * exactly that on purpose, because what they are about is the sending
+ * and not the recording. Having no default means nobody gets that
+ * behaviour without writing it down; a guarantee that the record is
+ * always written first would have to live somewhere this signature
+ * cannot reach.
  */
 export type Settle = (req: string, cursor: string | null) => void;
 

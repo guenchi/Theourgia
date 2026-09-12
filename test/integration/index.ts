@@ -28,7 +28,22 @@ import Mocha = require('mocha');
 import { shortfalls } from './census';
 
 export async function run(): Promise<void> {
-  const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 120000 });
+  /*
+   * ⚠️ `forbidOnly` AND `forbidPending`, BECAUSE THE COUNT CANNOT SEE
+   * THEM. A `describe.only` leaves every cell REGISTERED and runs three
+   * of seventeen; a `describe.skip` leaves them registered and runs none
+   * of that suite. The census below counts registrations, so both walk
+   * straight past it and the run reports no failures -- which reads
+   * exactly like a pass, and is the shape this whole guard exists for.
+   * Found in review.
+   */
+  const mocha = new Mocha({
+    ui: 'bdd',
+    color: true,
+    timeout: 120000,
+    forbidOnly: true,
+    forbidPending: true
+  });
   const here = __dirname;
   const files = fs.readdirSync(here).filter((f) => f.endsWith('.test.js'));
   if (files.length === 0) {

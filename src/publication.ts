@@ -57,7 +57,7 @@ export interface OpenDocuments {
 }
 
 /*
- * The record beside `<n>.md`, written as `<n>.meta`. The field names are
+ * The record beside `<n>.md`, written as `<n>.md.meta`. The field names are
  * the design's. (§12.9, §12.13.2, §12.17.3)
  */
 export interface Sidecar {
@@ -161,7 +161,7 @@ export type PublishOutcome =
 /*
  * THE NAMES ON DISK ARE THE DESIGN'S NAMES, NOT THIS LANGUAGE'S.
  *
- * `<n>.meta` is a record that outlives the build that wrote it and may
+ * `<n>.md.meta` is a record that outlives the build that wrote it and may
  * be read by something that is not this extension, so its keys are the
  * ones §12 uses -- `acknowledged-raw`, `local-only` -- rather than
  * whatever casing TypeScript is comfortable with. Inside the program
@@ -372,11 +372,17 @@ export class Publisher {
    * THE NEWEST VERSION IN A DIRECTORY, or `null` when there is none.
    *
    * ⚠️ IT IS PUBLIC BECAUSE AN ANSWER CAN OUTLIVE THE WINDOW THAT SENT
-   * IT. A retry after a restart names a request and no file; the only
-   * thing that can say which file it was about is the block's own
-   * directory, and the newest version in it is the one a save was sent
-   * from. Whether that version is really the one is not decided here --
-   * `saving.recognise` decides it by comparing the bytes.
+   * IT. A retry after a restart names a request and no file, and the
+   * block's own directory is the only place to look.
+   *
+   * ⚠️ IT IS A CANDIDATE, NOT THE VERSION THE REQUEST CAME FROM. This
+   * said the newest version "is the one a save was sent from", which is
+   * false: a save can go out from `1.md` and `2.md` be published before
+   * the answer arrives. What `saving.recognise` then establishes is that
+   * the candidate's body is exactly the text that was sent -- so the
+   * acknowledgement it records is TRUE OF THAT FILE, which is what the
+   * record claims. It is not a claim about which version the request was
+   * composed from, and nothing here should be read as one.
    */
   public latestIn(directory: string): string | null {
     return this.latestFile(directory);
@@ -470,7 +476,7 @@ export class Publisher {
   }
 
   /*
-   * Reads `<n>.meta` and `<n>.md` and says what the file is. The three
+   * Reads `<n>.md.meta` and `<n>.md` and says what the file is. The three
    * mid-publication answers are distinguished by comparing the file's
    * digest with `written` and with `previous`; neither ⇒ the editor
    * wrote a third version. (§12.9)
@@ -632,11 +638,33 @@ export class Publisher {
     file: string,
     action: 'prepend-prefix' | 'take-store-version',
     storePrefix: string,
-    storeText: string
-  ): { done: boolean; file: string } {
+    storeText: string,
+    offered?: string
+  ): { done: boolean; file: string; because?: 'no-record' | 'file-changed' | 'document-open' } {
     const sidecar = this.sidecarOf(file);
     if (sidecar === null) {
-      return { done: false, file };
+      return { done: false, file, because: 'no-record' };
+    }
+    /*
+     * ⚠️ THE ACTION IS CARRIED OUT AGAINST THE TEXT THAT WAS OFFERED, OR
+     * NOT AT ALL.
+     *
+     * `reconcile` shows the user three texts and they pick; the pick
+     * waits on a human, and this file is not theirs alone -- another
+     * window can replace it while the list is open. `prepend-prefix`
+     * then re-read the file and published somebody else's bytes with the
+     * heading in front, while the confirmation said the user's own text
+     * had been kept. Found in review, with a reproduction.
+     *
+     * THE CHECK LIVES HERE RATHER THAN AT THE CALL SITE because the
+     * caller that shows the list is the one part of this that no cell
+     * can reach. `offered` is optional so that a caller which did not
+     * offer anything -- a cell exercising the actions themselves -- is
+     * not forced to invent a value; passing it is what makes the
+     * guarantee, and the extension passes it.
+     */
+    if (offered !== undefined && this.files.readText(file) !== offered) {
+      return { done: false, file, because: 'file-changed' };
     }
     if (action === 'prepend-prefix') {
       /*
@@ -664,7 +692,7 @@ export class Publisher {
         digestOfBytes(this.files.readBytes(file))
       );
       if (!outcome.published) {
-        return { done: false, file };
+        return { done: false, file, because: 'document-open' };
       }
       const fresh = this.sidecarOf(outcome.file);
       if (fresh !== null) {
@@ -692,7 +720,7 @@ export class Publisher {
       digestOfBytes(this.files.readBytes(file))
     );
     if (!outcome.published) {
-      return { done: false, file };
+      return { done: false, file, because: 'document-open' };
     }
     this.write(file, { ...sidecar, unresolved: false });
     return { done: true, file: outcome.file };

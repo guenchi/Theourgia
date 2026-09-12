@@ -611,6 +611,26 @@ describe('X1c ⑨ line endings in the heading are not an edit to the heading', (
   });
 
   /*
+   * ⚠️ AND THE OTHER HALF OF SHAPE TWO, which was missing: the record's
+   * heading is CRLF and the BUFFER is LF, with `bodyHasCrlf` true so
+   * normalisation is off by rule. A review pointed out that the cell
+   * above repeats matching CRLF on both sides and therefore says nothing
+   * about a mismatch in this direction.
+   */
+  it('sends the body when the record’s heading is CRLF, the buffer is LF and the block uses CRLF', () => {
+    const dir = scratch();
+    const text = '## Two\nbody\n';
+    const file = onDisk(dir, text);
+    const sidecar = { ...baseline('## Two\r\n'), bodyHasCrlf: true };
+    const decision = new Saving(new RecordingFs()).decide(document(file, [text]), sidecar);
+    assert.strictEqual(decision.send, true, `refused: ${JSON.stringify(decision)}`);
+    if (decision.send) {
+      assert.strictEqual(decision.src, 'body\n');
+      assert.strictEqual(decision.normalised, false, 'the block uses CRLF, so nothing is folded');
+    }
+  });
+
+  /*
    * THE CUT IS MADE IN THE ORIGINAL TEXT. Folding is not
    * length-preserving: an index into the folded text used on the
    * original cuts a CRLF in half once for every line ending before it,

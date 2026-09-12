@@ -31,35 +31,92 @@
  * written-out example of the ruled answer, which passes today -- that
  * witness is the only evidence that this expectation is satisfiable at
  * all, and that the red means what it says.
+ *
+ * ⚠️ AND IT READS THE ANSWER RATHER THAN MATCHING ITS TEXT. The first
+ * version compared substrings, which a review showed to be wrong in both
+ * directions at once. Too weak: independent matches for
+ * `symbol-not-wire-safe`, `(field rel)` and `(spelling "1")` were
+ * satisfied by an answer of a DIFFERENT error family, and by one that
+ * put the position and the spelling outside the reason instead of
+ * inside it -- neither establishes the tags or their relationship. Too
+ * strong: `(field  rel)` with two spaces is the same datum and failed,
+ * and a blanket ban on hex escapes rejected `(spelling "\x31;")`, which
+ * carries the spelling as a STRING and is exactly what the ruling asks
+ * for. Wire-safe is a property of the datum, not of its spacing, and it
+ * does not mean "contains no escape sequence".
  */
 import * as assert from 'assert';
+import { Datum, headName, isList, isSym, parseAnswers } from '../../src/wire';
 
+function clause(value: Datum, name: string): Datum[] | null {
+  if (!isList(value)) {
+    return null;
+  }
+  for (const item of value) {
+    if (isList(item) && headName(item) === name) {
+      return item;
+    }
+  }
+  return null;
+}
+
+/*
+ * The answer as a datum, read the way the client reads it. Passing text
+ * rather than a datum is deliberate: what the core prints is what has to
+ * be legible, and a caller that handed over an already-parsed value
+ * would be asking a question that cannot fail.
+ */
 export function assertRuledRefusal(text: string, name: string, field: string): void {
-  assert.match(text, /symbol-not-wire-safe/, `the refusal does not say why: ${text}`);
-  assert.match(
-    text,
-    new RegExp(`\\(field ${field}\\)`),
-    `the refusal does not say which position was wrong: ${text}`
-  );
+  let data: Datum[];
+  try {
+    data = parseAnswers(text.endsWith('\n') ? text : `${text}\n`);
+  } catch (e) {
+    assert.fail(`the refusal could not be read by the wire reader: ${(e as Error).message}`);
+    return;
+  }
+  assert.strictEqual(data.length, 1, `the refusal is not one datum: ${text}`);
+  const answer = data[0];
+  assert.strictEqual(headName(answer), 'error', `the refusal is not an error answer: ${text}`);
+  assert.ok(isList(answer) && answer.length >= 2, `the error answer carries no family: ${text}`);
   /*
-   * THE NAME COMES BACK AS A STRING. That is the whole of U8: a symbol a
-   * writer would have to escape is described rather than echoed, so the
-   * answer stays readable. Asserting only that the name appears
-   * somewhere would pass against the escaped echo this replaces.
+   * THE FAMILY IS PART OF IT. A refusal of the right shape under the
+   * wrong family is a different answer, and substring matching accepted
+   * one.
    */
   assert.ok(
-    text.includes(`(spelling ${JSON.stringify(name)})`),
-    `the refusal does not carry the spelling as a string: ${text}`
+    isList(answer) && isSym(answer[1], 'malformed-intent'),
+    `the refusal is not in the malformed-intent family: ${text}`
   );
+  const reason = clause(answer, 'symbol-not-wire-safe');
+  assert.ok(reason !== null, `the refusal does not say why: ${text}`);
   /*
-   * AND NOTHING IN THE ANSWER NEEDED AN ESCAPE. A caller that got this
-   * far already has an answer that parsed; this says the core did not
-   * get there by escaping something a later reader would refuse.
+   * AND THE POSITION AND THE SPELLING ARE INSIDE THE REASON. Beside it
+   * is a different answer: the reason would then be a bare tag and the
+   * two clauses would belong to the error rather than to it.
    */
+  const where = clause(reason, 'field');
+  assert.ok(where !== null, `the refusal does not say which position was wrong: ${text}`);
+  assert.ok(
+    where !== null && where.length === 2 && isSym(where[1], field),
+    `the position is not the symbol ${field}: ${text}`
+  );
+  const spelling = clause(reason, 'spelling');
+  assert.ok(spelling !== null, `the refusal does not carry the spelling: ${text}`);
+  /*
+   * THE NAME COMES BACK AS A STRING, and it is compared AFTER decoding.
+   * That is the whole of U8: a symbol a writer would have to escape is
+   * described rather than echoed, so the answer stays readable. How the
+   * string was spelled on the wire -- plainly or with escapes -- is the
+   * writer's business and not this check's.
+   */
+  assert.ok(
+    spelling !== null && spelling.length === 2 && typeof spelling[1] === 'string',
+    `the spelling is not given as a string: ${text}`
+  );
   assert.strictEqual(
-    /\\x[0-9a-fA-F]+;/.test(text),
-    false,
-    `the refusal carries an escape the wire reader turns away: ${text}`
+    spelling !== null ? spelling[1] : undefined,
+    name,
+    `the refusal names a different spelling: ${text}`
   );
 }
 

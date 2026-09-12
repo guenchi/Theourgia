@@ -1084,3 +1084,137 @@ describe('X1c ⑨ what a version is measured against after the store has answere
     assert.strictEqual(draftOf(file), false, 'the bytes the store acknowledged were reported as unsent');
   });
 });
+
+/*
+ * REVIEW ROUND 20: THE CHOICE IS CARRIED OUT AGAINST THE TEXT THAT WAS
+ * OFFERED, OR NOT AT ALL.
+ *
+ * `reconcile` shows three texts and the user picks. The pick waits on a
+ * human, and the file is not this window's alone: another window can
+ * replace it while the list is open. `prepend-prefix` then re-read the
+ * file, published somebody else's bytes with the heading in front, and
+ * the confirmation said the user's own text had been kept -- bytes they
+ * were never shown, under a sentence saying the opposite.
+ *
+ * THE CELL IS HERE AND NOT IN THE EDITOR SUITE because the part that
+ * shows the list is the one part no cell can reach; the rule was moved
+ * into `reconcileBy` so that this could be asked at all.
+ */
+describe('review 20 a reconciliation is measured against the text it offered', () => {
+  const digestOf = (text: string): string =>
+    require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
+
+  function stranded(dir: string, fileText: string): string {
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, fileText, 'utf8');
+    fs.writeFileSync(
+      `${file}.meta`,
+      JSON.stringify(
+        sidecarToDisk({
+          format: 1,
+          storeId: 's1',
+          blockId: 'a.2',
+          phase: 'published',
+          prefix: '## Two\n',
+          written: digestOf(fileText),
+          previous: null,
+          acknowledgedRaw: null,
+          sent: null,
+          cursor: null,
+          localOnly: false,
+          unresolved: true,
+          bodyHasCrlf: false
+        })
+      ),
+      'utf8'
+    );
+    return file;
+  }
+
+  it('does nothing when the file changed between the offer and the choice', () => {
+    const dir = scratch();
+    const file = stranded(dir, 'alpha\n');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const offer = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
+    assert.strictEqual(offer.reconciled, false);
+    const offered = offer.reconciled ? '' : offer.fileText;
+    assert.strictEqual(offered, 'alpha\n');
+
+    /*
+     * ANOTHER WINDOW WRITES. This is the whole sequence: nothing about
+     * it is exotic, and nothing in the chain can prevent it, because the
+     * writer is not in this process.
+     */
+    fs.writeFileSync(file, 'beta\n', 'utf8');
+
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    assert.deepStrictEqual(
+      done,
+      { done: false, file, because: 'file-changed' },
+      'a choice made about one text was carried out against another'
+    );
+    assert.strictEqual(
+      fs.existsSync(path.join(dir, '2.md')),
+      false,
+      'a version was published carrying bytes the user was never shown'
+    );
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'beta\n', 'the other window’s bytes were touched');
+  });
+
+  it('does nothing when the file changed before the store’s version is taken either', () => {
+    const dir = scratch();
+    const file = stranded(dir, 'alpha\n');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const offer = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
+    const offered = offer.reconciled ? '' : offer.fileText;
+    fs.writeFileSync(file, 'beta\n', 'utf8');
+    const done = publisher.reconcileBy(
+      file,
+      'take-store-version',
+      '## Two\n',
+      '## Two\nstored\n',
+      offered
+    );
+    /*
+     * THE OTHER ACTION TOO. It does not re-read the file, so it would
+     * have published the right text -- but the user chose between three
+     * texts and one of them is no longer there, so the choice they made
+     * is not the choice they would make now.
+     */
+    assert.strictEqual(done.done, false, 'the store’s version was taken against a stale offer');
+    assert.strictEqual(done.because, 'file-changed');
+  });
+
+  /*
+   * THE GREEN TWIN. Without it every cell above is satisfied by a build
+   * that refuses every reconciliation, which would leave the only way
+   * out of a third version permanently shut.
+   */
+  it('carries the choice out when the file is still what was offered', () => {
+    const dir = scratch();
+    const file = stranded(dir, 'alpha\n');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    const offer = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
+    const offered = offer.reconciled ? '' : offer.fileText;
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    assert.strictEqual(done.done, true, `the ordinary path was refused: ${JSON.stringify(done)}`);
+    assert.strictEqual(fs.readFileSync(done.file, 'utf8'), '## Two\nalpha\n');
+  });
+
+  /*
+   * AND A CALLER THAT OFFERED NOTHING IS NOT FORCED TO INVENT A VALUE.
+   * `offered` is optional; the guarantee is made by passing it.
+   */
+  it('acts without the check when no offer was made', () => {
+    const dir = scratch();
+    const file = stranded(dir, 'alpha\n');
+    const done = new Publisher(new RecordingFs(), nothingOpen()).reconcileBy(
+      file,
+      'prepend-prefix',
+      '## Two\n',
+      '## Two\nstored\n'
+    );
+    assert.strictEqual(done.done, true, JSON.stringify(done));
+  });
+});

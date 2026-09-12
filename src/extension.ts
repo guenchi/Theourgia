@@ -50,6 +50,7 @@ import {
   nodeTooltip,
   notABlockNotice,
   reconcileChoiceNotice,
+  reconcileStaleNotice,
   reconcileUnfinishedNotice,
   reconciledNotice,
   retryNotice,
@@ -261,7 +262,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const pendingSaves = new Map<string, { blockId: string; file: string; rawDigest: string; sentDigest: string }>();
   /*
    * X1c REPLACED THE IN-MEMORY BASELINE. What a save is measured against
-   * now lives beside the file, on disk, in `<n>.meta` -- so it survives
+   * now lives beside the file, on disk, in `<n>.md.meta` -- so it survives
    * a restart, and two readings of one block cannot describe each other.
    * The ordering that used to be done with tickets is done by the chain.
    */
@@ -600,14 +601,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * IT TAKES AN OPTIONAL PATH so that it can be reached from somewhere
    * other than the active editor, and answers with the notice it showed
    * rather than only showing it: a message that is displayed and not
-   * returned is a message no cell can read.
+   * returned is a message no cell can read. ⚠️ THAT HOLDS FOR THE
+   * OUTCOMES OF THE RECONCILIATION AND NOT FOR EVERY EXIT: the paths
+   * that give up before one -- no store configured, the store could not
+   * be read, the settings changed underneath, no such block -- show a
+   * plain warning and answer `null`. They are about the command not
+   * running rather than about what it did.
    *
-   * THE THIRD TEXT IS NOT OFFERED AS A CHOICE, deliberately. The
-   * reconciliation reports the version published before this one
-   * because the user is choosing with it in view, but there is no action
-   * that produces it -- it is already on disk beside the file, under its
-   * own number, and this extension deletes nothing. A viewer that shows
-   * the three side by side is not in this batch.
+   * ⚠️ THE THIRD TEXT IS REPORTED AND NOT SHOWN. `reconcile` produces
+   * the version published before this one, and this function does not
+   * display it: the pick offers the two actions, each with an excerpt of
+   * the text it would produce, and nothing puts the previous version in
+   * front of the user. That is a gap, not a design -- the earlier
+   * wording here said the user was choosing "with it in view", which was
+   * not true of any code. There is no action that produces it, it is on
+   * disk beside the file under its own number, and this extension
+   * deletes nothing; a viewer that shows the three side by side is not
+   * in this batch.
    */
   async function reconcileBlock(target?: string): Promise<Notice | null> {
     const file = target ?? vscode.window.activeTextEditor?.document.uri.fsPath;
@@ -695,9 +705,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (picked === undefined) {
       return null;
     }
+    /*
+     * ⚠️ THE ACTION IS CARRIED OUT AGAINST THE TEXT THAT WAS OFFERED, OR
+     * NOT AT ALL.
+     *
+     * `prepend-prefix` re-reads the file. The pick waits on a human, and
+     * the file is not on the chain -- another window, or another editor,
+     * can replace it while the list is open. Then "keep my text" kept
+     * somebody else's: a new version was published carrying bytes the
+     * user was never shown, and the confirmation said their text had
+     * been kept. Found in review with a reproduction, not supposed.
+     *
+     * The comparison happens INSIDE the critical section, against the
+     * same question `reconcile` answered, so that nothing can move
+     * between the check and the action. A file that changed is not an
+     * error and nothing is undone -- the offer is simply stale, and the
+     * user is told to look again.
+     */
     const done = await chain.run(directory, async () =>
-      publisher.reconcileBy(file, picked.action, document.prefix, document.text)
+      publisher.reconcileBy(file, picked.action, document.prefix, document.text, outcome.fileText)
     );
+    if (!done.done && done.because === 'file-changed') {
+      const notice = reconcileStaleNotice(file);
+      show(notice);
+      paint();
+      return notice;
+    }
     if (!done.done) {
       const notice = reconcileUnfinishedNotice(file);
       show(notice);

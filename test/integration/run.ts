@@ -33,6 +33,7 @@
  * the harness failed rather than for anything about the extension.
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -76,21 +77,42 @@ function resolveExecutable(reported: string): string {
  * 1.13-main.sock` and the run died before a single cell, reported only
  * as `Test run failed with code 1`.
  *
- * So the candidates are tried shortest-first and the chosen one is
- * checked, with a sentence that says what is wrong. A limit that shows
- * up as EINVAL from inside the editor is a limit nobody will diagnose
- * from here.
+ * So the candidates are tried in order -- beside the checkout first,
+ * then under the temporary directory -- and the first that fits is
+ * taken, with a sentence that says what is wrong when neither does. A
+ * limit that shows up as EINVAL from inside the editor is a limit nobody
+ * will diagnose from here.
  */
 const SOCKET_ALLOWANCE = 24;
 const SOCKET_LIMIT = 104;
 
+/*
+ * ⚠️ THE LIMIT IS IN BYTES AND THE MEASUREMENT MUST BE TOO. This counted
+ * JavaScript string units, which are not bytes: a checkout under a path
+ * of non-ASCII characters measured well under the limit and produced a
+ * socket path well over it, so the check passed and the editor then died
+ * with the opaque failure this exists to prevent. Found in review with
+ * an arithmetic example.
+ */
+function fits(candidate: string): boolean {
+  return Buffer.byteLength(candidate, 'utf8') + SOCKET_ALLOWANCE <= SOCKET_LIMIT;
+}
+
 function chooseProfile(root: string): string {
+  /*
+   * THE FALLBACK'S NAME CARRIES THE CHECKOUT IT IS FOR. One fixed name
+   * under the temporary directory is shared by every checkout on the
+   * machine, so two test hosts started from two trees would contend for
+   * one profile -- isolated from the developer's editor and not from
+   * each other.
+   */
+  const mark = createHash('sha256').update(root).digest('hex').slice(0, 8);
   const candidates = [
     path.resolve(root, '.vscode-test', 'user-data'),
-    path.join(os.tmpdir(), 'theourgia-vsc-test-profile')
+    path.join(os.tmpdir(), `theourgia-vsc-test-${mark}`)
   ];
   for (const candidate of candidates) {
-    if (candidate.length + SOCKET_ALLOWANCE <= SOCKET_LIMIT) {
+    if (fits(candidate)) {
       return candidate;
     }
   }

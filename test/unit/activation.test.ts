@@ -79,7 +79,12 @@ describe('activation leaves a session another window can see', () => {
     );
   });
 
-  it('gives each store its own queue and each block its own directory', () => {
+  /*
+   * ⚠️ THE QUEUES ONLY. The block directories are named by
+   * `Sessions.directoryFor`, which this does not call; the cell's old
+   * name promised both.
+   */
+  it('gives each store its own queue', () => {
     const storage = scratch();
     const made = core(storage, 'S-mine', ['/stores/one', '/stores/two']);
     const one = made.outboxPath('/stores/one');
