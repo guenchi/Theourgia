@@ -36,7 +36,7 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
-import { Outbox, OutboxEntry } from './outbox';
+import { Outbox, OUTBOX_VERSION, OutboxEntry } from './outbox';
 import { Publisher, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
@@ -366,6 +366,26 @@ export class Sessions {
    * (§12.9, §12.11.4)
    */
   public begin(sessionId: string, stores: string[]): SessionIdentity {
+    /*
+     * ⚠️ AN ID WITH A NEWLINE IN IT IS NOT A NAME, IT IS TWO.
+     *
+     * A claim token is written as the id on one line and the nonce on
+     * the next, and re-entry compares both. An id containing a newline
+     * therefore frames its own second line: a window called `"M\n" + b`
+     * publishes a token that the window called `M` with nonce `b` reads
+     * as its own -- and re-enters a claim it does not hold, which is the
+     * double-send the token exists to prevent. Reached through the
+     * public API, with both real nonces untouched. Found in review.
+     *
+     * Production ids are uuids and cannot do this; nothing made that a
+     * requirement, so it is one now, checked where the id arrives rather
+     * than trusted where it is used.
+     */
+    if (sessionId.length === 0 || /[\n\r]/.test(sessionId)) {
+      throw new Error(
+        `a session id may not be empty or contain a line break; got ${JSON.stringify(sessionId)}`
+      );
+    }
     const identity: SessionIdentity = {
       sessionId,
       pid: process.pid,
@@ -472,10 +492,22 @@ export class Sessions {
    * remains addressable for a session's listing, where the store is not
    * known.
    */
+  /*
+   * ⚠️ AN EMPTY STORE NAME IS NOT A STORE. `path.join(dir, '', 'x')` is
+   * `dir/x`, so passing `''` here silently resolved to the queue from
+   * before stores had their own directories -- the one whose store
+   * nothing can establish, and which an import must not treat as any
+   * particular store's. Omitting the argument means that queue on
+   * purpose; passing an empty one is a mistake and says so.
+   */
   public outboxPathFor(sessionId: string, storeHash?: string): string {
-    return storeHash === undefined
-      ? path.join(this.sessionDirectory(sessionId), 'outbox.json')
-      : path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
+    if (storeHash === undefined) {
+      return path.join(this.sessionDirectory(sessionId), 'outbox.json');
+    }
+    if (storeHash.length === 0) {
+      throw new Error('a store name may not be empty; omit the argument for the legacy queue');
+    }
+    return path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
   }
 
   public async others(): Promise<OtherSession[]> {
@@ -628,6 +660,18 @@ export class Sessions {
    * U-claim)
    */
   public async claim(deadSessionId: string, forced = false): Promise<ClaimOutcome> {
+    /*
+     * ⚠️ A WINDOW THAT NEVER SAID WHO IT IS CANNOT TAKE A CLAIM.
+     *
+     * Without `begin` this published a token reading `unnamed` with no
+     * nonce -- which its own next call could not re-enter, and which no
+     * other window could judge either, so that queue was stranded by an
+     * attempt to rescue it. Activation calls `begin` first; nothing said
+     * so, and an unguarded precondition is one somebody will meet.
+     */
+    if (this.mine === null || this.nonce === null) {
+      throw new Error('claim was called before begin; this window has not recorded who it is');
+    }
     /*
      * THE SESSION BEING TAKEN OVER MUST BE JUDGED DEAD, and a record
      * that cannot be read is not a judgement. Treating "unreadable" as
@@ -884,6 +928,7 @@ export class Sessions {
       const outcome = this.importQueue(queue, token, into);
       imported += outcome.imported;
       skipped += outcome.skipped;
+      unreadable += outcome.unreadable;
     }
     return { imported, skipped, leftBehind, unrouted, unreadable };
   }
@@ -903,29 +948,67 @@ export class Sessions {
    * across. `imported-by` is the mark that says it went.
    */
   private entriesIn(queue: string): number | null {
-    let raw: { entries?: unknown[] };
+    let parsed: unknown;
     try {
-      raw = JSON.parse(this.files.readText(queue)) as { entries?: unknown[] };
+      parsed = JSON.parse(this.files.readText(queue));
     } catch (e) {
+      return null;
+    }
+    /*
+     * ⚠️ `null` PARSES AND IS NOT AN OBJECT. A file holding the four
+     * bytes `null` got past the catch and then threw on the first field
+     * -- outside it, out of `importFrom`, out of the command -- so the
+     * user saw no answer at all where they should have seen a takeover
+     * reporting an unreadable queue. Found in review.
+     */
+    if (typeof parsed !== 'object' || parsed === null) {
+      return null;
+    }
+    const raw = parsed as { version?: unknown; entries?: unknown };
+    /*
+     * A QUEUE THIS BUILD WOULD REFUSE TO LOAD IS NOT AN EMPTY ONE. The
+     * loader turns away a version it does not know; counting such a file
+     * as zero says there is nothing left in something this build cannot
+     * open.
+     */
+    if (raw.version !== undefined && raw.version !== OUTBOX_VERSION) {
       return null;
     }
     if (!Array.isArray(raw.entries)) {
       return null;
     }
-    return raw.entries.filter(
-      (entry) =>
-        typeof entry === 'object' &&
-        entry !== null &&
-        typeof (entry as { req?: unknown }).req === 'string' &&
-        (entry as { importedBy?: unknown }).importedBy == null
-    ).length;
+    let waiting = 0;
+    for (const entry of raw.entries) {
+      /*
+       * AN ENTRY THAT IS NOT ONE MAKES THE WHOLE FILE UNTRUSTWORTHY.
+       * Filtering it out reported the smaller number as though it were
+       * the truth, over a file the loader itself rejects.
+       */
+      if (typeof entry !== 'object' || entry === null) {
+        return null;
+      }
+      const it = entry as { req?: unknown; importedBy?: unknown };
+      if (typeof it.req !== 'string') {
+        return null;
+      }
+      /*
+       * ONLY A STRING IS A MARK. `Outbox` reads anything else as no mark
+       * at all and WILL import that entry, so treating a `false` or a
+       * `0` as "already carried away" would leave a waiting request out
+       * of the count of what is waiting.
+       */
+      if (typeof it.importedBy !== 'string') {
+        waiting += 1;
+      }
+    }
+    return waiting;
   }
 
   private importQueue(
     queue: string,
     token: ClaimToken,
     into: ImportTarget
-  ): { imported: number; skipped: number } {
+  ): { imported: number; skipped: number; unreadable: number } {
     const source = new Outbox(queue, this.files);
     try {
       source.load();
@@ -934,8 +1017,16 @@ export class Sessions {
        * A SOURCE THAT WILL NOT READ IS LEFT ALONE. It holds the only
        * record of that window's unsent work, and a takeover that
        * repaired it would write over exactly what it came to rescue.
+       *
+       * ⚠️ AND IT IS COUNTED. This answered "nothing imported" and
+       * nothing else, so a takeover of the ONE queue it was asked to
+       * take reported `imported: 0` with no explanation -- which reads
+       * as "there was nothing there" over a file full of somebody's
+       * unsent work. Only the queues it did NOT open were counted as
+       * unreadable; the one it did open could fail in silence. Found in
+       * review.
        */
-      return { imported: 0, skipped: 0 };
+      return { imported: 0, skipped: 0, unreadable: 1 };
     }
     let imported = 0;
     let skipped = 0;
@@ -957,7 +1048,7 @@ export class Sessions {
       source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
       imported += 1;
     }
-    return { imported, skipped };
+    return { imported, skipped, unreadable: 0 };
   }
 
   public adopt(otherSessionId: string): AdoptOutcome {

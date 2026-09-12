@@ -211,9 +211,17 @@ describe('C8 and C19 whether another window is still running', () => {
 });
 
 describe('C8 taking over a dead session’s queue', () => {
+  /*
+   * ⚠️ `begin` FIRST, AS ACTIVATION DOES. These fixtures used to claim
+   * without it, which is a state production never reaches and which the
+   * code now refuses by name: a window that never said who it is
+   * published a token nobody -- including itself -- could identify, so
+   * an attempt to rescue a queue stranded it.
+   */
   it('picks the next sequence itself rather than being told one', async () => {
     const storage = scratch();
     const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-taker', []);
     makeSession(storage, 'S-old');
     const first = await sessions.claim('S-old');
     assert.ok(first.claimed, `nothing was claimed: ${JSON.stringify(first)}`);
@@ -288,6 +296,7 @@ describe('C8 taking over a dead session’s queue', () => {
       const storage = scratch();
       makeSession(storage, 'S-alive', liveIdentity(idle.pid));
       const sessions = new Sessions(new RecordingFs(), storage);
+      sessions.begin('S-taker', []);
       const answer = await sessions.claim('S-alive');
       assert.deepStrictEqual(answer, { claimed: false, because: 'session-alive' });
     } finally {
@@ -1364,5 +1373,174 @@ describe('review 24 what a takeover reports as still waiting', () => {
       : null;
     assert.strictEqual(moved?.unrouted, 2);
     assert.strictEqual(moved?.leftBehind, 0, 'the unroutable queue was counted as another store’s');
+  });
+});
+
+/*
+ * REVIEW ROUND 25: WHAT A QUEUE FILE CAN BE, AND WHAT A NAME CAN FRAME.
+ */
+describe('review 25 a queue nobody can trust is not an empty queue', () => {
+  function badQueue(storage: string, id: string, where: string, text: string): void {
+    const dir = path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outbox.json'), text, 'utf8');
+  }
+
+  function good(storage: string, id: string, where: string): void {
+    badQueue(
+      storage,
+      id,
+      where,
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'r1',
+            cursor: 'w:1',
+            id: 'a.1',
+            field: 'src',
+            payload: 'x',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          }
+        ]
+      })
+    );
+  }
+
+  async function takeover(storage: string, store: string) {
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    return won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: () => false, adopt: () => undefined },
+          store
+        )
+      : null;
+  }
+
+  /*
+   * ⚠️ A FILE HOLDING THE FOUR BYTES `null` PARSES. Asking it for a
+   * field then threw -- outside the catch, out of `importFrom`, out of
+   * the command -- so the user saw no answer at all where they should
+   * have seen a takeover reporting an unreadable queue.
+   */
+  it('does not fall over on a queue file that parses to null', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    good(storage, 'S-dead', 'store-a');
+    badQueue(storage, 'S-dead', 'store-x', 'null');
+    const moved = await takeover(storage, 'store-a');
+    assert.strictEqual(moved?.unreadable, 1);
+    assert.strictEqual(moved?.imported, 1);
+  });
+
+  /*
+   * AND THE QUEUE IT WAS ASKED TO TAKE CAN FAIL TOO. Only the ones it
+   * did not open were counted, so a takeover of the one queue it was
+   * told to take reported `imported: 0` and nothing else -- which reads
+   * as "there was nothing there" over a file full of unsent work.
+   */
+  it('says so when the queue it was told to take could not be read', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    badQueue(storage, 'S-dead', 'store-a', '{ not json');
+    const moved = await takeover(storage, 'store-a');
+    assert.strictEqual(moved?.imported, 0);
+    assert.strictEqual(
+      moved?.unreadable,
+      1,
+      'the queue this takeover was about failed in silence'
+    );
+  });
+
+  for (const [what, text] of [
+    ['a version this build does not know', '{"version":99,"entries":[]}'],
+    ['an entry that is not an object', '{"entries":[null]}'],
+    ['an entry with no request id', '{"entries":[{"payload":"x"}]}'],
+    ['an entries field that is not a list', '{"entries":{}}']
+  ] as Array<[string, string]>) {
+    it(`counts a queue with ${what} as unreadable rather than empty`, async () => {
+      const storage = scratch();
+      makeSession(storage, 'S-dead');
+      good(storage, 'S-dead', 'store-a');
+      badQueue(storage, 'S-dead', 'store-x', text);
+      const moved = await takeover(storage, 'store-a');
+      assert.strictEqual(moved?.unreadable, 1, `${what} was counted as an empty queue`);
+      assert.strictEqual(moved?.leftBehind, 0);
+    });
+  }
+
+  /*
+   * ⚠️ AND ONLY A STRING IS A MARK. `Outbox` reads anything else as no
+   * mark at all and WILL import that entry, so treating a `false` as
+   * "already carried away" would leave a waiting request out of the
+   * count of what is waiting.
+   */
+  it('counts a request whose mark is not a string as still waiting', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    good(storage, 'S-dead', 'store-a');
+    badQueue(
+      storage,
+      'S-dead',
+      'store-b',
+      JSON.stringify({
+        cursor: null,
+        entries: [{ req: 'r9', cursor: 'w:1', id: 'a.1', field: 'src', payload: 'x', state: 'queued', createdAt: 0, lastError: null, importedBy: false }]
+      })
+    );
+    const moved = await takeover(storage, 'store-a');
+    assert.strictEqual(moved?.leftBehind, 1, 'a waiting request was counted as already carried away');
+  });
+});
+
+/*
+ * REVIEW ROUND 25: AN ID WITH A LINE BREAK IN IT FRAMES ITS OWN NONCE.
+ */
+describe('review 25 what a session id may be', () => {
+  /*
+   * ⚠️ THE ATTACK THE REVIEW FOUND, IN ONE CELL. A claim token is the id
+   * on one line and the nonce on the next. A window whose id IS
+   * `"M\nb"` publishes a token that the window called `M` with nonce `b`
+   * reads as its own -- and re-enters a claim it does not hold. Both
+   * nonces are the real ones; nothing is forged. Production ids are
+   * uuids and cannot do this, and nothing made that a requirement.
+   */
+  it('refuses an id that would frame a second line', () => {
+    const sessions = new Sessions(new RecordingFs(), scratch());
+    assert.throws(() => sessions.begin('M\nsomething', []), /line break/);
+    assert.throws(() => sessions.begin('', []), /empty/);
+  });
+
+  /*
+   * AND A WINDOW THAT NEVER SAID WHO IT IS CANNOT TAKE A CLAIM. It used
+   * to publish a token reading `unnamed` with no nonce, which its own
+   * next call could not re-enter and no other window could judge -- so
+   * an attempt to rescue a queue stranded it.
+   */
+  it('refuses to claim before the window has recorded who it is', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-old');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    await assert.rejects(() => sessions.claim('S-old'), /before begin/);
+    const left = fs.readdirSync(path.join(storage, 'sessions')).filter((n) => n.includes('.claim.'));
+    assert.deepStrictEqual(left, [], 'a nameless window left a token behind');
+  });
+
+  /*
+   * AND AN EMPTY STORE NAME IS NOT A STORE. `path.join(dir, '', 'x')` is
+   * `dir/x`, so it silently resolved to the queue from before stores had
+   * their own directories -- the one whose store nothing can establish.
+   */
+  it('refuses an empty store name rather than resolving it to the legacy queue', () => {
+    const sessions = new Sessions(new RecordingFs(), scratch());
+    assert.throws(() => sessions.outboxPathFor('S-old', ''), /may not be empty/);
+    assert.ok(sessions.outboxPathFor('S-old').endsWith(path.join('S-old', 'outbox.json')));
   });
 });

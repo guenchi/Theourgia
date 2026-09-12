@@ -698,11 +698,19 @@ export function adoptedNotice(
    * carry out. Telling them to do it anyway is worse than telling them
    * it cannot be done from here.
    */
+  /*
+   * ⚠️ "THIS COMMAND CANNOT MOVE THOSE", not "nothing can". The library
+   * underneath will import that queue when asked to take every one --
+   * what it cannot do is say which store the requests were written for,
+   * which is why this command does not ask. The absolute wording was
+   * false of the API and a review said so.
+   */
   const stranded =
     left.unrouted === 0
       ? ''
       : ` ${left.unrouted} more are in a queue from an older version of this extension, which ` +
-        'does not say which store they were for; this command cannot move those.';
+        'does not record which store they were written for; this command will not move them into ' +
+        'a store it cannot show they belong to.';
   const broken =
     left.unreadable === 0
       ? ''
