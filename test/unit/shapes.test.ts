@@ -797,17 +797,40 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * result and satisfied both cells. A bucket has to be reportable on
    * its own, because on its own is how a user meets it.
    */
-  it('mentions a bucket that is the only thing that happened', () => {
+  it('mentions a bucket that is the only thing that happened, and says what it means', () => {
+    /*
+     * ⚠️ THE COUNT WITH ITS MEANING, NOT THE DIGIT ALONE. Looking only
+     * for the number passed a build that suppressed a bucket's sentence
+     * and appended "Observed 5" -- measured in review. A number in the
+     * text is not a statement about that bucket.
+     */
+    const meanings: Record<string, RegExp> = {
+      imported: /now in this window's queue/,
+      skippedDuplicate: /already been carried across/,
+      leftOtherStore: /belong to other stores/,
+      leftUnknownStore: /older version of this extension/,
+      unreadableQueue: /could not be read/,
+      failedToMove: /could not be moved/,
+      movedButUnmarked: /arrived here/
+    };
     const buckets = Object.keys(emptyLedger()).filter((name) => name !== 'observed');
+    /*
+     * AND EVERY BUCKET HAS A MEANING WRITTEN DOWN HERE. A bucket added
+     * without one is not silently skipped by this loop.
+     */
+    const unexplained = buckets.filter((name) => meanings[name] === undefined);
+    assert.deepStrictEqual(unexplained, [], 'these buckets have no sentence to look for');
     for (const name of buckets) {
       const ledger = emptyLedger();
       (ledger as unknown as Record<string, number>)[name] = 5;
       ledger.observed = 5;
       const text = adoptedNotice('S-dead', ledger, false).text;
-      assert.ok(
-        text.includes('5'),
-        `${name} was the only thing that happened and the user was not told: ${text}`
+      assert.match(
+        text,
+        meanings[name],
+        `${name} was the only thing that happened and its sentence is missing: ${text}`
       );
+      assert.ok(text.includes('5'), `${name} was reported without its count: ${text}`);
     }
   });
 

@@ -714,6 +714,19 @@ export function adoptedNotice(
         'window’s queue; nothing was lost, and running this command again will try them.'
     );
   }
+  if (ledger.movedButUnmarked > 0) {
+    /*
+     * ⚠️ THESE ARRIVED. The sentence for the bucket beside this one says
+     * the opposite, and the two were one bucket until a review pointed
+     * out that it described work which had in fact moved as work the
+     * user should go looking for elsewhere.
+     */
+    parts.push(
+      `${ledger.movedButUnmarked} arrived here, but the other window’s copy could not be marked ` +
+        'as handed over; they will be offered again by a later takeover and recognised as ' +
+        'already here, so nothing is sent twice.'
+    );
+  }
   parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);
   return { level: 'information', text: `${sessionId}: ${parts.join(' ')}` };
 }

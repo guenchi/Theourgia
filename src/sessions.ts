@@ -257,8 +257,14 @@ export type DiscardOutcome =
  * So the report is a ledger and the law is conservation: `observed` is
  * everything this takeover saw, and every one of those things is in
  * exactly one of the buckets below. A cell adds the buckets and compares
- * them with `observed`. Anything that goes uncounted from now on is a
- * DIFFERENCE that goes red, rather than a number that quietly shrinks.
+ * them with `observed`.
+ *
+ * ⚠️ WHAT THAT CATCHES, EXACTLY: a thing counted as seen and put in no
+ * bucket. It does NOT catch a thing that was never counted as seen
+ * either -- dropping both sides preserves the equality -- nor a thing
+ * put in the WRONG bucket, nor an entry the destination did not really
+ * keep. Arithmetic is not membership and it is not truth; it is one
+ * property, and the cells for the individual buckets are the others.
  *
  * ⚠️ WHAT THE LAW DOES NOT SAY, WRITTEN DOWN BECAUSE IT COST A DEFECT:
  * it governs WHERE what was seen went, and says nothing about whether
@@ -270,9 +276,10 @@ export type DiscardOutcome =
  *
  * Presence is a separate guarantee and has a separate mechanism:
  * `importFrom` walks the union of the queues it DISCOVERED and the one
- * it was NAMED, so the thing the caller asked about is seen whatever the
- * enumeration managed to find. Do not read a balanced ledger as evidence
- * that everything was looked at.
+ * it was NAMED -- and the named one is not filtered by an existence
+ * check, because that check answers "no" for a file under an ancestry
+ * this process cannot search. Loading decides. Do not read a balanced
+ * ledger as evidence that everything was looked at.
  *
  * WHAT ONE "THING" IS: a request, where requests can be seen; a whole
  * FILE where they cannot, because the contents of a queue nobody can
@@ -319,6 +326,22 @@ export interface TakeoverLedger {
    * bucket list it named.
    */
   failedToMove: number;
+  /*
+   * ⚠️ MOVED, AND THE SOURCE STILL SAYS IT IS WAITING.
+   *
+   * The entry is in this window's queue and will be sent from here; what
+   * failed is the mark on the OTHER window's copy. Those two outcomes
+   * were one bucket, and the sentence for it said the requests "could
+   * not be moved and are still in that window's queue" -- the opposite
+   * of the truth for this half, about work that had in fact arrived.
+   * Found in review.
+   *
+   * Nothing is sent twice: a later takeover offers them again and the
+   * destination recognises them by request id. What is wrong is only the
+   * bookkeeping in the file this window does not own, and the user is
+   * told that rather than told their work is stuck.
+   */
+  movedButUnmarked: number;
 }
 
 export function emptyLedger(): TakeoverLedger {
@@ -329,7 +352,8 @@ export function emptyLedger(): TakeoverLedger {
     leftOtherStore: 0,
     leftUnknownStore: 0,
     unreadableQueue: 0,
-    failedToMove: 0
+    failedToMove: 0,
+    movedButUnmarked: 0
   };
 }
 
@@ -350,7 +374,8 @@ export function ledgerTotal(ledger: TakeoverLedger): number {
     ledger.leftOtherStore +
     ledger.leftUnknownStore +
     ledger.unreadableQueue +
-    ledger.failedToMove
+    ledger.failedToMove +
+    ledger.movedButUnmarked
   );
 }
 
@@ -516,8 +541,20 @@ export class Sessions {
      * API's failure path; an object that says who it is when nothing on
      * disk agrees is worth closing anyway. Found in review.
      */
+    /*
+     * ⚠️ PUBLISHED THROUGH A TEMPORARY FILE, because `writeText` empties
+     * the target first. A second `begin` on one object -- or a rerun
+     * after a crash -- could therefore leave `session.json` holding half
+     * a record, and the object kept the identity it already had: it went
+     * on claiming, with a record on disk that nobody, including itself,
+     * could read. The record is either the old one or the new one.
+     * Found in review.
+     */
     this.files.makeDirectory(this.sessionDirectory(sessionId));
-    this.files.writeText(this.identityFile(sessionId), `${JSON.stringify(identity, null, 2)}\n`);
+    const file = this.identityFile(sessionId);
+    const temporary = `${file}.${process.pid}.tmp`;
+    this.files.writeDurably(temporary, `${JSON.stringify(identity, null, 2)}\n`);
+    this.files.rename(temporary, file);
     this.mine = sessionId;
     this.nonce = identity.nonce;
     return identity;
@@ -629,6 +666,19 @@ export class Sessions {
     }
     if (storeHash.length === 0) {
       throw new Error('a store name may not be empty; omit the argument for the legacy queue');
+    }
+    /*
+     * ⚠️ AND IT MAY NOT LEAVE THE SESSION'S DIRECTORY. `path.join`
+     * resolves `..`, so a store name of `../live/a` addressed a LIVE
+     * window's queue -- and a takeover then imported from it and marked
+     * it as carried away by a claim on a different session. Production
+     * names are digests and cannot do this; nothing made that a
+     * requirement. Found in review.
+     */
+    if (/[\\/]/.test(storeHash) || storeHash === '..' || storeHash === '.') {
+      throw new Error(
+        `a store name may not contain a path; got ${JSON.stringify(storeHash)}`
+      );
     }
     return path.join(this.sessionDirectory(sessionId), storeHash, 'outbox.json');
   }
@@ -998,10 +1048,17 @@ export class Sessions {
       return ledger;
     }
     const all = this.outboxPathsFor(token.deadSessionId);
+    /*
+     * ⚠️ THE NAMED QUEUE IS NOT FILTERED BY `exists`. It was, and an
+     * ancestry this process cannot search makes `exists` answer false
+     * for a file that is right there -- so with the enumeration also
+     * empty, nothing was loaded and every field of the ledger stayed
+     * zero. Loading decides instead: a queue that really is absent loads
+     * as an empty one and contributes nothing, and one that cannot be
+     * read is counted as unreadable. Found in review.
+     */
     const queues =
-      storeHash === undefined
-        ? all
-        : [this.outboxPathFor(token.deadSessionId, storeHash)].filter((q) => this.files.exists(q));
+      storeHash === undefined ? all : [this.outboxPathFor(token.deadSessionId, storeHash)];
     const legacy = path.join(this.sessionDirectory(token.deadSessionId), 'outbox.json');
     /*
      * ⚠️ THE UNION, BECAUSE THE ENUMERATION CAN COME BACK EMPTY. `list`
@@ -1124,6 +1181,17 @@ export class Sessions {
        * the rest of the queue is still walked: one entry the destination
        * would not take is not a reason to abandon the others.
        */
+      /*
+       * ⚠️ THE TWO FAILURES ARE DIFFERENT NEWS AND ARE COUNTED APART.
+       *
+       * If the destination refuses the entry, it did not move. If the
+       * destination took it and the SOURCE could not be marked, it did
+       * move -- and one bucket for both made the report say "could not
+       * be moved, still in that window's queue" about work that had
+       * arrived. A user acting on that would go looking for it where it
+       * is not.
+       */
+      let arrived = false;
       try {
         /*
          * DEDUPLICATION IS BY REQUEST, NOT BY CONTENT: two saves of one
@@ -1135,10 +1203,15 @@ export class Sessions {
           continue;
         }
         into.adopt({ ...entry });
+        arrived = true;
         source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
         ledger.imported += 1;
       } catch (e) {
-        ledger.failedToMove += 1;
+        if (arrived) {
+          ledger.movedButUnmarked += 1;
+        } else {
+          ledger.failedToMove += 1;
+        }
       }
     }
   }

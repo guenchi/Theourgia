@@ -590,11 +590,22 @@ describe('C13 a takeover only ever happens because someone asked for one', () =>
     sessions.begin('S-new', ['/stores/one']);
     const others = await sessions.others();
     assert.ok(Array.isArray(others), 'starting up did not even list the other sessions');
-    assert.deepStrictEqual(
-      files.touched('rename'),
-      [],
-      'starting up moved something, so it did more than look'
-    );
+    /*
+     * ⚠️ NOTHING OF ANYBODY ELSE'S MOVED. This asserted that nothing was
+     * renamed at all, which stopped being the question when `begin`
+     * started publishing its own record through a temporary file: that
+     * rename is this window writing down who it is, and it is the one
+     * move a startup is supposed to make. What the cell is about is that
+     * startup takes nothing over -- so it names the paths instead of
+     * counting the operation.
+     */
+    for (const moved of files.touched('rename')) {
+      assert.ok(
+        moved.includes(path.join('sessions', 'S-new')),
+        `starting up moved ${moved}, which is not its own record`
+      );
+    }
+    assert.deepStrictEqual(files.touched('link'), [], 'starting up published a claim token');
   });
 });
 
@@ -1792,9 +1803,26 @@ describe('review 26 what the takeover must still see, and who may take one', () 
       }),
       'utf8'
     );
+    /*
+     * ⚠️ THE ENUMERATION COMES BACK EMPTY AND THE EXISTENCE CHECK SAYS
+     * NO, which is what an ancestry this process cannot search looks
+     * like from here: `list` answers `[]` and `exists` answers false for
+     * paths inside it. Only the directory itself can be seen, which is
+     * what lets the claim happen at all.
+     *
+     * The first version of this cell left `exists` working, so it did
+     * not reach the filter that was also dropping the named queue --
+     * measured: the reversion survived it.
+     */
     const blind = new (class extends RecordingFs {
       public list(directory: string): string[] {
         return directory.includes('S-dead') ? [] : super.list(directory);
+      }
+
+      public exists(file: string): boolean {
+        return file.endsWith('outbox.json') && file.includes('S-dead')
+          ? false
+          : super.exists(file);
       }
     })();
     const sessions = new Sessions(blind, storage);
@@ -1826,12 +1854,19 @@ describe('review 26 what the takeover must still see, and who may take one', () 
   it('does not count itself as begun when its identity could not be written', async () => {
     const storage = scratch();
     makeSession(storage, 'S-old');
+    /*
+     * ⚠️ THE OPERATION `begin` ACTUALLY USES. It wrote the record with
+     * `writeText` when this cell was written and publishes it through a
+     * temporary file now; a stand-in that refuses the operation the code
+     * no longer calls refuses nothing, and the cell passes while
+     * establishing nothing.
+     */
     const refusing = new (class extends RecordingFs {
-      public writeText(file: string, text: string): void {
-        if (file.endsWith('session.json')) {
+      public writeDurably(file: string, text: string): void {
+        if (file.includes('session.json')) {
           throw new Error('the disk would not take it');
         }
-        super.writeText(file, text);
+        super.writeDurably(file, text);
       }
     })();
     const sessions = new Sessions(refusing, storage);
@@ -1840,6 +1875,152 @@ describe('review 26 what the takeover must still see, and who may take one', () 
       () => sessions.claim('S-old'),
       /before begin/,
       'a window whose identity was never published took a claim anyway'
+    );
+  });
+});
+
+/*
+ * REVIEW ROUND 27: WHAT A FAILED MOVE ACTUALLY MEANS, AND WHERE A NAME
+ * MAY POINT.
+ */
+describe('review 27 a request that arrived is not a request that did not', () => {
+  function queueWith(storage: string, id: string, where: string, reqs: string[]): void {
+    const dir = path.join(storage, 'sessions', id, where);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({
+        cursor: null,
+        entries: reqs.map((req) => ({
+          req,
+          cursor: 'w:1',
+          id: 'a.1',
+          field: 'src',
+          payload: 'x',
+          state: 'queued',
+          createdAt: 0,
+          lastError: null,
+          importedBy: null
+        }))
+      }),
+      'utf8'
+    );
+  }
+
+  /*
+   * ⚠️ THE SOURCE MARK FAILS AFTER THE ENTRY HAS ARRIVED. Both failures
+   * were one bucket, and its sentence said the requests "could not be
+   * moved and are still in that window's queue" -- the opposite of the
+   * truth, about work that was already here. A user acting on it goes
+   * looking where it is not.
+   */
+  it('says a request arrived when only the bookkeeping failed', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueWith(storage, 'S-dead', 'store-a', ['r1']);
+    const stubborn = new (class extends RecordingFs {
+      public writeDurably(file: string, text: string): void {
+        if (file.includes(path.join('S-dead', 'store-a'))) {
+          throw new Error('the other window’s file will not take the mark');
+        }
+        super.writeDurably(file, text);
+      }
+    })();
+    const sessions = new Sessions(stubborn, storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed);
+    const landed: string[] = [];
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: (req) => landed.includes(req), adopt: (entry) => landed.push(entry.req) },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.deepStrictEqual(landed, ['r1'], 'the entry did not arrive, so this is the other case');
+    assert.strictEqual(
+      led.movedButUnmarked,
+      1,
+      `an entry that arrived was reported as one that did not: ${JSON.stringify(led)}`
+    );
+    assert.strictEqual(led.failedToMove, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * AND THE OTHER HALF: a destination that refuses the entry really is a
+   * request that did not move.
+   */
+  it('says a request did not move when the destination refused it', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    queueWith(storage, 'S-dead', 'store-a', ['r1']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          {
+            has: () => false,
+            adopt: () => {
+              throw new Error('this window will not take it');
+            }
+          },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.strictEqual(led.failedToMove, 1, JSON.stringify(led));
+    assert.strictEqual(led.movedButUnmarked, 0);
+    assert.strictEqual(ledgerTotal(led), led.observed);
+  });
+
+  /*
+   * ⚠️ AND A STORE NAME MAY NOT LEAVE THE SESSION'S DIRECTORY. `..` in
+   * one addressed a LIVE window's queue, and the takeover imported from
+   * it and marked it as carried away under a claim on a different
+   * session.
+   */
+  it('refuses a store name that points outside the session', () => {
+    const sessions = new Sessions(new RecordingFs(), scratch());
+    for (const bad of ['../live/a', 'a/b', '..', '.']) {
+      assert.throws(
+        () => sessions.outboxPathFor('S-dead', bad),
+        /path|empty/,
+        `${bad} was accepted as a store name`
+      );
+    }
+    assert.ok(sessions.outboxPathFor('S-dead', 'store-a').includes('store-a'));
+  });
+
+  /*
+   * AND A SECOND `begin` CANNOT LEAVE HALF A RECORD BEHIND. It wrote
+   * over the file in place, so a failure part-way left `session.json`
+   * unreadable while the object kept the identity it already had -- and
+   * went on claiming, over a record nobody could read.
+   */
+  it('leaves the old record intact when a second begin cannot be published', async () => {
+    const storage = scratch();
+    const files = new RecordingFs();
+    const sessions = new Sessions(files, storage);
+    sessions.begin('S-mine', []);
+    const record = path.join(storage, 'sessions', 'S-mine', 'session.json');
+    const before = fs.readFileSync(record, 'utf8');
+    const refusing = new (class extends RecordingFs {
+      public rename(from: string, to: string): void {
+        if (to.includes('session.json')) {
+          throw new Error('the rename would not go through');
+        }
+        super.rename(from, to);
+      }
+    })();
+    const again = new Sessions(refusing, storage);
+    assert.throws(() => again.begin('S-mine', ['/stores/two']), /would not go through/);
+    assert.strictEqual(
+      fs.readFileSync(record, 'utf8'),
+      before,
+      'a failed second begin left the record neither the old one nor the new one'
     );
   });
 });
