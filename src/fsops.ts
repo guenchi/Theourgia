@@ -64,6 +64,20 @@ export interface FileOps {
   syncDirectory(directory: string): void;
   exists(file: string): boolean;
   /*
+   * ⚠️ THE HONEST FORM OF `exists`, FOR THE CALLER THAT REPORTS WHAT IT
+   * FINDS.
+   *
+   * `existsSync` answers false for a file that is not there AND for one
+   * under an ancestry this process may not search -- the same word for
+   * "no" and for "I could not look". That is the right convenience for a
+   * caller choosing what to do next, and the wrong one for a caller
+   * writing a sentence a user will act on: a leftover file that becomes
+   * unreachable does not stop existing, and permissions can be given
+   * back. So this one distinguishes them, the way `readDirectory` does
+   * for `list`. Found in review.
+   */
+  presenceOf(file: string): { known: true; there: boolean } | { known: false };
+  /*
    * A CREATE-ONCE PUBLICATION. `link` fails with EEXIST if the name is
    * taken, which is what makes a claim token a token: whoever's call
    * succeeds holds it, and no read-then-write window exists for two
@@ -132,6 +146,24 @@ export const nodeFileOps: FileOps = {
     }
   },
   exists: (file) => fs.existsSync(file),
+  presenceOf: (file) => {
+    try {
+      fs.statSync(file);
+      return { known: true, there: true };
+    } catch (e) {
+      /*
+       * ONLY ENOENT MEANS "NOT THERE". A path whose ancestry cannot be
+       * searched, one that is not a directory where a directory was
+       * expected, an i/o failure -- each of those is this machine being
+       * unable to look, and nothing here can turn that into an answer.
+       */
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') {
+        return { known: true, there: false };
+      }
+      return { known: false };
+    }
+  },
   link: (existing, fresh) => fs.linkSync(existing, fresh),
   list: (directory) => {
     try {

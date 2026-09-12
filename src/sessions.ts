@@ -591,28 +591,93 @@ export class Sessions {
       this.files.rename(temporary, file);
     } catch (e) {
       /*
-       * THE OLD RECORD IS STILL THERE. Removing the half-written one is
+       * THE OLD RECORD IS STILL THERE. Removing the temporary one is
        * BEST EFFORT and says so: a failure to remove it must not replace
        * the reason the publication failed with a second, smaller reason.
        *
        * ⚠️ AND THE RESIDUE IS NAMED WHEN IT SURVIVES. The comment here
-       * used to say the half-written one is not there, flatly -- which
-       * is untrue when the removal itself throws, and untrue when the
-       * process stops between the write and the rename. Whoever reads
-       * the failure is the only one who can clear it up, so they are
-       * told where it is.
+       * used to say it is not there, flatly -- which is untrue when the
+       * removal itself throws, and untrue when the process stops between
+       * the write and the rename. Whoever reads the failure is the only
+       * one who can clear it up, so they are told where it is.
+       *
+       * ⚠️ BUT ONLY IF IT IS ACTUALLY THERE, AND IT IS NOT CALLED
+       * HALF-WRITTEN. The sentence used to be printed whenever `unlink`
+       * threw -- and the commonest reason it throws is that the write
+       * failed before creating anything, so the failure most likely to
+       * produce this message is the one where the file does not exist.
+       * Nor is "half-written" something this code established: a
+       * complete file whose rename failed reaches here too. So the
+       * question is put to the file system, the answer decides which of
+       * three sentences is added, and the word is `leftover`.
        */
       let residue = '';
       try {
         this.files.unlink(temporary);
       } catch (ignored) {
-        residue = ` A half-written record was left at ${temporary}; it is not a session record and can be removed.`;
+        residue = this.residueNoteFor(temporary);
       }
-      throw new Error(`${(e as Error).message}${residue}`);
+      /*
+       * ⚠️ ONE SHAPE ON EVERY FAILURE PATH.
+       *
+       * Two things were wrong with what this threw. It composed a fresh
+       * `Error` out of `e.message`, which threw away the class, the
+       * `code` -- ENOSPC and EACCES ask the reader to do different
+       * things -- and the stack that says which call failed. And the
+       * first repair made the shape CONDITIONAL: the original object
+       * when there was nothing to add, a wrapper when there was, so
+       * `err.code` worked or did not depending on whether a cleanup
+       * happened to succeed. A caller cannot write one test against
+       * that. The original is always the `cause`, its `code` is always
+       * carried, and there is always a wrapper. Found in review.
+       */
+      const failure = new Error(`${(e as Error).message}${residue}`, { cause: e }) as
+        NodeJS.ErrnoException;
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code !== undefined) {
+        failure.code = code;
+      }
+      throw failure;
     }
     this.mine = sessionId;
     this.nonce = identity.nonce;
     return identity;
+  }
+
+  /*
+   * WHAT TO SAY ABOUT A TEMPORARY FILE THE CLEANUP COULD NOT REMOVE.
+   *
+   * Three answers, because there are three states and the two of them
+   * that are comfortable are not the same one. If the file is there, it
+   * is named so it can be removed by hand. If it is not there, nothing
+   * is added -- the publication failed before creating it, and inventing
+   * a leftover sends the reader looking for a file that never existed.
+   * If this window cannot find out, it says that rather than choosing:
+   * the whole point of asking was to stop reporting a state nobody
+   * measured.
+   */
+  private residueNoteFor(temporary: string): string {
+    /*
+     * ⚠️ AND THE QUESTION IS PUT THROUGH `presenceOf`, NOT `exists`.
+     * `existsSync` says false both for a file that is not there and for
+     * one this process may not look at, so a sentence written from its
+     * answer says "there is nothing left behind" in a case where
+     * something is. The third answer below exists precisely for that
+     * case, and with `exists` underneath it was unreachable in
+     * production -- a state only a stand-in could produce. Found in
+     * review.
+     */
+    const presence = this.files.presenceOf(temporary);
+    if (!presence.known) {
+      return (
+        ` Whether a leftover file remains at ${temporary} could not be established; if one is ` +
+        'there it is not a session record and can be removed.'
+      );
+    }
+    if (!presence.there) {
+      return '';
+    }
+    return ` A leftover file was left at ${temporary}; it is not a session record and can be removed.`;
   }
 
   /*

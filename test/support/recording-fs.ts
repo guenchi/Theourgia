@@ -32,7 +32,7 @@
 import * as path from 'path';
 import { FileOps, nodeFileOps } from '../../src/fsops';
 
-export type Operation = 'readText' | 'readBytes' | 'writeText' | 'makeDirectory' | 'rename' | 'unlink' | 'writeDurably' | 'syncDirectory' | 'exists' | 'link' | 'list' | 'isDirectory';
+export type Operation = 'readText' | 'readBytes' | 'writeText' | 'makeDirectory' | 'rename' | 'unlink' | 'writeDurably' | 'syncDirectory' | 'exists' | 'presenceOf' | 'link' | 'list' | 'isDirectory';
 
 export interface Entry {
   op: Operation;
@@ -118,6 +118,11 @@ export class RecordingFs implements FileOps {
   public exists(file: string): boolean {
     this.record('exists', file);
     return this.inner.exists(file);
+  }
+
+  public presenceOf(file: string): { known: true; there: boolean } | { known: false } {
+    this.record('presenceOf', file);
+    return this.inner.presenceOf(file);
   }
 
   public link(existing: string, fresh: string): void {

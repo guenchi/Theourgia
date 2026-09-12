@@ -774,36 +774,91 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * proposition, and every one of those changed what the user is told.
    *
    * So each bucket's sentence is written out here in full and compared
-   * exactly. It is a duplicate of the product's wording and that is the
-   * point: the two copies are written by different people at different
-   * times, and any drift between them is somebody deciding to change
-   * what the user is told. Changing the message means changing this,
-   * where the diff shows a human the old sentence beside the new one.
+   * exactly.
+   *
+   * ⚠️ WHAT THAT BUYS, EXACTLY. The copy here was written by whoever
+   * wrote the product's, so it is not an independent statement of what
+   * the message ought to say and does not make a wrong sentence go red.
+   * What it does is stop a sentence changing WITHOUT ANYONE LOOKING:
+   * every edit to the message shows up as a diff here, beside the old
+   * wording, for a human to accept or refuse. It is a checkpoint in the
+   * review, not a guarantee about the meaning -- and saying otherwise
+   * would be this file making the same kind of claim it exists to catch.
+   * Found in review.
+   */
+  /*
+   * ⚠️ TWO FINISHED SENTENCES PER BUCKET, ONE FOR EACH NUMBER.
+   *
+   * A single template with `${n}` in it cannot be wrong about agreement,
+   * because it says the same thing at every count -- which is how "1
+   * unsent request(s) are now in this window's queue" and seven more
+   * like it went unremarked here while the cells compared whole
+   * sentences. Writing the singular out separately is what makes it
+   * possible to be wrong, and therefore what makes the cell able to say
+   * anything. Found in review, all eight at once.
    */
   const SENTENCES: Record<string, (n: number) => string> = {
-    imported: (n) => `${n} unsent request(s) are now in this window's queue.`,
-    skippedDuplicate: (n) => `${n} had already been carried across and were left alone.`,
+    imported: (n) =>
+      n === 1
+        ? "1 unsent request is now in this window's queue."
+        : `${n} unsent requests are now in this window's queue.`,
+    skippedDuplicate: (n) =>
+      n === 1
+        ? '1 had already been carried across and was left alone.'
+        : `${n} had already been carried across and were left alone.`,
     leftOtherStore: (n) =>
-      `${n} belong to other stores and are still there; configure that store and run this ` +
-      'command again to bring them across.',
+      n === 1
+        ? '1 was written for another store and is still there; configure that store and run ' +
+          'this command again to bring it across.'
+        : `${n} were written for other stores and are still there; configure those stores and ` +
+          'run this command again to bring them across.',
     leftUnknownStore: (n) =>
-      `${n} are in a queue from an older version of this extension, which does not record which ` +
-      'store they were written for; this command will not move them into a store it cannot show ' +
-      'they belong to.',
+      n === 1
+        ? '1 is in a queue from an older version of this extension, which does not record which ' +
+          'store it was written for; this command will not move it into a store it cannot show ' +
+          'it belongs to.'
+        : `${n} are in a queue from an older version of this extension, which does not record ` +
+          'which store they were written for; this command will not move them into a store it ' +
+          'cannot show they belong to.',
     unreadableQueue: (n) =>
-      `a usable queue could not be loaded from ${n} of its path(s), and nothing was taken from ` +
-      'them.',
+      n === 1
+        ? 'a usable queue could not be loaded from 1 of its paths, and nothing was taken from it.'
+        : `a usable queue could not be loaded from ${n} of its paths, and nothing was taken ` +
+          'from them.',
     failedToMove: (n) =>
-      `${n} could not be moved into this window and are still in that window’s queue; nothing ` +
-      'was lost, and running this command again will try them.',
+      n === 1
+        ? '1 could not be moved into this window and is still in that window’s queue; nothing ' +
+          'was lost, and running this command again will try it.'
+        : `${n} could not be moved into this window and are still in that window’s queue; ` +
+          'nothing was lost, and running this command again will try them.',
     movedButUnmarked: (n) =>
-      `${n} arrived here, and the other window’s copy was not confirmed as handed over, so a ` +
-      'later takeover may carry them again. The store recognises a request it has already ' +
-      'applied by its id and does not do the work twice.',
+      n === 1
+        ? '1 arrived here, and the other window’s copy was not confirmed as handed over, so a ' +
+          'later takeover may carry it again. The store recognises a request it has already ' +
+          'applied by its id and does not do the work twice.'
+        : `${n} arrived here, and the other window’s copy was not confirmed as handed over, so ` +
+          'a later takeover may carry them again. The store recognises a request it has already ' +
+          'applied by its id and does not do the work twice.',
     outcomeUnknown: (n) =>
-      `${n} could not be accounted for: this window could not find out whether they arrived. ` +
-      'Look at both queues before deciding anything about them.'
+      n === 1
+        ? '1 could not be accounted for: this window could not find out whether it arrived. ' +
+          'Look at both queues before deciding anything about it.'
+        : `${n} could not be accounted for: this window could not find out whether they ` +
+          'arrived. Look at both queues before deciding anything about them.'
   };
+
+  /*
+   * THE ADVICE IS PART OF THE REPORT, so it is written out here too, and
+   * against the buckets it is allowed to follow. It names its subject by
+   * PLACE: it said "They", and then "The ones that arrived", and both
+   * could be read as the requests the sentence before them is about --
+   * the ones nobody could account for, or the ones carried across on an
+   * earlier run. What is in this window's queue is not ambiguous.
+   */
+  const ADVICE =
+    ' Everything now in this window\'s queue goes out with the next save, or run "theourgia: ' +
+    'Retry Pending Saves" to send it now.';
+  const ADVICE_AFTER: Record<string, string> = { imported: ADVICE, movedButUnmarked: ADVICE };
 
   /*
    * A BUCKET WITH NO SENTENCE WRITTEN DOWN FAILS THIS FILE rather than
@@ -824,11 +879,38 @@ describe('every bucket a takeover counts is something the user is told', () => {
       (ledger as unknown as Record<string, number>)[name] = 5;
       ledger.observed = 5;
       const text = adoptedNotice('S-dead', ledger, false).text;
-      const expected =
-        name === 'imported' || name === 'movedButUnmarked'
-          ? `S-dead: ${sentence(5)} They go out with the next save, or run "theourgia: Retry Pending Saves" to send them now.`
-          : `S-dead: ${sentence(5)}`;
-      assert.strictEqual(text, expected, `the sentence for ${name} is not what it should be`);
+      assert.strictEqual(
+        text,
+        `S-dead: ${sentence(5)}${ADVICE_AFTER[name] ?? ''}`,
+        `the sentence for ${name} is not what it should be`
+      );
+    }
+  });
+
+  /*
+   * ⚠️ AND AGAIN AT ONE, WHICH IS WHERE THE THRESHOLDS ARE.
+   *
+   * Every sentence above is gated on `bucket > 0`, and the cell that
+   * reads them used 5 for all of them. An outside judge changed one gate
+   * to `> 1` -- a single failed request, the smallest thing that can go
+   * wrong, stops being mentioned -- and all six cells in this section
+   * passed. Nothing here distinguished "more than none" from "more than
+   * one", so nothing here was testing the threshold at all.
+   *
+   * One is also the count that makes English disagree, so the two
+   * readings this file was blindest to are the same reading.
+   */
+  it('says exactly that sentence when a bucket holds a single request', () => {
+    for (const [name, sentence] of Object.entries(SENTENCES)) {
+      const ledger = emptyLedger();
+      (ledger as unknown as Record<string, number>)[name] = 1;
+      ledger.observed = 1;
+      const text = adoptedNotice('S-dead', ledger, false).text;
+      assert.strictEqual(
+        text,
+        `S-dead: ${sentence(1)}${ADVICE_AFTER[name] ?? ''}`,
+        `the sentence for ${name} at a count of one is not what it should be`
+      );
     }
   });
 
@@ -851,6 +933,40 @@ describe('every bucket a takeover counts is something the user is told', () => {
     }
   });
 
+  /*
+   * ⚠️ THE TWO REPORTS WHERE THE ADVICE HAD SOMETHING TO BE MISREAD AS.
+   *
+   * A review named these: `{imported: 1, outcomeUnknown: 1}` puts the
+   * advice directly after the sentence about requests nobody could
+   * account for, and `{imported: 1, skippedDuplicate: 1}` puts it
+   * directly after the one about requests carried across on an earlier
+   * run. Both are reachable, both are one request each, and in both the
+   * previous wording offered to send something this window had just said
+   * it does not have or did not take. They are written out whole here so
+   * that a wording which reintroduces a pronoun cannot pass.
+   */
+  it('ends with advice that cannot be read as being about the sentence before it', () => {
+    const withUnknown = emptyLedger();
+    withUnknown.imported = 1;
+    withUnknown.outcomeUnknown = 1;
+    withUnknown.observed = 2;
+    assert.strictEqual(
+      adoptedNotice('S-dead', withUnknown, false).text,
+      `S-dead: ${SENTENCES.imported(1)} ${SENTENCES.outcomeUnknown(1)}${ADVICE}`,
+      'the report after an unaccounted-for request is not what it should be'
+    );
+
+    const withDuplicate = emptyLedger();
+    withDuplicate.imported = 1;
+    withDuplicate.skippedDuplicate = 1;
+    withDuplicate.observed = 2;
+    assert.strictEqual(
+      adoptedNotice('S-dead', withDuplicate, false).text,
+      `S-dead: ${SENTENCES.imported(1)} ${SENTENCES.skippedDuplicate(1)}${ADVICE}`,
+      'the report after an already-carried request is not what it should be'
+    );
+  });
+
   it('says every sentence, and only those, when several buckets carry something', () => {
     const ledger = emptyLedger();
     ledger.imported = 2;
@@ -861,8 +977,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
     assert.strictEqual(
       text,
       `S-dead: ${SENTENCES.imported(2)} ${SENTENCES.leftOtherStore(3)} ` +
-        `${SENTENCES.unreadableQueue(1)} They go out with the next save, or run ` +
-        '"theourgia: Retry Pending Saves" to send them now.',
+        `${SENTENCES.unreadableQueue(1)}${ADVICE}`,
       'the report is not exactly the sentences for the buckets that carry something'
     );
   });

@@ -654,6 +654,26 @@ export function refusedTakeoverNotice(
  * sentence promising they are on their way would be describing work that
  * has not been scheduled.
  */
+/*
+ * ONE OR MORE THAN ONE, AND THE WHOLE SENTENCE EITHER WAY.
+ *
+ * A report that says "1 belong to other stores" reads as written by
+ * something that did not look at what it was saying, which is the
+ * impression to avoid in the one message a user acts on.
+ *
+ * ⚠️ AND THE FIRST REPAIR WAS A WORD, WHICH IS NOT WHERE THE PROBLEM
+ * WAS. Fixing the leading verb left "1 was written for other stores and
+ * ARE still THERE ... bring THEM across" -- and a review reading all
+ * eight sentences at a count of one found every one of them broken the
+ * same way, in the verb or in a later pronoun or in both. "request(s)"
+ * is the same evasion in punctuation. So each bucket carries two
+ * finished sentences and picks one; nothing is assembled out of
+ * fragments, and the singular is not a plural with a word swapped.
+ */
+function say(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
 export function adoptedNotice(
   sessionId: string,
   ledger: TakeoverLedger,
@@ -694,22 +714,45 @@ export function adoptedNotice(
    */
   const parts: string[] = [];
   if (ledger.imported > 0) {
-    parts.push(`${ledger.imported} unsent request(s) are now in this window's queue.`);
+    parts.push(
+      say(
+        ledger.imported,
+        "1 unsent request is now in this window's queue.",
+        `${ledger.imported} unsent requests are now in this window's queue.`
+      )
+    );
   }
   if (ledger.skippedDuplicate > 0) {
-    parts.push(`${ledger.skippedDuplicate} had already been carried across and were left alone.`);
+    parts.push(
+      say(
+        ledger.skippedDuplicate,
+        '1 had already been carried across and was left alone.',
+        `${ledger.skippedDuplicate} had already been carried across and were left alone.`
+      )
+    );
   }
   if (ledger.leftOtherStore > 0) {
     parts.push(
-      `${ledger.leftOtherStore} belong to other stores and are still there; configure that store ` +
-        'and run this command again to bring them across.'
+      say(
+        ledger.leftOtherStore,
+        '1 was written for another store and is still there; configure that store and run this ' +
+          'command again to bring it across.',
+        `${ledger.leftOtherStore} were written for other stores and are still there; configure ` +
+          'those stores and run this command again to bring them across.'
+      )
     );
   }
   if (ledger.leftUnknownStore > 0) {
     parts.push(
-      `${ledger.leftUnknownStore} are in a queue from an older version of this extension, which ` +
-        'does not record which store they were written for; this command will not move them into ' +
-        'a store it cannot show they belong to.'
+      say(
+        ledger.leftUnknownStore,
+        '1 is in a queue from an older version of this extension, which does not record which ' +
+          'store it was written for; this command will not move it into a store it cannot show ' +
+          'it belongs to.',
+        `${ledger.leftUnknownStore} are in a queue from an older version of this extension, ` +
+          'which does not record which store they were written for; this command will not move ' +
+          'them into a store it cannot show they belong to.'
+      )
     );
   }
   if (ledger.unreadableQueue > 0) {
@@ -729,14 +772,23 @@ export function adoptedNotice(
      * nothing was taken. Found in review.
      */
     parts.push(
-      `a usable queue could not be loaded from ${ledger.unreadableQueue} of its path(s), and ` +
-        'nothing was taken from them.'
+      say(
+        ledger.unreadableQueue,
+        'a usable queue could not be loaded from 1 of its paths, and nothing was taken from it.',
+        `a usable queue could not be loaded from ${ledger.unreadableQueue} of its paths, and ` +
+          'nothing was taken from them.'
+      )
     );
   }
   if (ledger.failedToMove > 0) {
     parts.push(
-      `${ledger.failedToMove} could not be moved into this window and are still in that ` +
-        'window’s queue; nothing was lost, and running this command again will try them.'
+      say(
+        ledger.failedToMove,
+        '1 could not be moved into this window and is still in that window’s queue; nothing was ' +
+          'lost, and running this command again will try it.',
+        `${ledger.failedToMove} could not be moved into this window and are still in that ` +
+          'window’s queue; nothing was lost, and running this command again will try them.'
+      )
     );
   }
   if (ledger.movedButUnmarked > 0) {
@@ -761,9 +813,15 @@ export function adoptedNotice(
      * permissions on a file nothing tried to write. Found in review.
      */
     parts.push(
-      `${ledger.movedButUnmarked} arrived here, and the other window’s copy was not confirmed as ` +
-        'handed over, so a later takeover may carry them again. The store recognises a request ' +
-        'it has already applied by its id and does not do the work twice.'
+      say(
+        ledger.movedButUnmarked,
+        '1 arrived here, and the other window’s copy was not confirmed as handed over, so a ' +
+          'later takeover may carry it again. The store recognises a request it has already ' +
+          'applied by its id and does not do the work twice.',
+        `${ledger.movedButUnmarked} arrived here, and the other window’s copy was not confirmed ` +
+          'as handed over, so a later takeover may carry them again. The store recognises a ' +
+          'request it has already applied by its id and does not do the work twice.'
+      )
     );
   }
   if (ledger.outcomeUnknown > 0) {
@@ -773,8 +831,13 @@ export function adoptedNotice(
      * on its behalf.
      */
     parts.push(
-      `${ledger.outcomeUnknown} could not be accounted for: this window could not find out ` +
-        'whether they arrived. Look at both queues before deciding anything about them.'
+      say(
+        ledger.outcomeUnknown,
+        '1 could not be accounted for: this window could not find out whether it arrived. Look ' +
+          'at both queues before deciding anything about it.',
+        `${ledger.outcomeUnknown} could not be accounted for: this window could not find out ` +
+          'whether they arrived. Look at both queues before deciding anything about them.'
+      )
     );
   }
   /*
@@ -785,7 +848,29 @@ export function adoptedNotice(
    * them. Found in review.
    */
   if (ledger.imported > 0 || ledger.movedButUnmarked > 0) {
-    parts.push(`They go out with the next save, or run "${RETRY_OUTBOX.title}" to send them now.`);
+    /*
+     * ⚠️ THE ADVICE NAMES ITS SUBJECT BY WHERE IT IS.
+     *
+     * It said "They go out with the next save", and when the sentence
+     * before it was the one about requests whose whereabouts nobody
+     * could establish, "they" read as those -- an offer to send what
+     * this window has just said it cannot find.
+     *
+     * ⚠️ AND "THE ONES THAT ARRIVED" DID NOT FIX IT, which is worth the
+     * space: that sentence still sits immediately after the
+     * unknown-outcome one, where "arrived" can be read as "whichever of
+     * those turn out to have arrived"; and after the sentence about
+     * requests carried across on an earlier run, where "arrived" does
+     * not say arrived WHERE, or WHEN. A description picks its referent
+     * out of the paragraph and can lose. A place cannot: what is in this
+     * window's queue is exactly what the next save sends, and every
+     * reading the two sentences above invite is about something that is
+     * somewhere else. Found in review.
+     */
+    parts.push(
+      `Everything now in this window's queue goes out with the next save, or run ` +
+        `"${RETRY_OUTBOX.title}" to send it now.`
+    );
   }
   /*
    * AND A TAKEOVER THAT FOUND NOTHING SAYS THAT, rather than naming the

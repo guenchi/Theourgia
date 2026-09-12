@@ -2242,15 +2242,27 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   });
 
   /*
-   * AND A FAILED PUBLICATION LEAVES NOTHING BESIDE THE RECORD. The
-   * temporary file was named after the process alone -- the same name on
-   * every call -- and a failed rename left it there for ever.
+   * AND A FAILED PUBLICATION TRIES TO LEAVE NOTHING BESIDE THE RECORD.
+   * The temporary file was named after the process alone -- the same
+   * name on every call -- and a failed rename left it there for ever.
+   *
+   * ⚠️ "TRIES TO", NOT "DOES". The removal is best effort and can itself
+   * fail, and the cells further down are about what is said when it
+   * does. This comment said the stronger thing flatly, which is the
+   * shape of claim this file exists to catch. Found in review.
    */
   /*
-   * ⚠️ AND A WRITE THAT FAILS PART-WAY LEAVES NOTHING EITHER. The write
-   * was outside the cleanup, so a partial one left the temporary beside
-   * the record -- the same leak the rename's cleanup was added for, a
-   * step earlier. The cell only injected a rename failure and passed.
+   * ⚠️ AND A WRITE THAT THROWS AFTER TOUCHING THE FILE LEAVES NOTHING
+   * EITHER. The write was outside the cleanup, so one that had already
+   * created bytes left the temporary beside the record -- the same leak
+   * the rename's cleanup was added for, a step earlier. The cell only
+   * injected a rename failure and passed.
+   *
+   * ⚠️ IT IS NOT A PARTIAL WRITE, and used to say it was. The stand-in
+   * below completes `writeDurably` and then throws: what it establishes
+   * is a failure AFTER a file exists, which is the state the cleanup has
+   * to handle. Nothing here produces a half-written file, and naming one
+   * would be describing a fixture that does not exist. Found in review.
    */
   it('clears up after itself when the identity cannot even be written', () => {
     const storage = scratch();
@@ -2292,6 +2304,226 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     sessions.begin('S-mine', ['/stores/one']);
     assert.strictEqual(names.length, 2, 'the record was not published twice');
     assert.notStrictEqual(names[0], names[1], 'two publications shared one temporary name');
+  });
+
+  /*
+   * ⚠️ AND WHAT THE FAILURE SAYS ABOUT WHAT IT LEFT BEHIND.
+   *
+   * The publication's `catch` removes the temporary file, and when that
+   * removal ALSO fails it adds a sentence naming the path. There was no
+   * cell for the path where both fail, and an outside judge showed what
+   * that allowed: replacing the whole sentence with an empty string left
+   * the suite exactly as green as before. It was the third fix in this
+   * batch held up by nothing but the reasoning that produced it.
+   *
+   * The four cells below are the four states, because the sentence is
+   * wrong in three different ways if it is printed whenever `unlink`
+   * throws: the commonest reason it throws is that the write failed
+   * before creating anything.
+   *
+   * ⚠️ AND THE STAND-IN SAYS WHETHER IT CREATED THE FILE, because that
+   * is what decides which branch the cleanup takes. The first version of
+   * these cells used one stand-in that threw BEFORE creating anything
+   * for all four -- so the cell meant to exercise a SUCCESSFUL removal
+   * was taking the `ENOENT` branch beside it, and the two cells were one
+   * cell twice. A mutation adding a spurious note after a successful
+   * unlink would have survived every one of them. Found in review.
+   */
+  class FailingWrite extends RecordingFs {
+    public readonly temporaries: string[] = [];
+    public readonly refusals: NodeJS.ErrnoException[] = [];
+    private readonly leavesAFile: boolean;
+
+    constructor(leavesAFile: boolean) {
+      super();
+      this.leavesAFile = leavesAFile;
+    }
+
+    public writeDurably(file: string, text: string): void {
+      if (file.includes('session.json')) {
+        this.temporaries.push(file);
+        if (this.leavesAFile) {
+          super.writeDurably(file, text);
+        }
+        const e = new Error('no room on the device') as NodeJS.ErrnoException;
+        e.code = 'ENOSPC';
+        this.refusals.push(e);
+        throw e;
+      }
+      super.writeDurably(file, text);
+    }
+
+    /*
+     * ⚠️ THE ERROR OBJECT ITSELF, so a cell can compare identities. A
+     * copy of it that kept `code` and the text would satisfy every
+     * assertion about its contents, and a copy is exactly what the
+     * defect under repair produced.
+     */
+    public get injected(): NodeJS.ErrnoException {
+      assert.strictEqual(this.refusals.length, 1, 'the publication did not fail exactly once');
+      return this.refusals[0];
+    }
+
+    /*
+     * THE ONE PATH THE PUBLICATION WROTE, so the cells can compare the
+     * path in the sentence with the path that was written rather than
+     * with a pattern any `.tmp` name would satisfy.
+     */
+    public get temporary(): string {
+      assert.strictEqual(this.temporaries.length, 1, 'the publication did not write exactly once');
+      return this.temporaries[0];
+    }
+  }
+
+  /*
+   * A PUBLICATION THAT FAILED, AND THE ERROR IT FAILED WITH. Every cell
+   * below asks for the same thing, and `assert.fail` rather than a flag
+   * makes "it did not fail at all" a red rather than a skipped assertion.
+   */
+  function publicationFailure(files: FailingWrite, storage: string): NodeJS.ErrnoException {
+    const sessions = new Sessions(files, storage);
+    try {
+      sessions.begin('S-mine', []);
+    } catch (e) {
+      return e as NodeJS.ErrnoException;
+    }
+    return assert.fail('the publication did not fail');
+  }
+
+  /*
+   * WHAT IS TRUE OF EVERY PUBLICATION FAILURE, whichever way the cleanup
+   * went. The shape used to depend on that -- the original error when
+   * there was nothing to add and a wrapper when there was -- so
+   * `err.code` worked or did not according to whether an unlink
+   * succeeded. It is asserted in all four cells because a shape that
+   * holds in three of them is not a contract.
+   */
+  function carriesTheReason(thrown: NodeJS.ErrnoException, injected: Error): void {
+    assert.strictEqual(thrown.code, 'ENOSPC', 'the failure does not carry the original code');
+    assert.strictEqual(
+      (thrown as Error & { cause?: unknown }).cause,
+      injected,
+      'the original error is not the cause of the failure'
+    );
+    assert.ok(
+      thrown.message.startsWith(injected.message),
+      `the reason the publication failed was replaced: ${thrown.message}`
+    );
+  }
+
+  it('names the leftover file when the cleanup could not remove one that is there', () => {
+    const storage = scratch();
+    /*
+     * THE FILE IS REALLY THERE: the stand-in writes it and then throws,
+     * and only the removal is refused. Nothing here has to pretend an
+     * answer about presence -- the file system gives the true one.
+     */
+    const stubborn = new (class extends FailingWrite {
+      constructor() {
+        super(true);
+      }
+
+      public unlink(): void {
+        throw new Error('the removal was refused');
+      }
+    })();
+    const thrown = publicationFailure(stubborn, storage);
+    carriesTheReason(thrown, stubborn.injected);
+    assert.strictEqual(
+      thrown.message,
+      `${stubborn.injected.message} A leftover file was left at ${stubborn.temporary}; ` +
+        'it is not a session record and can be removed.',
+      `the surviving file was not named, or not named exactly: ${thrown.message}`
+    );
+    assert.ok(
+      fs.existsSync(stubborn.temporary),
+      'the cell did not leave a file behind, so it is not measuring this case'
+    );
+  });
+
+  /*
+   * ⚠️ THE TWIN, AND IT HAS TO REACH THE SUCCESSFUL REMOVAL. Without it,
+   * a build whose failure ALWAYS reports a leftover file passes the cell
+   * above and sends every reader of every publication failure looking
+   * for a file that is not there. The first version of this cell used a
+   * stand-in that never created the file, so `unlink` threw ENOENT and
+   * this was the cell below it wearing a different name -- and a note
+   * added after a SUCCESSFUL unlink would have survived both.
+   */
+  it('says nothing about a leftover file when the cleanup removed it', () => {
+    const storage = scratch();
+    const tidy = new FailingWrite(true);
+    const thrown = publicationFailure(tidy, storage);
+    carriesTheReason(thrown, tidy.injected);
+    assert.strictEqual(
+      thrown.message,
+      tidy.injected.message,
+      `a removed file was reported as left behind: ${thrown.message}`
+    );
+    assert.ok(
+      !fs.existsSync(tidy.temporary),
+      'the cleanup did not remove the file, so this cell is not measuring a successful removal'
+    );
+  });
+
+  /*
+   * ⚠️ AND THE STATE THAT MADE THE SENTENCE WRONG: the removal failed
+   * because there was nothing to remove. This is the ORDINARY case -- a
+   * write that fails before creating the file leaves no file, and
+   * `unlink` answers ENOENT of its own accord here rather than being
+   * told to.
+   */
+  it('does not invent a leftover file when the cleanup failed and none is there', () => {
+    const storage = scratch();
+    const empty = new FailingWrite(false);
+    const thrown = publicationFailure(empty, storage);
+    carriesTheReason(thrown, empty.injected);
+    assert.strictEqual(
+      thrown.message,
+      empty.injected.message,
+      `a file that was never created was reported as left behind: ${thrown.message}`
+    );
+    assert.ok(
+      !fs.existsSync(empty.temporary),
+      'the cell created the file after all, so it is not measuring this case'
+    );
+  });
+
+  /*
+   * ⚠️ AND WHEN THE QUESTION ITSELF CANNOT BE PUT, IT SAYS THAT. Neither
+   * of the two comfortable answers is chosen on the file system's
+   * behalf -- the same rule the takeover ledger is built on.
+   *
+   * ⚠️ THIS IS A STATE PRODUCTION CAN REACH. It could not be, while the
+   * question went through `exists`: `existsSync` answers false for a
+   * path it may not search, so the "could not be established" branch was
+   * something only a stand-in could produce, and a cell for it was
+   * measuring a world the product does not have. `presenceOf` reports an
+   * unreadable ancestry as unknown, which is what this stand-in returns.
+   */
+  it('says a leftover file could not be established when it cannot look', () => {
+    const storage = scratch();
+    const blind = new (class extends FailingWrite {
+      constructor() {
+        super(true);
+      }
+
+      public unlink(): void {
+        throw new Error('the removal was refused');
+      }
+
+      public presenceOf(file: string): { known: true; there: boolean } | { known: false } {
+        return file.includes('.tmp') ? { known: false } : super.presenceOf(file);
+      }
+    })();
+    const thrown = publicationFailure(blind, storage);
+    carriesTheReason(thrown, blind.injected);
+    assert.strictEqual(
+      thrown.message,
+      `${blind.injected.message} Whether a leftover file remains at ${blind.temporary} could ` +
+        'not be established; if one is there it is not a session record and can be removed.',
+      `the unanswerable case did not say so, or did not say it exactly: ${thrown.message}`
+    );
   });
 
   it('clears up after itself when the identity cannot be published', () => {

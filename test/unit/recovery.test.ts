@@ -631,7 +631,7 @@ describe('review 23 a takeover that moved one store’s work can come back for t
      * user believe the rescue was complete; two requests are still in
      * that window's directory.
      */
-    assert.match(said.said[0].text, /2 belong to other stores/);
+    assert.match(said.said[0].text, /2 were written for other stores and are still there/);
 
     /*
      * ⚠️ THE SECOND RUN, WITH THE OTHER STORE CONFIGURED. This used to
