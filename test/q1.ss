@@ -41,7 +41,7 @@
         (only (theourgia crc32) crc32-string-hex)
         (only (theourgia reduce) caller-payload-reason)
         (only (theourgia project) block-text)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
 ;; declares first and last sequence beside the hash. A fixture that

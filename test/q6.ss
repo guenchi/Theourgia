@@ -37,7 +37,7 @@
 ;; the set only ever grows.
 
 (import (chezscheme) (theourgia log) (theourgia ffi) (theourgia wire)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))

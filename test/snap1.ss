@@ -20,7 +20,7 @@
 ;; write it at all.
 (import (chezscheme) (theourgia log) (theourgia ffi) (theourgia trace)
         (theourgia reduce) (theourgia store) (theourgia wire)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
 ;; declares first and last sequence beside the hash. A fixture that

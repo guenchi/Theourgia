@@ -30,7 +30,7 @@
 ;; that writer is ever read.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -633,7 +633,7 @@
         (string->utf8
           (string-append
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
-            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "        (only (theourgia digest) sha256 bytevector->hex))\n"
             "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
             "(define (slurp p)\n"
             "  (call-with-port (open-file-input-port p)\n"

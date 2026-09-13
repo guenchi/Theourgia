@@ -35,7 +35,7 @@
 ;; candidate and the same code publish it when nothing is armed.
 
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
 ;; an absolute path under one session's scratchpad. That is green only
@@ -214,7 +214,7 @@
           (string-append
             "#!chezscheme\n"
             "(import (chezscheme) (theourgia log) (theourgia ffi)\n"
-            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "        (only (theourgia digest) sha256 bytevector->hex))\n"
             "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
             "(define bytes (call-with-port (open-file-input-port \"" scratch "/cand.bin\")\n"
             "                get-bytevector-all))\n"
@@ -345,7 +345,7 @@
         (string->utf8
           (string-append
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
-            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "        (only (theourgia digest) sha256 bytevector->hex))\n"
             "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
             "(let ((b (call-with-port (open-file-input-port \"" scratch "/pub.bin\")\n"
             "           get-bytevector-all)))\n"
@@ -434,7 +434,7 @@
         (string->utf8
           (string-append
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi)\n"
-            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "        (only (theourgia digest) sha256 bytevector->hex))\n"
             "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
             "(define b (call-with-port (open-file-input-port \"" scratch "/cand.bin\")\n"
             "            get-bytevector-all))\n"

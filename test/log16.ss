@@ -28,7 +28,7 @@
 ;; then replays under the new epoch.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace) (theourgia crc32)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))

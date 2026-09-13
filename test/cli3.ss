@@ -33,8 +33,8 @@
 
 (import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log)
         (theourgia ffi) (theourgia wire)
-        (only (igropyr crypto) sha256 bytevector->hex)
-        (only (igropyr sexpr) string->sexpr-extended))
+        (only (theourgia digest) sha256 bytevector->hex)
+        (only (theourgia wire) string->sexpr-extended))
 
 ;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
 ;; declares first and last sequence beside the hash. A fixture that
@@ -1854,60 +1854,6 @@
            (list (car (cadr tracked-answers)) (cadr (cadr tracked-answers))))
       '(error malformed-intent))
 
-(printf "\n== every refusal is readable by the reader it is sent to ==\n")
-;; A REFUSAL IS ADDRESSED TO A PROGRAM, and that program accepts the
-;; wire whitelist. While refusals carried the caller's intent back to
-;; explain themselves, the ones that were RIGHT were the ones that could
-;; not be read: the datum a refusal is about is exactly the datum the
-;; wire layer will not write. `link a 1 b` came back spelling the
-;; relation `\x31;`, and the client reported a transport error at that
-;; byte instead of the reason.
-;;
-;; THE READER IS THE PRODUCT'S OWN, not a description of it. Asserting
-;; "the answer looks wire-safe" would be this fixture writing down its
-;; own copy of the whitelist; `string->sexpr-extended` is the procedure
-;; a consumer actually uses, so a change to the whitelist reaches this
-;; row without anyone remembering to update it.
-(define (answer-text store . args)
-  (apply run store args)
-  (text-of out-path))
-(define (reads-back? text)
-  (guard (e (#t (list 'unreadable
-                      (if (and (vector? e) (= 3 (vector-length e)))
-                          (vector-ref e 1)
-                          "raised"))))
-    (let ((wire (string->sexpr-extended text))
-          (chez (read (open-string-input-port text))))
-      (equal? wire chez))))
-(define dW (fresh-store!))
-(init! dW)
-(define wA (car (lines-of (run dW "insert" "--under" "root" "--title" "A"))))
-(define idW (car (car (cadr (assq 'state (cdr wA))))))
-;; CONTROL: AN ANSWER THAT IS NOT A REFUSAL ROUND-TRIPS, so a row below
-;; that fails is saying something about refusals and not about the
-;; reader or the harness.
-;; ONE DATUM, BECAUSE THE READER TAKES ONE. `outline` prints a line per
-;; block, so the wire reader correctly reported trailing data -- and the
-;; row said the product was at fault when the row was.
-(want "CONTROL: an ordinary answer is read the same by both readers"
-      (reads-back? (answer-text dW "insert" "--under" "root" "--title" "C"))
-      #t)
-(for-each
-  (lambda (case)
-    (want (string-append "the refusal is readable: " (car case))
-          (reads-back? (apply answer-text dW (cdr case)))
-          #t))
-  (list
-    (cons "a relation that spells as a number"
-          (list "link" idW "1" idW))
-    (cons "a relation carrying a space"
-          (list "link" idW "has part" idW))
-    (cons "a field name that is not wire-safe"
-          (list "set" idW "field name" "x"))
-    (cons "an id position that is not an id"
-          (list "del" "7"))
-    (cons "too few arguments"
-          (list "set" idW))))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

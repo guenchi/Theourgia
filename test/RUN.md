@@ -315,6 +315,30 @@ could be inferred from the `ok`/`FAIL` lines already in the output. Also next
 batch, for the same reason as the others -- changing the driver mid-batch
 costs the comparability of the round it is measuring.
 
+## A delivery is self-contained only if it has been run somewhere else
+
+PIN.md is generated from the delivery, so it can say that every file it
+names is present and unchanged. It cannot say that a file the delivery
+NEEDS is absent -- a list built from what is there has no way to mention
+what is not.
+
+Nor does running the suite inside the delivery settle it. Fixtures look
+for what they need beside themselves and then one level up, and a
+delivery is built inside the directory it was built from. Anything it
+failed to carry is still found, one level up, in the original. **That run
+is green and means nothing about self-containment.**
+
+**Measured, twice.** The first build copied only `*.ss`, so `consts.c`,
+`q8-cli.py` and `rows-baseline.txt` were missing. The second carried
+those and missed `vendored-sources.txt`; the suite inside the delivery
+was green because three rows read the copy in the parent directory. Both
+times the manifest, the PIN self-check and the in-place suite all passed.
+
+So `build-deliver.sh` copies the delivery to a scratch directory and runs
+the whole suite there, and refuses to produce a delivery if that run is
+not green. A copy in a strange place is the only test that asks the
+question; everything else asks about the files that are present.
+
 ## Two limits this delivery does not close
 
 **Retirement records written by earlier builds say less than new ones.** A

@@ -16,7 +16,7 @@
 ;; The rewritten reader path: one validated-prefix discovery.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace) (theourgia crc32)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
 ;; declares first and last sequence beside the hash. A fixture that

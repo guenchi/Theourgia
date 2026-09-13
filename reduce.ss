@@ -56,7 +56,7 @@
                 request-actor? actor-identity actor-sub
                 actor-plan-event make-evidence request-gates)
           (only (theourgia wire) sexpr->string-extended wire-safe-symbol?)
-          (only (igropyr crypto) sha256 bytevector->hex)
+          (only (theourgia digest) sha256 bytevector->hex)
           (only (rnrs bytevectors) string->utf8))
 
   ;; ---- ids ------------------------------------------------------------------

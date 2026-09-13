@@ -53,7 +53,7 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs unicode)
           (rnrs bytevectors) (rnrs io ports) (rnrs exceptions)
           (only (theourgia wire) sexpr->string-extended)
-          (only (igropyr crypto) sha256 bytevector->hex))
+          (only (theourgia digest) sha256 bytevector->hex))
 
   ;; 1 to 64 characters of [A-Za-z0-9._-], or a batch item naming the
   ;; batch and its index. The set is small on purpose: a request id

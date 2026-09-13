@@ -94,7 +94,7 @@
           (theourgia ffi)
           (theourgia trace)
           (only (theourgia crc32) crc32-hex)
-          (only (igropyr crypto) sha256 bytevector->hex)
+          (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia wire)
                 sexpr->string-extended string->sexpr-extended decode-line
                 escape-newlines encode-record storable-encode))

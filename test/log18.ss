@@ -45,7 +45,7 @@
 ;; is refusing the case and not the shape of the case.
 
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
 ;; an absolute path under one session's scratchpad. That is green only

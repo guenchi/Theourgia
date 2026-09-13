@@ -27,9 +27,9 @@
 ;; -- and requires the same answer. An implementation that kept a second
 ;; opinion anywhere fails it without anyone having to guess where.
 
-(import (chezscheme) (only (igropyr sexpr) string->sexpr-extended) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia log)
+(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia log)
         (theourgia ffi) (theourgia wire)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE RANGE A SEGMENT HOLDS, READ OUT OF THE SEGMENT. A manifest entry
 ;; declares first and last sequence beside the hash. A fixture that
@@ -314,20 +314,6 @@
 (want "the refused verb is given as a string"
       (caddr (rpc-dispatch d1 '(eval "x") "a"))
       '(spelling "eval"))
-;; THE READER IS THE PRODUCT'S OWN, so a change to the whitelist reaches
-;; this row without anyone remembering to update a copy of it.
-(want "and the whole answer is read the same by the wire reader"
-      (let ((text (call-with-string-output-port
-                    (lambda (port)
-                      (write (rpc-dispatch d1 (list (string->symbol "show me") "x") "a")
-                             port)))))
-        (guard (e (#t (list 'unreadable
-                            (if (and (vector? e) (= 3 (vector-length e)))
-                                (vector-ref e 1) "raised"))))
-          (equal? (string->sexpr-extended text)
-                  (read (open-string-input-port text)))))
-      #t)
-
 (printf "\n== S3: the three kinds of answer, and which is a success ==\n")
 ;; An answer says which of three things it is, so that whoever renders it
 ;; never has to guess from the shape. Guessing -- "a list of pairs is

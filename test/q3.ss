@@ -43,7 +43,7 @@
 ;; happened" and "the guard worked" look alike.
 
 (import (chezscheme) (theourgia log) (theourgia ffi) (theourgia wire)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -215,7 +215,7 @@
           (string-append
             "#!chezscheme\n"
             "(import (chezscheme) (theourgia log) (theourgia ffi)\n"
-            "        (only (igropyr crypto) sha256 bytevector->hex))\n"
+            "        (only (theourgia digest) sha256 bytevector->hex))\n"
             "(putenv \"THEOURGIA_HOME\" \"" home "\")\n"
             "(define bytes (call-with-port (open-file-input-port \"" cand "\")\n"
             "                get-bytevector-all))\n"

@@ -28,7 +28,7 @@
 ;; zero bytes, and the water-mark assertions are not in this file.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (theourgia trace)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Naming an absolute path
 ;; under one session's scratchpad is green only while that exact

@@ -48,7 +48,7 @@
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault?)
-          (only (igropyr crypto) sha256 bytevector->hex)
+          (only (theourgia digest) sha256 bytevector->hex)
           (theourgia reduce))
 
   ;; WHAT THE REDUCER ANSWERS AND WHAT THE LOAD ASKS ARE NOT THE SAME

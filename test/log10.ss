@@ -36,7 +36,7 @@
 ;; The fixtures place segments and manifests by hand: publish, extend and
 ;; adopt do not exist yet, so L20 end to end is not what this covers.
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
-        (only (igropyr crypto) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
 ;; an absolute path under one session's scratchpad. That is green only

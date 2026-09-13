@@ -265,10 +265,82 @@
           unlink! file-create-exclusive! mkdir-p!
           process-id wall-clock-ms machine-home)
   (import (chezscheme)
-          (theourgia trace)
-          (only (igropyr platform)
-                platform-os ensure-supported-platform!
-                load-first-shared-object!))
+          (theourgia trace))
+
+  ;; BEGIN COPIED FROM IGROPYR -- platform detection and shared-object loading
+  ;;
+  ;;   repository  https://github.com/guenchi/Igropyr
+  ;;   commit      7196bfe
+  ;;   files       igropyr/platform.sc, igropyr/util.sc
+  ;;   licence     Apache-2.0, same author as this file
+  ;;   extracted   machine-name, platform-os, platform-arch,
+  ;;               ensure-supported-platform!, load-first-shared-object!,
+  ;;               string-search, string-contains?, string-suffix?
+  ;;
+  ;; No digest is claimed here. A file that carries its own hash proves
+  ;; nothing -- edit the body, edit the header, and the claim is restored.
+  ;; The digests live in `test/vendored-sources.txt`, outside this file:
+  ;; one for the upstream file as a whole, one for the bytes between these
+  ;; two markers. Editing the copy does not edit the table.
+  ;;
+  ;; WHAT IS DELIBERATELY NOT COPIED: `shared-object-candidates`, which is
+  ;; upstream's list of OpenSSL filenames. This library is not loading
+  ;; OpenSSL -- it passes its own candidates at the call site below. The
+  ;; part that was needed is the ACTION: try each name in order, answer the
+  ;; first that loads, and refuse with the whole list if none does. A cell
+  ;; asserts that the list reaching it is this file's, because a comment
+  ;; does not stop anyone restoring the one that looks missing.
+
+  (define machine-name (symbol->string (machine-type)))
+
+  (define (string-search hay needle start)
+    (let ((hn (string-length hay)) (nn (string-length needle)))
+      (let loop ((i start))
+        (cond ((> (+ i nn) hn) #f)
+              ((let check ((j 0))
+                 (or (= j nn)
+                     (and (char=? (string-ref hay (+ i j)) (string-ref needle j))
+                          (check (+ j 1)))))
+               i)
+              (else (loop (+ i 1)))))))
+
+  (define (string-contains? s needle)
+    (and (string-search s needle 0) #t))
+
+  (define (string-suffix? suffix s)
+    (let ((n (string-length s)) (m (string-length suffix)))
+      (and (>= n m) (string=? suffix (substring s (- n m) n)))))
+
+  (define platform-os
+    (cond
+      ((string-suffix? "osx" machine-name) 'macos)
+      ((string-suffix? "fb" machine-name) 'freebsd)
+      ((string-suffix? "le" machine-name) 'linux)
+      (else 'unsupported)))
+
+  (define platform-arch
+    (cond
+      ((string-contains? machine-name "arm64") 'arm64)
+      ((string-contains? machine-name "a6") 'x86_64)
+      (else 'unsupported)))
+
+  (define (ensure-supported-platform!)
+    (unless (and (memq platform-os '(macos linux freebsd))
+                 (memq platform-arch '(x86_64 arm64)))
+      (assertion-violation 'theourgia-ffi
+        "unsupported platform; expected Chez Scheme 10 on macOS/Linux/FreeBSD x86_64/arm64"
+        (machine-type))))
+
+  (define (load-first-shared-object! who candidates)
+    (let loop ((xs candidates))
+      (cond
+        ((null? xs)
+         (assertion-violation who "could not load any shared library candidate"
+                              candidates))
+        ((guard (e (#t #f)) (load-shared-object (car xs)) #t) (car xs))
+        (else (loop (cdr xs))))))
+
+  ;; END COPIED FROM IGROPYR
 
   (define platform-checked (begin (ensure-supported-platform!) #t))
 
@@ -801,13 +873,13 @@
      ;; partial -> EIO for the one that fires twice.
      (define fault-state (box 'fresh))
 
-     (define (string-contains? s sub)
-       (let ((n (string-length s)) (m (string-length sub)))
-         (let loop ((i 0))
-           (cond
-             ((> (+ i m) n) #f)
-             ((string=? (substring s i (+ i m)) sub) #t)
-             (else (loop (+ i 1)))))))
+       ;; `string-contains?` USED TO BE DEFINED HERE TOO. The platform
+       ;; layer copied into this library brought one with it, and this
+       ;; branch is expanded only when injection is on -- so with
+       ;; injection off the two never met and every ordinary run passed,
+       ;; while every fault-injection fixture failed to load the library
+       ;; at all. Fourteen at once, and the ordinary path said nothing.
+       ;; One definition, at the top of this file.
 
      ;; The path a fault is aimed at, taken from the subject when it is
      ;; one and from the registry otherwise.

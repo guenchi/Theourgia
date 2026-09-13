@@ -1,0 +1,24 @@
+# Where copied code came from, and what it is now.
+#
+# Two digests per copy, because they answer two different questions and
+# neither answers the other's:
+#
+#   upstream  the whole upstream file at the named commit. Checked by a
+#             comparison-class cell, which needs the original to be
+#             reachable; without THEOURGIA_COMPARE_LIBDIR it does not run,
+#             and not-run is not green.
+#   segment   the bytes between the two markers in our tree, exactly as
+#             they are, with no normalisation. Checked by the main suite,
+#             which needs nothing outside this repository. It answers "has
+#             this copy been edited", which is what a self-asserted hash in
+#             a file header cannot answer -- edit the body, edit the header,
+#             and the header agrees again. This table is not in the copy.
+#
+# Fields: kind  name  digest  detail
+upstream  igropyr/platform.sc   dd12ad1a23bba9d22a79f9b742d8836c  commit 7196bfe
+upstream  igropyr/util.sc       04514b44a78a013b82a7590a936f8189  commit 7196bfe
+upstream  igropyr/sexpr.sc      e85f4693b5851693ca291030559edd2c  commit 7196bfe
+upstream  igropyr/crypto.sc     e65c719d39f0968ac93a17c43ba60be1  commit 7196bfe
+segment   ffi.ss                65c25aac028664b57bbee4aa0bcc17ed  between the two markers
+segment   wire.ss               e7cedfbffc90a13ece2d07bba2d1fff8  between the two markers
+segment   digest.ss             35f2e75a112d468ff86f459b30f01b96  between the two markers
