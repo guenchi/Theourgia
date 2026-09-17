@@ -539,6 +539,60 @@
   ;; The versions the request named are the test, and the slot's own
   ;; envelope is checked as well: an envelope replaced between the read
   ;; and here is not the one that was consumed either.
+  ;; ---- who moved under this commit -----------------------------------------
+  ;;
+  ;; A DRAFT IS WRITTEN AGAINST A BASELINE, and by the time its commit
+  ;; lands other writers may have committed. The person who just
+  ;; committed is the one who most wants to know, because they are about
+  ;; to decide whether to test again -- and the fact is free here: both
+  ;; cuts are already in hand, so this reads no file and takes no lock.
+  ;;
+  ;; ⛔ IT IS INFORMATION, NOT A VERDICT (§7.5.22, v161). It does not
+  ;; refuse, does not hold the commit back, and triggers nothing. The
+  ;; earlier proposals -- refuse when behind, dry-run before committing
+  ;; -- were both ruled out.
+  ;;
+  ;; ⚠️ AND THIS WRITER IS NOT AMONG THE NAMES. Its own later records
+  ;; are its own work, not somebody moving underneath it; a commit that
+  ;; told you that you are behind yourself would be noise in the one
+  ;; place the answer is read. The case is reachable -- commit another
+  ;; block between writing this draft and committing it -- so it is a
+  ;; decision rather than an accident, and a row pins it.
+  ;;
+  ;; ⚠️ ABSENT, NOT EMPTY, when nothing moved: `(behind ())` would be a
+  ;; field that is always there, and a field that is always there says
+  ;; nothing.
+  ;; ⛔ NOTHING HERE MAY TURN A COMMIT THAT SUCCEEDED INTO A FAILURE.
+  ;; `problem` wraps the whole verb and renders ANY raise as
+  ;; `(error working-unavailable ...)`, so a cut this code cannot read --
+  ;; a replacement envelope can carry `(bogus)` past `entry?`'s
+  ;; list-only check and `cut-join` raises on its `(car e)` -- would
+  ;; answer a failure for a commit whose records are already durable.
+  ;; An informational field is not worth that, so every failure here is
+  ;; the field's absence.
+  ;;
+  ;; ⚠️ THE CUT IS PASSED IN, NOT TAKEN FROM A REDUCTION THIS FUNCTION
+  ;; CHOOSES. Which reduction it is decides whether the answer is right,
+  ;; and the two available ones differ; the caller is where that is
+  ;; visible, so it is decided there.
+  ;;
+  ;; ⚠️ AND IT IS NOT A COVERAGE TEST. A writer whose entry in the cut
+  ;; is EARLIER than the baseline's -- reachable after a retraction
+  ;; rebuilds the applied cut -- is not named, because it did not move
+  ;; after the baseline; it moved back. The field answers "who landed
+  ;; after you", not "is your baseline still comparable".
+  (define (behind-item cut writer entries)
+    (guard (e (#t #f))
+      (let* ((baseline (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
+                                  '() entries))
+             (moved (filter (lambda (p)
+                              (and (not (string=? (car p) writer))
+                                   (let ((mine (assoc (car p) baseline)))
+                                     (or (not mine) (< (cdr mine) (cdr p))))))
+                            cut)))
+        (and (pair? moved)
+             (list 'behind (list-sort (lambda (a b) (string<? (car a) (car b))) moved))))))
+
   (define (retire! store writer entries versions)
     ;; ⭐ A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
     ;; envelopes were read at the top of the commit, and the store's
@@ -819,7 +873,17 @@
                           (preflight state entries missing ids pairs))
                      => (lambda (refusal) refusal))
                     ((and (not supplied-req) (null? intents) (not read-failure))
-                     (begin (retire! store writer entries pairs) '(ok (items))))
+                     ;; ⚠️ THIS ARM ANSWERS THE SAME QUESTION AND USED TO
+                     ;; SKIP IT. Nothing is written here -- the request has
+                     ;; no identity to record and no sub-operations -- but
+                     ;; the drafts are still retired, so it IS a commit and
+                     ;; the person is owed the same fact. Nothing was
+                     ;; appended, so the cut this verb opened with is the
+                     ;; current one.
+                     (begin
+                       (retire! store writer entries pairs)
+                       (let ((behind (behind-item (reduce-applied-cut state) writer entries)))
+                         (if behind (list 'ok '(items) behind) '(ok (items))))))
                     ((and (not supplied-req) read-failure) read-failure)
                     (else
                      ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
@@ -827,7 +891,9 @@
                      ;; inputs the version is computed from, so a reader
                      ;; with the record alone can both check the name and
                      ;; rebuild the draft.
-                     (let ((answers (with-store-write store (lambda (current view) intents)
+                     (let* ((live #f)
+                            (answers (with-store-write store
+                                       (lambda (current view) (set! live current) intents)
                                       actor effective (lambda (current) (or read-failure (preflight current entries missing ids pairs))) #t
                                       (and (pair? entries)
                                            (list 'consumes writer
@@ -846,9 +912,33 @@
                              ;; committed. Measured: W4' read back
                              ;; "v1 text" from a draft that said
                              ;; "v2 text" until the retry arrived.
-                             (unless (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
-                                             answers)
-                               (retire! store writer entries pairs))
-                             (list 'ok (cons 'items answers)))
+                             (let ((replay? (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
+                                                    answers)))
+                               (unless replay? (retire! store writer entries pairs))
+                               ;; ⭐ THE CUT IS THE ONE THE WRITE PRODUCED, not the
+                               ;; one this verb opened with. They differ, and the
+                               ;; difference is the whole answer: appending this
+                               ;; request's records can RELEASE a foreign record
+                               ;; that was waiting on them, and that writer has
+                               ;; moved. Read from the outer state it is omitted,
+                               ;; and the field is then wrong rather than stale.
+                               ;; `with-store-write` builds its own reduction and
+                               ;; hands it to the thunk above -- the same object it
+                               ;; folds into -- so `live` is that cut for free.
+                               ;;
+                               ;; ⛔ AND A REPLAY GETS NO FIELD. Its drafts were
+                               ;; retired by the execution it repeats, so `entries`
+                               ;; is empty or holds a LATER draft: an empty
+                               ;; baseline names every writer in the store, and a
+                               ;; later one hides the movement that did happen.
+                               ;; Neither is "who moved under this commit", and the
+                               ;; commit it repeats already answered that question.
+                               (let ((behind (and (not replay?)
+                                                  live
+                                                  (behind-item (reduce-applied-cut live)
+                                                               writer entries))))
+                                 (if behind
+                                     (list 'ok (cons 'items answers) behind)
+                                     (list 'ok (cons 'items answers))))))
                            (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))
 )

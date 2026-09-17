@@ -48,6 +48,7 @@
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
           state-consumed-parent-cuts state-seen state-revoked draft-version
+          cut-join
           ord-between block-id
           reduction? reduction-state)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
