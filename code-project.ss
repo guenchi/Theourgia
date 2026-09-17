@@ -15,12 +15,17 @@
 (library (theourgia code-project)
   (export import-code export-code code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory)
-  (import (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
+  (import (only (theourgia view) view-read)
+          (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!))
   (define (code-field state id name)
-    (let* ((b (state-read state id)) (p (and b (assq name (cdr (assq 'fields b)))))) (and p (cdr p))))
+    ;; THE VIEW, because a projection writes what a reader would see --
+    ;; a code block's `name` is derived from its source and is not in the
+    ;; stored fields at all. The two calls below stay on `state-read`:
+    ;; they ask whether a block EXISTS, which no derivation changes.
+    (let* ((b (view-read state id)) (p (and b (assq name (cdr (assq 'fields b)))))) (and p (cdr p))))
   (define (alive? state id)
     (let ((b (state-read state id))) (and b (not (cdr (assq 'deleted b))))))
   (define (code-children state id)

@@ -144,6 +144,49 @@ def libdir():
     return chosen
 
 
+def _igropyr_in(directory):
+    """Whether `igropyr/` under this directory can answer (igropyr crypto).
+
+    The same shape as `_holds_libraries`, and for the same reason: a
+    plain file or an empty directory of that name satisfies `exists()`
+    and resolves nothing. `crypto.sc` is asked for because it is the
+    first igropyr library the core reaches, through `digest.ss`.
+    """
+    here = directory / 'igropyr'
+    if not here.is_dir():
+        return False
+    for suffix in ('.sc', '.ss', '.sls'):
+        source = here / f'crypto{suffix}'
+        try:
+            if source.is_file() and source.stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def igropyr():
+    """The `igropyr/` directory of the library path this run is pinned to.
+
+    A FIXTURE THAT STAGES ITS OWN COPY OF THE CORE NEEDS THIS. The core
+    imports `(igropyr crypto)`, `(igropyr sexpr)` and `(igropyr
+    platform)` through three facades of its own, so a staging directory
+    holding only `theourgia/` resolves nothing past the first import.
+
+    ⚠️ IT DID NOT USED TO. `mcp-probe.py` carried a comment saying "the
+    core imports no such library any more, so leaving one there would
+    let a reintroduced dependency resolve and go unremarked" -- true of
+    the tree it was written against, false since the copies became
+    forwards, and the fixture failed with `cli.ss init` exiting 255.
+    """
+    for candidate in _source_dirs(libdir()):
+        if _igropyr_in(candidate):
+            return (candidate / 'igropyr').resolve()
+    raise RuntimeError(
+        f'no source directory in {libdir()} holds an igropyr/ with a crypto '
+        f'source; the core cannot resolve (igropyr crypto) from it (see test/RUN.md)')
+
+
 def test_root():
     """The directory a run may create things under, made if absent."""
     root = Path(os.environ.get('THEOURGIA_TEST_ROOT') or tempfile.gettempdir())

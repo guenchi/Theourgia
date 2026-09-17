@@ -1,0 +1,2 @@
+theourgia: EXPANDING WITH FAULT INJECTION ON
+Exception: attempt to reference unbound identifier string-contains? at line 895, char 16 of /private/tmp/claude-501/-Users-guenchi-Workshop/f9922860-b2d1-4b21-8d41-65e517bc7fe7/scratchpad/libdir-p2/theourgia/ffi.ss

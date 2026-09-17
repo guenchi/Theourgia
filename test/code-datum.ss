@@ -1,5 +1,5 @@
 #!r6rs
-(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi))
+(import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia view) (theourgia ffi))
 (define bad 0)
 (define (want label got expected)
   (if (equal? got expected) (printf "ok ~a\n" label)
@@ -19,8 +19,17 @@
 (define result (rpc-dispatch store (list 'import-code input "--datum") "test"))
 (want "CD-01 Scheme library imports as datums" (rpc-ok? result) #t)
 (define state (open-and-reduce store))
+;; THIS ASKS THE VIEW, NOT THE REDUCTION, AND THE ROWS BELOW ARE WHY.
+;; `names` and `doc` are DERIVED -- read out of a block's body and source
+;; when someone looks, not written into the log -- and since v129 they
+;; are no longer among the fields `state-read` answers with. The rows
+;; that used to get them from `state-read` here get them from
+;; `view-read`, which is the same question addressed to the layer that
+;; now holds the answer. `kind`, asked for just below, is a stored field
+;; and would work either way; one helper is used for both so that no row
+;; here has to know which of the two a field is.
 (define (field id key)
-  (let* ((b (and id (state-read state id))) (p (and b (assq key (cdr (assq 'fields b)))))) (and p (cdr p))))
+  (let* ((b (and id (view-read state id))) (p (and b (assq key (cdr (assq 'fields b)))))) (and p (cdr p))))
 (define ids (map cadr (state-datum state)))
 (define libs (filter (lambda (id) (eq? 'library (field id 'kind))) ids))
 (define codes (filter (lambda (id) (eq? 'code (field id 'kind))) ids))

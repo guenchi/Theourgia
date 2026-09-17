@@ -267,6 +267,9 @@
           source-datum-print exec-argv!
           process-id wall-clock-ms machine-home)
   (import (chezscheme)
+          (only (igropyr platform)
+                platform-os ensure-supported-platform! load-first-shared-object!)
+          (only (igropyr util) string-contains?)
           (theourgia trace))
 
   ;; Host adapters for the datum projection. Admission lives in source-lex;
@@ -325,80 +328,24 @@
       (for-each foreign-free strings) (foreign-free argv)
       (raise '(error launcher-unavailable))))
 
-  ;; BEGIN COPIED FROM IGROPYR -- platform detection and shared-object loading
+  ;; PLATFORM DETECTION AND SHARED-OBJECT LOADING COME FROM IGROPYR, and
+  ;; this is one of the three places allowed to say so. Seventy-four
+  ;; lines stood here as a copy of `(igropyr platform)`, watched against
+  ;; drift by a digest table and a comparison fixture; the copy is gone
+  ;; and so are they.
   ;;
-  ;;   repository  https://github.com/guenchi/Igropyr
-  ;;   commit      7196bfe
-  ;;   files       igropyr/platform.sc, igropyr/util.sc
-  ;;   licence     Apache-2.0, same author as this file
-  ;;   extracted   machine-name, platform-os, platform-arch,
-  ;;               ensure-supported-platform!, load-first-shared-object!,
-  ;;               string-search, string-contains?, string-suffix?
+  ;; ONLY THREE NAMES ARE TAKEN, not the forty-six that library exports.
+  ;; `machine-name`, `platform-arch` and the three string helpers went
+  ;; with the copy because nothing here calls them -- what the import
+  ;; list says is what this core actually uses, which is the whole point
+  ;; of routing the dependency through a file of its own.
   ;;
-  ;; No digest is claimed here. A file that carries its own hash proves
-  ;; nothing -- edit the body, edit the header, and the claim is restored.
-  ;; The digests live in `test/vendored-sources.txt`, outside this file:
-  ;; one for the upstream file as a whole, one for the bytes between these
-  ;; two markers. Editing the copy does not edit the table.
-  ;;
-  ;; WHAT IS DELIBERATELY NOT COPIED: `shared-object-candidates`, which is
-  ;; upstream's list of OpenSSL filenames. This library is not loading
-  ;; OpenSSL -- it passes its own candidates at the call site below. The
-  ;; part that was needed is the ACTION: try each name in order, answer the
-  ;; first that loads, and refuse with the whole list if none does. A cell
-  ;; asserts that the list reaching it is this file's, because a comment
-  ;; does not stop anyone restoring the one that looks missing.
+  ;; THE REST OF THIS FILE IS THE CORE'S OWN. A hundred and forty-three
+  ;; definitions below are about this tree's syscalls, fault injection
+  ;; and durability, not about igropyr; `test/facades.sexp` lists the
+  ;; files that MAY import igropyr, and does not claim they hold nothing
+  ;; else.
 
-  (define machine-name (symbol->string (machine-type)))
-
-  (define (string-search hay needle start)
-    (let ((hn (string-length hay)) (nn (string-length needle)))
-      (let loop ((i start))
-        (cond ((> (+ i nn) hn) #f)
-              ((let check ((j 0))
-                 (or (= j nn)
-                     (and (char=? (string-ref hay (+ i j)) (string-ref needle j))
-                          (check (+ j 1)))))
-               i)
-              (else (loop (+ i 1)))))))
-
-  (define (string-contains? s needle)
-    (and (string-search s needle 0) #t))
-
-  (define (string-suffix? suffix s)
-    (let ((n (string-length s)) (m (string-length suffix)))
-      (and (>= n m) (string=? suffix (substring s (- n m) n)))))
-
-  (define platform-os
-    (cond
-      ((string-suffix? "osx" machine-name) 'macos)
-      ((string-suffix? "fb" machine-name) 'freebsd)
-      ((string-suffix? "le" machine-name) 'linux)
-      (else 'unsupported)))
-
-  (define platform-arch
-    (cond
-      ((string-contains? machine-name "arm64") 'arm64)
-      ((string-contains? machine-name "a6") 'x86_64)
-      (else 'unsupported)))
-
-  (define (ensure-supported-platform!)
-    (unless (and (memq platform-os '(macos linux freebsd))
-                 (memq platform-arch '(x86_64 arm64)))
-      (assertion-violation 'theourgia-ffi
-        "unsupported platform; expected Chez Scheme 10 on macOS/Linux/FreeBSD x86_64/arm64"
-        (machine-type))))
-
-  (define (load-first-shared-object! who candidates)
-    (let loop ((xs candidates))
-      (cond
-        ((null? xs)
-         (assertion-violation who "could not load any shared library candidate"
-                              candidates))
-        ((guard (e (#t #f)) (load-shared-object (car xs)) #t) (car xs))
-        (else (loop (cdr xs))))))
-
-  ;; END COPIED FROM IGROPYR
 
   (define platform-checked (begin (ensure-supported-platform!) #t))
 
@@ -931,13 +878,24 @@
      ;; partial -> EIO for the one that fires twice.
      (define fault-state (box 'fresh))
 
-       ;; `string-contains?` USED TO BE DEFINED HERE TOO. The platform
-       ;; layer copied into this library brought one with it, and this
-       ;; branch is expanded only when injection is on -- so with
-       ;; injection off the two never met and every ordinary run passed,
-       ;; while every fault-injection fixture failed to load the library
-       ;; at all. Fourteen at once, and the ordinary path said nothing.
-       ;; One definition, at the top of this file.
+       ;; `string-contains?` COMES FROM THE FACADE'S IMPORT, and this is
+       ;; the only place in this library that uses it.
+       ;;
+       ;; THIS BRANCH IS EXPANDED ONLY WHEN INJECTION IS ON, which has
+       ;; now cost two defects of opposite sign in the same six lines.
+       ;; First the platform layer copied into this library brought a
+       ;; second definition, the two collided here and nowhere else, and
+       ;; fourteen fault-injection fixtures failed to load the library
+       ;; while every ordinary run passed. Then the copy was replaced by
+       ;; a forward onto igropyr, the one definition went with it, and
+       ;; this reference became unbound -- again invisible to every
+       ;; ordinary run, and reported by the suite as a fifteen-minute
+       ;; HANG, because `cli1` starts two children that die instantly
+       ;; and then writes to a fifo nothing will ever read.
+       ;;
+       ;; ⛔ SO NOTHING IN HERE IS COVERED BY A RUN WITH INJECTION OFF.
+       ;; A change to this library is measured with THEOURGIA_INJECT=on
+       ;; as well, or it is not measured.
 
      ;; The path a fault is aimed at, taken from the subject when it is
      ;; one and from the registry otherwise.

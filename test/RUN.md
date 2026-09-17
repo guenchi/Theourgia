@@ -83,6 +83,35 @@ held in the one tree they were written in and in no other. `paths.py`
 separates them: `core()` is `parents[1]`, `libdir()` is the pin, and
 `scratch()` is a fresh directory that is short enough to hold a socket.
 
+## A Python fixture may say it moved its scratch, and that is a reading
+
+`paths.scratch()` prefers `THEOURGIA_TEST_ROOT` and falls back to the
+system temporary directory when the pinned root is too long to hold a
+unix socket path, printing the substitution on stderr:
+
+    paths: THEOURGIA_TEST_ROOT (104 bytes resolved) cannot hold a unix
+    socket path; using /private/var/folders/.../T for mcp-probe-*
+
+**That line is the fixture working, not failing.** `sun_path` holds 104
+bytes on this platform, and a store at
+`<root>/<prefix><8 random>/store/socket` has to fit inside it; a root
+that does not leaves `connect` raising ENAMETOOLONG, which the transport
+does not treat as "no daemon here", so every call comes back `(error
+transport-unavailable)` and the probe reports the core catalog as
+unavailable -- a sentence about the store, produced by the length of a
+directory name. It is said out loud rather than done silently so that a
+reader knows which directory the transcript is about.
+
+## The Python fixtures need the dependency too, and one of them stages it
+
+`mcp-probe.py` copies the core into a scratch area and puts that area on
+the library path. Since the three copies became forwards, a staging area
+holding only `theourgia/` resolves nothing past the first import, so it
+links `paths.igropyr()` in beside it. The comment there used to say the
+opposite -- correctly, for the tree it was written against -- and the
+fixture failed with `cli.ss init` exiting 255 when that stopped being
+true. A comment asserting the current state of a tree decays silently.
+
 ## Two files in this directory are tools, not fixtures
 
 `mutate-form.ss` rewrites one AST form inside one named definition;
@@ -95,10 +124,13 @@ runner record them as probes.
 
 `consts.c`, `rows-baseline.txt`, `vendored-sources.txt`, the nine Python
 fixtures, `q8-cli.py` (driven on its own, not one of the nine),
-`paths.py`, and now **`vectors/`** -- ten
-language files `code-text.ss` imports. They were read from
-`../theourgos/`, a different and closed repository, so that fixture
-could only run on a machine that had it checked out beside this one.
+`paths.py`, **`import-walk.scm`** -- which `facade-gate.ss` and
+`closures.ss` both `load`, and which neither can run without --
+**`evidence-cli1-hang/`**, which this file cites above, and
+**`vectors/`**, ten language files `code-text.ss` imports. The last of
+those were read from `../theourgos/`, a different and closed repository,
+so that fixture could only run on a machine that had it checked out
+beside this one.
 This is the same trap RUN.md already records twice below: a list built
 from what is there has no way to mention what is not.
 
@@ -170,6 +202,41 @@ different run of the same probe. A hang writes no output and counts no failure �
 it leaves a process. So every fault-injection probe here runs under a timeout,
 which turns a hang into a reading, and the end of a round looks at what
 processes are left rather than only at what files were written.
+
+### And it hung again, for a defect two seconds away from being named
+
+On 2026-09-17 a facade change removed `string-contains?` from `ffi.ss`, leaving
+one reference to it inside the branch that is expanded only when
+`THEOURGIA_INJECT` is on. No ordinary fixture noticed. `cli1` starts two child
+processes, waits for one of them to reach a barrier with a **bounded** spin, and
+then writes a byte to a fifo — so when both children died on load it spun out
+its bound and blocked forever on a write with no reader. The suite read a
+missing identifier as a 900-second alarm, and it would have read it that way
+once per fault-injection fixture: about three and a half hours before reaching
+`expansion-branches.ss`, which answers the same question in two seconds and
+names the file and the line.
+
+**So `expansion-branches.ss` now runs as a preflight**, before the loop, and a
+red preflight refuses the run. It still runs again inside the loop, so that
+every script in the directory is still classified exactly once and the
+count-back gate below stays true.
+
+⛔ **The preflight does not read the exit status.** Measured on the broken tree:
+
+    PREFLIGHT RED (rc=0 sentinel=1 hard=1 counters=1)
+
+`expansion-branches.ss` printed `1 failures` and exited **0** — it has no
+`(exit ...)` at all, and neither do fifty-eight of the other fixtures here. This
+suite decides on output, and a preflight written as `if scheme --script ...`
+would have been green on the exact tree that produced that reading. The
+preflight applies the loop's own four measures instead of inventing a second
+rule.
+
+KNOWN OPEN, not fixed here: `cli1`'s wait for its children is bounded and its
+write to the fifo is not, so any future failure of those children wedges the
+fixture for the full alarm instead of reporting. The readings from the wedged
+run are in `evidence-cli1-hang/`: `sh.txt` holds `EARLY 0 / WAITED 0` and each
+child's trace is two lines, the second being the load exception.
 
 ## What this batch has not established
 

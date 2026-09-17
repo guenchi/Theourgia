@@ -56,10 +56,7 @@
                 request-actor? actor-identity actor-sub
                 actor-plan-event make-evidence request-gates)
           (theourgia admission)
-          (only (theourgia text-code) text-properties)
-          (only (theourgia languages) language-for-name)
           (only (theourgia datum-metadata) datum-doc-marker? datum-doc-format?)
-          (only (theourgia datum-code) datum-names)
           (only (theourgia wire) sexpr->string-extended wire-safe-symbol? storable-encode)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (rnrs bytevectors) string->utf8 bytevector?))
@@ -907,29 +904,14 @@
   ;; Text metadata is a view of the same settled src/lang candidates. There
   ;; is no independently timed metadata write that can lag behind set src,
   ;; and replay order cannot pair one source candidate with another name.
-  (define (state-read-datum b)
-    (let* ((fields (cdr (assq 'fields b))) (body (assq 'body fields))
-           (names (datum-names (and body (cdr body))))
-           (derived (append (filter (lambda (f) (not (memq (car f) '(name names)))) fields)
-                            (list (cons 'names names))
-                            (if (pair? names) (list (cons 'name (car names))) '()))))
-      (map (lambda (p) (if (eq? (car p) 'fields)
-                          (cons 'fields (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b)))) derived)) p)) b)))
+  ;; THE RAW FIELDS, AND ONLY THOSE. Until v129 this reader also derived
+  ;; `name`/`doc` for a text block from the language table and
+  ;; `names`/`name` for a datum block from its body, which made the
+  ;; reduction -- the thing every hash and every `--based-on` is taken
+  ;; over -- depend on a table that is edited at runtime. The derivation
+  ;; moved to `(theourgia view)`; what a caller gets here is what was
+  ;; written.
   (define (state-read r id)
-    (let* ((b (state-read/raw r id))
-           (fs (and b (cdr (assq 'fields b))))
-           (get (lambda (k) (let ((p (and fs (assq k fs)))) (and p (cdr p))))))
-      (if (and b (eq? (get 'kind) 'code) (eq? (get 'mode) 'datum)) (state-read-datum b)
-        (if (not (and b (eq? (get 'kind) 'code) (eq? (get 'mode) 'text))) b
-          (let* ((src (get 'src)) (entry (language-for-name (get 'lang)))
-                 (properties (and entry (or (bytevector? src) (string? src)) (text-properties entry src)))
-                 (fields (append (filter (lambda (f) (not (memq (car f) '(name doc)))) fs)
-                                 (if (and properties (car properties)) (list (cons 'name (car properties))) '())
-                                 (if properties (list (cons 'doc (cadr properties))) '()))))
-            (map (lambda (p) (if (eq? (car p) 'fields)
-                                (cons 'fields (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b)))) fields)) p)) b))))))
-
-  (define (state-read/raw r id)
     (let ((b (find-block r id)))
       (and b
            (list (cons 'id id)

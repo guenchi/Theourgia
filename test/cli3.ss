@@ -1740,16 +1740,31 @@
 ;; "unexpected failure" while the thrown object was carrying the reason
 ;; the whole way. Nothing here fixes the failure -- it reads it.
 ;;
-;; A CHARACTER IS IN NEITHER WHITELIST, which is what makes this
-;; reachable from the command line at all. `get-datum` parses `#\a`, the
-;; record layer frames it, and the emitter that builds a snapshot's rows
-;; refuses it: a value this store can hold and cannot describe. Numbers,
-;; strings, vectors, bytevectors and flonums all pass, so a smaller
-;; oddity would not have got here.
+;; A VALUE NESTED DEEPER THAN THE CODEC WILL GO, which is what makes
+;; this reachable from the command line at all: `get-datum` parses it,
+;; the record layer frames it, and the emitter that builds a snapshot's
+;; rows refuses it -- a value this store can hold and cannot describe.
+;;
+;; ⚠️ IT USED TO BE A CHARACTER, `#\a`, AND THAT STOPPED BEING ONE.
+;; Block hashing now goes through `storable-encode`, which writes a
+;; character as the list ("#%char" 97) -- so a character is describable
+;; after all, the `state` section below succeeded, and this row was red
+;; in the delivery review of 2026-09-17 before anything in this batch
+;; touched it. It was red on the pinned tree too; that was measured,
+;; not assumed.
+;;
+;; THE SUCCESSOR HAD TO BE A VALUE STILL REFUSED BY BOTH READERS, and
+;; depth is the one left: 58 levels of vector hash and snapshot
+;; normally, 59 are written but cannot be described, and at 61 the
+;; record codec refuses the write itself. `nesting-depth.ss` pins those
+;; three edges; this block only needs one value from the middle band.
 (define dF (fresh-store!))
 (init! dF)
+(define deep-title
+  (let loop ((i 0) (out "0"))
+    (if (= i 59) out (loop (+ i 1) (string-append "#(" out ")")))))
 (define odd-intent
-  "((insert root #f ((kind . section) (title . #\\a))))")
+  (string-append "((insert root #f ((kind . section) (title . " deep-title "))))"))
 (define plain-intent
   "((insert root #f ((kind . section) (title \"plain\")))) ")
 (define (outline-count d) (length (lines-of (run d "outline"))))
@@ -1777,7 +1792,7 @@
 (want "the answer says which part it could not build, and why"
       (and odd-one (assq 'state (cdr odd-one))
            (cdr (assq 'state (cdr odd-one))))
-      '(unavailable (reason "datum not in the wire whitelist")))
+      '(unavailable (reason "nesting too deep (cyclic data?)")))
 ;; TWIN: A DESCRIBABLE WRITE STILL GETS ITS HASHES. `unavailable` has to
 ;; be what this particular value provoked, not what the section always
 ;; says.
@@ -1796,7 +1811,7 @@
 ;; called.
 (want "the CLI's last-resort answer carries the thrown vector's message"
       (car (lines-of (run dF "snapshot")))
-      '(error internal (condition "datum not in the wire whitelist")))
+      '(error internal (condition "nesting too deep (cyclic data?)")))
 ;; TWIN: A SNAPSHOT THAT CAN BE BUILT IS BUILT. Without this row a
 ;; command that answered `(error internal ...)` for every snapshot would
 ;; pass, and so would one whose emitter refused everything.

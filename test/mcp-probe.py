@@ -18,10 +18,29 @@ area=paths.scratch('mcp-probe-')
 # library names; followed rather than copied it recurses forever.
 shutil.copytree(core,area/'theourgia',symlinks=True,
                 ignore=shutil.ignore_patterns('*.so','*.wpo','__pycache__','test','.git','.build'))
-# NOTHING BUT `theourgia/` IS PUT ON THE LIBRARY PATH. This copy used to
-# get an `igropyr` symlink beside it; the core imports no such library
-# any more, so leaving one there would let a reintroduced dependency
-# resolve and go unremarked. The probe is a second witness for that.
+# `igropyr/` GOES BESIDE THE COPY, because the core reaches it. Since
+# v126 `digest.ss`, `wire.ss` and `ffi.ss` are forwards onto (igropyr
+# crypto), (igropyr sexpr) and (igropyr platform), so a staging area
+# holding only `theourgia/` resolves nothing past the first import.
+#
+# ⚠️ THIS COMMENT USED TO SAY THE OPPOSITE, and it was right when it was
+# written: "the core imports no such library any more, so leaving one
+# there would let a reintroduced dependency resolve and go unremarked."
+# The forwards reversed it, and the fixture failed with `cli.ss init`
+# exiting 255 -- a comment asserting the current state of a tree goes
+# out of date silently, and this one took the fixture with it.
+#
+# IT IS A LINK TO THE PINNED LIBRARY PATH'S OWN igropyr, not to whatever
+# sits beside the repository: `paths.igropyr()` resolves it out of
+# THEOURGIA_LIBDIR, so this probe is about the same dependency every
+# other reading in the run is about.
+#
+# AND THE WITNESS THE OLD COMMENT CLAIMED IS NOT LOST: which files reach
+# igropyr is counted by `facade-gate.ss`, against the list in
+# `facades.sexp`, in both directions. That is a better place for it --
+# this probe would only have noticed a new dependency by failing to
+# load, with no word about which file introduced it.
+(area/'igropyr').symlink_to(paths.igropyr())
 edit=subprocess.run(['scheme','--script',str(here/'mutate-form.ss'),str(area/'theourgia/rpc.ss'),'verbs','(verb-table)',"(cons (cons (quote catalog-probe) (lambda (store actor args req options) (quote (ok catalog-probe)))) (verb-table))"],capture_output=True,text=True,stdin=subprocess.DEVNULL)
 assert edit.returncode==0,edit.stdout+edit.stderr
 store=area/'store'

@@ -36,7 +36,8 @@
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           count-argument outline-text)
-  (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
+  (import (only (theourgia view) view-read)
+          (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
           (theourgia store) (theourgia reduce) (theourgia log)
@@ -181,8 +182,11 @@
                 (else (put-char out c)))
               (loop (+ i 1)))))))
 
+  ;; A TITLE IS SOMETHING A PERSON READS, so it comes from the view: for
+  ;; a code block the name is derived from its source, and `state-read`
+  ;; no longer derives anything.
   (define (title-of state id)
-    (let* ((b (state-read state id))
+    (let* ((b (view-read state id))
            (fs (and b (cdr (assq 'fields b)))))
       (define (get k)
         (let ((e (and fs (assq k fs))))
@@ -570,6 +574,18 @@
                   (md?
                    (guarded
                      (lambda ()
+                       ;; `state-read`, NOT `view-read`, AND THE COMMENT
+                       ;; BELOW IS THE REASON. This branch answers with
+                       ;; the block's own bytes -- `front`, `heading-src`
+                       ;; and `src` -- every one of which is stored. It
+                       ;; reads no derived field, so asking the view
+                       ;; layer for it would say that it does.
+                       ;;
+                       ;; IT WAS `view-read` UNTIL A MUTATION SURVIVED
+                       ;; HERE. Swapping this one call back left every
+                       ;; cell green, which is what a call with no
+                       ;; consumer looks like; the other three
+                       ;; `view-read`s in this file each kill a row.
                        (let* ((state (open-and-reduce store))
                               (b (state-read state (car rest))))
                          (cond
@@ -614,12 +630,12 @@
                               (ids (subtree-ids state (car rest))))
                          (if (not ids)
                              (unknown-id state (car rest))
-                             (items (map (lambda (id) (state-read state id)) ids)))))))
+                             (items (map (lambda (id) (view-read state id)) ids)))))))
                   (else
                    (guarded
                      (lambda ()
                        (let* ((state (open-and-reduce store))
-                              (b (state-read state (car rest))))
+                              (b (view-read state (car rest))))
                          (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
       (cons 'refs
             (lambda (store actor args req options)

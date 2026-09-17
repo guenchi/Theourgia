@@ -42,6 +42,40 @@ mkdir -p "$out"
 # holds cli.ss". Keying the whole comparison on one filename meant a
 # parent full of libraries with that one file missing or renamed took
 # the NOT CHECKED branch and the run continued.
+# THE LIBRARY DIRECTORY IS CHECKED BEFORE ANYTHING RUNS. The core reaches
+# igropyr through three facades, so a pin that holds only theourgia/ --
+# or an igropyr/ that is there but cannot answer -- produces a hundred
+# fixtures at rc=255, every one of them saying a library was not found.
+# That reads as a broken tree. One line naming what is missing is the
+# difference between a variable to fix and an afternoon of bisecting.
+#
+# THREE THINGS, BECAUSE THEY FAIL SEPARATELY: the directory is there, the
+# library this core actually imports from is there, and it exports the
+# name this core actually uses. The last one is what tells a WRONG
+# igropyr from a missing one.
+pinned=${THEOURGIA_LIBDIR:-$CHEZSCHEMELIBDIRS}
+if [ -n "$pinned" ]; then
+  first=$(printf %s "$pinned" | cut -d: -f1)
+  if [ ! -d "$first/igropyr" ]; then
+    echo "LIBRARY PATH: $first holds no igropyr/ -- the core imports (igropyr crypto),"
+    echo "  (igropyr sexpr) and (igropyr platform) through its three facades."
+    echo "REFUSING: nothing below this line would be a reading."
+    exit 1
+  fi
+  if [ ! -f "$first/igropyr/crypto.sc" ]; then
+    echo "LIBRARY PATH: $first/igropyr has no crypto.sc -- (igropyr crypto) cannot resolve."
+    echo "REFUSING: nothing below this line would be a reading."
+    exit 1
+  fi
+  if ! grep -q "sha256" "$first/igropyr/crypto.sc"; then
+    echo "LIBRARY PATH: $first/igropyr/crypto.sc does not mention sha256 -- this is an"
+    echo "  igropyr, but not one this core can use."
+    echo "REFUSING: nothing below this line would be a reading."
+    exit 1
+  fi
+  echo "library path: $first holds igropyr/ and theourgia/"
+fi
+
 libdir=..
 if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.ss > /dev/null 2>&1; then
   clash=""
@@ -57,6 +91,61 @@ if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.ss > /dev/null 2>&
 else
   echo "fixture/library names: NOT CHECKED -- no separate library directory beside this one"
 fi
+# THE CHEAP GATE THAT NAMES A CAUSE RUNS BEFORE THE ONES THAT SHOW A
+# SYMPTOM. This is the same repair as moving the structural gates above
+# the verdict: a check is worth what it is worth AT THE MOMENT IT RUNS.
+#
+# `expansion-branches.ss` loads each expansion branch of this tree -- the
+# one with THEOURGIA_INJECT unset and the one with it on -- and answers
+# in about two seconds, naming the file and line when a branch will not
+# build. Nothing else here asks that question early.
+#
+# MEASURED, AND THIS IS WHY IT IS FIRST. A facade change left
+# `string-contains?` unbound inside the injected branch of `ffi.ss`.
+# Every ordinary fixture stayed green. `cli1`, which sorts EARLIER than
+# `expansion-branches`, starts two children that then died on load,
+# spun out its bounded wait for them, and blocked forever writing to a
+# fifo with no reader -- so the suite read the defect as a 900-second
+# alarm, once per fault-injection fixture, three and a half hours before
+# reaching the two-second gate that names it.
+#
+# ⛔ A RED PREFLIGHT STOPS THE RUN. Every later reading would be about a
+# tree that cannot be built in one of the two shapes it ships in.
+#
+# It is NOT excluded from the loop below: it runs again there, as an
+# ordinary fixture, so that the classifier still sees every script in
+# this directory exactly once and the count-back gate stays true. Two
+# seconds is a cheap price for leaving that invariant alone.
+# ⛔ AND IT IS NOT JUDGED BY ITS EXIT STATUS. Measured: on a tree whose
+# injected branch would not build, `expansion-branches.ss` printed the
+# unbound identifier, the file and the line -- and exited 0. It has no
+# `(exit ...)` at all, and neither do fifty-eight of the other fixtures
+# here: THIS SUITE DECIDES ON OUTPUT, not on status, and the loop below
+# says so at length. A preflight that trusted `if scheme --script ...`
+# would have been green on the very tree that produced it.
+#
+# So the preflight applies the loop's own four measures, in one place
+# rather than two: the sentinel, the hard lines, the counters, the
+# status.
+if [ -f expansion-branches.ss ]; then
+  perl -e 'alarm 120; exec @ARGV' scheme --script expansion-branches.ss > "$out/preflight.out" 2>&1
+  pf_rc=$?
+  pf_sent=$(grep -c "^expansion-branches complete" "$out/preflight.out")
+  pf_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/preflight.out")
+  pf_cnt=$(grep -E "^[0-9]+ (failures|mismatches)" "$out/preflight.out" | grep -vc "^0 ")
+  if [ "$pf_rc" = 0 ] && [ "$pf_sent" != 0 ] && [ "$pf_hard" = 0 ] && [ "$pf_cnt" = 0 ]; then
+    echo "preflight: every expansion branch of this tree builds"
+  else
+    echo "PREFLIGHT RED (rc=$pf_rc sentinel=$pf_sent hard=$pf_hard counters=$pf_cnt)"
+    echo "  -- an expansion branch of this tree does not build:"
+    sed "s/^/  /" "$out/preflight.out"
+    echo "REFUSING: nothing below this line would be a reading."
+    exit 1
+  fi
+else
+  echo "preflight: NOT CHECKED -- expansion-branches.ss is not in this directory"
+fi
+
 bad=0; ran=0; libs=""; probes=""
 for f in *.ss; do
   n=${f%.ss}

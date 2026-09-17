@@ -15,28 +15,20 @@
 (library (theourgia text-code)
   (export byte-lines byte-slice bytes-append text-properties definition-name
           safe-utf8 string-prefix-at? trim-left comment-prefixes source-prefix-size)
-  (import (rnrs) (theourgia languages) (theourgia regex))
+  ;; The byte helpers moved to (theourgia markers), which
+  ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
+  ;; (theourgia wire), and nothing else. That, not "it imports nothing",
+  ;; is the property the move was made for, and `test/closures.ss` reads
+  ;; it off the import graph. The names come back here unchanged, so no
+  ;; caller of this library changed. See markers.ss for why.
+  (import (only (theourgia markers) byte-slice bytes-append byte-lines safe-utf8 string-prefix-at?)
+          (rnrs) (theourgia languages) (theourgia regex))
   (define patterns (make-hashtable string-hash string=?))
-  (define (byte-slice b from to)
-    (let ((out (make-bytevector (- to from)))) (bytevector-copy! b from out 0 (- to from)) out))
-  (define (bytes-append . parts)
-    (let ((out (make-bytevector (apply + (map bytevector-length parts)))))
-      (let loop ((xs parts) (offset 0))
-        (if (null? xs) out
-            (let ((n (bytevector-length (car xs))))
-              (bytevector-copy! (car xs) 0 out offset n) (loop (cdr xs) (+ offset n)))))))
-  (define (byte-lines b)
-    (let ((n (bytevector-length b)))
-      (let loop ((start 0) (i 0) (out '()))
-        (cond ((= i n) (reverse (if (< start n) (cons (list start n n) out) out)))
-              ((= 10 (bytevector-u8-ref b i))
-               (loop (+ i 1) (+ i 1) (cons (list start (if (and (> i start) (= 13 (bytevector-u8-ref b (- i 1)))) (- i 1) i) (+ i 1)) out)))
-              (else (loop start (+ i 1) out))))))
-  (define (safe-utf8 b)
-    (guard (e (#t #f)) (let ((s (utf8->string b))) (and (equal? (string->utf8 s) b) s))))
-  (define (string-prefix-at? text prefix start)
-    (and (<= (+ start (string-length prefix)) (string-length text))
-         (string=? prefix (substring text start (+ start (string-length prefix))))))
+
+
+
+
+
   (define (trim-left s)
     (let loop ((i 0))
       (if (and (< i (string-length s)) (memv (string-ref s i) '(#\space #\tab #\page)))

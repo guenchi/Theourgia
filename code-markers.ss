@@ -15,38 +15,22 @@
 (library (theourgia code-markers)
   (export projection-encode projection-decode marker-line projection-failure projection-header-wrapper?
           projection-control projection-header-line)
-  (import (rnrs) (theourgia text-code) (theourgia languages) (theourgia wire)
+  ;; The marker grammar moved to (theourgia markers), which
+  ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
+  ;; (theourgia wire), and nothing else. That, not "it imports nothing",
+  ;; is the property the move was made for, and `test/closures.ss` reads
+  ;; it off the import graph. The names come back here unchanged, so no
+  ;; caller of this library changed. See markers.ss for why.
+  (import (only (theourgia markers) wrapping marker-line family projection-header-wrapper?
+                projection-control projection-failure hex-decode safe-id? header-read block-read)
+          (rnrs) (theourgia text-code) (theourgia languages) (theourgia wire)
           (only (theourgia digest) bytevector->hex))
 
-  (define (projection-failure reason . details)
-    (raise (append (list 'error 'projection-invalid (list 'reason reason)) details)))
-  (define (wrapping entry)
-    (let ((line (language-property entry 'line-comment #f))
-          (block (language-property entry 'block-comment #f)))
-      (cond (line (cons (string-append line " ") ""))
-            (block (cons (string-append (car block) " ") (string-append " " (cadr block))))
-            (else (cons "# " "")))))
-  (define (marker-line entry body)
-    (let ((w (wrapping entry))) (string->utf8 (string-append (car w) body (cdr w) "\n"))))
-  (define (projection-header-wrapper? entry bytes)
-    (exists (lambda (row)
-              (let ((f (family entry (byte-slice bytes (car row) (cadr row)))))
-                (and f (= (car f) 1) (string-prefix-at? (cadr f) "file " 0))))
-            (byte-lines bytes)))
-  ;; Family recognition is exact at both ends. All positive @ counts escape.
-  ;; The payload grammar is checked only for a single-@ control line.
-  (define (family entry bytes)
-    (let* ((s (safe-utf8 bytes)) (w (wrapping entry))
-           (start (string-length (car w))) (suffix (string-length (cdr w))))
-      (and s (string-prefix-at? s (car w) 0)
-           (>= (string-length s) (+ start suffix))
-           (string-prefix-at? s (cdr w) (- (string-length s) suffix))
-           (let ((end (- (string-length s) suffix)))
-             (let loop ((i start))
-               (if (and (< i end) (char=? (string-ref s i) #\@)) (loop (+ i 1))
-                   (and (> i start)
-                        (or (string-prefix-at? s "block " i) (string-prefix-at? s "file " i))
-                        (list (- i start) (substring s i end) start))))))))
+
+
+
+
+
   (define (adjust-line entry b delta)
     (let ((f (family entry b)))
       (if (not f) b
@@ -67,46 +51,12 @@
       ((1) (unless (ends-lf? b) (projection-failure 'invalid-padding))
            (byte-slice b 0 (- (bytevector-length b) 1)))
       (else (projection-failure 'invalid-padding))))
-  (define (hex-decode s)
-    (unless (and (<= (string-length s) 65536) (even? (string-length s)))
-      (projection-failure 'invalid-header))
-    (let ((b (make-bytevector (div (string-length s) 2))))
-      (define (digit c)
-        (cond ((char<=? #\0 c #\9) (- (char->integer c) 48))
-              ((char<=? #\a c #\f) (+ 10 (- (char->integer c) 97)))
-              (else (projection-failure 'invalid-header))))
-      (do ((i 0 (+ i 2))) ((= i (string-length s)) b)
-        (bytevector-u8-set! b (div i 2) (+ (* 16 (digit (string-ref s i))) (digit (string-ref s (+ i 1))))))))
-  (define (header-read s)
-    (guard (e (#t (projection-failure 'invalid-header)))
-      (let ((h (storable-decode (string->sexpr-extended (utf8->string (hex-decode s))))))
-        (unless (and (list? h) (= 7 (length h)) (eq? (car h) 'code-projection)
-                     (equal? (cadr h) 1) (string? (caddr h)) (string? (cadddr h))
-                     (list? (list-ref h 4)) (memq (list-ref h 5) '(text datum))
-                     (memv (list-ref h 6) '(0 1))
-                     (for-all (lambda (p) (and (pair? p) (string? (car p))
-                                              (integer? (cdr p)) (exact? (cdr p)) (>= (cdr p) 0))) (list-ref h 4)))
-          (projection-failure 'invalid-header)) h)))
-  (define (safe-id? s)
-    (and (> (string-length s) 0) (<= (string-length s) 256)
-         (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
-                                  (memv c '(#\. #\- #\_)))) (string->list s))
-         (not (member s '("." "..")))))
-  (define (block-read s)
-    (let* ((n (string-length s))
-           (space (let loop ((i 0)) (and (< i n) (if (char=? (string-ref s i) #\space) i (loop (+ i 1))))))
-           (id (if space (substring s 0 space) s))
-           (tail (and space (substring s space n))))
-      (unless (and (safe-id? id) (or (not tail) (member tail '(" pad 0" " pad 1"))))
-        (projection-failure 'invalid-marker))
-      (list id (if (equal? tail " pad 1") 1 0))))
 
-  (define (projection-control entry content)
-    (let ((f (family entry content)))
-      (and f (= (car f) 1)
-           (if (string-prefix-at? (cadr f) "file " 0)
-               (list 'file (header-read (substring (cadr f) 5 (string-length (cadr f)))))
-               (cons 'block (block-read (substring (cadr f) 6 (string-length (cadr f)))))))))
+
+
+
+
+
   (define (projection-header-line entry header mode pad)
     (let ((hex (bytevector->hex (string->utf8 (sexpr->string-extended
                     (storable-encode (append '(code-projection 1) header (list mode pad))))))))
