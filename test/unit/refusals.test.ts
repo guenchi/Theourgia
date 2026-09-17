@@ -29,7 +29,8 @@
  * already carries as "the manifest is complete only against its own
  * list".)
  *
- * HOW IT IS READ: Chez reads actual forms from VCS-listed core sources.
+ * HOW IT IS READ: Chez reads actual forms from the core's top-level
+ * source files, listed from the directory rather than from git.
  * The inventory recognizes literal error constructors and excludes comments.
  * Dynamic refusal constructors still need an exported core schema to make
  * this a complete semantic catalog; the source pin remains reproducible.
@@ -43,6 +44,7 @@
 
 import * as assert from 'assert';
 import {execFileSync} from 'child_process';
+import {readdirSync} from 'fs';
 import * as path from 'path';
 import { NOT_A_WRITES_ANSWER, classifyRefusal } from '../../src/saver';
 import { initWire, parseAnswers } from '../../src/wire';
@@ -58,9 +60,33 @@ function coreSources(): { directory: string; files: string[] } {
     directory !== undefined && directory.length > 0,
     'THEOURGIA_CORE is not set, so the refusals this cell is about cannot be read from the core'
   );
-  const files = execFileSync('git',['ls-files','-z','--','*.ss'],{cwd:directory,encoding:'utf8'})
-    .split('\0').filter(name=>name&&path.dirname(name)==='.')
-    .map(name=>path.join(directory as string,name));
+  /*
+   * ⚠️ THE DIRECTORY IS LISTED, NOT THE INDEX. This read the core's
+   * sources with `git ls-files`, which answers "what is tracked" and not
+   * "what is there". Two readings, both taken:
+   *
+   *   * a core checkout that is not a git working tree answers `fatal:
+   *     not a git repository`, and all three cells below fail with it.
+   *     `git init` in that same copy made them pass -- a reading about
+   *     the copy rather than about the core.
+   *   * a core that IS a git checkout, with one library file added to
+   *     the directory but not yet to the index, answers WITHOUT it, and
+   *     that is the worse of the two because nothing goes red. Measured
+   *     with `working.ss` left untracked: the inventory fell from 47
+   *     refusal kinds to 43, losing `invalid-working-baseline`,
+   *     `no-draft`, `working-unavailable` and `working-version-changed`
+   *     -- four refusals a save can actually receive -- and every cell
+   *     here still passed, because each one asks about the kinds it
+   *     found.
+   *
+   * Top level only, as before: the libraries live beside `cli.ss`, and
+   * `test/` holds fixtures rather than core sources.
+   */
+  const files = readdirSync(directory as string, {withFileTypes: true})
+    .filter(entry => entry.isFile() && entry.name.endsWith('.ss'))
+    .map(entry => entry.name)
+    .sort()
+    .map(name => path.join(directory as string, name));
   assert.ok(files.length > 0, `no core sources under ${directory as string}`);
   return { directory: directory as string, files };
 }
