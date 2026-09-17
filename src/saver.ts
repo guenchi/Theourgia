@@ -298,6 +298,15 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
   'operation-packet-unavailable': 'refused',
   'unsupported-printer-version': 'refused',
   'bad-request': 'refused',
+  /*
+   * A COMMIT THAT NAMED VERSIONS THE DRAFTS NO LONGER HAVE. `complete-plan!`
+   * (store.ss) recomputes each named version before it runs anything and
+   * answers this when one disagrees; `working-restore!` (working.ss) makes
+   * the same name for the same reason. The extension issues `commit`
+   * (saver.ts, extension.ts), so a save can be answered with it: the write
+   * did not happen and the caller has to read the drafts again.
+   */
+  'consumes-version-mismatch': 'refused',
   'malformed-intent': 'refused',
   'no-subject': 'refused',
   deleted: 'refused',
@@ -351,6 +360,16 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'no-candidate': 'verb-table, rpc.ss:459 -- dispatch, before any verb runs',
   'unknown-verb': 'rpc-dispatch-parsed, rpc.ss:685 -- dispatch, before any verb runs',
   'no-such-intent': 'resolve-from, store.ss:2033 -- resolving an intent by name, not writing',
+  /*
+   * ⚠️ READ FROM THE W DELIVERY (archive/theourgia-code-delivery-w-2026-09-17-r1),
+   * not from the core the md5 above names -- that manifest is an older cut and
+   * this kind does not exist in it.
+   */
+  'unknown-version':
+    'working-restore!, working.ss:331 -- `restore` was asked for a version no plan of this ' +
+    "writer's froze. It is the only site in the core, and `restore` is not a verb this " +
+    'extension sends (client.ts lists write, commit, drafts, discard), so no write can be ' +
+    'answered with it',
   unknown:
     'write-outcome->answer, store.ss:1204 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
