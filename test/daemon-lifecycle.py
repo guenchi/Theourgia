@@ -13,14 +13,20 @@ import tempfile
 import threading
 import time
 
-root=Path(__file__).resolve().parents[2]
-sys.path.insert(0,str(root/'theourgia'))
+import paths
+
+# NO LIBRARY PIN HERE: this fixture takes its environment from the
+# product's own runtime_env(), which puts the core's parent first on
+# the library path. Binding paths.libdir() would name a pin the run
+# does not honour.
+core=paths.core()
+sys.path.insert(0,str(core))
 from local import runtime_env
 from transport import exchange,encode_request
-area=Path(tempfile.mkdtemp(prefix='ed-life-',dir='/private/tmp'))
+area=paths.scratch('ed-life-')
 store=area/'s'
 env=dict(runtime_env(),THEOURGIA_HOME=str(area/'home'),THEOURGIA_TRACE='1')
-subprocess.run(['scheme','--script',str(root/'theourgia/cli.ss'),'init','--store',str(store)],env=env,capture_output=True,check=True)
+subprocess.run(['scheme','--script',str(core/'cli.ss'),'init','--store',str(store)],env=env,capture_output=True,check=True,stdin=subprocess.DEVNULL)
 bad=0;logs=[]
 def want(label,a,b):
  global bad
@@ -35,7 +41,7 @@ def await_until(predicate):
  raise TimeoutError('NO-READING: IPC boundary not reached')
 def start(name):
  log=area/(name+'.log')
- process=subprocess.Popen([sys.executable,str(root/'theourgia/local.py'),'serve',str(store)],env=env,stdout=subprocess.PIPE,stderr=log.open('wb'))
+ process=subprocess.Popen([sys.executable,str(core/'local.py'),'serve',str(store)],env=env,stdout=subprocess.PIPE,stderr=log.open('wb'),stdin=subprocess.DEVNULL)
  await_until(lambda:(store/'socket').exists() or process.poll() is not None)
  assert process.poll() is None,log.read_text()
  return process,log
@@ -94,5 +100,7 @@ want('ED-11 connected lost answer reports uncertainty',b'transport-unknown' in a
 want('ED-11 connected lost answer never retries through local core',after,before)
 want('ED-11 no local dispatch after a connected lost answer','transport-local' in trace.getvalue(),False)
 logs.append(f'{bad} failures\ndaemon-lifecycle complete');print(logs[-1])
-(root/'implementation/evidence/daemon-lifecycle.log').write_text('\n'.join(logs)+'\n')
+transcript=paths.evidence('daemon-lifecycle.log')
+transcript.write_text('\n'.join(logs)+'\n')
+print(f'transcript {transcript}')
 sys.exit(bool(bad))

@@ -1,0 +1,3 @@
+﻿(define (f x) x)
+	(define x 1)
+(define-syntax m (syntax-rules () ((_ x) x)))

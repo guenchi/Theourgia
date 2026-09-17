@@ -1077,49 +1077,81 @@
       (list 'ok #t))
 
 (printf "\n== a request of nothing ==\n")
-;; A REQUEST THAT PRODUCES NO SUB-OPERATION IS NOT A BATCH OF ZERO.
-;; The distinction has nowhere to show itself in the answer -- both write
-;; no record -- so the row below asks the NEXT append instead. A batch of
-;; zero reserves the empty range [seq, seq-1] and then appends its
-;; receipt at seq, one past the end of what it reserved; the reservation
-;; and the log then disagree about where the writer stands, and the
-;; append after it is the one that has to refuse.
+;; SIX ROWS HERE WERE RETIRED ON 2026-09-17, BECAUSE THE RULE THEY
+;; STATED WAS REPLACED. They said "a request that produces no
+;; sub-operation writes no record", and that is no longer what the store
+;; does.
 ;;
-;; THE ROW THEREFORE HAS THREE PARTS, and needs all three: the empty
-;; request writes nothing, the store is still writable afterwards, and
-;; what it writes next lands at the sequence nothing was skipped over.
-;; Dropping the third part would let a store that silently burned a
-;; sequence number read as healthy.
+;; THE SOURCE OF THE CHANGE, so this is a retirement and not a fixture
+;; that gave up: brief `q3-crash-consistency.md`, section 四 (空 plan) --
+;; "0 条子操作的请求写空 plan，重试 ⇒ replay；plan 记录被清单取消选择后重试
+;; ⇒ `unknown`". A request of nothing now writes exactly one record, an
+;; empty plan, and that record is what makes the resend a replay rather
+;; than a second execution. Under the old rule a resend of an empty
+;; request had nothing to find and did the work again.
+;;
+;; WHO ASKS THE RETIRED QUESTIONS NOW: `empty-plan.ss`, rows QE-01 (the
+;; first answer names the durable empty plan; the retry replays it and
+;; appends nothing), QE-06 (zero operations write one empty plan, and one
+;; operation still uses `single` with no plan) and QE-03 (a pending empty
+;; plan is `unknown`; a delivered one is complete).
+;;
+;; AND TWO OF THE SIX ASKED SOMETHING THOSE ROWS DO NOT. They are kept
+;; here with new expectations rather than retired, because a question
+;; that survives a rule change loses its expectation, not its row:
+;;
+;;   * the store does not BURN a sequence number. The old rows checked
+;;     this by requiring the next append to land where nothing had been
+;;     skipped. The number changes -- the empty plan is itself a record
+;;     now -- and the invariant does not: the sequences a writer holds
+;;     are still consecutive from 1, with no gap where the empty request
+;;     stood. A batch of zero that reserved an empty range and then
+;;     appended one past it would leave exactly such a gap.
+;;   * emptiness is decided by WHAT THE WORK PRODUCED, not by what the
+;;     request asked for. A request carrying real arguments whose
+;;     evaluation yields no intent is the ordinary case -- a conditional
+;;     edit whose condition is already satisfied -- and a guard reading
+;;     the request rather than the intents passes every row above and
+;;     still mishandles it.
 (define d14 (fresh-store! '()))
 (define W14 (local-of d14))
 (define (seqs-of d w)
   (map cadr (records-of-writer d w)))
+;; AND WHAT THE RECORDS SAY, not only how many there are. A store that
+;; appended one ordinary record for each empty request -- rather than
+;; the empty plan the rule names -- satisfies every sequence count in
+;; this section and still fails the contract that makes the resend a
+;; replay. The verb and the plan's own fields are what tell them apart.
+(define (payloads-of d w)
+  (map (lambda (r) (storable-decode (list-ref r 5))) (records-of-writer d w)))
 (with-store-write d14 (lambda (st v)
                         (list (list 'insert 'root #f
                                     (list (cons 'kind 'section) (cons 'title "One")))))
                   "agent:claude" #f)
-(define before-empty (seqs-of d14 W14))
-;; THE GUARD IS PART OF THE ROW. Treating the empty request as a batch
-;; of zero raises inside the reservation, and an uncaught raise would end
-;; the fixture here -- the reading would be an abort, which is what a
-;; broken fixture also looks like. Caught, it is a failed row beside its
-;; twin.
+;; THE GUARD IS PART OF THE ROW. If the empty request raises instead of
+;; answering, an uncaught raise would end the fixture here -- the reading
+;; would be an abort, which is what a broken fixture also looks like.
+;; Caught, it is a failed row beside its twin.
 (define empty-answer
   (guard (e (#t (list 'raised)))
     (with-store-write d14 (lambda (st v) '()) "agent:claude"
                       (make-write-request "agent:claude" 'batch '() "r-empty"
                                           (cons W14 1)))))
-(want "a request that produces no sub-operation writes no record"
-      (list empty-answer (equal? before-empty (seqs-of d14 W14)))
-      (list '() #t))
-(want "and the next append lands at the sequence nothing was skipped over"
+(want "a request that produces no sub-operation writes one empty plan"
+      (list (map car empty-answer) (seqs-of d14 W14) (map car (payloads-of d14 W14)))
+      (list '(ok) (list 1 2) '(put plan)))
+(want "and the plan it wrote is empty and carries the request id"
+      (let ((plan (cadr (payloads-of d14 W14))))
+        (list (cadr plan) (list-ref plan 4)))
+      (list "r-empty" '()))
+(want "and the next append lands at the next sequence, with no gap"
       (begin
         (with-store-write d14 (lambda (st v)
                                 (list (list 'insert 'root #f
                                             (list (cons 'kind 'section) (cons 'title "Two")))))
                           "agent:claude" #f)
         (seqs-of d14 W14))
-      (list 1 2))
+      (list 1 2 3))
 ;; TWIN: one sub-operation under the same shape of request is executed.
 ;; Without it the row above is also passed by a store that refuses every
 ;; request carrying an id.
@@ -1130,9 +1162,9 @@
                                                          (cons 'title "Three")))))
                                  "agent:claude"
                                  (make-write-request "agent:claude" 'batch '() "r-one"
-                                                     (cons W14 2)))))
+                                                     (cons W14 3)))))
         (list (map car a) (seqs-of d14 W14)))
-      (list '(ok) (list 1 2 3)))
+      (list '(ok) (list 1 2 3 4)))
 
 ;; A NEW STORE RE-POINTS THE MACHINE HOME, so this one is created after
 ;; the rows above have finished with theirs. `fresh-store!` sets
@@ -1140,23 +1172,21 @@
 ;; the section's earlier store without the registry its next append has
 ;; to find -- which reads as the product refusing a request, not as a
 ;; fixture that moved the furniture.
-;; AND THE SAME AT THE BOUNDARY WHERE THE STORE HAS WRITTEN NOTHING.
-;; The rows above send their empty request at cursor (W . 1), so a guard
-;; written as "empty AND the cursor is above zero" passes all of them and
-;; still walks a pristine store into the reservation of an empty range.
-;; A store's first request is exactly where an empty one is most likely
-;; to arrive -- a client that starts up, has nothing to say yet, and says
-;; it anyway.
+;; AND THE SAME AT THE BOUNDARY WHERE THE STORE HAS WRITTEN NOTHING. A
+;; store's first request is exactly where an empty one is most likely to
+;; arrive -- a client that starts up, has nothing to say yet, and says it
+;; anyway -- and the empty plan it writes has to be the writer's first
+;; record rather than its second.
 (define d16 (fresh-store! '()))
 (define W16 (local-of d16))
-(want "on a store that has written nothing, a request of nothing still writes nothing"
-      (list (guard (e (#t (list 'raised)))
-              (with-store-write d16 (lambda (st v) '()) "agent:claude"
-                                (make-write-request "agent:claude" 'batch '() "r-empty0"
-                                                    (cons W16 0))))
-            (seqs-of d16 W16))
-      (list '() '()))
-(want "and the store's first real record is still sequence 1"
+(want "on a store that has written nothing, a request of nothing writes sequence 1"
+      (let ((a (guard (e (#t (list 'raised)))
+                 (with-store-write d16 (lambda (st v) '()) "agent:claude"
+                                   (make-write-request "agent:claude" 'batch '() "r-empty0"
+                                                       (cons W16 0))))))
+        (list (map car a) (seqs-of d16 W16)))
+      (list '(ok) (list 1)))
+(want "and the store's first real record follows it at sequence 2"
       (begin
         (with-store-write d16 (lambda (st v)
                                 (list (list 'insert 'root #f
@@ -1164,23 +1194,24 @@
                                                   (cons 'title "First")))))
                           "agent:claude" #f)
         (seqs-of d16 W16))
-      (list 1))
-;; AND EMPTINESS IS DECIDED BY WHAT THE WORK PRODUCED, NOT BY WHAT THE
-;; REQUEST ASKED FOR. Both rows above send a request whose argument list
-;; is empty, so a guard reading the REQUEST rather than the intents
-;; passes them and still walks a batch of zero whenever a request with
-;; real arguments happens to produce no sub-operation. That is not an
-;; exotic case: it is what a conditional edit does when the condition is
-;; already satisfied.
-(want "a request with arguments whose work produces nothing still writes nothing"
-      (list (guard (e (#t (list 'raised)))
-              (with-store-write d16 (lambda (st v) '()) "agent:claude"
-                                (make-write-request "agent:claude" 'batch
-                                                    (list "root" "Nothing to do")
-                                                    "r-empty-args"
-                                                    (cons W16 1))))
-            (seqs-of d16 W16))
-      (list '() (list 1)))
+      (list 1 2))
+(want "a request with arguments whose work produces nothing writes the same empty plan"
+      (let ((a (guard (e (#t (list 'raised)))
+                 (with-store-write d16 (lambda (st v) '()) "agent:claude"
+                                   (make-write-request "agent:claude" 'batch
+                                                       (list "root" "Nothing to do")
+                                                       "r-empty-args"
+                                                       (cons W16 2))))))
+        (list (map car a) (seqs-of d16 W16) (map car (payloads-of d16 W16))))
+      (list '(ok) (list 1 2 3) '(plan put plan)))
+(want "and that plan is empty too, under its own request id"
+      (let ((plan (caddr (payloads-of d16 W16))))
+        (list (cadr plan) (list-ref plan 4)))
+      (list "r-empty-args" '()))
+(want "on a store that has written nothing the first record is an empty plan"
+      (let ((plan (car (payloads-of d16 W16))))
+        (list (car plan) (cadr plan) (list-ref plan 4)))
+      (list 'plan "r-empty0" '()))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

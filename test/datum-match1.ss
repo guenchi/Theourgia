@@ -33,5 +33,5 @@
                      '((#f (define x 2) "" (x)) (#f (A) "" ())))) '("a.2" "a.3"))
 (want "CD-10 changed doc does not inherit anonymous identity"
       (datum-match '(("a.1" (A) ";; old\n" ())) '((#f (A) ";; new\n" ()))) '(#f))
-(printf "~a failures\ndatum-match complete\n" bad)
+(printf "~a failures\ndatum-match1 complete\n" bad)
 (exit (if (zero? bad) 0 1))

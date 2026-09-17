@@ -6,13 +6,15 @@ import tempfile
 import subprocess
 import sys
 
-root = Path(__file__).resolve().parents[2]
-area = Path(tempfile.mkdtemp(prefix='eval-supervisor-', dir=root / '.build'))
+import paths
+
+core = paths.core()
+area = paths.scratch('eval-supervisor-')
 os.environ['THEOURGIA_HOME'] = str(area / 'home')
-spec = importlib.util.spec_from_file_location('eval_product', root / 'theourgia/local.py')
+spec = importlib.util.spec_from_file_location('eval_product', core / 'local.py')
 product = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(product)
-subprocess.run(['scheme', '--script', str(root / 'theourgia/cli.ss'), 'init', '--store', str(area/'store')], env=product.runtime_env(), capture_output=True, check=True)
+subprocess.run(['scheme', '--script', str(core / 'cli.ss'), 'init', '--store', str(area/'store')], env=product.runtime_env(), capture_output=True, check=True,stdin=subprocess.DEVNULL)
 bad = 0
 def want(label, result, expected):
     global bad

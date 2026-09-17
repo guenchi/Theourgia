@@ -19,6 +19,89 @@ is the whole of the difference:
 Without a pinned libdir the working trees are used, and the reading is only
 as stable as they are.
 
+## The Python fixtures are not in that number, and are run by hand
+
+`run-fixtures.sh` runs `*.ss`. Nine fixtures here are `*.py`, they are
+**not** covered by its exit status, and nothing else runs them either --
+which is how five of them came to end by writing a log into a directory
+belonging to another repository and nobody noticed for a batch. Run them
+explicitly, from this directory:
+
+    . ./env.sh
+    export THEOURGIA_TEST_ROOT=/tmp/theourgia-test
+    for f in working-processes eval-supervisor eval-local datum-processes \
+             daemon daemon-lifecycle mcp mcp-route mcp-probe; do
+      echo "== $f"; python3 $f.py; echo "rc=$?"
+    done
+
+Each prints its own rows and ends with `<name> complete`, the same
+contract the Scheme fixtures keep, and `rc` is the verdict. `daemon`,
+`daemon-lifecycle`, `mcp-route` and `mcp-probe` start real processes and
+take a few minutes between them.
+
+**Three environment variables, and they do different things.**
+`THEOURGIA_LIBDIR` pins the library path exactly as it does for the
+Scheme fixtures. `THEOURGIA_TEST_ROOT` is where a run may create stores,
+and where each fixture writes its transcript (`<root>/evidence/`); every
+fixture that writes one prints the path. `THEOURGIA_SCHEME` names the
+Chez binary if it is not `scheme`.
+
+`THEOURGIA_LIBDIR` is optional in the repository and **required inside a
+delivery**: `paths.py` falls back to this file's grandparent, which holds
+`theourgia/` in the repository and holds `core/` in a delivery. It now
+refuses a library directory with no `theourgia/` in it and says so, rather
+than letting each child process come back `library (theourgia rpc) not
+found` one row at a time after the fixture has built its store.
+
+**A unix socket path is shorter than a file path, and that decides where
+a store may go.** `sun_path` holds 104 bytes; four of these fixtures
+connect to `<store>/socket`. `paths.py` therefore prefers
+`THEOURGIA_TEST_ROOT`, falls back to the system temporary directory when
+that root is too long, and says on stderr that it did so. Measured with
+a 95-character root: `connect` raised `ENAMETOOLONG`, which the
+transport does not treat as "no daemon here", so every call came back
+`(error transport-unavailable)` and `mcp-probe` reported the core
+catalog unavailable -- a sentence about the store produced by the length
+of a directory name.
+
+**Every child they start is given an empty stdin.** `batch` reads its
+intents from standard input, so a comparison call that inherited the
+fixture's own stdin waited forever for an end of file that a terminal or
+a detached session never sends. `mcp.py` surfaced it as
+`subprocess.TimeoutExpired` after 27 passing rows -- no sentinel, no
+`FAIL`, which reads as flakiness rather than as a hang, the failure this
+harness already records as the one it reports worst. Twenty-one calls
+across the ten Python scripts now pass `stdin=subprocess.DEVNULL`, and
+`q8-cli.py` sends `b''` where it used to send `input=None` -- which
+inherits standard input rather than closing it. The calls that feed a
+child deliberately already passed `input=`.
+
+**They find the core beside themselves.** All nine used
+`Path(__file__).resolve().parents[2]` for three different things at once
+-- the core sources, the library path, and a scratch directory -- which
+held in the one tree they were written in and in no other. `paths.py`
+separates them: `core()` is `parents[1]`, `libdir()` is the pin, and
+`scratch()` is a fresh directory that is short enough to hold a socket.
+
+## Two files in this directory are tools, not fixtures
+
+`mutate-form.ss` rewrites one AST form inside one named definition;
+`mcp-probe.py` uses it to add a verb to a throwaway copy of the core.
+`paths.py` is the module described above. Both print a usage line rather
+than crashing when the runner reaches them, which is what makes the
+runner record them as probes.
+
+## Non-`.ss` files a delivery has to carry
+
+`consts.c`, `rows-baseline.txt`, `vendored-sources.txt`, the nine Python
+fixtures, `q8-cli.py` (driven on its own, not one of the nine),
+`paths.py`, and now **`vectors/`** -- ten
+language files `code-text.ss` imports. They were read from
+`../theourgos/`, a different and closed repository, so that fixture
+could only run on a machine that had it checked out beside this one.
+This is the same trap RUN.md already records twice below: a list built
+from what is there has no way to mention what is not.
+
 The runner prints three lines you should read rather than skim:
 
     fixtures run: <n>   not-green: <n>

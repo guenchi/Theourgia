@@ -1,0 +1,3 @@
+﻿fn f() {}
+	struct Thing {}
+impl Thing {}

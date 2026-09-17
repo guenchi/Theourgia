@@ -8,15 +8,25 @@ import subprocess
 import sys
 import tempfile
 
-root=Path(__file__).resolve().parents[2]
-area=Path(tempfile.mkdtemp(prefix='mcp-probe-',dir=root/'.build'))
-shutil.copytree(root/'theourgia',area/'theourgia',ignore=shutil.ignore_patterns('*.so','*.wpo','__pycache__'))
-(area/'igropyr').symlink_to(root/'igropyr',target_is_directory=True)
-edit=subprocess.run(['scheme','--script',str(root/'implementation/mutate-form.ss'),str(area/'theourgia/rpc.ss'),'verbs','(verb-table)',"(cons (cons (quote catalog-probe) (lambda (store actor args req options) (quote (ok catalog-probe)))) (verb-table))"],capture_output=True,text=True)
+import paths
+
+core=paths.core()
+here=Path(__file__).resolve().parent
+area=paths.scratch('mcp-probe-')
+# `symlinks=True`, BECAUSE THE SOURCE DIRECTORY CONTAINS ONE TO ITSELF.
+# `theourgia/theourgia -> .` is how the repository resolves its own
+# library names; followed rather than copied it recurses forever.
+shutil.copytree(core,area/'theourgia',symlinks=True,
+                ignore=shutil.ignore_patterns('*.so','*.wpo','__pycache__','test','.git','.build'))
+# NOTHING BUT `theourgia/` IS PUT ON THE LIBRARY PATH. This copy used to
+# get an `igropyr` symlink beside it; the core imports no such library
+# any more, so leaving one there would let a reintroduced dependency
+# resolve and go unremarked. The probe is a second witness for that.
+edit=subprocess.run(['scheme','--script',str(here/'mutate-form.ss'),str(area/'theourgia/rpc.ss'),'verbs','(verb-table)',"(cons (cons (quote catalog-probe) (lambda (store actor args req options) (quote (ok catalog-probe)))) (verb-table))"],capture_output=True,text=True,stdin=subprocess.DEVNULL)
 assert edit.returncode==0,edit.stdout+edit.stderr
 store=area/'store'
 env=dict(os.environ,CHEZSCHEMELIBDIRS=str(area),CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj',THEOURGIA_HOME=str(area/'home'))
-subprocess.run(['scheme','--script',str(area/'theourgia/cli.ss'),'init','--store',str(store)],env=env,capture_output=True,check=True)
+subprocess.run(['scheme','--script',str(area/'theourgia/cli.ss'),'init','--store',str(store)],env=env,capture_output=True,check=True,stdin=subprocess.DEVNULL)
 requests=[{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-11-25','capabilities':{},'clientInfo':{'name':'fixture','version':'1'}}},
           {'jsonrpc':'2.0','method':'notifications/initialized'}, {'jsonrpc':'2.0','id':2,'method':'tools/list'},
           {'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'theourgia_catalog-probe','arguments':{'argv':[]}}}]
@@ -35,6 +45,8 @@ want('MC-01 newly compiled core verb appears without shell changes',
 want('MC-01 newly compiled core verb is callable through the shell',
  rows[2].get('result',{}).get('content',[{}])[0].get('text'),'(ok catalog-probe)\n')
 print(f'{bad} failures\nmcp-probe complete')
-(root/'implementation/evidence/mcp-probe.json').write_text(json.dumps({'source_sha256':hashlib.sha256((area/'theourgia/rpc.ss').read_bytes()).hexdigest(),'stdout':result.stdout,'stderr':result.stderr,'exit_code':result.returncode},indent=2)+'\n')
+transcript=paths.evidence('mcp-probe.json')
+print(f'transcript {transcript}')
+transcript.write_text(json.dumps({'source_sha256':hashlib.sha256((area/'theourgia/rpc.ss').read_bytes()).hexdigest(),'stdout':result.stdout,'stderr':result.stderr,'exit_code':result.returncode},indent=2)+'\n')
 
 sys.exit(bool(bad))

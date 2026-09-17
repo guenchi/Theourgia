@@ -74,5 +74,5 @@
                                      (uncertain-tokens ()) (prefix-lines ())))))
 (want "CT-02 registered data row activates existing profile"
       (boundaries (suggest "toy" "thing First {}\nthing Second {}\n")) '(0 15))
-(printf "~a failures\ncode-suggest complete\n" bad)
+(printf "~a failures\ncode-suggest1 complete\n" bad)
 (exit (if (zero? bad) 0 1))

@@ -1,0 +1,3 @@
+﻿function f() {}
+	class C {}
+const inc = (x) => x + 1;

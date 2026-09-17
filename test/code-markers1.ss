@@ -38,5 +38,5 @@
 (want "CT-15 raw escaped-family text without controls is not decoded"
       (projection-decode py (string->utf8 "# @@block whatever\n"))
       (list #f (list (list "new" (string->utf8 "# @@block whatever\n")))))
-(printf "~a failures\ncode-markers complete\n" bad)
+(printf "~a failures\ncode-markers1 complete\n" bad)
 (exit (if (zero? bad) 0 1))

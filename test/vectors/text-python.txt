@@ -1,0 +1,5 @@
+﻿def f():
+	return 1
+	class C:
+	pass
+answer = 42

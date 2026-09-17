@@ -36,7 +36,10 @@ def call(s, args, data=None, fault=None, actor='review'):
     if fault: e['THEOURGIA_FAULT'] = fault
     argv = ['scheme','--script',str(lib/'theourgia/cli.ss'),args[0],'--store',str(s)]
     if actor is not None: argv += ['--actor',actor]
-    p = subprocess.run(argv+args[1:], input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e, timeout=120)
+    # `input=None` INHERITS THIS PROCESS'S STDIN, it does not close it.
+    # Most calls here pass no payload, and a verb that reads standard
+    # input then waits for an end of file the caller never sends.
+    p = subprocess.run(argv+args[1:], input=data if data is not None else b'', stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=e, timeout=120)
     text = p.stdout.decode(errors='replace')
     rows.append(dict(args=args,fault=fault,exit=p.returncode,stdout=text,stderr=p.stderr.decode(errors='replace')))
     return p.returncode, text
@@ -117,7 +120,7 @@ for mode,fault in [('plain',None),('tracked',None),('plain','report-fail@report'
     case=root/('report-'+mode+'-'+str(bool(fault)));case.mkdir();(case/'store').mkdir();(case/'machine').mkdir()
     e=dict(env,THEOURGIA_HOME=str(case/'machine'))
     if fault:e['THEOURGIA_FAULT']=fault
-    result=subprocess.run(['scheme','--script',str(pathlib.Path(__file__).with_name('q8-report.ss')),str(case/'store'),mode],env=e,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45)
+    result=subprocess.run(['scheme','--script',str(pathlib.Path(__file__).with_name('q8-report.ss')),str(case/'store'),mode],env=e,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,stdin=subprocess.DEVNULL)
     check('report and outline '+mode+' '+str(fault),result.returncode==0 and '(failures 0)' in result.stdout.decode())
     rows.append(dict(mode=mode,fault=fault,exit=result.returncode,stdout=result.stdout.decode(),stderr=result.stderr.decode()))
 (root/'results.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))

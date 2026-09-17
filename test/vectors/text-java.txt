@@ -1,0 +1,3 @@
+﻿class C {}
+	interface I {}
+enum E { A }

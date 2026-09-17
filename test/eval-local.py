@@ -6,17 +6,21 @@ import sys
 import tempfile
 import time
 
-root = Path(__file__).resolve().parents[2]
-area = Path(tempfile.mkdtemp(prefix='eval-fixture-', dir=root / '.build'))
-env = dict(os.environ, CHEZSCHEMELIBDIRS=str(root), CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj', THEOURGIA_HOME=str(area / 'home'))
+import paths
+
+# `lib` is rebound below as a block id, so the library path is `libdir`.
+core, libdir = paths.core(), paths.libdir()
+area = paths.scratch('eval-fixture-')
+env = dict(os.environ, CHEZSCHEMELIBDIRS=str(libdir), CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj', THEOURGIA_HOME=str(area / 'home'))
 store = area / 'store'
-subprocess.run(['scheme', '--script', str(root / 'theourgia/cli.ss'), 'init', '--store', str(store)], env=env, capture_output=True, check=True)
+subprocess.run(['scheme', '--script', str(core / 'cli.ss'), 'init', '--store', str(store)], env=env, capture_output=True, check=True,stdin=subprocess.DEVNULL)
 bad = 0
-# Keep the raw output of this run next to the other implementation evidence.
+# The raw output of this run is kept beside the run's other scratch.
+transcript_path = paths.evidence('eval-local.log')
 class Transcript:
     def __init__(self, stream):
         self.stream = stream
-        self.file = (root / 'implementation/evidence/eval-local.log').open('w')
+        self.file = transcript_path.open('w')
     def write(self, text):
         self.stream.write(text)
         self.file.write(text)
@@ -34,7 +38,7 @@ def want(label, actual, expected):
         print(f'FAIL {label}: {actual!r} WANT {expected!r}', flush=True)
 def evaluate(source, *args):
     started = time.monotonic()
-    r = subprocess.run([sys.executable, str(root / 'theourgia/local.py'), 'eval', '--store', str(store), *args, '--', source], env=env, capture_output=True, timeout=15)
+    r = subprocess.run([sys.executable, str(core / 'local.py'), 'eval', '--store', str(store), *args, '--', source], env=env, capture_output=True, timeout=15,stdin=subprocess.DEVNULL)
     want('EV-transport result is one complete line', len(r.stdout.splitlines()), 1)
     return r.stdout.decode(), time.monotonic() - started
 for source, values in [('(+ 1 2)', '(3)'), ('(values)', '()'), ('(values 1 2)', '(1 2)')]:
@@ -69,13 +73,13 @@ want('EV-08 evaluation cannot write committed store', after, before)
 out, _ = evaluate('(store-cut)')
 want('EV-10 committed snapshot is readable', out.startswith('(ok (values ('), True)
 for verb in ['eval', 'not-a-verb']:
-    r = subprocess.run(['scheme', '--script', str(root / 'theourgia/rpc-worker.ss'), str(store), 'test', '--once'], input=('('+verb+' \"x\")\n').encode(), env=env, capture_output=True, timeout=10)
+    r = subprocess.run(['scheme', '--script', str(core / 'rpc-worker.ss'), str(store), 'test', '--once'], input=('('+verb+' \"x\")\n').encode(), env=env, capture_output=True, timeout=10)
     want('EV-01 RPC unknown path ' + verb, b'(error unknown-verb ' in r.stdout, True)
 source_dir = area / 'source'
 source_dir.mkdir()
 (source_dir / 'context.sc').write_text('(library (eval-test) (export x) (import (rnrs)) (define x 40))')
 def cli(*args):
-    r = subprocess.run(['scheme', '--script', str(root / 'theourgia/cli.ss'), *args, '--store', str(store)], env=env, capture_output=True, timeout=15)
+    r = subprocess.run(['scheme', '--script', str(core / 'cli.ss'), *args, '--store', str(store)], env=env, capture_output=True, timeout=15,stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stdout + r.stderr
     return r.stdout.decode()
 cli('import-code', str(source_dir), '--datum')
@@ -91,5 +95,6 @@ out, _ = evaluate('(+ x 2)', '--under', lib, '--cut', cut)
 want('EV-10 explicit earlier cut retains old definitions', '(values (42))' in out, True)
 out, _ = evaluate('(+ 2 3)', '--memory-bytes', '268435456')
 want('EV-03 small allocation twin fits the same memory budget', '(values (5))' in out, True)
+print(f'transcript {transcript_path}')
 print(f'{bad} failures\neval-local complete')
 sys.exit(bool(bad))

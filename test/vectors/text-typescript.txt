@@ -1,0 +1,3 @@
+﻿interface Shape {}
+	type Count = number;
+function f(): void {}

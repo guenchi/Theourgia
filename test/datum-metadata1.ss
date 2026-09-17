@@ -69,5 +69,5 @@
   (list "(define injected 1)\n" ";; unterminated" ";; separated\n\n" 7 '#vu8(59 10)))
 (want "CD-08 terminated CR comment doc remains writable"
       (rpc-ok? (rpc-dispatch store (list 'set id "doc" "  ;; valid\r") "test")) #t)
-(printf "~a failures\ndatum-metadata complete\n" bad)
+(printf "~a failures\ndatum-metadata1 complete\n" bad)
 (exit (if (zero? bad) 0 1))

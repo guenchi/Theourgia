@@ -1,0 +1,3 @@
+﻿f() { :; }
+	function g { :; }
+function h() { :; }

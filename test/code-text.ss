@@ -1,4 +1,18 @@
 #!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
 (import (chezscheme) (theourgia rpc) (theourgia store) (theourgia reduce) (theourgia ffi))
 (define bad 0)
 (define (want label got expected)
@@ -23,10 +37,33 @@
       (lambda (p) (let ((b (get-bytevector-all p))) (if (eof-object? b) #vu8() b))))))
 (define (write-bytes path b)
   (call-with-port (open-file-output-port path (file-options no-fail)) (lambda (p) (put-bytevector p b))))
+;; THE VECTORS TRAVEL WITH THE SUITE. They were read from
+;; `../theourgos/` -- another repository, and a closed one -- so this
+;; fixture could only run on a machine that had it checked out beside
+;; this one, and a delivery carrying these files carried no way to run
+;; them. They are copied into `test/vectors/` and found from this
+;; script's own path, like every other thing a fixture needs.
+;;
+;; AND AN ABSENT VECTOR IS NAMED. `slurp` answers `missing` for anything
+;; it cannot open, so a wrong directory made every comparison below run
+;; against the same non-bytevector on both sides.
+(define vectors-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1))))))
+         (dir (if cut (substring self 0 cut) ".")))
+    (string-append dir "/vectors")))
+(define (vector-bytes name)
+  (let* ((path (string-append vectors-dir "/text-" name ".txt"))
+         (b (slurp path)))
+    (if (bytevector? b) b
+        (assertion-violation 'code-text "the language vector is missing" path))))
 (define originals
   (map (lambda (e)
          (let* ((name (symbol->string (car e)))
-                (b (slurp (string-append "../theourgos/core/briefs/drafts/2026-09-13-codex/vectors/text-" name ".txt"))))
+                (b (vector-bytes name)))
            (write-bytes (string-append input "/" name "." (cadr e)) b)
            (cons (car e) b))) fixtures))
 (define imported (rpc-dispatch store (list 'import-code input) "test"))

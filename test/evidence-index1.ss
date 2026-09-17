@@ -1,4 +1,18 @@
 #!r6rs
+;; Copyright 2026 guenchi
+;;
+;; Licensed under the Apache License, Version 2.0 (the "License");
+;; you may not use this file except in compliance with the License.
+;; You may obtain a copy of the License at
+;;
+;;     http://www.apache.org/licenses/LICENSE-2.0
+;;
+;; Unless required by applicable law or agreed to in writing, software
+;; distributed under the License is distributed on an "AS IS" BASIS,
+;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+;; See the License for the specific language governing permissions and
+;; limitations under the License.
+
 (import (chezscheme) (theourgia rpc) (theourgia store) (theourgia request)
         (theourgia ffi) (theourgia trace) (theourgia log) (theourgia wire)
         (theourgia digest))
@@ -8,7 +22,7 @@
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" label got expected))))
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/evidence-index-" (number->string (get-process-id))))
-(when (file-exists? root) (error 'evidence-index "Use a fresh root" root))
+(when (file-exists? root) (error 'evidence-index1 "Use a fresh root" root))
 (mkdir-p! root)
 (define store (string-append root "/store"))
 (putenv "THEOURGIA_HOME" (string-append store "-home"))
@@ -56,10 +70,39 @@
 (want "QI-05 restored metadata restores verifiable placement" (map ev-placement (query)) '(valid-history))
 (store-snapshot! store "test")
 (want "QI-09 snapshot persists a derived identity checkpoint" (file-exists? checkpoint) #t)
+;; THE CHILD IS FOUND BESIDE THIS SCRIPT, NOT UNDER THE CURRENT
+;; DIRECTORY. The runner starts every fixture from `test/`, where
+;; `test/evidence-index-child.ss` does not exist -- the shell then
+;; reported a missing file, `code` was non-zero, and every row that used
+;; the child read `(child-failed 1)`: a red about the caller's directory
+;; rather than about the index.
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+(define child-script
+  (let ((p (string-append script-dir "/evidence-index-child.ss")))
+    (if (file-exists? p) p
+        (assertion-violation 'evidence-index1
+          "evidence-index-child.ss is not beside this fixture" p))))
+;; EVERY PATH IN THE COMMAND IS QUOTED. These are concatenated into a
+;; shell command line, and one of them is now derived from the path this
+;; script was started with -- so a space anywhere above the delivery
+;; splits the script name in two and the row reads `(child-failed 1)`, a
+;; sentence about the store produced by a directory name.
+(define (shell-quote s)
+  (string-append "'" (apply string-append
+    (map (lambda (c) (if (char=? c #\') "'\\''" (string c))) (string->list s))) "'"))
 (define (child . req)
   (let ((report (string-append root "/child.sexp")))
-    (let ((code (system (string-append "scheme --script test/evidence-index-child.ss " store " " writer " " report
-                                     (if (null? req) "" (string-append " " (car req)))))))
+    (when (file-exists? report) (delete-file report))
+    (let ((code (system (string-append "scheme --script " (shell-quote child-script)
+                                     " " (shell-quote store) " " (shell-quote writer)
+                                     " " (shell-quote report)
+                                     (if (null? req) "" (string-append " " (shell-quote (car req))))))))
       (if (and (= code 0) (file-exists? report)) (call-with-input-file report read) (list 'child-failed code)))))
 (want "QI-06 a fresh process reconstructs the same identity" (child) '(valid-history))
 (define checkpoint-bytes (and (file-exists? checkpoint) (call-with-port (open-file-input-port checkpoint) get-bytevector-all)))
@@ -91,5 +134,5 @@
 (delete-file segment)
 (want "QI-04 a checkpoint without the source refuses to forget a seen identity"
       (child) '(index-evidence-missing))
-(printf "~a failures\nevidence-index complete\n" bad)
+(printf "~a failures\nevidence-index1 complete\n" bad)
 (exit (if (zero? bad) 0 1))
