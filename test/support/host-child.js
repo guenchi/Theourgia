@@ -78,22 +78,16 @@ function load() {
  * without.
  */
 function crashingOps(inner, afterWrites) {
-  let writes = 0;
-  const wrap = (name) => (...args) => {
-    if (name === 'writeText' || name === 'writeDurably') {
-      writes += 1;
-      if (writes > afterWrites) {
-        report({ step: 'crash', at: `write-${writes}`, file: args[0] });
-        process.exit(9);
-      }
-    }
-    return inner[name](...args);
+  const stop=(point,file)=>{report({step:'crash',at:point,file});process.exit(9);};
+  const wrap=name=>(...args)=>{
+    if(afterWrites===0 && (name==='writeText'||name==='writeDurably'))stop('before-preparation',args[0]);
+    const result=inner[name](...args);
+    if(name==='rename' && args[1].endsWith('current.md.meta') && afterWrites===1 &&
+       JSON.parse(inner.readText(args[1])).phase==='publishing')stop('after-prepared',args[1]);
+    if(name==='rename' && args[1].endsWith('current.md') && afterWrites===2)stop('after-body-rename',args[1]);
+    return result;
   };
-  const out = {};
-  for (const name of Object.keys(inner)) {
-    out[name] = typeof inner[name] === 'function' ? wrap(name) : inner[name];
-  }
-  return out;
+  return Object.fromEntries(Object.keys(inner).map(name=>[name,typeof inner[name]==='function'?wrap(name):inner[name]]));
 }
 
 async function main() {

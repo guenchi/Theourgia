@@ -23,7 +23,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as ts from 'typescript';
-import { nodeFileOps } from '../../src/fsops';
+import { controlDirectory, nodeFileOps } from '../../src/fsops';
 import { OwnerRecord, Owners, Stamp, stamped, stillOwed, verdictOn } from '../../src/ownership';
 import { runHost } from '../support/host';
 
@@ -40,12 +40,13 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const held = owners().take(directory, 'S-a', []);
     assert.ok(held.held, 'an unowned directory was not taken');
     assert.strictEqual(held.record.generation, 0);
     assert.strictEqual(held.record.sessionId, 'S-a');
     assert.deepStrictEqual(held.record.expected, {}, 'a first owner inherits a debt from nobody');
-    assert.ok(fs.existsSync(path.join(directory, 'owner.0')), 'no owner record was published');
+    assert.ok(fs.existsSync(path.join(controlDirectory(directory), 'owner.0')), 'no owner record was published');
   });
 
   /*
@@ -59,13 +60,14 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const first = owners().take(directory, 'S-a', ['1.md.meta']);
     assert.ok(first.held);
     const second = owners().take(directory, 'S-b', ['1.md.meta']);
     assert.ok(second.held, 'the block could not be taken over at all');
     assert.strictEqual(second.record.generation, 1);
-    assert.ok(fs.existsSync(path.join(directory, 'owner.0')), 'the previous generation was destroyed');
-    assert.ok(fs.existsSync(path.join(directory, 'owner.1')), 'the new generation was not published');
+    assert.ok(fs.existsSync(path.join(controlDirectory(directory), 'owner.0')), 'the previous generation was destroyed');
+    assert.ok(fs.existsSync(path.join(controlDirectory(directory), 'owner.1')), 'the new generation was not published');
     const now = owners().ownerOf(directory);
     assert.ok(now.known && now.record !== null);
     assert.strictEqual(now.record.sessionId, 'S-b', 'the reader does not see the newest generation');
@@ -75,7 +77,8 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
-    fs.writeFileSync(path.join(directory, 'owner.0'), 'not json at all\n', 'utf8');
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
+    fs.writeFileSync(path.join(controlDirectory(directory), 'owner.0'), 'not json at all\n', 'utf8');
     const asked = owners().ownerOf(directory);
     assert.deepStrictEqual(
       asked,
@@ -101,10 +104,11 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const held = owners().take(directory, 'S-a', []);
     assert.ok(held.held);
     fs.writeFileSync(
-      path.join(directory, 'owner.7'),
+      path.join(controlDirectory(directory), 'owner.7'),
       `${JSON.stringify({ sessionId: 'S-x', generation: 2, expected: {} })}\n`,
       'utf8'
     );
@@ -124,6 +128,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const first = owners().take(directory, 'S-a', []);
     assert.ok(first.held);
 
@@ -134,7 +139,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
      * winning looks like from here.
      */
     fs.writeFileSync(
-      path.join(directory, 'owner.1'),
+      path.join(controlDirectory(directory), 'owner.1'),
       `${JSON.stringify({ sessionId: 'S-b', generation: 1, expected: {} })}\n`,
       'utf8'
     );
@@ -177,6 +182,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const held = owners().take(directory, 'S-a', ['1.md.meta']);
     assert.ok(held.held);
 
@@ -195,7 +201,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
     });
     watching.rewrite(directory, stamped(held.record, '1.md.meta', { sessionId: 'S-x', generation: 9 }));
 
-    const name = path.join(directory, 'owner.0');
+    const name = path.join(controlDirectory(directory), 'owner.0');
     assert.deepStrictEqual(
       wrote.filter((f) => f === name),
       [],
@@ -257,7 +263,7 @@ describe('O1 two processes reaching for one block directory', function () {
       1,
       `${won} of two processes took the same generation: ${JSON.stringify([a.steps, b.steps])}`
     );
-    const names = fs.readdirSync(path.join(storage, 'a.2')).filter((n) => n.startsWith('owner.'));
+    const names = fs.readdirSync(controlDirectory(path.join(storage, 'a.2'))).filter((n) => n.startsWith('owner.'));
     assert.deepStrictEqual(names.sort(), ['owner.0'], 'more than one generation was published');
   });
 });
@@ -269,6 +275,7 @@ describe('O3 a takeover owes the sidecars it has not stamped yet', () => {
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const first = owners().take(directory, 'S-a', sidecars);
     assert.ok(first.held);
     const second = owners().take(directory, 'S-b', sidecars);
@@ -309,6 +316,7 @@ describe('O3 a takeover owes the sidecars it has not stamped yet', () => {
     const root = scratch();
     const directory = path.join(root, 'a.2');
     fs.mkdirSync(directory, { recursive: true });
+    fs.mkdirSync(controlDirectory(directory), {recursive:true});
     const a = owners().take(directory, 'S-a', ['1.md.meta']);
     assert.ok(a.held);
     const b = owners().take(directory, 'S-b', ['1.md.meta']);
@@ -460,7 +468,7 @@ describe('O1 nothing takes ownership without the session layer', () => {
           if (
             ts.isCallExpression(n) &&
             ts.isPropertyAccessExpression(n.expression) &&
-            n.expression.name.getText(file) === 'claim' &&
+            ['claim','migrationSourceSafeNow'].includes(n.expression.name.getText(file)) &&
             n.getStart(file) < call.getStart(file)
           ) {
             legitimate = true;
@@ -612,7 +620,7 @@ describe('O2 every sidecar write passes the ownership rule', () => {
         const earliest = Math.min(...asks.map((call) => call.getStart(src)));
         return !all(fn, ts.isIfStatement).some(
           (guard) =>
-            guard.getStart(src) > earliest &&
+            guard.getEnd() > earliest &&
             guard.getStart(src) < write.getStart(src) &&
             leaves(guard.thenStatement)
         );

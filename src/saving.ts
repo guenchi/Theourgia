@@ -1,3 +1,6 @@
+import * as path from 'path';
+import {Owners} from './ownership';
+import {withExclusive} from './fsops';
 /*
  * Copyright 2018 - 2026 guenchi
  *
@@ -56,6 +59,7 @@ export interface SaveDocument {
  */
 export type Refusal =
   | { because: 'document-dirty' }
+  | { because: 'working-unavailable'; detail:string }
   | { because: 'byte-order-mark' }
   | { because: 'not-utf8' }
   | { because: 'disk-differs-from-snapshot' }
@@ -202,7 +206,7 @@ function bodyOf(text: string, sidecar: Sidecar): { body: string; normalised: boo
 export class Saving {
   private readonly files: FileOps;
 
-  constructor(files: FileOps) {
+  constructor(files: FileOps, private readonly ownership?: {owners:Owners;sessionId:string}) {
     this.files = files;
   }
 
@@ -213,6 +217,12 @@ export class Saving {
    * assert "zero sends" without watching a transport. (§12.19.4, C5,
    * C17)
    */
+  private requireOwnership(file:string):void {
+    if (this.ownership && !this.ownership.owners.mayWrite(path.dirname(file),this.ownership.sessionId).may) {
+      throw Object.assign(new Error(`Ownership was lost for ${file}; the receipt and current file are retained.`),{code:'OWNERSHIP_LOST'});
+    }
+  }
+
   public decide(document: SaveDocument, sidecar: Sidecar | null): SaveDecision {
     /*
      * DIRTY FIRST. Everything below reasons about "the text of the last
@@ -448,6 +458,8 @@ export class Saving {
    * them does" is not one of the choices.
    */
   public releaseSend(file: string, seq: number): boolean {
+    return withExclusive(path.dirname(file), (): boolean => {
+      this.requireOwnership(file);
     const meta = sidecarPathOf(file);
     if (!this.files.exists(meta)) {
       return false;
@@ -461,6 +473,8 @@ export class Saving {
       outstanding: read.sidecar.outstanding.filter((out) => out.seq !== seq)
     });
     return true;
+
+    });
   }
 
   public recordAnswer(
@@ -485,10 +499,12 @@ export class Saving {
        * caller whose record says the store confirmed something without
        * saying what.
        */
-      send: { seq: number; prefixDigest: string; by: 'store' | 'operator' };
+      send: { seq: number; prefixDigest: string; by: 'store' | 'operator'; projectionId?: string };
     },
     dequeue: () => void = () => undefined
   ): AnswerRecording {
+    return withExclusive(path.dirname(file), (): AnswerRecording => {
+      this.requireOwnership(file);
     const meta = sidecarPathOf(file);
     if (!this.files.exists(meta)) {
       return { dequeued: false, because: 'not-acknowledged' };
@@ -496,6 +512,14 @@ export class Saving {
     const read = sidecarFromDisk(this.files.readText(meta));
     if (!read.read) {
       return { dequeued: false, because: 'not-acknowledged' };
+    }
+    if (read.sidecar.phase !== 'published') return {dequeued:false,because:'not-acknowledged'};
+    if (read.sidecar.projection && read.sidecar.projection.id !== answer.send.projectionId) {
+      if (answer.mismatch) return {dequeued:false,because:'req-mismatch'};
+      // Retire only this request's transport evidence. The new origin is untouched.
+      writeSidecar(this.files,file,{...read.sidecar,outstanding:read.sidecar.outstanding.filter(o=>!(o.seq===answer.send.seq && o.req===answer.req))});
+      dequeue();
+      return {dequeued:true};
     }
     if (answer.mismatch) {
       /*
@@ -677,5 +701,7 @@ export class Saving {
     });
     dequeue();
     return { dequeued: true };
+
+    });
   }
 }

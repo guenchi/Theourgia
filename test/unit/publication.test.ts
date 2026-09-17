@@ -60,7 +60,7 @@ function nothingOpen(): OpenDocuments {
 }
 
 function openOn(file: string): OpenDocuments {
-  return { isOpen: (f) => path.resolve(f) === path.resolve(file) };
+  return { isOpen: (f) => path.resolve(f) === path.resolve(file), isDirty:(f)=>path.resolve(f)===path.resolve(file) };
 }
 
 function request(directory: string, text: string, prefix = '## Two\n', cursor: string | null = null) {
@@ -336,9 +336,10 @@ describe('D5 only bytes that came from the store make a baseline', () => {
   it('writes no baseline for a version built from the user’s own bytes', () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     writeSidecar(new RecordingFs(), file, {
       ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
       format: 1,
       storeId: 's1',
       blockId: 'a.2',
@@ -676,147 +677,53 @@ describe('D6 the mark an old-format send leaves on a block', () => {
   });
 });
 
-describe('C2 a published file is written once and never touched again', () => {
-  it('writes each version to its own path', async () => {
-    const dir = scratch();
-    const files = new RecordingFs();
-    const publisher = new Publisher(files, nothingOpen());
-
-    const first = await publisher.publish(request(dir, '## Two\none\n'));
-    const second = await publisher.publish(request(dir, '## Two\ntwo\n'));
-    assert.ok(first.published && second.published);
-    if (first.published && second.published) {
-      assert.notStrictEqual(first.file, second.file, 'the second reading replaced the first file');
-      assert.strictEqual(second.version, first.version + 1, 'versions do not advance by one');
-    cursor: null
-    cursor: null
-    }
+// C2 is replaced by v20 XC-01..04; each old safety axis remains executable here.
+describe('C2 to XC current publication handoff', () => {
+  it('uses one canonical path for successive readings', async () => {
+    const dir=scratch(),publisher=new Publisher(new RecordingFs(),nothingOpen());
+    const first=await publisher.publish(request(dir,'## Two\none\n'));
+    const second=await publisher.publish(request(dir,'## Two\ntwo\n'));
+    assert.ok(first.published&&second.published);
+    assert.strictEqual(first.file,second.file);
+    assert.strictEqual(fs.readFileSync(second.file as string,'utf8'),'## Two\ntwo\n');
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(),['current.md','current.md.meta']);
   });
-
-  /*
-   * THE ASSERTION C2 ACTUALLY MAKES: at most one write per path, by this
-   * process, across any sequence. An implementation that rewrote a file
-   * in place would still leave a consistent final state -- this is what
-   * tells them apart.
-   */
-  /*
-   * THE RULE IS ABOUT THE BLOCK FILES. `<n>.md` is written once and
-   * never moved; its record `<n>.meta` is REPLACED three times, and is
-   * replaced by writing a temporary file and renaming it -- which is
-   * what stops a stopped process from leaving a record nothing can
-   * read. Saying "nothing is ever renamed" would forbid the very thing
-   * that makes the record recoverable, so the cells name the paths the
-   * rule covers. (§12.23, §12.7.3)
-   */
-  function blockFiles(files: RecordingFs): string[] {
-    return Array.from(new Set(files.touched('writeText').concat(files.touched('writeDurably')))).filter(
-      (f) => f.endsWith('.md')
-    );
-  }
-
-  it('never writes a block file it has written before', async () => {
-    const dir = scratch();
-    const files = new RecordingFs();
-    const publisher = new Publisher(files, nothingOpen());
-    for (const text of ['## Two\none\n', '## Two\ntwo\n', '## Two\nthree\n']) {
-      await publisher.publish(request(dir, text));
-    }
-    const written = blockFiles(files);
-    assert.strictEqual(written.length, 3, `three readings produced ${written.length} files`);
-    cursor: null
-    for (const file of written) {
-      const writes = files.countOf('writeText', file) + files.countOf('writeDurably', file);
-      assert.strictEqual(
-        writes,
-        1,
-        `${file} was written ${writes} times; publication is supposed to be immutable`
-      );
-    }
+  it('never opens the canonical body for a truncating write', async () => {
+    const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
+    for(const body of ['long long body','x','third'])assert.ok((await publisher.publish(request(dir,'## Two\n'+body))).published);
+    const file=path.join(dir,'current.md');
+    assert.strictEqual(files.countOf('writeText',file)+files.countOf('writeDurably',file),0);
+    assert.strictEqual(files.countOf('rename',file),3);
+    assert.strictEqual(fs.readFileSync(file,'utf8'),'## Two\nthird');
   });
-
-  it('never unlinks or renames a block file', async () => {
-    const dir = scratch();
-    const files = new RecordingFs();
-    const publisher = new Publisher(files, nothingOpen());
-    for (const text of ['## Two\none\n', '## Two\ntwo\n']) {
-      await publisher.publish(request(dir, text));
-    }
-    assert.deepStrictEqual(files.touched('unlink'), [], 'something was unlinked');
-    cursor: null
-    for (const moved of files.touched('rename')) {
-      assert.ok(
-        !moved.endsWith('.md'),
-        `${moved} was renamed; only a record’s temporary file may be`
-      );
-    }
+  it('never unlinks current while installing a replacement', async () => {
+    const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
+    await publisher.publish(request(dir,'## Two\none'));
+    await publisher.publish(request(dir,'## Two\ntwo'));
+    assert.strictEqual(files.countOf('unlink',path.join(dir,'current.md')),0);
+    assert.strictEqual(files.countOf('rename',path.join(dir,'current.md')),2);
   });
-
-  /*
-   * AND THE RECORD IS REPLACED, NOT EMPTIED. A process stopped inside an
-   * in-place rewrite leaves a record nothing can read, and an unreadable
-   * record made this file count as absent and vanish from the draft
-   * listing -- surviving work made invisible by its own bookkeeping.
-   */
   it('replaces the record through a temporary file rather than truncating it', async () => {
-    const dir = scratch();
-    const files = new RecordingFs();
-    await new Publisher(files, nothingOpen()).publish(request(dir, '## Two\none\n'));
-    const meta = files.touched('rename').filter((f) => f.endsWith('.meta'));
-    assert.ok(meta.length > 0, 'the record was written in place, so a stopped process leaves it unreadable');
-    assert.strictEqual(
-      files.countOf('writeText', meta[0]),
-      0,
-      'the record path was opened for writing directly, which empties it first'
-    );
+    const dir=scratch(),files=new RecordingFs();
+    await new Publisher(files,nothingOpen()).publish(request(dir,'## Two\none'));
+    const meta=path.join(dir,'current.md.meta');
+    assert.ok(files.countOf('rename',meta)>=2);
+    assert.strictEqual(files.countOf('writeText',meta)+files.countOf('writeDurably',meta),0);
   });
-
-  /*
-   * AND IT DOES NOT WRITE AT ALL WHEN THE EDITOR HAS THE FILE. Then the
-   * editor is a writer and this is not; the open command only shows what
-   * is there and offers a refresh, which publishes a NEW version.
-   * (§12.13.1)
-   */
-  /*
-   * THE REFUSAL IS ABOUT THE PATH BEING WRITTEN, NOT ABOUT THE BLOCK.
-   *
-   * The first version of this cell opened a document on version 1 and
-   * expected version 2 to be refused, which is a misreading: refreshing
-   * a block the user has open is the ORDINARY path and publishes the
-   * next version (§12.15 结构一). What must never happen is writing a
-   * path the editor holds -- so the document here is open on the path
-   * the publication is about to use.
-   */
-    cursor: null
-  it('writes nothing when a document is open on the path it would write', async () => {
-    const dir = scratch();
-    const files = new RecordingFs();
-    const first = await new Publisher(files, nothingOpen()).publish(request(dir, '## Two\none\n'));
-    assert.ok(first.published);
-
-    const next = path.join(dir, '2.md');
-    const held = new RecordingFs();
-    const second = await new Publisher(held, openOn(next)).publish(request(dir, '## Two\ntwo\n'));
-    cursor: null
-    cursor: null
-    assert.deepStrictEqual(second, { published: false, because: 'document-open', file: next });
-    assert.deepStrictEqual(held.touched('writeText'), [], 'a file was written while the editor had it open');
+  it('preserves disk and sidecar when the current editor is dirty', async () => {
+    const dir=scratch(),file=path.join(dir,'current.md');
+    await new Publisher(new RecordingFs(),nothingOpen()).publish(request(dir,'## Two\none'));
+    const before=[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),files=new RecordingFs();
+    const refused=await new Publisher(files,openOn(file)).publish(request(dir,'## Two\ntwo'));
+    assert.deepStrictEqual(refused,{published:false,because:'dirty-document',file});
+    assert.deepStrictEqual([file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),before);
+    assert.strictEqual(files.touched('rename').length,0);
   });
-
-  /*
-   * AND REFRESHING A BLOCK THE USER HAS OPEN IS ALLOWED, which is the
-   * twin that stops the refusal above from being read as "never publish
-   * while anything is open" -- that would make the refresh command
-   * impossible.
-   */
-  it('publishes the next version while a document is open on the previous one', async () => {
-    const dir = scratch();
-    const first = await new Publisher(new RecordingFs(), nothingOpen()).publish(request(dir, '## Two\none\n'));
-    assert.ok(first.published);
-    const second = await new Publisher(
-      new RecordingFs(),
-      openOn(first.published ? first.file : '')
-    ).publish(request(dir, '## Two\ntwo\n'));
-    assert.ok(second.published, 'a refresh was refused because the old version was on screen');
+  it('updates an open clean document at the same path', async () => {
+    const dir=scratch(),publisher=new Publisher(new RecordingFs(),{isOpen:()=>true,isDirty:()=>false});
+    await publisher.publish(request(dir,'## Two\none'));
+    const result=await publisher.publish(request(dir,'## Two\ntwo'));
+    assert.ok(result.published);assert.strictEqual(fs.readFileSync(result.file,'utf8'),'## Two\ntwo');
   });
 });
 
@@ -1028,10 +935,11 @@ describe('C3 reconcile is the only way out of a third version', () => {
     require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
 
   function stranded(dir: string, fileText: string): string {
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.mkdirSync(dir, { recursive: true });
     const sidecar: Sidecar = {
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
       storeId: 's1',
       blockId: 'a.2',
@@ -1097,7 +1005,7 @@ describe('C3 reconcile is the only way out of a third version', () => {
    * version publishes a NEW version; the file the user had stays where
    * it is, because this extension deletes nothing. (§12.23)
    */
-  it('publishes a new version when they choose the store’s, and leaves the old file alone', () => {
+  it('replaces the current file atomically when the store version is chosen', () => {
     const dir = scratch();
     const file = stranded(dir, 'no heading at all\n');
     const files = new RecordingFs();
@@ -1108,11 +1016,11 @@ describe('C3 reconcile is the only way out of a third version', () => {
       '## Two\nthe store version\n'
     );
     assert.ok(done.done);
-    assert.notStrictEqual(done.file, file, 'the store’s version was written over the user’s');
+    assert.strictEqual(done.file, file, 'reconciliation did not use the canonical path');
     assert.strictEqual(
       fs.readFileSync(file, 'utf8'),
-      'no heading at all\n',
-      'the file the user had was changed'
+      '## Two\nthe store version\n',
+      'the chosen bytes were not installed'
     );
     assert.deepStrictEqual(files.touched('unlink'), [], 'reconciling deleted something');
   });
@@ -1230,13 +1138,14 @@ describe('every publication path asks the same questions', () => {
   it('refuses to take the store’s version onto a path the editor has open', () => {
     const dir = scratch();
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.writeFileSync(file, 'no heading at all\n', 'utf8');
     fs.writeFileSync(
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
           storeId: 's1',
           blockId: 'a.2',
@@ -1255,7 +1164,7 @@ describe('every publication path asks the same questions', () => {
       'utf8'
     );
     const files = new RecordingFs();
-    const done = new Publisher(files, openOn(path.join(dir, '2.md'))).reconcileBy(
+    const done = new Publisher(files, openOn(file)).reconcileBy(
       file,
       'take-store-version',
       '## Two\n',
@@ -1324,19 +1233,20 @@ describe('every publication path asks the same questions', () => {
  * that the user's bytes were still THERE, which they are right up until
  * the process stops halfway through replacing them.
  */
-describe('reconciling never writes over the file it is reconciling', () => {
+describe('XC reconciliation replaces current without a truncating write', () => {
   const digestOf = (text: string): string =>
     require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
 
   function strandedAt(dir: string, fileText: string): string {
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.writeFileSync(file, fileText, 'utf8');
     fs.writeFileSync(
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
           storeId: 's1',
           blockId: 'a.2',
@@ -1357,7 +1267,7 @@ describe('reconciling never writes over the file it is reconciling', () => {
     return file;
   }
 
-  it('puts the prefix in front of the user’s bytes in a NEW version', () => {
+  it('puts the prefix in front of the user bytes through one atomic replacement', () => {
     const dir = scratch();
     const file = strandedAt(dir, 'no heading at all\n');
     const files = new RecordingFs();
@@ -1368,13 +1278,13 @@ describe('reconciling never writes over the file it is reconciling', () => {
       '## Two\nthe store version\n'
     );
     assert.ok(done.done);
-    assert.notStrictEqual(done.file, file, 'the user’s only copy was written over');
+    assert.strictEqual(done.file, file, 'the result is not the current file');
     assert.strictEqual(
       files.countOf('writeText', file) + files.countOf('writeDurably', file),
       0,
       'the file holding the draft was opened for writing, which empties it first'
     );
-    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'no heading at all\n', 'the draft was changed');
+    assert.strictEqual(files.countOf('rename',file),1,'one body rename installs the selected bytes');
     assert.strictEqual(
       fs.readFileSync(done.file, 'utf8'),
       '## Two\nno heading at all\n',
@@ -1548,13 +1458,14 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
   it('marks the version it makes from the user’s bytes the same way', () => {
     const dir = scratch();
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.writeFileSync(file, 'no heading at all\n', 'utf8');
     fs.writeFileSync(
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
           storeId: 's1',
           blockId: 'a.2',
@@ -1774,13 +1685,14 @@ describe('review 20 a reconciliation is measured against the text it offered', (
 
   function stranded(dir: string, fileText: string): string {
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.writeFileSync(file, fileText, 'utf8');
     fs.writeFileSync(
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
           storeId: 's1',
           blockId: 'a.2',
@@ -1909,13 +1821,14 @@ describe('review 21 what the reconciliation action is measured against', () => {
    */
   function strandedOver(dir: string, fileText: string, baseline: string): string {
     fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, '1.md');
+    const file = path.join(dir, 'current.md');
     fs.writeFileSync(file, fileText, 'utf8');
     fs.writeFileSync(
       `${file}.meta`,
       JSON.stringify(
         sidecarToDisk({
     ...UNNUMBERED,
+      projection:{id:'fixture-source',kind:'committed',writer:'fixture',version:'v1',basedOn:null},
     format: 1,
           storeId: 's1',
           blockId: 'a.2',
@@ -1966,7 +1879,7 @@ describe('review 21 what the reconciliation action is measured against', () => {
    * step further along. This cannot be staged from outside the call, so
    * the write is injected into the FileOps between the two reads.
    */
-  it('publishes the text it checked, even if the file changes between the two reads', () => {
+  it('refuses replacement when external bytes change after the offer check', () => {
     const dir = scratch();
     const file = strandedOver(dir, 'alpha\n', 'alpha\n');
     let reads = 0;
@@ -1993,11 +1906,12 @@ describe('review 21 what the reconciliation action is measured against', () => {
       'alpha\n'
     );
     assert.ok(reads >= 1, 'the file was never read, so nothing was raced');
-    assert.strictEqual(done.done, true, `the ordinary path was refused: ${JSON.stringify(done)}`);
+    assert.strictEqual(done.done,false,'an external write was overwritten');
+    assert.strictEqual(done.because,'digest-moved');
     assert.strictEqual(
       fs.readFileSync(done.file, 'utf8'),
-      '## Two\nalpha\n',
-      'the version carries bytes that arrived after the check'
+      'beta\n',
+      'the external write was not preserved'
     );
   });
 

@@ -67,6 +67,7 @@ const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff']);
  * important it is.
  */
 const ALWAYS_WRITE_VERBS = new Set([
+  'write', 'commit',
   'insert',
   'set',
   'move',
@@ -97,6 +98,7 @@ export function appendsARecord(verb: string, args: string[]): boolean {
 }
 
 const KNOWN_VERBS = new Set([
+  'write', 'commit', 'drafts', 'discard',
   'init',
   'insert',
   'set',

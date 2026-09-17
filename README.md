@@ -1,7 +1,7 @@
 # theourgia for VS Code
 
 Browse a [theourgia](https://github.com/guenchi/theourgia) block store in the side bar,
-open a block in an editor, and save it back as one `set`.
+open a block in an editor, and save through a durable working draft and selected `commit`.
 
 Licensed under the Apache License, Version 2.0. See LICENSE.
 
@@ -13,8 +13,9 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 * **Opening a block**: `read <id>` gives the block, and its `heading-src` and `src`
   fields are put in a markdown buffer, in that order. One file per (store, block), so
   opening a block twice reaches the same document.
-* **Saving**: one `set <id> src <body>` carrying a request id and a cursor, sent through
-  an outbox that is written to disk before the request goes out.
+* **Saving**: `write` stores the body in this window's working namespace. A verified
+  readback supplies the immutable version selected by `commit`, carrying a request id
+  and cursor through an outbox written before transmission.
 * A **status bar** entry with the store, the actor, the cursor, the number of conflicts
   and the number of saves whose outcome is not known.
 
@@ -23,11 +24,10 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 * No graph view, no link editing, no title editing. Editing the heading line of a block
   is refused with a message rather than half-applied; changing a title is
   `set <id> title`, which is not in this batch.
-* No daemon. `theourgia.transport` has a `socket` setting and selecting it refuses every
-  request, rather than falling back to the command line and making the setting a lie.
-* No `--if-unchanged`. The core does not yet return a block's hash from `read`, so a save
-  cannot say which version it was composed against. Until it does, two people editing one
-  block from two machines will not be told; the store still records both records.
+* The core has a daemon, but this extension's direct `socket` adapter remains
+  unimplemented; select `cli` here.
+* Working drafts retain their original block hash and causal cut. Commit refuses a
+  stale baseline; accepting a new baseline is an explicit reconcile/rebase action.
 * No cache. Every view asks the core.
 
 ### Recovering another window's unsent work: where it stops
@@ -87,8 +87,8 @@ exit is not a confirmed write.
 
 ## Saving, and what happens when the answer is lost
 
-A save is written into the outbox — request id, cursor, block, body — **before** it is
-sent. Then:
+A save first becomes a durable W draft. The outbox then records request id, cursor,
+block, body and selected working namespace/version **before** commit is sent. Then:
 
 * `ok` naming the record it wrote: the entry is dropped and the cursor moves.
 * `ok` naming **no** record: the entry is **kept** and this is reported as a defect. Every
@@ -125,14 +125,15 @@ part of the request's identity and changing it would turn a retry into a differe
 wearing the first one's id. A host killed between the send and the answer leaves a `sent`
 entry behind, and that is the state the distinction exists for.
 
-**Known limitation: two editor windows on one store.** The queue is serialised within a
-process and re-read from the file after taking that lock, so two savers inside one window
-cannot lose each other's work. Two *windows* are two processes, and nothing arbitrates
-between them — a save recorded by one can be overwritten by the other, and what is lost is
-an entry whose outcome was not yet known. The store itself is not corrupted by this: every
-write carries a request id, so the core will not apply the same request twice; what goes
-missing is this client's record that a request is still unresolved. A lock file and a
-staleness check are the fix, and they belong to a later batch.
+Windows normally have separate session and working paths. Recovery can still reach an
+old session's current file, sidecar and queue. A stable kernel lock covers each participating
+read-modify-write and final ownership check. Contention reports busy; retry after the
+other operation finishes. Locks have no lease timeout and are never unlinked. Process
+death releases them. User dialogs and core requests run outside these critical sections.
+
+The managed session layout shares one lock for all its block/queue operations, including
+discard. This is local process exclusion, not a distributed filesystem locking protocol.
+An editor or external tool that writes these files does not participate in this lock.
 
 The first cursor, before any write has been answered, comes from `check`: a store with one
 writer has no ambiguity. `check` does not say which writer is local, so a store with more
@@ -141,15 +142,37 @@ guessing.
 
 ## The file a block is edited in
 
-One file per (store, block), so opening a block twice reaches the same document. Beside it
-is a marker recording the digest of what the store last agreed the file held.
+The current layout is `sessions/<session>/<store>/<block>/current.md` with
+`current.md.meta`. Refresh installs one complete temporary by rename; it does not add a
+numbered version. Owner records and replacement temporaries live in sibling control
+directories. History belongs to the core log and exported Git projections.
 
 **The editor's dirty flag does not answer "is there work here".** The save handler runs on
 `onDidSaveTextDocument`, after the bytes have reached disk — so a save the core *refused*
-leaves a clean buffer holding text the store has not got, and reopening the block would
-overwrite it. A second editor window computes the same path for the same block and is
-invisible to this one. The marker sees both: a file whose contents do not match it is not
-reloaded from the store, and the user is told why.
+leaves a clean buffer holding text the store has not got. Dirty buffers are never refreshed.
+A clean buffer can refresh from its verified W source; a prepared or ambiguous source
+cannot be sent. Each projection has an identity independent of its byte hash, so a late
+receipt cannot confirm a newer source merely because the bytes match.
+
+Sequential saves advance their baseline only with proof that the displayed W version
+was committed. The next draft uses that commit's causal cut, retaining any intervening
+external write as a stale-baseline refusal.
+
+`theourgia: Migrate Legacy Block Files` explicitly migrates a selected numbered block.
+The command retains an archive of every original file and resumes from its journal after
+interruption. Pending sends, live owners, dirty buffers, changed inputs, and drafts whose
+bytes cannot be verified against committed/W data stop migration. Multiple unprotected
+old drafts remain intact for manual handling; the command never overwrites them into one
+working slot. Re-run on the original selected path to resume an interrupted archive step.
+
+## Native lock build
+
+The current native lock build supports macOS and Linux. `npm run compile` requires a C
+compiler and Node N-API headers; set `THEOURGIA_NODE_HEADERS` to the directory containing
+`node_api.h` if automatic discovery fails. The build does not download headers. N-API v3
+allows the same platform/architecture binary to load in the tested Node and VS Code hosts.
+Windows support has not been implemented or tested. Directory-fsync limitations described
+above still apply; process locking does not strengthen power-loss durability.
 
 ## What it refuses to guess at
 

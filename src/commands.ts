@@ -71,7 +71,12 @@ export const OTHER_SESSIONS: CommandName = {
  * somebody remembered to name. A list that only mentions the commands a
  * reader thought of will not shout about the one they forgot.
  */
+export const MIGRATE_BLOCK: CommandName = {
+  id:'theourgia.migrateBlock',title:'theourgia: Migrate Legacy Block Files'
+};
+
 export const COMMANDS: CommandName[] = [
+  MIGRATE_BLOCK,
   REFRESH_OUTLINE,
   OPEN_BLOCK,
   RETRY_OUTBOX,

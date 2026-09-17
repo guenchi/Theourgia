@@ -35,11 +35,14 @@
  * after a restart.
  */
 
+import * as path from 'path';
+import {withExclusive} from './fsops';
 import { SaveDecision } from './saving';
 import { SendRecord, recordFor } from './record';
 import { Sidecar, digestOfBytes } from './publication';
 
 export interface Numbering {
+  acceptsSnapshot?(file:string,rawDigest:string,sidecar:Sidecar):boolean;
   takeSequence(
     file: string,
     req: string
@@ -75,6 +78,7 @@ export type Acceptance =
    */
   | { accepted: false; because: 'another-store'; store: string; configured: string }
   | { accepted: false; because: 'no-record' }
+  | { accepted: false; because: 'projection-changed' }
   /*
    * ANOTHER WINDOW HOLDS THIS BLOCK. Not a refusal about the bytes:
    * nothing is wrong with them, and the thing to do is look at the
@@ -84,6 +88,7 @@ export type Acceptance =
   | { accepted: false; because: 'could-not-number'; detail: string };
 
 export function acceptSave(parts: AcceptParts): Acceptance {
+  return withExclusive(path.dirname(parts.file), (): Acceptance => {
   const { sidecar, decision } = parts;
   /*
    * ⚠️ THE STORE COMES FROM THE FILE. A window configured for another
@@ -100,6 +105,9 @@ export function acceptSave(parts: AcceptParts): Acceptance {
       configured: parts.queueStore
     };
   }
+  if(parts.numbering.acceptsSnapshot && !parts.numbering.acceptsSnapshot(parts.file,decision.rawDigest,sidecar)) {
+    return {accepted:false,because:'projection-changed'};
+  }
   const req = parts.newRequestId();
   const numbered = parts.numbering.takeSequence(parts.file, req);
   if (!numbered.taken) {
@@ -114,6 +122,7 @@ export function acceptSave(parts: AcceptParts): Acceptance {
   return {
     accepted: true,
     record: recordFor({
+      projectionId: sidecar.projection?.id,
       req,
       store: sidecar.storeId,
       storeHash: parts.storeHash(sidecar.storeId),
@@ -138,4 +147,5 @@ export function acceptSave(parts: AcceptParts): Acceptance {
       }
     })
   };
+  });
 }

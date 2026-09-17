@@ -221,7 +221,7 @@ export interface SaverOptions {
  * a determination, and `unknown` is the absence of one.
  */
 function saysNobodyKnows(datum: Datum): boolean {
-  return headName(datum) === 'error' && Array.isArray(datum) && datum.length >= 2 && isSym(datum[1], 'unknown');
+  return headName(datum) === 'error' && Array.isArray(datum) && datum.length >= 2 && (isSym(datum[1], 'unknown') || isSym(datum[1], 'working-unavailable'));
 }
 
 function saysAnOperatorSettledIt(datum: Datum): boolean {
@@ -286,6 +286,17 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
    */
   changed: 'refused',
   'cursor-unreachable': 'refused',
+  'working-version-changed': 'refused',
+  'stale-baseline': 'refused',
+  'no-draft': 'refused',
+  'invalid-working-baseline': 'refused',
+  'derived-field': 'refused',
+  'mode-mismatch': 'refused',
+  'bad-source': 'refused',
+  'projection-invalid': 'refused',
+  'name-exists': 'refused',
+  'operation-packet-unavailable': 'refused',
+  'unsupported-printer-version': 'refused',
   'bad-request': 'refused',
   'malformed-intent': 'refused',
   'no-subject': 'refused',
@@ -321,6 +332,16 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
  * is derived from it and stops being a judgement of mine.
  */
 export const NOT_A_WRITES_ANSWER: Record<string, string> = {
+  'working-unavailable': 'working.ss: uncertain W storage result; handled by nobodyKnows before settlement',
+  'eval-value': 'eval-worker.ss: local evaluator value serialization',
+  'eval-exception': 'eval-worker.ss: local evaluator exception',
+  'eval-context': 'eval-worker.ss: local evaluator context',
+  'eval-denied': 'eval-worker.ss: local evaluator capability refusal',
+  'launcher-unavailable': 'ffi.ss: local executable launch',
+  'transport-store-mismatch': 'rpc-worker.ss: rejected socket envelope before dispatch',
+  'unknown-tag': 'store.ss: historical query cut lookup',
+  'tag-unsettled': 'store.ss: historical query cut lookup',
+  'cut-unavailable': 'store.ss: historical query cut validation',
   'already-initialised': 'store-init!, store.ss:2466 -- initialising a store, not writing to one',
   'foreign-writer': 'store-init!, store.ss:2469 -- as above',
   'ambiguous-identity': 'match-by-signature, project.ss:579 -- the markdown import path',
@@ -937,18 +958,22 @@ export class Saver {
       entry.record === undefined
         ? { id: entry.id, field: entry.field, payload: entry.payload }
         : { id: entry.record.blockId, field: entry.record.intent.field, payload: entry.record.intent.body };
-    const args = [
-      what.id,
-      what.field,
-      what.payload,
-      '--req',
-      entry.req,
-      '--cursor',
-      entry.cursor
-    ];
+    const verb = entry.record?.intent.verb === 'commit' ? 'commit' : 'set';
+    let args: string[];
+    if (verb === 'commit') {
+      let selected: {writer:string;version:string};
+      try {
+        selected=JSON.parse(entry.record?.intent.expectation ?? 'null');
+        if (!selected || typeof selected.writer!=='string' || typeof selected.version!=='string') throw new Error('Invalid working selection');
+      } catch {
+        this.outbox.markPending(entry.req,'The immutable working selection is unreadable');
+        return {status:'pending',req:entry.req,id:what.id,message:'The immutable working selection is unreadable; keep the request for recovery',answer:null};
+      }
+      args=[what.id,'--writer',selected.writer,'--working-version',selected.version,'--req',entry.req,'--cursor',entry.cursor];
+    } else args=[what.id,what.field,what.payload,'--req',entry.req,'--cursor',entry.cursor];
     let answer;
     try {
-      answer = await this.client.request('set', args);
+      answer = await this.client.request(verb, args);
     } catch (e) {
       if (e instanceof TransportError) {
         const why = aside(e.detail);

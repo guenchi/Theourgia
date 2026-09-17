@@ -228,6 +228,7 @@ export function settlerFor(parts: SettlingParts): Settler {
         send: {
           seq: record.seq,
           prefixDigest: record.prefixDigest,
+          projectionId: record.projectionId,
           by: settlement.verdict === 'executed-by-operator' ? 'operator' : 'store'
         }
       },

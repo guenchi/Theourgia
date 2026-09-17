@@ -36,7 +36,8 @@ import { execFileSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { checkOneComponent } from './paths';
-import { FileOps } from './fsops';
+import { FileOps, withExclusive } from './fsops';
+import {cleanupTemporary, cleanupFailure} from './temporary';
 import { Outbox, OutboxEntry } from './outbox';
 import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publication';
 
@@ -525,6 +526,10 @@ export class Sessions {
    * separately by whoever cares.
    */
   private async livenessOfSession(sessionId: string): Promise<Liveness> {
+    return this.livenessOfSessionNow(sessionId);
+  }
+
+  private livenessOfSessionNow(sessionId: string): Liveness {
     const read = this.identityOf(sessionId);
     if (!read.known) {
       return {
@@ -532,7 +537,7 @@ export class Sessions {
         because: read.because === 'absent' ? 'record-missing' : 'record-unreadable'
       };
     }
-    return this.livenessOf(read.identity);
+    return this.livenessNow(read.identity);
   }
 
   /*
@@ -549,6 +554,7 @@ export class Sessions {
    * (§12.9, §12.11.4)
    */
   public begin(sessionId: string, stores: string[]): SessionIdentity {
+    return withExclusive(this.sessionDirectory(sessionId), (): SessionIdentity => {
     /*
      * ⚠️ AN ID WITH A NEWLINE IN IT IS NOT A NAME, IT IS TWO.
      *
@@ -568,6 +574,13 @@ export class Sessions {
       throw new Error(
         `a session id may not be empty or contain a line break; got ${JSON.stringify(sessionId)}`
       );
+    }
+    const existing=this.identityOf(sessionId);
+    if (existing.known && !(this.mine===sessionId && this.nonce===existing.identity.nonce)) {
+      const state=this.livenessNow(existing.identity);
+      if (!('alive' in state) || state.alive) throw Object.assign(new Error(`Session ${sessionId} is active or its identity cannot be verified; use a fresh session namespace.`),{code:'SESSION_BUSY'});
+    } else if (!existing.known && existing.because!=='absent') {
+      throw Object.assign(new Error(`Session ${sessionId} has an unreadable identity and cannot be reused.`),{code:'SESSION_UNKNOWN'});
     }
     const identity: SessionIdentity = {
       sessionId,
@@ -617,94 +630,13 @@ export class Sessions {
       this.files.writeDurably(temporary, `${JSON.stringify(identity, null, 2)}\n`);
       this.files.rename(temporary, file);
     } catch (e) {
-      /*
-       * THE OLD RECORD IS STILL THERE. Removing the temporary one is
-       * BEST EFFORT and says so: a failure to remove it must not replace
-       * the reason the publication failed with a second, smaller reason.
-       *
-       * ⚠️ AND THE RESIDUE IS NAMED WHEN IT SURVIVES. The comment here
-       * used to say it is not there, flatly -- which is untrue when the
-       * removal itself throws, and untrue when the process stops between
-       * the write and the rename. Whoever reads the failure is the only
-       * one who can clear it up, so they are told where it is.
-       *
-       * ⚠️ BUT ONLY IF IT IS ACTUALLY THERE, AND IT IS NOT CALLED
-       * HALF-WRITTEN. The sentence used to be printed whenever `unlink`
-       * threw -- and the commonest reason it throws is that the write
-       * failed before creating anything, so the failure most likely to
-       * produce this message is the one where the file does not exist.
-       * Nor is "half-written" something this code established: a
-       * complete file whose rename failed reaches here too. So the
-       * question is put to the file system, the answer decides which of
-       * three sentences is added, and the word is `leftover`.
-       */
-      let residue = '';
-      try {
-        this.files.unlink(temporary);
-      } catch (ignored) {
-        residue = this.residueNoteFor(temporary);
-      }
-      /*
-       * ⚠️ ONE SHAPE ON EVERY FAILURE PATH.
-       *
-       * Two things were wrong with what this threw. It composed a fresh
-       * `Error` out of `e.message`, which threw away the class, the
-       * `code` -- ENOSPC and EACCES ask the reader to do different
-       * things -- and the stack that says which call failed. And the
-       * first repair made the shape CONDITIONAL: the original object
-       * when there was nothing to add, a wrapper when there was, so
-       * `err.code` worked or did not depending on whether a cleanup
-       * happened to succeed. A caller cannot write one test against
-       * that. The original is always the `cause`, its `code` is always
-       * carried, and there is always a wrapper. Found in review.
-       */
-      const failure = new Error(`${(e as Error).message}${residue}`, { cause: e }) as
-        NodeJS.ErrnoException;
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code !== undefined) {
-        failure.code = code;
-      }
-      throw failure;
+      throw cleanupFailure(cleanupTemporary(this.files, temporary, e));
     }
     this.mine = sessionId;
     this.nonce = identity.nonce;
     return identity;
-  }
 
-  /*
-   * WHAT TO SAY ABOUT A TEMPORARY FILE THE CLEANUP COULD NOT REMOVE.
-   *
-   * Three answers, because there are three states and the two of them
-   * that are comfortable are not the same one. If the file is there, it
-   * is named so it can be removed by hand. If it is not there, nothing
-   * is added -- the publication failed before creating it, and inventing
-   * a leftover sends the reader looking for a file that never existed.
-   * If this window cannot find out, it says that rather than choosing:
-   * the whole point of asking was to stop reporting a state nobody
-   * measured.
-   */
-  private residueNoteFor(temporary: string): string {
-    /*
-     * ⚠️ AND THE QUESTION IS PUT THROUGH `presenceOf`, NOT `exists`.
-     * `existsSync` says false both for a file that is not there and for
-     * one this process may not look at, so a sentence written from its
-     * answer says "there is nothing left behind" in a case where
-     * something is. The third answer below exists precisely for that
-     * case, and with `exists` underneath it was unreachable in
-     * production -- a state only a stand-in could produce. Found in
-     * review.
-     */
-    const presence = this.files.presenceOf(temporary);
-    if (!presence.known) {
-      return (
-        ` Whether a leftover file remains at ${temporary} could not be established; if one is ` +
-        'there it is not a session record and can be removed.'
-      );
-    }
-    if (!presence.there) {
-      return '';
-    }
-    return ` A leftover file was left at ${temporary}; it is not a session record and can be removed.`;
+    });
   }
 
   /*
@@ -726,6 +658,10 @@ export class Sessions {
    * liveness that can be stale exactly when it matters.
    */
   public async livenessOf(identity: SessionIdentity): Promise<Liveness> {
+    return this.livenessNow(identity);
+  }
+
+  private livenessNow(identity: SessionIdentity): Liveness {
     let permissionDenied = false;
     try {
       process.kill(identity.pid, 0);
@@ -782,10 +718,9 @@ export class Sessions {
   }
 
   /*
-   * `sessions/<session-id>/<store-hash>/outbox.json`. One writer -- this
-   * process -- so it needs no lock, which is the whole reason the queue
-   * moved inside the session. A queue outside them, however it were
-   * numbered, would be two windows writing one file again. (§12.9, C16)
+   * `sessions/<session-id>/<store-hash>/outbox.json`. Normal windows have
+   * separate paths. Recovery can reach an old window's queue, so its
+   * mutations still require the session-scoped kernel lock. (§12.9, C16)
    *
    * ⚠️ AND ONE PER STORE, WHICH §12.9's WORDING DOES NOT SAY. A queue
    * carries a cursor, and a cursor belongs to one store: with a single
@@ -913,6 +848,46 @@ export class Sessions {
    * this is the second time in one batch that a writer moved without
    * its readers.
    */
+  public async migrationSourceSafe(directory: string): Promise<boolean> {
+    return this.migrationSourceSafeNow(directory);
+  }
+
+  public claimMigrationDestination(directory:string,owners:import('./ownership').Owners):boolean {
+    return withExclusive(directory,()=>{
+      if (!this.migrationSourceSafeNow(directory) || this.mine===null) return false;
+      const owner=owners.ownerOf(directory);
+      if (!owner.known) return false;
+      if (owner.record && owner.record.sessionId!==this.mine) {
+        const state=this.livenessOfSessionNow(owner.record.sessionId);
+        if (!('alive' in state) || state.alive) return false;
+      }
+      return owners.take(directory,this.mine,[path.join(directory,'current.md.meta')]).held;
+    });
+  }
+
+  public migrationSourceSafeNow(directory: string): boolean {
+    const relative=path.relative(this.sessionsRoot(),directory).split(path.sep);
+    if (relative.length!==3 || relative.some(p=>p==='..'||p==='')) return false;
+    const source=relative[0],held=this.identityOf(source);
+    if (!held.known) return false;
+    if (source===this.mine && held.identity.nonce===this.nonce) return true;
+    const live=this.livenessNow(held.identity);
+    return 'alive' in live && !live.alive;
+  }
+
+  public pendingForDirectory(directory: string): boolean {
+    const relative=path.relative(this.sessionsRoot(),directory).split(path.sep);
+    if (relative.length!==3 || relative.some(p=>p==='..'||p==='')) return true;
+    for (const file of this.outboxPathsFor(relative[0])) {
+      try {
+        const raw=JSON.parse(this.files.readText(file));
+        if (!Array.isArray(raw.entries)) return true;
+        if (raw.entries.some((entry: {id?:string;record?:{file?:string}})=>entry.id===relative[2] || entry.record?.file && path.dirname(entry.record.file)===directory)) return true;
+      } catch {return true;}
+    }
+    return false;
+  }
+
   public outboxPathsFor(sessionId: string): string[] {
     const out: string[] = [];
     const session = this.sessionDirectory(sessionId);
@@ -984,6 +959,7 @@ export class Sessions {
    * U-claim)
    */
   public async claim(deadSessionId: string, forced = false): Promise<ClaimOutcome> {
+    return withExclusive(this.sessionDirectory(deadSessionId), () => {
     /*
      * ⚠️ A WINDOW THAT NEVER SAID WHO IT IS CANNOT TAKE A CLAIM.
      *
@@ -1002,7 +978,7 @@ export class Sessions {
      * "no such session" let a claim proceed against a window that might
      * still be draining its queue -- which double-sends. (§12.9)
      */
-    const liveness = await this.livenessOfSession(deadSessionId);
+    const liveness = this.livenessOfSessionNow(deadSessionId);
     if ('alive' in liveness) {
       if (liveness.alive) {
         return { claimed: false, because: 'session-alive' };
@@ -1128,7 +1104,7 @@ export class Sessions {
        * draining, which double-sends; erring this way costs a takeover
        * that is not offered, and the listing says so. (§12.9)
        */
-      const state = await this.livenessOfSession(holder);
+      const state = this.livenessOfSessionNow(holder);
       if (!('alive' in state) || state.alive) {
         return { claimed: false, because: 'already-claimed' };
       }
@@ -1151,6 +1127,8 @@ export class Sessions {
       return { claimed: false, because: 'already-claimed' };
     }
     return { claimed: true, token, sequence };
+
+    });
   }
 
   /*
@@ -1194,7 +1172,16 @@ export class Sessions {
    * production, and a cell says so.
    */
   public importFrom(token: ClaimToken, into: ImportTarget, storeHash?: string): TakeoverLedger {
+    return withExclusive(this.sessionDirectory(token.deadSessionId), () => {
     const ledger = emptyLedger();
+    const expected=path.join(this.sessionsRoot(),token.deadSessionId+'.claim.'+token.sequence);
+    const highest=this.files.list(this.sessionsRoot()).some(n=>n.startsWith(token.deadSessionId+'.claim.') && Number(n.slice((token.deadSessionId+'.claim.').length))>token.sequence);
+    const state=this.livenessOfSessionNow(token.deadSessionId);
+    if (path.resolve(token.file)!==path.resolve(expected) || highest || this.mine===null || this.nonce===null ||
+        !this.files.exists(expected) || this.files.readText(expected)!==this.mine+'\n'+this.nonce+'\n' ||
+        ('alive' in state ? state.alive : state.because!=='record-missing')) {
+      throw Object.assign(new Error('The source session or its claim changed; request takeover again.'),{code:'CLAIM_CHANGED'});
+    }
     if (!this.files.exists(token.file)) {
       return ledger;
     }
@@ -1238,6 +1225,8 @@ export class Sessions {
       this.surveyQueue(queue, path.resolve(queue) === path.resolve(legacy), ledger);
     }
     return ledger;
+
+    });
   }
 
   /*
@@ -1432,6 +1421,7 @@ export class Sessions {
   }
 
   public adopt(otherSessionId: string): AdoptOutcome {
+    return withExclusive(this.sessionDirectory(otherSessionId), () => {
     const directory = this.sessionDirectory(otherSessionId);
     if (!this.files.exists(directory)) {
       /*
@@ -1460,6 +1450,8 @@ export class Sessions {
       return { adopted: false, because: 'already-adopted-by-this-session' };
     }
     return { adopted: true, marker };
+
+    });
   }
 
   /*
@@ -1490,6 +1482,12 @@ export class Sessions {
        */
       return { discarded: false, because: 'undecidable', liveAdopters: adopters, notes };
     }
+    return withExclusive(directory, (): DiscardOutcome => {
+      if (!this.files.exists(directory)) return {discarded:false,because:'not-found',liveAdopters:adopters,notes};
+      const latest=this.identityOf(sessionId);
+      if (!latest.known) return {discarded:false,because:'undecidable',liveAdopters:adopters,notes};
+      const current=this.livenessNow(latest.identity);
+      if (!('alive' in current) || current.alive) return {discarded:false,because:'session-alive',liveAdopters:adopters,notes};
     if (!this.files.exists(directory)) {
       return { discarded: false, because: 'not-found', liveAdopters: adopters, notes };
     }
@@ -1504,6 +1502,7 @@ export class Sessions {
     this.files.makeDirectory(path.dirname(trash));
     this.files.rename(directory, trash);
     return { discarded: true, trash, liveAdopters: adopters, notes };
+    });
   }
 
   /*

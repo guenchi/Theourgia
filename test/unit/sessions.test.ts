@@ -809,11 +809,11 @@ describe('C10 what the confirmation says, and what discarding touches', () => {
   });
 
   /*
-   * ACROSS THE WHOLE SET OF OPERATIONS, not one call. C10 asks for the
-   * absence over everything `Sessions` does, and an absence is the
-   * reading a narrow cell gives away.
+   * C10's retained listing/claim/discard scope. Current-body replacement
+   * and explicit migration have their own XC operation traces; this cell
+   * does not impose the retired global ban on renaming published files.
    */
-  it('never unlinks, and renames only whole directories', async () => {
+  it('keeps block files intact during session listing, claims and whole-session discard', async () => {
     const storage = scratch();
     const files = new RecordingFs();
     const sessions = new Sessions(files, storage);
@@ -2039,28 +2039,19 @@ describe('review 27 a request that arrived is not a request that did not', () =>
    * unreadable while the object kept the identity it already had -- and
    * went on claiming, over a record nobody could read.
    */
-  it('leaves the old record intact when a second begin cannot be published', async () => {
-    const storage = scratch();
-    const files = new RecordingFs();
-    const sessions = new Sessions(files, storage);
-    sessions.begin('S-mine', []);
-    const record = path.join(storage, 'sessions', 'S-mine', 'session.json');
-    const before = fs.readFileSync(record, 'utf8');
-    const refusing = new (class extends RecordingFs {
-      public rename(from: string, to: string): void {
-        if (to.includes('session.json')) {
-          throw new Error('the rename would not go through');
-        }
-        super.rename(from, to);
+  it('leaves the old record intact when a second begin cannot be published', () => {
+    const storage=scratch();let refuse=false;
+    const files=new(class extends RecordingFs {
+      public rename(from:string,to:string):void {
+        if(refuse&&to.endsWith('session.json'))throw new Error('the rename would not go through');
+        super.rename(from,to);
       }
     })();
-    const again = new Sessions(refusing, storage);
-    assert.throws(() => again.begin('S-mine', ['/stores/two']), /would not go through/);
-    assert.strictEqual(
-      fs.readFileSync(record, 'utf8'),
-      before,
-      'a failed second begin left the record neither the old one nor the new one'
-    );
+    const sessions=new Sessions(files,storage);sessions.begin('S-mine',[]);
+    const record=path.join(storage,'sessions','S-mine','session.json'),before=fs.readFileSync(record,'utf8');
+    refuse=true;
+    assert.throws(()=>sessions.begin('S-mine',['/stores/two']),/would not go through/);
+    assert.strictEqual(fs.readFileSync(record,'utf8'),before);
   });
 });
 
@@ -2433,8 +2424,8 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     carriesTheReason(thrown, stubborn.injected);
     assert.strictEqual(
       thrown.message,
-      `${stubborn.injected.message} A leftover file was left at ${stubborn.temporary}; ` +
-        'it is not a session record and can be removed.',
+      `${stubborn.injected.message} The cleanup probe found an object at ${stubborn.temporary}; ` +
+        'verify it before removing it.',
       `the surviving file was not named, or not named exactly: ${thrown.message}`
     );
     assert.ok(
@@ -2522,8 +2513,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     carriesTheReason(thrown, blind.injected);
     assert.strictEqual(
       thrown.message,
-      `${blind.injected.message} Whether a leftover file remains at ${blind.temporary} could ` +
-        'not be established; if one is there it is not a session record and can be removed.',
+      `${blind.injected.message} The cleanup probe could not determine whether ${blind.temporary} exists.`,
       `the unanswerable case did not say so, or did not say it exactly: ${thrown.message}`
     );
   });

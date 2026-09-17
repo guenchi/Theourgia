@@ -30,6 +30,11 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { documentFor } from './blocks';
+import {Working} from './working';
+import {MIGRATE_BLOCK} from './commands';
+import {digestOfBytes} from './publication';
+import {migrateLegacy,migrationIdentity} from './migration';
+import {Owners} from './ownership';
 import { Client } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
@@ -90,6 +95,7 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
   private readonly failed: (e: unknown) => void;
   private readonly unknownMarks: () => void;
   private readonly generation: () => number;
+  private readonly nodeGenerations = new WeakMap<Node, number>();
 
   constructor(
     model: StoreModel | null,
@@ -136,7 +142,7 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     item.command = {
       command: OPEN_BLOCK.id,
       title: 'Open Block',
-      arguments: [node.id]
+      arguments: [node.id, this.nodeGenerations.get(node)]
     };
     return item;
   }
@@ -180,6 +186,12 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
      */
     if (!marksKnown && asked === this.generation()) {
       this.unknownMarks();
+    }
+    if (asked !== this.generation()) {
+      return [];
+    }
+    for (const returned of nodes) {
+      this.nodeGenerations.set(returned, asked);
     }
     return nodes;
   }
@@ -246,7 +258,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     files,
     globalStorage: storage,
     documents: {
-      isOpen: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file)
+      isOpen: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file),
+      isDirty: (file) => vscode.workspace.textDocuments.some((d) => d.uri.fsPath === file && d.isDirty)
     },
     stores: [],
     sessionId: randomUUID()
@@ -550,13 +563,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     paint();
   }
 
-  async function openBlock(id: string): Promise<void> {
+  async function openBlock(id: string, sourceGeneration?: number): Promise<void> {
+    if (sourceGeneration !== undefined && sourceGeneration !== generation) {
+      vscode.window.showWarningMessage('theourgia: the store changed after this outline item was created. Refresh the outline and select the block again.');
+      return;
+    }
     if (model === null) {
       vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
       return;
     }
     const asked = generation;
     const store = config.store;
+    const reading = client as Client;
     /*
      * THE TICKET IS TAKEN BEFORE THE READ, so that two opens of one
      * block are ordered by when they asked the store rather than by
@@ -591,18 +609,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * recorded ON the buffer: a document opened from one store carries
      * that store's path.
      *
-     * ⚠️ AND THE SENTENCE THAT USED TO FOLLOW IS NOT VERIFIED. It said
-     * "a save into a differently configured store is refused by name",
-     * which is what makes showing a buffer from the store the user has
-     * left merely the wrong answer to their last question rather than a
-     * way to write into the wrong place. Asked for the cell that holds
-     * that up, this batch could not find one: `sidecarOf` reads the
-     * `.meta` beside the file and decides nothing about which store is
-     * configured. The claim is left here as a claim, marked, rather than
-     * stated as a fact -- the guard, if it exists, would be on the save
-     * path where the sidecar's directory is compared with the configured
-     * store, and if it does not exist that is a defect on the outline
-     * and editor surface. First item of the next batch.
+     * XO-01/02/10 exercise the recorded-store comparisons at entry and
+     * inside the acceptance chain. Directory spelling is not identity.
      *
      * Do not add a check back here without a cell that fails when it is
      * removed.
@@ -617,14 +625,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showWarningMessage(`theourgia: the store has no block ${id}.`);
       return;
     }
-    /*
-     * X1c: THE BLOCK'S VERSIONS LIVE UNDER THIS SESSION'S DIRECTORY, and
-     * opening it publishes the next one. Nothing here rewrites a file
-     * and nothing here deletes one: a reading from the store becomes
-     * `<n+1>.md` with its own record, and what was there stays. That is
-     * why "another reading replaced my baseline" has nowhere to happen
-     * rather than being guarded against. (§12.9, §12.15 结构一)
-     */
+    // The store was captured before the read. Acceptance checks recorded store
+    // identity again inside the save chain, before numbering (XO-01/02/10).
+
     const directory = sessions.directoryFor(sessionId, storeHash(store), id);
     const document = documentFor(block, store);
 
@@ -633,18 +636,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * keyed by the directory these versions share, so a save arriving
      * for this block waits rather than interleaving. (§12.11.1)
      */
-    const outcome = await chain.run(directory, async () =>
-      publisher.publish({
-        directory,
-        storeId: store,
-        blockId: id,
-        prefix: document.prefix,
-        text: document.text,
-        cursor: null
-      })
-    );
+    const outcome = await chain.run(directory, async () => {
+      const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,document.prefix);
+      return publisher.publish({directory,storeId:store,blockId:id,prefix:projection.prefix,
+        text:projection.prefix+projection.body,cursor:null,projection:projection.source});
+    });
 
     if (!outcome.published) {
+      vscode.window.showWarningMessage(outcome.because==='dirty-document'
+        ? 'The store has newer content. Your unsaved edits are preserved; save or resolve them before updating.'
+        : `The current file was not updated (${outcome.because}). Keep the file and resolve its working or migration state before retrying.`);
+      if (outcome.file !== null && !files.exists(outcome.file)) return;
       /*
        * The editor holds the path this would have written. Showing what
        * is there is the answer; writing is not. (§12.13.1)
@@ -720,6 +722,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return null;
     }
     const asked = generation;
+    const reconciling = client as Client;
     let block;
     try {
       block = await model.blockOf(sidecar.blockId);
@@ -744,20 +747,39 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showWarningMessage(`theourgia: the store has no block ${sidecar.blockId}.`);
       return null;
     }
-    const document = documentFor(block, config.store);
+    const document = documentFor(block, sidecar.storeId);
     const directory = path.dirname(file);
     /*
      * ON THE CHAIN, because it reads the file and may publish beside it,
      * and a save arriving for this block has to wait rather than
      * interleave with it. (§12.11.1)
      */
-    const outcome = await chain.run(directory, async () =>
-      publisher.reconcile(file, document.prefix, document.text)
-    );
+    const outcome = await chain.run(directory, async () => {
+      const result=publisher.reconcile(file,document.prefix,document.text);
+      if (result.reconciled) {
+        const held=publisher.sidecarOf(file),text=files.readText(file);
+        if (held?.projection) {
+          try {
+            const note=await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
+              .write(held.blockId,text.slice(held.prefix.length),held.prefix,false,held.projection);
+            if (!publisher.recordWorking(file,note.source,digestOfBytes(text),held.projection.id)) throw new Error('Projection changed');
+          } catch (error) {
+            reportFailure(error);
+            return {reconciled:false as const,because:'working-unavailable' as const,choices:[],storeText:document.text,previousText:null,fileText:text};
+          }
+        }
+      }
+      return result;
+    });
     if (outcome.reconciled) {
       const notice = reconciledNotice(sidecar.blockId, path.basename(file));
       show(notice);
       paint();
+      return notice;
+    }
+    if (outcome.because !== undefined) {
+      const notice = reconcileUnfinishedNotice(file, outcome.because);
+      show(notice);
       return notice;
     }
     /*
@@ -771,7 +793,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       label:
         action === 'prepend-prefix'
           ? 'Keep my text, with the block heading in front of it'
-          : "Take the store's version",
+          : "Take the store's version and reset the working baseline",
       detail:
         action === 'prepend-prefix'
           ? firstLine(outcome.fileText)
@@ -800,9 +822,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * error and nothing is undone -- the offer is simply stale, and the
      * user is told to look again.
      */
-    const done = await chain.run(directory, async () =>
-      publisher.reconcileBy(file, picked.action, document.prefix, document.text, outcome.fileText)
-    );
+    const done = await chain.run(directory, async () => {
+      const refused=publisher.reconciliationGuard(file,outcome.fileText);
+      if (refused) return {done:false,file,because:refused};
+      let projection;
+      if (sidecar.projection) {
+        const text=picked.action==='take-store-version'?document.text:
+          outcome.fileText.startsWith(document.prefix)?outcome.fileText:document.prefix+outcome.fileText;
+        try {
+          projection=(await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
+            .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',sidecar.projection)).source;
+        } catch (error) {reportFailure(error);return {done:false,file,because:'working-unavailable'};}
+      }
+      return publisher.reconcileBy(file,picked.action,document.prefix,document.text,outcome.fileText,projection);
+    });
     if (!done.done && done.because === 'file-changed') {
       const notice = reconcileStaleNotice(file);
       show(notice);
@@ -810,7 +843,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return notice;
     }
     if (!done.done) {
-      const notice = reconcileUnfinishedNotice(file);
+      const notice = reconcileUnfinishedNotice(file, done.because);
       show(notice);
       paint();
       return notice;
@@ -822,6 +855,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     show(notice);
     paint();
     return notice;
+  }
+
+  async function migrateBlock(target?: string): Promise<void> {
+    const file=target ?? vscode.window.activeTextEditor?.document.uri.fsPath;
+    if (!file || !client) return;
+    const sidecar=publisher.sidecarOf(file) ?? migrationIdentity(files,path.dirname(file));
+    if (!sidecar || sidecar.storeId!==config.store) {
+      vscode.window.showWarningMessage('Select a legacy block from the configured store before migrating.');return;
+    }
+    const directory=path.dirname(file),reading=client;
+    const sourceSession=path.basename(path.dirname(path.dirname(directory)));
+    const writer=`window-${sourceSession.toLowerCase()}`;
+    const confirmed=await vscode.window.showWarningMessage('Verified legacy files will move to a one-time recovery archive. Unprotected drafts and pending sends will stay in place.',{modal:true},'Migrate');
+    if (confirmed!=='Migrate') return;
+    const result=await chain.run(directory,()=>migrateLegacy({files,publisher,directory,storeId:sidecar.storeId,blockId:sidecar.blockId,
+      sourceIsSafe:()=>sessions.migrationSourceSafe(directory),sourceStillSafe:()=>sessions.migrationSourceSafeNow(directory),pending:()=>sessions.pendingForDirectory(directory),
+      claimDestination:()=>sessions.claimMigrationDestination(directory,new Owners(files)),
+      isDirty:p=>vscode.workspace.textDocuments.some(d=>d.uri.fsPath===p&&d.isDirty),
+      sources:async()=>{
+        const committed=await new Working(reading,`migration-${randomUUID()}`).read(sidecar.blockId,sidecar.prefix);
+        const selected=await new Working(reading,writer).read(sidecar.blockId,sidecar.prefix);
+        return {committed:{source:committed.source,prefix:committed.prefix,text:committed.prefix+committed.body},
+          working:selected.source.kind==='working'?{source:selected.source,prefix:selected.prefix,text:selected.prefix+selected.body}:null};
+      }}));
+    if (!result.migrated) {
+      vscode.window.showWarningMessage(`Migration is incomplete (${result.because}). Preserved: ${result.retained.join(', ')}`);return;
+    }
+    const opened=await vscode.workspace.openTextDocument(vscode.Uri.file(result.file));
+    await vscode.window.showTextDocument(opened,{preview:false});
+    vscode.window.showInformationMessage(`Current file: ${result.file}. The one-time recovery archive is ${result.archive}.`);
   }
 
   /*
@@ -940,6 +1003,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * whatever window the user has moved to.
      */
     const sending = saver;
+    const writing = client as Client;
 
     /*
      * EVERYTHING THE SAVE IS ABOUT IS READ IN HERE, AT ONE INSTANT, on
@@ -950,18 +1014,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * settings, the document or the sidecar again. (§13.1)
      */
     const accepted = await chain.run(path.dirname(file), async () => {
-      const decision = saving.decide(
+      // A reconciliation ahead of this save may have changed the split or origin.
+      let currentSidecar = publisher.sidecarOf(file);
+      let decision = saving.decide(
         { file, isDirty: saved.isDirty, getText: () => saved.getText() },
-        sidecar
+        currentSidecar
       );
       if (!decision.send) {
         return { decision };
+      }
+      if (currentSidecar?.projection && currentSidecar.storeId === config.store) {
+        const capturedSidecar = currentSidecar;
+        const source = currentSidecar.projection;
+        try {
+          const working = await new Working(writing,`window-${sessionId.toLowerCase()}`)
+            .write(capturedSidecar.blockId,decision.src,capturedSidecar.prefix,false,source);
+          if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id)) {
+            throw new Error('The file or its projection changed while the working note was being saved');
+          }
+          currentSidecar = publisher.sidecarOf(file);
+          decision = {...decision,intent:{verb:'commit',field:'src',expectation:JSON.stringify({writer:working.source.writer,version:working.source.version})}};
+        } catch (error) {
+          return {decision:{send:false as const,refusal:{because:'working-unavailable' as const,detail:String(error)}}};
+        }
       }
       return {
         decision,
         acceptance: acceptSave({
           file,
-          sidecar,
+          sidecar: currentSidecar as NonNullable<typeof currentSidecar>,
           decision,
           /*
            * ⚠️ THE ONE READING OF THE LIVE SETTINGS AFTER THE FIRST
@@ -1116,6 +1197,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       vscode.window.showInformationMessage(status.tooltip as string);
       return facts();
     }),
+    vscode.commands.registerCommand(MIGRATE_BLOCK.id,migrateBlock),
     vscode.workspace.onDidSaveTextDocument(onSaved),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('theourgia')) {

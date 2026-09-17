@@ -107,7 +107,7 @@ export function activateCore(deps: CoreDeps): Core {
       owners: new Owners(deps.files),
       sessionId: deps.sessionId
     }),
-    saving: new Saving(deps.files),
+    saving: new Saving(deps.files,{owners:new Owners(deps.files),sessionId:deps.sessionId}),
     /*
      * ASKED OF `Sessions`, NOT COMPOSED HERE. The listing and the import
      * read the queue through the same function; when this composed its

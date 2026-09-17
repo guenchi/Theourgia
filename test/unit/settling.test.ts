@@ -157,6 +157,7 @@ async function queuedBeforeWeStarted(
       storeHash: store,
       blockId,
       file,
+      projectionId:r.publisher.sidecarOf(file)?.projection?.id,
       rawDigest: digestOfBytes(`## Two\n${body}`),
       sentDigest: digestOfBytes(body),
       prefixDigest: digestOfBytes('## Two\n'),
@@ -357,7 +358,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * its digests, its block -- the same block id, which is the whole
      * reason it collides.
      */
-    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), '1.md');
+    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), 'current.md');
     const bRecord = r.publisher.sidecarOf(bFile);
     assert.ok(bRecord !== null, 'the fixture did not publish store B’s version');
 
@@ -432,7 +433,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const { req } = await queuedBeforeWeStarted(r, A, 'a.2', same);
     await queuedBeforeWeStarted(r, B, 'a.2', same);
 
-    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), '1.md');
+    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), 'current.md');
     /*
      * STORE B'S CONTEXT, AND ITS DIGEST IS THE RIGHT ONE FOR STORE A'S
      * REQUEST TOO -- that is the whole point: the bytes are identical,
@@ -512,6 +513,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
         storeHash: A,
         blockId: 'a.2',
         file: first.file,
+        projectionId:r.publisher.sidecarOf(first.file)?.projection?.id,
         rawDigest: digestOfBytes('## Two\nsecond body\n'),
         sentDigest: digestOfBytes('second body\n'),
         prefixDigest: digestOfBytes('## Two\n'),
@@ -711,7 +713,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * what separates "recorded this answer" from "did not" is the
      * CURSOR, which a settlement moves and nothing else does.
      */
-    const file = path.join(r.sessions.directoryFor('S-mine', A, 'a.2'), '1.md');
+    const file = path.join(r.sessions.directoryFor('S-mine', A, 'a.2'), 'current.md');
     const record = r.publisher.sidecarOf(file);
     assert.ok(record !== null);
     assert.notStrictEqual(
@@ -1188,6 +1190,7 @@ describe('R6 what a withdrawal leaves behind', () => {
         storeHash: A,
         blockId: 'a.2',
         file,
+        projectionId:r.publisher.sidecarOf(file)?.projection?.id,
         rawDigest: digestOfBytes(`## Two\n${body}`),
         sentDigest: digestOfBytes(body),
         prefixDigest: digestOfBytes('## Two\n'),

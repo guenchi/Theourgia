@@ -241,6 +241,20 @@ function writeThenExit(bytes, offsets, rc) {
 }
 
 const script = loadScript();
+// Opt-in W transport fixture. Real W authority is exercised by brief-working and the editor store tests.
+if (script.workingProjection && (coreArgv[0]==='write' || coreArgv[0]==='read'&&coreArgv.includes('--working-info'))) {
+  const q=JSON.stringify,at=coreArgv.indexOf('--writer'),writer=coreArgv[at+1],id=coreArgv[1];
+  const storeAt=coreArgv.indexOf('--store'),store=coreArgv[storeAt+1],key=q([store,writer,id]),file=SCRIPT+'.working';
+  const notes=fs.existsSync(file)?JSON.parse(fs.readFileSync(file,'utf8')):{};
+  if(coreArgv[0]==='write') {
+    const version='v-'+process.pid;notes[key]={version,body:coreArgv[2]};
+    const temporary=file+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,q(notes));fs.renameSync(temporary,file);
+    answer({stdout:`(ok (saved ${q(id)}) (writer ${q(writer)}) (version ${q(version)}) (based-on "fixture-hash"))\n`});
+  } else {
+    const note=notes[key];
+    answer({stdout:`(ok (projection ${note?'working':'committed'} ${q(writer)} ${q(id)} ${note?q(note.version):'#f'} "fixture-hash" (("w" . 1)) ${q(note?note.body:script.workingProjection.body)} ${q(script.workingProjection.prefix)}))\n`});
+  }
+} else {
 const calls = Array.isArray(script.calls) ? script.calls : [];
 let chosen = null;
 for (let i = 0; i < calls.length; i += 1) {
@@ -266,3 +280,4 @@ if (chosen === null) {
 }
 
 answer(chosen);
+}

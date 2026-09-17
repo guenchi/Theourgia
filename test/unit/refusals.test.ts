@@ -29,12 +29,10 @@
  * already carries as "the manifest is complete only against its own
  * list".)
  *
- * HOW IT IS READ: the kinds are the second element of every `(list 'error
- * '<kind> ...)` in the core's sources. That is a grep over somebody
- * else's source, which is a weak instrument -- it can only miss names,
- * never invent them, so the failure direction is "this cell demands
- * fewer names than exist", and the pin is named in the message so a
- * reader can repeat it.
+ * HOW IT IS READ: Chez reads actual forms from VCS-listed core sources.
+ * The inventory recognizes literal error constructors and excludes comments.
+ * Dynamic refusal constructors still need an exported core schema to make
+ * this a complete semantic catalog; the source pin remains reproducible.
  *
  * ⚠️ AND IT IS THE WRONG PLACE TO BE ASKING. Which refusals a verb can
  * produce is a fact the CORE knows; deducing it by reading its source is
@@ -44,7 +42,7 @@
  */
 
 import * as assert from 'assert';
-import * as fs from 'fs';
+import {execFileSync} from 'child_process';
 import * as path from 'path';
 import { NOT_A_WRITES_ANSWER, classifyRefusal } from '../../src/saver';
 import { initWire, parseAnswers } from '../../src/wire';
@@ -60,28 +58,20 @@ function coreSources(): { directory: string; files: string[] } {
     directory !== undefined && directory.length > 0,
     'THEOURGIA_CORE is not set, so the refusals this cell is about cannot be read from the core'
   );
-  const files = fs
-    .readdirSync(directory as string)
-    .filter((name) => name.endsWith('.ss'))
-    .map((name) => path.join(directory as string, name));
+  const files = execFileSync('git',['ls-files','-z','--','*.ss'],{cwd:directory,encoding:'utf8'})
+    .split('\0').filter(name=>name&&path.dirname(name)==='.')
+    .map(name=>path.join(directory as string,name));
   assert.ok(files.length > 0, `no core sources under ${directory as string}`);
   return { directory: directory as string, files };
 }
 
 function kindsTheCoreMakes(): Map<string, string> {
-  const { files } = coreSources();
-  const found = new Map<string, string>();
-  for (const file of files) {
-    const lines = fs.readFileSync(file, 'utf8').split('\n');
-    lines.forEach((line, at) => {
-      const matches = line.matchAll(/\(list 'error '([a-z][a-z-]+)|'error '([a-z][a-z-]+)/g);
-      for (const m of matches) {
-        const kind = m[1] ?? m[2];
-        if (!found.has(kind)) {
-          found.set(kind, `${path.basename(file)}:${at + 1}`);
-        }
-      }
-    });
+  const {files}=coreSources();
+  const output=execFileSync(process.env.THEOURGIA_SCHEME??'scheme',
+    ['--script',path.join(__dirname,'../support/core-refusals.ss'),...files],{encoding:'utf8'});
+  const found=new Map<string,string>();
+  for(const row of output.trim().split('\n')) {
+    const [file,kind]=row.split('\t');if(kind)found.set(kind,path.basename(file));
   }
   return found;
 }
@@ -92,7 +82,7 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
   });
 
   /*
-   * THE INSTRUMENT'S OWN FIRST READING. A grep that matched nothing
+   * THE INSTRUMENT'S OWN FIRST READING. An AST walk that found nothing
    * would make every check below vacuous, and "no refusals found" is
    * exactly what a changed spelling in the core would produce.
    */
@@ -101,7 +91,7 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
     assert.ok(
       kinds.size >= 20,
       `only ${kinds.size} refusal kinds were found in the core, which is too few to be reading ` +
-        'its sources; the spelling this cell greps for may have changed'
+        'its sources; the literal error constructors may have changed'
     );
   });
 

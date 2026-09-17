@@ -331,14 +331,13 @@ export function reconcileChoiceNotice(
       level: 'information',
       text:
         `${id}: your text was kept and the block's heading put in front of it, in ${file}. The ` +
-        'file you were editing is untouched; edit and save the new one.'
+        'current file has been replaced. Save it to update your working note.'
     };
   }
   return {
     level: 'information',
     text:
-      `${id}: the store's version was published as ${file}. The file you were editing is ` +
-      'untouched, so nothing you wrote was lost; edit and save the new one.'
+      `${id}: the current file ${file} was replaced with the store's content you selected.`
   };
 }
 
@@ -367,12 +366,17 @@ export function reconcileStaleNotice(file: string): Notice {
  * holds the path the new version would take -- neither of which the
  * user can guess from a command that simply returns.
  */
-export function reconcileUnfinishedNotice(file: string): Notice {
+export function reconcileUnfinishedNotice(file: string, because?: string): Notice {
+  if (because === 'dirty-document') {
+    return {level:'warning', text:`${file} has unsaved edits. The current file was not updated. Save or resolve those edits before reconciling again.`};
+  }
+  if (because === 'not-ours') {
+    return {level:'warning', text:`${file} is owned by another session. The current file was not updated. Resolve ownership before reconciling again.`};
+  }
   return {
     level: 'warning',
     text:
-      `${file} was left exactly as it is: the new version could not be published. Close any other ` +
-      'window holding this block and run the command again.'
+      `${file}: the current projection could not be updated. Keep the file and resolve its publication or ownership state before retrying.`
   };
 }
 
@@ -424,6 +428,7 @@ export function refusalNotice(
   file: string,
   refusal:
     | { because: 'document-dirty' }
+    | { because: 'working-unavailable'; detail:string }
     | { because: 'byte-order-mark' }
     | { because: 'not-utf8' }
     | { because: 'disk-differs-from-snapshot' }
@@ -433,6 +438,7 @@ export function refusalNotice(
     | { because: 'publication-incomplete' }
     | { because: 'outside-session'; file: string }
 ): Notice {
+  if (refusal.because === 'working-unavailable') return {level:'error',text:`${id}: the working note was not confirmed saved. Your file is retained. Retry saving after resolving: ${refusal.detail}`};
   switch (refusal.because) {
     case 'document-dirty':
       /*

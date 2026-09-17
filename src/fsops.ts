@@ -15,12 +15,12 @@
  */
 
 /*
- * Every file operation this extension performs, named in one place.
+ * Projection, sidecar and queue file operations, named in one place.
  *
  * IT EXISTS SO THAT WHAT THIS PROCESS DID TO A PATH CAN BE ASKED. The
- * design this batch implements says the extension never unlinks and
- * never renames a path it has published, and the only way to hold a
- * build to that is to count what it actually called -- a claim about
+ * current-file design installs complete body bytes with one rename,
+ * and the way to hold a build to that is to count what it actually
+ * called -- a claim about
  * source text would be a claim about the lines somebody happened to
  * grep for. So the operations arrive as an object, and a cell can hand
  * over one that records.
@@ -31,15 +31,15 @@
  * makes the recording possible. The editor is handed to `Publisher`
  * the same way and for the same reason.
  *
- * THE SET IS EXACTLY WHAT IS USED, and it stays that way. A wider
- * interface than the product needs is a set of operations nothing
- * records the absence of -- and "the extension never unlinks" is a
- * statement about operations, so an operation that can be reached
- * without passing through here is a hole in the measurement. The cell
- * `fsops.test.ts` refuses any other file under src/ that imports `fs`.
+ * `fsops.test.ts` refuses other TypeScript product files importing fs.
+ * The stable native lock below has separate control IO, outside this
+ * recorder. Its open/flock/close protocol is tested with real processes;
+ * FileOps traces do not measure those native calls.
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
+import {createHash} from 'crypto';
 
 export interface FileOps {
   readText(file: string): string;
@@ -194,3 +194,51 @@ export const nodeFileOps: FileOps = {
     }
   }
 };
+
+
+interface NativeLease { acquire(file:string):number; release(fd:number):void; }
+let nativeLease:NativeLease|undefined;
+const heldResources=new Map<string,number>();
+
+export function controlDirectory(directory:string): string {
+  return path.join(path.dirname(directory),'.block-control',path.basename(directory));
+}
+
+function canonicalResource(resource:string):string {
+  let base=path.resolve(resource);const suffix:string[]=[];
+  for (;;) {
+    try {return path.join(fs.realpathSync(base),...suffix);}
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code!=='ENOENT') throw error;
+      const parent=path.dirname(base);if(parent===base)throw error;
+      suffix.unshift(path.basename(base));base=parent;
+    }
+  }
+}
+
+// The callback is synchronous: no human or network wait holds this resource.
+// Reentry is confined to the same JavaScript call stack, never an async owner.
+export function withExclusive<T>(resource:string,work:()=>T):T {
+  const resolved=canonicalResource(resource);
+  const marker=`${path.sep}sessions${path.sep}`,at=resolved.lastIndexOf(marker);
+  const canonical=at<0?resolved:resolved.slice(0,at+marker.length)+resolved.slice(at+marker.length).split(path.sep)[0];
+  if(heldResources.has(canonical))return work();
+  const sessionMarker=`${path.sep}sessions${path.sep}`;
+  const sessionAt=canonical.lastIndexOf(sessionMarker);
+  const directory=sessionAt>=0?path.join(canonical.slice(0,sessionAt),'.resource-locks'):
+    path.join(path.dirname(canonical),'.resource-locks');
+  fs.mkdirSync(directory,{recursive:true});
+  const lock=path.join(directory,createHash('sha256').update(canonical).digest('hex')+'.lock');
+  nativeLease ??= require('./native/lease.node') as NativeLease;
+  let descriptor:number;
+  try {descriptor=nativeLease.acquire(lock);}catch(error){
+    if(error instanceof Error)error.message+=`: ${canonical}. Retry after the other operation finishes.`;
+    throw error;
+  }
+  heldResources.set(canonical,descriptor);
+  try {
+    const result=work();
+    if(result && typeof (result as {then?:unknown}).then==='function')throw new Error('A synchronous resource guard cannot enclose an asynchronous operation');
+    return result;
+  } finally {heldResources.delete(canonical);nativeLease.release(descriptor);}
+}

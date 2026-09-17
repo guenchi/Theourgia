@@ -59,6 +59,10 @@
       {
         "command": "theourgia.otherSessions",
         "title": "theourgia: Other Sessions"
+      },
+      {
+        "command": "theourgia.migrateBlock",
+        "title": "theourgia: Migrate Legacy Block Files"
       }
     ],
     "menus": {
@@ -125,7 +129,7 @@
     }
   },
   "scripts": {
-    "compile": "node scripts/clean.js && tsc -p ./ && node scripts/copy-vendor.js",
+    "compile": "node scripts/clean.js && tsc -p ./ && node scripts/copy-vendor.js && node scripts/build-native.js",
     "watch": "tsc -watch -p ./",
     "test:unit": "npm run compile && mocha --reporter spec 'out/test/unit/**/*.test.js'",
     "test:integration": "npm run compile && node out/test/integration/run.js",

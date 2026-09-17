@@ -56,6 +56,13 @@ import * as ts from 'typescript';
  * does not have one.
  */
 const WITHOUT_THE_CHECK: Record<string, string> = {
+  migrateBlock: 'The offered store, directory and client are captured before confirmation. migrateLegacy rechecks source liveness, pending sends, complete bytes and dirty state after its source reads; the result names that captured directory.',
+  sources: 'Both source reads use the captured client and source writer. migrateLegacy compares the returned authority bytes against every original after these waits before any move.',
+
+  'chain.run(directory)':
+    'The working read, directory, store and writer are captured for the same open. Publisher checks dirty, bytes and owner at the final synchronous replacement boundary; a setting change cannot retarget the directory.',
+  'chain.run(path.dirname(file))':
+    'The save persists into the captured working namespace, verifies readback, rechecks the projection and checks live queue store in acceptSave before numbering. Its result uses the captured Saver; XO-01/02/10 and WS-28/31 cover these boundaries.',
   activate:
     'the extension is being built; there is no earlier generation for anything to have changed from',
   pick: 'it returns the user’s answer and decides nothing; its caller holds the generation',
@@ -65,12 +72,6 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
   'vscode.commands.registerCommand(SHOW_STATUS.id)':
     'it shows the status of the store configured NOW, which is what the user asked for; a stale ' +
     'generation is the answer to a question nobody put',
-  getChildren:
-    'RULED-SHAPED, REPORTED: its two comparisons guard the REPORTING -- `failed` and ' +
-    '`unknownMarks` -- and the nodes are returned without one, so a listing fetched for the ' +
-    'previous store can still be handed to the tree. That is the outline surface, not this ' +
-    'batch\'s, and it is named here rather than left looking like a site that conforms. Raised ' +
-    'with the main session',
   onSaved:
     'RULED: next batch; this one measures it and does not repair it. The save is issued to the ' +
     'Saver read before the wait and the outcome is reported after it, so a store changed ' +
@@ -327,10 +328,11 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
     'about WHICH store the writing goes to rather than about whether there is any. The source ' +
     'asks for a failing cell before a check is added back',
   reconcileBlock:
-    'REPORTED, NOT RULED: its check sits before `chain.run` and the confirmation the user may ' +
-    'leave open, so the write happens with a generation nobody re-read. The directory was ' +
-    'computed from the store the block was read from, which is where the block is -- so this may ' +
-    'be right rather than merely unguarded. Raised with the main session as its own surface'
+    'XR-01 activation schedules bind both waits to the selected file directory and preserve ' +
+    'the other store on real disk; XR-03 protects the offered bytes, XR-05 makes owner denial ' +
+    'visible, and XR-07 refuses dirty confirmation. VS Code and core latency are substituted; ' +
+    'the current-file replacement protocol is exercised again by the v20 task'
+
 };
 
 /*

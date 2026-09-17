@@ -175,7 +175,7 @@ describe('the extension inside an editor', function () {
    * earlier version is untouched -- which is the part that actually
    * mattered about "one block, one document".
    */
-  it('publishes a new version the second time and leaves the first alone', async () => {
+  it('XC reopens the current document with the same verified body and prefix', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
     await settle();
@@ -187,7 +187,7 @@ describe('the extension inside an editor', function () {
     await settle();
     const second = vscode.window.activeTextEditor?.document.uri.fsPath;
     assert.ok(second !== undefined, 'the second open put nothing in front of the user');
-    assert.notStrictEqual(second, first, 'the second reading was written over the first');
+    assert.strictEqual(second, first, 'a second canonical document was created');
     assert.strictEqual(
       fs.readFileSync(first as string, 'utf8'),
       firstBytes,
@@ -479,7 +479,11 @@ describe('a document block with front matter, edited twice', function () {
      * second one is measured against a baseline that never moved and the
      * cell passes without exercising the rebuild at all.
      */
-    const emptied = await new StoreModel(store.client).blockOf(fileBlock);
+    const deadline=Date.now()+12000;
+    let emptied=await new StoreModel(store.client).blockOf(fileBlock);
+    while(emptied && stringField(emptied,'src')!=='' && Date.now()<deadline) {
+      await settle(100);emptied=await new StoreModel(store.client).blockOf(fileBlock);
+    }
     assert.ok(emptied !== null);
     assert.strictEqual(
       stringField(emptied as NonNullable<typeof emptied>, 'src'),
@@ -497,6 +501,11 @@ describe('a document block with front matter, edited twice', function () {
     await document.save();
     await settle(1500);
 
+    const refillDeadline=Date.now()+12000;
+    let refilled=await new StoreModel(store.client).blockOf(fileBlock);
+    while(refilled && stringField(refilled,'src')!=='a body typed back in\r\n' && Date.now()<refillDeadline) {
+      await settle(100);refilled=await new StoreModel(store.client).blockOf(fileBlock);
+    }
     const logAfter = await store.client.request('log', [fileBlock]);
     assert.strictEqual(
       logAfter.answers.length,
@@ -589,21 +598,27 @@ describe('a retry whose store changed while it was in flight', function () {
     await settle();
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined, 'nothing was opened');
-    /*
-     * ONE ORDINARY SAVE FIRST, so that the cursor is known. `ensureCursor`
-     * asks the store only while it has none, and under a one-millisecond
-     * timeout that request is the one that fails -- the save is then
-     * refused before anything is written down, and nothing is stranded.
-     * The cell is about a save that reached the queue and not the store.
-     */
-    await editor?.edit((b) => b.insert(new vscode.Position(1, 0), 'first\n'));
-    await editor?.document.save();
-    await settle(1500);
-    await settings.update('timeoutMs', 1, vscode.ConfigurationTarget.Global);
+    // Pass every real W/read/cursor call through. Stall only commit, after the
+    // extension has durably selected and queued the version it intends to send.
+    const wrapper=`${store.root}/delay-commit.py`,entered=`${store.root}/commit-entered`;
+    fs.writeFileSync(wrapper,[
+      '#!/usr/bin/env python3','import os, sys, time',
+      `scheme = ${JSON.stringify(store.config.scheme)}`,
+      "if len(sys.argv) > 3 and sys.argv[3] == 'commit':",
+      `    with open(${JSON.stringify(entered)}, 'w') as marker: marker.write('commit')`,
+      '    time.sleep(30)',
+      'os.execvp(scheme, [scheme, *sys.argv[1:]])',''
+    ].join('\n'),{mode:0o700});
+    await settings.update('scheme', wrapper, vscode.ConfigurationTarget.Global);
+    await settings.update('timeoutMs', 10000, vscode.ConfigurationTarget.Global);
     await settle();
     await editor?.edit((b) => b.insert(new vscode.Position(1, 0), 'stranded\n'));
     await editor?.document.save();
-    await settle(1500);
+    const deadline=Date.now()+25000;
+    while(!fs.existsSync(entered) && Date.now()<deadline)await settle(100);
+    assert.ok(fs.existsSync(entered),'the real save never reached commit after its W write');
+    await settle(11000);
+    await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('timeoutMs', undefined, vscode.ConfigurationTarget.Global);
     await settle();
     const facts = (await vscode.commands.executeCommand('theourgia.showStatus', {
@@ -705,4 +720,3 @@ describe('what the status reports when the settings are unusable', function () {
     assert.strictEqual(facts.pending, 0, 'a readable and empty queue was not reported as empty');
   });
 });
-

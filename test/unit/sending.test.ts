@@ -145,7 +145,7 @@ describe('the save path reads who, what and which send at one moment', () => {
    * So the rule is a COUNT AND A PLACE, both pinned: one more, one
    * fewer, or the same one moved out of the callback all fail here.
    */
-  it('reads the live configuration exactly once after onSaved first waits', () => {
+  it('reads the live configuration before W saving and again at acceptance', () => {
     const src = parse('extension.ts');
     const onSaved = functionNamed(src, 'onSaved');
     const after = liveConfigReads(onSaved).filter((n) => n.getStart(src) > firstWaitIn(onSaved, src));
@@ -158,7 +158,7 @@ describe('the save path reads who, what and which send at one moment', () => {
      */
     assert.deepStrictEqual(
       after.map((n) => n.getText(src)),
-      ['config.store'],
+      ['config.store','config.store'],
       'onSaved reads the live configuration after its first wait somewhere other than the one ' +
         'place §13.1 allows -- the store check inside the chain callback. Found at ' +
         after
@@ -167,11 +167,11 @@ describe('the save path reads who, what and which send at one moment', () => {
     );
   });
 
-  it('takes that one reading inside the chain callback, where the save is accepted', () => {
+  it('takes both readings inside the captured chain callback', () => {
     const src = parse('extension.ts');
     const onSaved = functionNamed(src, 'onSaved');
     const read = liveConfigReads(onSaved).filter((n) => n.getStart(src) > firstWaitIn(onSaved, src));
-    assert.strictEqual(read.length, 1, 'this cell reads the one allowed configuration read; there is not exactly one');
+    assert.strictEqual(read.length, 2, 'W preparation and final acceptance each require a store check');
 
     const runs = within(onSaved, ts.isCallExpression).filter(
       (n) =>
@@ -181,9 +181,9 @@ describe('the save path reads who, what and which send at one moment', () => {
         n.expression.expression.text === 'chain'
     );
     assert.ok(runs.length > 0, 'onSaved does not call chain.run at all, so this census is not reading the save path');
-    const inside = runs.some(
-      (call) => read[0].getStart(src) > call.getStart(src) && read[0].getEnd() < call.getEnd()
-    );
+    const inside = read.every(r=>runs.some(
+      call => r.getStart(src) > call.getStart(src) && r.getEnd() < call.getEnd()
+    ));
     assert.ok(
       inside,
       'the one live-configuration read in onSaved sits outside chain.run, so the store it checks ' +

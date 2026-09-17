@@ -1,3 +1,4 @@
+import {withExclusive,controlDirectory} from './fsops';
 /*
  * Copyright 2018 - 2026 guenchi
  *
@@ -199,7 +200,17 @@ export class Owners {
    * as absent. A caller deciding whether to take ownership must not read
    * an unreadable directory as a free one.
    */
+  private location(directory:string):string {
+    const control=controlDirectory(directory);
+    const fresh=this.files.readDirectory(control);
+    if (!fresh.read && fresh.because==='unreadable') return control;
+    if (fresh.read && fresh.names.some(n=>/^owner\.\d+$/.test(n))) return control;
+    const legacy=this.files.readDirectory(directory);
+    return legacy.read && legacy.names.some(n=>/^owner\.\d+$/.test(n))?directory:control;
+  }
+
   public ownerOf(directory: string): OwnerOf {
+    directory=this.location(directory);
     const listing = this.files.readDirectory(directory);
     if (!listing.read) {
       return listing.because === 'absent' ? { known: true, record: null } : { known: false };
@@ -247,6 +258,7 @@ export class Owners {
    * part rather than mistaking it for contamination.
    */
   public take(directory: string, sessionId: string, sidecars: string[]): Held {
+    return withExclusive(directory, (): Held => {
     const current = this.ownerOf(directory);
     if (!current.known) {
       return { held: false, because: 'unreadable' };
@@ -267,9 +279,10 @@ export class Owners {
       }
     }
     const record: OwnerRecord = { sessionId, generation, expected };
-    const name = path.join(directory, `${OWNER}${generation}`);
+    const namespace=this.location(directory);
+    const name = path.join(namespace, `${OWNER}${generation}`);
     const temporary = `${name}.tmp-${randomUUID()}`;
-    this.files.makeDirectory(directory);
+    this.files.makeDirectory(namespace);
     this.files.writeDurably(temporary, `${JSON.stringify(record)}\n`);
     try {
       this.files.link(temporary, name);
@@ -285,8 +298,10 @@ export class Owners {
         void e;
       }
     }
-    this.files.syncDirectory(directory);
+    this.files.syncDirectory(namespace);
     return { held: true, record };
+
+    });
   }
 
   /*
@@ -295,6 +310,7 @@ export class Owners {
    * moves ownership.
    */
   public rewrite(directory: string, record: OwnerRecord): void {
+    return withExclusive(directory, (): void => {
     /*
      * ⚠️ THROUGH A TEMPORARY AND A RENAME, NOT OVER THE RECORD.
      *
@@ -305,11 +321,14 @@ export class Owners {
      * sidecar being stamped twice; the cost of a torn record is a block
      * nobody can write.
      */
-    const name = path.join(directory, `${OWNER}${record.generation}`);
+    const namespace=this.location(directory);
+    const name = path.join(namespace, `${OWNER}${record.generation}`);
     const temporary = `${name}.tmp-${randomUUID()}`;
     this.files.writeDurably(temporary, `${JSON.stringify(record)}\n`);
     this.files.rename(temporary, name);
-    this.files.syncDirectory(directory);
+    this.files.syncDirectory(namespace);
+
+    });
   }
 
   /*

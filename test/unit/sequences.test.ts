@@ -148,15 +148,15 @@ describe('C11/S1 an older reading cannot replace a newer baseline', () => {
    * that replaced it asserts exactly that, and so does the second half
    * of this one.
    */
-  it('gives each reading its own file and its own record', async () => {
+  it('replaces body and prefix together at the current path', async () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
     const older = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '', text: 'no heading\n', cursor: null });
     const newer = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '## Grown\n', text: '## Grown\nbody\n', cursor: null });
     assert.ok(older.published && newer.published);
     if (older.published && newer.published) {
-      assert.notStrictEqual(older.file, newer.file, 'the newer reading took the older one’s path');
-      assert.strictEqual(publisher.sidecarOf(older.file)?.prefix, '');
+      assert.strictEqual(older.file, newer.file, 'the canonical path changed');
+      assert.strictEqual(fs.readFileSync(newer.file,'utf8'),'## Grown\nbody\n');
       assert.strictEqual(
         publisher.sidecarOf(newer.file)?.prefix,
         '## Grown\n',

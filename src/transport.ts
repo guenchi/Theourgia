@@ -241,8 +241,8 @@ export class CliTransport implements Transport {
 }
 
 /*
- * THE SOCKET TRANSPORT IS A PLACE, NOT AN IMPLEMENTATION. The core has
- * no daemon yet. It exists so that the interface has two implementors
+ * The core now has a daemon; this extension's direct socket adapter is
+ * still unimplemented. It exists so the interface has two implementors
  * from the start -- an interface with one implementor is a shape nobody
  * has tested against a second one -- and it refuses rather than falling
  * back to the command line, because a silent fallback would make the
@@ -255,7 +255,7 @@ export class SocketTransport implements Transport {
     return Promise.reject(
       new TransportError(
         'unsupported',
-        'the socket transport is not implemented; the core has no daemon yet. ' +
+        'the extension socket transport is not implemented. ' +
           'Set theourgia.transport to "cli".'
       )
     );

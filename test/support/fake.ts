@@ -64,7 +64,7 @@ export class FakeCore {
   public readonly corePath: string;
   public readonly store: string;
 
-  constructor(calls: ScriptedCall[]) {
+  constructor(calls: ScriptedCall[], workingProjection?:{prefix:string;body:string}) {
     counter += 1;
     this.root = fs.mkdtempSync(path.join(os.tmpdir(), `theourgia-cell-${process.pid}-${counter}-`));
     this.scriptFile = path.join(this.root, 'script.json');
@@ -79,7 +79,7 @@ export class FakeCore {
      * pin pass for the wrong reason.
      */
     fs.writeFileSync(path.join(this.corePath, 'cli.ss'), ';; stand-in\n', 'utf8');
-    fs.writeFileSync(this.scriptFile, JSON.stringify({ calls }, null, 2), 'utf8');
+    fs.writeFileSync(this.scriptFile, JSON.stringify({ calls, workingProjection }, null, 2), 'utf8');
   }
 
   public config(overrides: Partial<CoreConfig> = {}): CoreConfig {

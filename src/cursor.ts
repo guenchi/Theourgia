@@ -91,7 +91,9 @@ export function eventFromWrite(answer: Answer): Event | null {
   if (!answer.ok || answer.answers.length === 0) {
     return null;
   }
-  const datum = answer.answers[0];
+  let datum = answer.answers[0];
+  const items = clause(datum,'items');
+  if (items && items.length === 2) datum = items[1];
   for (const name of ['cursor', 'event']) {
     const found = clauseValue(datum, name);
     if (found !== undefined) {
@@ -108,7 +110,8 @@ export function isReplay(answer: Answer): boolean {
   if (!answer.ok || answer.answers.length === 0) {
     return false;
   }
-  return clauseValue(answer.answers[0], 'replay') === true;
+  const datum=answer.answers[0],items=clause(datum,'items');
+  return clauseValue(items && items.length===2?items[1]:datum,'replay')===true;
 }
 
 export const CURSOR_SHAPE = /^[^:\s]+:(0|[1-9][0-9]*)$/;

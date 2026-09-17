@@ -44,8 +44,8 @@ export interface SuiteLike {
 }
 
 /*
- * Counted 2026-09-12, from a run that passed: 14 + 3 = the 17 the
- * editor-hosted suite reports.
+ * The current host registers 15 extension and 4 generation cells.
+ * The completed v20 editor run preserves this 19-cell floor.
  */
 export const EDITOR_CELLS: Array<[string, number]> = [
   ['extension.test.js', 15],

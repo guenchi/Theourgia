@@ -1,3 +1,4 @@
+import {withExclusive} from './fsops';
 /*
  * Copyright 2018 - 2026 guenchi
  *
@@ -179,6 +180,14 @@ function andWhatToDo(file: string, fault: OutboxFault): string {
   );
 }
 
+function withQueueExclusive<T>(file:string,work:()=>T):T {
+  try {return withExclusive(file,work);} catch(error) {
+    if(error instanceof OutboxWriteError)throw error;
+    const wrapped=new OutboxWriteError(`Cannot update ${file}: ${String(error)}`) as OutboxWriteError & {code?:string;cause?:unknown};
+    wrapped.code=(error as NodeJS.ErrnoException)?.code;wrapped.cause=error;throw wrapped;
+  }
+}
+
 export class Outbox {
   private readonly file: string;
   private readonly files: FileOps;
@@ -314,11 +323,9 @@ export class Outbox {
    * is a file two processes reach: a takeover writes into a session's
    * queue while that session may be waking up.
    *
-   * This does not make a change atomic. Two writers can still both
-   * read, both change and both write, and the design says so: the
-   * cross-process fence is a named problem this batch does not solve.
-   * What it buys is that a writer cannot erase work it never saw --
-   * the half that was costing entries.
+   * Every mutator now holds withQueueExclusive from before this refresh
+   * through its write. The stable kernel lock prevents two participating
+   * processes from reading and overwriting the same old queue snapshot.
    *
    * ⚠️ THE RULE IS WRITTEN ONCE. It used to be repeated at all six call
    * sites, which is six places for it to drift and six things to edit
@@ -371,10 +378,13 @@ export class Outbox {
    * and not a logged warning.
    */
   public enqueue(entry: OutboxEntry): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     next.entries.push({ ...entry });
     this.commit(next);
+
+    });
   }
 
   /*
@@ -388,20 +398,27 @@ export class Outbox {
    * composing against a number nobody stood at.
    */
   public clearCursor(): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     next.cursor = null;
     this.commit(next);
+
+    });
   }
 
   public setCursor(cursor: string): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     next.cursor = cursor;
     this.commit(next);
+
+    });
   }
 
   public resolve(req: string, cursor: string | null): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     const before = next.entries.length;
@@ -461,6 +478,8 @@ export class Outbox {
       }
     }
     this.commit(next);
+
+    });
   }
 
   /*
@@ -478,6 +497,7 @@ export class Outbox {
    * sent.
    */
   public aboutToSend(req: string, cursor: string | null): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     let changed = false;
@@ -494,6 +514,8 @@ export class Outbox {
     if (changed) {
       this.commit(next);
     }
+
+    });
   }
 
   /*
@@ -503,6 +525,7 @@ export class Outbox {
    * trace. (§12.11.3, §12.23)
    */
   public markImported(req: string, token: string): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     let changed = false;
@@ -515,6 +538,8 @@ export class Outbox {
     if (changed) {
       this.commit(next);
     }
+
+    });
   }
 
   /*
@@ -522,6 +547,7 @@ export class Outbox {
    * (§13, r3-4)
    */
   public markParked(req: string, why: string): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     for (const entry of next.entries) {
@@ -531,9 +557,12 @@ export class Outbox {
       }
     }
     this.commit(next);
+
+    });
   }
 
   public markPending(req: string, why: string): void {
+    return withQueueExclusive(this.file, (): void => {
     this.refresh();
     const next = this.copy();
     for (const entry of next.entries) {
@@ -543,6 +572,8 @@ export class Outbox {
       }
     }
     this.commit(next);
+
+    });
   }
 
   /*
@@ -738,6 +769,7 @@ function readRecord(raw: unknown, at: number): { record?: SendRecord } {
       rawDigest: text('rawDigest') as string,
       sentDigest: text('sentDigest') as string,
       prefixDigest: text('prefixDigest') as string,
+      projectionId: text('projectionId') ?? undefined,
       seq: held.seq,
       intent: {
         verb: intent.verb,

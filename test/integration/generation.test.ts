@@ -304,10 +304,10 @@ describe('a setting that changes while a request is in flight', function () {
        * The shapes now live in `test/support/answers.ts` and are put to
        * the product's own reader by a cell in `fsops.test.ts`.
        */
-      { match: ['set'], stdout: wroteAnswer(2), rc: 0, delayMs: 2500 },
+      { match: ['commit'], stdout: `(ok (items ${wroteAnswer(2).trim()}))\n`, rc: 0, delayMs: 2500 },
       { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n', rc: 0 },
       { match: ['outline'], stdout: '', rc: 0 }
-    ]);
+    ],{prefix:'## Two\n',body:'body\n'});
     await useStore(core, `${core.store}-A`);
     await settle();
 
@@ -335,7 +335,7 @@ describe('a setting that changes while a request is in flight', function () {
     await saving;
     await settle(2600);
 
-    const sets = core.calls().filter((c) => c.coreArgv.includes('set'));
+    const sets = core.calls().filter((c) => c.coreArgv.includes('commit'));
     assert.ok(sets.length > 0, 'no save was ever sent, so this cell measured nothing');
     assert.ok(
       sets.some((c) => c.event === 'answer'),

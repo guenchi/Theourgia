@@ -33,7 +33,8 @@ const files = [
   ['test/fixtures/goeteia/sexpr-vectors.json', 'out/test/fixtures/goeteia/sexpr-vectors.json'],
   ['test/fixtures/goeteia/sexpr-escape-vectors.json', 'out/test/fixtures/goeteia/sexpr-escape-vectors.json'],
   ['test/fake-core.js', 'out/test/fake-core.js'],
-  ['test/support/host-child.js', 'out/test/support/host-child.js']
+  ...fs.readdirSync(path.join(root, 'test/support')).filter(name => name.endsWith('.js') || name.endsWith('.ss')).sort()
+    .map(name => [`test/support/${name}`, `out/test/support/${name}`])
 ];
 
 let copied = 0;

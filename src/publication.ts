@@ -1,3 +1,4 @@
+import {withExclusive} from './fsops';
 /*
  * Copyright 2018 - 2026 guenchi
  *
@@ -18,22 +19,19 @@
  * Putting a reading of a block into a file, and deciding what a file
  * found on disk is.  (§12.15 结构一, §12.11.1, §12.13.2, §12.17)
  *
- * PUBLICATION IS IMMUTABLE. Every reading taken from the store is
- * written to a NEW path `<n>.md`; this extension never rewrites a file
- * that exists, and never unlinks or renames one it has published. The
- * only writer of an existing file is the editor, through a document it
- * has open. That is what removes the whole class of "checked, then
- * something wrote between the check and the write" -- there is nothing
- * to overwrite. (§12.15 结构一, §12.23)
+ * V20 PUBLICATION REPLACES current.md. A unique durable temporary is
+ * installed with one rename after the final ownership, dirty-buffer
+ * and byte checks. A session-scoped kernel lock protects plugin writers.
+ * The editor itself does not participate in that lock.
  *
- * THE SIDECAR IS WRITTEN FIRST, IN THREE STEPS, so that every point at
- * which the process can die is decidable afterwards. (§12.7.3 as it
- * stands in §12.9: phase + previous)
+ * The prepared sidecar retains the previous full source record. Recovery
+ * selects a source only when complete body bytes identify it unambiguously.
  */
 
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
+import {cleanupFailure, cleanupTemporary, replaceText, temporaryFor} from './temporary';
 import { Owners } from './ownership';
 
 /*
@@ -46,21 +44,31 @@ export function digestOfBytes(bytes: Buffer | string): string {
 }
 
 /*
- * WHAT THE EXTENSION CAN ASK THE EDITOR. `publish` must refuse when a
- * document is open on the target path, because then the editor is a
- * writer and this is not -- and `FileOps` cannot answer that. It is a
+ * WHAT THE EXTENSION CAN ASK THE EDITOR. `publish` refuses a dirty
+ * document on the target path. Clean open documents may refresh, and
+ * `FileOps` cannot answer this question. It is a
  * parameter for the reason the file operations are: this does not
  * need to know whose editor it is, and saying so is what lets a cell
  * drive it. (§12.13.1)
  */
 export interface OpenDocuments {
   isOpen(file: string): boolean;
+  isDirty?(file: string): boolean;
 }
 
 /*
- * The record beside `<n>.md`, written as `<n>.md.meta`. The field names are
+ * The record beside current.md (or a retained legacy numbered file). The field names are
  * the design's. (§12.9, §12.13.2, §12.17.3)
  */
+export interface ProjectionSource {
+  id: string;
+  kind: 'committed' | 'working' | 'local';
+  writer: string;
+  version: string;
+  basedOn: string | null;
+  cut?: string;
+}
+
 export interface Sidecar {
   /*
    * THE RECORD SAYS WHICH SHAPE IT IS. A queue written without a version
@@ -68,6 +76,8 @@ export interface Sidecar {
    * one, and a record on disk outlives the build that wrote it.
    * (outbox 的同一课)
    */
+  projection?: ProjectionSource;
+  prior?: Sidecar | null;
   format: 1;
   storeId: string;
   blockId: string;
@@ -281,6 +291,7 @@ export type Acknowledgement =
   | { recorded: false; because: 'older-event' | 'no-sidecar' | 'not-ours' };
 
 export interface PublishRequest {
+  projection?: ProjectionSource;
   directory: string;
   storeId: string;
   blockId: string;
@@ -310,7 +321,7 @@ export type PublishOutcome =
        * block's directory: nothing is wrong with the bytes, and the
        * thing to do is look at that window rather than save again.
        */
-      because: 'document-open' | 'digest-moved' | 'not-ours';
+      because: 'document-open' | 'dirty-document' | 'digest-moved' | 'not-ours' | 'projection-incomplete' | 'migration-required' | 'unknown-file';
       file: string | null;
     };
 
@@ -331,6 +342,8 @@ export type PublishOutcome =
  */
 export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
   return {
+    projection: sidecar.projection,
+    prior: sidecar.prior === undefined ? undefined : sidecar.prior === null ? null : sidecarToDisk(sidecar.prior),
     format: sidecar.format,
     'store-id': sidecar.storeId,
     'block-id': sidecar.blockId,
@@ -469,9 +482,29 @@ export function sidecarFromDisk(text: string): SidecarRead {
       return { read: false, because: 'unreadable', detail: `no ${key}` };
     }
   }
+  const projection = record.projection;
+  if (projection !== undefined && (!projection || typeof projection !== 'object' ||
+      !['id','writer','version'].every(k => typeof (projection as Record<string,unknown>)[k] === 'string') ||
+      !['committed','working','local'].includes(String((projection as Record<string,unknown>).kind)) ||
+      !((projection as Record<string,unknown>).basedOn === null || typeof (projection as Record<string,unknown>).basedOn === 'string') ||
+      !((projection as Record<string,unknown>).cut === undefined || typeof (projection as Record<string,unknown>).cut === 'string'))) {
+    return {read:false,because:'unreadable',detail:'invalid projection source'};
+  }
+  let prior: Sidecar | null | undefined;
+  if (record.prior !== undefined) {
+    if (record.prior === null) prior = null;
+    else {
+      if (typeof record.prior !== 'object' || 'prior' in record.prior) return {read:false,because:'unreadable',detail:'nested preparation'};
+      const parsed = sidecarFromDisk(JSON.stringify(record.prior));
+      if (!parsed.read || parsed.sidecar.phase !== 'published') return {read:false,because:'unreadable',detail:'invalid prior projection'};
+      prior = parsed.sidecar;
+    }
+  }
   return {
     read: true,
     sidecar: {
+      ...(projection===undefined?{}:{projection:projection as ProjectionSource}),
+      ...(prior===undefined?{}:{prior}),
       format: 1,
       storeId: required('store-id') as string,
       blockId: required('block-id') as string,
@@ -697,6 +730,7 @@ export type Reconciliation =
   | { reconciled: true; because: 'prefix-already-present' }
   | {
       reconciled: false;
+      because?: 'not-ours' | 'dirty-document' | 'working-unavailable';
       /*
        * Both actions run on the chain. `prepend-prefix` keeps the user's
        * bytes and puts the store's prefix in front of them;
@@ -765,11 +799,7 @@ export function sidecarPathOf(file: string): string {
  * does not have.
  */
 export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): void {
-  const meta = sidecarPathOf(file);
-  const temporary = `${meta}.${process.pid}.tmp`;
-  files.writeDurably(temporary, `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
-  files.rename(temporary, meta);
-  files.syncDirectory(path.dirname(meta));
+  replaceText(files, sidecarPathOf(file), `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
 }
 
 /*
@@ -976,168 +1006,115 @@ export class Publisher {
     return sidecarPathOf(file);
   }
 
-  private nextVersion(directory: string): number {
-    let n = 1;
-    while (this.files.exists(path.join(directory, `${n}.md`)) || this.files.exists(path.join(directory, `${n}.md.meta`))) {
-      n += 1;
-    }
-    return n;
-  }
-
-  /*
-   * THE NEWEST VERSION IN A DIRECTORY, or `null` when there is none.
-   *
-   * ⚠️ IT IS PUBLIC BECAUSE AN ANSWER CAN OUTLIVE THE WINDOW THAT SENT
-   * IT. A retry after a restart names a request and no file, and the
-   * block's own directory is the only place to look.
-   *
-   * ⚠️ IT IS A CANDIDATE, NOT THE VERSION THE REQUEST CAME FROM. This
-   * said the newest version "is the one a save was sent from", which is
-   * false: a save can go out from `1.md` and `2.md` be published before
-   * the answer arrives. What `saving.recognise` then establishes is that
-   * the candidate's body is exactly the text that was sent -- so the
-   * acknowledgement it records is TRUE OF THAT FILE, which is what the
-   * record claims. It is not a claim about which version the request was
-   * composed from, and nothing here should be read as one.
-   */
   public latestIn(directory: string): string | null {
-    return this.latestFile(directory);
+    const file = path.join(directory, 'current.md');
+    return this.files.exists(file) || this.files.exists(this.metaOf(file)) ? file : null;
   }
 
-  private latestFile(directory: string): string | null {
-    let n = 1;
-    let last: string | null = null;
-    for (;;) {
-      const candidate = path.join(directory, `${n}.md`);
-      if (!this.files.exists(candidate) && !this.files.exists(`${candidate}.meta`)) {
-        return last;
-      }
-      last = candidate;
-      n += 1;
-    }
-  }
-
-  /*
-   * Every record this class writes goes through `writeSidecar`, which
-   * says why it is a rename and not a write.
-   */
   private write(file: string, sidecar: Sidecar): void {
     writeSidecar(this.files, file, sidecar);
   }
 
-  /*
-   * Writes the next version: sidecar `publishing`, then the file, then
-   * sidecar `published`. Refuses when a document is open on the target
-   * path, because then the editor is a writer and this is not.
-   * (§12.13.1, §12.15 结构一)
-   */
-  public async publish(request: PublishRequest): Promise<PublishOutcome> {
-    this.files.makeDirectory(request.directory);
-    const version = this.nextVersion(request.directory);
-    const file = path.join(request.directory, `${version}.md`);
-    if (this.documents.isOpen(file)) {
-      return { published: false, because: 'document-open', file };
+  public recoverCurrent(file: string, supplied?: {source:ProjectionSource;text:string}): boolean {
+    return withExclusive(path.dirname(file), (): boolean => {
+    const record = this.sidecarOf(file);
+    if (!record || !record.projection) return false;
+    if (record.phase === 'published') return true;
+    if (this.documents.isDirty?.(file) || !this.mayWrite(file).may) return false;
+    if (!this.files.exists(file)) {
+      if (record.prior!==null || !supplied || supplied.source.id!==record.projection.id || digestOfBytes(supplied.text)!==record.written) return false;
+      replaceText(this.files,file,supplied.text);
     }
-    const previousFile = this.latestFile(request.directory);
-    const previous =
-      previousFile !== null && this.files.exists(previousFile)
-        ? digestOfBytes(this.files.readBytes(previousFile))
-        : null;
-    return this.publishInto(request.directory, request, previous, { cursor: request.cursor });
+    const digest = digestOfBytes(this.files.readBytes(file));
+    const old = record.prior;
+    const isOld = old != null && digest === old.written;
+    const isNew = digest === record.written;
+    // Equal bytes cannot select between two different origins after a crash.
+    if (isOld && isNew && old?.projection?.id !== record.projection.id) return false;
+    if (isOld) { this.write(file, old as Sidecar); return true; }
+    if (isNew) { const {prior: _prior, ...next} = record; this.write(file, {...next, phase:'published'}); return true; }
+    return false;
+
+    });
   }
 
-  /*
-   * THE ONE PLACE A VERSION IS WRITTEN. Both `publish` and the
-   * store-version branch of `reconcileBy` come here, so the refusal for
-   * an open target and the three-step record exist once. (§12.13.1,
-   * §12.15 结构一)
-   */
-  private publishInto(
-    directory: string,
-    what: { storeId: string; blockId: string; prefix: string; text: string },
-    previous: string | null,
-    /*
-     * WHETHER THESE BYTES CAME FROM THE STORE. A publication whose text
-     * was read from the store establishes a baseline; one built here --
-     * the user's own bytes with a heading put in front of them -- does
-     * not, and the block stays a draft until a save is confirmed. The
-     * difference is the caller's to state, because only the caller
-     * knows where the text came from.
-     */
-    baseline: { cursor: string | null } | null
-  ): PublishOutcome {
+  public async publish(request: PublishRequest): Promise<PublishOutcome> {
+    return this.publishNow(request);
+  }
+
+  public publishNow(request: PublishRequest): PublishOutcome {
+    return this.publishInto(request.directory, request, {cursor:request.cursor}, false);
+  }
+
+  private publishInto(directory: string, what: Omit<PublishRequest,'directory'|'cursor'>,
+      baseline: {cursor:string|null} | null, explicit: boolean, expectedRaw?:string): PublishOutcome {
+    return withExclusive(directory, (): PublishOutcome => {
+    const file = path.join(directory, 'current.md');
+    const refuse = (because: Extract<PublishOutcome,{published:false}>['because']): PublishOutcome => ({published:false,because,file});
+    if (this.documents.isDirty?.(file)) return refuse('dirty-document');
+    if (this.files.list(directory).some(n => /^\d+\.md(?:\.meta)?$/.test(n))) return refuse('migration-required');
+    let old = this.sidecarOf(file);
+    if (this.files.exists(file) && (!old || !old.projection)) return refuse('unknown-file');
+    if (old && (old.storeId !== what.storeId || old.blockId !== what.blockId)) return refuse('unknown-file');
+    if (old?.phase === 'publishing' && !explicit) {
+      if (!this.recoverCurrent(file)) return refuse('projection-incomplete');
+      old = this.sidecarOf(file);
+    }
+    let before: string | null = null;
+    if (this.files.exists(file)) before = digestOfBytes(this.files.readBytes(file));
+    if (expectedRaw!==undefined && before!==expectedRaw) return refuse('digest-moved');
+    if (explicit && old?.phase==='publishing' && before!==null && old.projection) {
+      old={...old,phase:'published',written:before,prior:undefined,confirmed:null,localOnly:true,
+        projection:{...old.projection,id:randomUUID(),kind:'local'}};
+    }
+    if (old && !explicit && (before !== old.written || old.localOnly)) return refuse('digest-moved');
     this.files.makeDirectory(directory);
-    /*
-     * ⚠️ A PUBLICATION IS WHERE OWNERSHIP OF A BLOCK BEGINS. There is
-     * nothing to own until the directory exists; every later write asks
-     * `mayWrite`. A directory somebody else holds is refused here, in
-     * the same words as a target the editor has open: nothing is
-     * written and the caller is told.
-     */
-    const ours = this.takeIfUnowned(directory);
-    if (!ours.may) {
-      return { published: false, because: 'not-ours', file: null };
-    }
-    const version = this.nextVersion(directory);
-    const file = path.join(directory, `${version}.md`);
-    if (this.documents.isOpen(file)) {
-      return { published: false, because: 'document-open', file };
-    }
+    if (!this.takeIfUnowned(directory).may) return refuse('not-ours');
+    const projection = what.projection ?? {id:randomUUID(),kind:baseline===null?'local':'committed',writer:this.ownership?.sessionId ?? 'local',version:randomUUID(),basedOn:null};
     const record: Sidecar = {
       ...UNNUMBERED,
-      format: 1,
-      storeId: what.storeId,
-      blockId: what.blockId,
-      phase: 'publishing',
-      prefix: what.prefix,
-      written: digestOfBytes(Buffer.from(what.text, 'utf8')),
-      previous,
-      confirmed:
-        baseline === null
-          ? null
-          : {
-              by: 'publication',
-              rawDigest: digestOfBytes(Buffer.from(what.text, 'utf8')),
-              prefixDigest: digestOfBytes(what.prefix),
-              cursor: baseline.cursor
-            },
-      acknowledgedRaw: null,
-      sent: null,
-      cursor: null,
-      localOnly: false,
-      unresolved: false,
-      /*
-       * WHETHER THE BLOCK ITSELF HOLDS CARRIAGE RETURNS, recorded when
-       * it is written rather than guessed later from the prefix. The
-       * prefix's line endings say nothing about the body's, and a save
-       * that guessed from them normalised a block whose stored body
-       * really did contain CRLF. (§12.17.3, P2-7)
-       */
-      bodyHasCrlf: what.text.slice(what.prefix.length).includes('\r\n')
+      nextSeq:old?.nextSeq ?? 1, highWater:old?.highWater ?? 0, outstanding:old?.outstanding ?? [],
+      writtenBy:old?.writtenBy ?? null, legacySend:old?.legacySend ?? false,
+      format:1, storeId:what.storeId, blockId:what.blockId,
+      phase:'publishing', projection, prior:old ?? null,
+      prefix:what.prefix, written:digestOfBytes(what.text), previous:before,
+      confirmed:baseline===null ? null : {by:'publication',rawDigest:digestOfBytes(what.text),prefixDigest:digestOfBytes(what.prefix),cursor:baseline.cursor},
+      acknowledgedRaw:null,sent:null,cursor:null,localOnly:baseline===null&&projection.kind!=='working',unresolved:false,
+      bodyHasCrlf:what.text.slice(what.prefix.length).includes('\r\n')
     };
-    this.write(file, record);
-    this.files.writeText(file, what.text);
-    this.write(file, { ...record, phase: 'published' });
-    return { published: true, file, version };
+    const temporary = temporaryFor(this.files,file);
+    let promoted=false;
+    try {
+      this.files.writeDurably(temporary,what.text);
+      this.write(file,record);
+      // No asynchronous preparation follows this final editor/owner/byte check.
+      const now = this.files.exists(file) ? digestOfBytes(this.files.readBytes(file)) : null;
+      if (this.documents.isDirty?.(file) || now !== before || !this.mayWrite(file).may) {
+        const reason = this.documents.isDirty?.(file) ? 'dirty-document' : now !== before ? 'digest-moved' : 'not-ours';
+        throw Object.assign(new Error(reason), {publicationRefusal:reason});
+      }
+      this.files.rename(temporary,file);
+      promoted=true;
+      this.files.syncDirectory(directory);
+      this.files.syncDirectory(path.dirname(temporary));
+      const {prior: _prior,...stable} = record;
+      this.write(file,{...stable,phase:'published'});
+      return {published:true,file,version:1};
+    } catch (error) {
+      if (promoted) throw error;
+      const observation=cleanupTemporary(this.files,temporary,error);
+      if (typeof error==='object' && error!==null && 'publicationRefusal' in error) {
+        // The prepared record is retained for explicit recovery if ownership changed.
+        if (old && this.mayWrite(file).may) this.write(file,old);
+        if (observation.presence==='present' || observation.presence==='unknown') throw cleanupFailure(observation);
+        return refuse((error as {publicationRefusal:Extract<PublishOutcome,{published:false}>['because']}).publicationRefusal);
+      }
+      throw cleanupFailure(observation);
+    }
+
+    });
   }
 
-  /*
-   * Reads `<n>.md.meta` and `<n>.md` and says what the file is. The three
-   * mid-publication answers are distinguished by comparing the file's
-   * digest with `written` and with `previous`; neither ⇒ the editor
-   * wrote a third version. (§12.9)
-   */
-  /*
-   * ⚠️ THE QUEUE IS AN INPUT, AND WHERE IT IS ABSENT THE ANSWER IS
-   * ABOUT THE FILE ALONE. (§13.3, D2)
-   *
-   * Whether a block is a draft is a pure function of four things: the
-   * bytes, the record beside them, and -- through `outstanding` -- what
-   * the owner's queue still holds. A caller that has no queue to hand
-   * (the judge `Sessions` makes for a listing when it is asked about
-   * one file) gets the answer for an empty one, which is what the
-   * record alone can say.
-   */
   public standingOf(file: string, queue?: QueueView): Standing {
     const sidecar = this.sidecarOf(file);
     if (sidecar === null) {
@@ -1241,11 +1218,15 @@ export class Publisher {
    * Offers the way out, without taking it. (§12.11.7, C3)
    */
   public reconcile(file: string, storePrefix: string, storeText: string): Reconciliation {
+    return withExclusive(path.dirname(file), (): Reconciliation => {
     const fileText = this.files.readText(file);
+    if (this.documents.isDirty?.(file)) {
+      return {reconciled:false, because:'dirty-document', choices:[], storeText, previousText:null, fileText};
+    }
     if (fileText.startsWith(storePrefix)) {
       const ours = this.mayWrite(file);
       if (!ours.may) {
-        return { reconciled: false, choices: [], storeText, previousText: null, fileText };
+        return { reconciled: false, because: 'not-ours', choices: [], storeText, previousText: null, fileText };
       }
       const sidecar = this.sidecarOf(file);
       if (sidecar !== null) {
@@ -1276,6 +1257,7 @@ export class Publisher {
         this.write(file, {
           ...sidecar,
           prefix: storePrefix,
+          projection: sidecar.projection ? {...sidecar.projection,id:randomUUID(),kind:'local'} : undefined,
           written: digestOfBytes(Buffer.from(fileText, 'utf8')),
           phase: 'published',
           confirmed: null,
@@ -1309,6 +1291,8 @@ export class Publisher {
       previousText,
       fileText
     };
+
+    });
   }
 
   /*
@@ -1317,168 +1301,57 @@ export class Publisher {
    * re-arm the overwrite the third-version judgement exists to prevent,
    * and would pass every other cell. (§12.11.7, C15)
    */
-  public reconcileBy(
-    file: string,
-    action: 'prepend-prefix' | 'take-store-version',
-    storePrefix: string,
-    storeText: string,
-    offered?: string
-  ): {
-    done: boolean;
-    file: string;
-    because?: 'no-record' | 'file-changed' | 'document-open' | 'not-ours';
-  } {
-    const sidecar = this.sidecarOf(file);
-    if (sidecar === null) {
-      return { done: false, file, because: 'no-record' };
-    }
-    /*
-     * ⚠️ THE ACTION IS CARRIED OUT AGAINST THE TEXT THAT WAS OFFERED, OR
-     * NOT AT ALL.
-     *
-     * `reconcile` shows the user three texts and they pick; the pick
-     * waits on a human, and this file is not theirs alone -- another
-     * window can replace it while the list is open. `prepend-prefix`
-     * then re-read the file and published somebody else's bytes with the
-     * heading in front, while the confirmation said the user's own text
-     * had been kept. Found in review, with a reproduction.
-     *
-     * THE CHECK LIVES HERE RATHER THAN AT THE CALL SITE because the
-     * caller that shows the list is the one part of this that no cell
-     * can reach. `offered` is optional so that a caller which did not
-     * offer anything -- a cell exercising the actions themselves -- is
-     * not forced to invent a value; passing it is what makes the
-     * guarantee, and the extension passes it.
-     */
-    /*
-     * ⚠️ ONE READ, AND THE ACTION USES THAT SAME TEXT.
-     *
-     * The first version of this guard read the file, compared it, and
-     * then let `prepend-prefix` read the file AGAIN -- two reads with a
-     * gap between them, and the writer this is protecting against is in
-     * another process, which the chain cannot exclude. A write landing
-     * in that gap passed the guard and was then published: exactly the
-     * defect the guard was added for, one step further along. Found in
-     * review with a reproduction.
-     *
-     * A DISAPPEARING FILE IS `file-changed` AND NOT A THROW. It went
-     * away, which is a thing the user has to be told in the words the
-     * caller already has for "look again"; an ENOENT escaping from here
-     * would leave the command with no answer at all.
-     */
-    const ours = this.mayWrite(file);
-    if (!ours.may) {
-      return { done: false, file, because: 'not-ours' };
-    }
-    let current: string | null;
-    try {
-      current = this.files.readText(file);
-    } catch (e) {
-      current = null;
-    }
-    if (offered !== undefined && current !== offered) {
-      return { done: false, file, because: 'file-changed' };
-    }
-    if (current === null) {
-      return { done: false, file, because: 'file-changed' };
-    }
-    if (action === 'prepend-prefix') {
-      /*
-       * THE USER'S BYTES ARE KEPT AND A NEW VERSION CARRIES THEM WITH
-       * THE PREFIX IN FRONT.
-       *
-       * ⚠️ THE FILE IS NOT REWRITTEN. An earlier version of this read
-       * the file and wrote the joined text back over it -- over the only
-       * copy of a draft, through a truncating write, on a path the
-       * editor may have open and which is not on the chain. A process
-       * stopped there leaves zero bytes where the user's work was. The
-       * rule that publication is immutable is not suspended because the
-       * user authorised the content; it is exactly what makes the
-       * authorisation safe. (§12.15 结构一, §12.11.7)
-       *
-       * The new version is marked `local-only`: its baseline came from
-       * the file rather than from an answer, so the store has not seen
-       * it and it counts as a draft until a save is confirmed.
-       */
-      /*
-       * THE TEXT THE GUARD ABOVE READ, not another read of the same
-       * path. See the paragraph there.
-       */
-      const joined = current.startsWith(storePrefix) ? current : `${storePrefix}${current}`;
-      const outcome = this.publishInto(
-        path.dirname(file),
-        { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: joined },
-        digestOfBytes(this.files.readBytes(file)),
-        null
-      );
-      if (!outcome.published) {
-        return { done: false, file, because: 'document-open' };
-      }
-      const fresh = this.sidecarOf(outcome.file);
-      if (fresh !== null) {
-        this.write(outcome.file, { ...fresh, localOnly: true });
-      }
-      this.write(file, { ...sidecar, unresolved: false });
-      return { done: true, file: outcome.file };
-    }
-    /*
-     * TAKING THE STORE'S VERSION PUBLISHES A NEW ONE, THROUGH THE SAME
-     * DOOR. The file the user had stays exactly where it is: this
-     * extension deletes nothing, and the bytes they typed are the only
-     * copy of them. (§12.23)
-     *
-     * IT GOES THROUGH `publishInto` rather than repeating the three
-     * steps, because the refusal for a path the editor has open belongs
-     * to every publication and a second copy of the sequence is a second
-     * place for that check to be missing -- which is exactly what it
-     * was. (§12.13.1)
-     */
-    const directory = path.dirname(file);
-    const outcome = this.publishInto(
-      directory,
-      { storeId: sidecar.storeId, blockId: sidecar.blockId, prefix: storePrefix, text: storeText },
-      digestOfBytes(this.files.readBytes(file)),
-      /*
-       * TAKING THE STORE'S VERSION IS READING FROM THE STORE, so it
-       * establishes a baseline the same way `publish` does. The cursor
-       * is not available on this path -- `reconcileBy` is handed the
-       * store's text by a caller that did not carry a position with it
-       * -- so the baseline records the digests and says it has no
-       * position, which is the honest half of what it knows.
-       */
-      { cursor: null }
-    );
-    if (!outcome.published) {
-      return { done: false, file, because: 'document-open' };
-    }
-    this.write(file, { ...sidecar, unresolved: false });
-    return { done: true, file: outcome.file };
+  public reconciliationGuard(file: string, offered: string): string | null {
+    if (this.documents.isDirty?.(file)) return 'dirty-document';
+    if (!this.mayWrite(file).may) return 'not-ours';
+    if (!this.files.exists(file) || this.files.readText(file)!==offered) return 'file-changed';
+    return null;
   }
 
-  /*
-   * TAKE THE NEXT SEND NUMBER FOR A FILE, AND RECORD IT AS OUT.
-   * (§13.1, I7)
-   *
-   * ⚠️ THE NUMBER IS ON DISK BEFORE ANYTHING IS SENT. Both halves --
-   * `nextSeq` advancing and the number joining `outstanding` -- are one
-   * write, and it is durable. A number handed out and not written down
-   * is a number the next start of this window hands out again, so two
-   * different sends would carry one sequence and the ordering guard
-   * that decides which of them becomes the baseline would be comparing
-   * them by a number they share.
-   *
-   * ⚠️ AND THE FAILURE IS AN ANSWER, NOT AN EXCEPTION. If the record
-   * cannot be written the save has not been accepted: nothing may be
-   * queued and the user has to be told. Throwing from here would reach
-   * the same place, but as "something went wrong in the save handler"
-   * rather than as this particular thing.
-   */
+  public reconcileBy(file: string, action: 'prepend-prefix' | 'take-store-version', storePrefix: string,
+      storeText: string, offered?: string, projection?: ProjectionSource): {done:boolean;file:string;because?:string} {
+    return withExclusive(path.dirname(file), (): {done:boolean;file:string;because?:string} => {
+    if (this.documents.isDirty?.(file)) return {done:false,file,because:'dirty-document'};
+    const sidecar=this.sidecarOf(file);
+    if (!sidecar) return {done:false,file,because:'no-record'};
+    if (!this.mayWrite(file).may) return {done:false,file,because:'not-ours'};
+    const current=this.files.exists(file)?this.files.readText(file):null;
+    if (current===null || offered!==undefined && current!==offered) return {done:false,file,because:'file-changed'};
+    const text=action==='take-store-version'?storeText:current.startsWith(storePrefix)?current:storePrefix+current;
+    const result=this.publishInto(path.dirname(file),{storeId:sidecar.storeId,blockId:sidecar.blockId,prefix:storePrefix,text,projection},
+      action==='take-store-version'?{cursor:null}:null,true,digestOfBytes(current));
+    return result.published?{done:true,file:result.file}:{done:false,file,because:result.because};
+
+    });
+  }
+
+  public acceptsSnapshot(file:string,rawDigest:string,sidecar:Sidecar):boolean {
+    const actual=this.sidecarOf(file);
+    return !!actual && actual.phase==='published' && actual.storeId===sidecar.storeId && actual.blockId===sidecar.blockId &&
+      actual.projection?.id===sidecar.projection?.id && actual.prefix===sidecar.prefix &&
+      !this.documents.isDirty?.(file) && this.files.exists(file) && digestOfBytes(this.files.readBytes(file))===rawDigest;
+  }
+
+  public recordWorking(file: string, projection: ProjectionSource, rawDigest: string, priorId?: string): boolean {
+    return withExclusive(path.dirname(file), (): boolean => {
+    if (!this.mayWrite(file).may) return false;
+    const held=this.sidecarOf(file);
+    if (!held || held.phase!=='published' || held.projection?.id!==priorId ||
+        !this.files.exists(file) || digestOfBytes(this.files.readBytes(file))!==rawDigest) return false;
+    this.write(file,{...held,projection,written:rawDigest,confirmed:null,acknowledgedRaw:null,localOnly:false});
+    return true;
+
+    });
+  }
+
   public takeSequence(
     file: string,
     req: string
   ):
     | { taken: true; seq: number }
     | { taken: false; because: 'no-record' | 'could-not-write' | 'not-ours'; detail?: string } {
+    return withExclusive(path.dirname(file), (): | { taken: true; seq: number }
+    | { taken: false; because: 'no-record' | 'could-not-write' | 'not-ours'; detail?: string } => {
     const ours = this.mayWrite(file);
     if (!ours.may) {
       return { taken: false, because: 'not-ours', detail: ours.because };
@@ -1498,6 +1371,8 @@ export class Publisher {
       return { taken: false, because: 'could-not-write', detail: String(e) };
     }
     return { taken: true, seq };
+
+    });
   }
 
   /*
@@ -1516,6 +1391,7 @@ export class Publisher {
    * deleted `recovered()` for. The caller puts this list in the entry.
    */
   public markLegacySend(directory: string): string[] {
+    return withExclusive(directory, (): string[] => {
     const marked: string[] = [];
     for (const name of this.files.list(directory).filter((n) => /^\d+\.md$/.test(n))) {
       const file = path.join(directory, name);
@@ -1531,6 +1407,8 @@ export class Publisher {
       marked.push(file);
     }
     return marked;
+
+    });
   }
 
   /*
@@ -1540,6 +1418,7 @@ export class Publisher {
    * the policy.
    */
   public clearLegacySend(file: string): boolean {
+    return withExclusive(path.dirname(file), (): boolean => {
     const ours = this.mayWrite(file);
     if (!ours.may) {
       return false;
@@ -1550,6 +1429,8 @@ export class Publisher {
     }
     this.write(file, { ...sidecar, legacySend: false });
     return true;
+
+    });
   }
 
   public acknowledge(
@@ -1558,6 +1439,7 @@ export class Publisher {
     sentDigest: string,
     cursor: string
   ): Acknowledgement {
+    return withExclusive(path.dirname(file), (): Acknowledgement => {
     const ours = this.mayWrite(file);
     if (!ours.may) {
       return { recorded: false, because: 'not-ours' };
@@ -1588,5 +1470,7 @@ export class Publisher {
       localOnly: false
     });
     return { recorded: true };
+
+    });
   }
 }

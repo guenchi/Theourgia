@@ -45,6 +45,7 @@ export interface SendIntent {
 }
 
 export interface SendRecord {
+  readonly projectionId?: string;
   readonly req: string;
   readonly store: string;
   readonly storeHash: string;
@@ -79,6 +80,7 @@ export function freezeRecord(record: SendRecord): SendRecord {
 }
 
 export interface RecordParts {
+  projectionId?: string;
   req: string;
   store: string;
   storeHash: string;
@@ -101,6 +103,7 @@ export interface RecordParts {
  */
 export function recordFor(parts: RecordParts): SendRecord {
   return freezeRecord({
+    projectionId: parts.projectionId,
     req: parts.req,
     store: parts.store,
     storeHash: parts.storeHash,

@@ -178,7 +178,7 @@ async function main(): Promise<void> {
   const profile = chooseProfile(root);
   emptyTheStorage(root, profile);
   try {
-    const reported = await downloadAndUnzipVSCode();
+    const reported = process.env.THEOURGIA_TEST_CODE ?? await downloadAndUnzipVSCode();
     const executable = resolveExecutable(reported);
     await runTests({
       vscodeExecutablePath: executable,

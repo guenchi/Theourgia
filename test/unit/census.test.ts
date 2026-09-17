@@ -73,6 +73,17 @@ import { countRegistered, EDITOR_CELLS, shortfalls } from '../integration/census
  *   decision and not a loss.
  */
 const AT_LEAST: Array<[string, number]> = [
+  ['brief-acceptance.test.ts', 9],
+  ['brief-current-crash.test.ts', 1],
+  ['brief-current.test.ts', 6],
+  ['brief-lease.test.ts', 8],
+  ['brief-migration.test.ts', 7],
+  ['brief-outline.test.ts', 8],
+  ['brief-reconcile.test.ts', 6],
+  ['brief-shared-state.test.ts', 4],
+  ['brief-temporary.test.ts', 7],
+  ['brief-working.test.ts', 2],
+  ['brief-write-boundaries.test.ts', 12],
   ['activation.test.ts', 4],
   ['answering.test.ts', 27],
   /*
