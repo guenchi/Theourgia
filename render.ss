@@ -1,0 +1,16 @@
+#!r6rs
+(library (theourgia render)
+  (export render-wire render-human)
+  (import (chezscheme))
+  (define (render-wire value)
+    (parameterize ((print-graph #f) (print-length #f) (print-level #f)
+                   (print-radix 10) (print-unicode #f) (print-gensym #f))
+      (call-with-string-output-port (lambda (p) (write value p) (newline p)))))
+  (define (render-human answer)
+    (cond
+      ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+            (eq? (caadr answer) 'text)) (cadadr answer))
+      ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+            (eq? (caadr answer) 'items)) (apply string-append (map render-wire (cdadr answer))))
+      (else (render-wire answer))))
+)

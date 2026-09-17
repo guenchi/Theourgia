@@ -256,16 +256,74 @@
           fd-seek! fd-size file-size file-ensure! fd-path link!
           barrier!
           lock-acquire! lock-release! lock-fd lock-held?
-          path-device-inode
+          path-device-inode path-version
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? rename-over!
           unlink! file-create-exclusive! mkdir-p!
+          source-reader-open source-reader-next source-reader-at source-reader-observer!
+          source-datum-print exec-argv!
           process-id wall-clock-ms machine-home)
   (import (chezscheme)
           (theourgia trace))
+
+  ;; Host adapters for the datum projection. Admission lives in source-lex;
+  ;; all source-reader callers must admit the entire source before opening.
+  ;; Chez annotation positions are characters, as documented at
+  ;; https://cisco.github.io/ChezScheme/csug9.5/syntax.html .
+  (define reader-observer (vector #f))
+  (define (source-reader-observer! proc)
+    (unless (or (not proc) (procedure? proc))
+      (assertion-violation 'source-reader-observer! "Expected procedure or false"))
+    (vector-set! reader-observer 0 proc))
+  (define source-mode-prefix "#!chezscheme\n")
+  (define (source-reader-open text)
+    (vector (open-input-string (string-append source-mode-prefix text))
+            (source-file-descriptor "datum-input" 0) 0 text))
+  (define (source-reader-next reader)
+    (let ((observer (vector-ref reader-observer 0)))
+      (when observer (observer (vector-ref reader 3) (max 0 (- (vector-ref reader 2) (string-length source-mode-prefix))))))
+    (trace-event! 'source-reader-enter (vector-ref reader 2) #f)
+    (let-values (((a end) (get-datum/annotations (vector-ref reader 0) (vector-ref reader 1) (vector-ref reader 2))))
+      (vector-set! reader 2 end)
+      (if (eof-object? a) a (source-annotation a))))
+  (define (source-annotation a)
+    (let ((src (annotation-source a)) (expr (annotation-expression a))
+          (datum (annotation-stripped a)))
+      (list datum
+            (- (source-object-bfp src) (string-length source-mode-prefix))
+            (- (source-object-efp src) (string-length source-mode-prefix))
+            (if (and (pair? datum) (eq? (car datum) 'library) (list? expr))
+                (map source-annotation (filter annotation? expr)) '()))))
+  (define (source-reader-at text offset)
+    (let ((reader (source-reader-open (substring text offset (string-length text)))))
+      (source-reader-next reader)))
+  (define (source-datum-print datum)
+    (unless (string=? (scheme-version) "Chez Scheme Version 10.1.0")
+      (raise '(error unsupported-printer-version)))
+    (parameterize ((pretty-line-length 72) (pretty-one-line-limit 72)
+                   (pretty-initial-indent 0) (pretty-standard-indent 2)
+                   (pretty-maximum-lines #f) (print-length #f) (print-level #f)
+                   (print-radix 10) (print-graph #f) (print-gensym #f)
+                   (print-unicode #f))
+      (call-with-string-output-port (lambda (port) (pretty-print datum port)))))
+
+  ;; Replace the launcher process without a shell or argument interpolation.
+  (define (exec-argv! args)
+    (let* ((width (foreign-sizeof 'void*)) (argv (foreign-alloc (* width (+ 1 (length args)))))
+           (strings
+             (map (lambda (arg)
+                    (let* ((b (string->utf8 arg)) (n (bytevector-length b)) (p (foreign-alloc (+ n 1))))
+                      (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref b i)))
+                      (foreign-set! 'unsigned-8 p n 0) p)) args)))
+      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+        (foreign-set! 'void* argv (* i width) (car ps)))
+      (foreign-set! 'void* argv (* (length args) width) 0)
+      ((foreign-procedure "execvp" (string void*) int) (car args) argv)
+      (for-each foreign-free strings) (foreign-free argv)
+      (raise '(error launcher-unavailable))))
 
   ;; BEGIN COPIED FROM IGROPYR -- platform detection and shared-object loading
   ;;
@@ -618,7 +676,7 @@
   ;; and a step no case can arm reads, in every log, exactly like a step
   ;; that passed.
   (define known-stages
-    '(deliver-barrier commit registry publish snapshot repair report))
+    '(deliver-barrier commit registry publish snapshot repair report working index))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -1369,6 +1427,16 @@
                     (bytevector-u32-native-ref buf st-dev-offset)
                     (bytevector-u64-native-ref buf st-dev-offset))
                 (bytevector-u64-native-ref buf st-ino-offset)))))
+
+  ;; Version hints invalidate derived indexes; they never prove a record.
+  ;; ctime catches replacements and same-length edits even if mtime is restored.
+  (define (path-version path)
+    (let-values (((device inode) (path-device-inode path)))
+      (let ((modified (file-modification-time path))
+            (changed (file-change-time path)))
+        (list device inode (time-second modified) (time-nanosecond modified)
+              (time-second changed) (time-nanosecond changed)
+              (and (file-is-regular? path) (file-size path))))))
 
   ;; ---- linking ----------------------------------------------------------
 

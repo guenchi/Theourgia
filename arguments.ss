@@ -60,20 +60,28 @@
   ;; flag as a value takes the id that follows it and leaves the list
   ;; looking empty, which is how `read <id> --md` used to lose its id.
   (define (value-options verb)
-    (append '("--store" "--actor" "--req" "--cursor")
+    (append '("--store" "--actor" "--req" "--cursor" "--socket")
       (case verb
         ((insert) '("--under" "--after" "--title" "--text"))
-        ((set) '("--if-unchanged"))
+        ((set) '("--if-unchanged" "--based-on"))
         ((move) '("--after"))
         ((outline) '("--depth"))
+        ((split-suggest) '("--output"))
+        ((def) '("--under"))
+        ((commit) '("--writer" "--working-version"))
+        ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
+        ((read drafts discard) '("--writer"))
         (else '()))))
 
   (define (flag-options verb)
-    (case verb
-      ((read) '("--md" "--recursive"))
+    (cons "--wire" (case verb
+      ((read) '("--md" "--recursive" "--working" "--working-info"))
+      ((write) '("--rebase"))
       ((import-md) '("--allow-delete"))
+      ((import-code) '("--allow-delete" "--datum"))
+      ((export-code) '("--raw" "--datum"))
       ((export-md) '("--with-ids"))
-      (else '())))
+      (else '()))))
 
   ;; `--` ENDS THE OPTIONS AND NOTHING AFTER IT IS ONE. It is kept as a
   ;; node rather than dropped, because `argument-strings` has to hand
@@ -149,6 +157,12 @@
   (define (argument-stdin verb nodes read-text)
     (case verb
       ((batch) (append nodes (list (list 'pos (read-text)))))
+      ((def) (if (= (length (argument-positionals nodes)) 1)
+                 (append nodes (list (list 'pos (read-text)))) nodes))
+      ((write)
+       (map (lambda (n)
+              (if (and (eq? (car n) 'pos) (string=? (cadr n) "-"))
+                  (list 'pos (read-text)) n)) nodes))
       ((insert)
        (map (lambda (n)
               (if (and (eq? (car n) 'option) (string=? (cadr n) "--text")

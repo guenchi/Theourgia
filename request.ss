@@ -53,7 +53,8 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs unicode)
           (rnrs bytevectors) (rnrs io ports) (rnrs exceptions)
           (only (theourgia wire) sexpr->string-extended)
-          (only (theourgia digest) sha256 bytevector->hex))
+          (only (theourgia digest) sha256 bytevector->hex)
+          (only (theourgia trace) trace-event!))
 
   ;; 1 to 64 characters of [A-Za-z0-9._-], or a batch item naming the
   ;; batch and its index. The set is small on purpose: a request id
@@ -1159,7 +1160,7 @@
   (define (readable-but-unverifiable? e)
     (and (memq (ev-placement e) '(damaged incoming unlisted)) #t))
   (define (broken-placement? e)
-    (and (memq (ev-placement e) '(quarantined torn)) #t))
+    (and (memq (ev-placement e) '(quarantined torn index-evidence-missing)) #t))
 
   ;; ① THE COMPARISON SET: what may be compared for sameness. A record
   ;; already known to be superseded or to have disagreed with its plan is
@@ -1261,6 +1262,7 @@
   ;; transitive past. Validate each index using only earlier, unique valid
   ;; bindings, detect duplicates, THEN check execution order.
   (define (request-gates evidence)
+    (for-each (lambda (e) (trace-event! 'identity-probe (ev-event e) #f)) evidence)
     (apply append (map identity-gates (group-by-identity evidence))))
 
   (define (identity-gates es)

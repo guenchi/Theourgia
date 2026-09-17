@@ -17,7 +17,7 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
+  (export store-resident-cache! open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
           store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict)
@@ -25,10 +25,11 @@
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)
           (theourgia request)
+          (theourgia evidence-index)
           (only (theourgia wire) decode-line storable-decode)
-          (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors)
+          (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (theourgia log)
-                log-open load-deliver! load-commit!
+                log-open load-deliver! load-commit! load-fingerprint
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
@@ -47,7 +48,7 @@
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
-                file-is-directory? report-fault?)
+                file-is-directory? report-fault? trace-event!)
           (only (theourgia digest) sha256 bytevector->hex)
           (theourgia reduce))
 
@@ -116,24 +117,34 @@
   ;; snapshot exists.
   ;; SEEDED FROM THE SNAPSHOT WHEN THERE IS ONE, and replay then starts
   ;; after the snapshot's cut rather than at the beginning.
+  (define resident-enabled? #f)
+  (define residents (make-hashtable string-hash string=?))
+  (define (store-resident-cache! enabled?)
+    (set! resident-enabled? (and enabled? #t))
+    (hashtable-clear! residents))
+  (define (complete-frontier? state ls)
+    (for-all (lambda (writer)
+               (let ((p (assoc writer (reduce-applied-cut state))))
+                 (= (if p (cdr p) 0) (discovery-end-seq (load-prefix ls writer)))))
+             (load-writers ls)))
   (define (replay store cut)
-    (let ((ls (log-open store)))
-      ;; A SNAPSHOT THAT CANNOT BE REBUILT FROM IS NOT A SNAPSHOT. The
-      ;; reduction may have to fold its records again -- a duplicate
-      ;; arriving later contests a slot that was already applied -- and
-      ;; it can only do that from the records it kept. A snapshot
-      ;; written before those were carried has the state and not the
-      ;; records, so seeding from it would leave the reduction unable to
-      ;; answer the one question it is now responsible for. The log is
-      ;; the authority and it is still there; the snapshot is a cache and
-      ;; this is what being a cache means.
-      (let* ((rows (and (not cut) (load-snapshot-rows ls)))
-             (usable (and rows (assq 'request-history rows) rows))
-             (r (if usable (rows->state usable) (reduce-empty)))
-             (from (if usable (load-snapshot-cut ls) '())))
-        (load-deliver! ls from (deliver-into r cut))
-        (load-commit! ls)
-        r)))
+    (let* ((ls (log-open store))
+           (key (and resident-enabled? (not cut) (load-fingerprint ls)))
+           (previous (and key (hashtable-ref residents store #f)))
+           (cached (and previous (equal? (car previous) key) (cdr previous)))
+           (rows (and (not cached) (not cut) (load-snapshot-rows ls)))
+           (usable (and rows (assq 'request-history rows) rows))
+           (r (or cached (if usable (rows->state usable) (reduce-empty))))
+           (from (cond (cached (reduce-applied-cut cached)) (usable (load-snapshot-cut ls)) (else '()))))
+      (when resident-enabled?
+        (trace-event! (if cached 'resident-hit (if previous 'resident-reset 'resident-load)) store #f))
+      (load-deliver! ls from (deliver-into r cut))
+      (load-commit! ls)
+      (when key
+        ;; Pending history cannot use the completed-frontier fast path.
+        (if (complete-frontier? r ls) (hashtable-set! residents store (cons key r))
+            (hashtable-delete! residents store)))
+      r))
 
   ;; READING AT A CUT DOES NOT USE THE SNAPSHOT. The snapshot stands at
   ;; whatever cut it was written at, which may be after the one being
@@ -430,75 +441,6 @@
                (let ((b (get-bytevector-all in)))
                  (if (eof-object? b) (make-bytevector 0) b)))))))
 
-  (define (records-of-file path writer placement fork)
-    (let ((bytes (read-file-bytes path)))
-      (if (not bytes)
-          (quote ())
-          (let loop ((ls (lines-of-segment bytes)) (out (quote ())))
-            (cond
-              ((null? ls) (reverse out))
-              (else
-               (let* ((line (car (car ls)))
-                      (whole? (eq? (cdr (car ls)) (quote whole)))
-                      (r (and whole? (decode-line line))))
-                 (loop (cdr ls)
-                       (if (and (pair? r) (eq? (car r) (quote ok)))
-                           (let* ((seq (cadr r))
-                                  (actor (cadddr r))
-                                  (where (cond
-                                           ((not whole?) (quote torn))
-                                           ((and fork (>= seq fork)) (quote quarantined))
-                                           (else placement))))
-                             ;; THE PAYLOAD IS DECODED HERE, ONCE. What a
-                             ;; record holds on disk is the storable
-                             ;; encoding, where a list beginning with a
-                             ;; reserved marker is wrapped in `#%quote` so
-                             ;; that ordinary data can never be mistaken
-                             ;; for a marker. The request layer compares
-                             ;; VALUES -- a plan's declared intent against
-                             ;; what a record did -- and a `("#%new" k)`
-                             ;; it never sees unwrapped is a marker it can
-                             ;; never bind.
-                             (cons (list (cons writer seq) actor
-                                         (list-ref r 4)
-                                         (stored->payload (list-ref r 5))
-                                         where)
-                                   out))
-                           out)))))))))
-
-  (define (directory-files dir)
-    (if (not (file-is-directory? dir))
-        (quote ())
-        (map (lambda (name) (string-append dir "/" name)) (directory-entries dir))))
-
-  (define (writer-evidence store writer)
-    (let* ((dir (writer-directory store writer))
-           (manifest (guard (e (#t #f)) (read-manifest store writer)))
-           (listed (manifest-segments manifest))
-           ;; THE FORK, READ FROM THE DISCOVERY RATHER THAN THE FILE. A
-           ;; second reader of quarantine.sexp would be a second opinion
-           ;; about where a writer's history stops being deliverable.
-           (fork (let ((p (guard (e (#t #f)) (discover-prefix store writer 'shared))))
-                   (and p (let ((q (discovery-quarantine p)))
-                            (and (pair? q) (cadr q)))))))
-      (append
-        ;; the segments themselves, listed or not
-        (apply append
-               (map (lambda (n)
-                      (records-of-file
-                        (string-append dir "/" (segment-file-name n))
-                        writer
-                        (if (or (not manifest) (memv n listed))
-                            (quote valid-history)
-                            (quote unlisted))
-                        fork))
-                    (enumerate-segment-files store writer)))
-        ;; and the two places a record can sit without being a segment
-        (apply append (map (lambda (p) (records-of-file p writer (quote damaged) #f))
-                           (directory-files (string-append dir "/damaged"))))
-        (apply append (map (lambda (p) (records-of-file p writer (quote incoming) #f))
-                           (directory-files (string-append dir "/incoming")))))))
-
   ;; THE DELIVERED CUT IS AN ARGUMENT, NOT SOMETHING THIS COMPUTES. Its
   ;; one caller from outside a session reads the store to get it; its
   ;; caller from INSIDE one already has it, and re-reading the store
@@ -510,63 +452,16 @@
     (let ((state (open-and-reduce store)))
       (evidence-for store identity (reduce-applied-cut state) (reduce-gates state))))
 
-  (define (resolves? payload identity)
-    (and (resolution? payload)
-         (identity=? (resolution-target payload) identity)))
-
   (define (evidence-for store identity delivered . marks)
-    (let ()
-      (let loop ((ws (store-writers store)) (out (quote ())))
-        (if (null? ws)
-            (reverse out)
-            (loop (cdr ws)
-                  (append
-                    (reverse
-                      (filter
-                        (lambda (e) e)
-                        (map (lambda (rec)
-                               (let ((actor (cadr rec)))
-                                 (and (request-actor? actor)
-                                      ;; TWO WAYS A RECORD BEARS ON AN
-                                      ;; IDENTITY. It can BE one of its
-                                      ;; records, which its actor says;
-                                      ;; or it can be a resolution ABOUT
-                                      ;; it, which its payload says --
-                                      ;; written by an operator, under
-                                      ;; the operator's own actor and
-                                      ;; cursor. Matching only on the
-                                      ;; actor leaves every resolution
-                                      ;; unreachable from the request it
-                                      ;; resolves, so an operator's
-                                      ;; determination that something ran
-                                      ;; would be ignored and the store
-                                      ;; would run it again.
-                                      (or (identity=? (actor-identity actor) identity)
-                                          (resolves? (cadddr rec) identity))
-                                      ;; THE MARKS COME FROM THE REDUCTION,
-                                      ;; which is the only place that knows
-                                      ;; them. They were always `()` here,
-                                      ;; so every filter that reads a mark
-                                      ;; was a filter over nothing and the
-                                      ;; cases that exercised them were
-                                      ;; feeding hand-built evidence to a
-                                      ;; supplier the store never fed.
-                                      (make-evidence (car rec) actor (caddr rec) (cadddr rec)
-                                                     (list-ref rec 4)
-                                                     (and (eq? (list-ref rec 4) (quote valid-history))
-                                                          (let ((have (assoc (car (car rec)) delivered)))
-                                                            (and have (<= (cdr (car rec)) (cdr have)))))
-                                                     ;; A LIST OF MARKS, because
-                                                     ;; that is what `ev-marked?`
-                                                     ;; reads. The reduction holds
-                                                     ;; one mark per event, so the
-                                                     ;; list is empty or a single.
-                                                     (let ((m (and (pair? marks)
-                                                                   (assoc (car rec) (car marks)))))
-                                                       (if m (list (cdr m)) (quote ())))))))
-                             (writer-evidence store (car ws)))))
-                    out))))))
-
+    (map (lambda (rec)
+           (make-evidence (car rec) (cadr rec) (caddr rec) (cadddr rec)
+                          (list-ref rec 4)
+                          (and (eq? (list-ref rec 4) 'valid-history)
+                               (let ((have (assoc (caar rec) delivered)))
+                                 (and have (<= (cdar rec) (cdr have)))))
+                          (let ((m (and (pair? marks) (assoc (car rec) (car marks)))))
+                            (if m (list (cdr m)) '()))))
+         (indexed-records store identity)))
 
   ;; ---- conflicts ------------------------------------------------------------
 
@@ -1111,6 +1006,21 @@
          (let ((id (cadr i)))
            (cond
              ((not (known? state id)) (missing id))
+             ((and (memq (caddr i) '(name doc))
+                   (equal? (assq 'kind (block-fields state id)) '(kind . code))
+                   (equal? (assq 'mode (block-fields state id)) '(mode . text)))
+              (list 'error 'derived-field (list 'field (caddr i))))
+             ((and (memq (caddr i) '(name names))
+                   (equal? (assq 'kind (block-fields state id)) '(kind . code))
+                   (equal? (assq 'mode (block-fields state id)) '(mode . datum)))
+              (list 'error 'derived-field (list 'field (caddr i))))
+             ((and (eq? (caddr i) 'mode) (assq 'mode (block-fields state id))
+                   (not (equal? (cdr (assq 'mode (block-fields state id)))
+                                (and (pair? (cdddr i)) (cadddr i)))))
+              (list 'error 'mode-mismatch '(remedy create-new-file)))
+             ((and (eq? (caddr i) 'src) (pair? (cdddr i)) (string? (cadddr i))
+                   (equal? (assq 'mode (block-fields state id)) '(mode . text)))
+              (list 'set id 'src (string->utf8 (cadddr i))))
              ;; ANY NON-ROOT PARENT, not merely a parent that is itself a
              ;; document. `insert` and `move` refuse a document anywhere
              ;; but the root; asking only about the immediate parent let
@@ -1353,6 +1263,7 @@
         (else (loop (cdr rs))))))
 
   (define (request-verdict store req delivered plan-size . marks)
+    (guard (e (#t (list 'unknown (list 'evidence-unavailable (failure-text e)))))
     (let* ((after (write-request-after req))
            (identity (request-identity after (write-request-req-id req)))
            (fingerprint (request-fingerprint (write-request-who req)
@@ -1371,7 +1282,7 @@
         ;; items live under identities of their own, so the evidence has
         ;; to be gathered for both and the rules that decide it are the
         ;; receipt's, not a plan's.
-        (plan-size
+        ((and plan-size (not (and (> (length marks) 1) (eq? (cadr marks) 'plan))))
          (batch-verdict
            (batch-state plan-size
                         (batch-evidence store identity req plan-size delivered
@@ -1382,8 +1293,8 @@
                            (evidence-for store identity delivered
                                          (if (pair? marks) (car marks) '()))
                            (car loaded)
-                           #f
-                           (car successors))))))
+                           (and (> (length marks) 1) (eq? (cadr marks) 'plan) plan-size)
+                           (car successors)))))))
 
   ;; RESERVING MORE THAN THE REQUEST USES IS ORDINARY, AND IT COST A
   ;; FORMAT CHANGE TO MAKE IT SO. While the registry held one number,
@@ -1516,6 +1427,8 @@
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
+          (preflight (and (> (length rest) 2) (list-ref rest 2)))
+          (plan? (and (> (length rest) 3) (list-ref rest 3)))
           (state (reduce-empty)))
       (let ((s (log-begin store (deliver-into state #f))))
         ;; THE SESSION IS GIVEN BACK BY THE UNWIND, NOT BY A LINE ON EACH
@@ -1579,9 +1492,9 @@
               (let* ((intents (proc state (session-view s)))
                      (verdict (and req (request-verdict store req
                                                         (reduce-applied-cut state)
-                                                        (and (> (length intents) 1)
-                                                             (length intents))
-                                                        (reduce-gates state)))))
+                                                        (and (not (= (length intents) 1)) (length intents))
+                                                        (reduce-gates state)
+                                                        (and (or plan? (null? intents)) 'plan)))))
                 (if (and verdict (not (eq? (car verdict) 'execute)))
                     ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. The
                     ;; unwind releases the store's exclusive lock, and the
@@ -1603,19 +1516,20 @@
                             (request-answer s store verdict)))
                     (commit-then s
                       (lambda ()
-                        (let ((bad (begin (announce-count! s intents)
-                                          (and req (cursor-unreachable store s req)))))
+                        (let ((bad (or (and preflight (preflight state))
+                                       (begin (announce-count! s intents)
+                                              (and req (cursor-unreachable store s req))))))
                           (cond
                             (bad (list bad))
                             ;; A REQUEST OF ONE SUB-OPERATION HAS NO PLAN,
                             ;; and says so: `single`, no plan event.
-                            ;; A REQUEST OF NOTHING WRITES NOTHING. It is
-                            ;; not a batch of zero items: `write-batch!`
-                            ;; would reserve `[seq, seq-1]` -- an empty
-                            ;; range -- and then append a receipt at
-                            ;; `seq`, outside the reservation it had just
-                            ;; taken. An empty batch reaches this through
-                            ;; the RPC verb, which accepts empty text.
+                            ;; Zero operations still have an identity: the
+                            ;; empty plan is their complete durable evidence.
+                            ;; One operation needs only its single record.
+                            ((and req (or (null? intents)
+                                          (and plan? (not (= (length intents) 1)))))
+                             (session-pending-count-set! s (+ 1 (length intents)))
+                             (write-plan-then! s state req intents))
                             ((null? intents) '())
                             ((or (not req) (= 1 (length intents)))
                              (run-intents! s state
@@ -1874,10 +1788,17 @@
            (answer (append-payload! s state (request-actor req 'plan #f) payload)))
       (if (eq? (car answer) 'error)
           (list answer)
-          (let ((plan-event (cadr (assq 'event (cdr answer)))))
-            (run-intents! s state
-                          (lambda (n) (request-actor req n plan-event))
-                          intents)))))
+          (let ((plan-event (cadr (assq 'event (cdr answer))))
+                (durable? (guard (failure (#t #f)) (session-commit! s) #t)))
+            (if (not durable?)
+                (list '(error unknown (plan-barrier-failed)))
+                (if (null? intents)
+                    (list (list 'ok (list 'events (list plan-event))
+                                (list 'state '()) (list 'cursor plan-event)
+                                (list 'replay #f)))
+                    (run-intents! s state
+                                  (lambda (n) (request-actor req n plan-event))
+                                  intents)))))))
 
   ;; ONE RECORD, NO INTENT BEHIND IT. The plan is not something a caller
   ;; asked for as a verb; it is the store writing down what it is about
@@ -2520,8 +2441,12 @@
                   (let ((v (session-view s)))
                     (if (not v)
                         (list 'refused 'no-local-writer)
-                        (session-snapshot!
-                          s (list v (reduce-applied-cut state) (state->rows state))))))))
+                        (let ((result (session-snapshot!
+                                        s (list v (reduce-applied-cut state) (state->rows state)))))
+                          ;; A failed derived checkpoint cannot revoke the snapshot.
+                          (when (eq? (car result) 'written)
+                            (guard (e (#t #f)) (index-checkpoint! store)))
+                          result))))))
           (log-end! s)
           answer))))
 

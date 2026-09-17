@@ -40,6 +40,9 @@
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
           (theourgia store) (theourgia reduce) (theourgia log)
+          (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
+          (theourgia datum-project)
+          (only (theourgia datum-code) datum-source-read)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -60,7 +63,8 @@
                   '()))))
 
   (define (guarded thunk)
-    (guard (e ((log-error? e) (describe-log-error e))
+    (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
+              ((log-error? e) (describe-log-error e))
               ;; A THROWN VALUE NEED NOT BE A CONDITION. The sexpr layer
               ;; raises `#(sexpr-error <message> <position>)`, a vector,
               ;; so `message-condition?` was false and the answer said
@@ -179,10 +183,22 @@
 
   (define (title-of state id)
     (let* ((b (state-read state id))
-           (fs (and b (cdr (assq 'fields b))))
-           (get (lambda (k) (let ((e (and fs (assq k fs))))
-                              (and e (string? (cdr e)) (cdr e))))))
-      (escape-one-line (or (get 'title) (get 'path) ""))))
+           (fs (and b (cdr (assq 'fields b)))))
+      (define (get k)
+        (let ((e (and fs (assq k fs))))
+          (and e (or (and (string? (cdr e)) (cdr e))
+                     (and (eq? k 'name) (datum-spelling (cdr e)))))))
+      (define (fallback)
+        (if (not (and fs (equal? (assq 'kind fs) '(kind . code)))) ""
+            (let* ((lang (assq 'lang fs))
+                   (parent (cadr (assq 'position b)))
+                   (siblings (map caddr (filter (lambda (r) (equal? (car r) parent)) (state-outline state)))))
+              (string-append
+                (if (and lang (symbol? (cdr lang))) (symbol->string (cdr lang)) "unknown") ":"
+                (number->string
+                  (let loop ((xs siblings) (n 1))
+                    (if (or (null? xs) (equal? (car xs) id)) n (loop (cdr xs) (+ n 1)))))))))
+      (escape-one-line (or (get 'title) (get 'path) (get 'name) (fallback)))))
 
   ;; THE OUTLINE IS TEXT, and it is rendered here rather than by whoever
   ;; asked. A caller that received the rows and drew them itself would be
@@ -290,9 +306,9 @@
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
 
-  (define (one-write store actor intent req)
+  (define (one-write store actor intent req . check)
     (let ((answers (with-store-write store (lambda (state view) (list intent))
-                                     actor req)))
+                                     actor req (and (pair? check) (car check)))))
       (car answers)))
 
   (define (parse-insert store actor args req options)
@@ -320,13 +336,21 @@
       (let ((intent
               (cond
                 ((= 3 (length rest))
-                 (list 'set (car rest) (string->symbol (cadr rest)) (caddr rest)))
+                 (list 'set (car rest) (string->symbol (cadr rest))
+                       (if (and (string=? (cadr rest) "body")
+                                (eq? (code-field (open-and-reduce store) (car rest) 'mode) 'datum))
+                           (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
+                             (if (= (length forms) 1) (caar forms)
+                                 (raise '(error bad-source (reason expected-one-form)))))
+                           (caddr rest))))
                 ((= 2 (length rest))
                  (list 'set (car rest) (string->symbol (cadr rest))))
                 (else #f))))
         (if (not intent)
             (usage '(set <id> <field> <value>))
-            (one-write store actor (if expect (list 'expect expect intent) intent) req)))))
+            (one-write store actor (if expect (list 'expect expect intent) intent) req
+              (let ((h (argument-option options "--based-on")))
+                (and h (lambda (state) (baseline-refusal state (car rest) h)))))))))
 
   (define (parse-move store actor args req options)
     (let ((after (argument-option options "--after")) (rest args))
@@ -400,7 +424,53 @@
                   (guarded (lambda () (one-write store actor (list 'del (car args)) req))))))
       (cons 'link (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'link args req)))))
       (cons 'unlink (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
+      (cons 'write
+            (lambda (store actor args req options)
+              (if (= 2 (length args))
+                  (working-write! store (argument-option options "--writer")
+                                  (car args) (cadr args) (argument-option options "--rebase")
+                                  (argument-option options "--based-on") (argument-option options "--working-cut")
+                                  (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
+                  (usage '(write <block> <bytes>)))))
+      (cons 'commit
+            (lambda (store actor args req options)
+              (working-commit! store (argument-option options "--writer") args actor req (argument-option options "--working-version"))))
+      (cons 'drafts
+            (lambda (store actor args req options)
+              (if (null? args) (working-list store (argument-option options "--writer"))
+                  (usage '(drafts)))))
+      (cons 'discard
+            (lambda (store actor args req options)
+              (if (= 1 (length args))
+                  (working-discard! store (argument-option options "--writer") (car args))
+                  (usage '(discard <block>)))))
       (cons 'batch (lambda (store actor args req options) (guarded (lambda () (parse-batch store actor args req)))))
+      (cons 'split-suggest
+            (lambda (store actor args req options)
+              (if (= 1 (length args))
+                  (guarded (lambda () (split-suggest (car args) (argument-option options "--output"))))
+                  (usage '(split-suggest <file> ["--output" <review-file>])))))
+      (cons 'import-code
+            (lambda (store actor args req options)
+              (if (= 1 (length args))
+                  (guarded (lambda ()
+                    (if (argument-option options "--datum") (import-datum store (car args) actor req)
+                        (import-code store (car args) actor req (argument-option options "--allow-delete")))))
+                  (usage '(import-code <dir> ["--allow-delete"])))))
+      (cons 'export-code
+            (lambda (store actor args req options)
+              (if (= 1 (length args))
+                  (guarded (lambda ()
+                    (cond ((and (argument-option options "--datum") (argument-option options "--raw"))
+                           '(error bad-request incompatible-projection-options))
+                          ((argument-option options "--datum") (export-datum store (car args)))
+                          (else (export-code store (car args) (argument-option options "--raw"))))))
+                  (usage '(export-code <dir> ["--raw"])))))
+      (cons 'def
+            (lambda (store actor args req options)
+              (if (= (length args) 2)
+                  (guarded (lambda () (def-datum store (car args) (argument-option options "--under") (cadr args) actor req)))
+                  (usage '(def <name> ["--under" <library>] <source>)))))
       (cons 'import-md
             (lambda (store actor args req options)
               (if (not (= 1 (length args)))
@@ -494,6 +564,9 @@
                     (deep? (argument-option options "--recursive")) (rest args))
                 (cond
                   ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"])))
+                  ((or (argument-option options "--working") (argument-option options "--working-info"))
+                   (if (or md? deep?) '(error bad-request incompatible-working-options)
+                       (working-read store (argument-option options "--writer") (car rest) (argument-option options "--working-info"))))
                   (md?
                    (guarded
                      (lambda ()
@@ -649,7 +722,7 @@
   ;; would go back to accepting one silently on the listing form.
   (define (tracked-request? verb args)
     (case verb
-      ((insert set move del link unlink batch) #t)
+      ((insert set move del link unlink batch commit import-code def) #t)
       ((tag) (= 1 (length args)))
       (else #f)))
 
@@ -684,7 +757,8 @@
         ((not entry)
          (list 'error 'unknown-verb (list 'spelling (datum-spelling verb))
                (cons 'verbs (rpc-verbs))))
-        ((or (argument-option options "--store") (argument-option options "--actor"))
+        ((or (argument-option options "--store") (argument-option options "--actor")
+             (argument-option options "--wire") (argument-option options "--socket"))
          '(error bad-request transport-option-in-rpc))
         ((and (not (eq? verb 'init)) (no-store? store)) => (lambda (a) a))
         ((and id (not after)) '(error bad-request req-without-cursor))

@@ -1,0 +1,201 @@
+#!r6rs
+(library (theourgia languages)
+  (export language-table register-language! language-for-path
+    language-for-name language-property)
+  (import (rnrs))
+  (define catalog
+    (vector
+      '(((comment-prefixes (";")) (lang "scheme") (extensions ("ss" "sc" "scm" "sls"))
+          (line-comment ";;") (block-comment ("#|" "|#"))
+          (def-heads
+            ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
+              "^\\(define\\s+([^\\s()\\[\\]\";]+)"
+              "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"))
+          (name-capture 1)
+          (suggest-only
+            ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
+              (quote-delimiters ("\"")) (escaped-character "\\")
+              (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+              (fallback "whole-file-with-warning") (prefix-lines ())))
+          (name-vectors
+            ("(define (f x) x)"
+              "(define x 1)"
+              "(define-syntax m (syntax-rules () ((_ x) x)))")))
+         ((lang "javascript") (extensions ("js" "mjs" "cjs")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^(?:export\\s+)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?class\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?const\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*=\\s*(?:\\([^)]*\\)|([A-Za-z_$][A-Za-z0-9_$]*))\\s*=>"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ("/" "`"))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("function f() {}"
+               "class C {}"
+               "const inc = (x) => x + 1;")))
+         ((lang "typescript") (extensions ("ts" "mts" "cts")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^(?:export\\s+)?interface\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+               "^(?:export\\s+)?type\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*="
+               "^(?:export\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ("/" "`" "<"))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("interface Shape {}"
+               "type Count = number;"
+               "function f(): void {}")))
+         ((lang "python") (extensions ("py" "pyw")) (line-comment "#")
+           (block-comment #f)
+           (def-heads
+             ("^(?:async\\s+)?def\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\("
+               "^class\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*[:(])"
+               "^([A-Za-z_][A-Za-z0-9_]*)\\s*="))
+           (name-capture 1)
+           (suggest-only
+             ((multiline-quotes ("\"\"\"" "'''")) (top-level "indent") (pairs ("()" "[]" "{}"))
+               (quote-delimiters ("\"\"\"" "'''" "\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ("f\"" "f'" "t\"" "t'"))
+               (fallback "whole-file-with-warning") (prefix-lines ("^@"))))
+           (name-vectors
+             ("def f():\n\treturn 1" "class C:\n\tpass" "answer = 42")))
+         ((lang "go") (extensions ("go")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^func\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\("
+               "^type\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+"
+               "^func\\s+\\([^)]*\\)\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\("))
+           (name-capture 1)
+           (suggest-only
+             ((multiline-quotes ("`")) (raw-quotes ("`")) (top-level "brace")
+               (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'" "`"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ()) (fallback "whole-file-with-warning")
+               (prefix-lines ())))
+           (name-vectors
+             ("func f() {}" "type Count int" "func (x T) M() {}")))
+         ((lang "rust") (extensions ("rs")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^(?:pub\\s+)?(?:async\\s+)?fn\\s+([A-Za-z_][A-Za-z0-9_]*)"
+               "^(?:pub\\s+)?struct\\s+([A-Za-z_][A-Za-z0-9_]*)"
+               "^impl\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #t)
+               (uncertain-tokens ("r#" "r\"" "'"))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("fn f() {}" "struct Thing {}" "impl Thing {}")))
+         ((lang "c") (extensions ("c" "h")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^(?:static\\s+)?int\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*\\{"
+               "^(?:static\\s+)?void\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\([^;]*\\)\\s*\\{"
+               "^struct\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "brace") (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ("#" "\\\n"))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("int f(void) { return 1; }"
+               "void g(void) {}"
+               "struct Point { int x; };")))
+         ((lang "java") (extensions ("java")) (line-comment "//")
+           (block-comment ("/*" "*/"))
+           (def-heads
+             ("^(?:public\\s+)?class\\s+([A-Za-z_][A-Za-z0-9_]*)"
+               "^(?:public\\s+)?interface\\s+([A-Za-z_][A-Za-z0-9_]*)"
+               "^(?:public\\s+)?enum\\s+([A-Za-z_][A-Za-z0-9_]*)"))
+           (name-capture 1)
+           (suggest-only
+             ((global-uncertain-tokens ("\\u")) (top-level "brace") (pairs ("()" "[]" "{}"))
+               (quote-delimiters ("\"" "'")) (escaped-character "\\")
+               (nested-block-comment #f)
+               (uncertain-tokens ("\\u" "\"\"\""))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("class C {}" "interface I {}" "enum E { A }")))
+         ((lang "shell") (extensions ("sh" "bash")) (line-comment "#")
+           (block-comment #f)
+           (def-heads
+             ("^([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\\s*\\)\\s*\\{"
+               "^function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{"
+               "^function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\\s*\\)\\s*\\{"))
+           (name-capture 1)
+           (suggest-only
+             ((multiline-quotes ("\"" "'")) (raw-quotes ("'")) (top-level "brace")
+               (pairs ("()" "[]" "{}")) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens
+                 ("<<" "$(" "`" "case " "if " "for " "while "))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("f() { :; }" "function g { :; }" "function h() { :; }")))
+         ((lang "markdown") (extensions ("md" "markdown")) (line-comment #f)
+           (block-comment ("<!--" "-->"))
+           (def-heads
+             ("^#\\s+(.+?)\\s*#*$"
+               "^##\\s+(.+?)\\s*#*$"
+               "^###\\s+(.+?)\\s*#*$"))
+           (name-capture 1)
+           (suggest-only
+             ((top-level "fence") (pairs ()) (quote-delimiters ("\"" "'"))
+               (escaped-character "\\") (nested-block-comment #f)
+               (uncertain-tokens ()) (fallback "whole-file-with-warning")
+               (prefix-lines ())))
+           (name-vectors ("# Alpha" "## Beta" "### Gamma"))))))
+  (define (language-table) (vector-ref catalog 0))
+  (define (language-property entry name default)
+    (let ([p (and entry (assq name entry))])
+      (if p (cadr p) default)))
+  (define (language-for-name name)
+    (find
+      (lambda (e)
+        (equal?
+          (language-property e 'lang #f)
+          (if (symbol? name) (symbol->string name) name)))
+      (language-table)))
+  (define (language-for-path path)
+    (let ([extension (let loop ([i (- (string-length path) 1)])
+                       (cond
+                         [(< i 0) ""]
+                         [(char=? (string-ref path i) #\.)
+                          (substring path (+ i 1) (string-length path))]
+                         [(char=? (string-ref path i) #\/) ""]
+                         [else (loop (- i 1))]))])
+      (find
+        (lambda (e)
+          (member extension (language-property e 'extensions '())))
+        (language-table))))
+  (define (register-language! entry)
+    (unless (and (list? entry)
+                 (string? (language-property entry 'lang #f))
+                 (list? (language-property entry 'extensions #f))
+                 (list? (language-property entry 'def-heads #f)))
+      (assertion-violation 'register-language!
+        "Invalid language entry"
+        entry))
+    (vector-set!
+      catalog
+      0
+      (cons
+        entry
+        (filter
+          (lambda (e)
+            (not (equal?
+                   (language-property e 'lang #f)
+                   (language-property entry 'lang #f))))
+          (language-table))))))

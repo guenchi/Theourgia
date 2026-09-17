@@ -1,0 +1,17 @@
+#!r6rs
+(import (chezscheme) (theourgia rpc) (theourgia reduce))
+(define args (cdr (command-line)))
+(define store (cadr args))
+(if (string=? (car args) "setup")
+    (begin
+      (unless (rpc-ok? (rpc-dispatch store '(init) "test")) (exit 1))
+      (let* ((a (rpc-dispatch store '(insert "--title" "Shared" "--text" "old") "test"))
+             (ev (car (cadr (assq 'events (cdr a))))))
+        (display (block-id (car ev) (cdr ev))) (newline)))
+    (let ((writer (caddr args)) (id (cadddr args)) (bytes (list-ref args 4)))
+      (display "ready") (newline) (flush-output-port (current-output-port))
+      (when (eof-object? (read-char)) (exit 2))
+      (let ((a (rpc-dispatch store (list 'write id bytes "--writer" writer) "test")))
+        (unless (rpc-ok? a) (write a) (newline) (exit 1))
+        (write (rpc-dispatch store (list 'read id "--working" "--writer" writer) "test"))
+        (newline))))

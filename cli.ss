@@ -31,7 +31,7 @@
 ;; STDOUT IS THE ANSWER AND THE EXIT CODE IS THE VERDICT. An agent reads
 ;; the S-expression; a shell reads the code. Diagnostics go to stderr and
 ;; are never part of either.
-(import (chezscheme) (theourgia rpc) (theourgia arguments))
+(import (chezscheme) (theourgia rpc) (theourgia arguments) (theourgia render) (only (theourgia ffi) exec-argv!))
 
 (define (say x) (write x (current-output-port)) (newline (current-output-port)))
 
@@ -52,33 +52,31 @@
 ;; THREE KINDS OF ANSWER AND THE ANSWER SAYS WHICH. Items are shown one
 ;; per line, text is shown as it is, and anything else is one datum. The
 ;; classification is the library's; this only draws it.
-(define (print-answer answer)
-  (cond
-    ((and (pair? answer) (eq? (car answer) 'ok)
-          (pair? (cdr answer)) (pair? (cadr answer))
-          (eq? (car (cadr answer)) 'text))
-     (put-string (current-output-port) (cadr (cadr answer))))
-    ((and (pair? answer) (eq? (car answer) 'ok)
-          (pair? (cdr answer)) (pair? (cadr answer))
-          (eq? (car (cadr answer)) 'items))
-     (for-each say (cdr (cadr answer))))
-    (else (say answer))))
+(define (print-answer answer wire?)
+  (put-string (current-output-port) ((if wire? render-wire render-human) answer)))
+(define (local-launch args)
+  (exec-argv! (append (list "python3" (string-append (let ((p (path-parent (car (command-line))))) (if (string=? p "") "." p)) "/local.py")) args)))
 
 (define (main argv)
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))
+  (when (member (car argv) '("eval" "serve")) (local-launch argv))
   (let* ((verb (string->symbol (car argv)))
          (nodes (parse-arguments verb (cdr argv)))
          (answer
            (if (and (pair? nodes) (eq? (car nodes) 'error)) nodes
-               (let ((store (or (argument-option nodes "--store")
+               (let* ((store (or (argument-option nodes "--store")
                                 (getenv "THEOURGIA_STORE") "."))
-                     (actor (or (argument-option nodes "--actor") (environment-actor))))
-                 (rpc-dispatch-parsed store verb
-                   (argument-stdin verb (argument-remove nodes '("--store" "--actor"))
-                     (lambda () (read-all-text (current-input-port)))) actor)))))
-    (print-answer answer)
+                     (actor (or (argument-option nodes "--actor") (environment-actor)))
+                     (socket-path (or (argument-option nodes "--socket") (string-append store "/socket")))
+                     (resolved (argument-stdin verb (argument-remove nodes '("--store" "--actor" "--wire" "--socket"))
+                                 (lambda () (read-all-text (current-input-port))))))
+                 (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (file-exists? socket-path))
+                   (local-launch (list "--forward" store actor (if (argument-option nodes "--wire") "wire" "human") socket-path
+                                       (render-wire (cons verb (argument-strings resolved))))))
+                 (rpc-dispatch-parsed store verb resolved actor)))))
+    (print-answer answer (and (list? nodes) (not (and (pair? nodes) (eq? (car nodes) 'error))) (argument-option nodes "--wire")))
     (exit (if (rpc-ok? answer) 0 1))))
 
 (main (cdr (command-line)))

@@ -44,7 +44,7 @@
           reduce-empty reduce-apply! reduce-pending reduce-noted
           reduce-applied-cut reduce-trace reduce-gates
           state-read state-outline state-dump state-hash state-datum block-hash
-          state-structure state-refs state-tags cut-usable? cut-id
+          state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
           ord-between block-id
           reduction? reduction-state)
@@ -55,9 +55,14 @@
           (only (theourgia request) store-supplied-fields
                 request-actor? actor-identity actor-sub
                 actor-plan-event make-evidence request-gates)
-          (only (theourgia wire) sexpr->string-extended wire-safe-symbol?)
+          (theourgia admission)
+          (only (theourgia text-code) text-properties)
+          (only (theourgia languages) language-for-name)
+          (only (theourgia datum-metadata) datum-doc-marker? datum-doc-format?)
+          (only (theourgia datum-code) datum-names)
+          (only (theourgia wire) sexpr->string-extended wire-safe-symbol? storable-encode)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (rnrs bytevectors) string->utf8))
+          (only (rnrs bytevectors) string->utf8 bytevector?))
 
   ;; ---- ids ------------------------------------------------------------------
 
@@ -123,12 +128,7 @@
             (mutable pending)
             (mutable trace)
             (mutable noted) (mutable history) (mutable gates)
-            ;; WHETHER ANY REQUEST RECORD HAS EVER BEEN SEEN. Once one
-            ;; has, every later record can move the gates -- an ordinary
-            ;; record changes what is causally available, which is half
-            ;; of what membership reads -- so the question is asked from
-            ;; then on. Before the first one there is nothing to ask.
-            (mutable gated)))
+            (mutable admission-index)))
 
   ;; Named blk rather than block so that the record's own accessors do
   ;; not collide with block-id, which is the derivation rule and part of
@@ -142,7 +142,7 @@
             (mutable position)
             (mutable tomb)))
 
-  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '() '() '() #f))
+  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission)))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
@@ -194,122 +194,29 @@
                  (reduction-pending r))
          (list 'refused 'already-pending))
         (else
-         ;; EVERY RECORD ASKS, ONCE ANY REQUEST RECORD HAS ARRIVED.
-         ;; A narrower test was tried and is wrong: it asked only
-         ;; records that could change what a plan DECLARED, and missed
-         ;; that an ordinary record changes what is causally AVAILABLE --
-         ;; which is the other half of what membership reads. A plan
-         ;; whose own dependency has not arrived is gated `pending-plan`,
-         ;; and when that dependency finally arrives under a plain actor,
-         ;; nothing recomputes. Measured on three records where the plan
-         ;; depends on an ordinary one:
-         ;;
-         ;;   plan, item, ordinary  ->  ("Base")
-         ;;   ordinary, plan, item  ->  ("Base" "Yes")
-         ;;
-         ;; Two orders, two documents -- and not an exotic order either:
-         ;; delivery goes writer by writer in name order, so reopening
-         ;; the store need not repair it.
-         ;;
-         ;; SO THE QUESTION IS ASKED WHENEVER THERE IS ANYTHING TO ASK
-         ;; ABOUT, and it stops being asked only while no request record
-         ;; has ever been seen. The cost is a gate computation per record
-         ;; after that point; it is the price of the answer not depending
-         ;; on arrival order, and no cheaper test has survived being
-         ;; measured.
          (let* ((actor (and (pair? rest) (car rest)))
                 (rec (make-record writer seq deps payload actor))
-                ;; THE LATCH IS SET BY ANY REQUEST RECORD, INCLUDING THE
-                ;; FIRST. It is restored from a snapshot by asking
-                ;; exactly that -- does any retained record carry a
-                ;; request actor -- so a live reduction that set it on a
-                ;; narrower condition means something different from one
-                ;; resumed out of its own snapshot. Measured: a single
-                ;; valid `single` record left the live latch false and
-                ;; the restored latch true, and the next record was
-                ;; admitted by one and refused by the other. Two
-                ;; reductions over the same records, two documents.
-                (ignored (when (request-actor? actor)
-                           (reduction-gated-set! r #t)))
-                (bears?
-                  (or (reduction-gated r)
-                      (and (pair? payload) (eq? (car payload) 'plan))
-                      (and (request-actor? actor)
-                           (or (and (actor-plan-event actor) #t)
-                               ;; AN INDEXED SLOT POINTING AT NO PLAN is a
-                               ;; record whose two statements about where
-                               ;; it belongs disagree, and the verdict for
-                               ;; it is `plan-mismatch`. Leaving it out of
-                               ;; this test let the FIRST such record be
-                               ;; applied before anything asked.
-                               (and (integer? (actor-sub actor)) #t)
-                               (exists (lambda (old)
-                                         (let ((a (rec-actor old)))
-                                           (and (request-actor? a)
-                                                (equal? (actor-identity a)
-                                                        (actor-identity actor)))))
-                                       (reduction-history r)))))))
+                (gates (admission-add! (reduction-admission-index r) rec))
+                (reversed?
+                  (exists (lambda (p)
+                            (and (not (assoc (car p) (reduction-gates r)))
+                                 (event-applied? r (car p)))) gates)))
            (reduction-history-set! r (cons rec (reduction-history r)))
-           (if (not bears?)
+           (if reversed?
+               (rebuild-request-state! r gates)
                (begin
+                 (reduction-gates-set! r gates)
+                 (reduction-noted-set! r (merge-gate-notes r gates))
                  (reduction-pending-set! r (append (reduction-pending r) (list rec)))
-                 (drain! r))
-               (let* ((gates (history-gates (reverse (reduction-history r))))
-                      (reversed?
-                        (exists (lambda (p)
-                                  (and (not (assoc (car p) (reduction-gates r)))
-                                       (event-applied? r (car p))))
-                                gates)))
-                 (if reversed?
-                     (rebuild-request-state! r gates)
-                     (begin
-                       (reduction-gates-set! r gates)
-                       (reduction-noted-set! r (merge-gate-notes r gates))
-                       (reduction-pending-set! r (append (reduction-pending r) (list rec)))
-                       (drain! r))))))
+                 (drain! r))))
          'accepted))))
 
   (define (event-applied? r id)
     (let ((e (assoc (car id) (reduction-applied r))))
       (and e (>= (cdr e) (cdr id)))))
 
-  ;; Determine causal availability without applying payloads. This pass
-  ;; includes later duplicates before admission, so record arrival order
-  ;; cannot choose a winner. The second pass reduces only admitted events.
-  ;; WHAT THE RECORDS SAY ABOUT MEMBERSHIP, as a pure function of the
-  ;; set. It folds a skeleton first -- positions only, no payloads --
-  ;; because membership asks which records were causally available to
-  ;; which, and that is answerable before anything is applied. Nothing
-  ;; here depends on the order the records arrived in, which is what
-  ;; makes it safe to call on every record that could change the answer.
-  (define (history-gates records)
-    (let ((skeleton (reduce-empty)))
-      (let loop ((pending records))
-        (let ((ready (filter (lambda (rec) (record-ready? (reduction-applied skeleton) rec)) pending)))
-          (unless (null? ready)
-            (for-each
-              (lambda (rec)
-                (let* ((w (rec-writer rec)) (n (rec-seq rec)) (id (cons w n)))
-                  (reduction-pasts-set! skeleton
-                    (cons (cons id (compute-past skeleton w n (rec-deps rec)))
-                          (reduction-pasts skeleton)))
-                  (reduction-applied-set! skeleton
-                    (cons id (filter (lambda (p) (not (string=? (car p) w)))
-                                     (reduction-applied skeleton))))))
-              ready)
-            (loop (filter (lambda (rec) (not (memq rec ready))) pending)))))
-      (let* ((evidence
-               (filter (lambda (x) x)
-                 (map (lambda (rec)
-                        (let* ((a (rec-actor rec)) (id (cons (rec-writer rec) (rec-seq rec)))
-                               (past (assoc id (reduction-pasts skeleton))))
-                          (and (request-actor? a)
-                               (make-evidence id a (if past (cdr past) (rec-deps rec))
-                                 (rec-payload rec) 'valid-history (and past #t) '())))) records)))
-             (gates (filter (lambda (p) (not (eq? (cdr p) 'valid)))
-                            (request-gates evidence))))
-        gates)))
-
+  ;; Causal availability and request buckets live in the admission index.
+  ;; Payload application remains here, including the whole-set rebuild below.
   (define (gate-notes gates)
     (map (lambda (p) (list (cdr p) (list 'event (caar p) (cdar p))))
          (list-sort (lambda (a b) (event<? (car a) (car b))) gates)))
@@ -674,11 +581,13 @@
              (else (loop (+ i 1)))))))
 
   (define (typed-field-reason alist)
-    (let ((e (assq 'level alist)))
-      (and e
+    (let ((e (assq 'level alist)) (doc (assq 'doc alist)))
+      (or (and doc (datum-doc-marker? (cdr doc)) 'marker-in-doc)
+          (and doc (not (datum-doc-format? (cdr doc))) 'invalid-doc)
+          (and e
            (not (and (integer? (cdr e)) (exact? (cdr e))
                      (> (cdr e) 0) (< (cdr e) 7)))
-           'level-not-a-heading-level)))
+           'level-not-a-heading-level))))
 
   ;; THE TITLE RULE IS THE WRITE PATH'S, NOT THE REDUCER'S. A title with
   ;; a line terminator is a thing this store will not WRITE; a record
@@ -735,7 +644,8 @@
                        ((not (pair? ps)) #f)
                        ((not (pair? (car ps))) #f)
                        ((bad? (car (car ps))) (say 'field-name (car (car ps))))
-                       ((bad? (cdr (car ps))) (say 'field-value (cdr (car ps))))
+                       ((and (not (memq (car (car ps)) '(body name))) (bad? (cdr (car ps))))
+                        (say 'field-value (cdr (car ps))))
                        (else (loop (cdr ps)))))))
              (else #f)))))
 
@@ -994,7 +904,32 @@
   ;; EVERY READ RETURNS AN IMMUTABLE DATUM, comparable with equal?. The
   ;; internal representation is this layer's business; what a case
   ;; asserts against must not be.
+  ;; Text metadata is a view of the same settled src/lang candidates. There
+  ;; is no independently timed metadata write that can lag behind set src,
+  ;; and replay order cannot pair one source candidate with another name.
+  (define (state-read-datum b)
+    (let* ((fields (cdr (assq 'fields b))) (body (assq 'body fields))
+           (names (datum-names (and body (cdr body))))
+           (derived (append (filter (lambda (f) (not (memq (car f) '(name names)))) fields)
+                            (list (cons 'names names))
+                            (if (pair? names) (list (cons 'name (car names))) '()))))
+      (map (lambda (p) (if (eq? (car p) 'fields)
+                          (cons 'fields (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b)))) derived)) p)) b)))
   (define (state-read r id)
+    (let* ((b (state-read/raw r id))
+           (fs (and b (cdr (assq 'fields b))))
+           (get (lambda (k) (let ((p (and fs (assq k fs)))) (and p (cdr p))))))
+      (if (and b (eq? (get 'kind) 'code) (eq? (get 'mode) 'datum)) (state-read-datum b)
+        (if (not (and b (eq? (get 'kind) 'code) (eq? (get 'mode) 'text))) b
+          (let* ((src (get 'src)) (entry (language-for-name (get 'lang)))
+                 (properties (and entry (or (bytevector? src) (string? src)) (text-properties entry src)))
+                 (fields (append (filter (lambda (f) (not (memq (car f) '(name doc)))) fs)
+                                 (if (and properties (car properties)) (list (cons 'name (car properties))) '())
+                                 (if properties (list (cons 'doc (cadr properties))) '()))))
+            (map (lambda (p) (if (eq? (car p) 'fields)
+                                (cons 'fields (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b)))) fields)) p)) b))))))
+
+  (define (state-read/raw r id)
     (let ((b (find-block r id)))
       (and b
            (list (cons 'id id)
@@ -1230,11 +1165,11 @@
       (and e
            (bytevector->hex
              (sha256 (string->utf8
-                       (sexpr->string-extended (block->datum r id (cdr e)))))))))
+                       (sexpr->string-extended (storable-encode (block->datum r id (cdr e))))))))))
 
   (define (state-hash r)
     (bytevector->hex
-      (sha256 (string->utf8 (sexpr->string-extended (state-datum r))))))
+      (sha256 (string->utf8 (sexpr->string-extended (storable-encode (state-datum r)))))))
 
 
   ;; ---- derived structure (design 9.2) ---------------------------------------
@@ -1376,6 +1311,11 @@
                        past)
               (loop (+ n 1)))
              (else #f)))))))
+
+  ;; Return the causal cut immediately after this applied event.
+  (define (state-event-cut state event)
+    (let ((past (assoc event (reduction-pasts state))))
+      (and past (past-sorted (past-join (cdr past) (list event))))))
 
   ;; THE CANONICAL IDENTITY OF A CUT (design 9.3): writers in order, one
   ;; agreed spelling, sha256 of that text. Anything that uses a cut as a
@@ -1530,12 +1470,8 @@
             ;; obligation it could not meet.
             ((request-history)
              (reduction-history-set! r (reverse (cadr row)))
-             ;; AND THE LATCH COMES BACK WITH THEM. A resumed reduction
-             ;; that forgot it had seen a request record would stop
-             ;; asking, and the first ordinary record after the snapshot
-             ;; would go in unexamined.
-             (reduction-gated-set! r
-               (exists (lambda (rec) (request-actor? (rec-actor rec))) (cadr row))))
+             (for-each (lambda (rec) (admission-add! (reduction-admission-index r) rec))
+                       (cadr row)))
             ((noted)
              (reduction-noted-set! r (append (reduction-noted r) (list (cadr row)))))
             ((pasts) (reduction-pasts-set! r (expand-pasts (cadr row) cut)))
@@ -1552,4 +1488,5 @@
                r (cons (cons (cadr row) (caddr row)) (reduction-tags r))))
             (else (if #f #f))))
         rows)
+      (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
       r)))

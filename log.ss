@@ -67,7 +67,7 @@
           store-register!
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
-          log-open log-open-in-session load-prefix load-writers load-integrity
+          log-open log-open-in-session load-prefix load-writers load-integrity load-fingerprint
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
           session-frontiers session-view session-view-refusal session-applied! session-load
@@ -1412,6 +1412,7 @@
             (mutable outcome) (mutable snapshot) (mutable barriered)))
 
   (define (log-open store)
+    (trace-event! 'log-open store #f)
     (open-load store 'acquire-shared))
 
   (define (log-open-in-session store)
@@ -5330,6 +5331,22 @@
         ((and (list? (car xs)) (= 2 (length (car xs))) (eq? (caar xs) 'format))
          (eqv? (cadr (car xs)) 1))
         (else (loop (cdr xs))))))
+
+  ;; A resident reduction may be reused only against the same authenticated
+  ;; source bytes and metadata, while this read session holds the store lock.
+  (define (load-fingerprint ls)
+    (guard (e (#t #f))
+      (let ((store (load-session-store ls)))
+        (list (metadata-versions store)
+              (map (lambda (entry)
+                     (let ((writer (car entry)) (p (cdr entry)))
+                       (list writer (discovery-origin p) (discovery-end-seq p)
+                             (discovery-integrity p) (discovery-quarantine p) (discovery-retired p)
+                             (map (lambda (range)
+                                    (let ((bytes (read-segment store writer (car range))))
+                                      (unless (bytevector? bytes) (raise 'unreadable-resident-source))
+                                      (list range (segment-sha bytes)))) (discovery-segment-ranges p)))))
+                   (load-session-prefixes ls))))))
 
   (define (load-prefix ls writer)
     (let ((e (assoc writer (load-session-prefixes ls)))) (and e (cdr e))))

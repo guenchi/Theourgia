@@ -225,7 +225,7 @@
                    (raw (substring text i stop))
                    (line (let back ((k (string-length raw)))
                            (if (and (> k 0)
-                                    (memv (string-ref raw (- k 1)) '(#\newline #\return)))
+                                    (char=? (string-ref raw (- k 1)) #\newline))
                                (back (- k 1))
                                (substring raw 0 k))))
                    (id (recovery-id line)))
