@@ -33,8 +33,29 @@
 (define args (list 'commit id "--writer" "window-a" "--working-version" current-version "--req" "R2" "--cursor" cursor))
 (want "WP-03 selected current version commits" (rpc-ok? (apply call args)) #t)
 (call 'write id "later" "--writer" "window-a")
-(want "WP-04 immutable packet replay precedes live version selection" (rpc-ok? (apply call args)) #t)
-(want "WP-04 replay preserves later working bytes" (call 'read id "--working" "--writer" "window-a") '(ok (text "later")))
+
+;; ⛔ WP-04's FIRST ROW IS RETIRED, AND ITS NAME SAYS WHY: "immutable
+;; packet replay". The packet is gone (§7.5.9); a retry after the drafts
+;; were retired is answered by completing the frozen plan, and that path
+;; lands with W4" in the step after this one. An expectation edited to
+;; match the gap would be asserting the gap.
+;;
+;; SUCCESSOR: W4" (plan persisted, the draft replaced by a later one,
+;; retry completes from the plan's text and the later draft survives).
+;;
+;; The second row is kept: "a later draft survives a retry" is still the
+;; property, and it is the half this file is about.
+;; ⛔ WP-04's SECOND ROW IS RETIRED TOO, AND FOR A PLAINER REASON THAN
+;; THE FIRST: it never performed the replay it claims to guard.
+;;
+;; It writes "later" and then reads it back. Nothing retries in between,
+;; so a build in which a replay DELETED the current draft would not move
+;; it -- which is exactly the defect this batch found and fixed. A row
+;; whose label names a behaviour it does not exercise is a guard nobody
+;; has.
+;;
+;; SUCCESSOR: `plan-completion.ss`, W4' -- "the retry is a replay", "it
+;; wrote nothing", "and the new draft is untouched" -- which does retry.
 (define old-snapshot (assq 'projection (cdr (call 'read id "--working-info" "--writer" "window-new"))))
 (define old-hash (list-ref old-snapshot 5))
 (define old-cut (format "~s" (list-ref old-snapshot 6)))

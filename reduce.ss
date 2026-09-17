@@ -46,20 +46,24 @@
           state-read state-outline state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
+          state-consumed? state-consumption state-consumed-completions
+          state-consumed-parent-cuts state-seen state-revoked draft-version
           ord-between block-id
           reduction? reduction-state)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs records syntactic) (rnrs hashtables) (rnrs arithmetic fixnums)
           (rnrs unicode) (rnrs io simple)
           (only (rnrs io ports) call-with-string-output-port)
+          (only (theourgia trace) trace-event!)
           (only (theourgia request) store-supplied-fields
                 request-actor? actor-identity actor-sub
-                actor-plan-event make-evidence request-gates)
+                actor-plan-event make-evidence request-gates
+                plan? plan-consumes consumes?)
           (theourgia admission)
           (only (theourgia datum-metadata) datum-doc-marker? datum-doc-format?)
           (only (theourgia wire) sexpr->string-extended wire-safe-symbol? storable-encode)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (rnrs bytevectors) string->utf8 bytevector?))
+          (only (rnrs bytevectors) string->utf8 bytevector? bytevector-copy! make-bytevector bytevector-length))
 
   ;; ---- ids ------------------------------------------------------------------
 
@@ -125,7 +129,433 @@
             (mutable pending)
             (mutable trace)
             (mutable noted) (mutable history) (mutable gates)
-            (mutable admission-index)))
+            (mutable admission-index)
+            (mutable consumption)))
+
+  ;; ---- the name of a draft's content ---------------------------------------
+  ;;
+  ;; `version = sha256(bytes || based-on || cut)`. It lives here, rather
+  ;; than beside the drafts, because two layers need it and a second copy
+  ;; of a hash rule is a second answer waiting to disagree: the draft
+  ;; store computes it when a draft is saved, and the completion path
+  ;; checks it against the text a plan froze.
+  ;;
+  ;; ⚠️ THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD IS
+  ;; A FIXED-WIDTH HEX DIGEST. `bytes` is arbitrary and comes first, so a
+  ;; variable-width baseline would let two different pairs hash alike --
+  ;; and a collision here answers "this is the draft you sent" for a
+  ;; draft nobody sent. Sixty-four characters of the hex alphabet, or
+  ;; this refuses to name anything.
+  (define draft-hash-width 64)
+  (define (draft-hex-digit? c)
+    (or (char<=? #\0 c #\9) (char<=? #\a c #\f)))
+
+  (define (draft-version bytes based-on cut)
+    (unless (and (string? based-on) (= (string-length based-on) draft-hash-width)
+                 (for-all draft-hex-digit? (string->list based-on)))
+      (assertion-violation 'draft-version "A baseline is a fixed-width block hash" based-on))
+    (bytevector->hex
+      (sha256
+        (let* ((tail (string->utf8
+                       (string-append based-on
+                                      (sexpr->string-extended (storable-encode cut)))))
+               (out (make-bytevector (+ (bytevector-length bytes) (bytevector-length tail)))))
+          (bytevector-copy! bytes 0 out 0 (bytevector-length bytes))
+          (bytevector-copy! tail 0 out (bytevector-length bytes) (bytevector-length tail))
+          out))))
+
+  ;; ---- what a commit consumed ----------------------------------------------
+  ;;
+  ;; A plan may name the draft versions its request took as input
+  ;; (`request.ss`, `consumes?`). A draft is CONSUMED once such a plan
+  ;; has completed, and the log is the only place that says so: the
+  ;; earlier design kept an immutable packet beside each draft, which
+  ;; meant two stores to keep in step and a scan of all of them on every
+  ;; read.
+  ;;
+  ;; TWO TABLES, BECAUSE THERE ARE TWO QUESTIONS. "Is this draft
+  ;; consumed" is asked per (owner, version) and must not walk the
+  ;; history -- a store with a thousand unrelated commits answers it in
+  ;; the same number of probes as one with ten. "Has this plan
+  ;; completed" is asked per plan event, as its members arrive.
+  ;;
+  ;; COMPLETION IS A MEMBER EVENT, NOT THE PLAN EVENT. The plan is
+  ;; written before its members, so its cut is earlier than the state the
+  ;; commit produced; taking it as the causal parent of a sequential edit
+  ;; reports that edit as stale against its own predecessor. An EMPTY
+  ;; plan is the exception and completes at the plan event, because there
+  ;; is no member to be later than.
+  ;;
+  ;; ⭐ WHICH MEMBER: THE GREATEST, BY (writer, seq) -- NOT "the one that
+  ;; happened to be applied last". Those agree for every plan this core
+  ;; writes, whose members are consecutive records of one writer. They
+  ;; would not agree for a plan whose members came from two writers, and
+  ;; there the arrival order is not a fact about the store: two replicas
+  ;; folding the same records would record different completions, and a
+  ;; snapshot would preserve whichever the cutting replica saw. A
+  ;; deterministic maximum is the same in both, which is also what lets
+  ;; the index be rebuilt from a snapshot that did not carry it.
+  ;;
+  ;; DELIVERED IS NOT APPLIED. A member record that is present but gated
+  ;; -- waiting on a dependency that has not arrived -- has not been
+  ;; applied, and a plan whose members are all present but not all
+  ;; applied has not completed. This table is fed from `apply-one!` for
+  ;; that reason and no other.
+  (define-record-type plan-entry
+    (fields owner items declared (mutable applied) (mutable completion)))
+
+  ;; A THIRD TABLE, AND IT IS NOT EVIDENCE OF ANYTHING.
+  ;;
+  ;; `by-seen` answers one question: which plan named this (owner,
+  ;; version), whether or not that plan was ever applied. A plan that a
+  ;; conflict has since gated never reaches `apply-one!`, so the other
+  ;; two tables cannot say that a draft WAS consumed by a request that
+  ;; has since been taken back -- and that is exactly the state a
+  ;; retired draft is left in: the file is gone, the consumption is
+  ;; revoked, and the person wants their text back.
+  ;;
+  ;; ⛔ IT IS NOT CONSUMPTION AND IT IS NOT REPLAY EVIDENCE. `consumed?`
+  ;; reads `by-key`, which is fed from applied records only. This table
+  ;; is read by `drafts` and by `restore`, to say "a plan named this,
+  ;; here it is" and nothing more.
+  (define-record-type (consumption make-consumption-record consumption?)
+    (fields by-key by-plan by-seen by-seen-plan by-member))
+
+  (define (make-consumption)
+    (make-consumption-record (make-hashtable string-hash string=?)
+                             (make-hashtable string-hash string=?)
+                             (make-hashtable string-hash string=?)
+                             (make-hashtable string-hash string=?)
+                             (make-hashtable string-hash string=?)))
+
+  ;; THE KEYS ARE STRINGS WITH A SEPARATOR THAT CANNOT OCCUR IN EITHER
+  ;; HALF. A writer id and a version are both drawn from a restricted
+  ;; alphabet that has no NUL in it, so `a\x0;b` cannot be spelled two
+  ;; ways -- concatenating without a separator lets ("ab","c") and
+  ;; ("a","bc") collide, and a collision here answers "consumed" for a
+  ;; draft nobody consumed.
+  (define (draft-key owner version) (string-append owner "\x0;" version))
+  (define (event-key e) (string-append (car e) "\x0;" (number->string (cdr e))))
+
+  (define (consumption-clear! r) (reduction-consumption-set! r (make-consumption)))
+
+  ;; NOTED WHEN THE RECORD ARRIVES, not when it is applied -- that is the
+  ;; whole difference between this table and the other two.
+  ;; WHICH PLAN A MEMBER BELONGS TO, noted when the member ARRIVES.
+  ;;
+  ;; ⭐ A REVOKED CONSUMPTION IS OFTEN GATED AT THE MEMBER, NOT AT THE
+  ;; PLAN. A second record claiming a member's slot puts the MEMBERS in
+  ;; conflict and leaves the plan itself applied; a lookup that used the
+  ;; gated event as a plan key found nothing, so the draft the commit
+  ;; had already retired was reported neither as a draft nor as revoked
+  ;; -- and `restore` answered `unknown-version` for work that was only
+  ;; in the log.
+  (define (consumption-note-member-of! r event plan-event)
+    (hashtable-set! (consumption-by-member (reduction-consumption r))
+                    (event-key event) plan-event))
+
+  (define (consumption-note-seen! r event payload)
+    (let ((c (plan-consumes payload)))
+      (when c
+        (let ((owner (cadr c)))
+          (for-each
+            (lambda (item)
+              (let* ((k (draft-key owner (cadr item)))
+                     (have (hashtable-ref (consumption-by-seen (reduction-consumption r)) k '())))
+                (unless (exists (lambda (x) (equal? (car x) event)) have)
+                  (hashtable-set! (consumption-by-seen (reduction-consumption r)) k
+                                  (cons (cons event item) have)))))
+            (caddr c))
+          ;; THE DECLARED SUB-OPERATIONS TRAVEL WITH IT, because the
+          ;; text a `restore` puts back is the text the plan froze --
+          ;; `(set <block> src <text>)` -- and looking it up later would
+          ;; mean finding the record again.
+          (hashtable-set! (consumption-by-seen-plan (reduction-consumption r))
+                          (event-key event)
+                          (list owner (caddr c) (list-ref payload 4)))))))
+
+  ;; A CONSUMPTION THAT WAS TAKEN BACK.
+  ;;
+  ;; A commit retired the drafts it consumed -- the files are gone -- and
+  ;; then a second record claiming its identity put the plan in conflict.
+  ;; The consumption is revoked, and the person's text is now only in the
+  ;; log. `drafts` has to say so, or the work looks deleted.
+  ;;
+  ;; ⭐ THE CANDIDATES ARE THE GATED PLANS, NOT EVERY VERSION EVER NAMED.
+  ;; Walking the whole `seen` table would be the packet scan again in
+  ;; another shape -- a cost that grows with how long the writer has been
+  ;; working. A revoked consumption is a plan that is GATED, and gates
+  ;; are the conflicts, of which there are few.
+  ;; THE TEXT THE PLAN FROZE FOR ONE BLOCK, or #f when the plan declared
+  ;; no sub-operation for it -- which is what an `unchanged` item looks
+  ;; like: it was consumed, and its bytes are the committed src at its
+  ;; own cut rather than anything the plan carries.
+  (define (declared-src entries block)
+    (let loop ((es entries))
+      (cond
+        ((null? es) #f)
+        ((and (pair? (car es)) (list? (cdar es)) (>= (length (cdar es)) 4)
+              (eq? 'set (car (cdar es)))
+              (equal? block (cadr (cdar es)))
+              (eq? 'src (caddr (cdar es))))
+         (cadddr (cdar es)))
+        (else (loop (cdr es))))))
+
+  ;; ⚠️ ONE ENTRY PER VERSION, NOT PER GATED PLAN. Two plans claiming one
+  ;; identity are both gated and both name the same version, so a caller
+  ;; that mapped over the gates listed the same revoked draft twice --
+  ;; and a person reading `drafts` would have seen one piece of work
+  ;; described as two.
+  (define (state-revoked r owner)
+    (let loop ((all (state-revoked-raw r owner)) (seen '()) (out '()))
+      (cond
+        ((null? all) (reverse out))
+        ((member (cadr (car (car all))) seen) (loop (cdr all) seen out))
+        (else (loop (cdr all) (cons (cadr (car (car all))) seen) (cons (car all) out))))))
+
+  (define (state-revoked-raw r owner)
+    (let ((c (reduction-consumption r)))
+      (apply append
+        (map (lambda (g)
+               ;; ⛔ ONLY A PLAN THAT WAS TAKEN BACK, NOT ONE THAT IS
+               ;; WAITING. `pending-plan` means a dependency has not
+               ;; arrived: nothing was consumed, nothing was retired, and
+               ;; the draft is still on disk and still a draft. Reporting
+               ;; it as revoked tells the person their work was undone by
+               ;; a commit that has not happened yet.
+               (let* ((plan-event
+                        (or (and (hashtable-ref (consumption-by-seen-plan c) (event-key (car g)) #f)
+                                 (car g))
+                            (hashtable-ref (consumption-by-member c) (event-key (car g)) #f)))
+                      (seen (and (memq (cdr g) '(plan-conflict plan-mismatch))
+                                 plan-event
+                                 (hashtable-ref (consumption-by-seen-plan c)
+                                                (event-key plan-event) #f))))
+                 (if (and seen (equal? owner (car seen)))
+                     (map (lambda (item) (list item (car g) (declared-src (caddr seen) (car item))))
+                          (filter (lambda (item)
+                                    (not (state-consumed? r owner (cadr item))))
+                                  (cadr seen)))
+                     '())))
+             (reduction-gates r)))))
+
+  ;; WHAT A PLAN NAMED THIS VERSION, AND IS THAT PLAN'S CONSUMPTION
+  ;; STANDING? A version that was named, is not consumed now, and whose
+  ;; file is gone is a REVOKED consumption: the caller decides what to
+  ;; do about it, this only reports it.
+  (define (state-seen r owner version)
+    (hashtable-ref (consumption-by-seen (reduction-consumption r))
+                   (draft-key owner version) '()))
+
+  (define (consumption-add-key! c owner version event)
+    (let* ((k (draft-key owner version))
+           (have (hashtable-ref (consumption-by-key c) k '())))
+      (unless (member event have)
+        (hashtable-set! (consumption-by-key c) k (cons event have)))))
+
+  ;; A PLAN IS NOTED WHEN IT IS APPLIED, with no completion yet. Its
+  ;; members may already be on disk; they are counted as they are
+  ;; applied, below, and not before.
+  (define (consumption-note-plan! r event payload)
+    (let ((c (plan-consumes payload)))
+      (when c
+        (let* ((owner (cadr c))
+               (items (caddr c))
+               (declared (length (list-ref payload 4)))
+               (entry (make-plan-entry owner items declared '()
+                                       (and (= declared 0) event))))
+          (hashtable-set! (consumption-by-plan (reduction-consumption r))
+                          (event-key event) entry)
+          (for-each (lambda (item)
+                      (consumption-add-key! (reduction-consumption r)
+                                            owner (cadr item) event))
+                    items)))))
+
+  (define (event>? a b)
+    (if (string=? (car a) (car b)) (> (cdr a) (cdr b)) (string>? (car a) (car b))))
+
+  (define (greatest-event events)
+    (and (pair? events)
+         (fold-left (lambda (best e) (if (event>? e best) e best)) (car events) (cdr events))))
+
+  (define (consumption-note-member! r event plan-event index)
+    (let* ((c (reduction-consumption r))
+           (entry (hashtable-ref (consumption-by-plan c) (event-key plan-event) #f)))
+      (when entry
+        (unless (assv index (plan-entry-applied entry))
+          (plan-entry-applied-set! entry (cons (cons index event) (plan-entry-applied entry))))
+        (plan-entry-completion-set!
+          entry
+          (and (= (length (plan-entry-applied entry)) (plan-entry-declared entry))
+               (greatest-event (map cdr (plan-entry-applied entry))))))))
+
+  ;; IS THIS DRAFT CONSUMED. One probe for the key, then one pass over
+  ;; the plans that named it -- which is bounded by how many requests
+  ;; named this exact version, not by the size of the store.
+  (define (state-consumed? r owner version)
+    (let ((events (hashtable-ref (consumption-by-key (reduction-consumption r))
+                                 (draft-key owner version) '())))
+      ;; ⭐ ONE PROBE PER PLAN THAT NAMED THIS EXACT VERSION, and the
+      ;; count is on the trace so a row can read it. The question used to
+      ;; be answered by opening every packet the writer had ever written,
+      ;; which made a draft more expensive to read the longer the writer
+      ;; had been working; a row that only checked the ANSWER would be
+      ;; green for that implementation too.
+      (trace-event! 'consumption-probe (cons owner version) #f)
+      (for-each (lambda (e) (trace-event! 'consumption-probe e #f)) events)
+      (exists (lambda (e)
+                (let ((entry (hashtable-ref (consumption-by-plan (reduction-consumption r))
+                                            (event-key e) #f)))
+                  (and entry (plan-entry-completion entry) #t)))
+              events)))
+
+  ;; THE COMPLETED PLANS THAT NAMED THIS DRAFT, as their completion
+  ;; events. A caller that wants the state this commit produced -- the
+  ;; causal parent of a sequential edit -- reduces at that event's cut;
+  ;; several completions mean several requests consumed the same
+  ;; version, and choosing between them is the caller's rule, not this
+  ;; table's.
+  (define (state-consumed-completions r owner version)
+    (let ((c (reduction-consumption r)))
+      (filter values
+        (map (lambda (e)
+               (let ((entry (hashtable-ref (consumption-by-plan c) (event-key e) #f)))
+                 (and entry (plan-entry-completion entry))))
+             (hashtable-ref (consumption-by-key c) (draft-key owner version) '())))))
+
+  ;; ⭐ THE CAUSAL PARENT OF A CONSUMED DRAFT IS THE JOIN OF ITS PLAN'S
+  ;; MEMBER CUTS, not the cut of any one member.
+  ;;
+  ;; For every plan this core writes the two agree: the members are
+  ;; consecutive records of one writer, so the last one's cut covers all
+  ;; the others. They part company for a plan whose members came from
+  ;; two writers -- there the greatest member by (writer, seq) is a
+  ;; deterministic CHOICE, and its cut does not contain the other
+  ;; writer's member. A sequential edit rebased on it would be standing
+  ;; on a state that does not include half of its own predecessor.
+  ;;
+  ;; AN EMPTY PLAN HAS NO MEMBER and answers with its own event's cut:
+  ;; it completed there, and there is nothing later to join.
+  (define (cut-join a b)
+    (let loop ((rest b) (out a))
+      (cond
+        ((null? rest) out)
+        (else
+         (let* ((e (car rest)) (mine (assoc (car e) out)))
+           (loop (cdr rest)
+                 (if (and mine (>= (cdr mine) (cdr e)))
+                     out
+                     (cons e (remp (lambda (x) (equal? (car x) (car e))) out)))))))))
+
+  (define (state-consumed-parent-cuts r owner version)
+    (let ((c (reduction-consumption r)))
+      (filter values
+        (map (lambda (e)
+               (let ((entry (hashtable-ref (consumption-by-plan c) (event-key e) #f)))
+                 (and entry (plan-entry-completion entry)
+                      (if (null? (plan-entry-applied entry))
+                          (state-event-cut r (plan-entry-completion entry))
+                          (fold-left (lambda (acc m)
+                                       (let ((cut (state-event-cut r (cdr m))))
+                                         (and acc cut (cut-join acc cut))))
+                                     '()
+                                     (plan-entry-applied entry))))))
+             (hashtable-ref (consumption-by-key c) (draft-key owner version) '())))))
+
+  ;; THE WHOLE INDEX AS DATA, sorted, for the snapshot and for a reader
+  ;; that wants to say what it found rather than only whether.
+  (define (state-consumption r)
+    (let ((c (reduction-consumption r)))
+      (list-sort
+        (lambda (a b) (string<? (car a) (car b)))
+        (let-values (((ks vs) (hashtable-entries (consumption-by-plan c))))
+          (let loop ((i 0) (out '()))
+            (if (= i (vector-length ks))
+                out
+                (let ((entry (vector-ref vs i)))
+                  (loop (+ i 1)
+                        (cons (list (vector-ref ks i)
+                                    (plan-entry-owner entry)
+                                    (plan-entry-items entry)
+                                    (plan-entry-declared entry)
+                                    (list-sort (lambda (x y) (< (car x) (car y)))
+                                               (plan-entry-applied entry))
+                                    (plan-entry-completion entry))
+                              out)))))))))
+
+  ;; A SNAPSHOT THAT DOES NOT CARRY THE INDEX STILL HAS THE RECORDS.
+  ;;
+  ;; Snapshots written before this existed have no `consumed` row, and
+  ;; leaving the index empty there would make every draft those commits
+  ;; consumed visible again as a draft. The records the snapshot does
+  ;; carry are enough: a plan names its own consumes list and its
+  ;; declared count, and a member's actor names the plan it belongs to.
+  ;;
+  ;; ⛔ THIS IS NOT A SECOND SUPPLIER. It computes completion by the same
+  ;; rule the incremental path uses -- the greatest member event, once
+  ;; every declared member is covered by the snapshot's cut -- so the two
+  ;; paths answer alike; that is what `rows->state` of a snapshot WITH
+  ;; the row and of the same snapshot WITHOUT it are compared on.
+  ;;
+  ;; ONLY WHAT THE CUT COVERS. A record that is in the history but not
+  ;; yet applied has not been applied here either.
+  (define (fill-seen-from-history! r)
+    (for-each
+      (lambda (rec)
+        (let ((payload (rec-payload rec)))
+          (let ((a (rec-actor rec)))
+            (when (and (pair? payload) (eq? 'plan (car payload)) (plan? payload)
+                       (not (plan-reason payload)))
+              (consumption-note-seen! r (cons (rec-writer rec) (rec-seq rec)) payload))
+            (let ((pe (and a (actor-plan-event a))) (sub (and a (actor-sub a))))
+              (when (and pe (integer? sub))
+                (consumption-note-member-of! r (cons (rec-writer rec) (rec-seq rec)) pe))))))
+      (reverse (reduction-history r))))
+
+  (define (rebuild-consumption-from-history! r)
+    (let ((cut (reduce-applied-cut r))
+          (records (reverse (reduction-history r))))
+      (define (covered? rec)
+        (past-covers? cut (rec-writer rec) (rec-seq rec)))
+      (for-each
+        (lambda (rec)
+          (let ((payload (rec-payload rec)))
+            (when (and (covered? rec) (pair? payload) (eq? 'plan (car payload)) (plan? payload)
+                       (not (plan-reason payload)))
+              (consumption-note-plan! r (cons (rec-writer rec) (rec-seq rec)) payload))))
+        records)
+      (for-each
+        (lambda (rec)
+          (let* ((actor (rec-actor rec))
+                 (plan-event (and actor (actor-plan-event actor)))
+                 (sub (and actor (actor-sub actor))))
+            (when (and (covered? rec) plan-event (integer? sub))
+              (consumption-note-member! r (cons (rec-writer rec) (rec-seq rec))
+                                        plan-event sub))))
+        records)))
+
+  (define (restore-consumption! r rows)
+    (let ((c (reduction-consumption r)))
+      (for-each
+        (lambda (row)
+          (let ((key (list-ref row 0))
+                (owner (list-ref row 1))
+                (items (list-ref row 2))
+                (declared (list-ref row 3))
+                (applied (list-ref row 4))
+                (completion (list-ref row 5)))
+            (hashtable-set! (consumption-by-plan c) key
+                            (make-plan-entry owner items declared applied completion))
+            (let ((event (let ((i (let loop ((n 0))
+                                    (cond ((= n (string-length key)) #f)
+                                          ((char=? #\nul (string-ref key n)) n)
+                                          (else (loop (+ n 1)))))))
+                           (and i (cons (substring key 0 i)
+                                        (string->number (substring key (+ i 1) (string-length key))))))))
+              (when event
+                (for-each (lambda (item) (consumption-add-key! c owner (cadr item) event))
+                          items)))))
+        rows)))
 
   ;; Named blk rather than block so that the record's own accessors do
   ;; not collide with block-id, which is the derivation rule and part of
@@ -139,7 +569,8 @@
             (mutable position)
             (mutable tomb)))
 
-  (define (reduce-empty) (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission)))
+  (define (reduce-empty)
+    (make-reduction '() '() '() '() '() '() '() '() '() '() (make-admission) (make-consumption)))
 
   (define (reduction-state r) r)
   (define (reduce-pending r) (map record-of (reduction-pending r)))
@@ -199,6 +630,13 @@
                             (and (not (assoc (car p) (reduction-gates r)))
                                  (event-applied? r (car p)))) gates)))
            (reduction-history-set! r (cons rec (reduction-history r)))
+           (let ((payload (rec-payload rec)) (a (rec-actor rec)))
+             (when (and (pair? payload) (eq? 'plan (car payload)) (plan? payload)
+                        (not (plan-reason payload)))
+               (consumption-note-seen! r (cons writer seq) payload))
+             (let ((pe (and a (actor-plan-event a))) (sub (and a (actor-sub a))))
+               (when (and pe (integer? sub))
+                 (consumption-note-member-of! r (cons writer seq) pe))))
            (if reversed?
                (rebuild-request-state! r gates)
                (begin
@@ -256,6 +694,14 @@
       (reduction-pasts-set! r '())
       (reduction-applied-set! r '())
       (reduction-trace-set! r '())
+      ;; THE INDEX IS DROPPED AND REBUILT WITH EVERYTHING ELSE. It is a
+      ;; function of the applied records; keeping it across a rebuild
+      ;; would make it a second supplier of the same fact, and the two
+      ;; would disagree exactly when a record was taken back.
+      (consumption-clear! r)
+      ;; THE `seen` TABLE COMES BACK FROM THE RECORDS, because it is
+      ;; about arrival and the records are all still here. Only the
+      ;; applied half is re-derived by folding.
       (reduction-pending-set! r records)
       (reduction-gates-set! r gates)
       ;; A REBUILD STARTS THE NOTES OVER, and that is the opposite of
@@ -274,6 +720,7 @@
       ;; other path interprets only the new record, so there the older
       ;; notes are the only copy and have to be kept.
       (reduction-noted-set! r (gate-notes gates))
+      (fill-seen-from-history! r)
       (drain! r)))
 
   ;; ONE AT A TIME, AND THEN LOOK AGAIN. Applying a record can make
@@ -305,6 +752,22 @@
            (past (compute-past r writer seq (rec-deps rec))))
       (reduction-pasts-set! r (cons (cons id past) (reduction-pasts r)))
       (reduction-trace-set! r (cons id (reduction-trace r)))
+      ;; NOTED HERE, WHERE "APPLIED" IS TRUE. A record that is present
+      ;; but gated has not been applied, and a plan whose members are
+      ;; all present but not all applied has not completed.
+      (let ((payload (rec-payload rec)) (actor (rec-actor rec)))
+        ;; ⛔ ONLY A PLAN THIS BUILD WILL APPLY. Registration used to run
+        ;; before `interpret!` asked `payload-reason`, so a plan whose
+        ;; `consumes` did not cover its own sub-operations was noted as
+        ;; malformed AND entered the index: the version it named came
+        ;; back as consumed by a record the reduction had refused.
+        (when (and (pair? payload) (eq? 'plan (car payload)) (plan? payload)
+                   (not (plan-reason payload)))
+          (consumption-note-plan! r id payload))
+        (let ((plan-event (and actor (actor-plan-event actor)))
+              (sub (and actor (actor-sub actor))))
+          (when (and plan-event (integer? sub))
+            (consumption-note-member! r id plan-event sub))))
       (interpret! r id past (rec-payload rec))
       (reduction-applied-set!
         r (cons (cons writer seq)
@@ -705,11 +1168,56 @@
                 (and (not (symbol? (cadr args))) 'relation-not-a-symbol)))
            ((tag) (or (args-reason args 2)
                       (and (not (string? (car args))) 'tag-name-not-a-string)))
+           ;; A PLAN IS CHECKED HERE TOO, and until now it was not: the
+           ;; arm below answered #f for it, so a plan carrying a
+           ;; malformed `consumes` was applied in silence and the index
+           ;; built from it was whatever the malformed list happened to
+           ;; say.
+           ;;
+           ;; TWO QUESTIONS, AND ONLY ONE OF THEM IS SHAPE. `plan?` says
+           ;; whether the sixth element is well formed; it deliberately
+           ;; does not look at the declared sub-operations, because a
+           ;; shape predicate should not need them. Here they ARE in
+           ;; hand, so the second question is asked: every sub-operation
+           ;; that names a block must have a consumes item for that
+           ;; block.
+           ;;
+           ;; ⛔ NOT THE CONVERSE. A mixed commit may consume a draft
+           ;; whose bytes are what the block already says; it has no
+           ;; sub-operation, and it is consumed all the same.
+           ((plan) (plan-reason payload))
            ;; A VERB THIS BUILD DOES NOT KNOW IS NOT MALFORMED. It is
            ;; answered by the arm below, which says so in its own words;
            ;; calling it malformed would tell an operator to repair a
            ;; record that is merely newer than their binary.
            (else #f))))))
+
+  ;; ⚠️ ONLY THE SIXTH ELEMENT. The first version of this asked `plan?`
+  ;; about the whole payload, and `plan?` is stricter than what the
+  ;; reduction has ever required of a plan record: `q1` publishes
+  ;; `(plan "r1" "fp" (("w" . 1)) ())` as a bookkeeping record that this
+  ;; build applies without effect, and that shape was suddenly called
+  ;; malformed. The field this batch adds is the field this checks;
+  ;; records written before it existed are treated exactly as they were.
+  (define (plan-reason payload)
+    (cond
+      ((not (list? payload)) #f)
+      ((<= (length payload) 5) #f)
+      ((> (length payload) 6) 'plan-extra-field)
+      ((not (consumes? (list-ref payload 5))) 'consumes-malformed)
+      ((not (list? (list-ref payload 4))) #f)
+      (else
+       (let ((blocks (map car (caddr (list-ref payload 5)))))
+         (let loop ((es (list-ref payload 4)))
+           (cond
+             ((null? es) #f)
+             ((not (and (pair? (car es)) (list? (cdar es)))) #f)
+             (else
+              (let* ((body (cdar es))
+                     (target (and (pair? body) (pair? (cdr body)) (cadr body))))
+                (if (and (string? target) (not (member target blocks)))
+                    'consumes-does-not-cover-sub-operation
+                    (loop (cdr es)))))))))))
 
   (define (note-malformed! r event-id reason)
     (reduction-noted-set!
@@ -1414,6 +1922,15 @@
                         (past-covers? (reduce-applied-cut r) (rec-writer rec) (rec-seq rec)))
                       (reverse (reduction-history r)))))
       (list (list 'pasts (compress-pasts r)))
+      ;; ⚠️ THIS ROW IS A SERIALISATION OF THE INDEX, NOT A SECOND
+      ;; SUPPLIER OF IT. A snapshot may be cut while a plan is still
+      ;; incomplete, so the bookkeeping that decides when it completes --
+      ;; how many members were declared and which have been applied --
+      ;; has to survive with it; without that, a resumed reduction can
+      ;; never finish a plan whose last member arrives after the cut.
+      ;; A snapshot WITHOUT this row is not an error: the index is
+      ;; rebuilt from `request-history`, and the two paths must agree.
+      (list (list 'consumed (state-consumption r)))
       (map (lambda (e)
              (let ((b (cdr e)))
                (list 'block (car e)
@@ -1457,6 +1974,7 @@
             ((noted)
              (reduction-noted-set! r (append (reduction-noted r) (list (cadr row)))))
             ((pasts) (reduction-pasts-set! r (expand-pasts (cadr row) cut)))
+            ((consumed) (restore-consumption! r (cadr row)))
             ((block)
              (let* ((id (cadr row))
                     (body (caddr row))
@@ -1471,4 +1989,13 @@
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
+      ;; ⭐ `seen` IS REFILLED EITHER WAY. It is about what a plan NAMED,
+      ;; which is a fact about the records the snapshot carries and not
+      ;; about what was applied -- so it does not travel in the
+      ;; `consumed` row, and a snapshot that does carry that row still
+      ;; needs it. A build that filled it only on the rebuild path would
+      ;; answer "nothing was ever named" for every resumed reduction.
+      (fill-seen-from-history! r)
+      (unless (exists (lambda (row) (eq? 'consumed (car row))) rows)
+        (rebuild-consumption-from-history! r))
       r)))

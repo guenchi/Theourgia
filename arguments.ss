@@ -43,7 +43,7 @@
 ;; which token was which -- an argument list whose meaning depends on
 ;; which layer looked at it is the shape this library exists to remove.
 (library (theourgia arguments)
-  (export parse-arguments argument-option argument-remove argument-positionals
+  (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin)
   (import (rnrs base) (rnrs lists))
 
@@ -73,6 +73,18 @@
         ((read drafts discard) '("--writer"))
         (else '()))))
 
+  ;; AN OPTION THAT MAY BE GIVEN MORE THAN ONCE.
+  ;;
+  ;; Every other option is refused on repetition, and that is right: two
+  ;; `--title`s leave "which one" without an answer. A commit's versions
+  ;; are different -- there is one per block it names, and they are a
+  ;; SET, so repeating the option is how the set is spelled. Each value
+  ;; is `<block>=<version>`; a commit naming exactly one block may give
+  ;; the bare version, which is what the single-block callers already
+  ;; wrote.
+  (define (repeatable-options verb)
+    (case verb ((commit) '("--working-version")) (else '())))
+
   (define (flag-options verb)
     (cons "--wire" (case verb
       ((read) '("--md" "--recursive" "--working" "--working-info"))
@@ -98,7 +110,8 @@
         ((or (member (car xs) (value-options verb))
              (member (car xs) (flag-options verb)))
          (cond
-           ((member (car xs) seen)
+           ((and (member (car xs) seen)
+                 (not (member (car xs) (repeatable-options verb))))
             (list 'error 'bad-request 'duplicate-option (car xs)))
            ((member (car xs) (flag-options verb))
             (loop (cdr xs) (cons (car xs) seen) (cons (list 'flag (car xs)) out) #f))
@@ -113,6 +126,12 @@
                                     (string=? (cadr n) name)))
                    nodes)))
       (and n (if (eq? (car n) 'flag) #t (caddr n)))))
+
+  ;; EVERY VALUE GIVEN FOR ONE OPTION, in the order it was written.
+  (define (argument-option-list nodes name)
+    (map caddr
+         (filter (lambda (n) (and (eq? 'option (car n)) (string=? (cadr n) name)))
+                 nodes)))
 
   (define (argument-remove nodes names)
     (filter (lambda (n) (not (and (memq (car n) '(option flag))

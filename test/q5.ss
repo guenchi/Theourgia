@@ -99,6 +99,20 @@
   (make-evidence PLAN (list WHO ID 'plan FP #f AFTER) '()
                  (list 'plan "req-1" FP AFTER entries) 'valid-history #t '()))
 (define two (list (cons 0 '(set "b" "t" "x")) (cons 1 '(set "c" "t" "y"))))
+
+;; ⚠️ A `complete` VERDICT CARRIES THE PLAN NOW, and these rows say so.
+;;
+;; It used to be `(complete <present-indices>)`, and the only thing a
+;; caller could do with that was answer `incomplete-request`. §7.5.11
+;; makes the caller FINISH the request instead, from the plan's own
+;; frozen declaration -- so the verdict hands out the plan event the
+;; remaining members hang from and the declared intents themselves. The
+;; rows below still assert the indices that are present, which is what
+;; they were written for; the two extra fields are what the answer is
+;; now allowed to be used for.
+;; The fifth element is the plan's `consumes` list, or #f when the plan
+;; carries none -- these hand-built plans are five-element ones.
+(define (completed present entries) (list 'complete present PLAN entries #f))
 (define three (append two (list (cons 2 '(set "d" "t" "z")))))
 
 ;; A resolution as the design writes it. The operator's record sits in
@@ -293,7 +307,7 @@
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))
                     (res-ev 9 (resolve 1 'not-executed (list W 14 30))))
               2 (list (list W 14 30)))
-      '(complete (0)))
+      (completed '(0) two))
 
 (printf "\n== Q13': two that do not reference each other are not a tie ==\n")
 ;; Choosing either would make the answer depend on which the scan reached
@@ -384,13 +398,13 @@
 (want "TWIN: a stretch that ends below the last present record is clear"
       (decide (list (plan-ev three) (ev 14 0 '(set "b" "t" "x"))) 3
               (list (list W 2 13)))
-      '(complete (0)))
+      (completed '(0) three))
 ;; AND THE EXEMPTION REACHES HERE, per missing index.
 (want "a not-executed for the missing index clears it"
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))
                     (res-ev 9 (resolve 1 'not-executed (list W 14 30))))
               2 (list (list W 14 30)))
-      '(complete (0)))
+      (completed '(0) two))
 (want "TWIN: the same resolution naming a different index does not"
       (decide (list (plan-ev three) (ev 14 0 '(set "b" "t" "x"))
                     (res-ev 9 (resolve 2 'not-executed (list W 14 30))))
@@ -416,7 +430,7 @@
       (list 'unknown (list 'range-overlaps (list W 13 30))))
 (want "TWIN: the same plan with the stretch ending below its own event"
       (decide (list (plan-ev two)) 2 (list (list W 2 13)))
-      '(complete ()))
+      (completed '() two))
 
 ;; AND AN ANCHOR THAT CANNOT BE RECOVERED IS NOT "NO OVERLAP". Here the
 ;; plan is declared by the request and the only record present is a

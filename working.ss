@@ -13,13 +13,14 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia working)
-  (export working-write! working-read working-discard! working-list working-commit!)
+  (export working-write! working-read working-discard! working-list working-commit!
+          working-restore!)
   (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
           (theourgia wire) (theourgia digest)
           (only (theourgia log) store-writers writer-directory atomic-write!
                 directory-entry-durable!)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
-                process-id wall-clock-ms unlink!))
+                process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!))
 
   (define counter 0)
   (define (fresh-id)
@@ -32,6 +33,35 @@
     (call-with-port (open-file-input-port path)
       (lambda (p) (storable-decode (string->sexpr-extended (utf8->string (get-bytevector-all p)))))))
   (define (digest x) (bytevector->hex (sha256 (encode x))))
+
+  ;; ---- the version is the content's name -----------------------------------
+  ;;
+  ;; `version = sha256(bytes || based-on || cut)`. It is not a token and
+  ;; not a counter: anyone can compute it, and two writes of the same
+  ;; bytes on the same baseline get the same name, which is what lets a
+  ;; retry say "this exact draft" without anybody having saved a
+  ;; correspondence.
+  ;;
+  ;; ⚠️ THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD
+  ;; HAS A FIXED WIDTH. `bytes` is arbitrary and comes first, so if
+  ;; `based-on` could be any length then (bytes="ab", based-on="c") and
+  ;; (bytes="a", based-on="bc") would hash alike -- and a collision here
+  ;; answers "this is the draft you sent" for a draft nobody sent. A
+  ;; block hash is 64 hex characters; this refuses to name anything else
+  ;; rather than leave the assumption unwritten.
+  ;; ONE DEFINITION, IN `reduce`. The completion path needs the same
+  ;; rule -- it checks a plan's frozen text against the version the
+  ;; record names -- and two copies of a hash rule are two answers
+  ;; waiting to disagree.
+  (define (content-version bytes based-on cut) (draft-version bytes based-on cut))
+
+  ;; A DRAFT THAT DOES NOT HASH TO ITS OWN NAME IS NOT READ. The envelope
+  ;; is a file on disk that nothing else guards; recomputing the name
+  ;; from the three inputs it carries is the whole check, and it is made
+  ;; wherever an envelope is read rather than only where it is written.
+  (define (version-ok? entry)
+    (equal? (list-ref entry 4)
+            (content-version (list-ref entry 7) (list-ref entry 5) (list-ref entry 6))))
   (define (safe-id? x)
     (and (string? x) (> (string-length x) 0) (<= (string-length x) 128)
          (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
@@ -58,6 +88,36 @@
       (directory-entry-durable! dir 'working)
       dir))
   (define (path-for store writer id) (string-append (area store writer "working") "/" id))
+
+  ;; ---- the one lock this library takes -------------------------------------
+  ;;
+  ;; TWO STEPS, AND ONLY TWO: the rename that installs a draft, and the
+  ;; compare-then-unlink that retires one. Without it those two race
+  ;; inside a SINGLE writer: retirement reads an envelope, decides its
+  ;; version is consumed, and unlinks -- while a second process of the
+  ;; same writer has renamed a new draft into that name in between. The
+  ;; new draft is deleted and nothing says so.
+  ;;
+  ;; ⛔ IT IS NOT THE UNIT OF CONCURRENCY. Concurrency between writers is
+  ;; provided by giving them separate draft spaces (7.5.3); this is one
+  ;; writer's own consistency between two of its own processes, and the
+  ;; lock is held across no wait but the I/O of those two steps.
+  ;; ⛔ THE LOCK DOES NOT LIVE AMONG THE DRAFTS.
+  ;;
+  ;; It was `working/.lock`, and `discard` takes any `safe-id?` -- which
+  ;; `.lock` is. A client could delete the lock file; the next two
+  ;; processes then create and lock DIFFERENT inodes, and the retirement
+  ;; that the lock exists to serialise runs beside an installation
+  ;; again. A name-based exclusion would be one more list to keep in
+  ;; step with `safe-id?`; putting the file where no block id can name
+  ;; it removes the question.
+  (define (lock-path store writer)
+    (string-append (writer-directory store writer) "/draft.lock"))
+  (define (with-draft-lock store writer thunk)
+    (ensure-area! store writer "working")
+    (let ((path (lock-path store writer)))
+      (file-ensure! path)
+      (with-exclusive-lock path (lambda (fd) (thunk)))))
   (define (entry? x)
     (and (list? x) (= (length x) 8) (eq? (car x) 'working) (equal? (cadr x) 1)
          (safe-id? (list-ref x 2)) (safe-id? (list-ref x 3))
@@ -69,67 +129,86 @@
            (let ((x (decode-file p)))
              (unless (and (entry? x) (equal? writer (list-ref x 2)) (equal? id (list-ref x 3)))
                (assertion-violation 'working "Corrupt working envelope" p))
+             ;; ⛔ RAISED, NOT RETURNED, so that every reader of an
+             ;; envelope gets the check whether or not it remembered to
+             ;; ask for it. `problem` turns it into the answer the
+             ;; caller sees; an assertion-violation here would read as a
+             ;; defect in this core rather than as a damaged file.
+             (unless (version-ok? x) (raise (list 'working-error 'version-mismatch id)))
              x))))
   (define (field state id name)
     (let* ((b (state-read state id)) (fs (and b (assq 'fields b)))
            (v (and fs (assq name (cdr fs)))))
       (and v (cdr v))))
   (define (problem thunk)
-    (guard (e (#t (list 'error 'working-unavailable
+    (guard (e ((and (pair? e) (eq? 'working-error (car e)))
+               (list 'error 'working-unavailable (list 'reason (cadr e))))
+              (#t (list 'error 'working-unavailable
                         (list 'message (if (message-condition? e) (condition-message e) "Working storage failed")))))
       (thunk)))
   (define (invalid-writer) '(error bad-request invalid-working-writer))
 
-  ;; One immutable packet binds a request to the exact versions it sent.
-  ;; It is durable before execution; no post-commit marker is required to
-  ;; distinguish a consumed leftover from a later write of identical bytes.
-  (define (packet? x)
-    (and (list? x) (= (length x) 5) (eq? (car x) 'working-packet)
-         (equal? (cadr x) 1) (write-request? (list-ref x 2))
-         (write-request? (list-ref x 3)) (list? (list-ref x 4))
-         (for-all entry? (list-ref x 4))))
-  (define (packets store writer)
-    (let ((dir (area store writer "working-requests")))
-      (if (not (file-is-directory? dir)) '()
-          (map (lambda (name)
-                 (let ((x (decode-file (string-append dir "/" name))))
-                   (unless (packet? x) (assertion-violation 'working "Corrupt commit packet" name))
-                   x))
-               (filter (lambda (n) (and (> (string-length n) 5)
-                                  (string=? ".sexp" (substring n (- (string-length n) 5) (string-length n)))))
-                       (directory-entries dir))))))
-  (define (packet-verdict store state packet)
-    (request-verdict store (list-ref packet 3) (reduce-applied-cut state)
-                     (let ((n (length (list-ref packet 4)))) (and (not (= n 1)) n))
-                     (reduce-gates state) 'plan))
-  (define (consumed? store state entry ps)
-    (exists (lambda (p)
-              (and (member entry (list-ref p 4))
-                   (eq? 'replay (car (packet-verdict store state p))))) ps))
+  ;; ---- is this draft consumed -----------------------------------------------
+  ;;
+  ;; THE LOG SAYS SO, AND NOTHING ELSE DOES. Until this, each commit left
+  ;; an immutable packet beside the drafts it named, and every read of a
+  ;; draft asked every packet whether it had been replayed. That was two
+  ;; stores to keep in step -- and a scan whose cost grew with the number
+  ;; of commits the writer had ever made.
+  ;;
+  ;; A commit now names its drafts in its own plan record, and the
+  ;; reduction keeps an index from (owner, version) to the plans that
+  ;; named it. A draft is consumed once one of those plans has COMPLETED.
+  (define (consumed? store state entry)
+    (state-consumed? state (list-ref entry 2) (list-ref entry 4)))
+
   (define (active-entries store writer state)
-    (let ((dir (area store writer "working")) (ps (packets store writer)))
+    (let ((dir (area store writer "working")))
       (if (not (file-is-directory? dir)) '()
-          (filter (lambda (e) (not (consumed? store state e ps)))
+          (filter (lambda (e) (not (consumed? store state e)))
             (map (lambda (id) (entry-at store writer id))
                  (filter block-name? (list-sort string<? (directory-entries dir))))))))
 
-  ;; A committed parent advances a sequential edit only to that execution's
-  ;; causal cut. A later external edit is never adopted as its baseline.
+  ;; ONE CUT COVERS ANOTHER when it has reached at least as far along
+  ;; every writer the other names. Two cuts that neither covers are
+  ;; CONCURRENT, which is a fact about the store and not a tie to be
+  ;; broken.
+  (define (cut-covers? a b)
+    (for-all (lambda (e)
+               (let ((mine (assoc (car e) a)))
+                 (and mine (>= (cdr mine) (cdr e)))))
+             b))
+
+  ;; A committed parent advances a sequential edit only to that
+  ;; execution's causal cut. A later external edit is never adopted as
+  ;; its baseline.
+  ;;
+  ;; THE CUT COMES FROM THE COMPLETION EVENT, not from the plan event.
+  ;; A plan is written before its members, so its cut is earlier than the
+  ;; state the commit produced -- taking it here reports the writer's own
+  ;; next edit as stale against its own predecessor.
+  ;;
+  ;; SEVERAL REQUESTS MAY HAVE NAMED THE SAME VERSION. When their cuts
+  ;; are comparable the latest is the parent; when they are not -- two
+  ;; unsynchronised replicas each completed one -- there is no single
+  ;; parent and the answer is #f, which sends the client to an explicit
+  ;; `--rebase` rather than to a cut that is not after both.
   (define (committed-parent store state writer id version hash original-cut)
     (and writer version (safe-id? writer)
-      (exists
-        (lambda (packet)
-          (let ((entries (list-ref packet 4)))
-            (and (= (length entries) 1)
-              (let ((entry (car entries)))
-                (and (equal? id (list-ref entry 3)) (equal? version (list-ref entry 4))
-                     (equal? hash (list-ref entry 5)) (equal? original-cut (list-ref entry 6))
-                  (let ((verdict (packet-verdict store state packet)))
-                    (and (eq? (car verdict) 'replay)
-                      (let ((cut (state-event-cut state (cadr verdict))))
-                        (and cut (let ((past (open-and-reduce store cut)))
-                          (and (reduction? past) past)))))))))))
-        (packets store writer))))
+      ;; THE CUT IS THE JOIN OF THE PLAN'S MEMBER CUTS, which for every
+      ;; plan this core writes is the last member's -- and for a plan
+      ;; whose members came from two writers is the only cut that
+      ;; contains both. `state-consumed-parent-cuts` computes it.
+      (let ((cuts (filter values (state-consumed-parent-cuts state writer version))))
+        (and (pair? cuts)
+          (let ((latest (fold-left (lambda (best c)
+                                     (and best (cond ((cut-covers? c best) c)
+                                                     ((cut-covers? best c) best)
+                                                     (else #f))))
+                                   (car cuts) (cdr cuts))))
+            (and latest
+              (let ((past (open-and-reduce store latest)))
+                (and (reduction? past) past))))))))
 
   (define (working-write! store supplied id bytes rebase? . provenance)
     (problem
@@ -151,33 +230,133 @@
             ((and (or parent-writer parent-version)
                   (not (and parent-writer parent-version hash cut-text (safe-id? parent-writer))))
              '(error invalid-working-baseline))
+            ;; ⛔ A REBASE NAMES THE VERSION IT MERGED ONTO.
+            ;;
+            ;; `--rebase` used to mean "take the block's hash as it is
+            ;; this instant", and that is a claim the store cannot check
+            ;; and the client did not make: the merge was done against
+            ;; some version the client had READ, and between reading it
+            ;; and saying `--rebase` somebody else may have committed.
+            ;; Falling back to "now" records that later commit as the
+            ;; baseline, and the next commit then overwrites it without
+            ;; being refused.
+            ((and rebase? (not (and hash cut-text)))
+             '(error bad-request rebase-needs-baseline))
+            ;; TWO WAYS A NAMED BASELINE CAN FAIL, AND THEY ARE NOT THE
+            ;; SAME ANSWER. The cut may be unusable -- a conflict was
+            ;; retracted and the state it names cannot be rebuilt -- in
+            ;; which case nothing about the hash has been established and
+            ;; the client's only move is an explicit rebase. Or the cut
+            ;; is fine and the block simply never had that hash there,
+            ;; which is a claim the client got wrong.
+            ;; THE CUT CANNOT BE USED AT ALL -- it does not parse, or the
+            ;; state it names cannot be rebuilt. Nothing about the hash
+            ;; has been established, and the client's only move is an
+            ;; explicit rebase.
+            ((and (or hash cut-text) (not (reduction? historical)))
+             '(error invalid-working-baseline (reason cut-unusable)))
+            ;; THE CUT IS FINE AND THE BLOCK IS NOT IN IT. A different
+            ;; answer from the one above, and from the one below: the
+            ;; client named a moment before this block existed.
+            ((and (or hash cut-text) (not (state-read historical id)))
+             '(error invalid-working-baseline (reason block-not-at-cut)))
             ((and (or hash cut-text)
-                  (not (and (reduction? historical) (state-read historical id)
-                            (equal? hash (block-hash historical id)))))
-             '(error invalid-working-baseline))
+                  (not (equal? hash (block-hash historical id))))
+             '(error invalid-working-baseline (reason hash-not-at-cut)))
             (else
+             ;; THE BASELINE IS DECIDED FIRST AND THE NAME FOLLOWS FROM
+             ;; IT. The version used to be a fresh counter, so two writes
+             ;; of the same bytes on the same baseline had different
+             ;; names and a retry could not say which draft it meant
+             ;; without somebody having stored the answer.
              (let* ((old (entry-at store writer id))
-                    (reuse (and old (not rebase?) (not (consumed? store state old (packets store writer)))))
-                    (entry (list 'working 1 writer id (fresh-id)
-                                 (cond (reuse (list-ref old 5)) ((and parent (not rebase?)) (block-hash parent id))
-                                       ((and historical (not rebase?)) hash)
-                                       (else (block-hash state id)))
-                                 (cond (reuse (list-ref old 6)) ((and parent (not rebase?)) (reduce-applied-cut parent))
-                                       ((and historical (not rebase?)) (reduce-applied-cut historical))
-                                       (else (reduce-applied-cut state)))
-                                 (if (string? bytes) (string->utf8 bytes) bytes))))
+                    (reuse (and old (not rebase?) (not (consumed? store state old))))
+                    (body (if (string? bytes) (string->utf8 bytes) bytes))
+                    ;; ⛔ A REBASE USES THE BASELINE IT NAMED. Both of
+                    ;; these arms once required `(not rebase?)`, so an
+                    ;; explicit rebase fell through to "now" -- it
+                    ;; validated the version the client said it had
+                    ;; merged onto and then recorded a different one,
+                    ;; silently adopting whatever had been committed in
+                    ;; between. That is the whole failure `--rebase
+                    ;; --based-on` exists to prevent, performed by the
+                    ;; code that implements it.
+                    (based-on
+                      (cond (reuse (list-ref old 5))
+                            ((and parent (not rebase?)) (block-hash parent id))
+                            (historical hash)
+                            (else (block-hash state id))))
+                    (cut
+                      (cond (reuse (list-ref old 6))
+                            ((and parent (not rebase?)) (reduce-applied-cut parent))
+                            (historical (reduce-applied-cut historical))
+                            (else (reduce-applied-cut state))))
+                    (entry (list 'working 1 writer id
+                                 (content-version body based-on cut)
+                                 based-on cut body)))
                (unless (bytevector? (list-ref entry 7)) (assertion-violation 'write "Expected bytes" bytes))
-               (ensure-area! store writer "working")
-               (atomic-write! (path-for store writer id) (encode entry) 'working)
+               (with-draft-lock store writer
+                 (lambda ()
+                   (atomic-write! (path-for store writer id) (encode entry) 'working)))
                (list 'ok (list 'saved id) (list 'writer writer)
                      (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5))))))))))
+
+  ;; ---- putting a revoked draft back ----------------------------------------
+  ;;
+  ;; The file was retired by a commit that has since been taken back. Its
+  ;; bytes are still in the log, and this is the verb that asks for them:
+  ;; a CHANGED item's text is the one the plan froze, an UNCHANGED item's
+  ;; text is the committed src at the cut the item names -- it had no
+  ;; sub-operation, so the plan carries nothing for it.
+  ;;
+  ;; ⛔ THE VERSION IS RECOMPUTED BEFORE ANYTHING IS WRITTEN. The record
+  ;; says `version`, `based-on` and `cut`; if the text those name does
+  ;; not hash to that version, the record and the text disagree and this
+  ;; refuses rather than standing a draft on bytes nobody sent.
+  ;;
+  ;; ⛔ AND THE BASELINE IS THE ONE THE RECORD HOLDS, not "now". A draft
+  ;; restored onto the current hash would be a claim that it was edited
+  ;; from the current text, and its next commit would overwrite whatever
+  ;; happened in between without being refused.
+  (define (working-restore! store supplied version)
+    (problem
+      (lambda ()
+        (let* ((writer (writer-for store supplied))
+               (state (and writer (open-and-reduce store)))
+               (found (and state
+                           (find (lambda (r) (equal? version (cadr (car r))))
+                                 (state-revoked state writer)))))
+          (cond
+            ((not writer) (invalid-writer))
+            ((not found) (list 'error 'unknown-version version))
+            (else
+             (let* ((item (car found))
+                    (id (car item))
+                    (based-on (caddr item))
+                    (cut (cadddr item))
+                    (declared (caddr found))
+                    (text (or declared
+                              (let ((past (guard (e (#t #f)) (open-and-reduce store cut))))
+                                (and (reduction? past) (field past id 'src)))))
+                    (body (and text (if (string? text) (string->utf8 text) text))))
+               (cond
+                 ((not body) (list 'error 'working-unavailable (list 'reason 'no-text-for-version)))
+                 ((not (equal? version (content-version body based-on cut)))
+                  (list 'error 'consumes-version-mismatch (list 'block id)))
+                 (else
+                  (let ((entry (list 'working 1 writer id version based-on cut body)))
+                    (with-draft-lock store writer
+                      (lambda ()
+                        (atomic-write! (path-for store writer id) (encode entry) 'working)))
+                    (list 'ok (list 'restored id) (list 'writer writer)
+                          (list 'version version) (list 'based-on based-on)))))))))))) 
 
   (define (working-read store supplied id . information)
     (problem (lambda ()
       (let ((writer (writer-for store supplied)) (state (open-and-reduce store)))
         (if (not writer) (invalid-writer)
             (let* ((e (and (safe-id? id) (entry-at store writer id)))
-                   (active (and e (not (consumed? store state e (packets store writer)))))
+                   (active (and e (not (consumed? store state e))))
                    (body (if active (list-ref e 7) (or (field state id 'src) ""))))
               (cond
                 ((not (state-read state id)) (list 'error 'unknown-id id))
@@ -199,27 +378,148 @@
     (problem (lambda ()
       (let ((writer (writer-for store supplied)))
         (cond ((not writer) (invalid-writer))
-              ((not (safe-id? id)) '(error bad-request invalid-block-id))
+              ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
+              ;; says so -- `safe-id?` admits names no block can have.
+              ((not (block-name? id)) '(error bad-request invalid-block-id))
               (else (let ((p (path-for store writer id)))
                       (when (file-exists? p) (unlink! p) (directory-entry-durable! p 'working))
                       (list 'ok (list 'discarded id)))))))))
+
+  ;; "NOTHING TO COMMIT" IS READ, NOT STORED.
+  ;;
+  ;; A draft whose bytes are what the block already says is not a
+  ;; change. That is a comparison anyone can make at any time, so the
+  ;; envelope does not carry a flag for it: a stored flag is a second
+  ;; copy of a fact, and it goes out of date the moment somebody else
+  ;; commits.
+  ;;
+  ;; ⛔ STALE COMES FIRST. If the baseline is no longer the block's
+  ;; current hash then the draft is stale, and what its bytes happen to
+  ;; equal is not the question -- the committed text it would be
+  ;; compared against is not the one it was written on. A build that
+  ;; answered "unchanged" there would turn a conflict into a no-op.
+  (define (unchanged? state entry fresh)
+    (and fresh
+         (let ((src (field state (list-ref entry 3) 'src)))
+           (and (or (string? src) (bytevector? src))
+                (equal? (list-ref entry 7)
+                        (if (string? src) (string->utf8 src) src))))))
 
   (define (working-list store supplied)
     (problem (lambda ()
       (let ((writer (writer-for store supplied)) (state (open-and-reduce store)))
         (if (not writer) (invalid-writer)
             (list 'ok (cons 'items
+              (append
               (map (lambda (e)
-                     (list 'draft (list 'block (list-ref e 3)) (list 'writer writer)
-                           (list 'version (list-ref e 4)) (list 'based-on (list-ref e 5))
-                           (list 'now (block-hash state (list-ref e 3)))
-                           (list 'fresh (equal? (list-ref e 5) (block-hash state (list-ref e 3))))))
-                   (active-entries store writer state)))))))))
+                     (let* ((id (list-ref e 3))
+                            (now (block-hash state id))
+                            (fresh (equal? (list-ref e 5) now)))
+                       (list 'draft (list 'block id) (list 'writer writer)
+                             (list 'version (list-ref e 4)) (list 'based-on (list-ref e 5))
+                             (list 'now now)
+                             (list 'fresh fresh)
+                             (list 'unchanged (unchanged? state e fresh)))))
+                   (active-entries store writer state))
+              ;; ⛔ A REVOKED CONSUMPTION IS NOT A DRAFT, AND IT IS NOT
+              ;; NOTHING. The file was retired by a commit that has since
+              ;; been taken back; the bytes are in the plan record, and
+              ;; `write --restore <version>` puts them back. Saying
+              ;; nothing here is what makes the work look deleted.
+              ;;
+              ;; ⛔ AND THE FILE IS NOT RESURRECTED BEHIND THE PERSON'S
+              ;; BACK. Whether to bring a draft back is theirs to decide;
+              ;; a store that re-created files during a read would be
+              ;; writing on a path nobody asked to write on.
+              (map (lambda (r)
+                     (let ((item (car r)))
+                       (list 'revoked (list 'block (car item)) (list 'writer writer)
+                             (list 'version (cadr item))
+                             (list 'based-on (caddr item))
+                             (list 'plan-event (cadr r)))))
+                   (filter (lambda (r)
+                             (not (file-exists? (path-for store writer (car (car r))))))
+                           (state-revoked state writer)))))))))))
 
-  (define (preflight state entries)
+  ;; THE (block . version) PAIRS THIS REQUEST IS ABOUT.
+  ;;
+  ;; A commit that carries `--req` must be GIVEN its versions: a retry
+  ;; from a new process has no draft to read them from, and "infer once
+  ;; and reuse" has nowhere to keep the inference. A commit without
+  ;; `--req` makes no retry promise, so it reads them from the drafts it
+  ;; is about to consume.
+  ;; `<block>=<version>`, or a bare version when exactly one block is
+  ;; named. The pairs a request declares are a SET: one per block, and
+  ;; repeating the option is how a caller spells more than one.
+  (define (split-at-equals s)
+    (let loop ((i 0))
+      (cond ((= i (string-length s)) #f)
+            ((char=? #\= (string-ref s i))
+             (cons (substring s 0 i) (substring s (+ i 1) (string-length s))))
+            (else (loop (+ i 1))))))
+
+  (define (parse-version-spec ids spec)
+    (let ((split (split-at-equals spec)))
+      (cond
+        (split split)
+        ((= 1 (length ids)) (cons (car ids) spec))
+        (else #f))))
+
+  ;; ⛔ ONE VERSION PER BLOCK. Two values naming the same block leave
+  ;; "which version did this request consume" without an answer -- and
+  ;; the answer matters twice: the identity is taken over the pairs, and
+  ;; RETIREMENT deletes the drafts whose version is among them. Accepting
+  ;; both `A=v1` and `A=v2` let a completion delete a replacement its
+  ;; request never consumed.
+  (define (no-duplicate-blocks? pairs)
+    (let loop ((ps pairs) (seen '()))
+      (or (null? ps)
+          (and (not (member (car (car ps)) seen))
+               (loop (cdr ps) (cons (car (car ps)) seen))))))
+
+  (define (commit-versions ids entries selected)
+    (cond
+      ((pair? selected)
+       (let ((parsed (map (lambda (spec) (parse-version-spec ids spec)) selected)))
+         (and (for-all values parsed) (no-duplicate-blocks? parsed) parsed)))
+      (else (map (lambda (e) (cons (list-ref e 3) (list-ref e 4))) entries))))
+
+  ;; WHICH NAMED BLOCKS HAVE NO VERSION. A request that promises a retry
+  ;; must name one for every block it commits; the refusal says which is
+  ;; missing rather than only that something is.
+  (define (versions-missing ids pairs)
+    (filter (lambda (id) (not (assoc id pairs))) ids))
+
+  ;; ⛔ EVERY REFUSAL HERE IS A PREMISE, AND PREMISES COME SECOND.
+  ;;
+  ;; §7.5.4 fixes the order: request identity, then premises, then
+  ;; execution. These three -- the draft has gone, the draft moved under
+  ;; the version the client named, the block moved under its baseline --
+  ;; are all statements about the store as it is NOW, and a retry of a
+  ;; request that already succeeded must be answered about its identity
+  ;; instead. Measured, twice: answering `no-draft` first told a retry
+  ;; about the drafts its own first attempt had retired, and answering
+  ;; `working-version-changed` first told a retry about the new draft the
+  ;; same person had written since.
+  (define (preflight state entries missing ids selected)
     (let ((bad (filter values
                  (map (lambda (e) (baseline-refusal state (list-ref e 3) (list-ref e 5) (list-ref e 6))) entries))))
-      (cond ((null? bad) #f)
+      (cond ((pair? missing) (list 'error 'no-draft (cons 'blocks missing)))
+            ;; EVERY NAMED VERSION MUST BE THE ONE ON DISK. A draft the
+            ;; client did not name the current version of has moved
+            ;; under them since they read it.
+            ((and (pair? selected) (pair? entries)
+                  (pair? (filter (lambda (e)
+                                   (let ((p (assoc (list-ref e 3) selected)))
+                                     (and p (not (equal? (cdr p) (list-ref e 4))))))
+                                 entries)))
+             (list 'error 'working-version-changed
+                   (cons 'blocks (map (lambda (e) (list-ref e 3))
+                                      (filter (lambda (e)
+                                                (let ((p (assoc (list-ref e 3) selected)))
+                                                  (and p (not (equal? (cdr p) (list-ref e 4))))))
+                                              entries)))))
+            ((null? bad) #f)
             ((null? (cdr bad)) (car bad))
             (else (list 'error 'stale-baseline (cons 'blocks (map cddr bad)))))))
   (define (entry-intent e)
@@ -227,18 +527,57 @@
       (unless (equal? bytes (string->utf8 text))
         (assertion-violation 'commit "The src field requires valid UTF-8" (list-ref e 3)))
       (list 'set (list-ref e 3) 'src text)))
-  (define (ticket-path store writer req)
-    (string-append (area store writer "working-requests") "/"
-                   (digest (list (car (list-ref req 5)) (list-ref req 4))) ".sexp"))
-  (define (retire! store writer entries)
-    (for-each (lambda (e)
-                (guard (failure (#t #f))
-                  (when (equal? e (entry-at store writer (list-ref e 3)))
-                    (working-discard! store writer (list-ref e 3))))) entries))
+  ;; ⛔ ONLY THE DRAFTS THIS REQUEST CONSUMED.
+  ;;
+  ;; The entries were read when the request was assembled, and on a
+  ;; COMPLETION -- a retry finishing a plan a dead process had written --
+  ;; what is in the slot now is a LATER draft the same person wrote in
+  ;; the meantime. Retiring it would throw away work nobody committed.
+  ;; Measured as W4": the completion carried out the plan's frozen text
+  ;; correctly and then deleted the draft that was standing beside it.
+  ;;
+  ;; The versions the request named are the test, and the slot's own
+  ;; envelope is checked as well: an envelope replaced between the read
+  ;; and here is not the one that was consumed either.
+  (define (retire! store writer entries versions)
+    ;; ⭐ A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
+    ;; envelopes were read at the top of the commit, and the store's
+    ;; write session is already released by the time this runs -- so
+    ;; another process belonging to the same writer can put a NEW draft
+    ;; in the slot before the lock is taken here. That is the case the
+    ;; `equal?` below refuses to delete.
+    ;;
+    ;; `retire-locked` cannot arm it: it fires after the comparison has
+    ;; agreed, with the lock already held, so nothing can get in. Armed
+    ;; from here, a build that deletes whatever is in the slot and a
+    ;; build that compares first stop being indistinguishable.
+    (barrier! 'before-retire)
+    (with-draft-lock store writer
+      (lambda ()
+        (for-each (lambda (e)
+                    (guard (failure (#t #f))
+                      (when (and (member (cons (list-ref e 3) (list-ref e 4)) versions)
+                                 (equal? e (entry-at store writer (list-ref e 3))))
+                        ;; A STEP NOTHING CAN ARM READS LIKE A STEP THAT
+                        ;; PASSED. The whole point of the lock is that a
+                        ;; concurrent `write` WAITS here; without a place
+                        ;; to stop, a lockless build and this one are
+                        ;; indistinguishable from outside.
+                        (barrier! 'retire-locked)
+                        (let ((p (path-for store writer (list-ref e 3))))
+                          (when (file-exists? p)
+                            (unlink! p)
+                            (directory-entry-durable! p 'working))))))
+                  entries))))
 
-  (define (working-commit! store supplied ids actor supplied-req . selected-version)
+  (define (working-commit! store supplied ids actor supplied-req . rest)
     (problem (lambda ()
-      (let* ((writer (writer-for store supplied)) (state (open-and-reduce store)))
+      ;; THE VERSIONS ARRIVE AS ONE LIST, and a rest argument wraps it
+      ;; in another. Reading the wrapper as the list made every value a
+      ;; list of strings, and the first refusal was a type error from
+      ;; deep inside the parser rather than the answer this rule owes.
+      (let* ((selected-version (if (pair? rest) (or (car rest) '()) '()))
+             (writer (writer-for store supplied)) (state (open-and-reduce store)))
         (cond
           ((not writer) (invalid-writer))
           ((not (for-all safe-id? ids)) '(error bad-request invalid-block-id))
@@ -246,39 +585,270 @@
                                       (if (null? xs) out (loop (cdr xs) (if (member (car xs) out) out (cons (car xs) out)))))))))
            '(error bad-request duplicate-block))
           (else
+           ;; ⛔ NO PACKET. A commit used to write an immutable file
+           ;; beside the drafts, holding the request it had accepted and
+           ;; the exact envelopes it had read, so that a retry could be
+           ;; answered from it. The log now holds both: the plan record
+           ;; names the versions this request consumed, and the plan's
+           ;; own payload freezes the text. A second store that has to
+           ;; be kept in step with the first is a second supplier of the
+           ;; same fact, and the two disagree exactly when one of the
+           ;; two writes fails.
            (let* ((after (or (assoc (writer-for store #f) (reduce-applied-cut state))
                              (cons (writer-for store #f) 0)))
-                  (external (or supplied-req (make-write-request actor 'commit ids (fresh-id) after)))
-                  (path (ticket-path store writer external))
-                  (saved (and (file-exists? path) (decode-file path))))
-             (cond
-               ((and saved (not (packet? saved))) '(error working-unavailable corrupt-commit-packet))
-               ((and saved (not (equal? external (list-ref saved 2)))) '(error req-mismatch))
-               (else
-                (let* ((entries (if saved (list-ref saved 4)
-                                    (let ((all (active-entries store writer state)))
-                                      (if (null? ids) all
-                                          (filter (lambda (e) (member (list-ref e 3) ids)) all)))))
-                       (missing (filter (lambda (id) (not (exists (lambda (e) (equal? id (list-ref e 3))) entries))) ids))
-                       (intents (map entry-intent entries))
-                       (effective (if saved (list-ref saved 3)
-                                      (make-write-request actor 'commit
-                                        (append (list-ref external 3) (list (utf8->string (encode entries))))
-                                        (list-ref external 4) (list-ref external 5)))))
+                  (external (or supplied-req (make-write-request actor 'commit ids (fresh-id) after))))
+             ;; ⛔ A DRAFT THAT CANNOT BE READ IS A PREMISE, NOT AN
+             ;; IDENTITY.
+             ;;
+             ;; A corrupt envelope, or one whose bytes are not text,
+             ;; used to raise out of here and become the answer -- before
+             ;; the request had been judged at all. A retry whose own
+             ;; first attempt retired its drafts, and whose slot now
+             ;; holds a damaged replacement, was told about the
+             ;; replacement instead of being told it had already
+             ;; succeeded.
+             ;;
+             ;; The failure is CAUGHT and carried to `preflight`, which
+             ;; runs after the verdict. On a replay or a completion it is
+             ;; never reached, which is the point: neither of those needs
+             ;; a draft.
+             ;; THE SELECTION IS DECIDED BEFORE ANY DRAFT IS OPENED.
+             ;; It is what the caller named -- positionally, or by the
+             ;; versions it gave -- and never what happens to be on disk.
+             (let* ((named (and (pair? selected-version)
+                                (let ((parsed (map (lambda (spec)
+                                                     (parse-version-spec ids spec))
+                                                   selected-version)))
+                                  (and (for-all values parsed)
+                                       (no-duplicate-blocks? parsed)
+                                       parsed))))
+                    (version-shape-ok (or (null? selected-version) (and named #t)))
+                    (selection (cond ((pair? ids) ids)
+                                     (named (map car named))
+                                     (else '())))
+                    (read-failure #f)
+                    (entries
+                      (guard (e (#t (set! read-failure
+                                          (if (and (pair? e) (eq? 'working-error (car e)))
+                                              (list 'error 'working-unavailable (list 'reason (cadr e)))
+                                              (list 'error 'working-unavailable
+                                                    (list 'message
+                                                          (if (message-condition? e)
+                                                              (condition-message e)
+                                                              "A draft could not be read")))))
+                                    '()))
+                        (let ((all (active-entries store writer state)))
+                          (if (null? ids) all
+                              (filter (lambda (e) (member (list-ref e 3) ids)) all)))))
+                    (missing (filter (lambda (id) (not (exists (lambda (e) (equal? id (list-ref e 3))) entries))) selection))
+                    ;; ⭐ AN UNCHANGED DRAFT HAS NO SUB-OPERATION.
+                    ;;
+                    ;; Its bytes are what the block already says, so a
+                    ;; `set` carrying them is a record that changes
+                    ;; nothing -- and §7.5.11 says what to write instead:
+                    ;; nothing at all without `--req`, an empty plan with
+                    ;; one. It is still CONSUMED, and still named in
+                    ;; `consumes`: the draft is being retired, and a
+                    ;; retry has to be able to say which one.
+                    ;;
+                    ;; ⚠️ THE TEST IS THE SAME ONE `drafts` USES, and it
+                    ;; is `fresh` AND equal -- a stale draft is not
+                    ;; unchanged whatever its bytes equal, because the
+                    ;; text it would be compared against is not the one
+                    ;; it was written on.
+                    (changed
+                      (filter (lambda (e)
+                                (not (unchanged? state e
+                                                  (equal? (list-ref e 5)
+                                                          (block-hash state (list-ref e 3))))))
+                              entries))
+                    (intents
+                      (guard (e (#t (unless read-failure
+                                      (set! read-failure
+                                            (list 'error 'working-unavailable
+                                                  (list 'message
+                                                        (if (message-condition? e)
+                                                            (condition-message e)
+                                                            "A draft could not be read")))))
+                                    '()))
+                        (map entry-intent changed)))
+                    ;; ⭐ THE IDENTITY IS TAKEN OVER THE VERSIONS, NOT
+                    ;; OVER THE DRAFTS' BYTES.
+                    ;;
+                    ;; It used to be the encoded envelopes. A retry
+                    ;; arrives after those envelopes have been retired
+                    ;; and, often, after the same person has written a
+                    ;; new draft into the same slot -- so the bytes
+                    ;; differ, the fingerprint differs with them, and a
+                    ;; retry of a request that succeeded was answered
+                    ;; `req-mismatch`. Measured, as W4' in
+                    ;; `plan-completion.ss`.
+                    ;;
+                    ;; §7.5.9 puts who, the verb, the draft writer, the
+                    ;; ORDERED (block . version) list and `after` in the
+                    ;; fingerprint. Every one of those is something the
+                    ;; client holds and can send again, which is the
+                    ;; property the packet used to provide by storing
+                    ;; them for it.
+                    ;;
+                    ;; SORTED BY BLOCK, because the blocks a commit names
+                    ;; are a SET: two orderings of the same set are the
+                    ;; same request, and a client that lists them the
+                    ;; other way round on a retry is retrying, not
+                    ;; sending something new.
+                    ;; ⛔ AND `pairs` HAS TO BE A LIST BEFORE ANYTHING
+                    ;; MAPS OVER IT. A duplicated or malformed
+                    ;; `--working-version` leaves it #f, and building the
+                    ;; effective request maps over it -- so the caller
+                    ;; got a storage error from inside the request
+                    ;; machinery instead of the bad-request this rule
+                    ;; owes them. Measured.
+                    (given (or named
+                               (and (null? selected-version)
+                                    (map (lambda (e) (cons (list-ref e 3) (list-ref e 4)))
+                                         entries))))
+                    (pairs (and given
+                                (list-sort (lambda (a b) (string<? (car a) (car b))) given)))
+                    ;; ⛔ THE CALLER'S ARGUMENT STRINGS ARE NOT IN IT.
+                    ;;
+                    ;; §7.5.9 fixes the fingerprint's inputs: who, the
+                    ;; verb, the draft writer, the ordered (block .
+                    ;; version) list, and `after`. Appending the sorted
+                    ;; pairs to the raw arguments left the raw ones in --
+                    ;; so `commit A B` and `commit B A`, the same request
+                    ;; over the same set, fingerprinted differently, and
+                    ;; a retry that listed them the other way round was a
+                    ;; `req-mismatch`. Sorting the suffix does not
+                    ;; canonicalise a list that still carries the
+                    ;; original order in front of it.
+                    (effective (and version-shape-ok
+                                    (make-write-request actor 'commit
+                                      (cons writer
+                                            (map (lambda (p) (string-append (car p) "\x0;" (cdr p)))
+                                                 pairs))
+                                      (list-ref external 4) (list-ref external 5)))))
                   (cond
-                    ((and (not saved) (pair? missing)) (list 'error 'no-draft (cons 'blocks missing)))
-                    ((and (not saved) (pair? selected-version) (car selected-version)
-                          (not (and (= (length ids) 1) (= (length entries) 1)
-                                    (equal? (car selected-version) (list-ref (car entries) 4)))))
-                     (list 'error 'working-version-changed (cons 'blocks ids)))
-                    ((and (not supplied-req) (null? entries)) '(ok (items)))
+                    ;; ⛔ NO `no-draft` HERE. §7.5.4 fixes the order:
+                    ;; request identity first, premises second. A retry
+                    ;; whose drafts were retired by the commit it is
+                    ;; retrying must be told about its identity -- replay
+                    ;; or mismatch -- and not that there is no draft.
+                    ;; The check moved into the preflight, which runs
+                    ;; after the verdict.
+                    ;; ⭐ A REQUEST THAT WILL CONSUME SOMETHING MUST SAY
+                    ;; WHAT. Its identity is taken over the versions, and
+                    ;; a retry from a new process has no draft left to
+                    ;; read them from -- "infer once and reuse" has
+                    ;; nowhere to keep the inference.
+                    ;;
+                    ;; ⛔ NOT FOR A COMMIT THAT CONSUMES NOTHING. Zero
+                    ;; drafts is a legitimate request: it writes an empty
+                    ;; plan, which is that request's whole durable
+                    ;; evidence, and there is no version to name.
+                    ;; Measured -- requiring one unconditionally refused
+                    ;; every row in `empty-plan.ss` with `bad-request`
+                    ;; where the answer should have been about identity.
+                    ((not pairs) '(error bad-request malformed-working-version))
+                    ;; ⭐ THE VERSIONS NAME THE SELECTION, AND THE
+                    ;; SELECTION IS THE IDENTITY.
+                    ;;
+                    ;; The fingerprint is taken over the pairs, so two
+                    ;; requests with the same pairs are the same request.
+                    ;; If the blocks a caller lists POSITIONALLY could
+                    ;; differ from the blocks it named versions for, then
+                    ;; `commit A --working-version A=.. B=..` and
+                    ;; `commit B --working-version A=.. B=..` share an
+                    ;; identity while selecting different drafts -- and
+                    ;; the second, completing the first's plan, deleted a
+                    ;; draft that plan never consumed. Measured.
+                    ;; TWO WAYS THE TWO LISTS CAN DISAGREE, AND THEY
+                    ;; DESERVE DIFFERENT WORDS: a block with no version
+                    ;; is a version that is MISSING, and the refusal
+                    ;; names it; a version for a block this request did
+                    ;; not select is a version that does not belong here.
+                    ((and (pair? selected-version) (pair? ids)
+                          (pair? (versions-missing ids pairs)))
+                     (list 'error 'bad-request 'req-needs-versions
+                           (cons 'blocks (versions-missing ids pairs))))
+                    ((and (pair? selected-version) (pair? ids)
+                          (not (equal? (list-sort string<? ids)
+                                       (list-sort string<? (map car pairs)))))
+                     (list 'error 'bad-request 'working-version-mismatch
+                           (cons 'blocks (filter (lambda (b) (not (member b ids)))
+                                                 (map car pairs)))))
+                    ;; ⚠️ THE BLOCK SET OF A REQUEST THAT NAMES VERSIONS
+                    ;; IS THE SET IT NAMED. Deriving it from the drafts
+                    ;; on disk made a NEW draft, written after the first
+                    ;; attempt, turn a retry into `req-needs-versions` --
+                    ;; a refusal about the store's present state, handed
+                    ;; to a request whose identity was never judged.
+                    ((and supplied-req (null? selected-version)
+                          (or (pair? ids) (pair? entries)))
+                     (list 'error 'bad-request 'req-needs-versions
+                           (cons 'blocks (if (null? ids)
+                                             (map (lambda (e) (list-ref e 3)) entries)
+                                             ids))))
+                    ((and supplied-req (pair? ids) (pair? (versions-missing ids pairs)))
+                     (list 'error 'bad-request 'req-needs-versions
+                           (cons 'blocks (versions-missing ids pairs))))
+                    ((and (not supplied-req) (pair? missing))
+                     (list 'error 'no-draft (cons 'blocks missing)))
+                    ;; NOTHING TO DO AND NO IDENTITY TO REMEMBER IT BY.
+                    ;; With `--req` this is a request like any other and
+                    ;; writes its empty plan, which is its whole durable
+                    ;; evidence; without one there is nothing to record.
+                    ;; ⛔ NOT WHEN A DRAFT COULD NOT BE READ. "No
+                    ;; sub-operations" and "the draft is damaged" are
+                    ;; different answers, and this arm used to give the
+                    ;; first for the second -- a non-text draft
+                    ;; committed as a no-op and was retired.
+                    ;; NOTHING TO WRITE, AND STILL SOMETHING TO CHECK.
+                    ;;
+                    ;; A commit with no request id and no sub-operations
+                    ;; writes no record -- but "nothing to write" is not
+                    ;; "nothing to check": the versions the caller named
+                    ;; must still be the ones on disk, and the baselines
+                    ;; must still be current. This arm answered
+                    ;; `(ok (items))` without either, and retired the
+                    ;; drafts anyway.
+                    ;;
+                    ;; ⛔ THE CHECK IS THE SAME FUNCTION, not a copy of
+                    ;; its rules: `preflight` is asked here exactly as
+                    ;; the write path asks it.
+                    ((and (not supplied-req) (null? intents) (not read-failure)
+                          (preflight state entries missing ids pairs))
+                     => (lambda (refusal) refusal))
+                    ((and (not supplied-req) (null? intents) (not read-failure))
+                     (begin (retire! store writer entries pairs) '(ok (items))))
+                    ((and (not supplied-req) read-failure) read-failure)
                     (else
-                     (unless saved
-                       (ensure-area! store writer "working-requests")
-                       (atomic-write! path (encode (list 'working-packet 1 external effective entries)) 'working))
+                     ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
+                     ;; Each item carries the version and the two other
+                     ;; inputs the version is computed from, so a reader
+                     ;; with the record alone can both check the name and
+                     ;; rebuild the draft.
                      (let ((answers (with-store-write store (lambda (current view) intents)
-                                      actor effective (lambda (current) (preflight current entries)) #t)))
+                                      actor effective (lambda (current) (or read-failure (preflight current entries missing ids pairs))) #t
+                                      (and (pair? entries)
+                                           (list 'consumes writer
+                                                 (map (lambda (e)
+                                                        (list (list-ref e 3) (list-ref e 4)
+                                                              (list-ref e 5) (list-ref e 6)))
+                                                      entries))))))
                        (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers)
-                           (begin (retire! store writer entries) (list 'ok (cons 'items answers)))
-                           (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))))
+                           (begin
+                             ;; ⛔ A REPLAY RETIRES NOTHING. The drafts
+                             ;; this request consumed were retired by the
+                             ;; execution it is a replay of; what is in
+                             ;; the slot now is a LATER draft, written by
+                             ;; the same person after that commit, and
+                             ;; retiring it would throw away work nobody
+                             ;; committed. Measured: W4' read back
+                             ;; "v1 text" from a draft that said
+                             ;; "v2 text" until the retry arrived.
+                             (unless (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
+                                             answers)
+                               (retire! store writer entries pairs))
+                             (list 'ok (cons 'items answers)))
+                           (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))
 )

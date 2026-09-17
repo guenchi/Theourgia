@@ -436,9 +436,19 @@
                                   (argument-option options "--based-on") (argument-option options "--working-cut")
                                   (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
                   (usage '(write <block> <bytes>)))))
+      ;; `write --restore <version>` IS ITS OWN SHAPE, not `write` with a
+      ;; flag: it takes a version and no bytes, and the bytes come from
+      ;; the log. Folding it into `write` would make the two-argument
+      ;; check above answer for a call that has one.
+      (cons 'restore
+            (lambda (store actor args req options)
+              (if (= 1 (length args))
+                  (working-restore! store (argument-option options "--writer") (car args))
+                  (usage '(restore <version>)))))
       (cons 'commit
             (lambda (store actor args req options)
-              (working-commit! store (argument-option options "--writer") args actor req (argument-option options "--working-version"))))
+              (working-commit! store (argument-option options "--writer") args actor req
+                               (argument-option-list options "--working-version"))))
       (cons 'drafts
             (lambda (store actor args req options)
               (if (null? args) (working-list store (argument-option options "--writer"))

@@ -59,9 +59,29 @@
 (define id (let ((e (car (cadr (assq 'events (cdr insert)))))) (block-id (car e) (cdr e))))
 (rpc-dispatch store (list 'write id "new") "test")
 (define cursor (string-append writer ":" (number->string (cdr (assoc writer (reduce-applied-cut (open-and-reduce store)))))))
-(rpc-dispatch store (list 'commit id "--req" "one-intent" "--cursor" cursor) "test")
-(want "QE-06 one operation uses single with no plan"
-      (map (lambda (e) (actor-sub (ev-actor e))) (store-evidence store (cons writer "one-intent"))) '(single))
+;; THE VERSION IS NAMED, because the request carries `--req` (§7.5.9:
+;; a retry rebuilds its identity from the versions, not from a draft
+;; that its own first attempt retired).
+(define one-version
+  (let ((r (rpc-dispatch store (list 'read id "--working-info") "test")))
+    (list-ref (assq 'projection (cdr r)) 4)))
+(rpc-dispatch store (list 'commit id "--req" "one-intent" "--cursor" cursor
+                          "--working-version" one-version) "test")
+;; ⚠️ THIS ROW SAID `single`, AND THE DESIGN TOOK THAT BACK.
+;;
+;; A commit of one block used to be written as a single record with no
+;; plan; §7.5.9 makes a commit write a plan ALWAYS, one block or ten.
+;; The reason is retry: a plan freezes the declared text and names the
+;; draft versions the request consumed, and a request that has neither
+;; cannot be completed from the log after a crash -- which is what the
+;; packet beside the drafts used to be for, and the packet is gone.
+;;
+;; The old expectation belongs to the Q3-fourth-section era; the reading
+;; below is what the rule that replaced it produces: a plan event, then
+;; its one member.
+(want "QE-06 one operation is a plan with one member (7.5.9: a commit always writes a plan)"
+      (map (lambda (e) (actor-sub (ev-actor e))) (store-evidence store (cons writer "one-intent")))
+      '(plan 0))
 
 ;; Hand-built evidence isolates delivery and selection from disk setup.
 (define who "test")

@@ -28,28 +28,115 @@
           ((set move del link unlink) (and (pair? (cdr p)) (equal? id (cadr p))))
           (else #f)))))
 
-  ;; The history cut is captured with the original draft. Both the number
-  ;; of records and their encoded size are bounded, including actor text.
+  ;; ---- what a refusal hands back -------------------------------------------
+  ;;
+  ;; A commit refused for a stale baseline gives the loser the winner's
+  ;; commit, so they can merge without going and fetching it. The
+  ;; promise is that the refusal's SIZE does not grow with the history:
+  ;; at most eight entries, each of bounded size.
+  ;;
+  ;; THE WINNER IS FIRST AND IS ALWAYS THERE. It is the one record the
+  ;; loser certainly needs -- their baseline is stale precisely because
+  ;; of it -- and an answer that dropped it to make room would be
+  ;; bounded and useless.
+  ;;
+  ;; THE REST ARE IN CAUSAL ORDER, not in the order they were ingested.
+  ;; A reader merging by hand needs premises before the records that
+  ;; depend on them, and ingestion order is an accident of who synced
+  ;; first: the same two records delivered the other way round would
+  ;; otherwise produce a different answer to the same question.
+  ;;
+  ;; AN ENTRY IS NEVER DROPPED FOR BEING BIG. Its identity and its actor
+  ;; are what make it findable; only the content is replaced, by
+  ;; `(content elided <bytes>)`, so the reader knows there is something
+  ;; there and how much of it. ⛔ An oversized entry TAKES ITS SLOT --
+  ;; skipping it to reach an older, smaller one would answer a different
+  ;; question than "the most recent eight".
   ;;
   ;; `truncated` MEANS AN ENTRY WAS LEFT OUT, not that the log holds more
   ;; records. The two are not the same question: a block always has the
   ;; record that created it, so "is any history left" is true for every
   ;; refusal that reaches the count bound, and an answer carrying all
   ;; eight of the eight commits that existed still told its reader to go
-  ;; and fetch the rest. Measured before the change, on one store per
+  ;; and fetch the rest. Measured before that change, on one store per
   ;; row: one earlier commit gave one entry and no mark, seven gave seven
   ;; and no mark, eight gave eight WITH the mark, nine gave eight with
   ;; the mark. The loser was being sent back to `log` for a history it
   ;; already held in full.
   ;;
-  ;; So reaching the count bound is not the end of the walk: the rest of
-  ;; the history is scanned for one more record that WOULD have been an
-  ;; entry -- about this block, and after the draft's cut -- and only
-  ;; finding one makes the answer truncated. Records about other blocks,
-  ;; and records the draft already saw, are not omissions.
+  ;; AND A REFUSAL WITH NO ENTRIES AT ALL SAYS WHY. The hash can differ
+  ;; with no record about this block after the draft's cut: a conflict
+  ;; was retracted, the applied cut moved back. ⛔ An empty `since` alone
+  ;; leaves the client guessing, so that case carries its own reason and
+  ;; a place to look.
+  (define content-limit 1024)
+  (define entry-limit 8)
+
   (define (eligible? r id cut)
     (let ((seen (assoc (car r) cut)))
       (and (touches? r id) (or (not seen) (> (cadr r) (cdr seen))))))
+
+  (define (event-of r) (cons (car r) (cadr r)))
+
+  ;; ONE RECORD IS BEFORE ANOTHER when the later one's causal cut has
+  ;; reached it. Records neither of which reached the other are
+  ;; CONCURRENT, and a total order has to come from somewhere: the pair
+  ;; (writer, seq) is used, which is a fact about the records rather than
+  ;; about the order they arrived in.
+  ;; ⛔ A COMPARATOR MADE OF "CAUSAL, ELSE LEXICAL" IS NOT AN ORDER.
+  ;;
+  ;; Causality is partial. Falling back to the writer's name for the
+  ;; pairs it does not relate produces a relation that CYCLES: with
+  ;; `zzzzzzzz` causally before `aaaaaaaa`, and `mmmmmmmm` concurrent
+  ;; with both, the ascending relation gives z < a causally, a < m
+  ;; lexically and m < z lexically. A sort over a cycling relation
+  ;; answers whatever the algorithm's traversal happens to produce, and
+  ;; two delivery orders of the same records then give different
+  ;; answers -- which is the exact thing ordering causally was for.
+  ;; Measured on three records plus a dependent winner: the two
+  ;; deliveries put z and a the other way round.
+  ;;
+  ;; ⭐ SO THE ORDER IS A KEY, NOT A COMPARISON. Each record is ranked by
+  ;; how much of the history its own causal cut covers; a record that
+  ;; causally precedes another covers strictly less, so this key REFINES
+  ;; causality, and being a key it is transitive by construction. The
+  ;; writer and sequence break the remaining ties, which are exactly the
+  ;; concurrent records -- for which any deterministic choice is as good
+  ;; as another, so long as it is the same one every time.
+  (define (causal-weight state r)
+    (let ((cut (state-event-cut state (event-of r))))
+      (if cut (apply + (map cdr cut)) 0)))
+
+  (define (rank state r) (list (causal-weight state r) (car r) (cadr r)))
+
+  (define (later? state a b)
+    (let ((ra (rank state a)) (rb (rank state b)))
+      (cond ((not (= (car ra) (car rb))) (> (car ra) (car rb)))
+            ((not (string=? (cadr ra) (cadr rb))) (string>? (cadr ra) (cadr rb)))
+            (else (> (caddr ra) (caddr rb))))))
+
+  ;; ⚠️ THE LIMIT IS ON THE BODY'S BYTES, NOT ON THE ENCODED CONTENT.
+  ;;
+  ;; They are not close to each other: a body of 1024 quotation marks
+  ;; encodes to 2066 bytes, because every quote is escaped. Measuring the
+  ;; encoded form elides a body the contract says to hand back whole, and
+  ;; reports a number the reader cannot check against anything they hold.
+  ;;
+  ;; A record with no body -- a delete, a move -- has no text to measure
+  ;; and no text to be long; its encoded form is used, which is bounded
+  ;; by the shape of the verb.
+  (define (content-body content)
+    (and (pair? content) (eq? 'set (car content))
+         (= 4 (length content)) (eq? 'src (caddr content))
+         (string? (cadddr content))
+         (cadddr content)))
+
+  (define (entry-of r)
+    (let* ((content (list-ref r 3))
+           (body (content-body content))
+           (n (if body (bytevector-length (string->utf8 body)) (encoded-size content))))
+      (list (event-of r) (list-ref r 4)
+            (if (> n content-limit) (list 'content 'elided n) content))))
 
   (define (baseline-refusal state id wanted . rest)
     (let* ((now (block-hash state id))
@@ -57,25 +144,29 @@
            (rows (state->rows state))
            (history (cadr (assq 'request-history rows))))
       (and (not (equal? wanted now))
-        (let loop ((xs (reverse history)) (out '()) (count 0) (size 0) (truncated? #f))
-          (cond
-            ((or (null? xs) (= count 8))
-             (let ((omitted?
-                     (or truncated?
-                         (exists (lambda (r) (eligible? r id cut)) xs))))
-               (append (list 'error 'stale-baseline (list 'block id)
-                             (list 'based-on wanted) (list 'now now)
-                             (cons 'since (reverse out)))
-                       (if omitted?
-                           (list '(truncated #t) (list 'retrieve (list 'log id) (list 'read id)))
-                           '()))))
-            (else
-             (let* ((r (car xs))
-                    (item (list (cons (car r) (cadr r)) (list-ref r 4) (list-ref r 3))))
-               (if (eligible? r id cut)
-                   (let ((n (encoded-size item)))
-                     (if (> (+ size n) 8192)
-                         (loop (cdr xs) out count size #t)
-                         (loop (cdr xs) (cons item out) (+ count 1) (+ size n) truncated?)))
-                   (loop (cdr xs) out count size truncated?)))))))))
+        (let* ((all (filter (lambda (r) (eligible? r id cut)) history))
+               ;; NEWEST FIRST, so "the most recent eight" is a prefix.
+               (ranked (list-sort (lambda (a b) (later? state a b)) all))
+               (kept (if (> (length ranked) entry-limit)
+                         (let loop ((xs ranked) (n 0) (out '()))
+                           (if (or (null? xs) (= n entry-limit)) (reverse out)
+                               (loop (cdr xs) (+ n 1) (cons (car xs) out))))
+                         ranked))
+               (omitted? (> (length ranked) (length kept)))
+               ;; THE WINNER FIRST, THEN THE REST OLDEST-FIRST. The
+               ;; winner is the newest of the kept; the others are given
+               ;; in the order a reader would apply them.
+               (ordered (if (null? kept) '()
+                            (cons (car kept)
+                                  (list-sort (lambda (a b) (later? state b a)) (cdr kept))))))
+          (append (list 'error 'stale-baseline (list 'block id)
+                        (list 'based-on wanted) (list 'now now)
+                        (cons 'since (map entry-of ordered)))
+                  (if (null? ordered)
+                      (list '(reason candidate-set-changed)
+                            (list 'conflicts id))
+                      '())
+                  (if omitted?
+                      (list '(truncated #t) (list 'retrieve (list 'log id) (list 'read id)))
+                      '()))))))
 )

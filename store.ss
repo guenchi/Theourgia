@@ -1429,6 +1429,11 @@
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
           (preflight (and (> (length rest) 2) (list-ref rest 2)))
           (plan? (and (> (length rest) 3) (list-ref rest 3)))
+          ;; WHAT THIS REQUEST CONSUMED, IF IT CONSUMED ANYTHING. It is
+          ;; the caller's to say -- the store does not go looking for
+          ;; drafts -- and it travels no further than the plan record it
+          ;; is written into.
+          (consumes (and (> (length rest) 4) (list-ref rest 4)))
           (state (reduce-empty)))
       (let ((s (log-begin store (deliver-into state #f))))
         ;; THE SESSION IS GIVEN BACK BY THE UNWIND, NOT BY A LINE ON EACH
@@ -1490,12 +1495,22 @@
               ;; reads the state and answers a list -- it writes nothing,
               ;; so asking it early costs nothing and changes nothing.
               (let* ((intents (proc state (session-view s)))
+                     ;; ⭐ A COMMIT IS A PLAN EVEN WHEN IT CARRIES ONE
+                     ;; SUB-OPERATION, and both of the two places that
+                     ;; decide that have to say so. This one gives the
+                     ;; verdict the request's SIZE: passing #f for a
+                     ;; one-intent commit made a retry ask the question a
+                     ;; single-record request asks, and the answer to
+                     ;; that question about a plan is `unknown`.
                      (verdict (and req (request-verdict store req
                                                         (reduce-applied-cut state)
-                                                        (and (not (= (length intents) 1)) (length intents))
+                                                        (if plan?
+                                                            (length intents)
+                                                            (and (not (= (length intents) 1)) (length intents)))
                                                         (reduce-gates state)
                                                         (and (or plan? (null? intents)) 'plan)))))
-                (if (and verdict (not (eq? (car verdict) 'execute)))
+                (if (and verdict (not (eq? (car verdict) 'execute))
+                         (not (and (eq? (car verdict) 'complete) (>= (length verdict) 4))))
                     ;; THE ANSWER IS MADE BEFORE THE SESSION ENDS. The
                     ;; unwind releases the store's exclusive lock, and the
                     ;; answer to a replay performs a barrier -- so
@@ -1516,20 +1531,33 @@
                             (request-answer s store verdict)))
                     (commit-then s
                       (lambda ()
-                        (let ((bad (or (and preflight (preflight state))
-                                       (begin (announce-count! s intents)
-                                              (and req (cursor-unreachable store s req))))))
+                        (let ((bad (and (not (and verdict (eq? (car verdict) 'complete)))
+                                        (or (and preflight (preflight state))
+                                            (begin (announce-count! s intents)
+                                                   (and req (cursor-unreachable store s req)))))))
                           (cond
                             (bad (list bad))
+                            ;; ⭐ A PLAN THAT IS ALREADY PERSISTED IS
+                            ;; FINISHED FROM THE PLAN. The premises are
+                            ;; NOT checked again: the blocks this request
+                            ;; already wrote have moved, and re-checking
+                            ;; would read the request's own progress as
+                            ;; somebody else's edit. The frozen
+                            ;; declaration is the only input.
+                            ((and verdict (eq? (car verdict) 'complete) (>= (length verdict) 4))
+                             (complete-plan! s state req verdict))
                             ;; A REQUEST OF ONE SUB-OPERATION HAS NO PLAN,
                             ;; and says so: `single`, no plan event.
                             ;; Zero operations still have an identity: the
                             ;; empty plan is their complete durable evidence.
                             ;; One operation needs only its single record.
-                            ((and req (or (null? intents)
-                                          (and plan? (not (= (length intents) 1)))))
+                            ;; AND THIS ONE CHOOSES THE PATH. `plan?` is
+                            ;; the caller saying "this is a commit"; the
+                            ;; number of blocks it names is not what
+                            ;; makes it one.
+                            ((and req (or (null? intents) plan?))
                              (session-pending-count-set! s (+ 1 (length intents)))
-                             (write-plan-then! s state req intents))
+                             (write-plan-then! s state req intents consumes))
                             ((null? intents) '())
                             ((or (not req) (= 1 (length intents)))
                              (run-intents! s state
@@ -1775,16 +1803,70 @@
   ;; sub-operations anyway would leave records whose actors point at a
   ;; plan that is not there -- and a retry reading them would find a set
   ;; of records claiming indices in a plan nobody can produce.
-  (define (write-plan-then! s state req intents)
+  ;; FINISHING A PLAN SOMEBODY ELSE STARTED -- or that this process
+  ;; started before it died. The members that are already there stay;
+  ;; the ones that are not are written at their own declared indices,
+  ;; under the same plan event, from the text the plan froze.
+  ;; ⛔ THE FROZEN TEXT IS CHECKED AGAINST THE NAME THE RECORD GAVE IT.
+  ;;
+  ;; A plan says both "this is the text" and "this was version V of the
+  ;; draft", and V is `sha256(text || based-on || cut)`. If they disagree
+  ;; the record is not describing one draft, and completing it would
+  ;; carry out something nobody sent. §7.5.14 asks for the check at the
+  ;; two moments the text is used: here, and in `restore`.
+  (define (consumes-mismatch entries consumes)
+    (and consumes
+         (let ((items (caddr consumes)))
+           (let loop ((es entries))
+             (cond
+               ((null? es) #f)
+               (else
+                (let* ((body (cdar es))
+                       (block (and (pair? body) (pair? (cdr body)) (eq? 'set (car body))
+                                   (cadr body)))
+                       (text (and block (= 4 (length body)) (eq? 'src (caddr body))
+                                  (cadddr body)))
+                       (item (and block (assoc block items))))
+                  (if (and text item (string? text)
+                           (not (equal? (cadr item)
+                                        (draft-version (string->utf8 text)
+                                                       (caddr item) (cadddr item)))))
+                      block
+                      (loop (cdr es))))))))))
+
+  (define (complete-plan! s state req verdict)
+    (let* ((present (cadr verdict))
+           (plan-event (caddr verdict))
+           (entries (list-ref verdict 3))
+           (consumes (and (>= (length verdict) 5) (list-ref verdict 4)))
+           (missing (filter (lambda (e) (not (memv (car e) present))) entries))
+           (indices (map car missing))
+           (bad (consumes-mismatch missing consumes)))
+      (if bad
+          (list (list 'error 'consumes-version-mismatch (list 'block bad)))
+          (begin
+            (session-pending-count-set! s (length missing))
+            (run-intents! s state
+                          (lambda (n) (request-actor req (list-ref indices n) plan-event))
+                          (map cdr missing))))))
+
+  (define (write-plan-then! s state req intents . rest)
     (let* ((entries (plan-entries intents))
-           (payload (list 'plan
-                          (write-request-req-id req)
-                          (request-fingerprint (write-request-who req)
-                                               (write-request-verb req)
-                                               (write-request-args req)
-                                               (write-request-after req))
-                          (write-request-after req)
-                          entries))
+           (consumes (and (pair? rest) (car rest)))
+           ;; THE SIXTH ELEMENT IS WRITTEN ONLY WHEN THERE IS ONE. A plan
+           ;; without it consumed nothing, which is exactly what every
+           ;; plan written before this field existed means -- so absence
+           ;; keeps its meaning and no record has to be rewritten.
+           (payload (append
+                      (list 'plan
+                            (write-request-req-id req)
+                            (request-fingerprint (write-request-who req)
+                                                 (write-request-verb req)
+                                                 (write-request-args req)
+                                                 (write-request-after req))
+                            (write-request-after req)
+                            entries)
+                      (if consumes (list consumes) '())))
            (answer (append-payload! s state (request-actor req 'plan #f) payload)))
       (if (eq? (car answer) 'error)
           (list answer)
@@ -1832,7 +1914,15 @@
                 ;; be refused for a reason that has nothing to do with
                 ;; them.
                 (begin
-                  (reduce-apply! state writer seq deps payload)
+                  ;; ⭐ THE ACTOR GOES IN. The replay path supplies it and
+                  ;; this one did not, so a reduction built by writing
+                  ;; disagreed with the same reduction built by reading:
+                  ;; the consumption index is fed from a record's actor --
+                  ;; that is how a member knows which plan it belongs to
+                  ;; -- and without it a live write completed no plan at
+                  ;; all. It only looked right because a fixture that
+                  ;; reopens the store is reading a replay.
+                  (reduce-apply! state writer seq deps payload actor)
                   (session-applied! s (session-epoch s) (reduce-applied-cut state))
                   (list 'ok (list 'event (cons writer seq)))))))))
 
@@ -2329,7 +2419,9 @@
                           (if (not (eq? (car outcome) 'committed))
                               (write-outcome->answer outcome seq)
                               (begin
-                                (reduce-apply! state writer seq deps payload)
+                                ;; THE ACTOR GOES IN HERE TOO -- see the
+                                ;; note in `append-payload!`.
+                                (reduce-apply! state writer seq deps payload actor)
                                 (session-applied! s (session-epoch s)
                                                   (reduce-applied-cut state))
                                 (list 'ok

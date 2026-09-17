@@ -37,6 +37,7 @@
 (library (theourgia request)
   (export request-fingerprint request-identity identity=?
           req-id-ok? actor-identity actor-fingerprint actor-sub
+          plan? plan-consumes consumes?
           actor-plan-event actor-after request-actor?
           make-evidence ev-event ev-actor ev-deps ev-payload ev-placement
           ev-delivered? ev-marks ev-marked?
@@ -180,8 +181,35 @@
   ;; whether the evidence can be read at all would report `req-mismatch`
   ;; for a store that cannot say what it holds -- a client would then
   ;; "fix" its request id and execute the thing a second time.
-  (define (request-decision identity fingerprint who after evidence intervals plan-size successors)
-    (let* ((resolved (resolution-state evidence plan-size (quote all)))
+  ;; ⭐ THE SIZE COMES FROM THE PLAN WHEN THERE IS ONE.
+  ;;
+  ;; A caller that is about to execute knows how many sub-operations it
+  ;; is about to declare. A caller that is RETRYING does not: the thing
+  ;; it would count -- the drafts it read the first time -- may have been
+  ;; retired by its own first attempt, and counting what is on disk now
+  ;; made a persisted plan of one look like a request of none and be
+  ;; answered `replay`.
+  ;;
+  ;; The plan already in the evidence carries the count, as the number of
+  ;; sub-operations it declared. That is a fact in the log and it does
+  ;; not move. When there is no plan the verdict is `execute` and the
+  ;; caller's number is the only one there is.
+  ;;
+  ;; ⛔ AND THIS IS WHY IDENTITY NEEDS NO DRAFT. With the count taken
+  ;; from the log, deciding who this request is uses `who`, the verb,
+  ;; `after` and the versions it names -- all of which the client holds.
+  ;; Reading a draft can then wait until the premises are checked, which
+  ;; is where a draft that cannot be read belongs.
+  (define (declared-size evidence fallback)
+    (let ((plan (find (lambda (e) (and (eq? (quote plan) (actor-sub (ev-actor e)))
+                                       (list? (ev-payload e))
+                                       (>= (length (ev-payload e)) 5)))
+                      evidence)))
+      (if plan (length (list-ref (ev-payload plan) 4)) fallback)))
+
+  (define (request-decision identity fingerprint who after evidence intervals given-size successors)
+    (let* ((plan-size (declared-size evidence given-size))
+           (resolved (resolution-state evidence plan-size (quote all)))
            ;; A RESOLUTION IS A RECORD ABOUT THIS IDENTITY, NOT A RECORD
            ;; OF IT. Its actor is the operator who wrote it, with their
            ;; own cursor and their own request -- so leaving it among the
@@ -239,7 +267,31 @@
                    (if (eq? (car why) (quote settled))
                        (cdr why)
                        (list (quote unknown) why))))
-             (else (list (quote complete) present)))))
+             ;; ⭐ THE ANSWER CARRIES THE PLAN, NOT ONLY THE HOLE.
+             ;; A caller that is going to finish this request needs the
+             ;; frozen declaration -- the plan's own payload lists the
+             ;; intents, with their text -- and the plan event the
+             ;; remaining members hang from. Without them the caller can
+             ;; only say `incomplete-request`, which is what it used to
+             ;; say, and the work is finished by nobody.
+             ;;
+             ;; ⛔ IT DOES NOT READ THE DRAFTS. The text is in the plan;
+             ;; the drafts may since have been replaced, retired, or
+             ;; deleted, and completing from them would carry out a
+             ;; request the client never sent.
+             (else
+              (let ((plan (find (lambda (e) (eq? (quote plan) (actor-sub (ev-actor e))))
+                                records)))
+                (if plan
+                    ;; THE CONSUMES LIST TRAVELS TOO. The completion has
+                    ;; to check the frozen text against the version the
+                    ;; record named -- §7.5.14 -- and that check cannot
+                    ;; be made from the declaration alone.
+                    (list (quote complete) present (ev-event plan)
+                          (list-ref (ev-payload plan) 4)
+                          (and (= 6 (length (ev-payload plan)))
+                               (list-ref (ev-payload plan) 5)))
+                    (list (quote complete) present)))))))
         ;; 5. SEEN AND WHOLE -- and "whole" has to be checked, not
         ;; inferred from the absence of a plan. A request with no plan is
         ;; one sub-operation, so a replay needs exactly that: an applied
@@ -1246,16 +1298,60 @@
                   ((intent-produced? bound (ev-payload e)) 'valid)
                   (else 'invalid))))))))))
 
+  ;; WHAT A COMMIT CONSUMED, WHEN IT SAYS SO.
+  ;;
+  ;; A plan may carry a sixth element naming the draft versions the
+  ;; request took as its input: `(consumes <draft-writer> ((<block>
+  ;; <version> <based-on> <cut>) ...))`. A record without it consumed
+  ;; nothing -- that is what every plan written before this existed
+  ;; means, and it is why the field is optional rather than defaulted.
+  ;;
+  ;; FOUR FIELDS, NOT TWO. `version` is `sha256(bytes || based-on ||
+  ;; cut)`, so a reader that has only the version cannot check it and
+  ;; cannot rebuild the draft; carrying the other two inputs beside it
+  ;; makes both possible from the record alone. The shapes this refuses
+  ;; are the ones a reader would otherwise have to guess at: a
+  ;; three-field item, a five-field item, and the earlier `(block .
+  ;; version)` pair, which is a PAIR and not a list of four.
+  ;;
+  ;; ⛔ IT DOES NOT CHECK CORRESPONDENCE WITH THE SUB-OPERATIONS. A plan
+  ;; is a shape here; whether each declared sub-operation has a
+  ;; consumes item, and whether the blocks agree, is an admission
+  ;; question asked where the sub-operations are known.
+  (define (consumes-item? x)
+    (and (list? x) (= 4 (length x))
+         (req-id-string? (list-ref x 0))
+         (string? (list-ref x 1)) (> (string-length (list-ref x 1)) 0)
+         (string? (list-ref x 2))
+         (list? (list-ref x 3))))
+
+  (define (consumes? x)
+    (and (list? x) (= 3 (length x)) (eq? (car x) 'consumes)
+         (req-id-string? (cadr x))
+         (list? (caddr x))
+         (for-all consumes-item? (caddr x))
+         ;; ONE ITEM PER BLOCK. Two items naming the same block leave
+         ;; "which version did this consume" without an answer, and the
+         ;; index this feeds is keyed on the pair.
+         (let loop ((items (caddr x)) (seen '()))
+           (or (null? items)
+               (and (not (member (car (car items)) seen))
+                    (loop (cdr items) (cons (car (car items)) seen)))))))
+
   ;; The immutable declaration has a complete, contiguous index set.
   (define (plan? p)
-    (and (list? p) (= 5 (length p)) (eq? (car p) 'plan)
+    (and (list? p) (<= 5 (length p) 6) (eq? (car p) 'plan)
          (req-id-ok? (cadr p)) (string? (caddr p)) (event-id? (cadddr p))
          (list? (list-ref p 4))
+         (or (= 5 (length p)) (consumes? (list-ref p 5)))
          (let loop ((es (list-ref p 4)) (i 0))
            (or (null? es)
                (and (pair? (car es)) (eqv? (caar es) i)
                     (list? (cdar es)) (pair? (cdar es)) (symbol? (cadar es))
                     (loop (cdr es) (+ i 1)))))))
+
+  (define (plan-consumes p)
+    (and (plan? p) (= 6 (length p)) (list-ref p 5)))
 
   ;; One admission table for reduction and request evidence. Inputs have
   ;; causal availability (before plan filtering); deps may include their

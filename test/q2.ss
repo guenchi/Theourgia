@@ -203,6 +203,17 @@
                  (list 'plan "req-1" FP AFTER entries) 'valid-history #t '()))
 (define (decide evidence n) (request-decision ID FP WHO AFTER evidence '() n '()))
 (define two (list (cons 0 '(set "b" "t" "x")) (cons 1 '(set "c" "t" "y"))))
+
+;; ⚠️ A `complete` VERDICT CARRIES THE PLAN NOW. It used to be
+;; `(complete <present-indices>)`, and the only thing a caller could do
+;; with that was answer `incomplete-request`. §7.5.11 makes the caller
+;; FINISH the request from the plan's own frozen declaration, so the
+;; verdict hands out the plan event the remaining members hang from and
+;; the declared intents themselves. The rows below still assert the
+;; indices that are present, which is what they were written for.
+;; The fifth element is the plan's `consumes` list, or #f when the plan
+;; carries none -- these hand-built plans are five-element ones.
+(define (completed present entries) (list 'complete present PLAN entries #f))
 (define three (append two (list (cons 2 '(set "d" "t" "z")))))
 
 (printf "== U1: no evidence at all is the only time a range is asked ==\n")
@@ -472,7 +483,7 @@
 ;; order its author never had.
 (want "a prefix is completed from where it stopped"
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))) 2)
-      '(complete (0)))
+      (completed '(0) two))
 (want "a hole is refused, and the present set is named"
       (decide (list (plan-ev three) (ev 14 0 '(set "b" "t" "x")) (ev 16 2 '(set "d" "t" "z"))) 3)
       '(unknown (plan-order (0 2))))
@@ -504,7 +515,7 @@
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))
                     (ev 15 1 '(set "c" "t" "y") 'valid-history #t '(superseded)))
               2)
-      '(complete (0)))
+      (completed '(0) two))
 (want "TWIN: the same record without the mark completes the plan"
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x"))
                     (ev 15 1 '(set "c" "t" "y")))
