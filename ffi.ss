@@ -254,6 +254,8 @@
           with-exclusive-lock with-shared-lock
           ftruncate! fsync! fsync-dir! write-all!
           fd-seek! fd-size file-size file-ensure! fd-path link!
+          setsid! session-id signal-pid! process-alive-signal0?
+          setrlimit! getrlimit RLIMIT_CPU process-rss-bytes
           barrier!
           lock-acquire! lock-release! lock-fd lock-held?
           path-device-inode path-version
@@ -498,6 +500,19 @@
   (define c-link  (foreign-procedure "link"  (string string) int))
   (define c-stat  (foreign-procedure "stat"  (string u8*) int))
 
+  ;; ---- the process calls the daemon and the eval guardian need ------------
+  ;;
+  ;; `setsid` is called by a CHILD, first thing, so that the guardian can
+  ;; later signal the whole group: `kill(-pgid, ...)` reaches the child
+  ;; and anything it started, and igropyr's own `proc-kill!` reaches only
+  ;; the direct child. A grandchild holding the output pipe open is the
+  ;; case that makes the difference visible.
+  (define c-setsid (foreign-procedure "setsid" () int))
+  (define c-getsid (foreign-procedure "getsid" (int) int))
+  (define c-kill (foreign-procedure "kill" (int int) int))
+  (define c-setrlimit (foreign-procedure "setrlimit" (int u8*) int))
+  (define c-getrlimit (foreign-procedure "getrlimit" (int u8*) int))
+
   ;; errno is a per-thread location reached through a function, and the
   ;; function has a different name on the BSDs than on glibc. Whichever
   ;; one this libc exports is the one used; neither present is a
@@ -513,6 +528,206 @@
                             "no errno location symbol in libc" libc))))
 
   (define (errno) (foreign-ref 'int (c-errno-location) 0))
+
+  ;; ---- processes ----------------------------------------------------------
+
+  (define ESRCH 3)
+  (define EPERM 1)
+
+  ;; A NEW SESSION, SO THE GUARDIAN CAN SIGNAL THE WHOLE GROUP LATER.
+  ;; Answers the new session id, or raises with the errno: a child that
+  ;; believed it had its own group when it had not would be killed one
+  ;; process at a time, and the one holding the pipe open is usually not
+  ;; the one the guardian knows about.
+  (define (setsid!)
+    (let ((r (c-setsid)))
+      (if (= r -1)
+          (assertion-violation 'setsid! "setsid failed" (errno))
+          r)))
+
+  ;; ⭐ SO THAT THE EFFECT CAN BE READ SOMEWHERE OTHER THAN THE RETURN
+  ;; VALUE. `setsid!` answers the new session id, which is also the
+  ;; caller's own pid -- so a row that compares the two is satisfied by
+  ;; an implementation that returns the pid and starts no session at all.
+  ;; `session-id` asks the kernel, and it can be asked about a process
+  ;; that did NOT call setsid, which is what makes a before-and-after
+  ;; comparison possible. Zero means the caller.
+  (define (session-id pid)
+    (let ((r (c-getsid pid)))
+      (if (= r -1) #f r)))
+
+  ;; `kill` AS IT COMES: 0, or the errno. The callers want to tell the
+  ;; failures apart -- ESRCH is "no such process" and EPERM is "there is
+  ;; one and it is not yours", which is still ALIVE -- so this does not
+  ;; collapse them into a boolean.
+  (define (signal-pid! pid signum)
+    (let ((r (c-kill pid signum)))
+      (if (= r 0) 0 (errno))))
+
+  ;; ⚠️ EPERM MEANS ALIVE. `kill(pid, 0)` asks the kernel whether a
+  ;; process exists that this one may signal; a process owned by somebody
+  ;; else answers EPERM, and reading that as "gone" is how a sampler
+  ;; decides a running child has died. ESRCH, and only ESRCH, is absence.
+  (define (process-alive-signal0? pid)
+    (let ((r (signal-pid! pid 0)))
+      (cond ((= r 0) #t)
+            ((= r EPERM) #t)
+            (else #f))))
+
+  ;; ---- resource limits ----------------------------------------------------
+  ;;
+  ;; `struct rlimit` is two 64-bit values, current then maximum, on every
+  ;; platform this tree builds on. It is passed as bytes rather than
+  ;; described to Chez because a record layout is what the kernel reads,
+  ;; and this way the two fields cannot be swapped by a declaration that
+  ;; looks right.
+  (define RLIMIT_CPU 0)
+
+  (define (rlimit-bytes cur max)
+    (let ((bv (make-bytevector 16 0)))
+      (bytevector-u64-native-set! bv 0 cur)
+      (bytevector-u64-native-set! bv 8 max)
+      bv))
+
+  (define (setrlimit! resource cur max)
+    (let ((r (c-setrlimit resource (rlimit-bytes cur max))))
+      (if (= r 0) 0 (errno))))
+
+  (define (getrlimit resource)
+    (let ((bv (make-bytevector 16 0)))
+      (if (= 0 (c-getrlimit resource bv))
+          (cons (bytevector-u64-native-ref bv 0) (bytevector-u64-native-ref bv 8))
+          (cons #f (errno)))))
+
+  ;; ---- resident size, per platform ----------------------------------------
+  ;;
+  ;; ⚠️ BYTES, ON EVERY PLATFORM. macOS reports bytes, FreeBSD and Linux
+  ;; report PAGES, and a reading that forgot to multiply is still a
+  ;; positive number that grows with the child's allocations -- it would
+  ;; pass any cell that only asks for "positive and rising", and would
+  ;; then let a child four thousand times over its limit run free.
+  ;;
+  ;; ⚠️ #f WHEN IT CANNOT BE READ, never 0. "I could not look" and "it is
+  ;; using nothing" are opposite facts, and a sampler that treats the
+  ;; first as the second reports a healthy child for a process that has
+  ;; gone.
+  (define PROC_PIDTASKINFO 4)
+
+  (define c-proc-pidinfo
+    (and (foreign-entry? "proc_pidinfo")
+         (foreign-procedure "proc_pidinfo" (int int integer-64 u8* int) int)))
+
+  (define (rss-darwin pid)
+    (and c-proc-pidinfo
+         (let ((bv (make-bytevector 256 0)))
+           (let ((n (c-proc-pidinfo pid PROC_PIDTASKINFO 0 bv 256)))
+             (and (> n 0)
+                  ;; pti_resident_size is the second 64-bit field of
+                  ;; proc_taskinfo, after pti_virtual_size.
+                  (bytevector-u64-native-ref bv 8))))))
+
+  (define (rss-linux pid)
+    (let ((path (string-append "/proc/" (number->string pid) "/statm")))
+      (and (file-exists? path)
+           (guard (e (#t #f))
+             (let* ((text (call-with-input-file path get-line))
+                    (parts (let loop ((cs (string->list text)) (cur '()) (out '()))
+                             (cond ((null? cs)
+                                    (reverse (if (null? cur) out (cons (list->string (reverse cur)) out))))
+                                   ((char=? (car cs) #\space)
+                                    (loop (cdr cs) '() (if (null? cur) out (cons (list->string (reverse cur)) out))))
+                                   (else (loop (cdr cs) (cons (car cs) cur) out))))))
+               (and (pair? (cdr parts))
+                    ;; ⚠️ THE PAGE SIZE IS ASKED FOR, not written down.
+                    ;; statm counts pages, and 4096 is only the common
+                    ;; case: on a machine with 16 KiB pages a hardcoded
+                    ;; 4096 under-reports every reading by four, quietly
+                    ;; and everywhere.
+                    (let ((pages (string->number (cadr parts))))
+                      (and pages (* pages (c-getpagesize))))))))))
+
+  ;; FreeBSD keeps it in `kinfo_proc`, reached through sysctl, and the
+  ;; offset of `ki_rssize` is not derivable from a header at runtime.
+  ;;
+  ;; ⭐ SO IT WAS MEASURED, ON THE MACHINE IT HAS TO WORK ON. A probe
+  ;; started two children -- one touching a large allocation, one not --
+  ;; read `ps -o rss=` for both at the same moment, and scanned the whole
+  ;; struct for a slot that reproduced BOTH readings. FreeBSD 15.0-RELEASE,
+  ;; page 4096, one candidate and no other:
+  ;;
+  ;;     offset 264, read as PAGES: big 57465 -> 224 MiB (ps: 224 MiB)
+  ;;                                small  5767 ->  23 MiB (ps:  23 MiB)
+  ;;
+  ;; ⚠️ READ AS 64 BITS, AND THE FIRST ANSWER HERE WAS WRONG. This said
+  ;; 32 bits, reasoning that the 64-bit read matched only because the
+  ;; next field happened to be zero. The header settles it the other way:
+  ;; `/usr/include/x86/_types.h` defines `__segsz_t` as `__int64_t` under
+  ;; `__LP64__`, so on amd64 `ki_rssize` IS 64 bits and the upper half
+  ;; belongs to the value. The probe could not tell the two readings
+  ;; apart because every number it saw was small -- agreement between two
+  ;; readings is not evidence when both would agree on small values.
+  ;; A 32-bit read would truncate above 2^32 pages.
+  ;;
+  ;; ⚠️ AND THE STRUCT SIZE IS CHECKED, because an offset is a claim about
+  ;; a layout. sysctl reports 1088 bytes there; a kernel that returns a
+  ;; different size is one this offset was never measured against, and
+  ;; answering #f is the honest response to that.
+  (define CTL_KERN 1)
+  (define KERN_PROC 14)
+  (define KERN_PROC_PID 1)
+  (define KI_RSSIZE-OFFSET 264)
+  (define KINFO_PROC-SIZE 1088)
+
+  (define c-sysctl
+    (and (foreign-entry? "sysctl")
+         (foreign-procedure "sysctl" (u8* unsigned-int u8* u8* void* size_t) int)))
+  (define c-getpagesize
+    (and (foreign-entry? "getpagesize")
+         (foreign-procedure "getpagesize" () int)))
+
+  (define (rss-freebsd pid)
+    (and c-sysctl c-getpagesize
+         (let ((mib (make-bytevector 16 0))
+               (buf (make-bytevector 4096 0))
+               (len (make-bytevector 8 0)))
+           (bytevector-u32-native-set! mib 0 CTL_KERN)
+           (bytevector-u32-native-set! mib 4 KERN_PROC)
+           (bytevector-u32-native-set! mib 8 KERN_PROC_PID)
+           (bytevector-u32-native-set! mib 12 pid)
+           (bytevector-u64-native-set! len 0 4096)
+           (and (= 0 (c-sysctl mib 4 buf len 0 0))
+                (= (bytevector-u64-native-ref len 0) KINFO_PROC-SIZE)
+                (* (bytevector-u64-native-ref buf KI_RSSIZE-OFFSET) (c-getpagesize))))))
+
+  ;; ⛔ AND ZERO IS NOT A READING. Every branch below can answer 0 for a
+  ;; process that is on its way out -- Linux prints `0 0 0 0 0 0 0` in
+  ;; statm once the task has no memory descriptor -- and 0 is true in
+  ;; Scheme, so it would be handed back as a measurement rather than as
+  ;; the absence of one. A caller sampling a worker would see its memory
+  ;; drop to zero and keep sampling.
+  (define (process-rss-bytes pid)
+    (let ((n (cond
+               ((string=? (machine-kind) "darwin") (rss-darwin pid))
+               ((string=? (machine-kind) "linux") (rss-linux pid))
+               ((string=? (machine-kind) "freebsd") (rss-freebsd pid))
+               (else #f))))
+      (and n (> n 0) n)))
+
+  (define (machine-kind)
+    (let ((m (symbol->string (machine-type))))
+      (cond
+        ((substring-index "osx" m) "darwin")
+        ((substring-index "macos" m) "darwin")
+        ((substring-index "le" m) (if (substring-index "fb" m) "freebsd" "linux"))
+        ((substring-index "fb" m) "freebsd")
+        (else "unknown"))))
+
+  (define (substring-index needle hay)
+    (let* ((n (string-length needle)) (h (string-length hay)))
+      (let loop ((i 0))
+        (cond ((> (+ i n) h) #f)
+              ((string=? needle (substring hay i (+ i n))) i)
+              (else (loop (+ i 1)))))))
 
   (define O_RDONLY 0)
   (define O_WRONLY 1)

@@ -82,11 +82,26 @@
             "(import (chezscheme) (theourgia ffi) (theourgia log) (theourgia store)\n"
             "        (theourgia wire) (theourgia digest))\n"
             "(display \"LOADED\")(newline)\n")))))
-    (system (string-append
-              (if inject "THEOURGIA_INJECT=on " "env -u THEOURGIA_INJECT ")
-              "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
-              " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
-              " scheme --script " src " > " out " 2>&1"))
+    ;; ⛔ SAY WHICH VARIABLE IS MISSING. Built straight into the command,
+    ;; an unset one reaches `string-append` as #f and the row reports
+    ;; "~s is not a string" -- which reads as "an expansion branch of this
+    ;; tree does not build", a defect in the tree, when the truth is that
+    ;; the caller did not source env.sh. Measured twice, once here and
+    ;; once by the main session. The diagnostic is part of the check.
+    (let ((dirs (getenv "CHEZSCHEMELIBDIRS"))
+          (exts (getenv "CHEZSCHEMELIBEXTS")))
+      (unless (and (string? dirs) (string? exts))
+        (assertion-violation 'expansion-branches
+          (string-append "this fixture needs the library path in the environment: "
+                         (if (string? dirs) "" "CHEZSCHEMELIBDIRS ")
+                         (if (string? exts) "" "CHEZSCHEMELIBEXTS ")
+                         "is unset -- source test/env.sh first")
+          (list 'CHEZSCHEMELIBDIRS dirs 'CHEZSCHEMELIBEXTS exts)))
+      (system (string-append
+                (if inject "THEOURGIA_INJECT=on " "env -u THEOURGIA_INJECT ")
+                "CHEZSCHEMELIBDIRS=" dirs
+                " CHEZSCHEMELIBEXTS='" exts "'"
+                " scheme --script " src " > " out " 2>&1")))
     (let ((t (text-of out)))
       (let loop ((i 0))
         (cond ((> (+ i 6) (string-length t)) (list 'did-not-load t))

@@ -75,8 +75,14 @@
   (apply append (map (lambda (f) (imports-of prefix f)) (forms-of path))))
 
 ;; THE SOURCES IN A DIRECTORY, by the suffixes Chez is told to search.
+;; ⚠️ ONE LIST, READ BY BOTH SCANS. `facade-gate.ss` walks
+;; subdirectories with its own reader; when it carried its own copy of
+;; this list -- `.ss` only -- a nested `helper.sls` importing igropyr
+;; went unseen by the very check added to see it.
+(define source-suffixes '(".ss" ".sls" ".sc" ".scm"))
+
 (define (source-files dir)
-  (let ((exts '(".ss" ".sls" ".sc" ".scm")))
+  (let ((exts source-suffixes))
     (list-sort string<?
       (filter (lambda (n)
                 (exists (lambda (e)

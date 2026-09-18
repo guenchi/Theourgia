@@ -13,4 +13,7 @@
 ;;
 ;; IT IS A LIST OF NAMES, which is the kind of rule that stays silent
 ;; about what it forgot -- so the gate is what shouts, not this file.
-(digest wire ffi)
+;; SIX, SINCE THE E BATCH: the three that were always here, and three
+;; that wrap what a daemon and an evaluator need -- the scheduler,
+;; unix-domain sockets, and child processes.
+(digest wire ffi sched net proc)

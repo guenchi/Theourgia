@@ -116,13 +116,24 @@
 ;; library body, not the ones nested inside them.
 (define (library-body form)
   (if (and (pair? form) (eq? 'library (car form))) (cddddr form) '()))
+;; ⚠️ IT WALKS INTO `begin` AND COUNTS `define-syntax`. Reading only the
+;; immediate library body, a definition wrapped in `(begin ...)` is
+;; invisible and so is a macro -- so "sched defines nothing of its own"
+;; was a rule anybody could step around by adding one pair of
+;; parentheses. Reported by codex; the row it protects is the one that
+;; says a forwarding library forwards and nothing else.
 (define (defined-names path)
-  (apply append
-    (map (lambda (form)
-           (map (lambda (d) (if (pair? (cadr d)) (car (cadr d)) (cadr d)))
-                (filter (lambda (x) (and (pair? x) (eq? 'define (car x)) (pair? (cdr x))))
-                        (library-body form))))
-         (forms-of path))))
+  (let walk ((forms (library-body (car (forms-of path)))) (out '()))
+    (cond
+      ((null? forms) out)
+      ((not (pair? (car forms))) (walk (cdr forms) out))
+      ((and (memq (caar forms) '(define define-syntax)) (pair? (cdar forms)))
+       (walk (cdr forms)
+             (cons (let ((head (cadr (car forms))))
+                     (if (pair? head) (car head) head))
+                   out)))
+      ((eq? (caar forms) 'begin) (walk (append (cdar forms) (cdr forms)) out))
+      (else (walk (cdr forms) out)))))
 
 (define (igropyr-in x)
   (cond ((and (pair? x) (eq? 'igropyr (car x))) (list x))
@@ -156,6 +167,65 @@
                            ".ss imports igropyr")
             (pair? (apply append (map imports-of (forms-of (path-of name))))) #t)))
   (map (lambda (e) (list (car e) (cdr e))) copied-definitions))
+
+;; ---- every facade, not only the three that were copies ----------------
+;;
+;; ⚠️ THE LIST ABOVE IS A HISTORY, NOT A POLICY. It names definitions
+;; that WERE copied out of igropyr and must not come back, so it says
+;; nothing about a facade that never held a copy -- and `sched`, `net`
+;; and `proc` never did. A facade could therefore import igropyr, export
+;; the right names, and privately redefine what it claims to forward,
+;; with every row above green.
+;;
+;; So the rule is stated for all six, read from `facades.sexp`:
+;;
+;;   * `sched` FORWARDS AND NOTHING ELSE. It re-exports a scheduler; a
+;;     definition in it would be a second scheduler in the seam.
+;;   * `net` and `proc` MAY DEFINE ADAPTERS -- they own connections and
+;;     children so that igropyr's vector shapes never reach a caller, and
+;;     that needs code. What they may not do is define a transport or a
+;;     process primitive of their own: the seam exists so the dependency
+;;     can be replaced, and a facade that reimplemented half of it would
+;;     make the replacement a lie.
+;;   * `digest`, `wire`, `ffi` keep the historical rule above.
+
+(define facade-names
+  (call-with-input-file (string-append script-dir "/facades.sexp") read))
+
+(want "D1-05 the facade list is the six this tree declares"
+      facade-names '(digest wire ffi sched net proc))
+
+;; ⭐ ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
+;; the file is read as data and every `define` in it counted.
+(want "D1-05 sched.ss defines nothing of its own"
+      (defined-names (path-of 'sched)) '())
+
+;; ⚠️ AND THE OTHER TWO DO DEFINE THINGS, which is what makes the row
+;; above a statement about `sched` rather than about the reader. An
+;; empty answer everywhere would satisfy it for the wrong reason.
+(want "D1-05 TWIN: net and proc do define their adapters"
+      (map (lambda (n) (> (length (defined-names (path-of n))) 0)) '(net proc))
+      '(#t #t))
+
+;; ⛔ AND NONE OF THE SIX REDEFINES A NAME IGROPYR OWNS. A facade whose
+;; own definition shadows the thing it forwards is the failure this
+;; whole arrangement is for: callers would be depending on this tree's
+;; copy of a primitive while the gate reported one clean seam.
+(define igropyr-primitive-names
+  '(spawn spawn&link send receive self monitor link start-scheduler sleep-ms
+    process-alive? tcp-listen! tcp-connect! tcp-write! tcp-close! tcp-read-start!
+    tcp-read-stop! tcp-stop-listen! pipe-listen! pipe-connect! conn-set-owner!
+    conn-on-close! proc-spawn! proc-write! proc-kill! proc-close! proc-stdin-close!
+    proc-read-start! proc-read-stop! sha256 bytevector->hex))
+
+(for-each
+  (lambda (name)
+    (let* ((here (defined-names (path-of name)))
+           (clash (filter (lambda (n) (memq n igropyr-primitive-names)) here)))
+      (want (string-append "D1-06 " (symbol->string name)
+                           ".ss defines no name igropyr owns")
+            clash '())))
+  facade-names)
 
 ;; -- the twin ---------------------------------------------------------
 ;; `crc32.ss` was never a copy: it is this tree's own digest, and it must
