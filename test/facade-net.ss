@@ -768,6 +768,124 @@
                                       (if (eq? who stranger) 'still-there (list 'other who))))
                             'still-there))))))
 
+      ;; ---- N-20 a peer that closes before the answer is whole ----------
+      ;;
+      ;; ⛔ A PREFIX IS NOT AN ANSWER. A caller that supplied `complete?`
+      ;; has said what a whole answer looks like; if the connection ends
+      ;; before one arrives, what it has is a FRAGMENT, and handing it
+      ;; back as `(answer …)` invites the consumer to act on a truncated
+      ;; reply. ⭐ The consumer this was found for is the MCP shell, which
+      ;; branches on the tag: a prefix arriving as `answer` becomes a
+      ;; SUCCESSFUL text result, which is the worst shape a lost answer
+      ;; can take.
+      ;;
+      ;; ⚠️ THREE WAYS TO BE INCOMPLETE, and they are three rows because
+      ;; they fail in three places: nothing at all, half a datum, and a
+      ;; whole datum whose terminator never came. An implementation that
+      ;; only checked for emptiness passes the first and fails the others.
+      (let ((answer-line?
+              (lambda (bv)
+                (let loop ((i 0))
+                  (cond ((>= i (bytevector-length bv)) #f)
+                        ((= (bytevector-u8-ref bv i) 10) #t)
+                        (else (loop (+ i 1))))))))
+
+        (define (peer-that-says path text)
+          (spawn (lambda ()
+                   (listen! path 16)
+                   (let serve ()
+                     (receive (after 9000 'done)
+                              (`(accepted ,ref) (conn-read-start! ref) (serve))
+                              (`(data ,r ,bv)
+                               (if (string=? text "")
+                                   (conn-close! r)
+                                   (conn-write! r (string->utf8 text) 'a))
+                               (serve))
+                              (`(written ,r ,t ,st) (conn-close! r) (serve))
+                              (`(eof ,r) (serve))
+                              (`#(DOWN ,w ,rr) (serve)))))))
+
+        (define (ask path)
+          (spawn (lambda ()
+                   (send main (list 'incomplete
+                                    (exchange path (string->utf8 "q") answer-line? 4000)))))
+          (let wait ()
+            (receive (after 9000 'no-answer)
+                     (`(incomplete ,what) what)
+                     (`#(DOWN ,w ,r) (wait)))))
+
+        (let ((p (sock "eof-empty")))
+          (peer-that-says p "")
+          (sleep-ms 200)
+          (want "N-20 a peer that closes without saying anything is a transport failure"
+                (ask p)
+                '(transport-error incomplete-answer)))
+
+        (let ((p (sock "eof-half")))
+          (peer-that-says p "(ok (text ")
+          (sleep-ms 200)
+          (want "N-20 half a datum followed by a close is a transport failure"
+                (ask p)
+                '(transport-error incomplete-answer)))
+
+        ;; ⭐ THE DISCRIMINATING ROW OF THE FIVE. The one that looks like
+        ;; an answer. Every byte of the datum is
+        ;; here; only the newline the caller defined as the end is
+        ;; missing. This is the row a "is it non-empty" implementation
+        ;; passes and a correct one fails.
+        (let ((p (sock "eof-noeol")))
+          (peer-that-says p "(ok (text \"\"))")
+          (sleep-ms 200)
+          (want "N-20 a whole datum with no terminator is still a transport failure"
+                (ask p)
+                '(transport-error incomplete-answer)))
+
+        ;; ⛔ TWIN: THE SAME PEER, ONE BYTE MORE, AND IT SUCCEEDS -- and it
+        ;; succeeds BEFORE any close, which is what says the completeness
+        ;; test is what ended the exchange rather than the disconnection.
+        (let ((p (sock "eof-whole")))
+          (spawn (lambda ()
+                   (listen! p 16)
+                   (let serve ()
+                     (receive (after 9000 'done)
+                              (`(accepted ,ref) (conn-read-start! ref) (serve))
+                              (`(data ,r ,bv)
+                               (conn-write! r (string->utf8 "(ok (text \"\"))\n") 'a)
+                               (serve))
+                              ;; ⛔ AND IT STAYS OPEN. Closing here would
+                              ;; make EOF a second reason the exchange
+                              ;; could have ended, and the row could not
+                              ;; say which one did.
+                              (`(written ,r ,t ,st) (serve))
+                              (`(eof ,r) (serve))
+                              (`#(DOWN ,w ,rr) (serve))))))
+          (sleep-ms 200)
+          (want "N-20 TWIN: a whole line from a peer that stays open succeeds"
+                (let ((r (ask p)))
+                  (if (and (pair? r) (eq? 'answer (car r)))
+                      (utf8->string (cadr r))
+                      (list 'other r)))
+                "(ok (text \"\"))\n"))
+
+        ;; ⛔ TWIN: NO `complete?`, NO CHANGE. A caller that said nothing
+        ;; about completeness is asking to read until the peer closes, and
+        ;; for that caller EOF is the answer -- the same bytes that are a
+        ;; failure above.
+        (let ((p (sock "eof-nopred")))
+          (peer-that-says p "(ok (text ")
+          (sleep-ms 200)
+          (spawn (lambda ()
+                   (send main (list 'nopred (exchange p (string->utf8 "q") #f 4000)))))
+          (want "N-20 TWIN: without a completeness test, EOF still ends the exchange"
+                (let ((r (let wait ()
+                           (receive (after 9000 'no-answer)
+                                    (`(nopred ,what) what)
+                                    (`#(DOWN ,w ,rr) (wait))))))
+                  (if (and (pair? r) (eq? 'answer (car r)))
+                      (utf8->string (cadr r))
+                      (list 'other r)))
+                "(ok (text ")))
+
       ;; ---- N-19 a read that will not start ----------------------------
       ;;
       ;; ⛔ igropyr COUNTS A NEGATIVE `uv_read_start` AND ANSWERS #f: it

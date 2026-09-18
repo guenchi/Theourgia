@@ -1133,6 +1133,15 @@
          (let ((actor (cadr parsed)) (request (caddr parsed)))
            (send (ctx-main ctx)
                  (list 'handling self seq (if (pair? request) (car request) request)))
+           ;; ⛔ ONE LINE SAYING THIS DAEMON SERVED THIS REQUEST. Without
+           ;; it, "the answer came from the daemon" can only be argued
+           ;; from the answer's content -- and a local run of the same
+           ;; verb produces the same content, which is the whole point of
+           ;; the two routes. ⚠️ It costs one comparison when tracing is
+           ;; off, because `trace-event!` asks that first.
+           (trace-event! 'daemon-dispatch
+                         (if (pair? request) (car request) request)
+                         #f)
            ;; ⛔ A WAY TO MAKE THIS PROCESS DIE, because otherwise nothing
            ;; can arm the one failure the trace rule exists for. A conn
            ;; is deliberately hard to kill from the wire -- a malformed

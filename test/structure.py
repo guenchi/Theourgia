@@ -201,8 +201,14 @@ def self_check():
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     parent = os.path.dirname(here)
+    # ⚠️ AND THE SUBDIRECTORIES THAT HOLD SOURCES. `mcp/` was outside this
+    # list until the shell moved into it, so the one file added that batch
+    # was the one file this gate could not see -- a gate that scans "the
+    # tree" and means "two directories" is wrong in the place nobody
+    # looks. Named rather than walked: a walk would pull in scratch
+    # directories and pinned copies that are not this tree's sources.
     files = []
-    for directory in (parent, here):
+    for directory in (parent, here, os.path.join(parent, "mcp")):
         if not os.path.isdir(directory):
             continue
         for name in sorted(os.listdir(directory)):

@@ -22,6 +22,7 @@
 
 (import (chezscheme) (theourgia sched) (theourgia net)
         (only (theourgia ffi) lock-try-acquire! lock-release!)
+        (only (theourgia rpc) request-frame)
         (only (theourgia working) draft-lock-path))
 
 (define bad 0)
@@ -138,8 +139,15 @@
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
           (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
+                ;; ⚠️ `'truncate`, BECAUSE A RUNNER MAY BE STARTED TWICE.
+                ;; `call-with-output-file` refuses an existing file, and
+                ;; the takeover row starts this same runner a second
+                ;; time -- measured: the second daemon died on the pid
+                ;; file before it reached `serve`, and the row read as
+                ;; "the new daemon does not answer", which is a
+                ;; statement about the daemon and was about this line.
                 (string-append "(call-with-output-file \"" pf
-                               "\" (lambda (p) (write (get-process-id) p)))")
+                               "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
                 (string-append "(rpc-dispatch \"" st "\" '(init) \"tester\")")
                 (string-append "(serve \"" st "\" \"" sk "\")")))))
     ;; ⛔ TRACING IS TURNED ON BY THE ENVIRONMENT, NOT BY A CALL. The
@@ -1359,6 +1367,161 @@
                           (list 'answers (and (pair? w) (cadr w))))
                       (if (< (car r) 50) 'the-read-was-at-once (list 'read-took (car r))))
                 '(held the-write-was-refused exactly-once the-read-was-at-once))))
+
+      ;; ---- D-27 the envelope a forwarding caller actually sends --------
+      ;;
+      ;; ⛔ ONE FRAME, ONE ANSWER, AND THE CONNECTION STAYS. The bytes here
+      ;; are not written out by this row -- they are whatever
+      ;; `request-frame` produces, which is what the command line and the
+      ;; MCP shell both send. A row that spelled the envelope itself would
+      ;; be checking its own copy.
+      ;;
+      ;; ⚠️ MEASURED ON THE VERSION THAT PACKED IT AT THE CALL SITE:
+      ;; `render-wire` already ends with a newline and the caller appended
+      ;; a second, so every forwarded request carried an EMPTY FRAME
+      ;; behind it. The daemon answered both --
+      ;; `(ok (text ""))\n(error bad-request (reason not-a-datum))\n` --
+      ;; and closed. Nobody saw it: that caller exits after the first
+      ;; answer. ⭐ The reading that separates the two is "how many
+      ;; answers, and did the peer close", ⛔ not "was the answer right".
+      ;; ⚠️ READING TO EOF IS THE POINT, AND SO IS NOT REACHING IT. A
+      ;; well-formed single frame leaves the connection open, so this
+      ;; helper times out -- and the timeout is the evidence. The failing
+      ;; shape is the opposite: a string means EOF arrived, which is what
+      ;; the extra empty frame used to cause.
+      (let* ((answers (ask-until-eof socket
+                                     (utf8->string (request-frame store "tester" 'outline '()))
+                                     2500))
+             (text (cond ((not (pair? answers)) "")
+                         ((and (pair? (car answers)) (eq? 'timed-out (caar answers)))
+                          (cadr (car answers)))
+                         ((string? (car answers)) (car answers))
+                         (else "")))
+             (closed? (and (pair? answers) (string? (car answers)))))
+        (want "D-27 what the shared packer sends is one frame: one answer, connection kept"
+              (list (if (and (pair? answers) (= 1 (cadr answers)))
+                        'exactly-one-answer
+                        (list 'answers (and (pair? answers) (cadr answers))))
+                    (if (starts-with? text "(ok") 'and-it-is-the-answer (list 'said text))
+                    (if closed? 'PEER-CLOSED 'connection-kept))
+              '(exactly-one-answer and-it-is-the-answer connection-kept)))
+
+      ;; ---- D-28 one frame, two writes ---------------------------------
+      ;;
+      ;; ⛔ A FRAME IS NOT A WRITE. D-03 is the other direction -- two
+      ;; frames arriving in one write; this is one frame split across
+      ;; two, ⚠️ with the cut INSIDE a UTF-8 sequence, which is where a
+      ;; reader that decoded as it went would break.
+      (spawn
+        (lambda ()
+          (let ((me self))
+            (connect! socket)
+            (receive
+              (after 4000 (send main (list 'split 'no-connect)))
+              (`(connected ,p ,ref)
+               (conn-read-start! ref)
+               (let* ((whole (string->utf8
+                               (string-append "(request \"" store "\" \"tester\" read \"\x6C49;\x5B57;\")\n")))
+                      (cut 30)
+                      (head (let ((o (make-bytevector cut)))
+                              (bytevector-copy! whole 0 o 0 cut) o))
+                      (tail (let ((o (make-bytevector (- (bytevector-length whole) cut))))
+                              (bytevector-copy! whole cut o 0 (- (bytevector-length whole) cut)) o)))
+                 (conn-write! ref head 'one)
+                 (sleep-ms 150)
+                 (conn-write! ref tail 'two))
+               (let hear ((acc ""))
+                 (receive
+                   (after 6000 (send main (list 'split (list 'timed-out acc))))
+                   (`(data ,r ,bv) (send main (list 'split (utf8->string bv))))
+                   (`(written ,r ,t ,st) (hear acc))
+                   (`(eof ,r) (send main (list 'split 'eof)))
+                   (`#(DOWN ,w ,y) (send main (list 'split 'down))))))))))
+      (want "D-28 a frame split across two writes is reassembled, cut inside a UTF-8 sequence"
+            (let ((said (let wait ()
+                          (receive (after 12000 'no-answer)
+                                   (`(split ,what) what)
+                                   (`#(DOWN ,w ,r) (wait))))))
+              (if (and (string? said) (contains? said "unknown-id"))
+                  'reassembled-and-dispatched
+                  (list 'said said)))
+            'reassembled-and-dispatched)
+
+      ;; ---- D-29 a legal datum that is not a request -------------------
+      ;;
+      ;; ⛔ WELL-FORMED IS NOT THE SAME AS MEANINGFUL. `(hello)` reads
+      ;; perfectly; it is simply not the envelope, and it is refused by
+      ;; shape rather than by parse failure. ⚠️ D-13's frame was
+      ;; unterminated and D-04's was too long -- this one is neither.
+      (want "D-29 a datum that reads but is not a request is refused by shape"
+            (let ((r (exchange socket (string->utf8 "(hello)\n") line-complete? 4000)))
+              (if (and (pair? r) (eq? 'answer (car r)))
+                  (if (starts-with? (utf8->string (cadr r)) "(error bad-request")
+                      'refused-by-shape
+                      (list 'said (utf8->string (cadr r))))
+                  (list 'transport r)))
+            'refused-by-shape)
+
+      ;; ---- D-30 two clients writing at once ---------------------------
+      ;;
+      ;; ⛔ BOTH COMMIT AND THEIR ANSWERS ARE DIFFERENT. The store process
+      ;; serialises them, so neither is lost and neither is answered with
+      ;; the other's receipt -- a daemon that shared one answer between
+      ;; concurrent writers would pass a row that only counted successes.
+      (let ((a-title (string-append "D30-A-" pid-text))
+            (b-title (string-append "D30-B-" pid-text)))
+        (spawn (lambda ()
+                 (send main (list 'w1 (timed-ask socket
+                                                 (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                                a-title "\")\n") 12000)))))
+        (spawn (lambda ()
+                 (send main (list 'w2 (timed-ask socket
+                                                 (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                                b-title "\")\n") 12000)))))
+        (let gather ((one #f) (two #f))
+          (if (and one two)
+              (want "D-30 two concurrent writes both commit, with answers of their own"
+                    (list (if (starts-with? (cadr one) "(ok") 'first-committed (list 'said (cadr one)))
+                          (if (starts-with? (cadr two) "(ok") 'second-committed (list 'said (cadr two)))
+                          (if (string=? (cadr one) (cadr two)) 'SAME-RECEIPT 'different-receipts))
+                    '(first-committed second-committed different-receipts))
+              (receive (after 20000 (want "D-30 two concurrent writes both commit, with answers of their own"
+                                          (list 'no-answer one two) 'never))
+                       (`(w1 ,x) (gather x two))
+                       (`(w2 ,x) (gather one x))
+                       (`#(DOWN ,w ,r) (gather one two))))))
+
+      ;; ---- D-31 taking over a socket a killed daemon left behind ------
+      ;;
+      ;; ⛔ THE NEXT DAEMON TAKES OVER, and the evidence is that it
+      ;; answers -- ⚠️ not that the file is there, which it was before it
+      ;; started. A daemon that refused because something was already at
+      ;; the path would leave a store unusable until somebody tidied up
+      ;; by hand.
+      (let* ((d (start-tagged-daemon! "takeover" #f))
+             (before (ask-tagged d "outline" 8000)))
+        (system (string-append "pkill -9 -f " (caddr d) " 2>/dev/null"))
+        (sleep-ms 500)
+        (let ((left-behind (file-exists? (tagged-socket d))))
+          (system (string-append "THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
+                                 " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
+                                 " scheme --script " (caddr d) " > " (cadddr d) ".2 2>&1 &"))
+          (let up ((k 0))
+            (cond ((and (file-exists? (tagged-socket d))
+                        (let ((r (ask-tagged d "outline" 3000)))
+                          (and (string? (cadr r)) (starts-with? (cadr r) "(ok"))))
+                   'up)
+                  ((> k 60) 'never)
+                  (else (sleep-ms 100) (up (+ k 1)))))
+          (let ((after (ask-tagged d "outline" 8000)))
+            (system (string-append "pkill -f " (caddr d) " 2>/dev/null"))
+            (want "D-31 a daemon takes over the socket a killed one left behind"
+                  (list (if (starts-with? (cadr before) "(ok") 'served-before (list 'said (cadr before)))
+                        (if left-behind 'socket-was-left 'NO-SOCKET-TO-TAKE-OVER)
+                        (if (and (string? (cadr after)) (starts-with? (cadr after) "(ok"))
+                            'and-the-new-one-answers
+                            (list 'after-said (cadr after))))
+                  '(served-before socket-was-left and-the-new-one-answers)))))
 
       (stop-daemon!)
       ;; ⛔ THIS RUN CLEANS UP AFTER ITSELF, BY ITS OWN PID. Every row

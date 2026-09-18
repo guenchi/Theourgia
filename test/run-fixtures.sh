@@ -184,12 +184,41 @@ else
   echo "preflight: NOT CHECKED -- structure.py is not in this directory"
 fi
 
-bad=0; ran=0; libs=""; probes=""
-for f in *.ss; do
-  n=${f%.ss}
+# ⛔ PYTHON FIXTURES RUN TOO, AND THEY DID NOT USED TO. This loop was
+# `for f in *.ss`, so ten fixtures in this directory -- every MCP cell,
+# the daemon lifecycle cells, the eval cells, `q8-cli`,
+# `working-processes`, `datum-processes` -- were never run by any suite.
+# They passed when somebody remembered to run them by hand and rotted
+# when nobody did: measured on the day the loop was widened, two of them
+# were red, against a Python daemon deleted a batch earlier, and no
+# reading had ever said so. "The environment could satisfy it and it was
+# not run" is a defect, not an opt-in.
+#
+# ⚠️ THE THREE CRITERIA ARE THE SAME for both kinds, and so is the
+# classifier: a sentinel line, no non-zero counter, no hard line. What
+# differs is only the interpreter.
+bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0
+for f in *.ss *.py; do
+  case "$f" in
+    *.ss) n=${f%.ss}; runner="scheme --script";;
+    *.py) n=${f%.py}; runner="python3";;
+  esac
+  # ⚠️ `paths.py` IS A HELPER, NOT A FIXTURE: it is imported by the
+  # others and prints no sentinel of its own. It is named here rather
+  # than detected, because "imports nothing and prints nothing" is also
+  # what a broken fixture looks like.
+  # ⚠️ THREE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
+  # the python fixtures; `structure` is the preflight above; and
+  # `reduce-hash-check` is a filter `reduce1.ss` pipes bytes through --
+  # run bare it prints a hash and no sentinel, which is also what a
+  # broken fixture looks like, so the list says which it is.
+  case "$n" in
+    paths|structure|reduce-hash-check) helpers="$helpers $n"; continue;;
+  esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
-  perl -e 'alarm 900; exec @ARGV' scheme --script "$f" > "$out/$n.out" 2>&1
+  perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$out/$n.out" 2>&1
   rc=$?
+  case "$f" in *.py) pyran=$((pyran+1));; esac
   sent=$(grep -c "^$n complete" "$out/$n.out")
   # TWO USAGE SHAPES, BECAUSE THERE ARE TWO KINDS OF CALLER. A probe
   # writes a plain `usage:` line for a person; the CLI answers with one
@@ -245,13 +274,15 @@ done
 # "clean run that exits non-zero" in the other -- the second was reported
 # as a defect in an unrelated gate before the cause was found. ONE RUNNER
 # AT A TIME IN A DIRECTORY.
-total=$(ls *.ss | wc -l | tr -d " ")
+total=$(ls *.ss *.py | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
-echo "fixtures run: $ran   not-green: $bad"
+echo "fixtures run: $ran   not-green: $bad   (of those, $pyran are python)"
 echo "libraries ($nlibs):$libs"
 echo "probes, printed a usage line ($nprobes):$probes"
-sum=$((ran + nlibs + nprobes))
+nhelpers=$(echo $helpers | wc -w | tr -d " ")
+echo "helpers, not fixtures ($nhelpers):$helpers"
+sum=$((ran + nlibs + nprobes + nhelpers))
 if [ "$sum" != "$total" ]; then
   echo "UNACCOUNTED: $total scripts in the directory, $sum classified"
   exit 1

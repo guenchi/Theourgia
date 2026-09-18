@@ -111,14 +111,14 @@
 ;; A table that parsed to nothing would make every row below vacuous,
 ;; and "no names declared" is what a broken read produces.
 
-(want "FE-00 the table names three libraries"
-      (map car declared) '(sched net proc))
+(want "FE-00 the table names four libraries"
+      (map car declared) '(sched net proc json))
 ;; ⚠️ NOT THE COUNTS. Writing `(10 10 7)` here put a second copy of the
 ;; table in the cell -- the design changed `net` from ten names to nine,
 ;; the table followed, and this row went red about nothing. What it is
 ;; for is a table that parsed to nothing, so it asks that and no more.
 (want "FE-00 and every library declares at least one name"
-      (map (lambda (e) (> (length (cdr e)) 0)) declared) '(#t #t #t))
+      (map (lambda (e) (> (length (cdr e)) 0)) declared) '(#t #t #t #t))
 
 ;; ---- FE-01..03 each library exports exactly its row ----------------------
 

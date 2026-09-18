@@ -1,25 +1,62 @@
-Run `python3 theourgia/mcp/server.py --store /absolute/store` as a local stdio
-server. A running daemon is preferred; pre-send connection failure starts the
-one-shot core CLI worker. No SDK dependency or network service is installed.
+# The MCP shell
 
-The shell implements the pinned MCP
-[2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle),
-[stdio framing](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-and [tool envelopes](https://modelcontextprotocol.io/specification/2025-11-25/server/tools).
-Every tool accepts `{ "argv": ["string", "arguments"] }`. The tool's job is to
-return a core command answer, so even a core refusal is successful text content
-with `isError: false`. Transport/protocol failures use JSON-RPC errors. Unknown
-names, including eval, take the same unknown-tool path. Eval is local CLI only.
+`theourgia-mcp --store <path> [--socket <path>] [--actor <name>]` speaks
+MCP `2025-11-25` over stdio, in front of the same dispatcher the command
+line uses.
 
-The catalog comes from the connected worker's `rpc-verbs` at each list/call;
-there is no hand-maintained verb list. Arguments are passed as strings, with no
-shell interpolation or business validation. Output text retains every byte and
-its final newline. Notifications have no response. Calls are processed serially;
-EOF drains the current bounded request, then exits. Cancellation does not revoke
-or automatically retry a core write.
+    scheme --script mcp/server.ss --store /path/to/store
 
-Input frames are limited to 1 MiB. The shared transport limits collected answers
-to 32 MiB, including its hex envelope overhead, and waits at most 30 seconds.
-Exceeding an output/time limit is an explicit transport error; no prefix is
-reported as a complete success, and execution may already have occurred.
-Pagination and HTTP transport are outside this stdio adapter.
+## What a tool returns
+
+The core's answer, as S-expression **text**, byte for byte. The JSON is
+the JSON-RPC envelope and nothing else: this shell does not read the
+answer, reformat it, or decide anything from it.
+
+A **core refusal is a successful result** — `(error unknown-id …)` is the
+answer to the question that was asked, so it comes back with
+`isError: false`. Only the shell's own failures use the JSON-RPC error
+channel: a frame it could not parse, a frame past the limit, or a daemon
+that took the request and then lost the answer. Translating core
+refusals into MCP errors would tell a client its command could not be
+run when it ran and was refused.
+
+The shell branches on the **transport's tag**, never on the answer's
+text: a core answer whose text happens to read `(error transport-unknown
+…)` is still an answer.
+
+## Tools
+
+One per verb in `rpc-verbs`, asked again on every call — a verb added to
+the core is a tool this shell can see without a restart.
+
+* name: `theourgia_<verb>`. A verb of `[A-Za-z0-9_.-]` keeps its
+  spelling; anything else, and anything already starting `x_`, is carried
+  as `theourgia_x_<hex>`. The `x_` exclusion is what keeps the mapping
+  injective. A name over 128 characters is left out of the catalogue.
+* arguments: `{"argv": ["…"]}`, `additionalProperties: false`. Every item
+  must be a string; each reaches the core byte for byte, and nothing on
+  the way hands them to a shell.
+* `eval` is not a tool. Calling it is indistinguishable from calling a
+  verb that does not exist.
+
+## Two routes, one answer
+
+With a daemon on the socket the request goes over it in the envelope
+`request-frame` packs — the same one the command line sends, from the
+same procedure. Without one it is dispatched in this process. No child
+process on either path, and the two answers are identical.
+
+A socket path with nobody behind it means the request reached nobody, so
+it is run locally. A connection that was made and then lost is different:
+the request may have been carried out, so it is **not** re-run and the
+client is told the answer could not be obtained.
+
+## Framing
+
+One JSON object per line on stdin, one per line on stdout. The input
+limit is 1 MiB **per frame, counting the terminator**; a frame past it is
+refused and the shell exits non-zero. A request split across writes — in
+the middle of a UTF-8 sequence included — is reassembled; two requests in
+one write are answered separately. Notifications are never answered.
+Calls are served one at a time. At EOF the call in flight is answered
+before the shell exits.

@@ -399,8 +399,26 @@
                         ;; for a peer that is not going to close it.
                         (send caller (list 'exchange-result me (list 'answer whole)))
                         (collect c all n complete? deadline caller me))))))))
+          ;; ⛔ A PREFIX IS NOT AN ANSWER. When the caller said what a
+          ;; complete answer looks like, EOF arriving before one is a
+          ;; TRANSPORT FAILURE, not a short success: handing back what
+          ;; had arrived lets a consumer treat a truncated reply as the
+          ;; real one -- and the MCP shell would turn it into a
+          ;; successful text result, which is the worst shape a lost
+          ;; answer can take.
+          ;;
+          ;; ⚠️ WITHOUT `complete?` THE RULE IS UNCHANGED: a caller that
+          ;; said nothing about completeness is asking to read until the
+          ;; peer closes, and EOF is exactly that answer.
           (`#(tcp-eof)
-           (send caller (list 'exchange-result me (list 'answer (join (reverse acc))))))
+           (let ((whole (join (reverse acc))))
+             (send caller
+                   (list 'exchange-result me
+                         (if (procedure? complete?)
+                             (if (complete? whole)
+                                 (list 'answer whole)
+                                 (list 'transport-error 'incomplete-answer))
+                             (list 'answer whole))))))
           (`#(tcp-error ,n)
            (send caller (list 'exchange-result me (list 'transport-error n))))
           (`(written ,status)

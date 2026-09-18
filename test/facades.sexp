@@ -13,7 +13,8 @@
 ;;
 ;; IT IS A LIST OF NAMES, which is the kind of rule that stays silent
 ;; about what it forgot -- so the gate is what shouts, not this file.
-;; SIX, SINCE THE E BATCH: the three that were always here, and three
-;; that wrap what a daemon and an evaluator need -- the scheduler,
-;; unix-domain sockets, and child processes.
-(digest wire ffi sched net proc)
+;; SEVEN, SINCE THE E BATCH: the three that were always here, three that
+;; wrap what a daemon and an evaluator need -- the scheduler, unix-domain
+;; sockets and child processes -- and `json`, for the one place this core
+;; speaks it: the MCP shell's JSON-RPC envelope.
+(digest wire ffi sched net proc json)

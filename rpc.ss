@@ -35,8 +35,10 @@
 ;; answer belongs to whoever asked.
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
+          request-frame transport-unreachable?
           count-argument outline-text)
   (import (only (theourgia view) view-read)
+          (only (theourgia render) render-wire)
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
@@ -781,6 +783,48 @@
   ;; the past with the present.
   (define (reduction-for store state)
     (or state (open-and-reduce store)))
+
+  ;; ---- the envelope a request travels in ----------------------------------
+  ;;
+  ;; ⛔ ONE PLACE PACKS IT. Two callers reach a daemon -- the command line
+  ;; and the MCP shell -- and if each wrote out `(request store actor verb
+  ;; args…)` for itself, the day the envelope grew a field would be the
+  ;; day one of them quietly kept sending the old one.
+  ;;
+  ;; ⚠️ AND IT PRODUCES THE BYTES, terminator included, because the
+  ;; terminator is part of the envelope. Measured on the version where it
+  ;; was not: `render-wire` already ends with a newline and the caller
+  ;; appended a second, so every forwarded request was followed by an
+  ;; EMPTY FRAME. The daemon answered it -- `(ok …)` and then
+  ;; `(error bad-request (reason not-a-datum))` -- and closed the
+  ;; connection. Nobody saw it, because that caller exits after the first
+  ;; answer.
+  ;; ⛔ "NOBODY IS THERE" IS ONE QUESTION, ASKED IN ONE PLACE. `exchange`
+  ;; reports a failed connection and a failure mid-answer with the SAME
+  ;; tag, `(transport-error <status>)`, and only the status tells them
+  ;; apart -- so the two callers that fall back to running locally have
+  ;; to agree about which statuses mean "the request reached nobody".
+  ;; Disagreeing would mean one of them re-running work that may already
+  ;; have been done.
+  ;;
+  ;; -2 ENOENT (nothing at that path), -38 ENOTSOCK (something that is
+  ;; not a socket), -61 ECONNREFUSED (a socket file whose daemon has
+  ;; gone). ⭐ All three measured on this platform against a real daemon,
+  ;; the last by killing one with SIGKILL so it could not unlink its own
+  ;; socket. -111 is the same refusal on Linux, where libuv reports that
+  ;; errno instead; it is listed by name rather than left to be found by
+  ;; a user whose CLI stopped working.
+  (define (transport-unreachable? outcome)
+    (and (pair? outcome)
+         (eq? 'transport-error (car outcome))
+         (memv (cadr outcome) '(-2 -38 -61 -111))
+         #t))
+
+  (define (request-frame store actor verb args)
+    (unless (and (string? store) (string? actor) (symbol? verb) (for-all string? args))
+      (assertion-violation 'request-frame "store and actor are strings, verb a symbol, args strings"
+                           (list store actor verb args)))
+    (string->utf8 (render-wire (append (list 'request store actor verb) args))))
 
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
     (let* ((state (and (pair? rest) (car rest)))

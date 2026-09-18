@@ -1,4 +1,4 @@
-;; WHAT THE THREE FORWARDING LIBRARIES EXPORT, AND NOTHING ELSE.
+;; WHAT THE FORWARDING LIBRARIES EXPORT, AND NOTHING ELSE.
 ;;
 ;; This is a copy of the table in the design (§7.6.20), kept here so a
 ;; cell can compare it against what the libraries ACTUALLY export. The
@@ -63,4 +63,13 @@
  (proc
    spawn-worker! worker-write! worker-close-stdin! worker-kill!
    worker-close! worker-alive? worker-rss
-   worker-ref? worker-ref-proc worker-ref-pid))
+   worker-ref? worker-ref-proc worker-ref-pid)
+ ;; FOUR, AND THE THIRTEEN THAT ARE NOT HERE ARE THE POINT. The core
+ ;; speaks JSON in one place -- the MCP shell, where JSON is the
+ ;; JSON-RPC envelope and the payload inside it is S-expression text.
+ ;; Reading a frame and writing a reply needs to parse, to print and to
+ ;; look up; it never builds a document, so the whole `json-set` /
+ ;; `json-drop` / `json-push` / `json-insert` / `json-update` family and
+ ;; the three classifiers are deliberately absent.
+ (json
+   string->json json->string json-ref json-ref*))

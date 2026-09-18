@@ -105,25 +105,15 @@
 ;; path with nothing there and a stale socket file whose daemon was
 ;; killed. ⚠️ A read failure mid-answer reports a different errno and
 ;; falls to the `transport-unknown` branch, which is the safe side.
-;; -2 ENOENT (nothing at that path), -38 ENOTSOCK (something that is not
-;; a socket), -61 ECONNREFUSED (a socket file whose daemon has gone).
-;; ⭐ All three measured here, on this platform, against this daemon --
-;; the last by killing one with SIGKILL so it could not unlink its own
-;; socket. -111 is the same refusal on Linux, where libuv reports that
-;; errno instead; it is listed by name rather than left to be discovered
-;; by a user whose CLI stopped working.
-(define connect-failed-statuses '(-2 -38 -61 -111))
 
 (define (forward-then-exit! socket store actor verb resolved wire?)
   (start-scheduler
     (lambda ()
       (let ((outcome
               (exchange socket
-                        (string->utf8
-                          (string-append
-                            (render-wire (append (list 'request store actor verb)
-                                                 (argument-strings resolved)))
-                            "\n"))
+                        ;; ⛔ THE ENVELOPE IS PACKED IN ONE PLACE, and this
+                        ;; is not it. The MCP shell sends the same one.
+                        (request-frame store actor verb (argument-strings resolved))
                         datum-line?
                         30000)))
         (cond
@@ -133,8 +123,8 @@
              (if (eq? answer 'unreadable)
                  (finish '(error transport-unknown (reason unreadable-answer)) wire?)
                  (finish answer wire?))))
-          ((and (pair? outcome) (eq? 'transport-error (car outcome))
-                (memv (cadr outcome) connect-failed-statuses))
+          ;; ⛔ THE SAME QUESTION THE MCP SHELL ASKS, ASKED IN ONE PLACE.
+          ((transport-unreachable? outcome)
            (finish (rpc-dispatch-parsed store verb resolved actor) wire?))
           (else
            (finish (list 'error 'transport-unknown (list 'reason 'lost-answer)) wire?)))))))

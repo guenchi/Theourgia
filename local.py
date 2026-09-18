@@ -147,6 +147,14 @@ def evaluate(args):
 # WHAT IS LEFT IS `eval`, which has its own step, and the fall-through
 # that runs the Scheme command line.
 def main(argv):
+    # ⛔ `serve` IS REFUSED HERE, NOT FORWARDED. It used to start a Python
+    # daemon; that daemon is gone and `theourgia serve` is the Scheme one.
+    # Without this branch the call fell through to the Scheme command line
+    # and silently started a daemon anyway -- a subcommand that quietly
+    # does something else is worse than one that is missing.
+    if argv and argv[0] == 'serve':
+        sys.stderr.write('serve has moved: run `theourgia serve <store>`\n')
+        return 2
     if argv and argv[0] == 'eval':
         answer = evaluate(argv[1:])
         sys.stdout.buffer.write(answer)

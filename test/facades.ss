@@ -192,8 +192,8 @@
 (define facade-names
   (call-with-input-file (string-append script-dir "/facades.sexp") read))
 
-(want "D1-05 the facade list is the six this tree declares"
-      facade-names '(digest wire ffi sched net proc))
+(want "D1-05 the facade list is the seven this tree declares"
+      facade-names '(digest wire ffi sched net proc json))
 
 ;; ⭐ ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
 ;; the file is read as data and every `define` in it counted.

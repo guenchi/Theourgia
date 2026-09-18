@@ -224,6 +224,88 @@
       'answered-locally)
 
 
+
+;; ---- F-13 several verbs, byte for byte -------------------------------------
+;;
+;; ⛔ ONE VERB AGREEING IS NOT THE CLAIM. The claim is that the socket
+;; route does not implement anything of its own, and a route that had
+;; its own idea about one verb would agree about the others. Measured
+;; across four answers of different shapes: text, items, a check report
+;; and a refusal.
+(define out-6 (string-append here "/out6.txt"))
+(define out-7 (string-append here "/out7.txt"))
+(define daemon-again2 (start-daemon! serve-a (string-append here "/serve-a3.log")))
+(want "F-13 a daemon for the byte comparison came up" daemon-again2 'up)
+
+(want "F-13 four verbs answer byte for byte as they do locally"
+      (map (lambda (argv)
+             (cli! "" (string-append argv " --store " store-a " --wire") out-6)
+             (let ((forwarded (file-text out-6)))
+               (cli! "THEOURGIA_LOCAL=1" (string-append argv " --store " store-a " --wire") out-7)
+               (if (string=? forwarded (file-text out-7))
+                   'identical
+                   (list argv forwarded (file-text out-7)))))
+           (list "outline" "refs missing.1" "conflicts" "check"))
+      '(identical identical identical identical))
+
+(stop-daemon! serve-a)
+
+;; ---- F-14 a peer that takes the request and then goes ----------------------
+;;
+;; ⛔ CONNECTED AND THEN LOST IS NOT "NOBODY WAS THERE". The request went
+;; out; it may have been carried out. ⛔ The command line must NOT run it
+;; again -- a caller told "that did not happen" would do it twice -- and
+;; ⛔ must not report success either. It says the answer could not be
+;; obtained, which is what "ask me again" means here.
+;;
+;; ⚠️ TWO HALVES, AND THE SECOND IS THE ONE THAT MATTERS. "It said
+;; transport-unknown" is satisfied by an implementation that also ran the
+;; command locally and then threw the answer away; the trace is what says
+;; it did not.
+(define silent-peer (string-append here "/silent.ss"))
+(write-script! silent-peer
+  (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+        "(start-scheduler"
+        "  (lambda ()"
+        (string-append "    (listen! \"" socket-a "\" 16)")
+        "    (let serve ()"
+        "      (receive (after 30000 'done)"
+        "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+        ;; ⛔ THE BYTES ARE READ AND THEN THE CONNECTION IS CLOSED. Reading
+        ;; first is what makes this "the request arrived", not "the dial
+        ;; failed".
+        "               (`(data ,r ,bv) (conn-close! r) (serve))"
+        "               (`(eof ,r) (serve))"
+        "               (`#(DOWN ,w ,y) (serve))))))"))
+(system (string-append "rm -f " socket-a))
+(system (string-append (env-prefix "") " scheme --script " silent-peer
+                       " > " here "/silent.log 2>&1 &"))
+(let wait ((k 0))
+  (cond ((file-exists? socket-a) 'up)
+        ((> k 200) 'never)
+        (else (system "sleep 0.05") (wait (+ k 1)))))
+
+(define out-8 (string-append here "/out8.txt"))
+(define trace-8 (string-append here "/trace8.txt"))
+(system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH THEOURGIA_TRACE=1 "))
+                       " scheme --script ../cli.ss insert --title LOST-ANSWER-CANARY --store " store-a
+                       " > " out-8 " 2>" trace-8))
+(want "F-14 a request that was taken and then lost is reported as unknown"
+      (if (contains? (file-text out-8) "transport-unknown")
+          'said-unknown
+          (list 'said (file-text out-8)))
+      'said-unknown)
+
+(want "F-14 TWIN: and it was not quietly run here instead"
+      (list (if (contains? (file-text trace-8) "log-open") 'RAN-IT-LOCALLY 'no-local-open)
+            (let ((found (string-append here "/found8.txt")))
+              (system (string-append "grep -rl LOST-ANSWER-CANARY " store-a " > " found " 2>/dev/null"))
+              (if (> (string-length (file-text found)) 0) 'IT-RAN 'not-in-the-store)))
+      '(no-local-open not-in-the-store))
+
+(system (string-append "pkill -f " silent-peer " 2>/dev/null"))
+
+
 ;; ---- F-10 `theourgia serve` is this program ---------------------------------
 ;;
 ;; ⛔ THE VERB USED TO EXEC A PYTHON DAEMON. It is Scheme now, and the row
