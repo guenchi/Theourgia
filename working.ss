@@ -14,7 +14,13 @@
 ;; limitations under the License.
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit!
-          working-restore!)
+          working-restore!
+          ;; ⚠️ EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
+          ;; TIME. The daemon has a seam that has to park inside exactly
+          ;; the lock a write takes, and a seam holding a path spelled
+          ;; independently would be holding a different file on the day
+          ;; this one moved -- and would still look like it was working.
+          (rename (lock-path draft-lock-path)))
   (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
           (theourgia wire) (theourgia digest)
           (only (theourgia log) store-writers writer-directory atomic-write!
@@ -210,10 +216,10 @@
               (let ((past (open-and-reduce store latest)))
                 (and (reduction? past) past))))))))
 
-  (define (working-write! store supplied id bytes rebase? . provenance)
+  (define (working-write! store state supplied id bytes rebase? . provenance)
     (problem
       (lambda ()
-        (let* ((writer (writer-for store supplied)) (state (open-and-reduce store))
+        (let* ((writer (writer-for store supplied)) (state (or state (open-and-reduce store)))
                (hash (and (pair? provenance) (car provenance)))
                (cut-text (and (pair? provenance) (pair? (cdr provenance)) (cadr provenance)))
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
@@ -318,11 +324,11 @@
   ;; restored onto the current hash would be a claim that it was edited
   ;; from the current text, and its next commit would overwrite whatever
   ;; happened in between without being refused.
-  (define (working-restore! store supplied version)
+  (define (working-restore! store state supplied version)
     (problem
       (lambda ()
         (let* ((writer (writer-for store supplied))
-               (state (and writer (open-and-reduce store)))
+               (state (and writer (or state (open-and-reduce store))))
                (found (and state
                            (find (lambda (r) (equal? version (cadr (car r))))
                                  (state-revoked state writer)))))
@@ -351,9 +357,9 @@
                     (list 'ok (list 'restored id) (list 'writer writer)
                           (list 'version version) (list 'based-on based-on)))))))))))) 
 
-  (define (working-read store supplied id . information)
+  (define (working-read store state supplied id . information)
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (open-and-reduce store)))
+      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
         (if (not writer) (invalid-writer)
             (let* ((e (and (safe-id? id) (entry-at store writer id)))
                    (active (and e (not (consumed? store state e))))
@@ -374,6 +380,11 @@
                             '(error working-unavailable non-text-projection))
                         (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes b)))))))))))))
 
+  ;; ⛔ NO `state` PARAMETER, AND THAT IS NOT AN OVERSIGHT. Every other
+  ;; verb in this family takes one because it folds the log to answer;
+  ;; this one removes a file from a writer's own directory and never
+  ;; looks at a reduction at all. A parameter it ignored would say it
+  ;; used the caller's value when it uses nothing.
   (define (working-discard! store supplied id)
     (problem (lambda ()
       (let ((writer (writer-for store supplied)))
@@ -405,9 +416,9 @@
                 (equal? (list-ref entry 7)
                         (if (string? src) (string->utf8 src) src))))))
 
-  (define (working-list store supplied)
+  (define (working-list store state supplied)
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (open-and-reduce store)))
+      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
         (if (not writer) (invalid-writer)
             (list 'ok (cons 'items
               (append

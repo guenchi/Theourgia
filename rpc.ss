@@ -335,14 +335,14 @@
                                   (if text (list (cons 'src text)) '())))
                     req)))))
 
-  (define (parse-set store actor args req options)
+  (define (parse-set store actor args req options state)
     (let ((expect (argument-option options "--if-unchanged")) (rest args))
       (let ((intent
               (cond
                 ((= 3 (length rest))
                  (list 'set (car rest) (string->symbol (cadr rest))
                        (if (and (string=? (cadr rest) "body")
-                                (eq? (code-field (open-and-reduce store) (car rest) 'mode) 'datum))
+                                (eq? (code-field (reduction-for store state) (car rest) 'mode) 'datum))
                            (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
                              (if (= (length forms) 1) (caar forms)
                                  (raise '(error bad-source (reason expected-one-form)))))
@@ -412,26 +412,26 @@
   (define (verb-table)
     (list
       (cons 'init
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (null? args))
                   (usage '(init))
                   (guarded (lambda ()
                              (let ((a (store-init! store)))
                                (if (eq? (car a) 'ok) a (cons 'error (cdr a)))))))))
-      (cons 'insert (lambda (store actor args req options) (guarded (lambda () (parse-insert store actor args req options)))))
-      (cons 'set (lambda (store actor args req options) (guarded (lambda () (parse-set store actor args req options)))))
-      (cons 'move (lambda (store actor args req options) (guarded (lambda () (parse-move store actor args req options)))))
+      (cons 'insert (lambda (store actor args req options state) (guarded (lambda () (parse-insert store actor args req options)))))
+      (cons 'set (lambda (store actor args req options state) (guarded (lambda () (parse-set store actor args req options state)))))
+      (cons 'move (lambda (store actor args req options state) (guarded (lambda () (parse-move store actor args req options)))))
       (cons 'del
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 1 (length args)))
                   (usage '(del <id>))
                   (guarded (lambda () (one-write store actor (list 'del (car args)) req))))))
-      (cons 'link (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'link args req)))))
-      (cons 'unlink (lambda (store actor args req options) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
+      (cons 'link (lambda (store actor args req options state) (guarded (lambda () (parse-edge store actor 'link args req)))))
+      (cons 'unlink (lambda (store actor args req options state) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
       (cons 'write
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 2 (length args))
-                  (working-write! store (argument-option options "--writer")
+                  (working-write! store state (argument-option options "--writer")
                                   (car args) (cadr args) (argument-option options "--rebase")
                                   (argument-option options "--based-on") (argument-option options "--working-cut")
                                   (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
@@ -441,38 +441,38 @@
       ;; the log. Folding it into `write` would make the two-argument
       ;; check above answer for a call that has one.
       (cons 'restore
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 1 (length args))
-                  (working-restore! store (argument-option options "--writer") (car args))
+                  (working-restore! store state (argument-option options "--writer") (car args))
                   (usage '(restore <version>)))))
       (cons 'commit
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (working-commit! store (argument-option options "--writer") args actor req
                                (argument-option-list options "--working-version"))))
       (cons 'drafts
-            (lambda (store actor args req options)
-              (if (null? args) (working-list store (argument-option options "--writer"))
+            (lambda (store actor args req options state)
+              (if (null? args) (working-list store state (argument-option options "--writer"))
                   (usage '(drafts)))))
       (cons 'discard
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (working-discard! store (argument-option options "--writer") (car args))
                   (usage '(discard <block>)))))
-      (cons 'batch (lambda (store actor args req options) (guarded (lambda () (parse-batch store actor args req)))))
+      (cons 'batch (lambda (store actor args req options state) (guarded (lambda () (parse-batch store actor args req)))))
       (cons 'split-suggest
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (guarded (lambda () (split-suggest (car args) (argument-option options "--output"))))
                   (usage '(split-suggest <file> ["--output" <review-file>])))))
       (cons 'import-code
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (guarded (lambda ()
                     (if (argument-option options "--datum") (import-datum store (car args) actor req)
                         (import-code store (car args) actor req (argument-option options "--allow-delete")))))
                   (usage '(import-code <dir> ["--allow-delete"])))))
       (cons 'export-code
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (guarded (lambda ()
                     (cond ((and (argument-option options "--datum") (argument-option options "--raw"))
@@ -481,12 +481,12 @@
                           (else (export-code store (car args) (argument-option options "--raw"))))))
                   (usage '(export-code <dir> ["--raw"])))))
       (cons 'def
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (= (length args) 2)
                   (guarded (lambda () (def-datum store (car args) (argument-option options "--under") (cadr args) actor req)))
                   (usage '(def <name> ["--under" <library>] <source>)))))
       (cons 'import-md
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 1 (length args)))
                   (usage '(import-md <dir> ["--allow-delete"]))
                   (guarded (lambda ()
@@ -494,12 +494,12 @@
                                    (import-md store (car args) actor
                                               (argument-option options "--allow-delete"))))))))
       (cons 'export-md
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 1 (length args)))
                   (usage '(export-md <dir> ["--with-ids"]))
                   (guarded (lambda () (export-md store (car args) (argument-option options "--with-ids")))))))
       (cons 'adopt
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (null? args))
                   (usage '(adopt))
                   (guarded (lambda ()
@@ -508,12 +508,12 @@
                                    (cons 'ok (cdr a))
                                    (cons 'error (cdr a)))))))))
       (cons 'check
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (null? args))
                   (usage '(check))
                   (guarded (lambda () (store-check store))))))
       (cons 'snapshot
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (null? args))
                   (usage '(snapshot))
                   (guarded (lambda ()
@@ -522,7 +522,7 @@
                                    (list 'ok (list 'snapshot (cadr a)) (list 'cut (caddr a)))
                                    (cons 'error (cdr a)))))))))
       (cons 'publish
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (let ((form '(publish <writer> <segment> <file> [<sha256>])))
                 (if (not (or (= 3 (length args)) (= 4 (length args))))
                     (usage form)
@@ -550,7 +550,7 @@
                                           (cons 'error
                                                 (if (eq? (car a) 'error) (cdr a) (list a)))))))))))))))
       (cons 'outline
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (let ((depth (argument-option options "--depth")) (rest args))
                 (cond
                   ((not (null? rest)) (usage '(outline ["--depth" <n>])))
@@ -558,9 +558,9 @@
                   (else
                    (guarded (lambda ()
                               (text (if depth
-                                        (outline-text (open-and-reduce store)
+                                        (outline-text (reduction-for store state)
                                                       (count-argument depth))
-                                        (outline-text (open-and-reduce store)))))))))))
+                                        (outline-text (reduction-for store state)))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections
@@ -573,14 +573,14 @@
       ;; An order-sensitive option list is a component whose meaning
       ;; depends on where it appears.
       (cons 'read
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (let ((md? (argument-option options "--md"))
                     (deep? (argument-option options "--recursive")) (rest args))
                 (cond
                   ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"])))
                   ((or (argument-option options "--working") (argument-option options "--working-info"))
                    (if (or md? deep?) '(error bad-request incompatible-working-options)
-                       (working-read store (argument-option options "--writer") (car rest) (argument-option options "--working-info"))))
+                       (working-read store state (argument-option options "--writer") (car rest) (argument-option options "--working-info"))))
                   (md?
                    (guarded
                      (lambda ()
@@ -596,7 +596,7 @@
                        ;; cell green, which is what a call with no
                        ;; consumer looks like; the other three
                        ;; `view-read`s in this file each kill a row.
-                       (let* ((state (open-and-reduce store))
+                       (let* ((state (reduction-for store state))
                               (b (state-read state (car rest))))
                          (cond
                            ((not b) (unknown-id state (car rest)))
@@ -636,7 +636,7 @@
                   (deep?
                    (guarded
                      (lambda ()
-                       (let* ((state (open-and-reduce store))
+                       (let* ((state (reduction-for store state))
                               (ids (subtree-ids state (car rest))))
                          (if (not ids)
                              (unknown-id state (car rest))
@@ -644,11 +644,11 @@
                   (else
                    (guarded
                      (lambda ()
-                       (let* ((state (open-and-reduce store))
+                       (let* ((state (reduction-for store state))
                               (b (view-read state (car rest))))
                          (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
       (cons 'refs
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 1 (length args)))
                   (usage '(refs <id>))
                   (guarded
@@ -662,14 +662,14 @@
                                         (cadr a)))
                             a)))))))
       (cons 'search
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 1 (length args)))
                   (usage '(search <query>))
                   (guarded (lambda ()
                              (items (map (lambda (hit) (cons 'hit hit))
                                          (store-search store (car args)))))))))
       (cons 'log
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (or (null? args) (= 1 (length args))))
                   (usage '(log [<id>]))
                   (guarded
@@ -686,7 +686,7 @@
                                         (cadr a)))
                             a)))))))
       (cons 'tag
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (cond
                 ((null? args)
                  (guarded
@@ -707,7 +707,7 @@
                  (guarded (lambda () (one-write store actor (list 'tag (car args)) req))))
                 (else (usage '(tag [<name>]))))))
       (cons 'diff
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (= 2 (length args)))
                   (usage '(diff <cut> <cut>))
                   (guarded
@@ -715,7 +715,7 @@
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
       (cons 'conflicts
-            (lambda (store actor args req options)
+            (lambda (store actor args req options state)
               (if (not (null? args))
                   (usage '(conflicts))
                   (guarded (lambda () (items (store-conflicts store)))))))))
@@ -762,12 +762,29 @@
        (let ((nodes (parse-arguments (car request) (cdr request))))
          (if (and (pair? nodes) (eq? (car nodes) 'error)) nodes
              (rpc-dispatch-parsed store (car request) nodes
-               (if (pair? rest) (car rest) "rpc")))))))
+               (if (pair? rest) (car rest) "rpc")
+               (and (pair? rest) (pair? (cdr rest)) (cadr rest))))))))
 
   ;; Parsed nodes are the CLI's internal handoff. All verb arguments and
   ;; their fingerprint are derived from the same tokenization.
-  (define (rpc-dispatch-parsed store verb nodes actor)
-    (let* ((entry (assq verb verbs))
+  ;; ⛔ `state` IS A VALUE THE CALLER ALREADY HOLDS, AND HANDLERS MAY NOT
+  ;; CHANGE IT. #f means "there is none, load one" -- which is what every
+  ;; caller that reaches a store by its path passes. A daemon passes the
+  ;; reduction it published: one fold, shared by every reader, never
+  ;; mutated after it was published. A handler that modified it would be
+  ;; modifying what every other reader sees, in another process, with
+  ;; nothing to report it.
+  ;;
+  ;; ⚠️ AND IT IS ONLY EVER THE WHOLE STORE. A verb asking for a
+  ;; historical cut is asking for a DIFFERENT reduction and still opens
+  ;; the log for it; passing this one there would answer a question about
+  ;; the past with the present.
+  (define (reduction-for store state)
+    (or state (open-and-reduce store)))
+
+  (define (rpc-dispatch-parsed store verb nodes actor . rest)
+    (let* ((state (and (pair? rest) (car rest)))
+           (entry (assq verb verbs))
            (id (argument-option nodes "--req"))
            (cursor (argument-option nodes "--cursor"))
            (after (and cursor (parse-after cursor)))
@@ -795,7 +812,7 @@
         ((eq? after 'malformed) '(error bad-request malformed-cursor))
         (else ((cdr entry) store actor args
                (and id (make-write-request actor verb (argument-strings options) id after))
-               options)))))
+               options state)))))
 
   ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader
   ;; implements the whole of Scheme's numeric syntax, and `#e1e99999999`

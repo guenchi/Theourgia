@@ -57,8 +57,8 @@
 (define (read-bytes p) (call-with-port (open-file-input-port p) get-bytevector-all))
 (define binary (bytevector 255 0 10 128))
 (want "WS-15 arbitrary bytes are durable in one envelope"
-      (rpc-ok? (working-write! store #f id binary #f)) #t)
-(want "WS-15 binary bytes survive reopening" (working-read store #f id) (list 'ok (list 'bytes binary)))
+      (rpc-ok? (working-write! store #f #f id binary #f)) #t)
+(want "WS-15 binary bytes survive reopening" (working-read store #f #f id) (list 'ok (list 'bytes binary)))
 (want "WS-15 a non-text draft is not silently converted on commit"
       (car (call 'commit id)) 'error)
 (call 'write id "saved")

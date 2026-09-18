@@ -63,6 +63,22 @@
           ((= (bytevector-u8-ref bv i) 10) #t)
           (else (loop (+ i 1))))))
 
+;; The last datum a child printed, past whatever banners came first.
+(define (last-datum path)
+  (call-with-input-file path
+    (lambda (port)
+      (let loop ((seen 'nothing))
+        (let ((d (guard (e (#t 'skip)) (read port))))
+          (cond ((eof-object? d) seen)
+                ((eq? d 'skip) (let skip ((c (read-char port)))
+                                 (cond ((eof-object? c) seen)
+                                       ((char=? c #\newline) (loop seen))
+                                       (else (skip (read-char port))))))
+                (else (loop d))))))))
+
+(define (condition-text e)
+  (if (and (condition? e) (message-condition? e)) (condition-message e) 'raised))
+
 (start-scheduler
   (lambda ()
     (let ((main self))
@@ -751,6 +767,72 @@
                                      (`#(DOWN ,who ,r)
                                       (if (eq? who stranger) 'still-there (list 'other who))))
                             'still-there))))))
+
+      ;; ---- N-19 a read that will not start ----------------------------
+      ;;
+      ;; ⛔ igropyr COUNTS A NEGATIVE `uv_read_start` AND ANSWERS #f: it
+      ;; does not close the connection and it sends no message. So an
+      ;; adapter that answered `not-reading` and waited would be waiting
+      ;; for a hook that is never going to run -- it dies instead, and
+      ;; the runtime hands the connection back.
+      ;;
+      ;; ⚠️ IT RUNS IN A CHILD, WITH INJECTION ON. The seam only exists in
+      ;; a build expanded with `IGROPYR_INJECT=on`, and this suite is not.
+      ;; ⛔ A row that quietly skipped itself when the variable was unset
+      ;; would be the kind of green that means nothing; the child always
+      ;; runs, and its absence of output is a failure with a reading.
+      (let* ((src (string-append "/tmp/n19-" (number->string (get-process-id)) ".ss"))
+             (out (string-append "/tmp/n19-" (number->string (get-process-id)) ".out"))
+             (dirs (getenv "CHEZSCHEMELIBDIRS"))
+             (exts (getenv "CHEZSCHEMELIBEXTS")))
+        (unless (and (string? dirs) (string? exts))
+          (assertion-violation 'facade-net
+            "this row needs the library path in the environment: source test/env.sh"
+            (list dirs exts)))
+        (call-with-output-file src
+          (lambda (port)
+            (for-each (lambda (l) (display l port) (newline port))
+              (list
+                "(import (chezscheme) (theourgia sched) (theourgia net)"
+                "        (only (igropyr tcp) conn-count uv-accept-failure-counts)"
+                "        (only (igropyr inject-control) inject-arm-return!))"
+                "(define sock (string-append \"/tmp/n19s-\" (number->string (get-process-id)) \".sock\"))"
+                "(define (read-starts) (cdr (assq 'read-start (uv-accept-failure-counts))))"
+                "(start-scheduler"
+                "  (lambda ()"
+                "    (let ((main self))"
+                "      (spawn (lambda ()"
+                "        (let ((me self))"
+                "          (listen! sock 16 9000)"
+                "          (receive (after 8000 (send main (list 'r 'no-accept)))"
+                "            (`(accepted ,ref)"
+                "             (let ((before-c (conn-count)) (before-n (read-starts)))"
+                "               (monitor (conn-ref-pid ref))"
+                "               (inject-arm-return! 'read-start-neg -22 1)"
+                "               (let ((answer (conn-read-start! ref)))"
+                "                 (sleep-ms 300)"
+                "                 (send main (list 'r (list (if (pair? answer) (car answer) answer)"
+                "                                           (if (and (pair? answer) (pair? (cadr answer)))"
+                "                                               (car (cadr answer)) (cadr answer))"
+                "                                           (- (read-starts) before-n)"
+                "                                           (if (<= (conn-count) before-c) 'closed 'still-open)))))))))))"
+                "      (sleep-ms 300)"
+                "      (connect! sock 9000)"
+                "      (receive (after 9000 (begin (write '(r timed-out)) (newline) (exit 1)))"
+                "        (`(r ,what) (write (list 'r what)) (newline) (exit 0))"
+                "        (`(connected ,p ,ref) "
+                "         (receive (after 9000 (begin (write '(r timed-out)) (newline) (exit 1)))"
+                "           (`(r ,what) (write (list 'r what)) (newline) (exit 0))))))))"))))
+        (system (string-append "IGROPYR_INJECT=on CHEZSCHEMELIBDIRS=" dirs
+                               " CHEZSCHEMELIBEXTS='" exts "'"
+                               " scheme --script " src " > " out " 2>&1"))
+        ;; ⚠️ THE CHILD PRINTS A BANNER FIRST -- a build with injection on
+        ;; says so -- so the row reads the LAST datum, not the first.
+        (want "N-19 a read that will not start ends the adapter and gives the connection back"
+              (guard (e (#t (list 'unreadable (condition-text e))))
+                (let ((answer (last-datum out)))
+                  (if (and (pair? answer) (eq? 'r (car answer))) (cadr answer) answer)))
+              '(down read-start-refused 1 closed)))
 
       (printf "rows: ~a\n~a failures\nfacade-net complete\n" rows bad)
       (exit (if (zero? bad) 0 1)))))

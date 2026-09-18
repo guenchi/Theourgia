@@ -1,15 +1,12 @@
 """Bounded byte transport and Unix listener lifecycle; no verb semantics."""
 from __future__ import annotations
-import asyncio
 import errno
-import fcntl
 import os
 from pathlib import Path
 import re
 import selectors
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import time
@@ -130,179 +127,17 @@ def exchange(store, actor, style, request, socket_path=None):
                 if port and not port.closed:
                     port.close()
 
-class SocketOwnership:
-    def __init__(self, path):
-        self.path = Path(path)
-        self.fd = None
-        self.identity = None
-    def claim(self):
-        self.fd = os.open(str(self.path)+'.serve.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        try:
-            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError('in-use')
-        try:
-            current = self.path.lstat()
-        except FileNotFoundError:
-            return
-        if not stat.S_ISSOCK(current.st_mode) or current.st_uid != os.getuid():
-            raise ValueError('occupied')
-        with socket.socket(socket.AF_UNIX) as probe:
-            probe.settimeout(CONNECT_SECONDS)
-            try:
-                probe.connect(str(self.path))
-            except OSError as exc:
-                if exc.errno != errno.ECONNREFUSED:
-                    raise ValueError('unverifiable')
-            else:
-                raise ValueError('in-use')
-        latest = self.path.lstat()
-        if (latest.st_dev, latest.st_ino) != (current.st_dev, current.st_ino):
-            raise ValueError('unverifiable')
-        self.path.unlink()
-    def bound(self):
-        current = self.path.lstat()
-        self.identity = current.st_dev, current.st_ino
-        os.chmod(self.path, 0o600)
-    def close(self):
-        if self.identity:
-            try:
-                current = self.path.lstat()
-                if (current.st_dev, current.st_ino) == self.identity:
-                    self.path.unlink()
-            except FileNotFoundError:
-                pass
-        if self.fd is not None:
-            os.close(self.fd)
-            self.fd = None
-
-async def run_server(store, path, actor):
-    from local import CORE, runtime_env
-    ownership = SocketOwnership(path)
-    server = worker = consumer = None
-    clients = {}
-    signals = 0
-    draining = False
-    queue = asyncio.Queue(maxsize=128)
-    def count_signal():
-        nonlocal signals
-        signals += 1
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, count_signal)
-    async def serve_queue():
-        while True:
-            frame, result = await queue.get()
-            try:
-                if draining:
-                    answer = b'(error busy (reason draining))\n'
-                else:
-                    trace('daemon-dispatch', len(frame))
-                    worker.stdin.write(frame)
-                    await worker.stdin.drain()
-                    answer = await worker.stdout.readline()
-                    if not answer or not answer.endswith(b'\n') or len(answer) > ANSWER_LIMIT:
-                        raise RuntimeError('worker-answer')
-                if not result.done():
-                    result.set_result(answer)
-            except Exception:
-                if not result.done():
-                    result.set_result(b'(error transport-unknown (reason worker-exit))\n')
-            finally:
-                queue.task_done()
-    async def peer(reader, writer):
-        task = asyncio.current_task()
-        clients[task] = 'reading'
-        try:
-            while not draining:
-                clients[task] = 'reading'
-                try:
-                    frame = await asyncio.wait_for(reader.readline(), PEER_SECONDS)
-                except (ValueError, asyncio.LimitOverrunError):
-                    writer.write(b'(error bad-request (reason frame-limit))\n')
-                    await writer.drain()
-                    break
-                except asyncio.TimeoutError:
-                    break
-                if not frame:
-                    break
-                if not frame.endswith(b'\n'):
-                    answer = b'(error bad-request (reason incomplete-frame))\n'
-                elif len(frame) > FRAME_LIMIT:
-                    answer = b'(error bad-request (reason frame-limit))\n'
-                else:
-                    try:
-                        frame.decode('utf-8', 'strict')
-                    except UnicodeError:
-                        answer = b'(error bad-request (reason invalid-utf8))\n'
-                    else:
-                        clients[task] = 'queued'
-                        result = loop.create_future()
-                        try:
-                            queue.put_nowait((frame, result))
-                            answer = await result
-                        except asyncio.QueueFull:
-                            answer = b'(error busy (reason queue-limit))\n'
-                clients[task] = 'writing'
-                writer.write(answer)
-                await asyncio.wait_for(writer.drain(), PEER_SECONDS)
-                if not frame.endswith(b'\n'):
-                    break
-        except (ConnectionError, asyncio.TimeoutError):
-            pass
-        finally:
-            writer.close()
-            clients.pop(task, None)
-    try:
-        ownership.claim()
-        worker = await asyncio.create_subprocess_exec(runtime_env().get('THEOURGIA_SCHEME', 'scheme'), '--script', str(CORE/'rpc-worker.ss'), str(Path(store).resolve()), actor,
-                                                       env=runtime_env(), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, limit=ANSWER_LIMIT,
-                                                       start_new_session=True)
-        consumer = asyncio.create_task(serve_queue())
-        server = await asyncio.start_unix_server(peer, path=path, limit=FRAME_LIMIT)
-        ownership.bound()
-        trace('daemon-listening', path)
-        while not signals and worker.returncode is None:
-            await asyncio.sleep(.02)
-        draining = True
-        server.close()
-        for task, phase in list(clients.items()):
-            if phase == 'reading':
-                task.cancel()
-        deadline = loop.time() + DRAIN_SECONDS
-        while (queue._unfinished_tasks or any(not t.done() for t in clients)) and signals < 2 and loop.time() < deadline:
-            await asyncio.sleep(.02)
-        if queue._unfinished_tasks or signals > 1 or loop.time() >= deadline:
-            return 75
-        return 0 if worker.returncode is None else 75
-    except (ValueError, OSError) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) else 'unavailable'
-        print(f'(error socket-unavailable (reason {reason}))')
-        return 1
-    finally:
-        if server:
-            server.close()
-        pending_clients = list(clients)
-        for task in pending_clients:
-            task.cancel()
-        if consumer:
-            consumer.cancel()
-        if worker:
-            if worker.returncode is None:
-                os.killpg(worker.pid, signal.SIGKILL)
-            await worker.wait()
-        await asyncio.gather(*pending_clients, *([consumer] if consumer else []), return_exceptions=True)
-        if server:
-            await server.wait_closed()
-        ownership.close()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            loop.remove_signal_handler(sig)
-
-def serve(args):
-    import argparse
-    parser = argparse.ArgumentParser(prog='theourgia serve')
-    parser.add_argument('store')
-    parser.add_argument('--socket')
-    parser.add_argument('--actor', default=os.environ.get('THEOURGIA_ACTOR') or os.environ.get('USER') or 'cli')
-    ns = parser.parse_args(args)
-    return asyncio.run(run_server(ns.store, ns.socket or str(Path(ns.store)/'socket'), ns.actor))
+# THE SERVER THAT USED TO BE HERE IS GONE, AND SO IS `SocketOwnership`.
+#
+# `theourgia serve` is Scheme now -- (theourgia daemon) -- and the
+# command line reaches it itself. What stood here was a second daemon and
+# a second implementation of the socket's ownership rules, in another
+# language, kept in step with the first by hand.
+#
+# ⛔ WHAT IS LEFT IS `exchange`, AND IT HAS ONE CALLER: mcp/server.py.
+# It is kept because that caller is still here, and it goes when that
+# caller does. ⚠️ It speaks `(transport-v1 ...)` and expects
+# `(transport-answer ...)`, which is NOT what the Scheme daemon speaks --
+# measured: against a Scheme daemon it comes back
+# `(error transport-invalid-answer)`. Its fall-back path, which runs a
+# local worker when nothing is listening, still works.

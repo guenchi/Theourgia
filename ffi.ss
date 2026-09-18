@@ -257,7 +257,8 @@
           setsid! session-id signal-pid! process-alive-signal0?
           setrlimit! getrlimit RLIMIT_CPU process-rss-bytes
           barrier!
-          lock-acquire! lock-release! lock-fd lock-held?
+          lock-acquire! lock-try-acquire! current-lock-acquire
+          lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
@@ -356,6 +357,15 @@
   ;; stays portable to a host with no environment; this is the one place
   ;; that knows there is one.
   (define trace-switch-installed
+    ;; ⛔ THIS OVERWRITES ANY `trace-enable!` MADE BEFORE THIS LIBRARY
+    ;; LOADS. A program that calls `(trace-enable! #t)` and then reaches
+    ;; a path that first loads this file gets its setting replaced by
+    ;; whatever the environment says -- and the failure is silent:
+    ;; `trace-event!` is `(when (trace-enabled?) ...)`, so every call
+    ;; afterwards returns perfectly normally and writes nothing. Measured
+    ;; while chasing a daemon row: the flag read #t in the launching
+    ;; script and #f inside the scheduler. ⇒ ACROSS PROCESSES, TURN
+    ;; TRACING ON WITH `THEOURGIA_TRACE=1`, never with a call.
     (begin (trace-enable! (equal? (getenv "THEOURGIA_TRACE") "1")) #t))
 
   ;; ---- the filesystem operations that are not R6RS ------------------------
@@ -838,7 +848,12 @@
   ;; and a step no case can arm reads, in every log, exactly like a step
   ;; that passed.
   (define known-stages
-    '(deliver-barrier commit registry publish snapshot repair report working index))
+    ;; `conn` is not a step in making something durable, and it is here
+    ;; on purpose: the daemon's connection processes need a way to be
+    ;; made to die, and a fault that cannot be named is a failure mode no
+    ;; row can arm. It is validated here so a misspelling is refused at
+    ;; startup like every other one.
+    '(deliver-barrier commit registry publish snapshot repair report working index conn))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -939,7 +954,8 @@
      ;; would arm, announce itself, and inject nothing.
      (define known-faults
        '(short-write eintr-once write-eio-after-partial write-eio-first
-         fsync-fail no-log-fsync stat-fail open-fail report-fail))
+         fsync-fail no-log-fsync stat-fail open-fail report-fail
+         conn-raise store-raise writer-raise writer-raise-late writer-hold))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -1712,6 +1728,32 @@
           (trace-event! 'flock subject #f))
         (make-lock-handle path mode fd #t))))
 
+  ;; ⛔ THE ATTEMPT THAT NEVER WAITS. `lock-acquire!` blocks when the lock
+  ;; is held, and blocking is exactly what an actor may not do: the flock
+  ;; runs on the scheduler's own thread, so a process parked in it stops
+  ;; every other process in the VM -- including the one that would have
+  ;; released the lock. A daemon that finds the lock held has to SAY so
+  ;; and leave, and a store process retrying has to come back and try
+  ;; again later; both need an answer, not a wait.
+  ;;
+  ;; Answers a lock handle, or #f when somebody else holds it.
+  (define (lock-try-acquire! path mode)
+    (unless (string? path)
+      (assertion-violation 'lock-try-acquire! "path must be a string" path))
+    (let ((m (mode->int 'lock-try-acquire! mode)))
+      (let ((fd (c-open path O_RDONLY)))
+        (when (< fd 0) (fail! 'open path))
+        (hashtable-set! fd-paths fd path)
+        (cond
+          (no-flock? (make-lock-handle path mode fd #t))
+          (else
+           (let ((rc (guard (e (#t (close-quietly fd) (raise e)))
+                       (c-flock fd (+ m LOCK_NB)))))
+             (cond
+               ((< rc 0) (close-quietly fd) #f)
+               (else (trace-event! 'flock (cons path mode) #f)
+                     (make-lock-handle path mode fd #t)))))))))
+
   ;; Idempotent, because the caller owning the release will sometimes
   ;; release on two paths out of the same region and must not have to
   ;; track which one ran.
@@ -1749,14 +1791,39 @@
   ;;
   ;; BUILT ON THE PAIR ABOVE so the acquisition sequence has one
   ;; implementation. What this adds is the release, on every path out.
+  ;; ⛔ HOW A LOCK IS TAKEN IS THE PROGRAM'S DECISION, NOT THIS FILE'S.
+  ;; The default is the blocking acquire, so every existing caller --
+  ;; the CLI above all -- behaves exactly as before. A daemon sets this
+  ;; once, for its whole lifetime, to an attempt that never waits: an
+  ;; actor parked in `flock` runs on the scheduler's own thread and
+  ;; stops every other process in the VM, including the one that would
+  ;; have released the lock.
+  ;;
+  ;; ⚠️ AND IT IS SET, NOT PARAMETERIZED AROUND A PROCESS. Measured:
+  ;; Chez parameters are per OS THREAD, and green threads share one --
+  ;; so a `parameterize` in one actor is visible to every actor that
+  ;; runs during its extent, and gone again afterwards. Neither half is
+  ;; what a per-process override would need. What keeps the CLI on the
+  ;; default is that nothing in the CLI ever sets this.
+  (define current-lock-acquire (make-parameter lock-acquire!))
+
+  ;; ⛔ THE PAIR IS OVERRIDDEN TOGETHER OR NOT AT ALL. A strategy in
+  ;; which somebody other than the caller opens the descriptor must
+  ;; also be the one to close it: a release that ran here would shut a
+  ;; descriptor its owner still has in a table, and the number would be
+  ;; handed to the next `open` in this same VM while that table still
+  ;; named it. Symmetry is the point, so the default is the matching
+  ;; direct release and every caller below goes through both.
+  (define current-lock-release (make-parameter lock-release!))
+
   (define (call-with-lock who path mode-name proc)
     (unless (procedure? proc)
       (assertion-violation who "not a procedure" proc))
-    (let ((l (lock-acquire! path mode-name)))
+    (let ((l ((current-lock-acquire) path mode-name)))
       (dynamic-wind
         void
         (lambda () (proc (lock-fd l)))
-        (lambda () (lock-release! l)))))
+        (lambda () ((current-lock-release) l)))))
 
   (define (with-exclusive-lock path proc)
     (call-with-lock 'with-exclusive-lock path 'exclusive proc))

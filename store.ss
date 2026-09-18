@@ -17,7 +17,8 @@
 ;; half -- open a store, replay what is durable into a reduction, and
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
-  (export store-resident-cache! open-and-reduce with-store-write store-init! nearest-ids store-snapshot!
+  (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
+          store-init! nearest-ids store-snapshot!
           store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict)
@@ -1424,6 +1425,79 @@
                                       delivered marks)
                         out))))))
 
+  ;; ⛔ PUBLISHED WHILE THE LOCK IS STILL HELD AND BEFORE THE ANSWER GOES
+  ;; BACK. Both halves are load-bearing. Under the lock, because a value
+  ;; published after the unwind would describe a store another session
+  ;; was already free to change. Before the answer, because that is what
+  ;; makes a client's own writes visible to its own next read: the answer
+  ;; is the client's evidence that the write happened, and by the time it
+  ;; has that evidence the new value is already the one every reader
+  ;; sees.
+  ;;
+  ;; ⭐ AND IT IS THE LIVE FOLD, NOT A REPLAY OF WHAT WAS JUST WRITTEN.
+  ;; `state` is the reduction this session has been applying records into
+  ;; -- `reduce-apply!` updates it in place -- so it knows things a fresh
+  ;; replay would have to rediscover, the consumption index of a plan
+  ;; that has just finished among them. Publishing a re-read would be a
+  ;; second supplier of the same fact, and the two would differ exactly
+  ;; where this one is interesting.
+  ;;
+  ;; ⚠️ PUBLISHING A MUTABLE OBJECT IS SAFE HERE FOR ONE REASON, AND IT
+  ;; IS WORTH WRITING DOWN BECAUSE IT READS LIKE A DEFECT: every call to
+  ;; `with-store-write` builds its OWN `(reduce-empty)` and folds into
+  ;; that, so once a value has been published nothing ever mutates it
+  ;; again. ⛔ It does not need a defensive copy, and a reader that
+  ;; changed it would be changing what every other reader sees -- which
+  ;; is why the readers are handed it as a value they may not modify.
+  ;;
+  ;; ⚠️ A RAISE PUBLISHES NOTHING. The body turns every failure it can
+  ;; describe into an answer, so a raise that gets past it is one nothing
+  ;; here can say the shape of -- and a value folded from a session in
+  ;; that condition is not one to hand to readers.
+  ;; ⛔ AND THERE IS NO ROW BEHIND "IT MUST BE THE LIVE FOLD", because
+  ;; the claim turned out not to be true. It was written down as "only
+  ;; the live fold knows the consumption index of a plan that has just
+  ;; finished", and that was hoped rather than measured. Measured, on a
+  ;; full `init -> insert -> write -> commit`, comparing this value with
+  ;; a fresh `open-and-reduce` taken afterwards: `drafts`, the outline,
+  ;; the applied cuts, `state-consumed?` and `state-consumed-completions`
+  ;; ALL AGREE. The consumption index is rebuilt from the plan record,
+  ;; which carries what it consumed, so a replay finds it.
+  ;;
+  ;; ⭐ SO PUBLISHING THE LIVE FOLD IS AN ECONOMY, NOT A CORRECTNESS
+  ;; PROPERTY: it saves folding the whole log a second time on every
+  ;; write. ⛔ A row here would have to be green against both versions,
+  ;; and a row that cannot fail says nothing -- so the reason is written
+  ;; here instead of a row being written that looks like cover.
+  ;;
+  ;; ⚠️ THE OTHER VERSION ALSO CANNOT BE BUILT. This runs INSIDE the
+  ;; store's lock; a `open-and-reduce` here would ask for the same lock
+  ;; on a second descriptor, which flock refuses to the same process --
+  ;; so under a daemon's non-blocking strategy it does not publish a
+  ;; wrong value, it fails with `store-busy`.
+  (define (publish-after state thunk)
+    (let ((answers (thunk)))
+      (publish-hook state)
+      answers))
+
+  ;; ⛔ A PLAIN VARIABLE SET ONCE, ⛔ NOT A PARAMETER. A parameter would
+  ;; say that this can differ between callers, and it cannot: there is
+  ;; one publication for the whole VM and only one process ever gets
+  ;; here. It would also be saying something untrue about how it is
+  ;; scoped -- measured, on the locking hooks: Chez parameters are per OS
+  ;; THREAD, and every green thread shares one, so a `parameterize` is
+  ;; visible to whatever else runs during its extent and gone afterwards.
+  ;; Neither half is what a per-caller override would need, and neither
+  ;; is what this wants.
+  ;;
+  ;; The default does nothing: a CLI run has one reader, itself, and it
+  ;; already holds the value.
+  (define publish-hook (lambda (state) (if #f #f)))
+  (define (store-publish-hook! procedure)
+    (unless (procedure? procedure)
+      (assertion-violation 'store-publish-hook! "not a procedure" procedure))
+    (set! publish-hook procedure))
+
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))
           (req (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
@@ -1448,6 +1522,9 @@
         (dynamic-wind
           (lambda () (if #f #f))
           (lambda ()
+            (publish-after
+              state
+              (lambda ()
             ;; A RAISE THAT GOT PAST EVERY INNER GUARD IS STILL AN ANSWER
             ;; WHEN BYTES WERE WRITTEN. `unknown` is a promise the store
             ;; can only keep about records that survive -- it means "send
@@ -1579,7 +1656,7 @@
                             ;; then only ever say how far the whole batch
                             ;; got -- never which item.
                             (else
-                             (write-batch! s state req intents))))))))))
+                             (write-batch! s state req intents))))))))))))
           (lambda () (guard (e (#t #f)) (log-end! s)))))))
 
   ;; THE ACTOR A REQUEST WRITES. Without it the record carries only a

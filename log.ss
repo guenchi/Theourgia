@@ -84,6 +84,7 @@
           atomic-write!
           segment-file-name segment-file-number
           store-writers writer-directory retired-successor retired-of
+          store-state-snapshot
           barrier-artefacts barrier-required run-barrier! publish-durable?
           uncertain-path uncertain-derived uncertain-load uncertain-write!
           enumerate-segment-files
@@ -340,6 +341,59 @@
                                   (file-is-regular? (string-append dir "/" name))
                                   n)))
                          (directory-entries dir)))))))
+
+  ;; ---- what this store looked like ----------------------------------------
+  ;;
+  ;; ⛔ A CHEAP READING THAT CHANGES WHEN ANYTHING DURABLE CHANGES, taken
+  ;; WITHOUT opening the log and WITHOUT taking the store's lock. It
+  ;; exists so a reader holding a value loaded earlier can ask "is this
+  ;; still what is on the disk" between requests: opening the log to find
+  ;; out would cost more than the read it is protecting, and would take
+  ;; the very lock the arrangement exists to stay out of.
+  ;;
+  ;; ⚠️ IT LIVES HERE BECAUSE THE LAYOUT LIVES HERE. Spelling these paths
+  ;; out anywhere else would be a second place that knows where a
+  ;; writer's manifest is -- and the day the layout moved, the copy would
+  ;; go on watching files that no longer exist and report "unchanged"
+  ;; for ever, which is the failure this is meant to catch.
+  ;;
+  ;; ⚠️ A MISSING FILE IS A STATE, so it reads as #f rather than being
+  ;; left out: a `retired.sexp` APPEARING is exactly the kind of change
+  ;; this has to notice, and an entry that is simply absent from both
+  ;; snapshots compares equal to itself.
+  ;;
+  ;; TWO READINGS PER WRITER DIRECTORY, because they catch two different
+  ;; things: the DIRECTORY's own version changes when an entry is added
+  ;; or removed (a new segment, a quarantine file appearing), and the
+  ;; CURRENT segment's version changes when bytes are appended to it
+  ;; without any entry changing. Neither one alone covers the other.
+  (define (path-snapshot path)
+    (cons path (guard (e (#t #f)) (path-version path))))
+
+  (define (directory-snapshot path)
+    (cons (path-snapshot path)
+          (map (lambda (name) (path-snapshot (string-append path "/" name)))
+               (guard (e (#t '()))
+                 (if (file-is-directory? path) (directory-entries path) '())))))
+
+  (define (store-state-snapshot store)
+    (cons
+      (path-snapshot (string-append store "/writers"))
+      (map
+        (lambda (writer)
+          (let* ((dir (writer-directory store writer))
+                 (segments (enumerate-segment-files store writer))
+                 (current (if (null? segments) #f (car (list-sort > segments)))))
+            (list
+              (path-snapshot dir)
+              (map (lambda (name) (path-snapshot (string-append dir "/" name)))
+                   '("published.sexp" "owner.sexp" "retired.sexp" "quarantine.sexp"))
+              (if current
+                  (path-snapshot (string-append dir "/" (segment-file-name current)))
+                  (cons 'no-segment #f))
+              (directory-snapshot (string-append dir "/damaged"))
+              (directory-snapshot (string-append dir "/incoming")))))
+        (store-writers store))))
 
   ;; ---- the manifest -------------------------------------------------------
 
@@ -1433,9 +1487,9 @@
         ;; every writer's discovery -- not to one discover-prefix call,
         ;; and every exit releases it.
         (let ((lock (if (eq? lock-context 'acquire-shared)
-                        (lock-acquire! (string-append store "/lock") 'shared)
+                        ((current-lock-acquire) (string-append store "/lock") 'shared)
                         #f)))
-          (guard (e (#t (when lock (lock-release! lock)) (raise e)))
+          (guard (e (#t (when lock ((current-lock-release) lock)) (raise e)))
             (let* ((writers (store-writers store))
                    (prefixes (map (lambda (w)
                                     (cons w (discover-prefix store w lock-context)))
@@ -1680,7 +1734,7 @@
       (dynamic-wind
         (lambda () (if #f #f))
         (lambda ()
-          (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
+          (let ((lock ((current-lock-acquire) (string-append store "/lock") 'exclusive)))
             (vector-set! held 0 lock)
             (guard (e (#t (raise e)))
               (trace-event! 'enter-critical
@@ -1728,7 +1782,7 @@
             (let ((lock (vector-ref held 0)))
               (when lock
                 (vector-set! held 0 #f)
-                (guard (e (#t (if #f #f))) (lock-release! lock))))
+                (guard (e (#t (if #f #f))) ((current-lock-release) lock))))
             (release-store! store))))))
 
   ;; THE APPLIED CURSOR MOVES ONLY ON THE REDUCER'S WORD. Reading a
@@ -2013,7 +2067,7 @@
       (lambda ()
         (dynamic-wind
           (lambda () (if #f #f))
-          (lambda () (lock-release! (session-lock s)))
+          (lambda () ((current-lock-release) (session-lock s)))
           (lambda () (release-store! (session-store s))))))
     'ended)
 
@@ -2659,11 +2713,11 @@
     (when (store-lock-collision?)
       (assertion-violation 'with-machine-lock
         "THEOURGIA_HOME must not put the machine lock inside a store" (home-now)))
-    (let ((lock (lock-acquire! (machine-lock-path) 'exclusive)))
+    (let ((lock ((current-lock-acquire) (machine-lock-path) 'exclusive)))
       (dynamic-wind
         (lambda () (if #f #f))
         thunk
-        (lambda () (guard (e (#t (if #f #f))) (lock-release! lock))))))
+        (lambda () (guard (e (#t (if #f #f))) ((current-lock-release) lock))))))
 
   ;; STEP 7: THE WATER MARK IS RECHECKED AND RAISED IN ONE CRITICAL
   ;; SECTION. Checking at load time is not enough -- another process can
@@ -3483,10 +3537,10 @@
 
   (define (log-publish! store writer segment bytes sha)
     (claim-store! store 'publish)
-    (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
-      (let ((answer (guard (e (#t (lock-release! lock) (release-store! store) (raise e)))
+    (let ((lock ((current-lock-acquire) (string-append store "/lock") 'exclusive)))
+      (let ((answer (guard (e (#t ((current-lock-release) lock) (release-store! store) (raise e)))
                       (publish-locked! store writer segment bytes sha))))
-        (lock-release! lock)
+        ((current-lock-release) lock)
         (release-store! store)
         answer)))
 
@@ -4360,10 +4414,10 @@
   ;; already held, because it runs on the write-open path that took it.
   (define (adopt! store)
     (claim-store! store 'adopt)
-    (let ((lock (lock-acquire! (string-append store "/lock") 'exclusive)))
-      (let ((answer (guard (e (#t (lock-release! lock) (release-store! store) (raise e)))
+    (let ((lock ((current-lock-acquire) (string-append store "/lock") 'exclusive)))
+      (let ((answer (guard (e (#t ((current-lock-release) lock) (release-store! store) (raise e)))
                       (adopt-locked! store))))
-        (lock-release! lock)
+        ((current-lock-release) lock)
         (release-store! store)
         answer)))
 
@@ -5391,7 +5445,7 @@
 
   (define (release-load! ls)
     (let ((l (load-session-lock ls)))
-      (when l (load-session-lock-set! ls #f) (lock-release! l))))
+      (when l (load-session-lock-set! ls #f) ((current-lock-release) l))))
 
   (define (load-outcome ls) (load-session-outcome ls))
 

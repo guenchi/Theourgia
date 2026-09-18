@@ -146,6 +146,44 @@ else
   echo "preflight: NOT CHECKED -- expansion-branches.ss is not in this directory"
 fi
 
+# THE SECOND PREFLIGHT, AND IT ANSWERS A QUESTION NOTHING ELSE ASKS.
+#
+# A MISSING CLOSER IS NOT A SYNTAX ERROR: the reader takes it, and the
+# definitions after the short form become part of its body. What comes
+# out is an "unbound identifier" naming something defined far below,
+# reported where it is USED. Measured on daemon.ss, 2026-09-18: one `)`
+# swallowed twenty-six definitions and the report was `unbound
+# identifier directory-of at line 219`, a hundred and eighty lines from
+# the cause -- and the whole file still balanced, because a second edit
+# had one closer too many.
+#
+# ⛔ IT RUNS BEFORE THE LOOP for the same reason expansion-branches does:
+# a tree in that state produces a hundred fixtures failing to import
+# something, which reads as a broken environment. One line naming the
+# file and the first definition that was swallowed is the difference.
+#
+# ⚠️ IT IS NOT IN `*.ss`, so it does not run again in the loop and the
+# count-back below is untouched.
+if [ -f structure.py ]; then
+  perl -e 'alarm 120; exec @ARGV' python3 structure.py > "$out/structure.out" 2>&1
+  st_rc=$?
+  st_sent=$(grep -c "^structure complete" "$out/structure.out")
+  st_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/structure.out")
+  st_cnt=$(grep -E "^[0-9]+ (failures|mismatches)" "$out/structure.out" | grep -vc "^0 ")
+  if [ "$st_rc" = 0 ] && [ "$st_sent" != 0 ] && [ "$st_hard" = 0 ] && [ "$st_cnt" = 0 ]; then
+    echo "preflight: $(grep '^checked ' "$out/structure.out"), every definition where its parentheses say"
+    grep "^NOT CHECKED " "$out/structure.out" | sed "s/^/  /"
+  else
+    echo "PREFLIGHT RED (rc=$st_rc sentinel=$st_sent hard=$st_hard counters=$st_cnt)"
+    echo "  -- a form in this tree does not close where it looks like it does:"
+    sed "s/^/  /" "$out/structure.out"
+    echo "REFUSING: nothing below this line would be a reading."
+    exit 1
+  fi
+else
+  echo "preflight: NOT CHECKED -- structure.py is not in this directory"
+fi
+
 bad=0; ran=0; libs=""; probes=""
 for f in *.ss; do
   n=${f%.ss}

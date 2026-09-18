@@ -135,16 +135,18 @@ def evaluate(args):
         if write_fd >= 0:
             os.close(write_fd)
 
+# `serve` and `--forward` USED TO BE HANDLED HERE AND ARE GONE.
+#
+# The daemon is Scheme -- (theourgia daemon) -- and the command line
+# reaches it itself, over the same envelope, with no process in between.
+# What was here was a second implementation of the wire format in another
+# language, kept in step by hand; the two had already drifted apart, and
+# the copy that lived here spoke `(transport-v1 ...)` to a daemon that
+# answers `(request ...)`.
+#
+# WHAT IS LEFT IS `eval`, which has its own step, and the fall-through
+# that runs the Scheme command line.
 def main(argv):
-    if argv and argv[0] == 'serve':
-        from transport import serve
-        return serve(argv[1:])
-    if argv and argv[0] == '--forward':
-        from transport import exchange
-        store, actor, style, socket_path, request = argv[1:]
-        code, answer = exchange(store, actor, style, request.encode(), socket_path)
-        sys.stdout.buffer.write(answer)
-        return code
     if argv and argv[0] == 'eval':
         answer = evaluate(argv[1:])
         sys.stdout.buffer.write(answer)
