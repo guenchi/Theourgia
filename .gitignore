@@ -1,5 +1,3 @@
-# The store's lock file is recreated by whoever opens the store.
-store/lock
 # Drafts are a writer's own scratch space, not part of the log.
 store/writers/*/working/
 store/writers/*/draft.lock
