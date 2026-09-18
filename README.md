@@ -6,13 +6,50 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 Design documents are maintained separately; this repository holds the implementation and its tests.
 
+## Installing
+
+**One set of prerequisites: Chez Scheme, and igropyr.** There is no
+Python anywhere in this, and no build step -- the verbs run from source:
+
+    scheme --script cli.ss <verb> [...]
+
+Chez finds the libraries through its own two variables, which must name a
+directory holding both `theourgia/` and `igropyr/`:
+
+    export CHEZSCHEMELIBDIRS=/path/to/that/directory
+    export CHEZSCHEMELIBEXTS=".ss::.sls::.sc::.scm"
+    scheme --script cli.ss init --store /path/to/store
+
+⚠️ Compiling to `.so` is not part of this: no build script ships here,
+and a stale object file beside a source file is read in preference to it.
+
+## Two ways to run
+
+**Standalone.** Every verb opens the store, answers, and exits. Nothing
+is left running, and two commands that overlap are two processes taking
+the store's lock in turn.
+
+**With a daemon.** `theourgia serve <store>` holds the store open and
+answers over a unix socket. A client finds that socket by the same rule
+the daemon used to create it, so nothing needs to be told where it is --
+running an ordinary verb reaches the daemon automatically when one is
+there, and runs locally when one is not.
+
+⛔ **The daemon's answer is the CLI's answer, byte for byte.** Both call
+the same dispatcher; no verb, answer or error shape exists in one and not
+the other. Set `THEOURGIA_LOCAL=1` to skip the socket and answer in
+process even when a daemon is running.
+
 ## Reading a store
 
 Every verb prints one S-expression per item on stdout; the exit code is the verdict.
 **Empty output with a zero code is an answer** — no references, no hits, no
 differences — and is never an error.
 
-### `read <id> [--md] [--recursive]`
+### `read <id> [--md] [--recursive] [--working] [--writer <name>] [--working-info]`
+
+    (read <id> ("--md") ("--recursive") ("--writer" <name>)
+          ("--working") ("--working-info"))
 
     (ok (<block>))        |  (ok (items <block> ...))  |  (ok (text "<markdown>"))
 
@@ -42,8 +79,15 @@ belongs to the document. Its body carries the blank line that separated it from
 whatever followed in the file, so a subtree lifted out of the middle of a document
 ends with one — put it back where it came from and the file is reproduced exactly.
 
-Neither option takes a value and both are stripped before the id is read, so the two
-orders are the same request.
+Neither `--md` nor `--recursive` takes a value and both are stripped before the id
+is read, so the two orders are the same request.
+
+**`--working` reads the writer's own view**: the committed store with that
+writer's drafts laid over the blocks they cover. `--writer` names whose;
+without it the writer is the one this caller was given. A block with no
+draft still reads as committed in the same answer -- the overlay replaces
+the blocks it covers, not the view. `--working-info` adds what the view
+is made of rather than changing what is read.
 
 ### `refs <id>`
 
@@ -126,6 +170,200 @@ nothing in it prints nothing.
 
 The structural conflicts are read from the same place `outline` reads them, so the two
 cannot disagree; `outline` prints the mark as a fourth column on that row.
+
+## Making and changing blocks
+
+Every verb here writes, and every write is one request with one answer.
+The store's lock is taken for the write and released; nothing is held
+across two verbs.
+
+### `init`
+
+    (init)
+
+Creates a store in the directory named by `--store`, and answers with the
+store's id and the writer the caller was given.
+
+### `insert --under <id> --title <text> [--after <id>] [--text <text>]`
+
+    (insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>))
+
+Adds a block under an existing one. `--after` places it among that
+parent's children; without it the block goes last. `--text` gives the
+block its `src` in the same request.
+
+### `set <id> <field> <value> [--if-unchanged <version>] [--based-on <version>]`
+
+    (set <id> <field> <value> ("--if-unchanged" <version>) ("--based-on" <version>))
+
+Replaces one field of one block. `--if-unchanged` makes the write
+conditional: the store refuses it if the block has moved on from that
+version, so a caller that read, thought, and came back cannot overwrite
+what happened in between.
+
+### `move <id> <parent> [--after <id>]`
+
+    (move <id> <parent> ("--after" <id>))
+
+Re-parents a block. `root` is spelled as the word, not as an id.
+
+### `del <id>`
+
+    (del <id>)
+
+Marks a block deleted. The block and its history stay in the log -- what
+changes is what the outline and the reads answer.
+
+### `link <from> <rel> <to>`
+
+    (link <from> <rel> <to>)
+
+Adds a typed edge between two blocks. `<rel>` is a name of the caller's
+choosing; the store does not interpret it.
+
+### `unlink <from> <rel> <to>`
+
+    (unlink <from> <rel> <to>)
+
+Removes that edge. ⚠️ The three positionals are the same three `link`
+takes, in the same order, and getting them out of order is not an error
+the store can see.
+
+### `def <name> <source> [--under <library>]`
+
+    (def <name> ("--under" <library>) <source>)
+
+Defines one datum by name, optionally inside a library block.
+
+### `outline [--depth <n>]`
+
+    (outline ("--depth" <n>))
+
+Prints the store's block tree as indented text: one line per block, its
+`<id>.<version>` and its title. `--depth` stops at that many levels.
+
+## Drafts, and committing them
+
+A **draft** is a block's proposed next version, held under a writer's own
+name and visible to nobody else until it is committed. A writer with
+drafts has a **working view**: the committed store, with its own drafts
+laid over the blocks they cover.
+
+### `write <block> <bytes> [--writer <name>] [--based-on <version>] [--rebase]`
+
+    (write <block> <bytes> ("--writer" <name>) ("--based-on" <version>)
+           ("--working-cut" <cut>) ("--working-parent-writer" <name>)
+           ("--working-parent" <version>) ("--rebase"))
+
+Puts a draft in that writer's slot for that block. A draft's version is
+the name of its content -- `sha256(bytes || based-on || cut)` -- so the
+same bytes written twice are the same version. `--rebase` moves a draft
+onto a newer committed parent.
+
+### `restore <version> [--writer <name>]`
+
+    (restore <version> ("--writer" <name>))
+
+Takes a version's bytes out of the log and puts them back as a draft.
+⚠️ It is its own verb rather than a flag on `write`, because it takes a
+version and NO bytes: the bytes come from the log.
+
+A version is looked up in that writer's own revoked consumptions -- the
+drafts a commit took and a later retraction gave back -- so `--writer`
+selects whose list is searched, and the same version can be unknown to
+one writer and restorable by another.
+
+### `drafts [--writer <name>]`
+
+    (drafts ("--writer" <name>))
+
+Lists that writer's live drafts. Each carries `block`, `writer`,
+`version`, `based-on`, `now` (what the committed block is at this
+moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
+(whether the draft's bytes differ from what is committed).
+
+### `discard <block> [--writer <name>]`
+
+    (discard <block> ("--writer" <name>))
+
+Drops that writer's draft for that block. The committed block is
+untouched.
+
+### `commit [<block> ...] [--writer <name>] [--working-version <block>=<version>]`
+
+    (commit (<block> ...) ("--writer" <name>) ("--working-version" <block>=<version>))
+
+Turns drafts into committed versions. Naming no block commits all of that
+writer's drafts. `--working-version` may be given once per block to say
+which version of the draft is being committed; with exactly one block
+named, the bare version may be given.
+
+⚠️ **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
+writers who landed after this writer's drafts were taken. It is
+informational, and it is **absent** when nothing moved rather than
+present and empty: a field that is always there says nothing.
+
+## Importing, exporting, and splitting
+
+### `import-md <dir> [--allow-delete]`
+
+    (import-md <dir> ("--allow-delete"))
+
+Reads a directory of Markdown into the store. Without `--allow-delete` a
+file that has disappeared from the directory leaves its blocks alone.
+
+### `export-md <dir> [--with-ids]`
+
+    (export-md <dir> ("--with-ids"))
+
+Writes the store out as Markdown. `--with-ids` keeps each block's id in
+the text, so the result can be imported back onto the same blocks.
+
+### `import-code <dir> [--allow-delete] [--datum]`
+
+    (import-code <dir> ("--allow-delete") ("--datum"))
+
+Reads a directory of source into the store. `--datum` reads it as data --
+one block per top-level form -- rather than as text.
+
+### `export-code <dir> [--raw] [--datum]`
+
+    (export-code <dir> ("--raw") ("--datum"))
+
+Writes the store out as source. ⛔ `--datum` and `--raw` together are
+refused with `(error bad-request incompatible-projection-options)`: they
+are two different projections and there is no answer to "both".
+
+### `split-suggest <file> [--output <review-file>]`
+
+    (split-suggest <file> ("--output" <review-file>))
+
+Proposes where a file could be split into blocks. It suggests; it does
+not write.
+
+## Checking, snapshotting, adopting
+
+### `check`
+
+    (check)
+
+Reads the store and reports what does not hold together.
+
+### `snapshot`
+
+    (snapshot)
+
+Writes a snapshot of the current reduction and answers
+`(ok (snapshot <n>) (cut <cut>))`. Later opens start from it instead of
+replaying the whole log.
+
+### `adopt`
+
+    (adopt)
+
+Takes over a store that belongs to another machine's registry entry --
+after a move or a restore, where the store is here but its recorded owner
+is not.
 
 ## Requests and replay
 
@@ -352,7 +590,9 @@ written to survive that shape. Do not resume a captured continuation out of a
 
 ## Sync: the `publish` verb
 
-    theourgia publish <writer> <segment> <file> [<sha256>]
+### `publish <writer> <segment> <file> [<sha256>]`
+
+    (publish <writer> <segment> <file> [<sha256>])
 
 A store receives another store's history one segment at a time. `publish` hands the
 bytes of one segment to the log layer and prints what it decided, as a single
@@ -439,7 +679,7 @@ there the difference decides whether the hole can ever be repaired: segment numb
 only increase, so refusing the one candidate that could fill a gap refuses it
 permanently.
 
-### `published.sexp`
+#### `published.sexp`
 
 The manifest lists what a writer has published:
 
@@ -464,7 +704,7 @@ excluded from the writer's history, and so is one whose declared range disagrees
 the range its bytes hold — with the hash matching, a disagreeing range is the manifest
 contradicting itself, and in both cases the store cannot say what the segment is.
 
-### `incoming/`
+#### `incoming/`
 
 A refused candidate is **kept, not installed**. Its bytes are written under
 `writers/<writer>/incoming/`, named by their own hash, with an empty marker file
@@ -569,3 +809,151 @@ these calls names a stage from the list.
 Run the suites from source (igropyr must be a sibling checkout):
 
     sh test/run-all.sh
+
+## Evaluating against a store
+
+### `eval <source> [--cut <cut>] [--under <library>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>]`
+
+    (eval ("--cut" <cut>) ("--under" <library>) ("--working") ("--latest")
+          ("--writer" <name>) ("--timeout-ms" <n>) ("--memory-bytes" <n>)
+          ("--output-bytes" <n>) <source>)
+
+Evaluates one expression against what the store holds, in a child process
+that is given nothing else: no filesystem, no network, no way to reach
+the committed store except by reading it.
+
+**The answer is one complete line**, always, and one of:
+
+    (ok (values (<v> ...)) (working-view <writer> <cut> <drafts>)
+        (stdout "...") (stderr "..."))
+    (error eval-limit (resource time|memory|output) (limit <n>) (stdout "..."))
+    (error eval-exception (kind raised) (message "..."))
+    (error bad-request (reason ...) (usage (eval ...)))
+
+⛔ **What the evaluation prints is DATA, carried in a field.** Text that
+reads exactly like an answer still arrives inside `(stdout ...)`; it can
+never be mistaken for the answer itself.
+
+**The limits, and their bounds**: `--timeout-ms` 1..60000 (default 3000),
+`--memory-bytes` 1 MiB..2 GiB (default 256 MiB), `--output-bytes`
+128..1 MiB (default 65536). The output quota counts DECODED user bytes
+across both streams -- what the user printed, not what the framing made
+of it. ⚠️ The memory budget is read by sampling the child's resident size
+every 50ms, so it applies to an evaluation that lasts at least that long;
+one that finishes sooner has already ended.
+
+**`(working-view <writer> <cut> <drafts>)` is always present.** Its
+`<cut>` is always the cut the evaluation actually used -- it is the
+coordinate the run can be repeated from, and "at some cut" is not one.
+Without `--working` the writer position is `#f` and the draft table is
+empty; the cut is still the committed state that was read.
+
+⛔ **`--working` is PINNED by default.** The view stands on the state the
+writer's OWN drafts record -- the join of their cuts -- so a commit
+another writer made after those drafts does not walk into it, and the
+same unchanged draft answers the same way twice. `--latest` releases the
+pin and evaluates against the current committed state. An explicit
+`--cut` wins over both, and `--cut` together with `--latest` is refused
+with `(error bad-request (reason cut-and-latest) ...)` rather than
+resolved by a precedence rule -- a rule would make one of the two
+spellings silently do nothing.
+
+## Serving a store
+
+### `serve [<store>] [--socket <path>]`
+
+    (serve (<store>) ("--socket" <path>))
+
+Holds the store open and answers requests over a unix socket until it is
+told to stop. The store may be given as a positional or as `--store`.
+
+**Where the socket is.** `<run-root>/<key>/socket`, where the run root is
+`THEOURGIA_RUN` or `$HOME/.theourgia/run`, and the key is the first 16
+hex digits of the sha256 of the store's RESOLVED path. ⚠️ **Not beside
+the store**: `sun_path` holds 104 bytes on macOS and FreeBSD, and a store
+may sit anywhere and be arbitrarily deep. Clients derive the same path
+from the same rule, and the store directory keeps no pointer file, so
+copying a store does not carry a daemon with it. Because the key is the
+resolved path, two names for one store -- through a symlink, say -- reach
+one socket and one lock.
+
+**Starting when one is already there.** The lock attempt never waits: a
+second daemon answers `(error serve-busy (path <socket>))` and exits 75.
+If the socket path is occupied by something that is not a socket it
+answers `(error serve-path-occupied (path <socket>))` and exits 75. A
+LEFTOVER socket file whose daemon is gone is cleared and taken over --
+the lock, not the file, is what decides which of those two it is. When it
+is up it reports `(serving (store <path>) (socket <path>))`.
+
+**`SIGTERM` drains; a second one stops.** The first signal lets work that
+has already begun run to its end, within a budget of five seconds, while
+refusing new requests with `(error draining)`. A second signal stops
+immediately -- a drain that is taking too long is exactly when somebody
+needs to be able to end it.
+
+**`(error store-busy (path <path>))`** is an answer, not a crash: a
+request waited for the store's lock past its five-second budget because
+something else was holding it. That is an ordinary state of the world.
+
+**`THEOURGIA_TRACE=1`** makes the daemon write its filesystem and
+dispatch events as `(trace <op> <path> <detail>)` lines on stderr.
+
+## The MCP shell
+
+`theourgia-mcp` speaks MCP `2025-11-25` over stdio in front of the same
+dispatcher, one tool per verb in `rpc-verbs`. See
+[`mcp/README.md`](mcp/README.md) -- what a tool returns, why a core
+refusal comes back as a successful result, and how the shell branches on
+the transport's tag rather than on the answer's text.
+
+## Environment variables
+
+| variable | read by | what it does |
+|---|---|---|
+| `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. Not read by any source file here. |
+| `THEOURGIA_STORE` | `cli.ss` | the store to use when `--store` is absent. Falls back to `.` |
+| `THEOURGIA_ACTOR` | `cli.ss`, `mcp/server.ss` | who the requests are from. Falls back to `USER`, then `cli` |
+| `THEOURGIA_HOME` | `ffi.ss` | where the machine registry and its lock live. Falls back to `HOME` |
+| `THEOURGIA_RUN` | `daemon.ss` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
+| `THEOURGIA_LOCAL` | `cli.ss` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_SCHEME` | `cli.ss` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
+| `THEOURGIA_TRACE` | `ffi.ss` | `1` writes filesystem and dispatch events to stderr. ⚠️ Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
+
+**Test-only, and two of them do not exist in an ordinary build.**
+
+| variable | what it does |
+|---|---|
+| `THEOURGIA_INJECT` | `on` at EXPANSION time builds the fault-injection branches. With it unset or `off` there is no fault code in the object at all -- not a disabled branch, none |
+| `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
+| `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. ⛔ Exists only inside the `THEOURGIA_INJECT=on` branch |
+| `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
+| `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Read only by `test/` |
+| `THEOURGIA_LIBDIR` | read by `test/env.sh` and `test/paths.py`, not by any library. It is what makes a suite reading a PINNED one |
+
+## KNOWN OPEN
+
+Each of these is a thing this tree does not do, recorded with where it
+was found rather than left for a reader to discover.
+
+  * **The machine registry never retires an entry.** Every daemon start
+    rewrites `<home>/instances.sexp` whole, and entries for stores that
+    have been deleted stay in it marked `active`. Measured on the
+    development machine: 319 KB, 5421 records, all `active`.
+  * **`structure.py` is Python**, and it is the only check in the suite
+    that is -- it is the preflight that reads every file's paren depth at
+    each top-level definition, which is how a missing closer is caught
+    before it reports itself as an unbound identifier a hundred lines
+    away. It is an OPTIONAL preflight: a machine with no `python3`
+    prints `preflight: NOT CHECKED -- structure.py is here but no
+    python3 is` and the run continues. ⚠️ NOT CHECKED is not green -- it
+    says the reading has a hole in it and names the hole. Porting it to
+    Scheme is not done.
+  * **`W11-export-working` and `W11-cut-plus-working` have no cells.**
+    They belong to verbs the working-view fixture does not drive
+    (`export-code`, and `eval --cut` combined with a view beyond the one
+    row that covers it). Recorded in `test/eval-working.ss` beside the
+    rows that do exist.
+  * **Twenty fixtures define `want` as a procedure**, which evaluates
+    both arguments before the call: a row that raises ends the file
+    rather than failing. `run-fixtures.sh` counts and names them on every
+    run. New fixtures use the `want`/`caught` macro pair instead.

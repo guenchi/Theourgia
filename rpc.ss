@@ -451,7 +451,7 @@
             (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (working-restore! store state (argument-option options "--writer") (car args))
-                  (usage '(restore <version>)))))
+                  (usage '(restore <version> ["--writer" <name>])))))
       ;; ⛔ COMMIT ADVERTISES ADDITIVELY, BECAUSE IT HAS NO SHAPE TO GET
       ;; WRONG. Every other verb answers a usage form when its arity or
       ;; its positionals are wrong; `commit` accepts any number of block

@@ -8,16 +8,34 @@ from **these files only**. To repeat that:
 with `THEOURGIA_LIBDIR` pointing at a directory holding `theourgia/` (the
 library sources from this delivery) and `igropyr/`.
 
-**`env.sh` has to be sourced; the runner does not do it for you.** Setting
-only `THEOURGIA_LIBDIR` and running the script gives 85 scripts at `rc=255`
-and `library (theourgia request) not found` -- which reads as everything
-being broken rather than as a variable that was never exported. Sourcing it
-is the whole of the difference:
+**`env.sh` has to be sourced; the runner does not do it for you.**
 
     . ./env.sh && sh run-fixtures.sh <output-directory>
 
-Without a pinned libdir the working trees are used, and the reading is only
-as stable as they are.
+An unsourced run now stops at the preflight and says which variables are
+missing:
+
+    FAIL the libraries load with THEOURGIA_INJECT=on ->
+      (RAISED "this fixture needs the library path in the environment:
+       CHEZSCHEMELIBDIRS CHEZSCHEMELIBEXTS is unset -- source test/env.sh first")
+    REFUSING: nothing below this line would be a reading.
+
+⚠️ **This paragraph used to describe a different failure**, and the
+difference is the point: it said an unsourced run gave "85 scripts at
+`rc=255` and `library (theourgia request) not found`", every script
+failing one at a time, which reads as everything being broken rather than
+as a variable that was never exported. The preflight now refuses before
+any of that. The count in that sentence had also stopped being true --
+⛔ a number restated in prose describes the run somebody once had, and
+nothing tells it when the tree moves.
+
+⛔ **`THEOURGIA_LIBDIR` IS WHAT MAKES THE READING A PINNED ONE.** Without
+it the working trees are used, so the run measures whatever those trees
+happened to contain at that moment -- including a co-worker's edit
+landing halfway through. A reading taken that way says nothing about any
+particular version, and cannot be repeated. Point it at a directory
+holding `theourgia/` and `igropyr/` at known commits, and record which
+ones beside the reading.
 
 ## The Python fixtures are in that number, and three files are not fixtures
 

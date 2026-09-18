@@ -120,6 +120,36 @@
 
 ;; ---- restore --------------------------------------------------------------
 
+;; ⭐ `--writer` ON THIS VERB, WHICH DID NOT WORK UNTIL IT WAS MEASURED.
+;; The handler reads `--writer`, but the option table did not list it for
+;; `restore`, so the token parsed as a POSITIONAL: the call arrived with
+;; three positionals, failed the arity check, and answered a usage form.
+;; A version could never be restored into a named writer's slot from the
+;; command line.
+;;
+;; ⛔ EVERY ROW BELOW REACHED THE HANDLER WITHOUT EVER PASSING THIS
+;; OPTION, which is why they were all green. `rpc-dispatch` does parse
+;; its arguments -- these rows go through the same reader the command
+;; line does -- so the gap was not the route, it was that nothing here
+;; ever spelled `--writer` on a `restore`.
+
+;; A version that does not exist, so nothing is consumed: what this row
+;; reads is WHICH ANSWER comes back. `unknown-version` is the handler's;
+;; a usage form would mean the call never got there.
+(want "RR-03a --writer reaches the handler rather than becoming a positional"
+      (call 'restore "no-such-version" "--writer" writer)
+      '(error unknown-version "no-such-version"))
+
+;; ⛔ TWIN: ACCEPTED IS NOT THE SAME AS READ. A parser that took the
+;; option and a handler that ignored it would pass the row above. The
+;; revoked entry belongs to one writer, so naming a different one has to
+;; answer differently for the SAME version -- and the row after this one
+;; restores that very version under the default writer, which is what
+;; makes the pair a discriminator rather than two readings of nothing.
+(want "RR-03a TWIN: naming another writer searches another writer's list"
+      (call 'restore v1 "--writer" "somebody-else")
+      (list 'error 'unknown-version v1))
+
 (want "RR-03 restore succeeds" (rpc-ok? (call 'restore v1)) #t)
 (want "RR-03 the bytes are the ones the plan froze"
       (call 'read A "--working") '(ok (text "the text I wrote")))

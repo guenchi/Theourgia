@@ -164,7 +164,20 @@ fi
 #
 # ⚠️ IT IS NOT IN `*.ss`, so it does not run again in the loop and the
 # count-back below is untouched.
-if [ -f structure.py ]; then
+# ⚠️ AND IT IS THE ONE CHECK IN THIS SUITE THAT NEEDS PYTHON. Every
+# other thing here runs under Chez. A machine without `python3` must be
+# able to take a reading -- so a missing interpreter prints NOT CHECKED
+# and the run continues, exactly as a missing `structure.py` does.
+# ⛔ THE TWO CASES SAY DIFFERENT WORDS ON PURPOSE: "the file is not here"
+# and "nothing here can run it" send a reader to different places, and
+# one message for both would send them to the wrong one half the time.
+# ⚠️ NOT CHECKED IS NOT GREEN. It says this reading does not cover the
+# thing the check covers; porting it to Scheme is in the README's KNOWN
+# OPEN, and until then a run on a machine with no python3 is a reading
+# with a hole in it that names itself.
+if [ -f structure.py ] && ! command -v python3 > /dev/null 2>&1; then
+  echo "preflight: NOT CHECKED -- structure.py is here but no python3 is"
+elif [ -f structure.py ]; then
   perl -e 'alarm 120; exec @ARGV' python3 structure.py > "$out/structure.out" 2>&1
   st_rc=$?
   st_sent=$(grep -c "^structure complete" "$out/structure.out")

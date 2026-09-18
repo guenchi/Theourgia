@@ -35,7 +35,7 @@
 ;; cell that restates the table checks its own copy of it.
 
 (import (rnrs)
-        (only (chezscheme) with-input-from-file system get-process-id
+        (only (chezscheme) with-input-from-file system get-process-id call-with-input-file
               get-string-all file-exists?)
         (only (theourgia arguments) parse-arguments)
         (only (theourgia rpc) rpc-verbs))
@@ -341,6 +341,134 @@
 
 (want "GATE-B2 no verb-specific option the parser accepts goes unadvertised"
       accepted-but-unadvertised options-not-yet-advertised)
+
+;; ---- B3: what a handler READS, the parser accepts -----------------------------
+;;
+;; ⭐ THE DIRECTION THE FIRST TWO DO NOT COVER, AND THE ONE THE DEFECT
+;; THIS GATE EXISTS FOR WAS IN. `eval`'s handler read `--timeout-ms`
+;; while the table had no `eval` entry at all; `restore`'s handler read
+;; `--writer` while the table listed it for `read`, `drafts` and
+;; `discard` only. Both were found by reading, not by a row.
+;;
+;; ⛔ B1 AND B2 WERE GREEN THROUGHOUT. It is not that the gate did not
+;; run -- it is that the gate did not ask this question. A usage form
+;; and an option table can agree with each other perfectly while the
+;; handler reaches for a third thing neither of them mentions.
+;;
+;; ⚠️ WHAT A MISMATCH DOES IS QUIET. The token is not refused; it is
+;; parsed as a POSITIONAL. So the verb sees extra positionals and
+;; answers a usage form, or -- worse, and this is what `eval` did --
+;; takes the option's own spelling as its argument and runs with it.
+
+(define (find-from text needle from)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let scan ((j from))
+      (cond ((> (+ j n) m) #f)
+            ((string=? (substring text j (+ j n)) needle) j)
+            (else (scan (+ j 1)))))))
+
+(define rpc-text (call-with-input-file "../rpc.ss" get-string-all))
+(define cli-text (call-with-input-file "../cli.ss" get-string-all))
+
+;; ⛔ SCOPED TO THE VERB TABLE, NOT TO THE FILE. A scan for `(cons '`
+;; across the whole of `rpc.ss` also matches `(cons 'items ...)` and
+;; `(cons 'src text)` in the helpers, and then attributes to those
+;; imaginary verbs every option read after them -- which is exactly what
+;; the first version of this row did, reporting seven failures for two
+;; verbs that do not exist. The table runs from `(define (verb-table)` to
+;; the definition after it.
+(define table-from (find-from rpc-text "(define (verb-table)" 0))
+(define table-to (find-from rpc-text "(define verbs " (or table-from 0)))
+
+(define (verb-spans)
+  (let loop ((i (or table-from 0)) (out '()))
+    (let ((at (find-from rpc-text "(cons '" i)))
+      (if (or (not at) (and table-to (>= at table-to)))
+          (reverse out)
+          (let* ((from (+ at (string-length "(cons '")))
+                 (end (let scan ((j from))
+                        (cond ((>= j (string-length rpc-text)) j)
+                              ((or (char=? (string-ref rpc-text j) #\space)
+                                   (char=? (string-ref rpc-text j) #\newline)) j)
+                              (else (scan (+ j 1))))))
+                 (name (string->symbol (substring rpc-text from end))))
+            (loop end (cons (cons name from) out)))))))
+
+;; Every `(argument-option options "--x")` between one verb's `(cons '`
+;; and the next one's belongs to that verb.
+;; ⚠️ THREE READER NAMES, NOT ONE. `eval`'s limits are read through
+;; `eval-number`, not `argument-option` -- so a scanner that knew only
+;; the latter missed `--timeout-ms`, `--memory-bytes` and
+;; `--output-bytes`, which is to say it missed the exact option the
+;; defect this row exists for was about. It caught `eval` anyway,
+;; through three other spellings, and a row that finds the right answer
+;; for the wrong reason is one tree-shape away from finding nothing.
+(define reader-names '("argument-option" "eval-number"))
+
+(define (options-read-in text from to)
+  (apply append
+         (map (lambda (r) (options-read-via r text from to)) reader-names)))
+
+(define (options-read-via marker text from to)
+  (let loop ((i from) (out '()))
+    (let ((at (find-from text marker i)))
+      (if (or (not at) (>= at to))
+          out
+          (let ((q (let scan ((j at))
+                     (cond ((>= j to) #f)
+                           ((char=? (string-ref text j) #\") j)
+                           ((char=? (string-ref text j) #\)) #f)
+                           (else (scan (+ j 1)))))))
+            (if (not q)
+                (loop (+ at (string-length marker)) out)
+                (let ((e (let scan ((j (+ q 1)))
+                           (cond ((>= j to) #f)
+                                 ((char=? (string-ref text j) #\") j)
+                                 (else (scan (+ j 1)))))))
+                  (if (not e)
+                      (loop (+ at (string-length marker)) out)
+                      (let ((o (substring text (+ q 1) e)))
+                        (loop e (if (or (member o out) (not (dashed? o))) out (cons o out))))))))))))
+
+(define handler-reads
+  (let* ((spans (verb-spans)) (n (length spans)))
+    (let loop ((i 0) (out '()))
+      (if (>= i n)
+          (reverse out)
+          (let* ((this (list-ref spans i))
+                 (to (if (< (+ i 1) n)
+                         (cdr (list-ref spans (+ i 1)))
+                         (or table-to (string-length rpc-text))))
+                 (opts (options-read-in rpc-text (cdr this) to)))
+            (loop (+ i 1)
+                  (append (reverse (map (lambda (o) (list (car this) o)) opts)) out)))))))
+
+;; ⚠️ `eval` IS NOT IN THAT TABLE -- it is the CLI's own verb -- and it
+;; is the reason this row exists: its handler read `--timeout-ms` while
+;; the option table had no `eval` entry at all. `cli.ss` is scanned as
+;; one handler, and only the spellings `eval` itself takes are attributed
+;; to it, because that file also reads options on behalf of other verbs.
+(define cli-reads
+  (map (lambda (o) (list 'eval o))
+       (filter (lambda (o)
+                 (member o '("--cut" "--under" "--working" "--latest" "--writer"
+                             "--timeout-ms" "--memory-bytes" "--output-bytes")))
+               (options-read-in cli-text 0 (string-length cli-text)))))
+
+(define read-but-refused
+  (filter (lambda (p) (not (accepted? (car p) (cadr p))))
+          (append handler-reads cli-reads)))
+
+(want "GATE-B3 every option a handler reads is one the parser accepts"
+      read-but-refused '())
+
+;; ⛔ AND THE SWEEP HAS TO HAVE FOUND SOMETHING TO SWEEP. An empty
+;; `handler-reads` satisfies the row above and says nothing at all.
+(want "GATE-B3 the sweep found handlers reading options"
+      (list (> (length (append handler-reads cli-reads)) 20)
+            (and (member '(write "--writer") handler-reads) #t)
+            (and (member '(restore "--writer") handler-reads) #t))
+      '(#t #t #t))
 
 ;; ---- the gate's own instrument ------------------------------------------------
 ;;

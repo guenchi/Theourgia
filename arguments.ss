@@ -70,7 +70,14 @@
         ((def) '("--under"))
         ((commit) '("--writer" "--working-version"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
-        ((read drafts discard) '("--writer"))
+        ;; ⚠️ `restore` IS IN THIS GROUP BECAUSE ITS HANDLER READS
+        ;; `--writer`, and it was not. The token then parsed as a
+        ;; POSITIONAL: `restore <version> --writer w1` arrived with three
+        ;; positionals, failed the arity check and answered a usage form,
+        ;; so a version could never be restored into a named writer's
+        ;; slot from the command line. Same shape as the `eval` entry
+        ;; below -- a handler reading an option this table does not list.
+        ((read drafts discard restore) '("--writer"))
         ;; ⚠️ ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
