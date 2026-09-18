@@ -955,7 +955,8 @@
      (define known-faults
        '(short-write eintr-once write-eio-after-partial write-eio-first
          fsync-fail no-log-fsync stat-fail open-fail report-fail
-         conn-raise store-raise writer-raise writer-raise-late writer-hold))
+         conn-raise store-raise writer-raise writer-raise-late
+         writer-hold writer-hold-long))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))

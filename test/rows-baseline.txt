@@ -12,7 +12,8 @@ commit-consumes 25 28 f8a857fc5c9fe2ceb167e8bfdf3efa34
 consumption-index 64 67 b86c0678e7825e6339f27fc0036ec022
 crash 15 19 de6c0bcff479810a026828b6721d85bf
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
-daemon-e1 25 28 b397fc44a6ca10e59396627a1ed48ff2
+daemon-e1 33 36 078e409b26886df26aeea971e97561d5
+daemon-link-gate 34 37 647f3c713c988c92108e92cd79f8016b
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
 devino - 1 a1db0a6c54d26163970627cc4119c32f
 doc-predicate 5 8 cd14ef1bb11738533909c3621f3d5ceb

@@ -41,11 +41,21 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports)
           (only (chezscheme) real-time getenv write newline read void let-values
+                register-signal-handler
                 irritants-condition? condition-irritants filter raise condition
                 make-message-condition make-irritants-condition
                 open-string-input-port call-with-string-output-port
                 condition? message-condition? condition-message guard exit)
-          (theourgia sched)
+          ;; ⛔ NAMED ONE BY ONE, AND `link` IS NOT AMONG THEM. A linked
+          ;; process that exits abnormally takes its peer down with it
+          ;; without asking, which is the one shape this daemon must not
+          ;; have: a connection dying must cost that connection. Every
+          ;; watch here is a `monitor`, and the way that rule is kept is
+          ;; that the name is not in scope to be written -- ⛔ not that
+          ;; somebody remembered. `test/daemon-link-gate.ss` reads this
+          ;; import as data and refuses a wholesale one.
+          (only (theourgia sched)
+                start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch)
@@ -114,6 +124,43 @@
   ;; would let it hold a connection for ever.
   (define frame-ms 5000)
 
+  ;; ---- the signal -----------------------------------------------------------
+  ;;
+  ;; ⛔ THE HANDLER ONLY COUNTS. It runs in a signal context, where the
+  ;; scheduler's own invariants do not hold: sending a message or
+  ;; spawning from here would be doing scheduler work from outside the
+  ;; scheduler. Counting is the whole of it, and everything else is done
+  ;; by a process that reads the count.
+  ;;
+  ;; ⚠️ AND THE READER POLLS, with `sleep-ms`, ⛔ not a bare `receive`.
+  ;; An idle daemon is parked in the event loop with nothing to wake it;
+  ;; the poll is what keeps a timer in the loop so the count is noticed.
+  ;; Measured: with a poll every 25 ms, a `kill -TERM` sent a second
+  ;; after start-up was seen 39 polls later -- the latency is the poll
+  ;; interval, not something that swallows the signal.
+  ;;
+  ;; ⚠️ SECOND SIGNAL MEANS STOP NOW. A drain that is taking too long and
+  ;; a person who has asked twice are the same request, and both leave
+  ;; with 75.
+  (define sigterm-count 0)
+  (define signal-term 15)
+  (define drain-poll-ms 25)
+  (define drain-budget-ms 5000)
+
+  (define (watch-for-signals! main-pid)
+    (register-signal-handler signal-term
+                             (lambda (signo) (set! sigterm-count (+ sigterm-count 1))))
+    (spawn
+      (lambda ()
+        (let poll ((told 0))
+          (sleep-ms drain-poll-ms)
+          (cond
+            ((>= sigterm-count 2) (send main-pid (list 'signal 'again)) (poll 2))
+            ((and (>= sigterm-count 1) (= told 0))
+             (send main-pid (list 'signal 'drain))
+             (poll 1))
+            (else (poll told)))))))
+
   ;; ---- serve -------------------------------------------------------------
 
   ;; ⛔ ONE LOCKING STRATEGY FOR THE WHOLE DAEMON, SET ONCE. Inside a
@@ -168,6 +215,30 @@
   (define (fresh-lock-token)
     (set! lock-seq (+ lock-seq 1))
     (list 'lk lock-seq))
+
+  ;; ⛔ ONE NUMBER PER REQUEST FOR THE WHOLE DAEMON, taken where the
+  ;; request is accepted. A connection's own sequence numbers say which
+  ;; frame on that connection; this says which request in this daemon,
+  ;; which is what main needs to answer "is anything still running".
+  (define ticket-seq 0)
+  (define (fresh-ticket)
+    (set! ticket-seq (+ ticket-seq 1))
+    ticket-seq)
+
+  ;; ⛔ ASKED BY WHOEVER IS ABOUT TO EXECUTE, IMMEDIATELY BEFORE DOING SO,
+  ;; and answered by main. ⛔ Not decided by the connection: a request
+  ;; gets exactly one answer, and two deciders is how it comes to get two
+  ;; or none. What has begun runs to its end -- it may already have
+  ;; changed the store, and a caller told `draining` about work that was
+  ;; done would be told something false.
+  (define (may-execute? main-pid ticket)
+    (eq? 'execute (ask-main main-pid (list 'may-execute ticket) 'may-execute-is)))
+
+  (define (executed! main-pid ticket)
+    (send main-pid (list 'finished ticket)))
+
+  ;; The answer an executor gives for work it is not going to start.
+  (define draining-answer '(error draining))
 
   ;; ⚠️ NO TIMEOUT ON THE REPLY, ON PURPOSE. Main answers every request
   ;; in the handler that receives it, so the only way no answer comes is
@@ -271,6 +342,10 @@
            ;; for the whole VM, and only the process that writes ever
            ;; reaches it.
            (store-publish-hook! (lambda (state) (publish! store state)))
+           ;; ⚠️ INSTALLED BEFORE ANYTHING CAN BE ACCEPTED, so a signal
+           ;; that arrives during the store's first load is not lost --
+           ;; the count is read by a process, and the process is here.
+           (watch-for-signals! me)
            (let* ((store-pid (spawn (lambda () (store-loop store me))))
                   (smon (monitor store-pid))
                   (st (make-main-state lock socket store store-pid #f)))
@@ -301,8 +376,10 @@
   (define locks-slot 8)
   (define writers-slot 9)
 
+  ;; 11 draining-since (#f until a signal), 12 the tickets being executed,
+  ;; 13 the conn processes that have been told to drain.
   (define (make-main-state lock socket store store-pid listener)
-    (vector lock socket store store-pid listener '() '() #f '() '() self))
+    (vector lock socket store store-pid listener '() '() #f '() '() self #f '() '()))
 
   (define (state-lock st) (vector-ref st 0))
   (define (state-socket st) (vector-ref st 1))
@@ -311,6 +388,10 @@
   (define (state-listener st) (vector-ref st 4))
   (define (state-listener-set! st v) (vector-set! st 4 v))
   (define (state-main st) (vector-ref st 10))
+  (define (state-draining st) (vector-ref st 11))
+  (define (state-draining-set! st v) (vector-set! st 11 v))
+  (define (state-running st) (vector-ref st 12))
+  (define (state-running-set! st v) (vector-set! st 12 v))
   (define (state-roles st) (vector-ref st roles-slot))
   (define (state-roles-set! st v) (vector-set! st roles-slot v))
   (define (state-handling st) (vector-ref st handling-slot))
@@ -331,8 +412,21 @@
   ;;
   ;; ⚠️ A NORMAL ENDING IS NOT AN EVENT. Tracing those would bury the one
   ;; line that matters under one line per connection that ever closed.
+  ;; ⚠️ THE LOOP HAS A CLOCK, and it is here rather than in a process of
+  ;; its own because the thing it has to notice -- a drain that is not
+  ;; finishing -- is main's own state. A request parked on something that
+  ;; never completes sends no message; without this arm main would wait
+  ;; for it for ever, and "exits within five seconds" would be a promise
+  ;; kept only by requests that were going to finish anyway.
   (define (watch-loop st)
     (receive
+      (after drain-poll-ms
+             (when (state-draining st)
+               (when (> (- (real-time) (state-draining st)) drain-budget-ms)
+                 (report `(exiting (reason drain-timeout)
+                                   (in-flight ,(length (state-running st)))))
+                 (leave st 75)))
+             (watch-loop st))
       ;; The listener says what it bound, so the exit path can tell this
       ;; socket from one somebody else has since put in its place.
       (`(bound ,ident)
@@ -391,6 +485,70 @@
                          p))))
          (send who (list 'writer-is tok pid)))
        (watch-loop st))
+      ;; ⛔ ONE SIGNAL STARTS THE DRAIN AND MAIN IS THE ONLY PLACE THAT
+      ;; KNOWS IT HAS. The listener stops accepting, every connection is
+      ;; told to stop reading, and what is already running is allowed to
+      ;; finish -- ⛔ nothing is killed. A request that has begun has
+      ;; possibly already changed the store, and a caller told "draining"
+      ;; about work that was done would be told something false.
+      ;;
+      ;; ⚠️ MAIN DOES NOT KILL THE CONNECTIONS EITHER. A conn process may
+      ;; be inside a write; killing it there can strand a write block in
+      ;; the runtime (igropyr's own open item). Each conn is TOLD, and
+      ;; closes its own connection when its write has completed.
+      (`(signal ,which)
+       (cond
+         ((eq? which 'again)
+          (report `(exiting (reason second-signal)))
+          (leave st 75))
+         ((state-draining st) (watch-loop st))
+         (else
+          (state-draining-set! st (real-time))
+          (report `(draining (in-flight ,(length (state-running st)))))
+          (when (state-listener st) (send (state-listener st) (list 'stop)))
+          (for-each (lambda (entry)
+                      (when (eq? 'conn (cdr entry)) (send (car entry) (list 'drain))))
+                    (state-roles st))
+          ;; ⚠️ AND BACK INTO THE LOOP. `finish-if-drained` leaves only
+          ;; when the drain is already over; on every other path main has
+          ;; to keep watching, because the clock that ends a drain that
+          ;; cannot finish is an arm of this receive. Measured: without
+          ;; this line main returned from its own loop here, and a second
+          ;; signal and the watchdog both had nobody left to reach --
+          ;; three rows read as "the daemon never exited".
+          (finish-if-drained st)
+          (watch-loop st))))
+      ;; ⛔ THE EXECUTOR ASKS BEFORE IT STARTS, AND MAIN ANSWERS. Not the
+      ;; connection: a request has exactly one answerer, and if the conn
+      ;; decided as well there would be interleavings where a request is
+      ;; answered twice or not at all. What has begun is on main's list
+      ;; until its executor says it is done, and that list is the whole
+      ;; of "is the drain finished".
+      (`(may-execute ,ticket ,who ,tok)
+       (cond
+         ((state-draining st) (send who (list 'may-execute-is tok 'draining)))
+         (else
+          ;; ⚠️ THE OWNER TRAVELS WITH THE TICKET. An executor that dies
+          ;; mid-request sends no `finished` -- a killed actor runs no
+          ;; unwinds -- and without knowing whose ticket it was, main
+          ;; would go on counting a request nobody is working on as in
+          ;; flight, and hold a drain open until the clock ran out.
+          (state-running-set! st (cons (cons ticket who) (state-running st)))
+          (send who (list 'may-execute-is tok 'execute))))
+       (watch-loop st))
+      (`(finished ,ticket)
+       ;; ⚠️ BY `equal?`, not `eq?`: a ticket is a number, and `eq?` on
+       ;; numbers is not something this may depend on.
+       (state-running-set! st
+         (filter (lambda (entry) (not (equal? ticket (car entry)))) (state-running st)))
+       (finish-if-drained st)
+       (watch-loop st))
+      ;; The conn processes report themselves gone; when the last one has
+      ;; and nothing is running, the drain is over.
+      (`(conn-done ,who)
+       (state-roles-set! st (remove-key who (state-roles st)))
+       (finish-if-drained st)
+       (watch-loop st))
       (`#(DOWN ,who ,reason)
        (let ((role (or (lookup who (state-roles st)) 'unknown)))
          (unless (eq? reason 'normal)
@@ -402,6 +560,9 @@
          ;; would otherwise keep the store locked for as long as this
          ;; daemon lives.
          (state-locks-set! st (release-all-of who (state-locks st)))
+         ;; Whatever it had begun is no longer being worked on by anyone.
+         (state-running-set! st
+           (filter (lambda (entry) (not (eq? who (cdr entry)))) (state-running st)))
          ;; ⛔ AND IT IS FORGOTTEN BEFORE ANYTHING CAN ASK FOR IT AGAIN,
          ;; so the next request for that writer gets a new process
          ;; rather than a pid nobody is listening on.
@@ -413,13 +574,38 @@
             (report `(exiting (reason ,(if (eq? who (state-store-pid st))
                                            'store-actor-down
                                            'listener-down))))
-            (unlink-own-socket! (state-socket st) (state-bound st))
-            (lock-release! (state-lock st))
-            (exit 75))
+            (leave st 75))
            (else
             (state-roles-set! st (remove-key who (state-roles st)))
             (state-handling-set! st (remove-key who (state-handling st)))
+            ;; ⚠️ A CONNECTION THAT DIED IS A CONNECTION THAT IS GONE. It
+            ;; sends no `conn-done` -- a killed actor runs no unwinds --
+            ;; so the drain's completion condition has to be re-asked
+            ;; here as well, or a crash during a drain would be reported
+            ;; as a drain that timed out.
+            (finish-if-drained st)
             (watch-loop st)))))))
+
+  ;; ⛔ ONE WAY OUT, SO THE SOCKET IS TIDIED ON ALL OF THEM. A daemon
+  ;; that leaves its socket behind is one the next client waits on before
+  ;; falling back, and every exit path that forgot the unlink would be a
+  ;; separate small version of that bug.
+  (define (leave st code)
+    (unlink-own-socket! (state-socket st) (state-bound st))
+    (lock-release! (state-lock st))
+    (exit code))
+
+  ;; ⛔ FINISHED MEANS NOTHING IS RUNNING AND NO CONNECTION IS LEFT --
+  ;; both, because either alone is reached long before the work is over:
+  ;; a connection with nothing in flight still holds bytes it has been
+  ;; told not to read, and a request still running still has an answer
+  ;; owed to somebody.
+  (define (finish-if-drained st)
+    (when (and (state-draining st)
+               (null? (state-running st))
+               (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st))))
+      (report `(exiting (reason drained)))
+      (leave st 0)))
 
   (define (forget-pid who alist)
     (let loop ((rest alist) (kept '()))
@@ -553,7 +739,7 @@
         (`(reload)
          (guard (e (#t (if #f #f))) (publish! store (open-and-reduce store)))
          (loop))
-        (`(request ,from ,seq ,parsed ,actor)
+        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor)
          ;; ⛔ AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
          ;; the daemon: without it nothing can be answered, so main is
          ;; supposed to say so and leave with 75 rather than sit there
@@ -569,7 +755,11 @@
          ;; store as it stands under the lock -- answering from a
          ;; fold made before the lock was taken is how two writers
          ;; come to disagree about what was there.
-         (send from (list 'answer seq (answer-for store parsed actor #f)))
+         (if (may-execute? main-pid ticket)
+             (let ((answer (answer-for store parsed actor #f)))
+               (executed! main-pid ticket)
+               (send from (list 'answer seq answer)))
+             (send from (list 'answer seq draining-answer)))
          (loop))
         (`(drain) (loop)))))
 
@@ -633,7 +823,7 @@
   (define writer-fault-pending #t)
   (define writer-hold-name #f)
 
-  (define (park-in-draft-lock store name)
+  (define (park-in-draft-lock store name hold-ms)
     (let ((path (draft-lock-path store name)))
       (mkdir-p! (directory-of path))
       (file-ensure! path)
@@ -643,21 +833,18 @@
       ;; milliseconds is over before that sequence has finished, and the
       ;; row would then be measuring an unparked daemon.
       (let ((l ((current-lock-acquire) path 'exclusive)))
-        (sleep-ms 1500)
+        (sleep-ms hold-ms)
         ((current-lock-release) l))))
 
   (define (writer-loop store name)
     (let loop ()
       (receive
-        (`(request ,from ,seq ,parsed ,actor)
+        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor)
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise))
            (set! writer-fault-pending #f)
            ((current-lock-acquire) (string-append store "/lock") 'exclusive)
            (raise (condition (make-message-condition "injected writer raise")
                              (make-irritants-condition (list name seq)))))
-         (when (and (eq? (theourgia-fault) 'writer-hold) (not writer-hold-name))
-           (set! writer-hold-name name)
-           (park-in-draft-lock store name))
          ;; ⛔ THE PUBLISHED VALUE, NOT A FRESH FOLD. A note verb reads
          ;; the library to decide what a draft is based on, and doing
          ;; that by opening the log would take the store's lock on a
@@ -665,7 +852,31 @@
          ;; Being one commit behind is the documented behaviour here,
          ;; and the consequences of acting on a stale premise are caught
          ;; where they have to be caught -- by the commit, under the lock.
-         (send from (list 'answer seq (answer-for store parsed actor (published-state))))
+         (if (may-execute? main-pid ticket)
+             (begin
+               ;; ⛔ THE PARK IS INSIDE THE EXECUTED REGION, AFTER MAIN HAS
+               ;; SAID YES. ⚠️ Measured with it OUTSIDE: a request that
+               ;; parked before asking had, from main's point of view,
+               ;; never begun -- so a drain that started during the park
+               ;; refused it, and the row that wanted "what has begun
+               ;; finishes" read `(error draining)` for the very request
+               ;; it was about. ⭐ `may-execute?` returning IS what "begun"
+               ;; means here; whatever a process does before asking is
+               ;; invisible to the only process that decides.
+               ;;
+               ;; ⚠️ TWO LENGTHS, BECAUSE TWO ROWS NEED OPPOSITE THINGS:
+               ;; the short park has to end while another writer is being
+               ;; tidied up; the long one has to outlast the whole drain
+               ;; budget, so the only way out is the clock.
+               (when (and (memq (theourgia-fault) '(writer-hold writer-hold-long))
+                          (not writer-hold-name))
+                 (set! writer-hold-name name)
+                 (park-in-draft-lock store name
+                                     (if (eq? (theourgia-fault) 'writer-hold-long) 12000 1500)))
+               (let ((answer (answer-for store parsed actor (published-state))))
+                 (executed! main-pid ticket)
+                 (send from (list 'answer seq answer))))
+             (send from (list 'answer seq draining-answer)))
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise-late))
            (set! writer-fault-pending #f)
            (raise (condition (make-message-condition "injected writer raise late")
@@ -686,11 +897,21 @@
   ;; process, and that process makes itself the target -- so the bytes go
   ;; to whoever serves them and never through here.
   (define (listener-loop socket store-pid store main-pid)
-    (let ((me self))
-      (listen! socket 64)
+    (let ((me self)
+          ;; ⚠️ THE HANDLE IS KEPT, because stopping needs it: `listen!`
+          ;; answers a reference and `stop-listen!` is about that
+          ;; reference, not about the path -- the path may by then be
+          ;; somebody else's socket.
+          (lref (listen! socket 64)))
       (send main-pid (list 'bound (device-inode socket)))
       (let loop ()
         (receive
+          ;; ⛔ THE DOOR CLOSES FIRST. Everything else about a drain is
+          ;; about work already accepted; a listener still accepting
+          ;; would keep making more of it.
+          (`(stop)
+           (guard (e (#t (if #f #f))) (stop-listen! lref))
+           (loop))
           (`(accepted ,ref)
            ;; ⚠️ MAIN IS TOLD ABOUT EVERY CONN IT WILL HAVE TO EXPLAIN.
            (let ((conn (spawn (lambda () (conn-loop ref store-pid store main-pid)))))
@@ -762,13 +983,22 @@
   ;; procedures as another positional argument is how a call and a
   ;; definition drift apart.
   (define (make-ctx ref store-pid store main-pid)
-    (vector ref store-pid store main-pid (vector '())))
+    (vector ref store-pid store main-pid (vector '()) (vector #f)))
   (define (ctx-ref c) (vector-ref c 0))
   (define (ctx-store-pid c) (vector-ref c 1))
   (define (ctx-store c) (vector-ref c 2))
   (define (ctx-main c) (vector-ref c 3))
   (define (ctx-writers c) (vector-ref (vector-ref c 4) 0))
   (define (ctx-writers-set! c v) (vector-set! (vector-ref c 4) 0 v))
+  ;; ⚠️ SET WHEREVER THE MESSAGE IS RECEIVED, READ WHEREVER A DECISION IS
+  ;; MADE. A connection can be told to drain while it is waiting for an
+  ;; answer, while it is writing one, or while it is reading -- three
+  ;; places -- and what follows differs at each. A flag is the only shape
+  ;; that lets all three say the same thing.
+  (define (ctx-draining? c) (vector-ref (vector-ref c 5) 0))
+  (define (ctx-drain! c)
+    (vector-set! (vector-ref c 5) 0 #t)
+    (guard (e (#t (if #f #f))) (conn-read-stop! (ctx-ref c))))
 
   ;; ⚠️ ASKED ONCE PER WRITER, NOT ONCE PER REQUEST, and watched by this
   ;; connection as well as by main: the cache is this connection's, and
@@ -793,13 +1023,22 @@
   (define (conn-loop ref store-pid store main-pid)
     (let ((ctx (make-ctx ref store-pid store main-pid)))
       (monitor store-pid)
+      ;; ⛔ MAIN IS TOLD WHEN THIS CONNECTION IS OVER, on every path out of
+      ;; the loop below. "Nothing is running and no connection is left" is
+      ;; main's completion condition for a drain, and a conn that ended
+      ;; without saying so would hold the drain open until the clock ran
+      ;; out -- a clean shutdown reported as a timeout.
+      (dynamic-wind
+        void
+        (lambda ()
       ;; ⚠️ THE FIRST FRAME'S CLOCK STARTS ONLY ONCE THE READ HAS STARTED,
       ;; and a read that will not start is a failed connection: it is
       ;; closed, ⛔ not retried and ⛔ not run locally by anyone.
-      (let ((started (conn-read-start! ref)))
-        (if (eq? started 'ok)
-            (frames ctx 0 (make-bytevector 0) (+ (real-time) frame-ms))
-            (conn-close! ref)))))
+          (let ((started (conn-read-start! ref)))
+            (if (eq? started 'ok)
+                (frames ctx 0 (make-bytevector 0) (+ (real-time) frame-ms))
+                (conn-close! ref))))
+        (lambda () (send main-pid (list 'conn-done self))))))
 
   ;; ⛔ WHAT FOLLOWS A NEWLINE IS THE NEXT FRAME, NOT RUBBISH. One read
   ;; can carry two frames, or a frame and the beginning of another, and
@@ -815,6 +1054,19 @@
     (let ((ref (ctx-ref ctx))
           (cut (newline-at buffered)))
       (cond
+        ;; ⛔ A FRAME THAT ARRIVED BEFORE THE DRAIN AND HAS NOT BEEN
+        ;; STARTED IS REFUSED, NOT RUN. It is a request nobody has begun,
+        ;; so `draining` is the true answer -- and it is answered rather
+        ;; than dropped, because a client that is told nothing cannot
+        ;; tell "refused" from "lost".
+        ((and cut (ctx-draining? ctx))
+         (answer-and-close ref draining-answer))
+        ;; ⛔ DRAINING WITH NOTHING WHOLE LEFT: this connection is done.
+        ;; Waiting in the receive below would be waiting for bytes that
+        ;; cannot arrive -- reads are stopped -- so the connection would
+        ;; sit there until its frame budget expired and the drain would
+        ;; be held open by a client that had already been served.
+        ((ctx-draining? ctx) (conn-close! ref))
         ;; already holding a whole frame: serve it before reading more
         (cut (let ((line (subbytes buffered 0 cut))
                    (rest (subbytes buffered (+ cut 1) (bytevector-length buffered))))
@@ -827,6 +1079,10 @@
            (`(data ,r ,bv)
             (frames ctx seq (append-bytes buffered bv) deadline))
            (`(eof ,r) (conn-close! ref))
+           ;; ⛔ NOTHING IN FLIGHT HERE, so there is nothing to wait for:
+           ;; this connection is idle and closing it is the whole of the
+           ;; drain for it.
+           (`(drain) (ctx-drain! ctx) (conn-close! ref))
            (`(written ,r ,tok ,status) (frames ctx seq buffered deadline))
            (`#(DOWN ,who ,reason)
             ;; ⛔ ONLY THE STORE'S DEATH ENDS THIS CONNECTION. A writer
@@ -899,10 +1155,15 @@
                  (write-answer ctx seq
                                (answer-for (ctx-store ctx) request actor (published-state))
                                rest))
-           (let ((target (target-for ctx request)))
-             (send target (list 'request self seq request actor))
+           (let ((target (target-for ctx request))
+                 (ticket (fresh-ticket)))
+             (send target (list 'request self seq ticket (ctx-main ctx) request actor))
              (let await ()
                (receive
+                 ;; ⛔ AN IN-FLIGHT REQUEST IS FINISHED, NOT ABANDONED. It
+                 ;; may already have changed the store; the drain is
+                 ;; remembered and acted on once this one has its answer.
+                 (`(drain) (ctx-drain! ctx) (await))
                  (`(answer ,@seq ,result)
                   (write-answer ctx seq result rest))
                  (`#(DOWN ,who ,reason)
@@ -955,16 +1216,28 @@
       (let await ()
         (receive
           (after 5000 (conn-close! ref))
+          (`(drain) (ctx-drain! ctx) (await))
           (`(written ,r ,tok ,status)
-           (if (= status 0)
-               (let ((started (conn-read-start! ref)))
-                 (if (eq? started 'ok)
-                     ;; ⚠️ THE LEFTOVER BYTES GO ON, and the clock restarts
-                     ;; for the frame they belong to, not for the one just
-                     ;; answered.
-                     (frames ctx (+ seq 1) rest (+ (real-time) frame-ms))
-                     (void)))
-               (conn-close! ref)))
+           (cond
+             ((not (= status 0)) (conn-close! ref))
+             ;; ⛔ THE LEFTOVER BYTES ARE STILL DEALT WITH, EVEN NOW.
+             ;; ⚠️ Measured with this branch closing here instead: a
+             ;; second frame that had arrived in the same write as the
+             ;; first was never answered at all -- the connection simply
+             ;; ended -- and a client cannot tell that from a daemon that
+             ;; died. `frames` answers it `draining` and closes after
+             ;; THAT write. ⛔ Reads are NOT restarted: nothing new may
+             ;; arrive, only what was already here may be finished.
+             ((ctx-draining? ctx)
+              (frames ctx (+ seq 1) rest (+ (real-time) frame-ms)))
+             (else
+              (let ((started (conn-read-start! ref)))
+                (if (eq? started 'ok)
+                    ;; ⚠️ THE LEFTOVER BYTES GO ON, and the clock restarts
+                    ;; for the frame they belong to, not for the one just
+                    ;; answered.
+                    (frames ctx (+ seq 1) rest (+ (real-time) frame-ms))
+                    (void))))))
           ;; ⛔ A WRITER DYING WHILE THIS ANSWER IS ON THE WIRE IS NOT
           ;; THIS CONNECTION'S BUSINESS. Only the store's death ends it
           ;; here; anything else is forgotten and the wait goes on.

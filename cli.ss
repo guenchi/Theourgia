@@ -32,7 +32,10 @@
 ;; the S-expression; a shell reads the code. Diagnostics go to stderr and
 ;; are never part of either.
 (import (chezscheme) (theourgia rpc) (theourgia arguments) (theourgia render)
-        (theourgia sched) (theourgia net)
+        ;; ⛔ ONLY WHAT IT USES, AND `link` IS NOT IN IT: see the same
+        ;; note in daemon.ss. Forwarding runs one exchange and exits;
+        ;; nothing here has a peer to be linked to.
+        (only (theourgia sched) start-scheduler) (theourgia net)
         (only (theourgia daemon) serve)
         (only (theourgia ffi) exec-argv!))
 

@@ -125,12 +125,21 @@
          (st (string-append "/tmp/dmn-c" tag))
          (sk (string-append "/tmp/dmn-c" tag ".sock"))
          (rn (string-append "/tmp/dmn-c" tag ".ss"))
-         (lg (string-append "/tmp/dmn-c" tag ".log")))
-    (system (string-append "rm -rf " st " " sk "; mkdir -p " st))
+         (lg (string-append "/tmp/dmn-c" tag ".log"))
+         ;; ⚠️ THE DAEMON WRITES ITS OWN PID AND THE SHELL WRITES ITS
+         ;; EXIT CODE. A row about signals needs to send one to THIS
+         ;; daemon -- `pkill -f` would hit any other run's -- and a row
+         ;; about shutting down needs the code it left with, which is
+         ;; gone by the time anything can ask about it.
+         (pf (string-append "/tmp/dmn-c" tag ".pid"))
+         (rc (string-append "/tmp/dmn-c" tag ".rc")))
+    (system (string-append "rm -rf " st " " sk " " pf " " rc "; mkdir -p " st))
     (call-with-output-file rn
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
           (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
+                (string-append "(call-with-output-file \"" pf
+                               "\" (lambda (p) (write (get-process-id) p)))")
                 (string-append "(rpc-dispatch \"" st "\" '(init) \"tester\")")
                 (string-append "(serve \"" st "\" \"" sk "\")")))))
     ;; ⛔ TRACING IS TURNED ON BY THE ENVIRONMENT, NOT BY A CALL. The
@@ -148,11 +157,35 @@
                            (if fault (string-append "THEOURGIA_FAULT=" fault " ") "")
                            "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
-                           " scheme --script " rn " > " lg " 2>&1 &"))
+                           " sh -c 'scheme --script " rn " > " lg " 2>&1; echo $? > " rc "' &"))
     (let up ((k 0))
       (cond ((file-exists? sk) 'up)
             ((> k 120) 'never) (else (sleep-ms 50) (up (+ k 1)))))
-    (list st sk rn lg)))
+    (list st sk rn lg pf rc)))
+
+(define (tagged-pid d)
+  (let ((text (file-text (list-ref d 4))))
+    (and (> (string-length text) 0)
+         (string->number (substring text 0 (string-length text))))))
+
+(define (signal-tagged! d name)
+  (let ((pid (tagged-pid d)))
+    (and pid
+         (begin (system (string-append "kill -" name " " (number->string pid)))
+                'sent))))
+
+;; ⛔ WAITS FOR THE EXIT CODE, WITH A BOUND, and says which of the two
+;; things happened. "It did not exit" and "it exited with 0" are
+;; different answers and a row that cannot tell them apart is not a row
+;; about shutting down.
+(define (tagged-exit d ms)
+  (let wait ((k 0))
+    (let ((text (file-text (list-ref d 5))))
+      (cond ((> (string-length text) 0)
+             (list 'exited (string->number
+                             (substring text 0 (- (string-length text) 1)))))
+            ((> k (div ms 25)) (list 'still-running-after ms))
+            (else (sleep-ms 25) (wait (+ k 1)))))))
 
 (define (tagged-store d) (car d))
 (define (tagged-socket d) (cadr d))
@@ -307,6 +340,40 @@
       (cond ((contains? (tagged-log d) marker) 'published)
             ((> k (div ms 50)) (list 'never-published revision))
             (else (sleep-ms 50) (wait (+ k 1)))))))
+
+;; Sends whatever it is given on ONE connection and reads to EOF, so the
+;; row can say how many answers arrived. ⛔ `exchange` stops at the first
+;; complete line, which cannot tell "one answer" from "one answer and
+;; then another": counting is the whole question for a rule that says a
+;; request gets exactly one answerer.
+(define (ask-until-eof sock text ms)
+  (let ((asker self))
+    (spawn
+      (lambda ()
+        (connect! sock)
+        (receive
+          (after 4000 (send asker (list 'until-eof 'no-connect 0)))
+          (`(connected ,p ,ref)
+           (conn-read-start! ref)
+           (conn-write! ref (string->utf8 text) 'all)
+           (let hear ((acc ""))
+             (receive
+               (after ms (send asker (list 'until-eof (list 'timed-out acc)
+                                           (count-lines acc))))
+               (`(written ,r ,t ,st) (hear acc))
+               (`(data ,r ,bv) (hear (string-append acc (utf8->string bv))))
+               (`(eof ,r) (send asker (list 'until-eof acc (count-lines acc))))
+               (`#(DOWN ,w ,why) (send asker (list 'until-eof acc (count-lines acc))))))))))
+    (let wait ()
+      (receive (after (+ ms 6000) (list 'no-answer 0))
+               (`(until-eof ,text ,n) (list text n))
+               (`#(DOWN ,w ,r) (wait))))))
+
+(define (count-lines text)
+  (let loop ((i 0) (n 0))
+    (cond ((>= i (string-length text)) n)
+          ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ n 1)))
+          (else (loop (+ i 1) n)))))
 
 (start-scheduler
   (lambda ()
@@ -1023,6 +1090,275 @@
                       'answered-the-published-value)
                   (list 'said (cadr triggering)))
               'answered-the-published-value))
+
+      ;; ---- D-19 one SIGTERM, a clean drain ----------------------------
+      ;;
+      ;; ⛔ WHAT IS RUNNING FINISHES; WHAT HAS NOT STARTED IS REFUSED;
+      ;; THE SOCKET IS TIDIED. A daemon that dropped the request it was
+      ;; in the middle of would leave a client that had been told
+      ;; nothing about work that may well have been done -- and a daemon
+      ;; that left its socket behind makes the next client wait on a
+      ;; path with nobody on it before it falls back.
+      ;;
+      ;; ⚠️ A CLEAN DRAIN LEAVES WITH 0. 75 is what a second signal and a
+      ;; drain that ran out of time leave with; a row that accepted any
+      ;; exit code would not tell those apart.
+      (let* ((d (start-tagged-daemon! "drain" #f))
+             (before (ask-tagged d "outline" 8000))
+             (sent (signal-tagged! d "TERM"))
+             (code (tagged-exit d 8000))
+             (socket-after (file-exists? (tagged-socket d)))
+             (later (ask-tagged d "outline" 3000)))
+        (want "D-19 one SIGTERM drains and the daemon leaves with 0"
+              (list (if (and (string? (cadr before)) (starts-with? (cadr before) "(ok"))
+                        'served-before
+                        (list 'before-said (cadr before)))
+                    sent
+                    code
+                    (if socket-after 'SOCKET-LEFT-BEHIND 'socket-tidied)
+                    (if (eq? 'no-answer (cadr later)) 'refused-afterwards
+                        (list 'answered-afterwards (cadr later))))
+              '(served-before sent (exited 0) socket-tidied refused-afterwards)))
+
+      ;; ---- D-20 a second signal does not wait -------------------------
+      ;;
+      ;; ⛔ 75, AND WITHOUT WAITING OUT THE BUDGET. Asking twice is asking
+      ;; to stop now; a daemon that finished its five-second drain anyway
+      ;; and then reported 75 would be doing the opposite of what it was
+      ;; asked while printing the right number.
+      ;;
+      ;; ⚠️ THE SEAM IS A REQUEST THAT WILL NOT COME BACK -- the writer
+      ;; parked inside its draft lock -- because otherwise the drain is
+      ;; over before a second signal could mean anything.
+      (let* ((d (start-tagged-daemon! "twice" "writer-hold@conn")))
+        (spawn (lambda () (ask-tagged d "drafts \"--writer\" \"w1\"" 12000)))
+        (sleep-ms 200)
+        (let ((t0 (real-time)))
+          (signal-tagged! d "TERM")
+          (sleep-ms 150)
+          (signal-tagged! d "TERM")
+          (let* ((code (tagged-exit d 8000))
+                 (ms (- (real-time) t0)))
+            (stop-tagged-daemon! d)
+            (want "D-20 a second SIGTERM leaves with 75 without waiting out the budget"
+                  (list code (if (< ms 3000) 'without-waiting (list 'took ms)))
+                  '((exited 75) without-waiting)))))
+
+      ;; ---- D-21 the watchdog -----------------------------------------
+      ;;
+      ;; ⛔ A DRAIN THAT CANNOT FINISH STILL ENDS. The seam parks a
+      ;; request inside a lock for longer than the whole budget, so the
+      ;; only way out is the clock. ⚠️ Without a clock main would wait for
+      ;; a message that is never coming, and "it exits within five
+      ;; seconds" would be a promise kept only by requests that were
+      ;; going to finish anyway.
+      (let* ((d (start-tagged-daemon! "watchdog" "writer-hold-long@conn")))
+        (spawn (lambda () (ask-tagged d "drafts \"--writer\" \"w1\"" 20000)))
+        (sleep-ms 200)
+        (let ((t0 (real-time)))
+          (signal-tagged! d "TERM")
+          (let* ((code (tagged-exit d 12000))
+                 (ms (- (real-time) t0)))
+            (stop-tagged-daemon! d)
+            (want "D-21 a drain that cannot finish exits 75 on the budget"
+                  (list code
+                        (if (and (> ms 4500) (< ms 8000)) 'on-the-budget (list 'at ms)))
+                  '((exited 75) on-the-budget)))))
+
+      ;; ---- D-22 a frame that arrives during a drain -------------------
+      ;;
+      ;; ⛔ CLOSED, ⛔ NOT DISPATCHED. The frame below is a WRITE, so a
+      ;; daemon that ran it would be changing the store after it had been
+      ;; told to stop -- and the client, whose connection is closing,
+      ;; would never learn that it had.
+      (let* ((d (start-tagged-daemon! "idleconn" "writer-hold-long@conn")))
+        (spawn (lambda () (ask-tagged d "drafts \"--writer\" \"w1\"" 20000)))
+        (sleep-ms 200)
+        (signal-tagged! d "TERM")
+        (sleep-ms 300)
+        (let* ((during (ask-tagged d "insert \"--title\" \"AFTER-DRAIN-CANARY\"" 4000))
+               (code (tagged-exit d 12000)))
+          (stop-tagged-daemon! d)
+          (want "D-22 a request sent during a drain is refused or dropped, never run"
+                (list (cond ((eq? 'no-answer (cadr during)) 'connection-closed)
+                            ((and (string? (cadr during))
+                                  (starts-with? (cadr during) "(error draining"))
+                             'answered-draining)
+                            (else (list 'said (cadr during))))
+                      ;; ⛔ ASKED OF THE STORE, NOT OF THE LOG. Whether a
+                      ;; write ran is a fact about what is on the disk;
+                      ;; the daemon's own output is where it would say so
+                      ;; if it chose to, which is not the same question.
+                      (let ((found (string-append "/tmp/dmn-found-" pid-text ".txt")))
+                        (system (string-append "grep -rl AFTER-DRAIN-CANARY "
+                                               (tagged-store d) " > " found " 2>/dev/null"))
+                        (if (> (string-length (file-text found)) 0) 'IT-RAN 'not-run))
+                      code)
+                '(connection-closed not-run (exited 75)))))
+
+      ;; ---- D-23 a frame already in the buffer when the drain starts ---
+      ;;
+      ;; ⛔ ANSWERED `draining`, ⛔ NOT RUN AND ⛔ NOT DROPPED. Both frames
+      ;; below arrive in ONE write, so the second is sitting in this
+      ;; connection's buffer, parsed by nobody, while the first is being
+      ;; served. A daemon that ran it would be working after it was told
+      ;; to stop; one that simply closed would leave a client unable to
+      ;; tell a refusal from a lost connection.
+      ;;
+      ;; ⚠️ THE ROW COUNTS THE ANSWERS. "The second was refused" and "the
+      ;; second was refused twice" are different facts, and a reader that
+      ;; stopped at the first newline could not tell them apart -- which
+      ;; is the whole of what "one request, one answerer" claims.
+      (let* ((d (start-tagged-daemon! "queued" "writer-hold@conn"))
+             (both (string-append
+                     "(request \"" (tagged-store d) "\" \"tester\" drafts \"--writer\" \"w1\")\n"
+                     "(request \"" (tagged-store d) "\" \"tester\" drafts \"--writer\" \"w2\")\n")))
+        (spawn (lambda () (send main (list 'queued (ask-until-eof (tagged-socket d) both 15000)))))
+        (sleep-ms 300)
+        (signal-tagged! d "TERM")
+        (let* ((answers (let wait ()
+                          (receive (after 20000 'no-answer)
+                                   (`(queued ,what) what)
+                                   (`#(DOWN ,w ,r) (wait)))))
+               (code (tagged-exit d 12000)))
+          (stop-tagged-daemon! d)
+          (want "D-23 a frame buffered when the drain begins is answered draining, once"
+                (list (if (and (pair? answers) (string? (car answers))
+                               (starts-with? (car answers) "(ok"))
+                          'first-served
+                          (list 'first-said answers))
+                      (if (and (pair? answers) (string? (car answers))
+                               (contains? (car answers) "(error draining"))
+                          'second-refused
+                          'NO-DRAINING-ANSWER)
+                      (if (and (pair? answers) (= 2 (cadr answers)))
+                          'exactly-two-answers
+                          (list 'answers (and (pair? answers) (cadr answers))))
+                      code)
+                '(first-served second-refused exactly-two-answers (exited 0)))))
+
+      ;; ---- D-24 a request queued behind one in a writer ---------------
+      ;;
+      ;; ⛔ THE EXECUTOR DECIDES, NOT THE CONNECTION. A is parked inside
+      ;; the writer's lock; B is in the same writer's mailbox behind it.
+      ;; The drain begins while both exist. When A finishes, B has still
+      ;; not started -- so B is the case the rule is about, and the
+      ;; process that answers it is the writer, which is the only one
+      ;; that knows B had not begun.
+      ;;
+      ;; ⚠️ A IS ALLOWED TO FINISH. It may already have changed something;
+      ;; a daemon that refused it after it had begun would be reporting
+      ;; work that was done as work that was not.
+      (let* ((d (start-tagged-daemon! "wqueued" "writer-hold@conn")))
+        (spawn (lambda ()
+                 (send main (list 'a (ask-until-eof
+                                       (tagged-socket d)
+                                       (string-append "(request \"" (tagged-store d)
+                                                      "\" \"tester\" drafts \"--writer\" \"w1\")\n")
+                                       15000)))))
+        (sleep-ms 150)
+        (spawn (lambda ()
+                 (send main (list 'b (ask-until-eof
+                                       (tagged-socket d)
+                                       (string-append "(request \"" (tagged-store d)
+                                                      "\" \"tester\" drafts \"--writer\" \"w1\")\n")
+                                       15000)))))
+        (sleep-ms 200)
+        (signal-tagged! d "TERM")
+        (let gather ((a #f) (b #f))
+          (if (and a b)
+              (let ((code (tagged-exit d 12000)))
+                (stop-tagged-daemon! d)
+                (want "D-24 a request queued in a writer is refused by the writer, exactly once"
+                      (list (if (and (string? (car a)) (starts-with? (car a) "(ok"))
+                                'the-one-that-started-finished
+                                (list 'a-said a))
+                            (if (and (string? (car b)) (starts-with? (car b) "(error draining"))
+                                'the-queued-one-was-refused
+                                (list 'b-said b))
+                            (if (= 1 (cadr b)) 'exactly-one-answer (list 'answers (cadr b)))
+                            code)
+                      '(the-one-that-started-finished the-queued-one-was-refused
+                        exactly-one-answer (exited 0))))
+              (receive (after 25000 (want "D-24 a request queued in a writer is refused by the writer, exactly once"
+                                          (list 'no-answer a b) 'never))
+                       (`(a ,what) (gather what b))
+                       (`(b ,what) (gather a what))
+                       (`#(DOWN ,w ,r) (gather a b))))))
+
+      ;; ---- D-25 a read while somebody else holds the store ------------
+      ;;
+      ;; ⭐ FIFTY MILLISECONDS, AND IT IS ONLY TRUE BECAUSE READS STOPPED
+      ;; TOUCHING THE LOCK. Before the published value existed, a read
+      ;; during somebody else's exclusive hold waited for that holder --
+      ;; measured on this very fixture at 2950 ms. The promise is not
+      ;; that the daemon is fast; it is that a reader asks nobody.
+      ;;
+      ;; ⚠️ THE TWIN IS A WRITE IN THE SAME WINDOW. Without it, a daemon
+      ;; that ignored the store lock altogether would pass this row --
+      ;; and would be answering reads quickly by being wrong.
+      (let* ((tag (string-append pid-text "-fifty"))
+             (held (hold-lock! (string-append store "/lock") 2 tag)))
+        (spawn
+          (lambda ()
+            (send main (list 'slow-write
+                             (timed-ask socket
+                                        (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                       tag "\")\n")
+                                        12000)))))
+        (let* ((r (timed-ask socket
+                             (string-append "(request \"" store "\" \"tester\" outline)\n")
+                             8000))
+               (w (let wait ()
+                    (receive (after 20000 'no-answer)
+                             (`(slow-write ,what) what)
+                             (`#(DOWN ,x ,y) (wait))))))
+          (want "D-25 a read is answered in 50 ms while somebody else holds the store"
+                (list (car held)
+                      (if (< (car r) 50) 'at-once (list 'read-took (car r)))
+                      (if (and (string? (cadr r)) (starts-with? (cadr r) "(ok"))
+                          'and-answered
+                          (list 'read-said (cadr r)))
+                      ;; the twin: the write in the same window waited
+                      (if (and (pair? w) (> (car w) 1000))
+                          'the-write-waited
+                          (list 'write-took (and (pair? w) (car w)))))
+                '(held at-once and-answered the-write-waited))))
+
+      ;; ---- D-26 a hold longer than the budget -------------------------
+      ;;
+      ;; ⛔ ONE `store-busy`, ON THE BUDGET, AND ⛔ ONLY FOR THE WRITE. The
+      ;; reader in the same window is not waiting for anything and must
+      ;; not be made to: that is the whole difference the published value
+      ;; buys, and a row that only looked at the write would not see it.
+      (let* ((tag (string-append pid-text "-toolong"))
+             (held (hold-lock! (string-append store "/lock") 7 tag)))
+        (spawn
+          (lambda ()
+            (send main (list 'refused
+                             (ask-until-eof socket
+                                            (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                           tag "\")\n")
+                                            12000)))))
+        (sleep-ms 200)
+        (let* ((r (timed-ask socket
+                             (string-append "(request \"" store "\" \"tester\" outline)\n")
+                             8000))
+               (w (let wait ()
+                    (receive (after 25000 'no-answer)
+                             (`(refused ,what) what)
+                             (`#(DOWN ,x ,y) (wait))))))
+          (want "D-26 a hold past the budget refuses the write once and leaves the read alone"
+                (list (car held)
+                      (if (and (pair? w) (string? (car w))
+                               (starts-with? (car w) "(error store-busy"))
+                          'the-write-was-refused
+                          (list 'write-said w))
+                      (if (and (pair? w) (= 1 (cadr w)))
+                          'exactly-once
+                          (list 'answers (and (pair? w) (cadr w))))
+                      (if (< (car r) 50) 'the-read-was-at-once (list 'read-took (car r))))
+                '(held the-write-was-refused exactly-once the-read-was-at-once))))
 
       (stop-daemon!)
       ;; ⛔ THIS RUN CLEANS UP AFTER ITSELF, BY ITS OWN PID. Every row
