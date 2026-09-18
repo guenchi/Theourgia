@@ -36,7 +36,7 @@
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           request-frame transport-unreachable?
-          count-argument outline-text)
+          count-argument outline-text write-protocol)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -87,6 +87,30 @@
                                 ((message-condition? e) (condition-message e))
                                 (else "unexpected failure"))))))
       (thunk)))
+
+  ;; HOW TO WRITE INTO A STORE, IN ONE PLACE.
+  ;;
+  ;; ⭐ THIS STRING IS THE ONLY COPY. The README's `## Writing for
+  ;; agents` section is this text, and the MCP shell's `insert` and
+  ;; `write` tool descriptions begin with it. A protocol stated in three
+  ;; places is three protocols the moment one of them is edited, and the
+  ;; one a reader happens to meet is the one they will follow.
+  ;;
+  ;; ⚠️ ENGLISH, like every other user-facing string in this library.
+  ;;
+  ;; ⛔ EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.ss` compares it
+  ;; to the COMMITTED README byte for byte, and `f1-protocol.ss` checks
+  ;; each rule is still in it -- so a rule cannot be dropped quietly, and
+  ;; the README cannot drift from it.
+  (define write-protocol
+    (string-append
+      "A block is the unit of writing: one block should answer one question on its own.\n"
+      "Keep a block under about 800 tokens (roughly 3000 bytes); split a longer one.\n"
+      "Give every block a one-sentence title.\n"
+      "Give every block 3 to 8 keywords, comma separated, with --keywords.\n"
+      "Place a block under the parent its source or subject puts it under, with --under.\n"
+      "Do not rewrite the source bytes: splitting a document must not edit its prose.\n"
+      "Change a block with write and then commit, through a draft, rather than replacing it.\n"))
 
   (define (usage form) (list 'usage form))
 
@@ -211,9 +235,32 @@
   ;; a second opinion about what an outline looks like -- and the two
   ;; would differ first at exactly the rows that are hardest to draw, the
   ;; ones in a structural conflict.
+  ;; ⚠️ THE SECOND REST ARGUMENT IS OPTIONAL SO EVERY EXISTING CALLER IS
+  ;; UNCHANGED, and `--with-keywords` is off unless it is asked for. A
+  ;; listing that grew a suffix by default would change the bytes of
+  ;; every outline anybody has ever scripted against.
   (define (outline-text state . limit)
     (let*-values (((out get) (open-string-output-port)))
       (let* ((depth-limit (if (pair? limit) (car limit) #f))
+             (with-keywords? (and (pair? limit) (pair? (cdr limit)) (cadr limit)))
+             (keywords-of
+               (lambda (id)
+                 (let* ((block (state-read state id))
+                        (fields (and block (assq 'fields block)))
+                        (e (and fields (assq 'keywords (cdr fields)))))
+                   (and e (string? (cdr e)) (cdr e)))))
+             (put-keywords
+               (lambda (id)
+                 (when with-keywords?
+                   (let ((k (keywords-of id)))
+                     ;; ⛔ A BLOCK WITHOUT THE FIELD PRINTS NO BRACKETS.
+                     ;; Empty brackets would say the writer chose no
+                     ;; keywords, which is a different thing from a store
+                     ;; written before the field existed.
+                     (when k
+                       (put-string out "  [")
+                       (put-string out k)
+                       (put-string out "]"))))))
              (rows (state-outline state))
              (structure (state-structure state))
              (orphans (cdr (assq 'orphans structure))))
@@ -264,6 +311,7 @@
                   ;; listing from being the one view that does not.
                   (when (member id orphans)
                     (put-string out "  orphan"))
+                  (put-keywords id)
                   (put-string out "\n")
                   (walk id (+ depth 1)))))
             (children-of parent)))
@@ -295,6 +343,7 @@
                         (put-string out id)
                         (put-string out "  ")
                         (put-string out (title-of state id))
+                        (put-keywords id)
                         (put-string out "\n")
                         (walk id 1))
                       left)))
@@ -309,8 +358,12 @@
   (define commit-usage
     '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>]))
 
+  (define outline-usage
+    '(outline ["--depth" <n>] ["--with-keywords"]))
+
   (define insert-usage
-    '(insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)))
+    '(insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)
+             ("--keywords" <text>)))
 
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
@@ -324,7 +377,8 @@
     (let ((under (argument-option options "--under"))
           (after (argument-option options "--after"))
           (title (argument-option options "--title"))
-          (text (argument-option options "--text")) (rest args))
+          (text (argument-option options "--text"))
+          (keywords (argument-option options "--keywords")) (rest args))
       (cond
         ((not (null? rest)) (usage insert-usage))
         ((not title) (usage insert-usage))
@@ -336,8 +390,14 @@
                     (list 'insert
                           (if (or (not under) (string=? under "root")) 'root under)
                           after
+                          ;; ⛔ STORED AS THE CALLER WROTE IT. `read` gives
+                          ;; back the same bytes -- spacing, commas and
+                          ;; all -- because a field that came back
+                          ;; normalised would be a different string from
+                          ;; the one that was sent.
                           (append (list (cons 'kind 'section) (cons 'title title))
-                                  (if text (list (cons 'src text)) '())))
+                                  (if text (list (cons 'src text)) '())
+                                  (if keywords (list (cons 'keywords keywords)) '())))
                     req)))))
 
   (define (parse-set store actor args req options state)
@@ -574,14 +634,14 @@
             (lambda (store actor args req options state)
               (let ((depth (argument-option options "--depth")) (rest args))
                 (cond
-                  ((not (null? rest)) (usage '(outline ["--depth" <n>])))
-                  ((and depth (not (count-argument depth))) (usage '(outline ["--depth" <n>])))
+                  ((not (null? rest)) (usage outline-usage))
+                  ((and depth (not (count-argument depth))) (usage outline-usage))
                   (else
-                   (guarded (lambda ()
-                              (text (if depth
-                                        (outline-text (reduction-for store state)
-                                                      (count-argument depth))
-                                        (outline-text (reduction-for store state)))))))))))
+                   (let ((with-keywords (argument-option options "--with-keywords")))
+                     (guarded (lambda ()
+                                (text (outline-text (reduction-for store state)
+                                                    (and depth (count-argument depth))
+                                                    with-keywords))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections

@@ -24,6 +24,20 @@ The shell branches on the **transport's tag**, never on the answer's
 text: a core answer whose text happens to read `(error transport-unknown
 …)` is still an answer.
 
+## Writing for agents
+
+The `theourgia_insert` and `theourgia_write` tools carry the core's
+write protocol in their `description`, ahead of the sentence naming the
+verb. ⛔ It is not written here and not written in the shell: it is
+`write-protocol`, exported by `(theourgia rpc)`, and the README's
+`## Writing for agents` section is the same string. An agent choosing a
+tool from `tools/list` reads the description and nothing else, so the
+rules for writing a block have to be in it.
+
+⚠️ Only those two tools carry it. It is about writing a block, and on
+`read` or `search` it would be noise in the place an agent is choosing
+from.
+
 ## Tools
 
 One per verb in `rpc-verbs`, asked again on every call — a verb added to

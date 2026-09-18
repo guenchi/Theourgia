@@ -349,10 +349,15 @@
 
   ;; THE SNIPPET IS THE FIRST LINE THAT HITS, title before src, with its
   ;; whitespace collapsed and cut to the limit.
+  ;; ⚠️ KEYWORDS COME FIRST IN THE LINES SEARCHED, so a block matched on
+  ;; its keywords shows them. A snippet drawn from the prose for a
+  ;; keyword hit would show a line that does not contain the word the
+  ;; caller searched for, which reads as a wrong result.
   (define (snippet-for block tokens)
     (let* ((titles (field-strings block (quote title)))
            (srcs (field-strings block (quote src)))
-           (lines (append titles
+           (kws (field-strings block (quote keywords)))
+           (lines (append kws titles
                           (apply append (map lines-of-text srcs)))))
       (let loop ((ls lines))
         (cond
@@ -374,16 +379,29 @@
                                (block (state-read state id))
                                (titles (field-strings block (quote title)))
                                (srcs (field-strings block (quote src)))
+                               ;; ⭐ KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
+                               ;; SOURCE'S 1. They are the one field a
+                               ;; writer chose FOR being found by, so a
+                               ;; block whose keywords match is a better
+                               ;; answer than one whose prose happens to.
+                               (kws (field-strings block (quote keywords)))
                                (in-title (exists (lambda (tk) (any-hit? titles tk)) tokens))
                                (in-src (exists (lambda (tk) (any-hit? srcs tk)) tokens))
+                               (in-kw (exists (lambda (tk) (any-hit? kws tk)) tokens))
+                               ;; ⛔ EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
+                               ;; Keywords widen where a token may be
+                               ;; found; they do not turn the query into
+                               ;; an OR across tokens.
                                (every-token
                                  (for-all (lambda (tk)
-                                            (or (any-hit? titles tk) (any-hit? srcs tk)))
+                                            (or (any-hit? titles tk) (any-hit? srcs tk)
+                                                (any-hit? kws tk)))
                                           tokens)))
                           (loop (cdr ds)
                                 (if every-token
                                     (cons (list id
-                                                (+ (if in-title 2 0) (if in-src 1 0))
+                                                (+ (if in-title 2 0) (if in-src 1 0)
+                                                   (if in-kw 3 0))
                                                 (snippet-for block tokens))
                                           out)
                                     out)))))))

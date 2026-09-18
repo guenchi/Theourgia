@@ -38,6 +38,7 @@
 
 (import (chezscheme)
         (theourgia rpc)
+        (only (theourgia render) render-wire answer-printing!)
         (theourgia json)
         (theourgia arguments)
         (only (theourgia sched) start-scheduler)
@@ -138,6 +139,24 @@
                  "\"items\":{\"type\":\"string\"}}},\"required\":[\"argv\"],"
                  "\"additionalProperties\":false}"))
 
+;; ⭐ THE TWO TOOLS THAT WRITE CARRY THE PROTOCOL, and they carry the
+;; core's copy of it rather than a sentence written here. An agent
+;; choosing a tool from `tools/list` reads the description and nothing
+;; else; if the rules for writing live in a README it will not open,
+;; they are rules it will not follow.
+;;
+;; ⚠️ EVERY OTHER TOOL KEEPS THE PLAIN SENTENCE. The protocol is about
+;; writing a block, and putting it on `read` or `search` would be noise
+;; in the place an agent is choosing from.
+(define writing-verbs '(insert write))
+
+(define (description-for verb)
+  (let ((plain (string-append "Execute the core " (symbol->string verb)
+                              " command and return its exact S-expression answer.")))
+    (if (memq verb writing-verbs)
+        (string-append write-protocol "\n" plain)
+        plain)))
+
 (define (tools-json entries)
   (string-append
     "{\"tools\":["
@@ -149,10 +168,7 @@
                (string-append
                  out (if (string=? out "") "" ",")
                  "{\"name\":" (json->string (caar es))
-                 ",\"description\":" (json->string
-                                       (string-append "Execute the core "
-                                                      (symbol->string (cdar es))
-                                                      " command and return its exact S-expression answer."))
+                 ",\"description\":" (json->string (description-for (cdar es)))
                  ",\"inputSchema\":" (schema-json) "}")))))
     "]}"))
 
@@ -188,13 +204,10 @@
 (define (local-answer store actor verb args)
   (render-answer (rpc-dispatch store (cons verb args) actor)))
 
-(define (render-answer answer)
-  (call-with-string-output-port
-    (lambda (port)
-      (parameterize ((print-graph #f) (print-length #f) (print-level #f)
-                     (print-radix 10) (print-unicode #f) (print-gensym #f))
-        (write answer port)
-        (newline port)))))
+;; ⛔ THE CORE'S PRINTER, NOT A COPY OF IT. This was a copy, with the
+;; same six settings written out again -- and a copy of a printer is a
+;; second printer the day one of them is edited.
+(define (render-answer answer) (render-wire answer))
 
 (define (datum-line? bv)
   (let loop ((i 0))
@@ -388,6 +401,11 @@
       "cli"))
 
 (define (main argv)
+  ;; ⛔ ONCE, BEFORE THE FIRST FRAME IS ANSWERED. The shell returns the
+  ;; core's answer as text; how that text spells a non-ASCII character is
+  ;; decided here, in the same place and the same way as in the CLI and
+  ;; the daemon.
+  (answer-printing!)
   (let ((nodes (parse-arguments 'serve argv)))
     (if (and (pair? nodes) (eq? (car nodes) 'error))
         (begin (say (error-frame 'null -32600 "Invalid arguments")) (exit 2))

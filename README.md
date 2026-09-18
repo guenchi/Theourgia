@@ -20,8 +20,25 @@ directory holding both `theourgia/` and `igropyr/`:
     export CHEZSCHEMELIBEXTS=".ss::.sls::.sc::.scm"
     scheme --script cli.ss init --store /path/to/store
 
-⚠️ Compiling to `.so` is not part of this: no build script ships here,
-and a stale object file beside a source file is read in preference to it.
+**Running it compiled.** `build.ss` compiles every library -- this tree
+and its dependency -- into a directory of objects:
+
+    scheme --script build.ss <library-root> <output-root>
+
+where both arguments are the directory that *contains* `theourgia/`.
+Point `CHEZSCHEMELIBDIRS` at the output and `CHEZSCHEMELIBEXTS` at
+`.so`. ⚠️ Objects start about twelve times faster than source, because
+they do not re-expand the libraries on every call.
+
+⛔ **The products do not belong in the source tree.** A stale `.so`
+beside a `.ss` is resolved in preference to it, so a tree holding both
+can be running code nobody has edited for a week.
+
+⚠️ **Packaging the whole program into one file is not done yet.** That
+form would drop a library nothing statically references -- and `serve`,
+`eval` and forwarding are reached at run time by name, so they would
+stop resolving. It is recorded as F13; until then the shipped form is a
+directory of objects, which those three verbs do work in.
 
 ## Two ways to run
 
@@ -39,6 +56,16 @@ there, and runs locally when one is not.
 the same dispatcher; no verb, answer or error shape exists in one and not
 the other. Set `THEOURGIA_LOCAL=1` to skip the socket and answer in
 process even when a daemon is running.
+
+## Writing for agents
+
+A block is the unit of writing: one block should answer one question on its own.
+Keep a block under about 800 tokens (roughly 3000 bytes); split a longer one.
+Give every block a one-sentence title.
+Give every block 3 to 8 keywords, comma separated, with --keywords.
+Place a block under the parent its source or subject puts it under, with --under.
+Do not rewrite the source bytes: splitting a document must not edit its prose.
+Change a block with write and then commit, through a draft, rather than replacing it.
 
 ## Reading a store
 
@@ -184,13 +211,22 @@ across two verbs.
 Creates a store in the directory named by `--store`, and answers with the
 store's id and the writer the caller was given.
 
-### `insert --under <id> --title <text> [--after <id>] [--text <text>]`
+### `insert --under <id> --title <text> [--after <id>] [--text <text>] [--keywords <text>]`
 
-    (insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>))
+    (insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)
+            ("--keywords" <text>))
 
 Adds a block under an existing one. `--after` places it among that
 parent's children; without it the block goes last. `--text` gives the
 block its `src` in the same request.
+
+`--keywords` gives it the words it should be found by -- three to eight
+of them, comma separated, as the protocol above says. ⛔ The value is
+stored as TEXT, exactly as it was written: `read` gives back the same
+string, spacing and commas included. Splitting it into words happens in
+`search`, which is the only reader that needs them; a store holding a
+normalised form could not give back what was sent. `set <id> keywords
+<text>` changes it afterwards.
 
 ### `set <id> <field> <value> [--if-unchanged <version>] [--based-on <version>]`
 
@@ -235,12 +271,17 @@ the store can see.
 
 Defines one datum by name, optionally inside a library block.
 
-### `outline [--depth <n>]`
+### `outline [--depth <n>] [--with-keywords]`
 
-    (outline ("--depth" <n>))
+    (outline ["--depth" <n>] ["--with-keywords"])
 
 Prints the store's block tree as indented text: one line per block, its
 `<id>.<version>` and its title. `--depth` stops at that many levels.
+
+`--with-keywords` appends `  [<keywords>]` to each row that has them. ⚠️
+A block without the field prints no brackets: empty ones would say the
+writer chose no keywords, which is a different thing from a store written
+before the field existed. Without the option the listing is unchanged.
 
 ## Drafts, and committing them
 

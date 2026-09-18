@@ -62,7 +62,12 @@
   (define (value-options verb)
     (append '("--store" "--actor" "--req" "--cursor" "--socket")
       (case verb
-        ((insert) '("--under" "--after" "--title" "--text"))
+        ;; ⚠️ `--keywords` IS A VALUE OPTION AND ITS VALUE IS TEXT. The
+        ;; field holds what the caller typed, commas and all; the
+        ;; splitting happens in `search`, which is the only reader that
+        ;; needs tokens. Parsing it here would mean the store held a
+        ;; normalised form and `read` could not give back what was sent.
+        ((insert) '("--under" "--after" "--title" "--text" "--keywords"))
         ((set) '("--if-unchanged" "--based-on"))
         ((move) '("--after"))
         ((outline) '("--depth"))
@@ -102,6 +107,7 @@
 
   (define (flag-options verb)
     (cons "--wire" (case verb
+      ((outline) '("--with-keywords"))
       ((read) '("--md" "--recursive" "--working" "--working-info"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.

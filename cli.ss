@@ -35,11 +35,49 @@
         ;; ⛔ ONLY WHAT IT USES, AND `link` IS NOT IN IT: see the same
         ;; note in daemon.ss. Forwarding runs one exchange and exits;
         ;; nothing here has a peer to be linked to.
-        (only (theourgia sched) start-scheduler) (theourgia net)
-        (only (theourgia daemon) serve)
-        (only (theourgia eval-supervise) supervise-eval)
+        (only (theourgia render) answer-printing!)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce))
+
+;; ---- what this program does NOT load until it has to -----------------------
+;;
+;; ⭐ EVERY `read` USED TO LOAD THE ACTOR SYSTEM. `(theourgia sched)`,
+;; `(theourgia net)`, `(theourgia daemon)` and `(theourgia eval-supervise)`
+;; were imported here unconditionally, for the benefit of `serve`, `eval`
+;; and the forwarding path -- so a plain `theourgia read` paid to load
+;; igropyr's scheduler and libuv machinery and then never used them.
+;;
+;; MEASURED, on this machine, against the same libraries, in BOTH forms
+;; this ships in -- because the numbers are very different and only one
+;; of them is a user's:
+;;
+;;     from source   static 623ms   on demand 435ms   -188ms
+;;     from .so      static  51ms   on demand  42ms   -9ms
+;;
+;; ⚠️ MOST OF THAT 188ms IS EXPANSION, which compiled objects do not pay.
+;; A user runs objects and saves about 9ms a call -- 18% of startup,
+;; worth having, and ⛔ not the 200ms figure that a source-form reading
+;; alone would have suggested. The structural point does not depend on
+;; either number: a `read` has no business loading the daemon.
+;;
+;; ⚠️ AND THE COST IS ONE COST, NOT FOUR. `sched` alone is +164ms; `net`,
+;; `daemon` and `eval-supervise` each depend on it and add about 36ms
+;; between them. So the saving is "does this call need the actor system
+;; at all", and nothing finer is worth arranging.
+;;
+;; ⚠️ `working` AND `store` STAY STATIC because they are already inside
+;; `(theourgia rpc)`'s closure: importing them measured 453ms against the
+;; base 452ms. Moving them would buy nothing and would say something
+;; false about where the cost is.
+;;
+;; ⛔ WHAT THIS DOES NOT SAVE, said plainly: a call that FORWARDS to a
+;; daemon still loads `net`, which still needs `sched` -- 637ms measured,
+;; the same as before. The saving is for calls answered in this process.
+;; A mechanism that also made forwarding cheap would have to not use the
+;; actor system for the transport, which is a different design and not
+;; this one.
+(define (later lib name)
+  (eval name (environment lib)))
 
 (define (say x) (write x (current-output-port)) (newline (current-output-port)))
 
@@ -106,10 +144,10 @@
 ;; falls to the `transport-unknown` branch, which is the safe side.
 
 (define (forward-then-exit! socket store actor verb resolved wire?)
-  (start-scheduler
+  ((later '(theourgia sched) 'start-scheduler)
     (lambda ()
       (let ((outcome
-              (exchange socket
+              ((later '(theourgia net) 'exchange) socket
                         ;; ⛔ THE ENVELOPE IS PACKED IN ONE PLACE, and this
                         ;; is not it. The MCP shell sends the same one.
                         (request-frame store actor verb (argument-strings resolved))
@@ -272,10 +310,10 @@
              (let ((source (read-source nodes)))
                (if (> (string-length source) 1048576)
                    (finish '(error bad-source (reason input-limit)) wire?)
-                   (start-scheduler
+                   ((later '(theourgia sched) 'start-scheduler)
                      (lambda ()
                        (finish
-                         (supervise-eval
+                         ((later '(theourgia eval-supervise) 'supervise-eval)
                            (list (cons 'store store) (cons 'cut cut) (cons 'under under)
                                  (cons 'source source)
                                  (cons 'timeout-ms timeout)
@@ -320,10 +358,14 @@
                            (string-append store "/socket"))))
           ;; Does not return: the daemon runs until it is told to go, or
           ;; until it finds a reason to leave and reports it.
-          (serve store socket)
+          ((later '(theourgia daemon) 'serve) store socket)
           (exit 0)))))
 
 (define (main argv)
+  ;; ⛔ ONCE, BEFORE ANYTHING IS PRINTED. Every answer this program gives
+  ;; -- local, forwarded, wire or human -- goes through `render-wire`,
+  ;; and this is where its settings are decided.
+  (answer-printing!)
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))

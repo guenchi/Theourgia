@@ -59,6 +59,7 @@
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-close! conn-ref-pid)
           (only (theourgia rpc) rpc-dispatch)
+          (only (theourgia render) render-wire answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) open-and-reduce store-publish-hook!)
           (only (theourgia log) store-state-snapshot)
@@ -177,6 +178,11 @@
   ;; freeze this exists to prevent. What keeps the CLI on the default is
   ;; that nothing in the CLI ever sets this.
   (define (serve store . opts)
+    ;; ⛔ ONCE, HERE, BEFORE ANY ANSWER LEAVES. Every conn process in this
+    ;; VM prints through `render-wire`, and the settings it needs are per
+    ;; OS thread -- so they are set on the way in rather than around each
+    ;; write.
+    (answer-printing!)
     (let ((socket (if (pair? opts) (car opts) (socket-path-for store))))
       (start-scheduler (lambda () (main store socket)))))
 
@@ -1219,7 +1225,11 @@
   ;; does not read cannot hold up the store process or any other client.
   (define (write-answer ctx seq result rest)
     (let ((ref (ctx-ref ctx))
-          (bytes (string->utf8 (string-append (datum->string result) "\n"))))
+          ;; ⚠️ `render-wire` ENDS THE LINE ITSELF. This used to add one
+          ;; because the old `datum->string` was a bare `write`; keeping
+          ;; it after the printers were collapsed put a blank line after
+          ;; every answer the daemon gave.
+          (bytes (string->utf8 (datum->string result))))
       (conn-read-stop! ref)
       (conn-write! ref bytes seq)
       (let await ()
@@ -1256,12 +1266,17 @@
              (else (forget-writer! ctx who) (await))))))))
 
   (define (answer-and-close ref result)
-    (conn-write! ref (string->utf8 (string-append (datum->string result) "\n")) 'last)
+    (conn-write! ref (string->utf8 (datum->string result)) 'last)
     (receive
       (after 2000 (conn-close! ref))
       (`(written ,r ,tok ,status) (conn-close! ref))
       (`#(DOWN ,who ,reason) (void))))
 
-  (define (datum->string x)
-    (call-with-string-output-port (lambda (port) (write x port))))
+  ;; ⛔ THE SAME PRINTER THE CLI USES. This was a bare `write` that set
+  ;; nothing, so the daemon's answers were already spelled differently
+  ;; from the command line's for any non-ASCII character -- the two
+  ;; routes are supposed to be byte for byte the same answer.
+  ;; ⚠️ `render-wire` ends the line itself, so the caller no longer adds
+  ;; one.
+  (define (datum->string x) (render-wire x))
 )

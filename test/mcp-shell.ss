@@ -333,9 +333,15 @@
     ;; agree about something wrong -- they share a dispatcher. The
     ;; expectation here comes from outside both: it is what the argument
     ;; is, spelled the way the core spells it back.
+    ;; ⚠️ THE SPELLING CHANGED WITH F3, AND THIS ROW IS THE RECORD OF IT.
+    ;; It used to expect `\x6C49;\x5B57;\x1F600;`, because that is how the
+    ;; core spelled a non-ASCII character back. Answers now carry the
+    ;; characters themselves -- so this expectation is, more directly
+    ;; than before, "what the argument is". A user-visible change, and
+    ;; the one cell in this suite that states it literally.
     (want "MC-argv-verbatim and the echoed argument is exactly what was sent"
           (car through-mcp)
-          "(error unknown-id \"  \\x6C49;\\x5B57;\\x1F600;  \" (nearest ()))\n")
+          "(error unknown-id \"  \x6c49;\x5b57;\x1f600;  \" (nearest ()))\n")
     ;; ⛔ NOBODY LET A SHELL SEE IT. `${MC_SENTINEL}` has a value in this
     ;; fixture's environment that would be visible if any layer had.
     (want "MC-argv-verbatim TWIN: no layer let a shell expand the argument"

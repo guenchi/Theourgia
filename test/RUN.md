@@ -37,6 +37,27 @@ particular version, and cannot be repeated. Point it at a directory
 holding `theourgia/` and `igropyr/` at known commits, and record which
 ones beside the reading.
 
+## A design that loads at run time needs a reading in each shipped form
+
+⛔ **Two forms, two cells.** This tree runs from source in development
+and ships as compiled objects. Anything that resolves a library at RUN
+time rather than by a static import behaves differently in the two, and
+a reading taken in one says nothing about the other.
+
+`cli.ss` is the case that produced the rule: it reaches
+`(theourgia daemon)`, `(theourgia eval-supervise)`, `(theourgia sched)`
+and `(theourgia net)` through `(environment ...)` when a `serve`, an
+`eval` or a forwarded call asks for them. From source that resolves to a
+`.ss`; from objects to a `.so`; inside a whole-program package it would
+not resolve at all, because nothing references those libraries
+statically. `f0-ondemand.ss` carries both readings -- F0-1 to F0-3 from
+source, F0-4 against objects built by `build.ss` with `.so` alone on the
+path.
+
+⚠️ **And a timing budget belongs to one form.** F0-2's budget is a
+source-form budget. The same change measured 188 ms from source and 9 ms
+from objects; quoting the first as what a user saves would be false.
+
 ## The Python fixtures are in that number, and three files are not fixtures
 
 `run-fixtures.sh` loops over `*.ss *.py`, so the Python fixtures are
