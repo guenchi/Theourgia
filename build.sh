@@ -52,3 +52,6 @@ render page-agents     agents.html
 render page-reference  reference.html
 render page-changelog  changelog.html
 render favicon         favicon.svg
+# .gitignore is rendered too, from the same block the concurrency page
+# shows, so the file and the page cannot drift apart.
+render gitignore-file  .gitignore

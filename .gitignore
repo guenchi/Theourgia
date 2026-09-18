@@ -1,5 +1,10 @@
-# Drafts are a writer's own scratch space, not part of the log.
+# Track store/lock. It is zero bytes and only its existence is used,
+# but a clone without it answers store-busy to every verb, reads
+# included -- and init will not create it in a store that exists.
+
+# A writer's drafts are that writer's own space, not part of the log.
 store/writers/*/working/
 store/writers/*/draft.lock
+
 # The snapshot is a cached reduction of the log; it rebuilds itself.
 store/snap/
