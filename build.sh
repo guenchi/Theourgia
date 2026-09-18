@@ -15,11 +15,31 @@ cd "$(dirname "$0")"
 THEOURGIA=${THEOURGIA:-theourgia}
 SCHEME=${SCHEME:-scheme}
 STORE=${STORE:-store}
+# Absolute, always. A daemon identifies the store it serves by the path
+# STRING it was asked for, while the client picks its socket by the
+# resolved path -- so a client saying "store" reaches the daemon already
+# serving "/.../store" and is answered (error transport-store-mismatch).
+# The build then fails only when somebody else has the store open, which
+# is the worst way for it to fail.
+if [ ! -d "$STORE" ]; then
+    echo "build.sh: no store directory at $STORE" >&2
+    exit 1
+fi
+STORE=$(cd "$STORE" && pwd)
 TMP=${TMPDIR:-/tmp}/theourgia-ws-$$
 trap 'rm -f "$TMP"' EXIT
 
-LIB=$("$THEOURGIA" outline --store "$STORE" 2>/dev/null |
-      awk '$3 == "site" && $4 == "generator" { print $2; exit }')
+# Asked twice on purpose. A read through a running daemon can answer from
+# the state it held a moment ago -- measured: the first read after a write
+# made on the local path misses it and the second sees it -- so a single
+# lookup can come back empty for a block that is there. Two empty answers
+# mean the block really is absent.
+find_lib() {
+    "$THEOURGIA" outline --store "$STORE" 2>/dev/null |
+        awk '$3 == "site" && $4 == "generator" { print $2; exit }'
+}
+LIB=$(find_lib)
+[ -n "$LIB" ] || LIB=$(find_lib)
 if [ -z "$LIB" ]; then
     echo "build.sh: no block titled 'site generator' in $STORE" >&2
     exit 1
@@ -48,6 +68,7 @@ render page-index      index.html
 render page-why        why.html
 render page-model      model.html
 render page-concurrency concurrency.html
+render page-evaluate   evaluate.html
 render page-agents     agents.html
 render page-reference  reference.html
 render page-changelog  changelog.html
