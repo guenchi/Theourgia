@@ -1,0 +1,186 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>For agents -- theourgia</title><meta name="description" content="The write protocol, the daemon and the MCP shell, the measured latencies, and two prompts that put a store behind Claude Code's memory."><link rel="icon" href="favicon.svg" type="image/svg+xml"><style>:root{--bg:#fbfaf7;--bg2:#f3f1ea;--panel:#f7f5ef;--line:#e4e0d5;--fg:#1c1b18;
+  --dim:#6a655c;--acc:#5b3fc4;--acc2:#3f3a8f;--gold:#9a6b12;--teal:#0f6f68;
+  --kw:#6d28d9;--str:#0f6f3f;--com:#8a857a;--num:#8a4b12}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+.narrow{max-width:760px}
+nav{position:sticky;top:0;z-index:10;background:rgba(251,250,247,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;height:56px;gap:22px}
+nav .logo{font-weight:700;color:var(--fg);font-size:17px;letter-spacing:-.2px}
+nav .logo span{color:var(--acc);font-size:20px;vertical-align:-1px}
+nav .links{margin-left:auto;display:flex;gap:18px;font-size:14px}
+nav .links a{color:var(--dim)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .links a.on{color:var(--fg);font-weight:600}
+header{padding:80px 0 56px;position:relative;overflow:hidden;
+  background:radial-gradient(60% 50% at 50% 0%,#efeaff 0%,transparent 100%)}
+header .wrap{position:relative;z-index:1}
+.glyph{font-size:44px;color:var(--acc);line-height:1}
+h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
+.tag{font-size:21px;color:var(--dim);max-width:660px;margin-bottom:12px}
+.tag b{color:var(--fg);font-weight:600}
+.sub{color:var(--dim);font-size:15px;margin-bottom:30px}
+.cta{display:flex;gap:14px;margin-bottom:38px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 22px;border-radius:8px;font-size:15px;font-weight:600}
+.btn.primary{background:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--fg)}
+.btn.ghost:hover{border-color:var(--dim);text-decoration:none}
+section{padding:64px 0;border-top:1px solid var(--line)}
+.kicker{color:var(--acc);font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+h2{font-size:32px;margin:8px 0 14px;letter-spacing:-.5px}
+h3{font-size:21px;margin-bottom:10px}
+p{margin-bottom:14px}
+.lead{color:var(--dim);font-size:17px;max-width:700px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:36px}
+.grid2>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin-bottom:0}
+.card p+p{margin-top:10px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:32px}
+.num{background:var(--bg);padding:20px}
+.num b{display:block;font-size:30px;letter-spacing:-.5px;color:var(--acc);margin-bottom:6px}
+.num span{color:var(--dim);font-size:13.5px;line-height:1.5;display:block}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  overflow-x:auto;font-size:13px;line-height:1.6}
+pre.wide{font-size:12.5px}
+code{color:var(--acc);font-size:.86em;background:var(--bg2);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+.k{color:var(--kw)}.s{color:var(--str)}.c{color:var(--com);font-style:italic}.n{color:var(--num)}
+table{border-collapse:collapse;width:100%;margin-top:24px;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:var(--bg2);font-weight:600}
+td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.verb{border-top:1px solid var(--line);padding:16px 0}
+.verb:first-child{border-top:none}
+.verb .sig{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--fg);
+  background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+  display:block;overflow-x:auto;white-space:pre}
+.verb .d{color:var(--dim);font-size:15px;margin-top:8px}
+.verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
+.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+  border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
+.note b{color:var(--fg)}
+.steps{counter-reset:s;margin-top:28px}
+.step{position:relative;padding-left:46px;margin-bottom:26px}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:-2px;
+  width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;
+  font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.step h3{font-size:18px;margin-bottom:6px}
+.step p{color:var(--dim);font-size:15px;margin-bottom:0}
+footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+footer .sp{margin-left:auto}
+.diagram{margin-top:36px}
+.diagram svg{width:100%;height:auto;display:block}
+@media (max-width:760px){
+  h1{font-size:38px}
+  header{padding:56px 0 40px}
+  .tag{font-size:18px}
+  .grid2{grid-template-columns:1fr;gap:24px}
+  nav .wrap{gap:12px}
+  nav .links{gap:11px;font-size:12.5px}
+  section{padding:48px 0}
+  h2{font-size:26px}
+}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><span>&#952;</span> theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="model.html">Model</a><a href="concurrency.html">Concurrency</a><a href="agents.html" class="on">Agents</a><a href="reference.html">Reference</a><a href="changelog.html">Changelog</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><h1>For agents</h1><p class="tag">What an agent has to know to write into a store, what it costs, and two prompts that are meant to be copied as they are.</p></div></header><section id="protocol"><div class="wrap"><div class="kicker">01</div><h2>The write protocol</h2><p class="lead">One block answers one question on its own. Keep it under about 800 tokens; split a longer one into blocks that each stand alone. Give it a one-line title and three to eight keywords -- the words a future reader would actually type. Put it under the parent its subject puts it under. Do not rewrite the source bytes when you are moving something in: no polishing, no translating, no dropping sentences.</p></div></section><section id="shape"><div class="wrap"><div class="kicker">02</div><h2>One daemon, thin clients</h2><p class="lead">One store, one daemon. theourgia serve &lt;store&gt; holds the store's write lock and keeps the reduced state in memory. The client is thin: it knows the transport and nothing else, and it starts a daemon itself if it cannot reach one. Requests and answers are S-expression envelopes over a unix socket. The MCP shell is thin in the same way -- it asks the daemon for the tool list with describe rather than carrying its own copy.</p><p>Through the daemon, on a store of 387 blocks: read 1 ms, outline 2 ms, search 50-70 ms, insert about 100 ms. A client process starts in 30-50 ms from compiled objects. Over MCP with the shell resident: initialize 39 ms, tools/list 121 ms including the describe round trip, and a tool call is the daemon figure plus the shell. search is a full scan and grows with the store.</p></div></section><section id="cost"><div class="wrap"><div class="kicker">03</div><h2>What it costs</h2><div class="grid2"><div class="card"><h3>What it costs to move a memory in</h3><p>import-md opens the files itself, so the bytes never enter the agent's context. Measured on 113 documents totalling 2,717,039 bytes: 0 tokens of context to convert, against roughly 1,082,000 if the same agent had read them first. This holds only while the split needs no judgement -- import-md cuts at headings. A corpus that needs a human decision about where to cut does not get the zero.</p></div><div class="card"><h3>Recall, measured against markdown</h3><p>Twenty real questions about a real agent memory, answered blind by two agents: one allowed only the store, one allowed only the markdown files. Both scored 20/20, and the answers were checked against each other question by question. The store route read 14% more bytes, all of it from search: its replies have no upper bound yet, and a broad query returns every hit with its full keyword list. That is a known open item, not a property of the model.</p></div></div></div></section><section id="migrate"><div class="wrap"><div class="kicker">04</div><h2>Prompt: move an existing markdown memory in</h2><p class="lead">Give this to an agent together with the list of files to migrate. One agent per group of files works, and several may write into one store at the same time, each under its own writer id.</p><pre><code>You are moving an existing markdown memory into a theourgia store through
+its command-line client, following the store's write protocol. The store is
+the target of everything you write; the markdown files are read-only source.
+
+Environment (every shell):
+  export THEOURGIA_ACTOR=&lt;your-name&gt; THEOURGIA_WRITER=&lt;your-name&gt;
+  STORE=&lt;path of the store&gt;
+  theourgia &lt;verb&gt; --store $STORE ... --wire
+The first stderr line `(theourgia machine-home ...)` is a banner; ignore it.
+
+Write protocol:
+  - A block is the unit of writing: one block answers one question on its
+    own. Keep a block under about 800 tokens (roughly 3000 bytes); split a
+    longer one into blocks that each stand alone.
+  - Give every block a one-line title and 3 to 8 keywords, comma separated,
+    the words a future reader would actually type when searching.
+  - Place a block under the parent its subject puts it under (--under).
+  - Do not rewrite the source bytes: do not polish, translate or drop
+    sentences. Frontmatter stays out of the body; its description may become
+    the title, its name and type belong in the keywords.
+  - A memory file is usually one block. A file holding several independent
+    dated instances that together exceed the limit is split by instance,
+    each block titled with the file's name.
+
+Per file:
+  theourgia insert --store $STORE --under &lt;parent-id&gt; --title &quot;&lt;title&gt;&quot; \
+    --keywords &quot;&lt;k1&gt;, &lt;k2&gt;, ...&quot; --text &quot;&lt;body verbatim&gt;&quot; --wire
+A success answers (ok (events ...) (state ((&lt;id&gt; . &lt;hash&gt;))) ...); record
+&lt;id&gt;. Record any other answer verbatim, with the command minus the body;
+retry at most once.
+
+Ledger (write it to &lt;ledger path&gt; as JSON):
+  {&quot;group&quot;: ..., &quot;files&quot;: [{&quot;file&quot;: ..., &quot;chars&quot;: n,
+     &quot;blocks&quot;: [{&quot;id&quot;: ..., &quot;title&quot;: ..., &quot;keywords&quot;: ..., &quot;bytes&quot;: n}],
+     &quot;refusals&quot;: [{&quot;cmd&quot;: ..., &quot;answer&quot;: ...}]}],
+   &quot;totals&quot;: {&quot;files&quot;: n, &quot;blocks&quot;: n, &quot;refusals&quot;: n, &quot;wall_seconds&quot;: n},
+   &quot;friction&quot;: [&quot;one sentence per thing that was awkward: command line,
+                 answers, protocol, speed&quot;]}
+Every id in the ledger comes from a real answer; never write a placeholder.
+
+Do not modify any source file. Do not touch git. Do not kill processes. Do
+nothing to the store except insert under the parents you were given. If the
+client fails more than three times in a row, stop, record, report.</code></pre></div></section><section id="memory"><div class="wrap"><div class="kicker">05</div><h2>Prompt: use a store as Claude Code's memory</h2><p class="lead">Three pieces. Turn the markdown memory off, put the store's outline into the session at startup, and tell the agent how to recall and how to write.</p><h3 style="margin-top:26px">The session hook</h3><pre><code>{
+  &quot;hooks&quot;: {
+    &quot;SessionStart&quot;: [
+      {
+        &quot;matcher&quot;: &quot;startup&quot;,
+        &quot;hooks&quot;: [
+          {
+            &quot;type&quot;: &quot;command&quot;,
+            &quot;command&quot;: &quot;theourgia outline --store /path/to/memory-store --depth 1&quot;
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre><h3 style="margin-top:26px">What goes in CLAUDE.md</h3><pre><code>## Memory lives in theourgia, not in markdown files
+
+The store at /path/to/memory-store is my memory. The markdown memory
+directory is retired: do not read it and do not write to it.
+
+Identity: export THEOURGIA_ACTOR=&lt;agent name&gt; and THEOURGIA_WRITER=&lt;agent
+name&gt; before the first call. One writer id is held by one live agent at a
+time; a later session may bind the same id and carry on with its drafts.
+Two agents that need to edit the same draft copy it (drafts --writer w1,
+restore &lt;version&gt; --writer w2) instead of sharing the id.
+
+Recall, before starting a task:
+  theourgia search --store $STORE &lt;two or three words from the task&gt;
+  theourgia read --store $STORE &lt;id&gt;          # the hits that look relevant
+  theourgia outline --store $STORE &lt;id&gt;       # to see what sits under a block
+Read what the search returns; do not page through the whole store. If a
+search finds nothing, try the other words a past self would have used, then
+stop: absence of a memory is an answer.
+
+Write, when something worth keeping happens (a correction, a decision, a
+fact about the environment, a lesson):
+  theourgia insert --store $STORE --under &lt;section id&gt; --title &quot;&lt;one line&gt;&quot; \
+    --keywords &quot;&lt;3-8 words a future reader would search for&gt;&quot; \
+    --text &quot;&lt;the fact, then Why: and How to apply:&gt;&quot;
+One block answers one question; keep it under about 800 tokens. Put it under
+the section it belongs to (the outline shows them). Before inserting, search
+for an existing block on the same fact and update that one with `write`
+followed by `commit --based-on` rather than adding a duplicate. Keep the
+markdown habits that still apply: say why, say how to apply, link related
+blocks by id in the text.
+
+Do not put into the store what the repository already records (code
+structure, git history, CLAUDE.md itself), and nothing that only matters to
+the current conversation.</code></pre><h3 style="margin-top:26px">Over MCP instead of a shell</h3><pre><code>claude mcp add theourgia -- theourgia-mcp --store /path/to/memory-store \
+  --actor &lt;agent name&gt; --writer &lt;agent name&gt;</code></pre></div></section><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="reference.html">Reference</a><span>Apache-2.0</span><span class="sp">Every page here is rendered from the blocks of a theourgia store.</span></div></footer></body></html>

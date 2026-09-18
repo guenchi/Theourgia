@@ -1,0 +1,96 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Why not markdown -- theourgia</title><meta name="description" content="The four things a file-per-note memory does badly, what replaces each, and the measurements."><link rel="icon" href="favicon.svg" type="image/svg+xml"><style>:root{--bg:#fbfaf7;--bg2:#f3f1ea;--panel:#f7f5ef;--line:#e4e0d5;--fg:#1c1b18;
+  --dim:#6a655c;--acc:#5b3fc4;--acc2:#3f3a8f;--gold:#9a6b12;--teal:#0f6f68;
+  --kw:#6d28d9;--str:#0f6f3f;--com:#8a857a;--num:#8a4b12}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+.narrow{max-width:760px}
+nav{position:sticky;top:0;z-index:10;background:rgba(251,250,247,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;height:56px;gap:22px}
+nav .logo{font-weight:700;color:var(--fg);font-size:17px;letter-spacing:-.2px}
+nav .logo span{color:var(--acc);font-size:20px;vertical-align:-1px}
+nav .links{margin-left:auto;display:flex;gap:18px;font-size:14px}
+nav .links a{color:var(--dim)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .links a.on{color:var(--fg);font-weight:600}
+header{padding:80px 0 56px;position:relative;overflow:hidden;
+  background:radial-gradient(60% 50% at 50% 0%,#efeaff 0%,transparent 100%)}
+header .wrap{position:relative;z-index:1}
+.glyph{font-size:44px;color:var(--acc);line-height:1}
+h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
+.tag{font-size:21px;color:var(--dim);max-width:660px;margin-bottom:12px}
+.tag b{color:var(--fg);font-weight:600}
+.sub{color:var(--dim);font-size:15px;margin-bottom:30px}
+.cta{display:flex;gap:14px;margin-bottom:38px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 22px;border-radius:8px;font-size:15px;font-weight:600}
+.btn.primary{background:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--fg)}
+.btn.ghost:hover{border-color:var(--dim);text-decoration:none}
+section{padding:64px 0;border-top:1px solid var(--line)}
+.kicker{color:var(--acc);font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+h2{font-size:32px;margin:8px 0 14px;letter-spacing:-.5px}
+h3{font-size:21px;margin-bottom:10px}
+p{margin-bottom:14px}
+.lead{color:var(--dim);font-size:17px;max-width:700px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:36px}
+.grid2>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin-bottom:0}
+.card p+p{margin-top:10px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:32px}
+.num{background:var(--bg);padding:20px}
+.num b{display:block;font-size:30px;letter-spacing:-.5px;color:var(--acc);margin-bottom:6px}
+.num span{color:var(--dim);font-size:13.5px;line-height:1.5;display:block}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  overflow-x:auto;font-size:13px;line-height:1.6}
+pre.wide{font-size:12.5px}
+code{color:var(--acc);font-size:.86em;background:var(--bg2);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+.k{color:var(--kw)}.s{color:var(--str)}.c{color:var(--com);font-style:italic}.n{color:var(--num)}
+table{border-collapse:collapse;width:100%;margin-top:24px;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:var(--bg2);font-weight:600}
+td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.verb{border-top:1px solid var(--line);padding:16px 0}
+.verb:first-child{border-top:none}
+.verb .sig{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--fg);
+  background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+  display:block;overflow-x:auto;white-space:pre}
+.verb .d{color:var(--dim);font-size:15px;margin-top:8px}
+.verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
+.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+  border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
+.note b{color:var(--fg)}
+.steps{counter-reset:s;margin-top:28px}
+.step{position:relative;padding-left:46px;margin-bottom:26px}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:-2px;
+  width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;
+  font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.step h3{font-size:18px;margin-bottom:6px}
+.step p{color:var(--dim);font-size:15px;margin-bottom:0}
+footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+footer .sp{margin-left:auto}
+.diagram{margin-top:36px}
+.diagram svg{width:100%;height:auto;display:block}
+@media (max-width:760px){
+  h1{font-size:38px}
+  header{padding:56px 0 40px}
+  .tag{font-size:18px}
+  .grid2{grid-template-columns:1fr;gap:24px}
+  nav .wrap{gap:12px}
+  nav .links{gap:11px;font-size:12.5px}
+  section{padding:48px 0}
+  h2{font-size:26px}
+}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><span>&#952;</span> theourgia</a></div><div class="links"><a href="why.html" class="on">Why</a><a href="model.html">Model</a><a href="concurrency.html">Concurrency</a><a href="agents.html">Agents</a><a href="reference.html">Reference</a><a href="changelog.html">Changelog</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><h1>Why not markdown</h1><p class="tag">Four things a memory made of files does badly, what replaces each, and what the replacement does not do.</p></div></header><section id="read"><div class="wrap"><div class="kicker">01</div><h2>Reading is all or nothing</h2><p class="lead">A memory file grows the way an edit log grows: many lines added, almost none removed. When an agent needs one rule out of it, the file is still the unit it has to read, so the whole thing lands in the context window. The cost is not the writing, it is every later read.</p><p>Measured on one real question against one real memory file, both routes run into the same agent's context: reading the 19,820-byte file cost 10,432 tokens; an outline call plus a read of the single block that answered the question cost 1,823. That is 5.7x, and about 600 of each route's tokens are per-turn framing rather than content.</p><table><thead><tr><th>Route</th><th>Tokens</th><th>Share</th></tr></thead><tbody><tr><td>Read the whole document for each question</td><td>232,478</td><td>100%</td></tr><tr><td>outline, then read the block that answers</td><td>46,410</td><td>20.0%</td></tr><tr><td>search, then read the block that answers</td><td>34,917</td><td>15.0%</td></tr></tbody></table><p class="lead" style="margin-top:18px">Fifty-six questions over twenty documents. The share is of what reading the whole document every time would have cost.</p></div></section><section id="shape"><div class="wrap"><div class="kicker">02</div><h2>The shape degenerates</h2><p class="lead">Left alone, a file-per-note memory drifts to two extremes at once: a long tail of tiny isolated notes, and a handful of files that accrete for months until nobody can say where one subject ends. Splitting a big file by hand cuts a thread that was continuous. The block, not the file, is the unit here: a block is placed under the parent its subject puts it under, and a boundary never decides what gets read.</p></div></section><section id="concurrency"><div class="wrap"><div class="kicker">03</div><h2>Two writers meet at the file</h2><p class="lead">Two agents editing one markdown file have nothing smaller than the file to meet on, so one write silently lands on top of the other. theourgia's answer is not a block-level lock. Each writer has their own space; drafts live there and are not in the log. Consistency is decided at commit time, per block, against the version the draft was based on -- and a refused commit comes back carrying the content of the writer who got there first, so the loser has what it needs to redo the work.</p><p style="margin-top:20px"><a href="concurrency.html">Drafts, commits and what a refusal hands back</a> -&gt;</p></div></section><section id="index"><div class="wrap"><div class="kicker">04</div><h2>The index drifts away from the text</h2><p class="lead">Line maps and external indexes are separate artifacts from the prose they describe, and they go stale quietly. Here the identifier is part of the state: a block's id does not change when its text, its title or its position does, and the reference graph is reduced from the same log as the content. What that buys is one query -- refs &lt;id&gt; answers who points at this block. What it does not buy: there is no staleness detection, and no embeddings. Vectors are an explicit non-goal. What exists is per-block full text, keywords, and a graph of stable ids.</p><div class="grid2"><div class="card"><h3>What a rename actually does</h3><p>Worth being precise, because it is easy to over-claim. Explicit edges are recorded by id, so renaming a block's title or a function's name leaves them intact. Derived edges -- the ref and uses relations the reducer works out for itself -- are re-resolved by name on every reduction. That is a fresh resolution, not an edge that followed the rename, and after a rename it resolves to whatever now carries the name.</p></div><div class="card"><h3>Editing one sentence</h3><p>Changing one sentence in a markdown memory means handing the whole file back. Here it means handing back the one block: write &lt;block&gt; &lt;bytes&gt;, then commit. Measured on three documents, the payload plus command line came to between 0.19% and 5.61% of rewriting the file, and the answer stayed at 190-200 tokens whatever the document's size. Exporting afterwards and diffing against the original showed exactly one line replaced, all three times.</p></div></div><table><thead><tr><th>Document</th><th>Rewrite the file</th><th>write plus commit</th><th>Share</th></tr></thead><tbody><tr><td>19,820 B design note</td><td>8,403</td><td>292</td><td>3.47%</td></tr><tr><td>297 KB design note</td><td>127,510</td><td>246</td><td>0.19%</td></tr><tr><td>6,800 B design note</td><td>2,904</td><td>163</td><td>5.61%</td></tr></tbody></table></div></section><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="reference.html">Reference</a><span>Apache-2.0</span><span class="sp">Every page here is rendered from the blocks of a theourgia store.</span></div></footer></body></html>

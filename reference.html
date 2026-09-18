@@ -1,0 +1,96 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Reference -- theourgia</title><meta name="description" content="Every verb the store answers to, with its usage line, rendered from describe."><link rel="icon" href="favicon.svg" type="image/svg+xml"><style>:root{--bg:#fbfaf7;--bg2:#f3f1ea;--panel:#f7f5ef;--line:#e4e0d5;--fg:#1c1b18;
+  --dim:#6a655c;--acc:#5b3fc4;--acc2:#3f3a8f;--gold:#9a6b12;--teal:#0f6f68;
+  --kw:#6d28d9;--str:#0f6f3f;--com:#8a857a;--num:#8a4b12}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+.narrow{max-width:760px}
+nav{position:sticky;top:0;z-index:10;background:rgba(251,250,247,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;height:56px;gap:22px}
+nav .logo{font-weight:700;color:var(--fg);font-size:17px;letter-spacing:-.2px}
+nav .logo span{color:var(--acc);font-size:20px;vertical-align:-1px}
+nav .links{margin-left:auto;display:flex;gap:18px;font-size:14px}
+nav .links a{color:var(--dim)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .links a.on{color:var(--fg);font-weight:600}
+header{padding:80px 0 56px;position:relative;overflow:hidden;
+  background:radial-gradient(60% 50% at 50% 0%,#efeaff 0%,transparent 100%)}
+header .wrap{position:relative;z-index:1}
+.glyph{font-size:44px;color:var(--acc);line-height:1}
+h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
+.tag{font-size:21px;color:var(--dim);max-width:660px;margin-bottom:12px}
+.tag b{color:var(--fg);font-weight:600}
+.sub{color:var(--dim);font-size:15px;margin-bottom:30px}
+.cta{display:flex;gap:14px;margin-bottom:38px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 22px;border-radius:8px;font-size:15px;font-weight:600}
+.btn.primary{background:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--fg)}
+.btn.ghost:hover{border-color:var(--dim);text-decoration:none}
+section{padding:64px 0;border-top:1px solid var(--line)}
+.kicker{color:var(--acc);font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+h2{font-size:32px;margin:8px 0 14px;letter-spacing:-.5px}
+h3{font-size:21px;margin-bottom:10px}
+p{margin-bottom:14px}
+.lead{color:var(--dim);font-size:17px;max-width:700px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:36px}
+.grid2>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin-bottom:0}
+.card p+p{margin-top:10px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:32px}
+.num{background:var(--bg);padding:20px}
+.num b{display:block;font-size:30px;letter-spacing:-.5px;color:var(--acc);margin-bottom:6px}
+.num span{color:var(--dim);font-size:13.5px;line-height:1.5;display:block}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  overflow-x:auto;font-size:13px;line-height:1.6}
+pre.wide{font-size:12.5px}
+code{color:var(--acc);font-size:.86em;background:var(--bg2);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+.k{color:var(--kw)}.s{color:var(--str)}.c{color:var(--com);font-style:italic}.n{color:var(--num)}
+table{border-collapse:collapse;width:100%;margin-top:24px;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:var(--bg2);font-weight:600}
+td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.verb{border-top:1px solid var(--line);padding:16px 0}
+.verb:first-child{border-top:none}
+.verb .sig{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--fg);
+  background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+  display:block;overflow-x:auto;white-space:pre}
+.verb .d{color:var(--dim);font-size:15px;margin-top:8px}
+.verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
+.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+  border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
+.note b{color:var(--fg)}
+.steps{counter-reset:s;margin-top:28px}
+.step{position:relative;padding-left:46px;margin-bottom:26px}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:-2px;
+  width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;
+  font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.step h3{font-size:18px;margin-bottom:6px}
+.step p{color:var(--dim);font-size:15px;margin-bottom:0}
+footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+footer .sp{margin-left:auto}
+.diagram{margin-top:36px}
+.diagram svg{width:100%;height:auto;display:block}
+@media (max-width:760px){
+  h1{font-size:38px}
+  header{padding:56px 0 40px}
+  .tag{font-size:18px}
+  .grid2{grid-template-columns:1fr;gap:24px}
+  nav .wrap{gap:12px}
+  nav .links{gap:11px;font-size:12.5px}
+  section{padding:48px 0}
+  h2{font-size:26px}
+}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><span>&#952;</span> theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="model.html">Model</a><a href="concurrency.html">Concurrency</a><a href="agents.html">Agents</a><a href="reference.html" class="on">Reference</a><a href="changelog.html">Changelog</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><h1>32 verbs</h1><p class="tag">Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, or daemon over the socket.</p></div></header><section id="Reading a store"><div class="wrap"><div class="kicker"></div><h2>Reading a store</h2><div><div class="verb"><span class="sig">read &lt;id&gt; [--md] [--recursive] [--writer &lt;name&gt;] [--working] [--working-info]</span><div class="d"><span class="r">daemon</span>Read one block: its fields, or its text.</div></div><div class="verb"><span class="sig">outline [--depth &lt;n&gt;] [--with-keywords]</span><div class="d"><span class="r">daemon</span>List the blocks as a tree of titles.</div></div><div class="verb"><span class="sig">refs &lt;id&gt;</span><div class="d"><span class="r">daemon</span>List the relations a block takes part in.</div></div><div class="verb"><span class="sig">search &lt;query&gt;</span><div class="d"><span class="r">daemon</span>Find blocks whose title, keywords or text match every word given.</div></div><div class="verb"><span class="sig">log [&lt;id&gt;]</span><div class="d"><span class="r">daemon</span>Show the changes recorded, for the store or for one block.</div></div><div class="verb"><span class="sig">tag [&lt;name&gt;]</span><div class="d"><span class="r">daemon</span>Name the current cut, or list the names already given.</div></div><div class="verb"><span class="sig">diff &lt;cut&gt; &lt;cut&gt;</span><div class="d"><span class="r">daemon</span>Report what changed between two cuts.</div></div><div class="verb"><span class="sig">conflicts</span><div class="d"><span class="r">daemon</span>List blocks whose writers disagree.</div></div><div class="verb"><span class="sig">describe</span><div class="d"><span class="r">daemon</span>List the verbs, what each is for, and the writing protocol.</div></div></div></div></section><section id="Making and changing blocks"><div class="wrap"><div class="kicker"></div><h2>Making and changing blocks</h2><div><div class="verb"><span class="sig">init</span><div class="d"><span class="r">local</span>Create a store in this directory.</div></div><div class="verb"><span class="sig">insert --under &lt;id&gt; [--after &lt;id&gt;] --title &lt;text&gt; [--text &lt;text&gt;] [--keywords &lt;text&gt;]</span><div class="d"><span class="r">daemon</span>Add a block under a parent, with a title and optional text.</div></div><div class="verb"><span class="sig">set &lt;id&gt; &lt;field&gt; &lt;value&gt; [--if-unchanged &lt;version&gt;] [--based-on &lt;version&gt;]</span><div class="d"><span class="r">daemon</span>Replace one field of one block.</div></div><div class="verb"><span class="sig">move &lt;id&gt; &lt;parent&gt; [--after &lt;id&gt;]</span><div class="d"><span class="r">daemon</span>Move a block to another parent, optionally after a sibling.</div></div><div class="verb"><span class="sig">del &lt;id&gt;</span><div class="d"><span class="r">daemon</span>Retire a block. Its history stays.</div></div><div class="verb"><span class="sig">link &lt;from&gt; &lt;rel&gt; &lt;to&gt;</span><div class="d"><span class="r">daemon</span>Record a named relation between two blocks.</div></div><div class="verb"><span class="sig">unlink &lt;from&gt; &lt;rel&gt; &lt;to&gt;</span><div class="d"><span class="r">daemon</span>Remove a named relation between two blocks.</div></div><div class="verb"><span class="sig">def &lt;name&gt; [--under &lt;library&gt;] &lt;source&gt;</span><div class="d"><span class="r">daemon</span>Define or replace one named definition.</div></div></div></div></section><section id="Drafts, and committing them"><div class="wrap"><div class="kicker"></div><h2>Drafts, and committing them</h2><div><div class="verb"><span class="sig">write &lt;block&gt; &lt;bytes&gt; [--writer &lt;name&gt;] [--based-on &lt;version&gt;] [--rebase]</span><div class="d"><span class="r">daemon</span>Save a draft of a block in a writer's own space, without committing it.</div></div><div class="verb"><span class="sig">restore &lt;version&gt; [--writer &lt;name&gt;]</span><div class="d"><span class="r">daemon</span>Take an earlier version of a draft back into a writer's space.</div></div><div class="verb"><span class="sig">drafts [--writer &lt;name&gt;]</span><div class="d"><span class="r">daemon</span>List the drafts a writer is holding.</div></div><div class="verb"><span class="sig">discard &lt;block&gt; [--writer &lt;name&gt;]</span><div class="d"><span class="r">daemon</span>Throw away a writer's draft of a block.</div></div><div class="verb"><span class="sig">commit [&lt;block&gt; ...] [--writer &lt;name&gt;] [--working-version &lt;block&gt;=&lt;version&gt;]</span><div class="d"><span class="r">daemon</span>Install a writer's drafts into the store as one change.</div></div></div></div></section><section id="Importing, exporting, splitting"><div class="wrap"><div class="kicker"></div><h2>Importing, exporting, splitting</h2><div><div class="verb"><span class="sig">import-md &lt;dir&gt; [--allow-delete]</span><div class="d"><span class="r">daemon</span>Read a directory of markdown into the store.</div></div><div class="verb"><span class="sig">export-md &lt;dir&gt; [--with-ids]</span><div class="d"><span class="r">daemon</span>Write the store out as markdown.</div></div><div class="verb"><span class="sig">import-code &lt;dir&gt; [--allow-delete] [--datum]</span><div class="d"><span class="r">daemon</span>Read a directory of source into the store.</div></div><div class="verb"><span class="sig">export-code &lt;dir&gt; [--raw] [--datum]</span><div class="d"><span class="r">daemon</span>Write the store's source back out to a directory.</div></div><div class="verb"><span class="sig">split-suggest &lt;file&gt; [--output &lt;review-file&gt;]</span><div class="d"><span class="r">daemon</span>Propose where a long file could be divided into blocks.</div></div></div></div></section><section id="Checking, syncing, serving"><div class="wrap"><div class="kicker"></div><h2>Checking, syncing, serving</h2><div><div class="verb"><span class="sig">check</span><div class="d"><span class="r">daemon</span>Read the whole store and report whether it is sound.</div></div><div class="verb"><span class="sig">snapshot</span><div class="d"><span class="r">daemon</span>Record the current state as a reduction that can be reopened quickly.</div></div><div class="verb"><span class="sig">adopt</span><div class="d"><span class="r">daemon</span>Take in records that are on disk but not yet in the log.</div></div><div class="verb"><span class="sig">publish &lt;writer&gt; &lt;segment&gt; &lt;file&gt; [&lt;sha256&gt;]</span><div class="d"><span class="r">daemon</span>Publish a segment of a writer's log.</div></div><div class="verb"><span class="sig">batch &lt;intents&gt;</span><div class="d"><span class="r">daemon</span>Carry out several changes as one request.</div></div></div></div></section><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="reference.html">Reference</a><span>Apache-2.0</span><span class="sp">Every page here is rendered from the blocks of a theourgia store.</span></div></footer></body></html>

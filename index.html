@@ -1,0 +1,109 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>theourgia -- a block-graph knowledge base for agents and people</title><meta name="description" content="A knowledge base agents and people write into together: stable block ids, typed edges, an append-only log per writer, and a deterministic reduction over it."><link rel="icon" href="favicon.svg" type="image/svg+xml"><style>:root{--bg:#fbfaf7;--bg2:#f3f1ea;--panel:#f7f5ef;--line:#e4e0d5;--fg:#1c1b18;
+  --dim:#6a655c;--acc:#5b3fc4;--acc2:#3f3a8f;--gold:#9a6b12;--teal:#0f6f68;
+  --kw:#6d28d9;--str:#0f6f3f;--com:#8a857a;--num:#8a4b12}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+.narrow{max-width:760px}
+nav{position:sticky;top:0;z-index:10;background:rgba(251,250,247,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;height:56px;gap:22px}
+nav .logo{font-weight:700;color:var(--fg);font-size:17px;letter-spacing:-.2px}
+nav .logo span{color:var(--acc);font-size:20px;vertical-align:-1px}
+nav .links{margin-left:auto;display:flex;gap:18px;font-size:14px}
+nav .links a{color:var(--dim)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .links a.on{color:var(--fg);font-weight:600}
+header{padding:80px 0 56px;position:relative;overflow:hidden;
+  background:radial-gradient(60% 50% at 50% 0%,#efeaff 0%,transparent 100%)}
+header .wrap{position:relative;z-index:1}
+.glyph{font-size:44px;color:var(--acc);line-height:1}
+h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
+.tag{font-size:21px;color:var(--dim);max-width:660px;margin-bottom:12px}
+.tag b{color:var(--fg);font-weight:600}
+.sub{color:var(--dim);font-size:15px;margin-bottom:30px}
+.cta{display:flex;gap:14px;margin-bottom:38px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 22px;border-radius:8px;font-size:15px;font-weight:600}
+.btn.primary{background:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--fg)}
+.btn.ghost:hover{border-color:var(--dim);text-decoration:none}
+section{padding:64px 0;border-top:1px solid var(--line)}
+.kicker{color:var(--acc);font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+h2{font-size:32px;margin:8px 0 14px;letter-spacing:-.5px}
+h3{font-size:21px;margin-bottom:10px}
+p{margin-bottom:14px}
+.lead{color:var(--dim);font-size:17px;max-width:700px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:36px}
+.grid2>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin-bottom:0}
+.card p+p{margin-top:10px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:32px}
+.num{background:var(--bg);padding:20px}
+.num b{display:block;font-size:30px;letter-spacing:-.5px;color:var(--acc);margin-bottom:6px}
+.num span{color:var(--dim);font-size:13.5px;line-height:1.5;display:block}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  overflow-x:auto;font-size:13px;line-height:1.6}
+pre.wide{font-size:12.5px}
+code{color:var(--acc);font-size:.86em;background:var(--bg2);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+.k{color:var(--kw)}.s{color:var(--str)}.c{color:var(--com);font-style:italic}.n{color:var(--num)}
+table{border-collapse:collapse;width:100%;margin-top:24px;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:var(--bg2);font-weight:600}
+td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.verb{border-top:1px solid var(--line);padding:16px 0}
+.verb:first-child{border-top:none}
+.verb .sig{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--fg);
+  background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+  display:block;overflow-x:auto;white-space:pre}
+.verb .d{color:var(--dim);font-size:15px;margin-top:8px}
+.verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
+.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+  border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
+.note b{color:var(--fg)}
+.steps{counter-reset:s;margin-top:28px}
+.step{position:relative;padding-left:46px;margin-bottom:26px}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:-2px;
+  width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;
+  font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.step h3{font-size:18px;margin-bottom:6px}
+.step p{color:var(--dim);font-size:15px;margin-bottom:0}
+footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+footer .sp{margin-left:auto}
+.diagram{margin-top:36px}
+.diagram svg{width:100%;height:auto;display:block}
+@media (max-width:760px){
+  h1{font-size:38px}
+  header{padding:56px 0 40px}
+  .tag{font-size:18px}
+  .grid2{grid-template-columns:1fr;gap:24px}
+  nav .wrap{gap:12px}
+  nav .links{gap:11px;font-size:12.5px}
+  section{padding:48px 0}
+  h2{font-size:26px}
+}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><span>&#952;</span> theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="model.html">Model</a><a href="concurrency.html">Concurrency</a><a href="agents.html">Agents</a><a href="reference.html">Reference</a><a href="changelog.html">Changelog</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><header><div class="wrap"><div class="glyph">&#952;</div><h1>theourgia</h1><p class="tag">A block-graph knowledge base that agents and people write into together.</p><p class="sub">Apache-2.0 · R6RS Scheme, Chez as the reference platform · runs on Igropyr</p><div class="cta"><a class="btn primary" href="https://github.com/guenchi/theourgia">Get the code</a><a class="btn ghost" href="why.html">Why not markdown</a><a class="btn ghost" href="reference.html">The 32 verbs</a></div></div></header><section id="problem"><div class="wrap"><div class="kicker">01 -- The problem</div><h2>A file is the wrong unit</h2><p class="lead">Knowledge is written by appending to a chain and by inserting in the middle of one. A file boundary is a poor place to cut it, and a poor reason to read all of it. And it should index itself: an agent should be able to read down to the level it needs, instead of grepping, or reading an index file whole before it can ask its first question.</p><div class="grid2"><div class="card"><h3>Reading is all or nothing</h3><p>A memory file grows the way an edit log grows: many lines added, almost none removed. When an agent needs one rule out of it, the file is still the unit it has to read, so the whole thing lands in the context window. The cost is not the writing, it is every later read.</p></div><div class="card"><h3>Two writers meet at the file</h3><p>Two agents editing one markdown file have nothing smaller than the file to meet on, so one write silently lands on top of the other. theourgia's answer is not a block-level lock. Each writer has their own space; drafts live there and are not in the log. Consistency is decided at commit time, per block, against the version the draft was based on -- and a refused commit comes back carrying the content of the writer who got there first, so the loser has what it needs to redo the work.</p></div></div><p style="margin-top:26px"><a href="why.html">All four, and what replaces each</a> -&gt;</p></div></section><section id="model"><div class="wrap"><div class="kicker">02 -- The model</div><h2>A store, its blocks, and one log per writer</h2><p class="lead">A store is a directory: one append-only log per writer, plus blobs and metadata. A block is the smallest unit of content -- a stable id, a few fields, a position under a parent, and typed directed edges to other blocks. The state is a deterministic reduction over a fixed set of events. The log is the only truth; snapshots, indexes, renderings and projections are derived, and can be deleted and rebuilt.</p><div class="diagram"><svg viewBox="0 0 900 262" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A store's root with three sections, each holding a block, and one typed edge running between two blocks"><path d="M180 111 C214 111 226 47 260 47" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M180 111 C214 111 226 125 260 125" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M180 111 C214 111 226 203 260 203" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M420 47 C454 47 466 47 500 47" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M420 125 C454 125 466 125 500 125" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M420 203 C454 203 466 203 500 203" fill="none" stroke="#c9c2b1" stroke-width="1.4"></path><path d="M 660 180 C 720 180 720 70 660 70" fill="none" stroke="#5b3fc4" stroke-width="1.6" stroke-dasharray="5 4"></path><text x="726" y="129" font-size="11.5" font-family="ui-monospace, Menlo, monospace" fill="#5b3fc4">ref</text><g><rect x="20" y="88" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="34" y="109" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">root</text><text x="34" y="125" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">the store</text></g><g><rect x="260" y="24" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="274" y="45" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">Model</text><text x="274" y="61" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.3</text></g><g><rect x="260" y="102" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="274" y="123" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">Concurrency</text><text x="274" y="139" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.7</text></g><g><rect x="260" y="180" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="274" y="201" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">Agents</text><text x="274" y="217" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.b</text></g><g><rect x="500" y="24" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="514" y="45" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">A block</text><text x="514" y="61" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.4</text></g><g><rect x="500" y="102" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="514" y="123" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">Drafts, then commit</text><text x="514" y="139" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.8</text></g><g><rect x="500" y="180" width="160" height="46" rx="9" fill="#ffffff" stroke="#d9d3c4"></rect><text x="514" y="201" font-size="13.5" font-family="-apple-system, sans-serif" fill="#1c1b18">The write protocol</text><text x="514" y="217" font-size="11" font-family="ui-monospace, Menlo, monospace" fill="#8a857a">f0sjkuzn.c</text></g></svg></div><p style="margin-top:22px"><a href="model.html">The model in full</a> -&gt; <a href="concurrency.html">How two writers meet</a> -&gt;</p></div></section><section id="measured"><div class="wrap"><div class="kicker">03 -- Measured</div><h2>Numbers, and where they came from</h2><div class="nums"><div class="num"><b>387</b><span>blocks written into one store by five agents at the same time, with 0 refusals</span></div><div class="num"><b>5.7x</b><span>less context for one real question: outline plus one block, against reading the file</span></div><div class="num"><b>113/113</b><span>documents exported back byte-for-byte identical after being imported</span></div><div class="num"><b>6%</b><span>of a corpus's markdown tokens is the size of its entire outline</span></div><div class="num"><b>1 ms</b><span>to read a block through the daemon</span></div></div><div class="note"><b>How the numbers were taken</b> Every figure on this site comes from one of two measured runs: 157 files of a real agent memory written by five concurrent agents, and 113 documents converted and then queried. What is worth knowing before quoting them. The token counts use cl100k_base, which is OpenAI's tokenizer, not Claude's and not a billing unit; calibrated once against real context growth it ran about 9% low. How much a query saves tracks the size of the block that happens to answer it, not anything theourgia does: where the answering block is most of the document, it saves almost nothing. Documents under about a thousand tokens do not benefit. And roughly 40% of queries made without knowing what is in the store fall back to reading the outline first.</div></div></section><section id="start"><div class="wrap"><div class="kicker">04 -- Start</div><h2>A store is a directory</h2><pre><code># a store is a directory
+theourgia init
+
+# one block answers one question
+theourgia insert --under root --title &quot;Why the retry is three deep&quot; \
+  --keywords &quot;retry, supervisor, worker, timeout&quot; \
+  --text &quot;...&quot;
+
+# find it again without reading the store
+theourgia search &quot;retry supervisor&quot;
+theourgia read &lt;id&gt;
+
+# what is under this block?
+theourgia outline --depth 1</code></pre><p class="lead" style="margin-top:22px">theourgia is R6RS Scheme and builds with Chez Scheme against Igropyr. build.ss compiles every library in the tree into a directory of objects; the client, the MCP shell and the sandbox worker are the scripts beside them. There is no package to install and no daemon to configure: point the client at a directory and it starts what it needs.</p></div></section><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="reference.html">Reference</a><span>Apache-2.0</span><span class="sp">Every page here is rendered from the blocks of a theourgia store.</span></div></footer></body></html>
