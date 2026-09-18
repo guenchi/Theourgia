@@ -62,7 +62,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
 import { Outbox, OutboxWriteError } from '../../src/outbox';
-import { Saver, Settle } from '../../src/saver';
+import { RETRY_CAP, Saver, Settle } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
@@ -1228,5 +1228,192 @@ describe('X1c a save stops when the answer could not be recorded', () => {
     assert.strictEqual(setCalls(core).length - before, 2, 'the drain stopped at the settled entry');
     assert.strictEqual(outbox.entries.length, 1, 'the kept entry was removed after all');
     assert.strictEqual(outcomes[outcomes.length - 1].status, 'pending');
+  });
+});
+
+/*
+ * S-notnow AND S-unknown: THE TWO ANSWERS THAT ARE NOT ABOUT THESE BYTES.
+ *
+ * The core gained both with its batch E, and what separates them is what
+ * the store knows. `store-busy` and `draining` say the store did not look
+ * at this write; `transport-unknown` says the store may have applied it
+ * and cannot say. ⛔ Neither may settle the entry, and they settle it in
+ * two DIFFERENT ways: one is retried under a cap, the other stops the
+ * queue until somebody learns what happened. (v223, v224)
+ */
+describe('S-notnow a refusal that is not about these bytes is retried, and capped', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const BUSY = '(error store-busy (path "/s"))\n';
+
+  it('keeps the entry under the same request id rather than settling it', async () => {
+    const r = rig([{ match: ['set'], stdout: BUSY, rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'pending');
+    const held = r.outbox.entries;
+    assert.strictEqual(held.length, 1, 'the entry must still be in the queue');
+    assert.strictEqual(held[0].req, outcome.req);
+    /*
+     * ⛔ THE POINT OF THE ROW. A settled entry would be gone, and the
+     * next save would go out under a NEW id -- which is a different
+     * request as far as the store is concerned, and the first one's
+     * outcome would never be established.
+     */
+    assert.strictEqual(setCalls(core)[0][4], '--req');
+  });
+
+  /*
+   * ⛔ FIVE IN A ROW PARKS IT, AND THE QUEUE STEPS OVER IT. `pending`
+   * would stop the queue for ever on a store that is never going to
+   * answer differently without a person; `parked` is the state that is
+   * stepped over. The two are not interchangeable and this row is the
+   * difference.
+   */
+  it('parks the entry after five in a row, and carries on with another block', async () => {
+    const r = rig([
+      { match: ['set', 'a.2'], stdout: BUSY, rc: 1 },
+      { match: ['set', 'b.3'], stdout: wrote(9), rc: 0 }
+    ]);
+    core = r.core;
+    for (let i = 0; i < RETRY_CAP; i += 1) {
+      await r.saver.save('a.2', 'src', `body${i}\n`);
+    }
+    /*
+     * ⚠️ THE QUEUE IS WHAT THIS ROW READS, NOT WHAT `save` RETURNED.
+     * After the first refusal every later `save` answers about the entry
+     * IT just queued -- "queued behind an earlier one whose outcome is
+     * unknown" -- while the entry being retried is the first one. A row
+     * written against the caller's status would be reading a different
+     * request from the one it is about. Measured: it read `pending` five
+     * times while the first entry went from attempt 1 to parked.
+     */
+    const parked = r.outbox.entries.filter((e) => e.state === 'parked');
+    assert.strictEqual(parked.length, 1, 'the fifth answer must park the entry being retried');
+    assert.ok(
+      parked[0].lastError?.includes(String(RETRY_CAP)),
+      `the reason must say how many times: ${parked[0].lastError}`
+    );
+
+    /*
+     * ⛔ AND THE QUEUE CARRIES ON, which is the whole difference between
+     * `parked` and `pending`. ⚠️ It has to be ANOTHER block: entries for
+     * a parked block are held back with it, deliberately, so a same-block
+     * save would be stepped over too and this row would pass for the
+     * wrong reason.
+     */
+    const before = setCalls(core).length;
+    const other = await r.saver.save('b.3', 'src', 'elsewhere\n');
+    assert.strictEqual(other.status, 'saved', 'another block must still go out');
+    assert.ok(setCalls(core).length > before, 'the other block must have been sent');
+  });
+
+  /*
+   * ⛔ TWIN: A RESTART STARTS THE COUNT OVER, ON PURPOSE. The count is
+   * in memory; a new Saver over the same queue file is what a restart
+   * looks like from here. Persisting it would leave a user with an entry
+   * that has used up its allowance and will never go again on its own,
+   * which is harder to explain than trying once more -- and both of
+   * these conditions are transient by nature. (v224)
+   */
+  it('TWIN: a restart sends the same entry once more', async () => {
+    const r = rig([{ match: ['set'], stdout: BUSY, rc: 1 }]);
+    core = r.core;
+    for (let i = 0; i < RETRY_CAP - 1; i += 1) {
+      await r.saver.save('a.2', 'src', `body${i}\n`);
+    }
+    assert.strictEqual(
+      r.outbox.entries.filter((e) => e.state === 'parked').length,
+      0,
+      'four in a row must not have parked it yet, or this row proves nothing'
+    );
+    const before = setCalls(core).length;
+    const restarted = new Saver(
+      new Client(new CliTransport(core.config(), core.env())),
+      r.outbox,
+      settling(r.outbox)
+    );
+    await restarted.save('a.2', 'src', 'again\n');
+    assert.ok(setCalls(core).length > before, 'the restarted saver must have sent it again');
+    assert.strictEqual(
+      r.outbox.entries.filter((e) => e.state === 'parked').length,
+      0,
+      'and the fifth send after a restart must not park it: the count started over'
+    );
+  });
+});
+
+describe('S-unknown an answer nobody can act on stops the queue and keeps the identity', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const LOST = '(error transport-unknown (reason store-actor-down))\n';
+
+  /*
+   * ⛔ THE REQUEST ID IS THE WHOLE ROW. The store may already have
+   * applied this write; sending it again under a new id would ask the
+   * store to do it a second time, and nothing would ever establish what
+   * the first one did. So the resend carries the SAME id, and the core
+   * recognising it -- answering with `(replay #t)` -- is what says the
+   * identity survived.
+   */
+  it('resends under the same request id, and the core answers it as a replay', async () => {
+    const r = rig([
+      /*
+       * ⚠️ `once` IS LOAD BEARING. A scripted call without it answers
+       * EVERY matching send, so the retry met the same lost answer again
+       * and the row read "it was never settled" about a core that had
+       * never been asked a second time. Measured: two sends, both
+       * answered `transport-unknown`, no settlement -- which is exactly
+       * what a broken retry would also look like.
+       */
+      { match: ['set'], stdout: LOST, rc: 1, once: true },
+      { match: ['set'], stdout: '(ok (events (("w" . 9))) (state (("a.2" . "hhh"))) (cursor ("w" . 9)) (replay #t))\n', rc: 0 }
+    ]);
+    core = r.core;
+    const first = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(first.status, 'pending', 'an unknown outcome may not be settled');
+    assert.strictEqual(r.outbox.entries.length, 1, 'the entry stays until somebody knows');
+    const held = r.outbox.entries[0].req;
+
+    await r.saver.save('a.2', 'src', 'body3\n');
+    const sent = setCalls(core);
+    const idOf = (call: string[]): string => call[call.indexOf('--req') + 1];
+    /*
+     * ⚠️ THREE SENDS, NOT TWO, AND THE THIRD IS THE POINT OF THE FIRST
+     * TWO. Once the held entry is answered it leaves the queue, and the
+     * queue carries on with the save that had been waiting behind it.
+     * This row first asserted two, which described a queue that stays
+     * stuck after the answer arrives -- the opposite of what a settled
+     * unknown is for.
+     */
+    assert.ok(sent.length >= 2, `the held entry must have gone out again: ${sent.length} sends`);
+    /*
+     * ⛔ THE REQUEST ID IS THE WHOLE ROW. The store may already have
+     * applied the first send; going again under a NEW id would ask it to
+     * do the work twice and leave the first attempt's outcome permanently
+     * unestablished. The core recognising the id -- answering `(replay
+     * #t)` -- is what says the identity survived the retry.
+     */
+    assert.strictEqual(idOf(sent[1]), idOf(sent[0]), 'the retry must wear the first send\'s id');
+    assert.strictEqual(idOf(sent[0]), held, 'and it must be the id the queue was holding');
+    assert.ok(
+      r.outbox.entries.every((e) => e.req !== held),
+      'once the core answers the replay, the held entry is settled and leaves the queue'
+    );
+    /*
+     * AND THE QUEUE RESUMED: the save that was waiting behind the
+     * unknown one goes out under its OWN id, which is what says the
+     * stop was about that one entry and not about the queue.
+     */
+    assert.ok(sent.length >= 3, 'the save queued behind it must go out once the unknown is settled');
+    assert.notStrictEqual(idOf(sent[2]), held, 'and it is a different request, with its own id');
   });
 });

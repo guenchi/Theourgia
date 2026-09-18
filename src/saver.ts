@@ -220,8 +220,60 @@ export interface SaverOptions {
  * README is explicit that it never guesses: every other named refusal is
  * a determination, and `unknown` is the absence of one.
  */
+/*
+ * ⚠️ AND `transport-unknown` IS THE THIRD, for the same reason and not
+ * by analogy. The daemon answers it when the process that owns the
+ * store dies while a connection is open (daemon.ss:1097, 1192) -- the
+ * request may already have been applied, and the connection is closed
+ * before anything can say. ⛔ It must NOT be classified as a refusal:
+ * that path resolves the entry out of the queue and releases its send
+ * number, which would record "the store declined this" about a write
+ * that may have landed.
+ */
 function saysNobodyKnows(datum: Datum): boolean {
-  return headName(datum) === 'error' && Array.isArray(datum) && datum.length >= 2 && (isSym(datum[1], 'unknown') || isSym(datum[1], 'working-unavailable'));
+  return (
+    headName(datum) === 'error' &&
+    Array.isArray(datum) &&
+    datum.length >= 2 &&
+    (isSym(datum[1], 'unknown') ||
+      isSym(datum[1], 'working-unavailable') ||
+      isSym(datum[1], 'transport-unknown'))
+  );
+}
+
+/*
+ * THE TWO REFUSALS THAT MEAN "NOT NOW", AND NOTHING ABOUT THIS WRITE.
+ *
+ * `draining` is a daemon that has been asked to stop and is refusing new
+ * work while it finishes what it has (daemon.ss:241); `store-busy` is
+ * the store's lock still held by somebody else past the waiting budget
+ * (daemon.ss:266). ⛔ Neither is a determination about these bytes --
+ * the store did not look at them -- so neither may settle the entry.
+ * The same request goes again, under the SAME id, on the next drain.
+ */
+export const RETRYABLE_REFUSALS = ['draining', 'store-busy'] as const;
+
+/*
+ * ⚠️ FIVE IN A ROW, COUNTED IN MEMORY ONLY, AND THE RESET ON RESTART IS
+ * DELIBERATE. Persisting the count would mean a user who restarts meets
+ * an entry that has used up its allowance and will never be sent again
+ * on its own -- which is harder to explain than starting the count
+ * over. Both of these conditions are transient by nature: a drain
+ * finishes, a lock is released. After a restart, trying once more is
+ * the right thing to do. (v224)
+ */
+export const RETRY_CAP = 5;
+
+function whichRetryableRefusal(datum: Datum): string | null {
+  if (headName(datum) !== 'error' || !Array.isArray(datum) || datum.length < 2) {
+    return null;
+  }
+  for (const kind of RETRYABLE_REFUSALS) {
+    if (isSym(datum[1], kind)) {
+      return kind;
+    }
+  }
+  return null;
 }
 
 function saysAnOperatorSettledIt(datum: Datum): boolean {
@@ -370,6 +422,64 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     "writer's froze. It is the only site in the core, and `restore` is not a verb this " +
     'extension sends (client.ts lists write, commit, drafts, discard), so no write can be ' +
     'answered with it',
+  /*
+   * ⚠️ THESE THREE ARE ANSWERS TO A WRITE, and they are here for the
+   * reason `unknown` and `working-unavailable` are: they are handled
+   * BEFORE classification, so `classifyRefusal` is never asked about
+   * them in the running extension. The row says where the core makes
+   * each and what this client does instead of settling it.
+   */
+  'transport-unknown':
+    'daemon.ss:1097 and 1192 -- the process that owns the store died while this connection was ' +
+    'open, so the request may already have been applied and the connection is closed before ' +
+    'anything can say. `saysNobodyKnows` takes it before settlement: the entry is marked ' +
+    'pending, keeps its request id and its cursor, and goes again on the next drain',
+  draining:
+    'daemon.ss:241 -- the daemon has been asked to stop and is refusing new work while it ' +
+    'finishes what it has. Taken before settlement as a retryable refusal: the entry stays, ' +
+    'under the same request id, and is parked for a person after RETRY_CAP in a row',
+  'store-busy':
+    'daemon.ss:266 -- the store lock was still held by somebody else past the waiting budget. ' +
+    'Taken before settlement as a retryable refusal, exactly as `draining` is',
+  /*
+   * ⚠️ THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
+   * CORE'S BATCH E, read from the core this run is pinned to
+   * (theourgia 3017e45).
+   *
+   * ⛔ THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
+   * STRUCTURAL REASON, not because they look unlikely: `eval` is not a
+   * verb this extension can send. `client.ts` lists twenty-six verbs in
+   * `KNOWN_VERBS` and neither `eval` nor `serve` is among them, and
+   * `answerKind` (client.ts:127) THROWS for a verb that is not listed --
+   * so an `eval` request cannot leave this process at all.
+   */
+  'eval-worker-unavailable':
+    'eval-worker.ss:123 (handshake) and eval-supervise.ss:134 (no-ready) -- TWO sites, not ' +
+    'one: the worker says it when its handshake fails, and the supervisor says it when no ' +
+    "worker became ready inside 500ms. Both answer an `eval`, which this extension cannot send",
+  'spawn-refused':
+    'eval-supervise.ss:144 -- the worker process could not be started at all. It answers an ' +
+    '`eval`; the same tag also appears in proc.ss:87 as a process DEATH REASON rather than an ' +
+    'answer, which is a different thing wearing the same word',
+  'eval-limit':
+    'limit-answer, eval-supervise.ss:218 -- an evaluation reached its time, memory or output ' +
+    'budget. It answers an `eval`, which this extension cannot send',
+  'eval-worker-exit':
+    'finish, eval-supervise.ss:230 -- the worker ended without a complete protocol line. It ' +
+    'answers an `eval`, which this extension cannot send',
+  /*
+   * ⛔ AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
+   * daemon's BOOT path, before it can serve: `store-loop` (daemon.ss:727)
+   * tries to open the store, and on failure calls `report` --
+   * `(write x) (newline)` to the daemon's own output, daemon.ss:665 --
+   * and then re-raises. ⚠️ It runs BEFORE `(send main-pid '(ready))`, so
+   * at that moment no connection exists for it to be an answer on. A
+   * client sees the daemon fail to start, never this datum.
+   */
+  'store-load-failed':
+    'store-loop, daemon.ss:732 -- printed by the daemon on its boot path when the store ' +
+    'cannot be opened, before it signals ready and therefore before any connection exists; ' +
+    'it is a startup report on the daemon\'s own output, not an answer to a request',
   unknown:
     'write-outcome->answer, store.ss:1204 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
@@ -500,6 +610,11 @@ export class Saver {
   private readonly outbox: Outbox;
   private readonly settle: Settle & { storeHash?: string };
   private readonly newRequestId: () => string;
+  /*
+   * HOW MANY TIMES IN A ROW THIS REQUEST HAS BEEN TOLD "NOT NOW".
+   * ⚠️ In memory, by decision: see RETRY_CAP.
+   */
+  private readonly notNowCounts = new Map<string, number>();
   private readonly now: () => number;
   private readonly baselineOf?: (file: string) => { highWater: number } | null;
   private readonly retired?: (
@@ -1078,6 +1193,52 @@ export class Saver {
         answer: null
       };
     }
+
+    const notNow = whichRetryableRefusal(datum);
+    if (notNow !== null) {
+      const soFar = (this.notNowCounts.get(entry.req) ?? 0) + 1;
+      if (soFar >= RETRY_CAP) {
+        /*
+         * ⛔ PARKED, NOT PENDING, AND THE DIFFERENCE IS WHO IS WAITING.
+         * `pending` stops the whole queue behind this entry; after this
+         * many refusals nothing here is going to change on its own, so
+         * the queue steps over it and carries on with other blocks while
+         * a person looks at this one. The count is in the reason because
+         * "the store was busy" and "the store was busy five times
+         * running" ask for different things from whoever reads it.
+         */
+        this.notNowCounts.delete(entry.req);
+        const why = `the store answered ${notNow} ${soFar} times in a row; a person has to look`;
+        this.outbox.markParked(entry.req, why);
+        return {
+          status: 'refused',
+          req: entry.req,
+          id: what.id,
+          message: why,
+          answer: datum,
+          keptForAPerson: true as const
+        };
+      }
+      this.notNowCounts.set(entry.req, soFar);
+      const why = `the store answered ${notNow}; attempt ${soFar} of ${RETRY_CAP}`;
+      this.outbox.markPending(entry.req, why);
+      return {
+        status: 'pending',
+        req: entry.req,
+        id: what.id,
+        message:
+          `the store is not taking writes just now (${notNow}); the save is kept and goes again ` +
+          'under the same request id',
+        answer: datum
+      };
+    }
+    /*
+     * ⚠️ ANY OTHER ANSWER BREAKS THE RUN. "Five in a row" means in a
+     * row: an intervening answer of a different kind is the store
+     * having looked at this request, so the next `not now` starts from
+     * one.
+     */
+    this.notNowCounts.delete(entry.req);
 
     if (saysNobodyKnows(datum)) {
       this.outbox.markPending(entry.req, 'the store cannot say whether the request ran');
