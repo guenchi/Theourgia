@@ -54,10 +54,26 @@
   ;;
   ;; ⚠️ THE CALLER GETS A pid, NOT A ref. The ref arrives as `(spawned
   ;; ref)` once the child exists; a refusal arrives as the adapter's DOWN
-  ;; carrying `(spawn-refused reason)`. The caller monitors that pid
-  ;; before it can miss either.
+  ;; carrying `(spawn-refused reason)`.
+  ;;
+  ;; ⛔ AND THIS FACADE TAKES THE WATCH, IN THE CALLER'S PROCESS, BEFORE
+  ;; IT RETURNS. A refusal is immediate, so between `spawn` returning a
+  ;; pid and a caller getting round to `monitor` there is a window in
+  ;; which the adapter has already died -- and a caller that simply
+  ;; forgot would then wait for a message that will never come. ⚠️ This
+  ;; comment used to say "the caller monitors that pid", which moved a
+  ;; duty the design gives to the facade (§7.6.32 I) onto every caller;
+  ;; it read perfectly and every caller dutifully did it by hand, which
+  ;; is why nobody noticed the ones that would not have.
+  ;;
+  ;; ⚠️ A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, with the
+  ;; same reason. That is inherent -- it cannot demonitor a watch whose
+  ;; object it never received -- and consumers have to tolerate the
+  ;; second one. There is a row for each half.
   (define (spawn-worker! file argv opts target)
-    (spawn (lambda () (worker-adapter file argv opts target))))
+    (let ((pid (spawn (lambda () (worker-adapter file argv opts target)))))
+      (monitor pid)
+      pid))
 
   (define (worker-adapter file argv opts target)
     (let ((me self))

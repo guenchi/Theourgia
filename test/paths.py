@@ -9,7 +9,7 @@ from `Path(__file__).resolve().parents[2]`, which in the tree these
 fixtures were written in held `theourgia/`, `igropyr/` and
 `implementation/` side by side:
 
-  * the CORE sources -- `cli.ss`, `local.py`, `mcp/server.py`. That is
+  * the CORE sources -- `cli.ss`, `daemon.ss`, `mcp/server.ss`. That is
     `parents[1]`, always, and it does not depend on what sits beside the
     repository.
   * the LIBRARY PATH handed to Chez. `THEOURGIA_LIBDIR` when the caller
@@ -35,7 +35,7 @@ _here = Path(__file__).resolve().parent
 
 
 def core():
-    """The directory holding cli.ss, local.py and mcp/."""
+    """The directory holding cli.ss, daemon.ss and mcp/."""
     return _here.parent
 
 

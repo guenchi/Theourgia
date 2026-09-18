@@ -306,6 +306,9 @@
   ;; symbol an R6RS reader will accept, and the point of answering with
   ;; the shape is that an agent can read it back -- a form this library
   ;; could not itself read would be a poor thing to hand out.
+  (define commit-usage
+    '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>]))
+
   (define insert-usage
     '(insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)))
 
@@ -353,7 +356,7 @@
                  (list 'set (car rest) (string->symbol (cadr rest))))
                 (else #f))))
         (if (not intent)
-            (usage '(set <id> <field> <value>))
+            (usage '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>]))
             (one-write store actor (if expect (list 'expect expect intent) intent) req
               (let ((h (argument-option options "--based-on")))
                 (and h (lambda (state) (baseline-refusal state (car rest) h)))))))))
@@ -437,7 +440,9 @@
                                   (car args) (cadr args) (argument-option options "--rebase")
                                   (argument-option options "--based-on") (argument-option options "--working-cut")
                                   (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
-                  (usage '(write <block> <bytes>)))))
+                  (usage '(write <block> <bytes> ["--writer" <name>] ["--based-on" <version>]
+                     ["--working-cut" <cut>] ["--working-parent-writer" <name>]
+                     ["--working-parent" <version>] ["--rebase"])))))
       ;; `write --restore <version>` IS ITS OWN SHAPE, not `write` with a
       ;; flag: it takes a version and no bytes, and the bytes come from
       ;; the log. Folding it into `write` would make the two-argument
@@ -447,19 +452,33 @@
               (if (= 1 (length args))
                   (working-restore! store state (argument-option options "--writer") (car args))
                   (usage '(restore <version>)))))
+      ;; ⛔ COMMIT ADVERTISES ADDITIVELY, BECAUSE IT HAS NO SHAPE TO GET
+      ;; WRONG. Every other verb answers a usage form when its arity or
+      ;; its positionals are wrong; `commit` accepts any number of block
+      ;; ids, including none, so there is no such moment -- and until
+      ;; this batch a caller who misspelled `--working-version` was told
+      ;; what was wrong with the value and never what the verb accepts.
+      ;; The form is therefore appended to whatever refusal came back,
+      ;; which leaves the refusal's own classification alone: a reader
+      ;; testing `(car answer)` or its first three fields sees exactly
+      ;; what it saw before.
       (cons 'commit
             (lambda (store actor args req options state)
-              (working-commit! store (argument-option options "--writer") args actor req
-                               (argument-option-list options "--working-version"))))
+              (let ((answer (working-commit! store (argument-option options "--writer")
+                                             args actor req
+                                             (argument-option-list options "--working-version"))))
+                (if (and (pair? answer) (eq? (car answer) 'error))
+                    (append answer (list (list 'usage commit-usage)))
+                    answer))))
       (cons 'drafts
             (lambda (store actor args req options state)
               (if (null? args) (working-list store state (argument-option options "--writer"))
-                  (usage '(drafts)))))
+                  (usage '(drafts ["--writer" <name>])))))
       (cons 'discard
             (lambda (store actor args req options state)
               (if (= 1 (length args))
                   (working-discard! store (argument-option options "--writer") (car args))
-                  (usage '(discard <block>)))))
+                  (usage '(discard <block> ["--writer" <name>])))))
       (cons 'batch (lambda (store actor args req options state) (guarded (lambda () (parse-batch store actor args req)))))
       (cons 'split-suggest
             (lambda (store actor args req options state)
@@ -472,7 +491,7 @@
                   (guarded (lambda ()
                     (if (argument-option options "--datum") (import-datum store (car args) actor req)
                         (import-code store (car args) actor req (argument-option options "--allow-delete")))))
-                  (usage '(import-code <dir> ["--allow-delete"])))))
+                  (usage '(import-code <dir> ["--allow-delete"] ["--datum"])))))
       (cons 'export-code
             (lambda (store actor args req options state)
               (if (= 1 (length args))
@@ -481,7 +500,7 @@
                            '(error bad-request incompatible-projection-options))
                           ((argument-option options "--datum") (export-datum store (car args)))
                           (else (export-code store (car args) (argument-option options "--raw"))))))
-                  (usage '(export-code <dir> ["--raw"])))))
+                  (usage '(export-code <dir> ["--raw"] ["--datum"])))))
       (cons 'def
             (lambda (store actor args req options state)
               (if (= (length args) 2)
@@ -579,7 +598,8 @@
               (let ((md? (argument-option options "--md"))
                     (deep? (argument-option options "--recursive")) (rest args))
                 (cond
-                  ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"])))
+                  ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
+                                 ["--working"] ["--working-info"])))
                   ((or (argument-option options "--working") (argument-option options "--working-info"))
                    (if (or md? deep?) '(error bad-request incompatible-working-options)
                        (working-read store state (argument-option options "--writer") (car rest) (argument-option options "--working-info"))))

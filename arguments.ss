@@ -71,6 +71,14 @@
         ((commit) '("--writer" "--working-version"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
         ((read drafts discard) '("--writer"))
+        ;; ⚠️ ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
+        ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
+        ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
+        ;; evaluation became the string "--timeout-ms" and the run failed
+        ;; with an exception instead of refusing an out-of-range limit.
+        ;; The warning at the top of this file describes exactly that.
+        ((eval) '("--cut" "--under" "--timeout-ms" "--memory-bytes"
+                  "--output-bytes" "--writer"))
         (else '()))))
 
   ;; AN OPTION THAT MAY BE GIVEN MORE THAN ONCE.
@@ -88,6 +96,16 @@
   (define (flag-options verb)
     (cons "--wire" (case verb
       ((read) '("--md" "--recursive" "--working" "--working-info"))
+      ;; `--working` names the view and `--writer` names whose; `--latest`
+      ;; releases the pin.
+      ;;
+      ;; ⚠️ THIS COMMENT USED TO CLAIM `--latest` WAS "the same spelling
+      ;; the read verbs already use". It was not: `latest` appeared
+      ;; nowhere in the dispatcher, the flag was accepted by this table
+      ;; and read by no code at all, and the DEFAULT was the floating
+      ;; behaviour the flag was meant to ask for. A sentence taken from
+      ;; a design and written down as a fact about the tree.
+      ((eval) '("--working" "--latest"))
       ((write) '("--rebase"))
       ((import-md) '("--allow-delete"))
       ((import-code) '("--allow-delete" "--datum"))

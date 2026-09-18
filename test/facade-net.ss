@@ -108,8 +108,17 @@
       ;; closes" with nothing of ours in between: the adapter monitors
       ;; its target, dies with it, and the runtime closes what it owned.
       ;; ⚠️ Read from `conn-count`, the runtime's own number.
+      ;; ⚠️ A SHORT UNSTARTED-READ DEADLINE, BECAUSE THIS ROW IS NOT ABOUT
+      ;; THE ACCEPTED SIDE. Nobody here reads the accepted connection, so
+      ;; its adapter waits out the default five seconds before giving up
+      ;; -- and `settles-to` runs out of patience at four. Measured: with
+      ;; a twenty-second window every row passed, so `conn-count` DOES
+      ;; come home; what failed was the row's clock, not the teardown.
+      ;; ⛔ The answer is not a longer wait everywhere -- that makes every
+      ;; leak row slower to fail -- it is telling this listener to stop
+      ;; waiting for a reader that is never coming.
       (let ((p (sock "b")))
-        (listen! p 16)
+        (listen! p 16 300)
         (sleep-ms 100)
         (let ((before (conn-count)))
           (spawn (lambda ()
@@ -400,9 +409,15 @@
               'nothing))
 
       ;; ---- N-09 dialling a path nobody is listening on ----------------
+      ;; ⚠️ NO `monitor` HERE: `connect!` takes the watch in this process
+      ;; before it returns. A second one owned by the same process
+      ;; delivers a SECOND DOWN for the same pid, and a row that stops at
+      ;; the first leaves the other in the mailbox for the NEXT row --
+      ;; measured, eight rows across two fixtures went red exactly that
+      ;; way, one of them reporting a reason that belonged to its
+      ;; predecessor. The duplicate is asserted once, on purpose, below.
       (let* ((p (sock "nobody"))
-             (pid (connect! p))
-             (m (monitor pid)))
+             (pid (connect! p)))
         (want "N-09 a dial to nobody ends as DOWN (connect-failed …)"
               (receive (after 5000 'no-down)
                        (`#(DOWN ,w ,r)
@@ -416,7 +431,6 @@
       (let ((p (sock "slow")))
         (let ((before (conn-count)))
           (let ((pid (connect! p)))
-            (monitor pid)
             (kill pid 'cancelled-mid-dial)
             (want "N-10 a dial cancelled in flight leaves no connection"
                   (begin
@@ -566,15 +580,25 @@
       (let* ((p (sock "stop"))
              (lref (listen! p 16)))
         (sleep-ms 100)
+        ;; ⚠️ AND THE DOWN THIS ROW'S OWN CLOSE PRODUCES IS DRAINED HERE.
+        ;; `connect!` watches the adapter on this process's behalf, so
+        ;; closing the connection delivers `#(DOWN adapter closed)` --
+        ;; wanted or not. A row that dials, closes and walks away leaves
+        ;; it in the mailbox for whoever reads next. Measured: the twin
+        ;; below read this row's `closed` instead of its own
+        ;; `connect-failed`, and reported `(other closed)`.
         (want "N-15 the listener accepts while it is up"
               (let ((pid (connect! p)))
                 (receive (after 4000 'no-connect)
-                         (`(connected ,pp ,ref) (conn-close! ref) 'accepted)))
+                         (`(connected ,pp ,ref)
+                          (conn-close! ref)
+                          (receive (after 4000 'closed-but-no-down)
+                                   (`#(DOWN ,w ,r) 'accepted)))))
               'accepted)
         (stop-listen! lref)
         (sleep-ms 200)
         (want "N-15 TWIN: and refuses once it has been stopped"
-              (let* ((pid (connect! p)) (m (monitor pid)))
+              (let ((pid (connect! p)))
                 (let wait ()
                   (receive (after 5000 'no-answer)
                            (`#(DOWN ,w ,r)

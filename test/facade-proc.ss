@@ -92,8 +92,7 @@
       ;; are ahead of the runtime's DOWN in this mailbox, so a consumer
       ;; that reads in order sees the child's whole story and then its
       ;; ending.
-      (let* ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "echo hi; exit 3") '() main))
-             (m (monitor pid)))
+      (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "echo hi; exit 3") '() main)))
         (want "P-01 a child's output, exit and DOWN all arrive, DOWN last"
               (let wait ((seen '()))
                 (receive
@@ -117,8 +116,7 @@
       ;; match the set exhaustively.
       (let ((base-proc (proc-count))
             (base-procs (process-count)))
-        (let* ((pid (spawn-worker! "/bin/sh" '() '() main))
-               (m (monitor pid)))
+        (let ((pid (spawn-worker! "/bin/sh" '() '() main)))
           (want "P-02 a refusal that arrives by raising is still just a DOWN"
                 (receive (after 5000 'no-down)
                          (`(spawned ,r) 'unexpectedly-spawned)
@@ -131,8 +129,7 @@
 
       ;; ---- P-03 a refusal igropyr RETURNS -----------------------------
       (let ((base-proc (proc-count)))
-        (let* ((pid (spawn-worker! "/nonexistent-for-this-row" '("x") '() main))
-               (m (monitor pid)))
+        (let ((pid (spawn-worker! "/nonexistent-for-this-row" '("x") '() main)))
           (want "P-03 a missing executable ends as DOWN (spawn-refused …)"
                 (receive (after 5000 'no-down)
                          (`(spawned ,r) 'unexpectedly-spawned)
@@ -142,6 +139,43 @@
                               (list 'other r))))
                 'spawn-refused))
         (want "P-03 TWIN: and proc-count never moved"
+              (settles-to base-proc proc-count) 'back))
+
+      ;; ---- P-03 TWIN: a caller that watches as well hears twice -------
+      ;;
+      ;; ⛔ THE FACADE TAKES THE WATCH, AND A CALLER MAY TAKE ONE TOO --
+      ;; so that caller gets TWO DOWNs for the same pid, with the same
+      ;; reason, and cannot demonitor the one whose object it never
+      ;; received. That is not a defect to be fixed; it is the shape this
+      ;; arrangement has, and consumers have to tolerate the second one.
+      ;;
+      ;; ⭐ IT IS ASSERTED HERE, ONCE, ON PURPOSE. It used to be true
+      ;; accidentally at a dozen call sites, where the second DOWN was
+      ;; nobody's business and simply sat in the mailbox until the NEXT
+      ;; row read it -- eight rows across two fixtures reported reasons
+      ;; belonging to their predecessors. Every one of those watches is
+      ;; gone; this row is where the fact lives.
+      (let ((base-proc (proc-count)))
+        (let ((pid (spawn-worker! "/nonexistent-for-the-twin" '("x") '() main)))
+          (monitor pid)
+          (want "P-03 TWIN: a caller that also monitors gets exactly two DOWNs, alike"
+                (let gather ((seen '()) (k 0))
+                  (if (>= k 2)
+                      (let ((a (car seen)) (b (cadr seen)))
+                        (list (length seen)
+                              (if (eq? (car a) (car b)) 'same-pid 'DIFFERENT-PIDS)
+                              (if (equal? (cdr a) (cdr b)) 'same-reason (list (cdr a) (cdr b)))))
+                      (receive (after 6000 (list 'only (length seen)))
+                               (`(spawned ,r) (gather seen k))
+                               (`#(DOWN ,w ,r) (gather (append seen (list (cons w r))) (+ k 1))))))
+                '(2 same-pid same-reason)))
+        ;; ⛔ AND A THIRD NEVER COMES. Two watches, two DOWNs -- a row
+        ;; that only counted "at least two" would pass against a facade
+        ;; that watched twice itself.
+        (want "P-03 TWIN: and no third DOWN follows"
+              (receive (after 1000 'exactly-two) (`#(DOWN ,w ,r) 'A-THIRD-ARRIVED))
+              'exactly-two)
+        (want "P-03 TWIN: and the refused spawn left no child behind"
               (settles-to base-proc proc-count) 'back))
 
       ;; ---- P-04 closing a worker ends the child -----------------------
@@ -155,8 +189,8 @@
       ;; already-queued messages remain observable and the DOWN is the
       ;; boundary in the mailbox.
       (let ((base-proc (proc-count)))
-        (let* ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "sleep 30") '() main))
-               (m (monitor pid)))
+        (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "sleep 30") '() main))
+              )
           (let ((ref (receive (after 5000 'none) (`(spawned ,r) r))))
             (want "P-04 the worker is running before we close it"
                   (and (not (eq? ref 'none)) (worker-alive? ref)) #t)
@@ -184,9 +218,8 @@
       ;; stdout ends while the child runs, stderr speaks afterwards, the
       ;; exit comes last. An adapter that ended at the first EOF would
       ;; lose the stderr line and the exit.
-      (let* ((pid (spawn-worker! "/bin/sh"
-                    '("sh" "-c" "exec 1>&-; sleep 0.2; printf late >&2; exit 7") '() main))
-             (m (monitor pid)))
+      (let ((pid (spawn-worker! "/bin/sh"
+                    '("sh" "-c" "exec 1>&-; sleep 0.2; printf late >&2; exit 7") '() main)))
         (want "P-05 output after the first stream ends still arrives, then the exit"
               (let wait ((late #f) (ex #f))
                 (receive
@@ -201,8 +234,8 @@
               '("late" (7 0))))
 
       ;; ---- P-06 a signal, and what the exit says about it -------------
-      (let* ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "sleep 30") '() main))
-             (m (monitor pid)))
+      (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "sleep 30") '() main))
+            )
         (let ((ref (receive (after 5000 'none) (`(spawned ,r) r))))
           (want "P-06 a worker killed by signal reports that signal"
                 (begin
@@ -224,8 +257,8 @@
       ;; ever running the completion -- so the facade supplies that one
       ;; itself. Otherwise a caller holding a token waits for something
       ;; nobody will send.
-      (let* ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "cat") '() main))
-             (m (monitor pid)))
+      (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "cat") '() main))
+            )
         (let ((ref (receive (after 5000 'none) (`(spawned ,r) r))))
           (want "P-07 a write that is accepted completes exactly once"
                 (begin
@@ -265,11 +298,11 @@
       ;; and the row compares this library's reading with `ps` for that
       ;; same pid, and requires the one holding forty megabytes to read
       ;; far larger than the one holding none.
-      (let* ((big (spawn-worker! "/bin/sh"
+      (let ((big (spawn-worker! "/bin/sh"
                     '("sh" "-c" "x=$(dd if=/dev/zero bs=1000000 count=40 2>/dev/null | tr '\\0' 'a'); echo $$; sleep 8")
                     '() main))
              (small (spawn-worker! "/bin/sh" '("sh" "-c" "echo $$; sleep 8") '() main))
-             (mb (monitor big)) (ms (monitor small)))
+             )
         (let gather ((refs '()) (pids '()) (k 0))
           (if (or (and (= 2 (length refs)) (= 2 (length pids))) (> k 200))
               (let* ((big-ref (cond ((assq big refs) => cdr) (else #f)))
@@ -301,8 +334,8 @@
             (base-procs (process-count)))
         (let loop ((n 0))
           (when (< n 8)
-            (let* ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "exit 0") '() main))
-                   (m (monitor pid)))
+            (let ((pid (spawn-worker! "/bin/sh" '("sh" "-c" "exit 0") '() main))
+                  )
               (let wait ()
                 (receive
                   (after 5000 'gave-up)

@@ -122,10 +122,23 @@
   ;; connection completes: there is no handover at all. Cancelling is
   ;; killing this pid, in flight or after -- the runtime clears the owner
   ;; and closes a success that arrives late.
+  ;; ⛔ THE WATCH IS TAKEN HERE, IN THE CALLER'S PROCESS, BEFORE THE pid
+  ;; IS RETURNED. A dial that fails does so on its own schedule, and
+  ;; between `spawn` handing back a pid and a caller getting round to
+  ;; `monitor` the adapter may already be dead -- a caller that simply
+  ;; forgot would wait for a `(connected …)` that is never coming. The
+  ;; design gives this duty to the facade (§7.6.32 I); leaving it to
+  ;; callers made it a thing each of them had to remember.
+  ;;
+  ;; ⚠️ A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, same
+  ;; reason, and cannot demonitor a watch it never received the object
+  ;; for. Consumers tolerate the second one; there is a row for it.
   (define (connect! path . opts)
-    (let ((custodian self)
-          (idle (idle-of opts)))
-      (spawn (lambda () (dialling-adapter path custodian idle)))))
+    (let* ((custodian self)
+           (idle (idle-of opts))
+           (pid (spawn (lambda () (dialling-adapter path custodian idle)))))
+      (monitor pid)
+      pid))
 
   ;; ---- the adapter -------------------------------------------------------
 

@@ -14,7 +14,7 @@
 ;; limitations under the License.
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit!
-          working-restore!
+          working-restore! working-snapshot working-baseline
           ;; ⚠️ EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
           ;; the lock a write takes, and a seam holding a path spelled
@@ -415,6 +415,67 @@
            (and (or (string? src) (bytevector? src))
                 (equal? (list-ref entry 7)
                         (if (string? src) (string->utf8 src) src))))))
+
+  ;; ⛔ THE WHOLE OF A WRITER'S LIVE DRAFTS, TAKEN AT ONE INSTANT, UNDER
+  ;; THAT WRITER'S OWN LOCK. An evaluation runs against a view that must
+  ;; not change under it: the committed side is pinned by the cut, which
+  ;; loads deterministically, and the drafts are pinned by being copied
+  ;; out here, before the child that will read them exists. A commit
+  ;; landing mid-run changes neither.
+  ;;
+  ;; ⚠️ THE LOCK IS HELD ONLY FOR THE COPY. Nothing holds it during the
+  ;; evaluation -- §7.6 is explicit that a run takes no lock -- so what
+  ;; this returns is a snapshot of that moment and says nothing about the
+  ;; moment after it.
+  ;;
+  ;; ⚠️ FOUR FIELDS, NOT ONE. The bytes are what the evaluation reads;
+  ;; the version and the base are what the answer reports back, so a
+  ;; caller can tell which draft it actually got.
+  (define (working-snapshot store state supplied)
+    (problem (lambda ()
+      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
+        (if (not writer)
+            (invalid-writer)
+            (list 'ok writer
+                  (with-draft-lock store writer
+                    (lambda ()
+                      (map (lambda (e)
+                             (list (list-ref e 3) (list-ref e 4) (list-ref e 5) (list-ref e 7)))
+                           (active-entries store writer state))))))))))
+
+  ;; THE BASELINE OF A WRITER'S WORKING VIEW: the join of the cuts its
+  ;; live drafts were written against.
+  ;;
+  ;; ⛔ THIS IS WHAT `--working` EVALUATES AT, AND THE REASON IS THE
+  ;; USER'S RULING: a writer's working view stands on the state ITS OWN
+  ;; drafts record, so another writer's commit made after those drafts
+  ;; does not walk into it. Evaluating at the current committed state
+  ;; instead -- which is what the tree did -- means a draft is read
+  ;; against a store it was never written against, and two runs of the
+  ;; same unchanged draft can answer differently because somebody else
+  ;; committed in between.
+  ;;
+  ;; ⚠️ A JOIN, NOT ONE DRAFT'S CUT. The drafts may have been written at
+  ;; different times; the view has to contain all of them, and the join
+  ;; is the only cut that does.
+  ;;
+  ;; ⚠️ EMPTY WHEN THERE ARE NO DRAFTS, and the caller reads that as the
+  ;; current committed state: a writer with nothing in progress has
+  ;; nothing to be pinned to.
+  ;;
+  ;; ⛔ THE ENTRY LAYOUT STAYS IN THIS FILE. `behind-item` folds the same
+  ;; field of the same entries; a caller doing it would be a second
+  ;; place that knows an envelope's sixth element is its cut.
+  (define (working-baseline store state supplied)
+    (problem (lambda ()
+      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
+        (if (not writer)
+            (invalid-writer)
+            (list 'ok writer
+                  (with-draft-lock store writer
+                    (lambda ()
+                      (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
+                                 '() (active-entries store writer state))))))))))
 
   (define (working-list store state supplied)
     (problem (lambda ()

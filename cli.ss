@@ -37,7 +37,9 @@
         ;; nothing here has a peer to be linked to.
         (only (theourgia sched) start-scheduler) (theourgia net)
         (only (theourgia daemon) serve)
-        (only (theourgia ffi) exec-argv!))
+        (only (theourgia eval-supervise) supervise-eval)
+        (only (theourgia working) working-snapshot working-baseline)
+        (only (theourgia store) open-and-reduce))
 
 (define (say x) (write x (current-output-port)) (newline (current-output-port)))
 
@@ -60,9 +62,6 @@
 ;; classification is the library's; this only draws it.
 (define (print-answer answer wire?)
   (put-string (current-output-port) ((if wire? render-wire render-human) answer)))
-(define (local-launch args)
-  (exec-argv! (append (list "python3" (string-append (let ((p (path-parent (car (command-line))))) (if (string=? p "") "." p)) "/local.py")) args)))
-
 ;; ---- forwarding ----------------------------------------------------------
 ;;
 ;; ⛔ THE SAME LANGUAGE, OVER A SOCKET. A daemon answers with exactly
@@ -129,6 +128,177 @@
           (else
            (finish (list 'error 'transport-unknown (list 'reason 'lost-answer)) wire?)))))))
 
+;; ---- eval --------------------------------------------------------------
+;;
+;; ⛔ THE SUPERVISOR RUNS HERE, IN THIS PROCESS. The child is owned by an
+;; adapter, so its ending is a `#(DOWN …)` and there is nothing to reap by
+;; hand -- and there is no helper process between this program and the
+;; child.
+;;
+;; ⚠️ THE LIMITS ARE CHECKED BEFORE ANYTHING IS SPAWNED, and a limit out
+;; of range is a bad request rather than a clamped run: a caller that
+;; asked for something impossible should hear so, not silently get
+;; something else.
+(define eval-defaults
+  '((timeout-ms . 3000) (memory-bytes . 268435456) (output-bytes . 65536)))
+
+(define (bounded name value low high)
+  (and value (exact? value) (integer? value) (<= low value high) value))
+
+(define (eval-number nodes name fallback low high)
+  (let ((given (argument-option nodes name)))
+    (if (not given)
+        fallback
+        (bounded name (string->number given) low high))))
+
+(define (read-source nodes)
+  (let ((positional (argument-positionals nodes)))
+    (if (pair? positional)
+        (car positional)
+        (read-all-text (current-input-port)))))
+
+;; ⛔ THE VIEW IS FIXED BEFORE THE CHILD EXISTS, or it is not a view at
+;; all. Without `--working` there is nothing to overlay and the answer is
+;; the committed store at that cut. With it, the writer's live drafts are
+;; copied out here, under that writer's own lock -- so a commit landing
+;; while the evaluation runs cannot change what was evaluated.
+;;
+;; ⚠️ AND THE LOCK IS HELD ONLY FOR THE COPY. The run itself takes no
+;; lock; what crosses into the worker is bytes, not a handle.
+;; WHICH COMMITTED STATE THE EVALUATION STANDS ON.
+;;
+;; ⛔ `--working` IS PINNED BY DEFAULT, and that is the whole of the
+;; difference this settles. A writer's working view stands on the state
+;; ITS OWN drafts record -- the join of their cuts -- so a commit another
+;; writer made after those drafts does not walk into it. Until this batch
+;; the tree always evaluated at the CURRENT committed state, which is the
+;; opposite: the same unchanged draft could answer differently because
+;; somebody else committed in between, and `--latest` (which asks for
+;; exactly that) was accepted and read by nothing.
+;;
+;; ⚠️ A WRITER WITH NO DRAFTS HAS NO BASELINE and gets the current state.
+;; There is nothing for it to be pinned to, and an empty cut is not a
+;; coordinate.
+;;
+;; ⛔ AN EXPLICIT `--cut` WINS over both. The caller named a coordinate;
+;; nothing here may move it.
+(define (eval-cut nodes store)
+  (let ((given (argument-option nodes "--cut")))
+    (cond
+      (given given)
+      ((or (not (argument-option nodes "--working"))
+           (argument-option nodes "--latest"))
+       "")
+      (else
+       (let ((answer (working-baseline store #f (argument-option nodes "--writer"))))
+         (if (and (pair? answer) (eq? 'ok (car answer)) (pair? (caddr answer)))
+             (cut->text (caddr answer))
+             ;; A writer that cannot be resolved, or one with no drafts:
+             ;; the refusal belongs to the view, which is built next and
+             ;; carries it, so the cut is simply the current state.
+             ""))))))
+
+;; ⚠️ THE SAME SPELLING `--cut` IS READ IN. `parse-cut` accepts
+;; `(("writer" . 3))`, which is what `write` produces for the alist a
+;; cut is, so the text this makes can be handed back to the CLI by a
+;; caller who read it out of an answer.
+(define (cut->text c)
+  (let-values (((port get) (open-string-output-port)))
+    (write c port)
+    (get)))
+
+(define (eval-view nodes store cut)
+  (if (not (argument-option nodes "--working"))
+      (list 'working #f #f '())
+      (let* ((state (open-and-reduce store))
+             (answer (working-snapshot store state (argument-option nodes "--writer"))))
+        (if (and (pair? answer) (eq? 'ok (car answer)))
+            (list 'working (cadr answer) cut (caddr answer))
+            ;; A writer that cannot be resolved is the core's refusal, and
+            ;; it is carried as an empty view so the worker answers it the
+            ;; same way any other bad request is answered.
+            (list 'working #f cut '())))))
+
+;; ⛔ THE SPELLING IS ADVERTISED WHERE IT IS REFUSED. These two verbs are
+;; the CLI's own -- they are not in `rpc-verbs`, so the dispatcher's
+;; usage forms say nothing about them -- and until this batch a caller
+;; who misspelled an option got a refusal that named no alternative.
+;; `options-gate.ss` reads these two forms as data and checks every
+;; option in them against `parse-arguments`, in both directions, which
+;; is what makes them a claim rather than a comment: the bug that
+;; prompted the gate was `eval --timeout-ms` parsing as a positional
+;; because the option table had no `eval` entry at all.
+;;
+;; ⚠️ ONLY VERB-SPECIFIC OPTIONS BELONG HERE. `--store`, `--wire`,
+;; `--actor`, `--req`, `--cursor` and `--socket` are accepted for every
+;; verb by the common part of the table, and listing them in one usage
+;; form would suggest they are special to it.
+(define eval-usage
+  '(eval ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
+         ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
+         ["--output-bytes" <n>] <source>))
+
+(define serve-usage
+  '(serve [<store>] ["--socket" <path>]))
+
+(define (eval-and-exit! argv)
+  (let ((nodes (parse-arguments 'eval (cdr argv))))
+    (if (and (pair? nodes) (eq? (car nodes) 'error))
+        (finish (list 'error 'bad-request '(reason eval-arguments)
+                      (list 'usage eval-usage))
+                #f)
+        (let ((timeout (eval-number nodes "--timeout-ms" 3000 1 60000))
+              (memory (eval-number nodes "--memory-bytes" 268435456 1048576 2147483648))
+              (output (eval-number nodes "--output-bytes" 65536 128 1048576))
+              (store (or (argument-option nodes "--store") (getenv "THEOURGIA_STORE") "."))
+              (cut (eval-cut nodes (or (argument-option nodes "--store")
+                                       (getenv "THEOURGIA_STORE") ".")))
+              (under (or (argument-option nodes "--under") ""))
+              (wire? (argument-option nodes "--wire")))
+          (cond
+            ;; ⛔ TWO ANSWERS TO ONE QUESTION. `--cut` names a coordinate
+            ;; and `--latest` asks for whichever one is current; a rule
+            ;; giving one of them precedence would make the other silently
+            ;; do nothing, which is the defect this batch just removed.
+            ((and (argument-option nodes "--latest") (argument-option nodes "--cut"))
+             (finish (list 'error 'bad-request '(reason cut-and-latest)
+                           (list 'usage eval-usage))
+                     wire?))
+            ((not (and timeout memory output))
+             (finish (list 'error 'bad-request '(reason eval-arguments)
+                           (list 'usage eval-usage))
+                     wire?))
+            (else
+             (let ((source (read-source nodes)))
+               (if (> (string-length source) 1048576)
+                   (finish '(error bad-source (reason input-limit)) wire?)
+                   (start-scheduler
+                     (lambda ()
+                       (finish
+                         (supervise-eval
+                           (list (cons 'store store) (cons 'cut cut) (cons 'under under)
+                                 (cons 'source source)
+                                 (cons 'timeout-ms timeout)
+                                 (cons 'memory-bytes memory)
+                                 (cons 'output-bytes output)
+                                 (cons 'view (eval-view nodes store cut))
+                                 (cons 'scheme (scheme-binary))
+                                 (cons 'worker (beside-this-program "eval-worker.ss"))))
+                         wire?)))))))))))
+
+;; ⚠️ THE INTERPRETER THIS PROGRAM IS ITSELF RUNNING UNDER, so a tree
+;; started with a particular Chez starts its children with the same one.
+(define (scheme-binary)
+  (or (getenv "THEOURGIA_SCHEME") "scheme"))
+
+(define (beside-this-program name)
+  (let* ((argv0 (car (command-line)))
+         (cut (let loop ((i (- (string-length argv0) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref argv0 i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (string-append (substring argv0 0 cut) "/" name) name)))
+
 ;; ---- serve -----------------------------------------------------------------
 ;;
 ;; `theourgia serve [<store>] [--socket <path>]`. ⚠️ The store may be
@@ -140,7 +310,7 @@
 (define (serve-and-exit! argv)
   (let ((nodes (parse-arguments 'serve (cdr argv))))
     (if (and (pair? nodes) (eq? (car nodes) 'error))
-        (begin (say nodes) (exit 1))
+        (begin (say nodes) (say (list 'usage serve-usage)) (exit 1))
         (let* ((positional (argument-positionals nodes))
                (store (or (argument-option nodes "--store")
                           (and (pair? positional) (car positional))
@@ -157,14 +327,17 @@
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))
-  ;; ⛔ `serve` IS THIS PROGRAM NOW. It used to exec a Python
-  ;; implementation of the daemon; the daemon is Scheme, it speaks the
-  ;; envelope the forwarding above speaks, and there is no second one to
-  ;; keep in step. ⚠️ `eval` still goes out to the helper -- that is its
-  ;; own step, and pretending otherwise here would leave a verb that
-  ;; silently stopped working.
+  ;; ⛔ BOTH OF THESE ARE THIS PROGRAM NOW. `serve` used to exec a Python
+  ;; daemon and `eval` a Python supervisor; neither exists. There is no
+  ;; second implementation of either to keep in step.
+  ;;
+  ;; ⛔ AND `eval` NEVER GOES THROUGH A DAEMON. It is intercepted here,
+  ;; before the forwarding below, so it always runs in this process --
+  ;; and a request naming `eval` that reaches a daemon meets a dispatcher
+  ;; that has no such verb, which is the same answer any unknown verb
+  ;; gets. Those two facts are the whole of E1-6.
   (when (string=? (car argv) "serve") (serve-and-exit! argv))
-  (when (string=? (car argv) "eval") (local-launch argv))
+  (when (string=? (car argv) "eval") (eval-and-exit! argv))
   (let* ((verb (string->symbol (car argv)))
          (nodes (parse-arguments verb (cdr argv)))
          (answer

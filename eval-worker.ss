@@ -12,24 +12,138 @@
 ;; WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
+
+;; The evaluation worker: one child process, three pipes, and nothing of
+;; the store's write side in scope.
+;;
+;; ⛔ THE ORDER AT THE TOP OF THIS FILE IS THE WHOLE SAFETY ARGUMENT, and
+;; it is not an ordering anybody may tidy:
+;;
+;;   1. `setsid!` -- a session of our own, so the supervisor can signal
+;;      the whole group and reach anything this evaluation spawns.
+;;   2. `RLIMIT_CPU` -- installed BEFORE a byte of untrusted source is
+;;      read, so no source can run under an inherited unlimited one.
+;;   3. `(ready <pgid>)` -- only now, because the supervisor reads it as
+;;      "the group exists and the limits are on". Before it arrives the
+;;      supervisor may only kill this pid; after it, the whole group.
+;;   4. `go` -- the supervisor's acknowledgement. ⛔ Nothing is read and
+;;      no grandchild may be started before it: between `ready` being
+;;      sent and `go` coming back, the supervisor is deciding whether
+;;      this worker exists at all.
+;;
+;; ⛔ THREE DESCRIPTORS, AND THE USER GETS NEITHER OF THE OTHER TWO.
+;; stdout is the protocol and nothing else; the user's output and errors
+;; go to stderr wrapped in `(out …)` / `(err …)` frames written by this
+;; file, outside the sandbox. Evaluated code is handed the wrappers, so
+;; it cannot reach the protocol and cannot forge an answer.
+
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
-        (theourgia eval-context) (theourgia code-project))
+        (theourgia eval-context) (theourgia code-project)
+        (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU))
 
 (define args (cdr (command-line)))
 (define store (car args))
 (define cut-text (cadr args))
 (define under (caddr args))
-(define protocol
-  (open-fd-output-port (string->number (getenv "THEOURGIA_EVAL_FD"))
-                       (buffer-mode block) (native-transcoder)))
-(define user-error
-  (open-fd-output-port (string->number (getenv "THEOURGIA_EVAL_ERROR_FD"))
-                      (buffer-mode block) (native-transcoder)))
-(define output-limit (string->number (getenv "THEOURGIA_EVAL_OUTPUT")))
+;; ⚠️ THE CPU CEILING ARRIVES IN argv, and it has to: it must be installed
+;; before `ready`, `ready` comes before `go`, and `go` is the first thing
+;; the supervisor sends. There is no earlier channel than the argument
+;; vector.
+(define cpu-seconds (string->number (cadddr args)))
+(define output-limit (string->number (car (cddddr args))))
+
+;; ---- the protocol stream ----------------------------------------------------
+;;
+;; ⛔ HELD IN A NAME THE SANDBOX NEVER SEES.
+(define protocol (standard-output-port))
+
+(define (say-datum! value)
+  (put-bytevector protocol
+                  (string->utf8
+                    (call-with-string-output-port
+                      (lambda (port)
+                        (parameterize ((print-graph #f) (print-length #f)
+                                       (print-level #f) (print-unicode #f)
+                                       (print-gensym #f))
+                          (write value port)
+                          (newline port))))))
+  (flush-output-port protocol))
+
+;; ---- the user's two streams, framed -----------------------------------------
+;;
+;; ⚠️ FLUSHED AFTER EVERY WRITE, INSIDE THE WRAPPER. Chez 10.1's
+;; `make-custom-textual-output-port` will not take a buffer-mode and
+;; `custom-port-buffer-size` may not be zero, so "unbuffered" has to be
+;; arranged by flushing here -- where the user cannot decline it.
+;; Measured on the buffered version: 65,537 displays handed over 65,536
+;; bytes, and a quota counted downstream was a quota counted on the wrong
+;; number.
+(define diagnostics (standard-error-port))
+
+(define (frame! tag text)
+  (put-bytevector diagnostics
+                  (string->utf8
+                    (call-with-string-output-port
+                      (lambda (port)
+                        (parameterize ((print-graph #f) (print-length #f)
+                                       (print-level #f) (print-unicode #f)
+                                       (print-gensym #f))
+                          (write (list tag text) port)
+                          (newline port))))))
+  (flush-output-port diagnostics))
+
+(define (framed-port tag)
+  (make-custom-textual-output-port
+    (symbol->string tag)
+    (lambda (string start count)
+      (when (> count 0) (frame! tag (substring string start (+ start count))))
+      count)
+    #f #f
+    (lambda () #t)))
+
+(define user-out (framed-port 'out))
+(define user-err (framed-port 'err))
+
+;; ---- the order that is the safety argument ----------------------------------
+
+(define pgid (setsid!))
+(define cpu-status (setrlimit! RLIMIT_CPU cpu-seconds cpu-seconds))
+;; ⚠️ SAID OUT LOUD, so a row can see that the ceiling went on before any
+;; source was sent. `EV-CPU-before-input` starts this worker with an
+;; inherited unlimited limit and waits for this line before handing over
+;; the source; without it the row would have to take the ordering on
+;; trust, which is the thing it exists to check.
+(frame! 'diag (string-append "rlimit-cpu " (number->string cpu-seconds)
+                             (if (= cpu-status 0) "" " (refused)")))
+(say-datum! (list 'ready pgid))
+
+;; ⛔ NOTHING BELOW THIS LINE RUNS UNTIL THE SUPERVISOR SAYS SO.
+(define go (read (current-input-port)))
+(unless (eq? go 'go)
+  (say-datum! '(error eval-worker-unavailable (reason handshake)))
+  (exit 1))
+
+;; ⚠️ TWO MORE DATUMS, IN THIS ORDER: the view, then the source. `read`
+;; is the framing -- there is no second framing scheme to keep in step,
+;; and a draft body that is arbitrary binary survives it (measured:
+;; bytevectors, embedded NUL, CRLF and non-BMP characters all round-trip).
+(define view (read (current-input-port)))
+(define source-datum (read (current-input-port)))
+
+(define working-writer (and (pair? view) (cadr view)))
+(define working-cut (and (pair? view) (caddr view)))
+(define drafts (if (pair? view) (cadddr view) '()))
+(define source (if (and (pair? source-datum) (eq? 'source (car source-datum)))
+                   (cadr source-datum)
+                   ""))
+
+;; ---- the sandbox ------------------------------------------------------------
+
 (define allowed-libraries
   '((rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
     (rnrs exceptions) (rnrs conditions) (rnrs mutable-pairs)
     (rnrs mutable-strings) (rnrs unicode) (rnrs bytevectors)))
+
 (define (limited-value? value index)
   (let ((active (make-eq-hashtable)) (count 0))
     (define (refuse kind) (raise (list 'error 'eval-value (list 'kind kind) (list 'index index))))
@@ -50,18 +164,28 @@
         ((or (null? x) (boolean? x) (number? x) (char? x) (symbol? x)) (values))
         (else (refuse 'unsupported))))
     (visit value 0)))
+
+;; ⛔ THE OVERLAY IS THE SAME RULE `working-read` USES: a block with a live
+;; draft reads as that draft, everything else as what is committed. The
+;; drafts came with the request, snapshotted before this process existed,
+;; so a commit landing during the run cannot change what is evaluated.
+(define (overlay-for id)
+  (let loop ((ds drafts))
+    (cond ((null? ds) #f)
+          ((equal? id (car (car ds))) (cadddr (car ds)))
+          (else (loop (cdr ds))))))
+
 (define (answer)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) e)
             (#t '(error eval-exception (kind raised) (message "Evaluation raised an exception"))))
-    (let* ((source (get-string-all (current-input-port)))
-           (forms (datum-source-read (string->utf8 (if (eof-object? source) "" source))))
+    (let* ((forms (datum-source-read (string->utf8 source)))
            (cut (and (not (string=? cut-text ""))
                      (let ((v (datum-source-read (string->utf8 cut-text))))
                        (unless (= (length v) 1) (raise '(error bad-source (reason expected-one-cut)))) (caar v))))
            (state (if cut (open-and-reduce store cut) (open-and-reduce store))))
       (unless (= (length forms) 1) (raise '(error bad-source (reason expected-one-form))))
       (unless (reduction? state) (raise '(error eval-context (reason unavailable-cut))))
-      (eval-context! state)
+      (eval-context! state drafts)
       (let* ((body (caar forms))
              (body
                (if (string=? under "") body
@@ -71,15 +195,30 @@
                      (unless (for-all (lambda (spec) (or (equal? spec '(rnrs)) (member spec allowed-libraries)))
                                       (code-field state under 'imports))
                        (raise '(error eval-denied (operation library-import))))
-                     (cons 'let (cons '() (append (map (lambda (id) (code-field state id 'body)) (code-children state under)) (list body)))))))
+                     (cons 'let (cons '() (append (map (lambda (id)
+                                                         (or (overlay-for id) (code-field state id 'body)))
+                                                       (code-children state under))
+                                                  (list body)))))))
              (env (apply environment
                     (append allowed-libraries
                             '((only (theourgia eval-context) store-cut blocks block display write newline open-string-input-port current-error-port flush-output-port)))))
-             (vs (call-with-values (lambda () (parameterize ((current-error-port user-error)) (eval body env))) list)))
+             (vs (call-with-values
+                   (lambda ()
+                     (parameterize ((current-output-port user-out)
+                                    (current-error-port user-err))
+                       (eval body env)))
+                   list)))
         (do ((xs vs (cdr xs)) (i 0 (+ i 1))) ((null? xs)) (limited-value? (car xs) i))
-        (list 'ok (list 'values vs))))))
-;; User output has separate descriptors. It can never write this protocol port.
-(parameterize ((print-graph #f) (print-length #f) (print-level #f) (print-unicode #f))
-  (write (answer) protocol) (newline protocol) (flush-output-port protocol))
-(close-port protocol)
-(close-port user-error)
+        ;; ⛔ THE CUT POSITION CARRIES THE CUT THIS EVALUATION ACTUALLY
+        ;; USED, ⛔ never #f. It is the coordinate that makes the run
+        ;; reproducible -- ask again at this cut, with these drafts, and
+        ;; the same thing is read -- and it is what `pinned-by-default`
+        ;; and `--latest` are judged by. The request's own `--cut` is an
+        ;; input; this is what the store resolved it to.
+        (list 'ok (list 'values vs)
+              (list 'working-view working-writer (reduce-applied-cut state)
+                    (map (lambda (d) (cons (car d) (cadr d))) drafts)))))))
+
+(say-datum! (answer))
+(flush-output-port user-out)
+(flush-output-port user-err)

@@ -19,25 +19,34 @@ is the whole of the difference:
 Without a pinned libdir the working trees are used, and the reading is only
 as stable as they are.
 
-## The Python fixtures are not in that number, and are run by hand
+## The Python fixtures are in that number, and three files are not fixtures
 
-`run-fixtures.sh` runs `*.ss`. Nine fixtures here are `*.py`, they are
-**not** covered by its exit status, and nothing else runs them either --
-which is how five of them came to end by writing a log into a directory
-belonging to another repository and nobody noticed for a batch. Run them
-explicitly, from this directory:
+`run-fixtures.sh` loops over `*.ss *.py`, so the Python fixtures are
+covered by its exit status and need no separate invocation. They did not
+used to be: the loop was `for f in *.ss`, ten fixtures were run only when
+somebody remembered, and on the day the loop was widened two of them were
+red against a daemon that had been deleted a batch earlier. Nothing had
+ever said so, because nothing had ever run them.
 
-    . ./env.sh
-    export THEOURGIA_TEST_ROOT=/tmp/theourgia-test
-    for f in working-processes eval-supervisor eval-local datum-processes \
-             daemon daemon-lifecycle mcp mcp-route mcp-probe; do
-      echo "== $f"; python3 $f.py; echo "rc=$?"
-    done
+Three of the remaining `*.py` files are **helpers, not fixtures**, and the
+runner names them rather than detecting them -- "imports nothing and
+prints no sentinel" is also what a broken fixture looks like:
 
-Each prints its own rows and ends with `<name> complete`, the same
-contract the Scheme fixtures keep, and `rc` is the verdict. `daemon`,
-`daemon-lifecycle`, `mcp-route` and `mcp-probe` start real processes and
-take a few minutes between them.
+  * `paths.py` is imported by the others;
+  * `structure.py` is the preflight that reads every file's paren depth;
+  * `reduce-hash-check.py` is a filter `reduce1.ss` pipes bytes through.
+
+The fixtures proper are `datum-processes`, `q8-cli` and
+`working-processes`. Each prints its rows and ends with `<name>
+complete`, the same contract the Scheme fixtures keep.
+
+**What used to be here.** `eval-local` and `eval-supervisor` are now
+`eval-local.ss` and `eval-supervisor.ss`; the Python supervisor they
+drove, `local.py`, is gone, and so is `rpc-worker.ss`. The daemon and MCP
+fixtures went the same way in the two batches before this one. A list of
+names in prose is the part of a document that goes stale first, which is
+why the runner's list is the one that decides and this paragraph only
+says where things went.
 
 **Three environment variables, and they do different things.**
 `THEOURGIA_LIBDIR` pins the library path exactly as it does for the
@@ -60,9 +69,11 @@ connect to `<store>/socket`. `paths.py` therefore prefers
 that root is too long, and says on stderr that it did so. Measured with
 a 95-character root: `connect` raised `ENAMETOOLONG`, which the
 transport does not treat as "no daemon here", so every call came back
-`(error transport-unavailable)` and `mcp-probe` reported the core
-catalog unavailable -- a sentence about the store produced by the length
-of a directory name.
+`(error transport-unavailable)` and the probe then in this directory
+reported the core catalog unavailable -- a sentence about the store
+produced by the length of a directory name. That probe has since been
+replaced by `mcp-shell.ss`; the substitution in `paths.py` stays because
+the hazard belongs to the platform, not to the fixture that met it.
 
 **Every child they start is given an empty stdin.** `batch` reads its
 intents from standard input, so a comparison call that inherited the
@@ -102,23 +113,27 @@ unavailable -- a sentence about the store, produced by the length of a
 directory name. It is said out loud rather than done silently so that a
 reader knows which directory the transcript is about.
 
-## The Python fixtures need the dependency too, and one of them stages it
+## Staging a copy of the core, and why the comment there matters
 
-`mcp-probe.py` copies the core into a scratch area and puts that area on
+Several fixtures copy the core into a scratch area and put that area on
 the library path. Since the three copies became forwards, a staging area
-holding only `theourgia/` resolves nothing past the first import, so it
-links `paths.igropyr()` in beside it. The comment there used to say the
-opposite -- correctly, for the tree it was written against -- and the
-fixture failed with `cli.ss init` exiting 255 when that stopped being
-true. A comment asserting the current state of a tree decays silently.
+holding only `theourgia/` resolves nothing past the first import, so a
+fixture that stages one has to link the dependency in beside it. The
+comment where this was first written down used to say the opposite --
+correctly, for the tree it was written against -- and the fixture failed
+with `cli.ss init` exiting 255 when that stopped being true. A comment
+asserting the current state of a tree decays silently, and that one did.
 
-## Two files in this directory are tools, not fixtures
+## One file in this directory is a tool, not a fixture
 
-`mutate-form.ss` rewrites one AST form inside one named definition;
-`mcp-probe.py` uses it to add a verb to a throwaway copy of the core.
-`paths.py` is the module described above. Both print a usage line rather
-than crashing when the runner reaches them, which is what makes the
-runner record them as probes.
+`paths.py` is the module described above. It prints a usage line rather
+than crashing when the runner reaches it, which is what makes the runner
+record it as a probe.
+
+`mutate-form.ss` used to be named here beside it. Its only caller was
+`mcp-probe.py`, which went when the MCP shell became Scheme, and a tool
+with no caller is a tool nobody is measuring -- so it went too rather
+than staying in this paragraph indefinitely.
 
 ## Non-`.ss` files a delivery has to carry
 
