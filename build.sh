@@ -67,12 +67,10 @@ render() {
 render page-index      index.html
 render page-why        why.html
 render page-model      model.html
-render page-concurrency concurrency.html
-render page-evaluate   evaluate.html
 render page-agents     agents.html
 render page-reference  reference.html
 render page-changelog  changelog.html
 render favicon         favicon.svg
-# .gitignore is rendered too, from the same block the concurrency page
-# shows, so the file and the page cannot drift apart.
+# .gitignore is rendered too, from the same block the home page's
+# concurrency section shows, so the file and the page cannot drift apart.
 render gitignore-file  .gitignore
