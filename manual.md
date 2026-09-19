@@ -1,4 +1,4 @@
-# theourgia manual
+# Theourgia manual
 
 The model a store holds, and every verb it answers to. This file is generated from the store it describes: the prose is its blocks and the reference is what `describe` answers, so neither can drift from the thing it documents.
 
