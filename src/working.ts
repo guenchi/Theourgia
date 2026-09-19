@@ -55,10 +55,14 @@ export class Working {
       ...rebase?['--rebase']:baseline?['--based-on',baseline.basedOn as string,'--working-cut',baseline.cut as string,
         ...baseline.kind==='working'?['--working-parent-writer',baseline.writer,'--working-parent',baseline.version]:[]]:[]]);
     const saved=answer.ok&&answer.answers.length>0?answerOf(answer.answers[0],'ok'):null;
-    if (!saved || saved.value('saved')!==block || saved.value('writer')!==this.writer) {
+    const confirmedBlock=saved===null?null:saved.value('saved');
+    const confirmedWriter=saved===null?null:saved.value('writer');
+    if (!saved || confirmedBlock===null || !confirmedBlock.read || confirmedBlock.value!==block ||
+        confirmedWriter===null || !confirmedWriter.read || confirmedWriter.value!==this.writer) {
       throw new Error(`The working note was not confirmed saved for ${block}: ${answer.text}`);
     }
-    const version=saved.value('version');
+    const stated=saved.value('version');
+    const version=stated.read?stated.value:undefined;
     const reopened=await this.read(block,prefix);
     if (reopened.source.kind!=='working' || reopened.source.version!==version || reopened.body!==body) {
       throw new Error(`The working note changed before its saved bytes could be verified for ${block}`);

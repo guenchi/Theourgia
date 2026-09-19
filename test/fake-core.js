@@ -52,15 +52,39 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
 
 const SCRIPT = process.env.FAKE_CORE_SCRIPT;
 const LOG = process.env.FAKE_CORE_LOG;
 
+/*
+ * NEVER: AND A LINE WRITTEN AFTER THE FIXTURE IS GONE RE-CREATES IT.
+ *
+ * `mkdirSync(..., {recursive: true})` put the directory back, so a child
+ * that outlived its `dispose` rebuilt the log that had just been removed
+ * -- and the next cell then read lines belonging to the previous one.
+ * Measured in a twentieth review round. The directory is made once, at
+ * the start; afterwards its absence means the fixture has been disposed
+ * of and there is nobody to write for.
+ */
+/*
+ * NEVER: AND `home` WAS RESOLVED ON THE FIRST APPEND, WHICH IS TOO LATE.
+ *
+ * A child disposed BEFORE it had written anything still had `home` at
+ * null, so its first append made the directory again and it went on
+ * polling for a release that would never come. Measured in a
+ * twenty-first review round. The directory is made when this process
+ * starts, which is before it can be disposed of in any ordering that
+ * matters, and from then on its absence means the fixture is gone.
+ */
+const home = LOG ? path.dirname(LOG) : null;
+if (home !== null) {
+  fs.mkdirSync(home, { recursive: true });
+}
 function append(record) {
-  if (!LOG) {
+  if (!LOG || home === null || !fs.existsSync(home)) {
     return;
   }
-  fs.mkdirSync(path.dirname(LOG), { recursive: true });
   fs.appendFileSync(LOG, `${JSON.stringify(record)}\n`, 'utf8');
 }
 
@@ -81,7 +105,18 @@ function coreArgvOf(all) {
 }
 
 const coreArgv = coreArgvOf(argv);
+/*
+ * NEVER: A WALL-CLOCK READING IS NOT AN INCARNATION.
+ *
+ * `pid + started` was meant to identify one run of one process, and
+ * `Date.now()` repeats: two runs that get the same reused pid within a
+ * millisecond collide, and a reader pairing starts with answers then
+ * attributes one run's answer to the other. Measured in a twenty-first
+ * review round with pid 42 and 1000 twice. A random nonce is the
+ * identity; the timestamp stays because it is useful to read.
+ */
 const started = Date.now();
+const incarnation = `${process.pid}:${started}:${randomUUID()}`;
 
 /*
  * WHAT A WATCHED FILE HELD AT THE MOMENT THE REQUEST ARRIVED. The outbox
@@ -105,6 +140,7 @@ const base = {
   argv,
   coreArgv,
   pid: process.pid,
+  incarnation,
   cwd: process.cwd(),
   /*
    * NOTE: EVERY VARIABLE THE CLIENT SETS IS RECORDED, not only the two the
@@ -193,7 +229,64 @@ function claim(script, index) {
   fs.renameSync(temporary, SCRIPT);
 }
 
+/*
+ * THE REQUEST IS WRITTEN DOWN THE MOMENT IT IS TAKEN, before any delay
+ * and before any branch decides what to answer.
+ *
+ * NEVER: THE FIRST VERSION OF THIS SAT IN ONE BRANCH. It was appended
+ * just before the scripted answer, and the working-projection branch
+ * above answers without going near that line -- so a cell waiting for a
+ * `start` from a working read waited for something that is never
+ * written. Measured in an eighteenth review round: the event sequence
+ * for a working-info read was `['answer']`. It lives in `answer` now,
+ * which every branch goes through.
+ */
 function answer(entry) {
+  append({ ...base, event: 'start', name: entry.name || null, at: Date.now() });
+  /*
+   * AND A REQUEST CAN BE HELD OPEN UNTIL THE CELL SAYS SO.
+   *
+   * `delayMs` releases on a clock, which means "the request is still in
+   * flight" is true for 2500 ms and false afterwards -- a cell that
+   * observed the start and was then descheduled could do its work after
+   * the answer had already gone. A hold ends when a file appears, and
+   * nothing but the cell creates that file.
+   */
+  const held = entry.holdFile;
+  if (held) {
+    /*
+     * NEVER: AND THE HOLD ENDS IF NOBODY IS COMING.
+     *
+     * A cell that failed while a request was held used to leave this
+     * process polling for a file the NEXT cell would create, and then
+     * two children answered one release. `dispose` cannot signal what it
+     * cannot name -- a pid is reused, and a child that has not written
+     * its start line is not in the log at all -- so the child watches
+     * for the one thing that says the fixture is gone: the directory its
+     * log lives in. Measured in a twentieth review round.
+     */
+    const waitForRelease = () => {
+      if (LOG && !fs.existsSync(path.dirname(LOG))) {
+        process.exit(0);
+        return;
+      }
+      if (fs.existsSync(held)) {
+        finishNow();
+        return;
+      }
+      setTimeout(waitForRelease, 20);
+    };
+    const finishNow = () => {
+      delete entry.holdFile;
+      answerNow(entry);
+    };
+    waitForRelease();
+    return;
+  }
+  answerNow(entry);
+}
+
+function answerNow(entry) {
   const finish = () => {
     if (entry.exitWithoutAnswer) {
       append({ ...base, event: 'answer', name: entry.name || null, rc: 0, wrote: '', at: Date.now() });

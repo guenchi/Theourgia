@@ -59,6 +59,50 @@ describe('the cursor a write carries forward', () => {
     assert.strictEqual(isReplay(answerOf(FRESH_WRITE)), false);
   });
 
+  /*
+   * plugin-r3: an answer that names two cursors names no cursor.
+   *
+   * This reader asks for `cursor` and then for `event`, and it used to
+   * move on from each when the decoder said `undefined` -- which it gave
+   * for "there is no such clause" and for "there are two of them" alike.
+   * Measured in a seventeenth review round:
+   * `(ok (cursor ("a" . 1)) (cursor ("b" . 2)) (event ("wrong" . 99))
+   * (replay #f))` answered `{writer: "wrong", seq: 99}`, a cursor the
+   * answer never gave, and a Saver settles a save `confirmed` on it.
+   */
+  it('refuses an answer that names two cursors, rather than falling through to the event', () => {
+    assert.strictEqual(
+      eventFromWrite(
+        answerOf('(ok (cursor ("a" . 1)) (cursor ("b" . 2)) (event ("wrong" . 99)) (replay #f))')
+      ),
+      null,
+      'the cursor came from the event clause, because two cursors cancelled each other out'
+    );
+    /*
+     * THE TWIN, TWICE: `event` is still read when `cursor` is genuinely
+     * absent -- the two are spellings of one thing -- and two `event`
+     * clauses refuse in their turn.
+     */
+    assert.deepStrictEqual(eventFromWrite(answerOf(REPLAYED_WRITE)), { writer: 'fsu7hd1k', seq: 6 });
+    assert.strictEqual(
+      eventFromWrite(answerOf('(ok (replay #t) (event ("a" . 1)) (event ("b" . 2)))')),
+      null
+    );
+    /*
+     * KEY: AND A CURSOR THAT IS THERE AND WILL NOT DECODE IS NOT AN
+     * ABSENT ONE. Measured in an eighteenth review round, one round
+     * after the repair above: `(ok (cursor bad) (event ("wrong" . 99)))`
+     * answered `{writer: "wrong", seq: 99}`. The decoder said the clause
+     * was found; whether its value is an event is this reader's own
+     * question, and it answered that one by moving on to the next name.
+     */
+    assert.strictEqual(
+      eventFromWrite(answerOf('(ok (cursor bad) (event ("wrong" . 99)))')),
+      null,
+      'a cursor this client cannot read let the event clause supply one instead'
+    );
+  });
+
   it('reads the event of a write the store had already applied', () => {
     assert.deepStrictEqual(eventFromWrite(answerOf(REPLAYED_WRITE)), { writer: 'fsu7hd1k', seq: 6 });
     assert.strictEqual(isReplay(answerOf(REPLAYED_WRITE)), true);

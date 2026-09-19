@@ -110,7 +110,16 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
      * comes out of a form whose head has been checked, which is what
      * makes reading it safe. See `clauseOfRecord` in wire.ts.
      */
-    const end = asInteger(recordValue(entry, 'end'));
+    /*
+     * NOTE: AND `end` IS ASKED FOR THROUGH THE COUNTED READER, so a writer
+     * entry naming its end twice refuses the listing rather than
+     * supplying the first of them.
+     */
+    const stated = recordValue(entry, 'end');
+    if (!stated.read) {
+      return null;
+    }
+    const end = asInteger(stated.value);
     if (end === null) {
       return null;
     }
@@ -177,14 +186,45 @@ export function eventFromWrite(answer: Answer): Event | null {
   if (form === null) {
     return null;
   }
+  /*
+   * NEVER: A NAME THAT IS THERE AND CANNOT BE READ STOPS THE SEARCH.
+   *
+   * This asked `value` for each name in turn and moved on when it got
+   * `undefined` -- which the decoder gave for "there is no such clause"
+   * and for "there are two of them" alike. Measured in a seventeenth
+   * review round:
+   * `(ok (cursor ("a" . 1)) (cursor ("b" . 2)) (event ("wrong" . 99))
+   * (replay #f))` answered `{writer: "wrong", seq: 99}` -- the two
+   * cursors cancelled out and the cursor came from the `event` clause,
+   * and a Saver settles a save `confirmed` on it.
+   *
+   * Absence still falls through to the next name, because `cursor` and
+   * `event` are two spellings of one thing and an answer carries one of
+   * them. Anything else refuses.
+   */
   for (const name of ['cursor', 'event']) {
     const found = form.value(name);
-    if (found !== undefined) {
-      const event = readEvent(found);
-      if (event !== null) {
-        return event;
+    if (!found.read) {
+      if (found.because === 'absent') {
+        continue;
       }
+      return null;
     }
+    /*
+     * NEVER: AND A CLAUSE THAT IS THERE AND WILL NOT DECODE IS NOT AN
+     * ABSENT ONE EITHER.
+     *
+     * The decoder answers whether the CLAUSE was found; whether its
+     * value is an event is this reader's own question, and it used to
+     * answer that question by moving on. Measured in an eighteenth
+     * review round: `(ok (cursor bad) (event ("wrong" . 99)))` gave
+     * `{writer: "wrong", seq: 99}` -- the answer names a cursor, this
+     * client cannot read it, and the save settles `confirmed` on a
+     * cursor taken from somewhere else. One clause is present, so the
+     * search is over; what remains is whether it can be read.
+     */
+    const event = readEvent(found.value);
+    return event;
   }
   return null;
 }
@@ -199,8 +239,23 @@ export function isReplay(answer: Answer): boolean {
    * would have a save reported as "the store had already applied this
    * request" when the store had just applied it for the first time.
    */
+  /*
+   * NOTE: AND A `replay` CLAUSE THIS BUILD CANNOT READ ANSWERS THE SAME AS
+   * AN ABSENT ONE, which is the one place in this file where the two are
+   * deliberately not told apart. The reason is reachability: by the time
+   * this is asked, the save has been settled on a cursor -- and a cursor
+   * taken from an answer with two of them is refused above. What is left
+   * for this to decide is the WORD shown to the user, `replayed` or
+   * `saved`, and `saved` is the answer that claims nothing about which
+   * it was. A third state here would need a third sentence, which is a
+   * question for whoever writes that sentence and not for this reader.
+   */
   const form = answerOf(answer.answers[0], 'ok');
-  return form !== null && form.value('replay') === true;
+  if (form === null) {
+    return false;
+  }
+  const replay = form.value('replay');
+  return replay.read && replay.value === true;
 }
 
 export const CURSOR_SHAPE = /^[^:\s]+:(0|[1-9][0-9]*)$/;

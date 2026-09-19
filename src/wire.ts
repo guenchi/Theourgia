@@ -258,12 +258,55 @@ const VERIFIED: unique symbol = Symbol('a form whose head has been checked');
  * separate now and the type makes each caller say which it is handling;
  * five of the eight callers refuse both and were already right.
  */
-export type Clause =
-  | { read: true; items: Datum[] }
-  | { read: false; because: 'absent' | 'duplicated' };
+export type Why = 'absent' | 'duplicated' | 'unreadable';
 
-const ABSENT: Clause = { read: false, because: 'absent' };
-const DUPLICATED: Clause = { read: false, because: 'duplicated' };
+export type Clause = { read: true; items: Datum[] } | { read: false; because: Why };
+
+/*
+ * THE SAME THREE REASONS FOR A READER THAT WANTS ONE VALUE rather than a
+ * clause: `Form.value` and the record reader both answer this.
+ */
+export type Single = { read: true; value: Datum } | { read: false; because: Why };
+
+const ABSENT = { read: false as const, because: 'absent' as const };
+const DUPLICATED = { read: false as const, because: 'duplicated' as const };
+const UNREADABLE = { read: false as const, because: 'unreadable' as const };
+
+/*
+ * THE NAME AT THE FRONT OF A DATUM, WHETHER IT WAS WRITTEN WITH A DOT OR
+ * WITHOUT ONE.
+ *
+ * NEVER: A DOTTED OCCURRENCE IS AN OCCURRENCE. `clause` counted only list
+ * items, so `(fields . bad) (fields . worse)` was two occurrences that
+ * the duplicate refusal could not see: a seventeenth review round read
+ * `((id . "a.1") (fields . bad) (fields . worse) (position root . 0))`
+ * as block a.1 with NO fields, and the same trick unwrapped a `--wire`
+ * commit answer through `(items . bad)`. Both of the refusals added the
+ * round before were walked past this way.
+ */
+function frontName(value: Datum): string | null {
+  const head = isList(value) ? value[0] : isDotted(value) ? value.items[0] : undefined;
+  return head !== undefined && isSym(head) ? head.name : null;
+}
+
+/*
+ * KEY: EVERY ELEMENT NAMED `name`, AND THIS IS THE ONLY PLACE THAT COUNTS
+ * THEM.
+ *
+ * Five routes reached into a form looking for a named element --
+ * `clause`, `whole`, `value`, the record reader and the association
+ * reader -- and each had its own answer to "how many are there". Rounds
+ * fifteen, sixteen and seventeen each found one of them giving the
+ * reassuring answer: the first of several, or none at all. They all ask
+ * this now, and a sixth route that does not is what `decoding.test.ts`
+ * fails on.
+ */
+function occurrencesOf(value: Datum, name: string): Datum[] {
+  if (!isList(value)) {
+    return [];
+  }
+  return value.filter((item) => frontName(item) === name);
+}
 
 export interface Form {
   /*
@@ -294,7 +337,7 @@ export interface Form {
    * carrying any other number -- the same rule `clauseValue` has always
    * had, for the same reason.
    */
-  value(name: string): Datum | undefined;
+  value(name: string): Single;
   /*
    * THE WHOLE FORM, for the readers that need its positions rather than
    * its clauses -- an `(error unknown-id "a.1" ...)` names its subject
@@ -356,7 +399,17 @@ export function clauseOfRecord(value: Datum, name: string): Clause {
   return clauseRest(value, name);
 }
 
-export function recordValue(value: Datum, name: string): Datum | undefined {
+/*
+ * NEVER: THIS SAID `Datum | undefined`, WHICH IS `unknown`.
+ *
+ * `Datum` is `unknown`, so the declared type accepted any change to what
+ * this actually returns -- and when `clauseValue` began answering a
+ * `Single`, the one caller went on handing it to `asInteger`, which
+ * takes `unknown` too. Nothing failed to compile and 84 cells went red
+ * at once. The compiler is only the census where the types say
+ * something; a signature written in `unknown` is a hole in it.
+ */
+export function recordValue(value: Datum, name: string): Single {
   return clauseValue(value, name);
 }
 
@@ -372,19 +425,20 @@ export function recordValue(value: Datum, name: string): Datum | undefined {
  * the readers above all know how to be told so.
  */
 function clause(value: Datum, name: string): Clause {
-  if (!isList(value)) {
+  const found = occurrencesOf(value, name);
+  if (found.length === 0) {
     return ABSENT;
   }
-  let found: Datum[] | null = null;
-  for (const item of value) {
-    if (isList(item) && headName(item) === name) {
-      if (found !== null) {
-        return DUPLICATED;
-      }
-      found = item;
-    }
+  if (found.length > 1) {
+    return DUPLICATED;
   }
-  return found === null ? ABSENT : { read: true, items: found };
+  /*
+   * ONE OCCURRENCE, WRITTEN WITH A DOT, IS NOT A CLAUSE. `(fields . bad)`
+   * has a name and no sequence after it; reading it as "no fields" is
+   * the collapse this file exists to stop, so it is a third reason
+   * rather than an absence.
+   */
+  return isList(found[0]) ? { read: true, items: found[0] } : UNREADABLE;
 }
 
 /*
@@ -417,16 +471,30 @@ function clause(value: Datum, name: string): Clause {
  *
  * It is censused with the other two; see test/unit/decoding.test.ts.
  */
-export function assocTail(alist: Datum[], name: string): Datum | undefined {
-  for (const entry of alist) {
-    if (isDotted(entry) && entry.items.length >= 1 && isSym(entry.items[0], name)) {
-      return cdrOf(entry);
-    }
-    if (isList(entry) && entry.length >= 1 && isSym(entry[0], name)) {
-      return entry.slice(1);
-    }
+/*
+ * NEVER: AND IT TOOK THE FIRST OF SEVERAL.
+ *
+ * Measured in a seventeenth review round:
+ * `((id . "a.1") (id . "b.1") (deleted . #f) ...)` read as block a.1 --
+ * an identity chosen by this reader out of an answer that names two.
+ * It counts through `occurrencesOf` like everything else now.
+ */
+export function assocTail(alist: Datum[], name: string): Single {
+  const found = occurrencesOf(alist, name);
+  if (found.length === 0) {
+    return ABSENT;
   }
-  return undefined;
+  if (found.length > 1) {
+    return DUPLICATED;
+  }
+  const entry = found[0];
+  if (isDotted(entry)) {
+    return { read: true, value: cdrOf(entry) };
+  }
+  if (isList(entry)) {
+    return { read: true, value: entry.slice(1) };
+  }
+  return UNREADABLE;
 }
 
 /*
@@ -445,12 +513,29 @@ function clauseRest(value: Datum, name: string): Clause {
  * this reads are small and fixed, and a shape that is not the expected
  * one is a core that changed.
  */
-function clauseValue(value: Datum, name: string): Datum | undefined {
+/*
+ * NEVER: AND THE SINGLE VALUE SAYS WHICH KIND OF NOTHING IT FOUND.
+ *
+ * `clause` was split into absent and duplicated in a sixteenth review
+ * round and this was left answering `undefined` for both -- so in a
+ * seventeenth round, `(ok (cursor ("a" . 1)) (cursor ("b" . 2)) (event
+ * ("wrong" . 99)) (replay #f))` had the two cursors cancel each other
+ * out and `eventFromWrite` take its event from the `event` clause: a
+ * save settled on a cursor the answer never gave. Every `value()` call
+ * goes through here.
+ *
+ * A clause that is there and carries a number of values other than one
+ * is `unreadable` rather than absent, for the same reason.
+ */
+function clauseValue(value: Datum, name: string): Single {
   const rest = clauseRest(value, name);
-  if (!rest.read || rest.items.length !== 1) {
-    return undefined;
+  if (!rest.read) {
+    return rest;
   }
-  return rest.items[0];
+  if (rest.items.length !== 1) {
+    return UNREADABLE;
+  }
+  return { read: true, value: rest.items[0] };
 }
 
 /*

@@ -51,25 +51,23 @@ export interface Hit {
  * FOUND NOTHING. They are one collapse apart and they are opposite news:
  * the store saying it looked, and the store saying it did not.
  *
- * NOTE: TWO SHAPES ARRIVE HERE, AND BOTH ARE READ. Measured against the
- * pinned core:
+ * NEVER: AND THIS READER NO LONGER DECIDES ANYTHING FROM THE SHAPE OF WHAT
+ * CAME BACK. Ruled by the main session after three review rounds found a
+ * face of it.
  *
- *     $ theourgia search "stale baseline"
- *     (hit "qqevbgov.1" 6 "concurrency, baseline, stale")
- *     $ theourgia search "stale baseline" --wire
- *     (ok (items (hit "qqevbgov.1" 6 "concurrency, baseline, stale")))
+ * It used to unwrap an `(ok (items ...))` envelope when it saw one. That
+ * is the defect `client.ts` was repaired for: whether an envelope was
+ * asked for is a fact about the REQUEST, and what came back merely looks
+ * a certain way. With both readers unwrapping, a search carrying
+ * `--wire` had `interpret` remove one envelope and this remove a second.
+ * Two guards were written here over those rounds and both were deleted
+ * for having no case behind them -- the refusal one line below is wider
+ * than either.
  *
- * This extension asks for neither mode by name, so it gets the first:
- * the client already treats `search` as a verb whose answer is a
- * sequence of items, exactly as it treats `refs`, `log` and
- * `conflicts`. The wrapper is accepted as well because accepting it
- * costs three lines and because the day this client does ask for
- * `--wire` -- it will, for the clause the human rendering drops -- the
- * search must not become the reason that change is hard.
- *
- * NOTE: ON THE HUMAN ROUTE NO HITS IS NO OUTPUT AT ALL, so an empty list
- * arrives as an empty list and there is nothing to unwrap. That is why
- * an empty input is an empty answer here and not an unreadable one.
+ * So: this takes the answers `interpret` already opened. On the human
+ * route the core prints one datum per hit and no hits is no output at
+ * all, which is why an empty input is an empty answer and not an
+ * unreadable one.
  */
 export function hitsOf(data: Datum[]): Hit[] | null {
   /*
@@ -82,49 +80,16 @@ export function hitsOf(data: Datum[]): Hit[] | null {
    * what says whether this is an answer at all.
    */
   /*
-   * NEVER: AND A SECOND GUARD HERE WOULD HAVE NO CASE BEHIND IT EITHER.
+   * NOTE: THE TWO GUARDS THAT WERE DELETED FROM HERE, kept as a record
+   * because both were written in good faith and neither could fail.
    *
-   * The decoder tells "two of this clause" from "no such clause" since a
-   * sixteenth review round, and three of its callers had been reading
-   * the first as the second. One was written here -- refuse when `items`
-   * came back duplicated -- and a mutation run showed it changed
-   * nothing: `(ok (items ...) (items ...))` is one datum, so it falls
-   * through as the item list, and `(ok ...)` is not a `hit`, so the loop
-   * below already answers null. It was deleted rather than left looking
-   * like a repair.
-   *
-   * That is the SECOND guard deleted from this function for having no
-   * case behind it; the note above records the first. Both times the
-   * reason was the same: the refusal one line below is wider than the
-   * guard being added over it.
+   * The first refused an item that was itself an `ok` form; the second
+   * refused a duplicated `items` clause. Each was measured with a
+   * mutation and each changed nothing, because the loop below already
+   * refuses anything that is not a `hit`. With the unwrapping gone
+   * neither has a subject at all.
    */
-  const envelope = data.length === 1 ? answerOf(data[0], 'ok') : null;
-  const wrapped = envelope === null ? null : envelope.clause('items');
-  const items = wrapped !== null && wrapped.read ? wrapped.items : data;
-  /*
-   * NOTE: THIS READER DECIDES BY SHAPE, AND THAT IS THE DEFECT THIS
-   * DELIVERY REPAIRED ELSEWHERE -- named here because removing it
-   * changes what two cells expect.
-   *
-   * `client.ts` was repaired so that unwrapping turns on whether the
-   * REQUEST asked for `--wire`; this is a second reader making the same
-   * decision from the shape of what came back. A fifteenth review round
-   * measured the consequence: for a search carrying `--wire`,
-   * `interpret` removes one envelope and this removes a second, so
-   * `(ok (items (ok (items (hit "a.1" 2 "x")))))` yields the hit.
-   *
-   * NEVER: A GUARD HERE WOULD HAVE NO CASE BEHIND IT. One was written --
-   * refuse when the single item is itself an `ok` form -- and a mutation
-   * run showed it changed nothing: that input is already refused one
-   * line below, because `(ok ...)` is not a `hit`. It was deleted rather
-   * than left looking like a repair.
-   *
-   * The repair is to stop unwrapping here at all, since this extension
-   * does not ask for `--wire` on a search and the pinned core emits
-   * nothing for a search with no hits on the human route. That is a
-   * change to two cells' expectations, so it is in the delivery note for
-   * a ruling.
-   */
+  const items = data;
   const out: Hit[] = [];
   for (const item of items) {
     if (!isList(item) || answerOf(item, 'hit') === null || item.length !== 4) {

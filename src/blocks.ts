@@ -104,11 +104,24 @@ export function readBlock(value: Datum): Block | null {
   if (value.length === 0 || !isDotted(value[0])) {
     return null;
   }
-  const id = assocTail(value, 'id');
+  /*
+   * NEVER: AND A RECORD THAT NAMES TWO IDENTITIES IS NOT A RECORD WITH
+   * ONE. `assocTail` used to take the first of several -- measured in a
+   * seventeenth review round, where `((id . "a.1") (id . "b.1") ...)`
+   * read as block a.1. It answers `duplicated` now, and that is a
+   * refusal here for the same reason `deleted` and `position` are: this
+   * reader cannot choose between two answers the store gave.
+   */
+  const named = assocTail(value, 'id');
+  const id = named.read ? named.value : undefined;
   if (typeof id !== 'string') {
     return null;
   }
-  const deleted = assocTail(value, 'deleted');
+  const marked = assocTail(value, 'deleted');
+  if (!marked.read && marked.because !== 'absent') {
+    return null;
+  }
+  const deleted = marked.read ? marked.value : undefined;
   /*
    * NOTE: A BLOCK RECORD HAS NO HEAD. Its first element is
    * `(id . "a.1")` -- a pair, not a name -- so there is nothing for
@@ -129,7 +142,7 @@ export function readBlock(value: Datum): Block | null {
    * already written below for a field of an unknown shape.
    */
   const fieldList = clauseOfRecord(value, 'fields');
-  if (!fieldList.read && fieldList.because === 'duplicated') {
+  if (!fieldList.read && fieldList.because !== 'absent') {
     throw new TransportError(
       'unreadable',
       `the core answered with two field lists for block ${id}, and which one holds its text ` +
@@ -147,6 +160,30 @@ export function readBlock(value: Datum): Block | null {
        * after the name as its value -- which is how a conflicted field
        * arrives.
        */
+      /*
+       * NEVER: AND A NAME THAT APPEARS TWICE IS NOT THE SECOND ONE.
+       *
+       * The repair above protects which LIST is read; this protects what
+       * is in it. Measured in a seventeenth review round:
+       * `(fields (src . "one") (src . "two"))` gave `src = "two"`, and
+       * `src` is the document body -- a block served with one of two
+       * bodies the store named, chosen by the order they were written
+       * in. `set` on a Map is silent about it, which is why nothing said
+       * so.
+       */
+      const named = isDotted(entry) && entry.items.length >= 1 && isSym(entry.items[0])
+        ? (entry.items[0] as { name: string }).name
+        : isList(entry) && entry.length >= 1 && isSym(entry[0])
+          ? (entry[0] as { name: string }).name
+          : null;
+      if (named !== null && fields.has(named)) {
+        throw new TransportError(
+          'unreadable',
+          `the core answered with two fields called ${named} for block ${id}, and which one is ` +
+            'the block is not something this client may choose',
+          describe(entry)
+        );
+      }
       if (isDotted(entry) && entry.items.length >= 1 && isSym(entry.items[0])) {
         fields.set((entry.items[0] as { name: string }).name, cdrOf(entry));
         continue;
@@ -170,7 +207,11 @@ export function readBlock(value: Datum): Block | null {
       );
     }
   }
-  const position = assocTail(value, 'position');
+  const placed = assocTail(value, 'position');
+  if (!placed.read && placed.because !== 'absent') {
+    return null;
+  }
+  const position = placed.read ? placed.value : undefined;
   const placement = placementOf(position);
   return {
     id,

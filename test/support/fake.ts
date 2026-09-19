@@ -44,6 +44,15 @@ export interface ScriptedCall {
   stderr?: string;
   rc?: number;
   delayMs?: number;
+  /*
+   * A REQUEST THIS STAND-IN HOLDS OPEN UNTIL THE CELL RELEASES IT. The
+   * path is created by the cell; until it exists, the request has been
+   * taken and not answered. `delayMs` ends on a clock, so "still in
+   * flight" stops being true at a moment the cell does not choose --
+   * measured in an eighteenth review round as the reason a race a cell
+   * established could be over before the cell acted on it.
+   */
+  holdFile?: string;
   exitWithoutAnswer?: boolean;
   once?: boolean;
   chunkAt?: number[];
@@ -177,6 +186,71 @@ export class FakeCore {
       .map((c) => c.coreArgv);
   }
 
+  /*
+   * THE REQUESTS THIS STAND-IN HAS TAKEN, whether or not it has answered
+   * them yet. A cell that wants to act while a request is in flight
+   * waits for one of these rather than for a number of milliseconds.
+   */
+  public started(): string[][] {
+    return this.calls()
+      .filter((c) => c.event === 'start')
+      .map((c) => c.coreArgv);
+  }
+
+  /*
+   * THE REQUESTS THIS STAND-IN HAS TAKEN AND NOT YET ANSWERED.
+   *
+   * NEVER: A PID IS NOT AN IDENTITY, AND COUNTING IS NOT PAIRING.
+   *
+   * The first version counted answers and dropped that many starts off
+   * the front, which assumes the two sequences correspond; they do not.
+   * The second paired by pid and asked the operating system whether that
+   * pid was alive -- and a pid is reused, so both questions answer about
+   * whatever process holds the number now. Measured in a twentieth
+   * review round: with one live pid P, `start(P, read)`, `answer(P)`,
+   * `start(P, conflicts)` reported nothing in flight, and a lone old
+   * start for a pid the system had given to somebody else reported a
+   * request that had finished long ago.
+   *
+   * Every line carries the pid AND the instant that process started, and
+   * the two together are the identity -- the same rule a lock file needs
+   * for the same reason. Liveness is not asked at all: `kill(pid, 0)`
+   * can only answer about the number. A request whose process died
+   * without answering therefore stays "in flight", and the wait that is
+   * watching for it ends at `until`'s timeout with the last reading
+   * printed, which is a diagnosis rather than a hang.
+   */
+  public inFlight(): string[][] {
+    const lines = this.calls();
+    /*
+     * NEVER: AND `pid + started` COLLIDES. `started` is `Date.now()`,
+     * which repeats -- two runs that get the same reused pid within a
+     * millisecond are one identity to this reader, and one run's answer
+     * is then attributed to the other. Measured in a twenty-first review
+     * round. Each run makes a nonce for itself and that is the identity.
+     */
+    const identity = (c: LoggedCall): string =>
+      String((c as unknown as { incarnation?: string }).incarnation);
+    const answered = new Set(
+      lines.filter((c) => c.event === 'answer' || c.event === 'unscripted').map(identity)
+    );
+    return lines
+      .filter((c) => c.event === 'start' && !answered.has(identity(c)))
+      .map((c) => c.coreArgv);
+  }
+
+  /*
+   * A PATH FOR `holdFile`, AND THE ACT OF RELEASING IT. Both are here so
+   * that a cell cannot spell one of them differently from the other.
+   */
+  public holdPath(name: string): string {
+    return path.join(this.root, `hold-${name}`);
+  }
+
+  public release(name: string): void {
+    fs.writeFileSync(this.holdPath(name), '', 'utf8');
+  }
+
   public outboxFile(): string {
     return path.join(this.root, 'outbox.json');
   }
@@ -191,6 +265,23 @@ export class FakeCore {
       .filter((p): p is number => typeof p === 'number');
   }
 
+  /*
+   * NEVER: AND DISPOSE DOES NOT SIGNAL ANYTHING.
+   *
+   * The first version killed every pid the log named. Three ways that
+   * was wrong, all measured in a twentieth review round: a pid is reused,
+   * so an old fixture's dispose could SIGKILL a process belonging to a
+   * cell still running; a child that had taken its request but not yet
+   * written its start line was not in the log to be stopped; and a log
+   * that could not be read disabled the cleanup entirely while the
+   * children went on polling.
+   *
+   * A child that cannot be named cannot be signalled, so it stops
+   * ITSELF: the hold loop in `fake-core.js` gives up when the directory
+   * its log lives in is gone. Removing that directory is therefore the
+   * whole of the cleanup, it needs no identity, and it works for a child
+   * that has not logged anything yet.
+   */
   public dispose(): void {
     fs.rmSync(this.root, { recursive: true, force: true });
   }

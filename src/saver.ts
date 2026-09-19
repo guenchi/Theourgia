@@ -761,7 +761,7 @@ function describeRefusal(datum: Datum): string {
    * comment.
    */
   const current = answerOf(datum, 'error')?.value('current');
-  if (name === 'changed' && current !== undefined) {
+  if (name === 'changed' && current !== undefined && current.read) {
     return 'the block changed in the store since it was opened';
   }
   return `the core refused the write: ${name}`;
@@ -939,6 +939,33 @@ export class Saver {
    * its first transmission, and drain.
    */
   public submit(record: SendRecord): Promise<SaveOutcome> {
+    /*
+     * NEVER: WHETHER THE ENTRY WAS QUEUED IS ASKED OF THE FILE.
+     *
+     * Four review rounds repaired this one exit at a time. Round sixteen
+     * made every `return` before the enqueue carry `notQueued` and wrote
+     * the rule down at the function; round seventeen left through the
+     * `await` beside those returns; round eighteen left through
+     * `serialise`, which reloads the queue from disk BEFORE this
+     * callback runs at all. Round eighteen's answer was a flag set at
+     * the enqueue -- and round nineteen showed the flag lying in the
+     * other direction: `Outbox.write` renames the file into place and
+     * THEN syncs the directory, so an enqueue can throw with the entry
+     * already on disk, and the outcome said it had not been queued.
+     *
+     * Round nineteen asked the file in the catch, and round twenty
+     * showed the file answering a different question by then: a save
+     * that was queued, SENT and dequeued is not in the file either, so
+     * a failure after a successful transmission read as "never queued"
+     * and released the number for a send that had gone out.
+     *
+     * "Was this entry ever queued" is a fact about a MOMENT, and the
+     * only moment the file can answer it is immediately after the
+     * enqueue. So that is when it is read, once, and the answer is what
+     * every later failure consults. Not being able to read the file then
+     * is not permission to release the number.
+     */
+    let queued = false;
     return this.serialise(async () => {
       /*
        * NOTE: THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
@@ -988,7 +1015,39 @@ export class Saver {
           notQueued: true as const
         };
       }
-      const cursor = await this.ensureCursor();
+      /*
+       * NEVER: AND AN EXCEPTION FROM THE BOOTSTRAP IS AN EXIT TOO.
+       *
+       * The rule above is positional -- every return before the enqueue
+       * carries `notQueued` -- and a seventeenth review round walked out
+       * through the door beside it: `ensureCursor` asks the store, and a
+       * `check` that times out rejects. `submit` then rejected, the save
+       * handler reported the failure and returned, and `releaseSend` is
+       * reached only for a RESOLVED outcome carrying the flag. The
+       * number stayed in `outstanding` for a send that was never queued,
+       * and the file is a draft nothing can settle.
+       *
+       * The caller cannot repair this: once an exception is out of here,
+       * whether the entry reached the queue is not a question it can
+       * answer. This is the layer that knows, so the ambiguity is turned
+       * into an outcome here, where the entry demonstrably has not been
+       * queued yet.
+       */
+      let cursor: string | null;
+      try {
+        cursor = await this.ensureCursor();
+      } catch (e) {
+        return {
+          status: 'blocked' as const,
+          req: record.req,
+          id: record.blockId,
+          message:
+            'the store could not be asked where its log ends, so this save was not queued: ' +
+            (e instanceof Error ? e.message : String(e)),
+          answer: null,
+          notQueued: true as const
+        };
+      }
       if (cursor === null) {
         return {
           status: 'blocked' as const,
@@ -1019,17 +1078,33 @@ export class Saver {
       };
       try {
         this.outbox.enqueue(entry);
+        queued = true;
       } catch (e) {
-        return {
-          status: 'blocked' as const,
-          req: record.req,
-          id: record.blockId,
-          message:
-            `the save could not be written to the queue at ${this.outbox.path}, so it was not ` +
-            `sent: ${String(e)}`,
-          answer: null,
-          notQueued: true as const
-        };
+        /*
+         * THE ONE MOMENT THE FILE CAN ANSWER. `Outbox.write` renames the
+         * new file into place and THEN syncs the directory, so an
+         * enqueue that threw may have landed; nothing later can tell,
+         * because a drain removes a settled entry and the file then
+         * looks the same as one that was never written.
+         */
+        try {
+          this.outbox.load();
+          queued = this.outbox.entries.some((held) => held.req === entry.req);
+        } catch {
+          queued = true;
+        }
+        /*
+         * NOTE: AND THIS ONE IS RE-RAISED RATHER THAN ANSWERED HERE.
+         *
+         * A failed enqueue is the case where the entry may or may not be
+         * on disk -- the rename happens before the sync -- so it is
+         * exactly the case the question below exists for. Answering it
+         * here would be a second place deciding the same thing, and the
+         * two would differ.
+         */
+        throw new Error(
+          `the save could not be written to the queue at ${this.outbox.path}: ${String(e)}`
+        );
       }
       const outcomes = await this.drain();
       const mine = outcomes.find((o) => o.req === entry.req);
@@ -1042,6 +1117,30 @@ export class Saver {
           answer: null
         }
       );
+    }).catch((e) => {
+      /*
+       * THE ANSWER RECORDED AT THE ENQUEUE, not a second reading taken
+       * now.
+       *
+       * A failure after the entry was queued is still a failure, and the
+       * number must NOT be released then: something else will answer for
+       * that entry -- or already has -- and saying a send is not
+       * outstanding while it went out is how a record comes to disagree
+       * with the store. Reading the file HERE would answer a different
+       * question, because by now a drain may have removed the entry.
+       */
+      if (queued) {
+        throw e;
+      }
+      return {
+        status: 'blocked' as const,
+        req: record.req,
+        id: record.blockId,
+        message:
+          'this save was not queued: ' + (e instanceof Error ? e.message : String(e)),
+        answer: null,
+        notQueued: true as const
+      };
     });
   }
 

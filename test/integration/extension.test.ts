@@ -36,12 +36,9 @@ import {
   socketPathOf,
   stopDaemonsFor
 } from '../support/real-core';
+import { settle, until } from '../support/until';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
-
-async function settle(ms = 250): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /*
  * NOTE: THE FIXTURE'S STORES SHARE THE HOST'S RUN ROOT, deliberately.
@@ -75,40 +72,12 @@ function hostRunRoot(): string {
  * (design 7.6.53). One cell in this file went red on the switch for the
  * opposite reason -- it slept while a background drain it did not know
  * about finished, and asserted that a save was still stranded after the
- * extension had quietly got it through. A duration is not an observation
- * of anything: too short and the cell asserts before the work; too long
- * and it asserts after work the cell did not ask for.
+ * extension had quietly got it through.
  *
- * NOTE: AND THE STARTING POINT IS PINNED FIRST. "Wait until the log is not
- * empty" is satisfied for ever by a log that was not empty to begin
- * with. Every caller here reads the count BEFORE acting and waits for a
- * number GREATER than that one.
+ * `until` and the reasons for it now live in `test/support/until.ts`,
+ * because the other editor-hosted file was still sleeping and a second
+ * copy of this would have been the one nobody fixed.
  */
-const PATIENCE_MS = 30000;
-
-async function until(
-  what: string | (() => string),
-  ready: () => Promise<boolean> | boolean
-): Promise<void> {
-  const deadline = Date.now() + PATIENCE_MS;
-  for (;;) {
-    if (await ready()) {
-      return;
-    }
-    if (Date.now() >= deadline) {
-      /*
-       * THE MESSAGE MAY BE A FUNCTION, so that a cell can put the LAST
-       * reading into it. A timeout that says only what was hoped for
-       * leaves the reader to guess what was actually there, which is the
-       * one thing the waiting loop was in a position to know.
-       */
-      throw new Error(
-        `waited ${PATIENCE_MS} ms and ${typeof what === 'function' ? what() : what} never happened`
-      );
-    }
-    await settle(50);
-  }
-}
 
 /*
  * HOW MANY RECORDS THIS BLOCK'S LOG HOLDS. Read through the fixture's

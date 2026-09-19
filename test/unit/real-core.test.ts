@@ -329,7 +329,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      * opposite of what this cell is about.
      */
     assert.strictEqual(
-      answerOf(repeat.answers[0], 'ok')?.value('replay'),
+      (answerOf(repeat.answers[0], 'ok')?.value('replay') as { value?: unknown })?.value,
       true,
       `the repeat was not answered as a replay: ${repeat.text}`
     );
@@ -521,7 +521,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
      * that is the outside source.
      */
     const replayed = outcomes[0].answer;
-    const named = readEvent(answerOf(replayed, 'ok')?.value('event') as unknown);
+    const named = readEvent((answerOf(replayed, 'ok')?.value('event') as { value?: unknown })?.value);
     /*
      * THE MESSAGE MUST SURVIVE THE VALUE IT DESCRIBES. Every integer the
      * reader produces is a BigInt, and JSON.stringify throws on one --
@@ -570,7 +570,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'replayed', retried[0].message);
 
-    const named = readEvent(answerOf(retried[0].answer, 'ok')?.value('event') as unknown);
+    const named = readEvent((answerOf(retried[0].answer, 'ok')?.value('event') as { value?: unknown })?.value);
     assert.ok(named !== null, `the replay named no record: ${String(retried[0].answer)}`);
     const expected = `${named?.writer}:${named?.seq}`;
 
@@ -1360,7 +1360,9 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
     try {
       const idOf = async (title: string, text: string): Promise<string> => {
         const inserted = await store.client.request('insert', ['--title', title, '--text', text]);
-        const events = answerOf(inserted.answers[0], 'ok')?.value('events') as unknown[];
+        const listed = answerOf(inserted.answers[0], 'ok')?.value('events');
+        assert.ok(listed !== undefined && listed.read, 'the insert answered no readable events clause');
+        const events = listed.value as unknown[];
         const event = readEvent(events[0]);
         assert.ok(event !== null, 'the insert answered with no event');
         return `${event.writer}.${event.seq}`;

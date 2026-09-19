@@ -48,8 +48,9 @@ import * as ts from 'typescript';
 import { Client } from '../../src/client';
 import { Outbox } from '../../src/outbox';
 import { RecordParts, SendRecord, recordFor } from '../../src/record';
-import { Saver, Settle } from '../../src/saver';
-import { CliTransport } from '../../src/transport';
+import { SaveOutcome, Saver, Settle } from '../../src/saver';
+import { CliTransport, TransportError } from '../../src/transport';
+import { nodeFileOps } from '../../src/fsops';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { wroteAnswer } from '../support/answers';
@@ -991,6 +992,279 @@ describe('R4 a send whose queue write did not land', () => {
     assert.strictEqual(outbox.entries.length, 0, 'the entry reached the queue after all');
   });
 
+  /*
+   * KEY: AND AN EXCEPTION IS AN EXIT TOO.
+   *
+   * The rule was written as "every RETURN before the enqueue carries the
+   * flag", and a seventeenth review round left through the door beside
+   * it: `ensureCursor` asks the store, a `check` that times out rejects,
+   * and `submit` rejected with the number already outstanding. The save
+   * handler's catch reports and returns; `releaseSend` is reached only
+   * for a resolved outcome.
+   */
+  it('says it was not queued when asking the store where its log ends failed', async () => {
+    const core0 = new FakeCore([{ match: ['check'], stdout: '', rc: 0 }]);
+    core = core0;
+    const outbox = new Outbox(path.join(core0.root, 'outbox.json'));
+    outbox.load();
+    const refusing = {
+      kind: 'refusing',
+      send: async (): Promise<never> => {
+        throw new TransportError('timeout', 'the store did not answer the check in time', '');
+      }
+    };
+    const saver = new Saver(new Client(refusing), outbox, settling(outbox, parts().storeHash));
+    const outcome = await saver.submit(recordFor(parts()));
+    assert.strictEqual(outcome.status, 'blocked', `the save was not blocked: ${outcome.message}`);
+    assert.strictEqual(
+      outcome.notQueued,
+      true,
+      'the bootstrap threw, so the outcome never said the entry had not been queued, and the ' +
+        'number it took stays out for ever'
+    );
+    assert.strictEqual(outbox.entries.length, 0, 'the entry reached the queue after all');
+  });
+
+  /*
+   * KEY: AND SO DOES A FAILURE THAT HAPPENS BEFORE `submit`'s OWN BODY
+   * RUNS.
+   *
+   * `serialise` reloads the queue from disk after taking the lock and
+   * before the callback -- so a queue file that will not read rejects
+   * `submit` without anything in the callback having had a chance to
+   * say so. Measured in an eighteenth review round with EACCES on the
+   * queue: the save handler reported the rejection and returned, and the
+   * number stayed in `outstanding`.
+   *
+   * This is the third round to find an exit of this kind, which is why
+   * the answer is no longer positional: `submit` records whether the
+   * entry was queued and every failure without that flag is a failure
+   * before it.
+   */
+  /*
+   * KEY: AND AN ENQUEUE THAT FAILED AFTER THE RENAME DID QUEUE.
+   *
+   * `Outbox.write` renames the new file into place and then syncs the
+   * directory; a failure at that second step leaves the entry on disk
+   * while the catch that reports "not queued" runs. Measured in a
+   * nineteenth review round: the caller gave the sequence number back
+   * and reloading the queue recovered the request the record then said
+   * was not outstanding -- the mirror image of the defect the flag was
+   * added for, and reachable through the shipped `syncDirectory`, whose
+   * `closeSync` is not caught.
+   */
+  it('does not say it was not queued when the entry reached the file anyway', async () => {
+    const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    core = core0;
+    const queuePath = path.join(core0.root, 'outbox.json');
+    let syncs = 0;
+    let failing = false;
+    const failsAfterTheRename = {
+      ...nodeFileOps,
+      syncDirectory(directory: string): void {
+        if (!failing) {
+          nodeFileOps.syncDirectory(directory);
+          return;
+        }
+        syncs += 1;
+        throw new Error('the directory could not be synced after the rename');
+      }
+    };
+    const outbox = new Outbox(queuePath, failsAfterTheRename);
+    outbox.load();
+    outbox.setCursor('w:7');
+    /*
+     * THE SETUP WRITES TOO, so the fixture only starts failing once the
+     * cursor is in place: otherwise this cell is about the cursor write
+     * rather than the enqueue.
+     */
+    failing = true;
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    let outcome: SaveOutcome | undefined;
+    let rejected: unknown = null;
+    try {
+      outcome = await saver.submit(recordFor(parts()));
+    } catch (e) {
+      rejected = e;
+    }
+    assert.ok(rejected !== null || outcome !== undefined);
+    assert.ok(syncs > 0, 'the write never reached the sync, so this cell is about nothing');
+    /*
+     * THE ENTRY IS ON DISK. A fresh reader is used, because the saver's
+     * own copy is not evidence about the file.
+     */
+    const onDisk = new Outbox(queuePath);
+    onDisk.load();
+    assert.strictEqual(
+      onDisk.entries.length,
+      1,
+      'the fixture did not leave the entry on disk, so this cell cannot be about the case it names'
+    );
+    /*
+     * AND THE OUTCOME DOES NOT LET THE NUMBER GO. A rejection is the
+     * right answer here: the entry will be drained by whoever comes
+     * next, the user is told the write failed, and `releaseSend` is
+     * reached only for a resolved outcome carrying the flag -- so the
+     * send stays outstanding, which is what the file says.
+     */
+    assert.notStrictEqual(
+      outcome === undefined ? undefined : (outcome as { notQueued?: true }).notQueued,
+      true,
+      'the outcome said the entry was never queued while it is in the file, so the caller gives ' +
+        'the sequence number back and the store keeps a request nothing is outstanding for'
+    );
+  });
+
+  /*
+   * KEY: AND A SAVE THAT WENT OUT IS NOT A SAVE THAT WAS NEVER QUEUED.
+   *
+   * Round nineteen's answer read the file in the catch. Round twenty
+   * showed the file answering a different question by then: a save that
+   * was queued, SENT and dequeued is not in the file either, so a
+   * failure after a successful transmission read as "never queued" and
+   * the caller released the number for a send that had gone out. "Was
+   * this ever queued" is a fact about a moment, and the moment is the
+   * enqueue.
+   */
+  it('does not say it was not queued after the save has been sent', async () => {
+    const core0 = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: `${wroteAnswer(8)}\n`, rc: 0 }
+    ]);
+    core = core0;
+    const queuePath = path.join(core0.root, 'outbox.json');
+    let sent = false;
+    const failsOnceTheSendHasLanded = {
+      ...nodeFileOps,
+      syncDirectory(directory: string): void {
+        if (!sent) {
+          nodeFileOps.syncDirectory(directory);
+          return;
+        }
+        throw new Error('the directory could not be synced after the entry was dequeued');
+      }
+    };
+    const outbox = new Outbox(queuePath, failsOnceTheSendHasLanded);
+    outbox.load();
+    outbox.setCursor('w:7');
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    /*
+     * THE FIXTURE STARTS FAILING ONCE THE WIRE HAS SEEN THE SAVE, so the
+     * failure this cell is about is the one AFTER the transmission.
+     */
+    const watching = {
+      kind: 'watching',
+      send: async (verb: string, args: string[]) => {
+        const answer = await new CliTransport(core0.config(), core0.env()).send(verb, args);
+        if (verb === 'set') {
+          sent = true;
+        }
+        return answer;
+      }
+    };
+    void client;
+    const saver = new Saver(new Client(watching), outbox, settling(outbox, parts().storeHash));
+    let outcome: SaveOutcome | undefined;
+    try {
+      outcome = await saver.submit(recordFor(parts()));
+    } catch {
+      outcome = undefined;
+    }
+    assert.ok(sent, 'nothing was ever sent, so this cell is not about the case it names');
+    assert.notStrictEqual(
+      outcome === undefined ? undefined : (outcome as { notQueued?: true }).notQueued,
+      true,
+      'a save that reached the store was reported as never queued, so the caller gives back a ' +
+        'sequence number the store has already seen'
+    );
+  });
+
+  /*
+   * KEY: AND WHEN THE FILE CANNOT BE READ AT THAT MOMENT, THE ANSWER IS
+   * THE SAFE ONE.
+   *
+   * The enqueue threw and the reload that would say whether it landed
+   * threw as well. Nothing here can tell, and cannot-tell is not
+   * permission to release the number: the entry may be on disk.
+   */
+  it('does not release the number when it could not tell whether the entry landed', async () => {
+    const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    core = core0;
+    const queuePath = path.join(core0.root, 'outbox.json');
+    let blind = false;
+    let threw = false;
+    const failsBothWays = {
+      ...nodeFileOps,
+      syncDirectory(directory: string): void {
+        if (!blind) {
+          nodeFileOps.syncDirectory(directory);
+          return;
+        }
+        /*
+         * THE WRITE FAILS AFTER THE RENAME, and from that moment the
+         * file cannot be read either -- which is the state where nothing
+         * can say whether the entry landed.
+         */
+        threw = true;
+        throw new Error('the directory could not be synced');
+      },
+      readText(file: string): string {
+        if (threw && file === queuePath) {
+          throw new Error('and the queue cannot be read either');
+        }
+        return nodeFileOps.readText(file);
+      }
+    };
+    const outbox = new Outbox(queuePath, failsBothWays);
+    outbox.load();
+    outbox.setCursor('w:7');
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    blind = true;
+    let outcome: SaveOutcome | undefined;
+    try {
+      outcome = await saver.submit(recordFor(parts()));
+    } catch {
+      outcome = undefined;
+    }
+    assert.notStrictEqual(
+      outcome === undefined ? undefined : (outcome as { notQueued?: true }).notQueued,
+      true,
+      'the number was released although nothing could say whether the entry is on disk'
+    );
+  });
+
+  it('says it was not queued when the queue itself could not be read', async () => {
+    const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    core = core0;
+    const queuePath = path.join(core0.root, 'outbox.json');
+    const outbox = new Outbox(queuePath);
+    outbox.load();
+    outbox.setCursor('w:7');
+    /*
+     * READABLE WHEN THE SAVER IS BUILT AND NOT WHEN IT RELOADS, which is
+     * the window `serialise` opens: the copy in memory is fine and the
+     * file it is about to be refreshed from is not.
+     */
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    fs.chmodSync(queuePath, 0o000);
+    let outcome;
+    try {
+      outcome = await saver.submit(recordFor(parts()));
+    } finally {
+      fs.chmodSync(queuePath, 0o600);
+    }
+    assert.strictEqual(outcome.status, 'blocked', `the save was not blocked: ${outcome.message}`);
+    assert.strictEqual(
+      outcome.notQueued,
+      true,
+      'the queue reload failed before anything was queued and the outcome did not say so, so the ' +
+        'number the save took stays outstanding for ever'
+    );
+  });
+
   it('says it was not queued when the store has no cursor to write against', async () => {
     const core0 = new FakeCore([
       {
@@ -1014,5 +1288,269 @@ describe('R4 a send whose queue write did not land', () => {
     );
     assert.strictEqual(outbox.entries.length, 0, 'the entry reached the queue after all');
     assert.strictEqual(sentCalls(core0).length, 0);
+  });
+});
+
+/*
+ * plugin-r3 C: what `submit` records, checked by something that fails.
+ *
+ * NEVER: AND THE FIRST VERSION OF THIS CENSUS MEASURED NOTHING AT ALL.
+ *
+ * It asked whether every `return` before the enqueue carried `notQueued`
+ * and whether every `await` before it was inside a `try`. Its walk
+ * stopped at function-like nodes, and `submit`'s whole body is an async
+ * arrow handed to `serialise` -- so the only return it ever inspected
+ * was `return this.serialise(...)`, whose SOURCE TEXT contains the
+ * entire body including the comments that mention the flag. Measured in
+ * an eighteenth review round: renaming every `notQueued` property inside
+ * `submit` left it passing, and so did deleting the bootstrap's
+ * try/catch outright.
+ *
+ * KEY: AND THE MUTATIONS I RAN AGAINST IT KILLED SOMETHING ELSE. Both
+ * went red, and I recorded them as evidence for these two cells --
+ * whereas the rows that failed were the BEHAVIOURAL cells above, which
+ * were doing the work. A kill is evidence for a cell only if that cell
+ * is in the red rows, and I did not read which rows they were.
+ *
+ * What is asked now is about the flag `submit` keeps, which is what its
+ * correctness actually rests on: it is set in one place, that place is
+ * immediately after the enqueue, and the catch consults it. The
+ * behavioural cells above cover the four failures anyone has thought of;
+ * this covers the fifth.
+ */
+describe('plugin-r3 submit records whether the entry was queued', () => {
+  const root = path.join(__dirname, '..', '..', '..');
+
+  function submitOf(): { node: ts.MethodDeclaration; source: ts.SourceFile } {
+    const file = path.join(root, 'src', 'saver.ts');
+    const parsed = ts.createSourceFile(
+      'saver.ts',
+      fs.readFileSync(file, 'utf8'),
+      ts.ScriptTarget.Latest,
+      true
+    );
+    let found: ts.MethodDeclaration | undefined;
+    const walk = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node) && node.name.getText(parsed) === 'submit') {
+        found = node;
+      }
+      node.forEachChild(walk);
+    };
+    walk(parsed);
+    assert.ok(found !== undefined, 'submit is gone, so this census reads nothing');
+    return { node: found, source: parsed };
+  }
+
+  /*
+   * EVERY NODE INSIDE, INCLUDING THE ONES INSIDE THE CALLBACK. The walk
+   * that stopped at function-like nodes is the defect this census had.
+   */
+  function every(node: ts.Node, seen: (inner: ts.Node) => void): void {
+    const walk = (inner: ts.Node): void => {
+      seen(inner);
+      inner.forEachChild(walk);
+    };
+    node.forEachChild(walk);
+  }
+
+  /*
+   * NEVER: THE CENSUS HAS BEEN REWRITTEN THREE TIMES, AND EACH VERSION
+   * ASKED ABOUT THE SHAPE OF THE CODE RATHER THAN ABOUT WHAT DECIDES.
+   *
+   * r19 counted `return`s before the enqueue and read source text for
+   * `.enqueue(`; r20 counted assignments and required adjacency; r21
+   * required both facts to appear in the catch. Measured past them, in
+   * order: comments containing the word, a flag initialised `true`, an
+   * enqueue wrapped in `if (false)`, `if (queued && false)`, and
+   * `false && (attempted = true)` -- an expression statement in the
+   * right position that does nothing.
+   *
+   * KEY: AND A SOURCE CENSUS CANNOT ESTABLISH WHAT A VALUE MEANS. This
+   * is written down because the previous version of this comment claimed
+   * otherwise.
+   *
+   * A twenty-first review round got four more changes past it: deleting
+   * the catch's `load()`, `entries.every(...)` in place of
+   * `entries.some(...)`, wrapping the fallback in `if (false)`, and an
+   * unconditional `return` placed above the decision so that the
+   * decision is unreachable. Each of those leaves the shape intact. No
+   * reading of the source can tell them apart from the real thing,
+   * because what separates them is what happens when the program runs.
+   *
+   * So the claim here is narrowed to what this can actually witness:
+   * the decision is held in ONE variable, it starts false, it is written
+   * in the three places the design has and no more, one of those writes
+   * reads the file, none of them is behind an operator that can skip it,
+   * and the catch re-raises under the identifier alone. **Every one of
+   * the mutations above is killed by a BEHAVIOURAL cell in this file**,
+   * and which row dies to which mutation is recorded in the delivery
+   * note. This row is the tripwire for a shape nobody has written a
+   * behavioural cell for yet; it is not evidence that the program is
+   * right.
+   */
+  it('decides from a fact recorded at the enqueue, in two places and no others', () => {
+    const { node, source } = submitOf();
+    const declared: ts.VariableDeclaration[] = [];
+    const writes: ts.BinaryExpression[] = [];
+    every(node, (inner) => {
+      if (ts.isVariableDeclaration(inner) && inner.name.getText(source) === 'queued') {
+        declared.push(inner);
+      }
+      if (
+        ts.isBinaryExpression(inner) &&
+        inner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        inner.left.getText(source) === 'queued'
+      ) {
+        writes.push(inner);
+      }
+    });
+    assert.strictEqual(declared.length, 1, 'the decision is not held in one variable');
+    assert.strictEqual(
+      declared[0].initializer?.getText(source),
+      'false',
+      'it starts as something other than false, so a failure before anything happened reads as a ' +
+        'save that was queued and the number is never given back'
+    );
+    assert.strictEqual(
+      writes.length,
+      3,
+      `it is written in ${writes.length} places; the design has exactly three -- the enqueue ` +
+        'that returned, the read of the file where it threw, and the read that could not be made'
+    );
+    /*
+     * TWO WRITES ARE `true` AND ONE IS A READ OF THE FILE. A census that
+     * accepted any three writes would accept three constants -- and one
+     * of those `true`s is the answer to "I could not read the file",
+     * which must be the safe side: cannot-tell is not permission to
+     * release the number.
+     */
+    const spellings = writes.map((write) => write.right.getText(source));
+    assert.strictEqual(
+      spellings.filter((text) => text === 'true').length,
+      2,
+      `the two plain answers are not both there: ${JSON.stringify(spellings)}`
+    );
+    const cannotTell = writes.find(
+      (write) =>
+        write.right.getText(source) === 'true' &&
+        (() => {
+          for (let at: ts.Node | undefined = write; at !== undefined; at = at.parent) {
+            if (ts.isCatchClause(at)) {
+              return true;
+            }
+            if (at === node) {
+              return false;
+            }
+          }
+          return false;
+        })()
+    );
+    assert.ok(
+      cannotTell !== undefined,
+      'no write says what happens when the file could not be read, so a reload that fails leaves ' +
+        'the decision at whatever it was -- which is false, and releases the number'
+    );
+    assert.strictEqual(
+      spellings.filter((text) => /\.entries\b/.test(text) && /\breq\b/.test(text)).length,
+      1,
+      `no write reads the file for this request: ${JSON.stringify(spellings)}`
+    );
+    /*
+     * NEVER: AND NEITHER WRITE IS GUARDED BY AN EXPRESSION THAT CAN SKIP
+     * IT. `false && (queued = true)` is an expression statement in the
+     * right place that never runs -- measured in a twentieth review
+     * round against the version of this census that checked positions.
+     */
+    for (const write of writes) {
+      let at: ts.Node = write;
+      while (at.parent !== undefined && !ts.isBlock(at.parent)) {
+        if (
+          ts.isBinaryExpression(at.parent) &&
+          (at.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+            at.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+            at.parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+        ) {
+          assert.fail(
+            `a write of the decision is behind \`${at.parent.getText(source).slice(0, 60)}\`, ` +
+              'which can skip it while leaving a statement that looks like it'
+          );
+        }
+        if (ts.isConditionalExpression(at.parent)) {
+          assert.fail('a write of the decision is inside a conditional expression');
+        }
+        at = at.parent;
+      }
+    }
+    /*
+     * AND THE ENQUEUE IS THE UNCONDITIONAL STATEMENT BEFORE THE FIRST
+     * WRITE, so the `true` really does mean "it returned".
+     */
+    const statementOf = (from: ts.Node): ts.Statement => {
+      let at: ts.Node = from;
+      while (at.parent !== undefined && !ts.isBlock(at.parent)) {
+        at = at.parent;
+      }
+      return at as ts.Statement;
+    };
+    let enqueue: ts.CallExpression | undefined;
+    every(node, (inner) => {
+      if (ts.isCallExpression(inner) && /\.enqueue$/.test(inner.expression.getText(source))) {
+        enqueue = inner;
+      }
+    });
+    assert.ok(enqueue !== undefined, 'submit no longer queues anything');
+    const queues = statementOf(enqueue as ts.CallExpression);
+    assert.ok(
+      ts.isExpressionStatement(queues) &&
+        queues.expression === enqueue,
+      'the enqueue is not a statement of its own, so something can decide whether it happens'
+    );
+    const plain = writes.find((write) => write.right.getText(source) === 'true');
+    const after = statementOf(plain as ts.BinaryExpression);
+    assert.strictEqual(after.parent, queues.parent);
+    assert.strictEqual(
+      (after.parent as ts.Block).statements.indexOf(after),
+      (after.parent as ts.Block).statements.indexOf(queues) + 1,
+      'the write that means "the enqueue returned" is not the statement after the enqueue'
+    );
+  });
+
+  it('consults that fact, and nothing else, when a failure reaches the caller', () => {
+    const { node, source } = submitOf();
+    let decides = false;
+    every(node, (inner) => {
+      if (!ts.isCallExpression(inner) || !/\.catch$/.test(inner.expression.getText(source))) {
+        return;
+      }
+      /*
+       * THE CATCH RE-RAISES UNDER `if (queued)` AND NOTHING ELSE. A
+       * census that asked whether the name APPEARS accepted
+       * `if (queued && false)`; what is asked is that the condition IS
+       * the identifier and that its consequence throws.
+       */
+      const walk = (at: ts.Node): void => {
+        if (
+          ts.isIfStatement(at) &&
+          ts.isIdentifier(at.expression) &&
+          at.expression.text === 'queued'
+        ) {
+          const body = at.thenStatement;
+          const throws =
+            ts.isThrowStatement(body) ||
+            (ts.isBlock(body) && body.statements.some((one) => ts.isThrowStatement(one)));
+          if (throws) {
+            decides = true;
+          }
+        }
+        at.forEachChild(walk);
+      };
+      inner.arguments.forEach((argument) => argument.forEachChild(walk));
+    });
+    assert.ok(
+      decides,
+      "submit's catch does not re-raise under the recorded fact alone. Anything else there -- a " +
+        'second reading of the file, a condition with another term in it -- decides the release ' +
+        'of a sequence number by something other than whether the entry was ever queued.'
+    );
   });
 });

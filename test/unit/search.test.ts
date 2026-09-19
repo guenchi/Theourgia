@@ -85,30 +85,62 @@ describe('plugin-r2 T5 reading a search answer', function () {
   });
 
   /*
-   * THE OTHER ROUTE READS THE SAME. `--wire` wraps the items; this
-   * client does not ask for that mode today and will when it needs the
-   * clause the human rendering drops, and the search must not be what
-   * makes that change hard.
+   * NEVER: THE ENVELOPE IS NOT THIS READER'S TO OPEN, and these two cells
+   * used to say the opposite.
+   *
+   * They asserted that `hitsOf` reads `(ok (items ...))` as hits -- the
+   * SECOND reader in this client deciding from the shape of what came
+   * back, which is the defect `client.ts` was repaired for. Three review
+   * rounds each found a face of it, and the main session ruled: whether
+   * an envelope was asked for is a fact about the request, `interpret`
+   * holds that fact, and this reader takes the answers it already
+   * opened. A form is not a `hit`, so one that reaches here is refused
+   * by the loop that was always there.
+   *
+   * KEY: THIS IS A RULING-DRIVEN CHANGE TO AN EXPECTATION, which is the
+   * kind that has to be pointed at rather than made quietly. The old
+   * assertions are quoted above so that a reader of this file can see
+   * what was believed and what replaced it.
    */
-  it('reads the wrapped shape --wire produces as the same hits', function () {
-    assert.deepStrictEqual(
+  it('does not open an envelope, because opening one is the request\'s question', function () {
+    assert.strictEqual(
       hitsOf(data('(ok (items (hit "qqevbgov.1" 6 "concurrency, baseline, stale")))')),
-      [{ id: 'qqevbgov.1', score: 6, note: 'concurrency, baseline, stale' }]
+      null,
+      'an envelope was opened here, by a reader that cannot know whether one was asked for'
     );
-    assert.deepStrictEqual(hitsOf(data('(ok (items))')), []);
+    assert.strictEqual(hitsOf(data('(ok (items))')), null);
   });
 
   /*
-   * KEY: AND A CELL THAT WOULD NOTICE IF THE TWO STOPPED AGREEING. Two
-   * readers for two shapes is two places for the shape to be wrong; one
-   * reader for both is only worth having if both really do arrive at the
-   * same answer, which is a thing to assert rather than to intend.
+   * AND THE ROUTE THAT REMAINS STILL READS. `interpret` hands over the
+   * items of a `--wire` answer and the raw data of a human one, and both
+   * arrive here as a sequence of hits.
    */
-  it('gives the same answer for the same hits however they were wrapped', function () {
+  it('reads a sequence of hits, however it was carried here', function () {
     const bare = '(hit "a.1" 6 "x")\n(hit "a.2" 2 "y")';
-    const wrapped = '(ok (items (hit "a.1" 6 "x") (hit "a.2" 2 "y")))';
-    assert.deepStrictEqual(hitsOf(data(bare)), hitsOf(data(wrapped)));
-    assert.strictEqual((hitsOf(data(bare)) as unknown[]).length, 2);
+    assert.deepStrictEqual(hitsOf(data(bare)), [
+      { id: 'a.1', score: 6, note: 'x' },
+      { id: 'a.2', score: 2, note: 'y' }
+    ]);
+    /*
+     * NEVER: AND THE OTHER CARRIAGE IS DRIVEN BY `interpret`, NOT BY THIS
+     * CELL.
+     *
+     * It used to take the clause apart here -- `(opened[1] as
+     * unknown[]).slice(1)` -- and compare the result with the bare hits.
+     * Measured in an eighteenth review round: replacing `interpret` with
+     * an unconditional throw left this passing, because nothing in the
+     * comparison went through it. A cell about how an answer is CARRIED
+     * has to use the thing that carries it.
+     */
+    const carried = interpret(
+      { argv: [], rc: 0, stdout: '(ok (items (hit "a.1" 6 "x") (hit "a.2" 2 "y")))', stderr: '' },
+      'search',
+      'items',
+      ['--wire']
+    );
+    assert.deepStrictEqual(hitsOf(carried.answers), hitsOf(data(bare)));
+    assert.strictEqual(hitsOf(carried.answers)?.length, 2);
   });
 
   /*
@@ -1218,11 +1250,24 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
      * passed -- it was asking the decoder to agree with itself.
      */
     assert.strictEqual(
-      answerOf(answer.answers[0], 'ok')?.value('replay'),
+      (answerOf(answer.answers[0], 'ok')?.value('replay') as { value?: unknown })?.value,
       false,
       'the item did not come out of the envelope with its replay flag'
     );
-    assert.notStrictEqual(answerOf(answer.answers[0], 'ok')?.clause('cursor') ?? null, null, 'the cursor did not come out');
+    /*
+     * NEVER: `clause(...) !== null` IS TRUE OF EVERY ANSWER NOW.
+     *
+     * When the decoder began answering `{read, because}` instead of a
+     * nullable list, three assertions in this file became `an object is
+     * not null`. Measured in an eighteenth review round: making
+     * `clause('cursor')` answer `{read: false, because: 'absent'}`
+     * passed this whole cell. The contents are asserted.
+     */
+    assert.deepStrictEqual(
+      answerOf(answer.answers[0], 'ok')?.clause('cursor'),
+      { read: true, items: parseAnswers('(("w" . 7))')[0] },
+      'the cursor did not come out of the envelope'
+    );
   });
 
   it('keeps the outer form, which is the only place the behind clause is', function () {
@@ -1233,7 +1278,15 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
       ['--wire']
     );
     assert.notStrictEqual(answer.envelope, null);
-    assert.notStrictEqual(answerOf(answer.envelope, 'ok')?.clause('behind') ?? null, null);
+    /*
+     * AND WHAT IS IN IT, for the reason above: the envelope existing
+     * says nothing about the clause this cell is named for.
+     */
+    assert.deepStrictEqual(
+      answerOf(answer.envelope, 'ok')?.clause('behind'),
+      { read: true, items: parseAnswers('((("w" . 7) ("other" . 2)))')[0] },
+      'the behind clause did not survive, and the outer form is the only place it is'
+    );
   });
 
   /*
@@ -1248,7 +1301,17 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
     const answer = interpret({ argv: [], rc: 0, stdout: plain, stderr: '' }, 'commit', 'datum', []);
     assert.strictEqual(answer.answers.length, 1);
     assert.strictEqual(answer.envelope, null);
-    assert.notStrictEqual(answerOf(answer.answers[0], 'ok')?.clause('cursor') ?? null, null);
+    /*
+     * EXACTLY AS IT WAS means the datum, not its length. Measured in an
+     * eighteenth review round: replacing the answers with `(ok)` passed
+     * this cell, because one is still one and an absent clause is still
+     * an object.
+     */
+    assert.deepStrictEqual(
+      answer.answers[0],
+      parseAnswers(plain)[0],
+      'an answer that was never wrapped did not come back as it went in'
+    );
   });
 
   /*

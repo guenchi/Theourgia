@@ -374,15 +374,23 @@ describe('plugin-r2 what the decoder refuses', function () {
      * and a clause that is not there is asserted to be undefined, so
      * one constant answer cannot satisfy all three.
      */
-    assert.strictEqual(form.value('replay'), false);
-    assert.deepStrictEqual(form.value('cursor'), datum('("w" . 6)'));
-    assert.strictEqual(form.value('nothing-of-the-sort'), undefined);
+    assert.deepStrictEqual(form.value('replay'), { read: true, value: false });
+    assert.deepStrictEqual(form.value('cursor'), { read: true, value: datum('("w" . 6)') });
+    assert.deepStrictEqual(form.value('nothing-of-the-sort'), { read: false, because: 'absent' });
+    /*
+     * KEY: AND THE SINGLE VALUE SAYS WHICH KIND OF NOTHING, like the
+     * clause reader. A seventeenth review round measured what the old
+     * `undefined` for both cost: two `cursor` clauses cancelled out and
+     * `eventFromWrite` took its event from the `event` clause instead.
+     */
+    const twice = answerOf(datum('(ok (cursor ("a" . 1)) (cursor ("b" . 2)))'), 'ok') as Form;
+    assert.deepStrictEqual(twice.value('cursor'), { read: false, because: 'duplicated' });
     /*
      * AND A CLAUSE WITH TWO VALUES HAS NO SINGLE VALUE -- the rule
      * `clauseValue` has always had, which nothing here asked about.
      */
     const two = answerOf(datum('(ok (cursor "w" 6))'), 'ok') as Form;
-    assert.strictEqual(two.value('cursor'), undefined);
+    assert.deepStrictEqual(two.value('cursor'), { read: false, because: 'unreadable' });
     assert.deepStrictEqual(form.datum, datum('(ok (replay #f) (cursor ("w" . 6)))'));
     assert.strictEqual(form.head, 'ok');
   });
@@ -507,24 +515,319 @@ describe('plugin-r2 two of a clause is not none of it', function () {
   });
 
   /*
-   * NOTE: AND THE SEARCH NEEDS NO GUARD OF ITS OWN, which is why this
-   * cell asserts the ANSWER rather than a refusal written for it. A
-   * guard was added here and deleted: a mutation run showed
-   * `(ok (items ...) (items ...))` already answers null, because the
-   * form falls through as the item list and `(ok ...)` is not a `hit`.
-   * The cell stays, because the answer is the thing that matters and
-   * nothing else pins it.
+   * NOTE: AND THE SEARCH NO LONGER OPENS AN ENVELOPE AT ALL, by a ruling
+   * taken after three review rounds each found a face of it.
+   *
+   * Whether an envelope was asked for is a fact about the REQUEST, which
+   * `interpret` already holds; a reader that decides from the shape of
+   * what came back is the defect `client.ts` was repaired for. So an
+   * `(ok (items ...))` handed to `hitsOf` is not a search result -- it
+   * is a form, and a form is not a `hit`.
    */
-  it('answers nothing readable for a search answer carrying two item lists', function () {
-    assert.strictEqual(
-      hitsOf(parseAnswers('(ok (items (hit "a.1" 2 "k")) (items (hit "a.2" 1 "j")))')),
-      null,
-      'an answer with two item lists was read as something other than an unreadable answer'
-    );
+  /*
+   * plugin-r3 A: every route into a clause counts through one reader,
+   * and a dotted occurrence is an occurrence.
+   *
+   * A seventeenth review round walked past both of round sixteen's
+   * refusals the same way -- `clause` counted only list items, so
+   * `(fields . bad) (fields . worse)` was two occurrences it could not
+   * see. Each row below is a route, and each names the reading it gave
+   * before the repair.
+   */
+  it('counts a dotted occurrence, at every route', function () {
     assert.deepStrictEqual(
-      hitsOf(parseAnswers('(ok (items (hit "a.1" 2 "k")))')),
-      [{ id: 'a.1', score: 2, note: 'k' }],
-      'the twin: one item list is still a search result'
+      (answerOf(parseAnswers('(ok (items . bad) (items . worse) (cursor ("w" . 7)))')[0], 'ok') as Form).clause(
+        'items'
+      ),
+      { read: false, because: 'duplicated' },
+      'two dotted items clauses read as no items clause at all'
     );
+    /*
+     * AND ONE OF THEM IS NOT A CLAUSE EITHER. `(items . bad)` has a name
+     * and no sequence after it; reading that as "there is no such
+     * clause" is the same collapse with one occurrence instead of two.
+     */
+    assert.deepStrictEqual(
+      (answerOf(parseAnswers('(ok (items . bad))')[0], 'ok') as Form).clause('items'),
+      { read: false, because: 'unreadable' }
+    );
+    assert.throws(
+      () =>
+        readBlock(
+          parseAnswers('((id . "a.1") (fields . bad) (fields . worse) (position root . 0))')[0]
+        ),
+      /two field lists/,
+      'a record with two dotted field lists read as a block with no fields'
+    );
+  });
+
+  it('refuses a record that names two identities', function () {
+    assert.strictEqual(
+      readBlock(
+        parseAnswers('((id . "a.1") (id . "b.1") (deleted . #f) (fields (src . "one")) (position root . 0))')[0]
+      ),
+      null,
+      'an identity was chosen out of a record that names two'
+    );
+    /*
+     * AND THE OTHER TWO ASSOCIATIONS REFUSE THE SAME WAY, because the
+     * reader is the same one.
+     */
+    for (const twice of [
+      '((id . "a.1") (deleted . #f) (deleted . #t) (fields (src . "one")) (position root . 0))',
+      '((id . "a.1") (deleted . #f) (fields (src . "one")) (position root . 0) (position root . 1))'
+    ]) {
+      assert.strictEqual(readBlock(parseAnswers(twice)[0]), null, `read a block out of ${twice}`);
+    }
+  });
+
+  it('refuses a record that names one field twice', function () {
+    assert.throws(
+      () =>
+        readBlock(
+          parseAnswers('((id . "a.1") (deleted . #f) (fields (src . "one") (src . "two")) (position root . 0))')[0]
+        ),
+      /two fields called src/,
+      'a body was chosen out of two the store named, by the order they were written in'
+    );
+    /*
+     * THE TWIN: two DIFFERENT field names are an ordinary record.
+     */
+    const block = readBlock(
+      parseAnswers('((id . "a.1") (deleted . #f) (fields (src . "one") (title . "A")) (position root . 0))')[0]
+    );
+    assert.strictEqual(block?.fields.get('src'), 'one');
+    assert.strictEqual(block?.fields.get('title'), 'A');
+  });
+
+  it('reads the hits it is given, and nothing that came wrapped', function () {
+    assert.deepStrictEqual(
+      hitsOf(parseAnswers('(hit "a.1" 2 "k")\n(hit "a.2" 1 "j")')),
+      [
+        { id: 'a.1', score: 2, note: 'k' },
+        { id: 'a.2', score: 1, note: 'j' }
+      ]
+    );
+    assert.strictEqual(
+      hitsOf(parseAnswers('(ok (items (hit "a.1" 2 "k")))')),
+      null,
+      'an envelope reached this reader and was opened here, which is the ruling that was taken'
+    );
+    assert.deepStrictEqual(hitsOf([]), [], 'no hits is no output on the human route');
+  });
+});
+
+/*
+ * plugin-r3 B: the census that keeps section A true.
+ *
+ * Section A repaired five routes into a clause so that all of them count
+ * occurrences through one reader. That is four rounds' worth of repairs
+ * to four sites, and the last five review rounds have each produced a
+ * fifth site. What makes A a property of the tree rather than a list of
+ * fixed places is this: a function that reaches into a form's elements
+ * looking for a named one, and does not go through `occurrencesOf`, is
+ * a new route and fails here.
+ *
+ * KEY: THE QUESTION IS PUT TO THE SYNTAX TREE, and what it looks for is a
+ * comparison of a datum's head with a name -- `isSym(x[0], name)`,
+ * `headName(x) === name`, `x[0].name === name`. Those are the shapes the
+ * five routes had in common before they were merged.
+ */
+describe('plugin-r3 no sixth route into a clause', function () {
+  /*
+   * NEVER: THE EXEMPTIONS USED TO BE WHOLE FILES, AND THE MATCH USED TO
+   * BE ONE-SIDED.
+   *
+   * Two ways past the first version, both measured in an eighteenth
+   * review round. A new reader written as
+   * `value.find((item) => Array.isArray(item) && name === item[0]?.name)`
+   * was invisible, because the census looked at the LEFT of a comparison
+   * and this one puts the name on the right. And a new reader appended
+   * to `wire.ts` -- in the exact syntax the census does recognise -- was
+   * invisible too, because that whole file was exempt.
+   *
+   * So the comparison is read from both sides, and an exemption names a
+   * FUNCTION. A file is too big a thing to exempt: the reason a file has
+   * one head comparison in it says nothing about the next one somebody
+   * adds to it.
+   */
+  const NOT_LOOKING_FOR_A_CLAUSE: Record<string, string> = {
+    'wire.ts:answerOf':
+      "compares a name given by the caller's `expect` argument against a POSITION the caller " +
+      'named -- `(error unknown-id "a.1")`. It is not a search for a clause.',
+    'wire.ts:occurrencesOf':
+      'IS the one reader. It is the function every other route was made to go through, and the ' +
+      'comparison here is the counting this census exists to funnel everything into.',
+    'wire.ts:isSym':
+      'is the predicate every other route is written in terms of: it answers whether a datum IS ' +
+      'the symbol with this name, which is the question, not a search for one.',
+    'blocks.ts:fieldConflict':
+      'asks whether a FIELD VALUE is a conflict marker -- `(conflict "a" "b")` in the place a ' +
+      "field's value would be. The datum was handed to it; it is not searching a record for a " +
+      'clause called conflict.',
+    'blocks.ts:placementOf':
+      'dispatches on the first element of a `position` datum: `(position root . 0)` versus ' +
+      '`(position conflict 2)`. The element was handed to it by `assocTail`.',
+    'saver.ts:saysNobodyKnows':
+      'reads position one of `(error <name> ...)`, which `answerOf` has already verified, and ' +
+      'asks whether that name is one of three. It is reading a name, not looking for one.',
+    'saver.ts:whichRetryableRefusal':
+      'as `saysNobodyKnows` -- position one of the same verified form, against a list of names.',
+    'saver.ts:whichSettingsRefusal':
+      'as `saysNobodyKnows` -- position one of the same verified form, against a list of names.',
+    'model.ts:readMark':
+      'reads a structural mark, `(orphan "a.1")`, by head: the head is the KIND of the mark and ' +
+      'this dispatches on it. Nothing here searches a sequence for a named element.',
+    'saver.ts:saysAnOperatorSettledIt':
+      'as `saysNobodyKnows` -- position one of the same verified form, against one name.'
+  };
+
+  const root = path.join(__dirname, '..', '..', '..');
+
+  /*
+   * THE FUNCTION A NODE IS IN, by its name, so that an exemption can be
+   * about one function rather than a file.
+   */
+  /*
+   * NEVER: AN UNQUALIFIED NAME LETS A NEW FUNCTION INHERIT AN OLD ONE'S
+   * EXEMPTION.
+   *
+   * Measured in a nineteenth review round: a class added to `wire.ts`
+   * with a static method called `answerOf` took the exemption written
+   * for the decoder's own `answerOf` and passed all three rows. The name
+   * is the whole chain of things it is inside, so two different
+   * functions cannot share one.
+   */
+  function owner(node: ts.Node, source: ts.SourceFile): string {
+    const names: string[] = [];
+    for (let at: ts.Node | undefined = node; at !== undefined; at = at.parent) {
+      if (ts.isFunctionDeclaration(at) || ts.isMethodDeclaration(at)) {
+        const named = at.name?.getText(source);
+        if (named !== undefined) {
+          names.push(named);
+        }
+      } else if (ts.isClassDeclaration(at) || ts.isInterfaceDeclaration(at)) {
+        names.push(at.name?.getText(source) ?? '<anonymous class>');
+      } else if (ts.isModuleDeclaration(at)) {
+        /*
+         * NEVER: A NAMESPACE WAS NOT PART OF THE NAME EITHER. Measured in
+         * a twentieth review round, one round after the class case:
+         * `namespace Extra { export function answerOf ... }` took the
+         * exemption written for the decoder's own `answerOf`. Anything
+         * that can hold a function has to be in the name, so the list is
+         * written as one chain rather than as three cases that happened
+         * to be thought of.
+         */
+        names.push(at.name.getText(source));
+      } else if (ts.isVariableDeclaration(at) && ts.isIdentifier(at.name)) {
+        names.push(at.name.text);
+      } else if (ts.isPropertyAssignment(at) && ts.isIdentifier(at.name)) {
+        names.push(at.name.text);
+      }
+    }
+    return names.length === 0 ? '<top level>' : names.reverse().join('.');
+  }
+
+  function routesIn(file: string): string[] {
+    const text = fs.readFileSync(path.join(root, 'src', file), 'utf8');
+    const parsed = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+    const found: string[] = [];
+    const note = (node: ts.Node): void => {
+      found.push(`${file}:${owner(node, parsed)}`);
+    };
+    const walk = (node: ts.Node): void => {
+      /*
+       * `isSym(x, name)` -- the two-argument form is a head comparison
+       * and the one-argument form is not.
+       */
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(parsed) === 'isSym' &&
+        node.arguments.length === 2
+      ) {
+        note(node);
+      }
+      /*
+       * `headName(x) === name`, `x[0].name === name`, and the same two
+       * written the other way round. A census that reads one side of an
+       * equality is a census somebody gets past by swapping the
+       * operands, which is what happened.
+       */
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+      ) {
+        const sides = [node.left.getText(parsed), node.right.getText(parsed)];
+        /*
+         * NEVER: `headName` WAS NOT THE ONLY HELPER THAT ANSWERS A HEAD.
+         *
+         * Measured in a nineteenth review round: a new unchecked reader
+         * written with `frontName(item) === name` -- the helper this
+         * delivery ADDED, and the one `occurrencesOf` itself uses --
+         * passed all three rows. A census that lists the spellings it
+         * knows is a census whose list is always one short; what it can
+         * do is list them out loud, here, so the next one is an obvious
+         * omission rather than a discovery.
+         */
+        if (sides.some((side) => /^(headName|frontName)\(/.test(side) || /\.name$/.test(side) || /\.name\?\.?$/.test(side))) {
+          note(node);
+        }
+      }
+      node.forEachChild(walk);
+    };
+    walk(parsed);
+    return found;
+  }
+
+  function everyRoute(): string[] {
+    return fs
+      .readdirSync(path.join(root, 'src'))
+      .filter((name) => name.endsWith('.ts'))
+      .flatMap((name) => routesIn(name));
+  }
+
+  it('finds no route into a clause outside the one reader', function () {
+    const strays = [...new Set(everyRoute())]
+      .filter((where) => NOT_LOOKING_FOR_A_CLAUSE[where] === undefined)
+      .sort();
+    assert.deepStrictEqual(
+      strays,
+      [],
+      'these functions compare a datum\'s head with a name of their own accord, which is another ' +
+        'way of asking "is there a clause called this" -- and the five that existed before each ' +
+        'gave the reassuring answer to "how many are there". Ask `occurrencesOf` instead, or add ' +
+        'a line to NOT_LOOKING_FOR_A_CLAUSE saying what this comparison is for.'
+    );
+  });
+
+  /*
+   * KEY: AND NO EXEMPTION FOR A COMPARISON THAT IS NOT THERE. A stale
+   * entry is a lie that reads like diligence, and with whole-file
+   * entries there was nothing to go stale.
+   */
+  it('has no exemption for a comparison that is not there any more', function () {
+    const present = new Set(everyRoute());
+    const gone = Object.keys(NOT_LOOKING_FOR_A_CLAUSE)
+      .filter((where) => !present.has(where))
+      .sort();
+    assert.deepStrictEqual(gone, [], 'these exemptions name comparisons that have moved or gone');
+  });
+
+  /*
+   * NOTE: AND THIS ONE IS ABOUT THE TABLE, NOT ABOUT THE PRODUCT.
+   *
+   * A nineteenth review round pointed out that it would pass over an
+   * empty `src/` -- which is true, and is what it is for. The table is
+   * the only thing standing between this census and the next reader who
+   * wants their new function allowed, so a one-word reason is a hole in
+   * the census itself. It is named so that nobody reads it as evidence
+   * about behaviour; the two rows above it are the ones that read the
+   * tree.
+   */
+  it('has a reason, of more than a few words, beside every exemption in this table', function () {
+    const thin = Object.entries(NOT_LOOKING_FOR_A_CLAUSE)
+      .filter(([, why]) => why.length < 40)
+      .map(([where]) => where);
+    assert.deepStrictEqual(thin, []);
   });
 });

@@ -33,16 +33,110 @@ import * as assert from 'assert';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as vscode from 'vscode';
 import { wroteAnswer } from '../support/answers';
 import { FakeCore } from '../support/fake';
 import { StatusFacts } from '../../src/status';
+import { settle, until } from '../support/until';
 
 const BLOCK =
   '(ok ((id . "a.2") (deleted . #f) (fields (heading-src . "## Two\\n") (src . "body\\n") (title . "Two")) (position root . 0) (edges)))';
 
-async function settle(ms = 250): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+/*
+ * NEVER: THESE CELLS USED TO ESTABLISH A RACE WITH A STOPWATCH.
+ *
+ * Each one starts a request the stand-in holds open for 2500 ms, waits
+ * `settle(400)` in the hope that it has begun, and then changes the
+ * store under it. 400 ms is not an observation of anything: on a loaded
+ * machine the request has not started and the cell measures a change
+ * made before the race it is about, and nothing says so -- the
+ * assertions below would pass for the wrong reason. The other
+ * editor-hosted file was repaired for exactly this in rounds three to
+ * five and this one was named in the delivery note for three rounds
+ * after that.
+ *
+ * What is waited for now is the stand-in's own record that it has TAKEN
+ * the request, which it writes before its delay. `until` and `settle`
+ * come from `test/support/until.ts`, the same ones the other file uses.
+ */
+/*
+ * WHERE A HELD REQUEST WAITS, AND WHO LETS IT GO.
+ *
+ * The stand-in holds a request until its hold file appears. The path has
+ * to be known before the stand-in is built, so it lives here rather than
+ * on the FakeCore.
+ *
+ * NEVER: AND EVERY ONE IS REMOVED BEFORE EACH CELL. A marker whose name
+ * can be reused is a wait that returns instantly -- the release left by
+ * the previous cell would let the next cell's request straight through,
+ * and the race it meant to establish would never exist. The removal is
+ * in `beforeEach` with the rest of the setup, not beside the release.
+ */
+const HOLD_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-hold-'));
+const HOLD = {
+  read: path.join(HOLD_ROOT, 'read'),
+  conflicts: path.join(HOLD_ROOT, 'conflicts'),
+  commit: path.join(HOLD_ROOT, 'commit')
+};
+
+function release(name: keyof typeof HOLD): void {
+  fs.writeFileSync(HOLD[name], '', 'utf8');
+}
+
+function holdAgain(): void {
+  for (const file of Object.values(HOLD)) {
+    fs.rmSync(file, { force: true });
+  }
+}
+
+/*
+ * NEVER: AND `argv.includes(verb)` IS NOT THE REQUEST THIS CELL STARTED.
+ *
+ * Measured in an eighteenth review round: a wait for `commit` was
+ * satisfied by `['set', 'a.2', 'src', 'commit']`, a wait for `read` by a
+ * read of another id in another store, and both by a request that had
+ * finished long before -- because two of the three call sites passed a
+ * literal zero for "how many there were before" instead of reading it.
+ *
+ * What is waited for now is a request that is IN FLIGHT -- taken and not
+ * answered -- whose first argument is the verb. The stand-in holds it
+ * until this cell releases it, so "in flight" stops being a claim about
+ * the clock.
+ *
+ * KEY: AND THE PRECISE MATCH IS HARDENING, WHICH IS SAID RATHER THAN
+ * CLAIMED. With the hold in place, reverting `argv[0] === verb` to
+ * `argv.includes(verb)` changes nothing that any cell can see: the log
+ * is this cell's own, the held request is the only one outstanding, and
+ * no request in this tree carries another verb's name in its arguments.
+ * The reviewer's example -- a wait for `commit` satisfied by
+ * `['set', 'a.2', 'src', 'commit']` -- is a shape the product does not
+ * currently produce. It is kept because it costs nothing and because
+ * what the wait MEANS is "this request", not "a request with that word
+ * in it"; it is not kept on the strength of a mutation, and the
+ * mutation run that failed to kill it is in the delivery note.
+ */
+function flying(core: FakeCore, verb: string): string[][] {
+  return core.inFlight().filter((argv) => argv[0] === verb);
+}
+
+async function requestInFlight(core: FakeCore, verb: string): Promise<void> {
+  await until(
+    () =>
+      `a ${verb} request was taken and not answered (in flight: ${JSON.stringify(
+        core.inFlight().map((argv) => argv[0])
+      )})`,
+    () => flying(core, verb).length > 0
+  );
+}
+
+async function requestAnswered(core: FakeCore, verb: string, from: number): Promise<void> {
+  const answered = (): number =>
+    core.calls().filter((c) => c.event === 'answer' && c.coreArgv[0] === verb).length;
+  await until(
+    () => `the stand-in answered a ${verb} (it has answered ${answered()}, and ${from} before this)`,
+    () => answered() > from
+  );
 }
 
 async function useStore(core: FakeCore, store: string): Promise<void> {
@@ -131,6 +225,15 @@ describe('a setting that changes while a request is in flight', function () {
     await extension?.activate();
   });
 
+  beforeEach(() => {
+    /*
+     * EVERY HOLD IS PUT BACK BEFORE THE CELL THAT USES IT. See the note
+     * at HOLD: a release left by the previous cell would let this cell's
+     * request straight through.
+     */
+    holdAgain();
+  });
+
   afterEach(async () => {
     core?.dispose();
     const settings = vscode.workspace.getConfiguration('theourgia');
@@ -144,7 +247,7 @@ describe('a setting that changes while a request is in flight', function () {
 
   it('C1 does not open a block into the store that replaced the one it was read from', async () => {
     core = new FakeCore([
-      { match: ['read', 'a.2'], stdout: `${BLOCK}\n`, rc: 0, delayMs: 2500 },
+      { match: ['read', 'a.2'], stdout: `${BLOCK}\n`, rc: 0, holdFile: HOLD.read },
       { match: ['conflicts'], stdout: '', rc: 0 },
       { match: ['check'], stdout: '(check (writers (("w" (end 1) (torn #f) (integrity ())))) (verdict ok))\n', rc: 0 }
     ]);
@@ -153,16 +256,19 @@ describe('a setting that changes while a request is in flight', function () {
 
     const before = vscode.workspace.textDocuments.map((d) => d.uri.toString()).sort();
     const opening = vscode.commands.executeCommand('theourgia.openBlock', 'a.2');
-    await settle(400);
+    await requestInFlight(core, 'read');
 
     /*
-     * The read is still running. The store setting is replaced under it.
+     * THE READ IS HELD -- taken and not answered, and it stays that way
+     * until this cell releases it. The store setting is replaced under
+     * it, which is the state this cell is about.
      */
     await vscode.workspace
       .getConfiguration('theourgia')
       .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
+    release('read');
     await opening;
-    await settle(500);
+    await requestAnswered(core, 'read', 0);
 
     const after = vscode.workspace.textDocuments.map((d) => d.uri.toString()).sort();
     assert.deepStrictEqual(
@@ -184,14 +290,33 @@ describe('a setting that changes while a request is in flight', function () {
     await settle();
 
     await vscode.commands.executeCommand('theourgia.refreshOutline');
-    await settle(600);
+    let seen: unknown = null;
+    await until(
+      () => `the status reported store A's conflicts (it says ${JSON.stringify(seen)})`,
+      async () => {
+        seen = (await currentFacts()).conflicts;
+        return seen !== null;
+      }
+    );
     const asked = await currentFacts();
     assert.strictEqual(asked.conflicts, 2, `the count for store A was ${asked.conflicts}`);
+    let named: unknown = null;
 
     await vscode.workspace
       .getConfiguration('theourgia')
       .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
-    await settle(400);
+    /*
+     * WAIT FOR THE STATUS TO SAY IT IS ABOUT THE NEW STORE, which is the
+     * event this cell is about; the count beside it is then read from a
+     * status that has caught up, rather than from one that may not have.
+     */
+    await until(
+      () => `the status named store B (it names ${JSON.stringify(named)})`,
+      async () => {
+        named = (await currentFacts()).store;
+        return named === `${core.store}-B`;
+      }
+    );
 
     const carried = await currentFacts();
     assert.strictEqual(carried.store, `${core.store}-B`);
@@ -218,7 +343,7 @@ describe('a setting that changes while a request is in flight', function () {
    */
   it('C6 does not paint a conflict count that arrived for the store the user left', async () => {
     core = new FakeCore([
-      { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n(orphan "a.9")\n', rc: 0, delayMs: 2500 },
+      { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n(orphan "a.9")\n', rc: 0, holdFile: HOLD.conflicts },
       { match: ['read'], stdout: `${BLOCK}\n`, rc: 0 },
       { match: ['outline'], stdout: '', rc: 0 }
     ]);
@@ -226,12 +351,13 @@ describe('a setting that changes while a request is in flight', function () {
     await settle();
 
     const running = vscode.commands.executeCommand('theourgia.refreshOutline') as Promise<unknown>;
-    await settle(300);
+    await requestInFlight(core, 'conflicts');
     await vscode.workspace
       .getConfiguration('theourgia')
       .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
+    release('conflicts');
     await running;
-    await settle(300);
+    await requestAnswered(core, 'conflicts', 0);
 
     /*
      * THE REQUEST HAS TO HAVE SUCCEEDED. `refreshConflicts` answers null
@@ -304,7 +430,7 @@ describe('a setting that changes while a request is in flight', function () {
        * The shapes now live in `test/support/answers.ts` and are put to
        * the product's own reader by a cell in `fsops.test.ts`.
        */
-      { match: ['commit'], stdout: `(ok (items ${wroteAnswer(2).trim()}))\n`, rc: 0, delayMs: 2500 },
+      { match: ['commit'], stdout: `(ok (items ${wroteAnswer(2).trim()}))\n`, rc: 0, holdFile: HOLD.commit },
       { match: ['conflicts'], stdout: '(conflict "a.1" cycle)\n', rc: 0 },
       { match: ['outline'], stdout: '', rc: 0 }
     ],{prefix:'## Two\n',body:'body\n'});
@@ -312,7 +438,12 @@ describe('a setting that changes while a request is in flight', function () {
     await settle();
 
     await vscode.commands.executeCommand('theourgia.openBlock', 'a.2');
-    await settle(500);
+    /*
+     * THE BLOCK IS OPEN WHEN AN EDITOR SAYS SO. `openBlock` resolves
+     * before the editor is active, and 500 ms was a guess about how long
+     * after.
+     */
+    await until('a block opened in an editor', () => vscode.window.activeTextEditor !== undefined);
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined, 'the block did not open, so nothing below is about a save');
     const document = (editor as vscode.TextEditor).document;
@@ -323,17 +454,47 @@ describe('a setting that changes while a request is in flight', function () {
       );
     });
     const saving = document.save();
-    await settle(400);
+    await requestInFlight(core, 'commit');
 
     /*
-     * THE SAVE IS IN FLIGHT. The store is replaced under it, which is
-     * the state the census named.
+     * THE SAVE IS IN FLIGHT -- the stand-in has taken the commit and is
+     * holding it until this cell lets go. The store is replaced under
+     * it, which is the state the census named.
      */
     await vscode.workspace
       .getConfiguration('theourgia')
       .update('store', `${core.store}-B`, vscode.ConfigurationTarget.Global);
+    release('commit');
     await saving;
-    await settle(2600);
+    await requestAnswered(core, 'commit', 0);
+    /*
+     * NEVER: AND THE STAND-IN'S ANSWER IS NOT THE EXTENSION'S SETTLEMENT.
+     *
+     * `requestAnswered` reads the stand-in's log, and the stand-in writes
+     * that line BEFORE it writes the answer to stdout -- so the reading
+     * below could be taken while the save handler had not yet settled
+     * the entry or moved the cursor, and the assertions would then be
+     * racing correct behaviour rather than measuring it. Measured in an
+     * eighteenth review round.
+     *
+     * What this cell is about is store A's queue: its entry gone and its
+     * cursor moved. So it waits for THAT, and the assertions that follow
+     * say what the settled queue must look like. A wait for the thing
+     * being asserted is not the assertion: the wait can end for any
+     * reading at all, and the assertions are still what decide.
+     */
+    await until(
+      () => {
+        const at = queueFiles().find((q) => q.store === namespaceOf(`${core.store}-A`));
+        return `store A's queue settled (it holds ${
+          at === undefined ? 'no file' : `${at.entries.length} entries, cursor ${String(at.cursor)}`
+        })`;
+      },
+      () => {
+        const at = queueFiles().find((q) => q.store === namespaceOf(`${core.store}-A`));
+        return at !== undefined && at.entries.length === 0 && at.cursor !== null;
+      }
+    );
 
     const sets = core.calls().filter((c) => c.coreArgv.includes('commit'));
     assert.ok(sets.length > 0, 'no save was ever sent, so this cell measured nothing');

@@ -268,7 +268,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
    */
   const wrapped = args.includes('--wire') && read.length === 1 ? answerOf(read[0], 'ok') : null;
   const items = wrapped === null ? null : wrapped.clause('items');
-  if (items !== null && !items.read && items.because === 'duplicated') {
+  if (items !== null && !items.read && items.because !== 'absent') {
     throw new TransportError(
       'unreadable',
       `the core answered the ${verb} with two item lists, and which one is the answer is not ` +
