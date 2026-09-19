@@ -342,6 +342,71 @@
 
 (sh (string-append "kill $(cat " scratch "/so-serve.pid) 2>/dev/null; rm -f " so-socket))
 
+;; ---- F18: the output directory has to be usable BY ITSELF -----------------
+;;
+;; KEY: EVERY ROW ABOVE RUNS THE PROGRAM FROM THE SOURCE TREE. They put only
+;; objects on the library path, which is what proves the LIBRARIES resolve
+;; from objects -- but the thing they invoke is `root/cli.sc`, a source
+;; file. So none of them can say whether the output directory would work
+;; on a machine that has no source tree, which is the only machine a user
+;; has.
+;;
+;; Measured before `build.ss` copied the programs, with the output alone on
+;; the path: `Exception in load: failed for <out>/theourgia/theourgia.sc: no
+;; such file or directory`, rc=255. Putting only the thin client there moved
+;; the same failure one step along to `cli.sc`. The programs are found BESIDE
+;; THE PROGRAM, by path, so no quantity of `.so` substitutes for them.
+
+(define (product-file rel) (string-append objects "/theourgia/" rel))
+
+(want "F18 the build left every program in the output directory"
+      (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'MISSING)))
+           '("theourgia.sc" "cli.sc" "eval-worker.sc" "mcp/server.sc"))
+      '(("theourgia.sc" . there) ("cli.sc" . there)
+        ("eval-worker.sc" . there) ("mcp/server.sc" . there)))
+
+;; NEVER: THE LIBRARY PATH HOLDS THE OUTPUT AND NOTHING ELSE. With the source
+;; tree also reachable this row would resolve the client from there and pass
+;; whatever the output directory contained, which is the one thing it exists
+;; to rule out.
+(define (product-client args out-file)
+  (sh (string-append
+        "THEOURGIA_LOCAL=1 THEOURGIA_HOME=" scratch "/f18home"
+        " THEOURGIA_RUN=" scratch "/f18home/run"
+        " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
+        "scheme --script " (product-file "theourgia.sc") " " args
+        " > " out-file " 2>&1"))
+  (file-text out-file))
+
+(sh (string-append "mkdir -p " scratch "/f18home/run"))
+
+(want "F18 the thin client runs from the output directory alone and answers the verb table"
+      (if (contains? (product-client "describe --wire" (string-append scratch "/f18-desc.txt"))
+                     "(ok (verbs (init ")
+          'answered
+          (list 'said (file-text (string-append scratch "/f18-desc.txt"))))
+      'answered)
+
+;; NEVER: AND THE ROW ABOVE HAS TO BE ABOUT THE COPIED PROGRAMS. Moving one
+;; away and putting it back is the only thing here that shows the row is
+;; reading them rather than something else that happens to be true.
+(define f18-hidden (string-append scratch "/cli.sc.hidden"))
+(sh (string-append "mv " (product-file "cli.sc") " " f18-hidden))
+(define f18-without (product-client "describe --wire" (string-append scratch "/f18-without.txt")))
+(sh (string-append "mv " f18-hidden " " (product-file "cli.sc")))
+
+(want "F18 TWIN: with one program taken out of the output, the same call fails"
+      (list (if (contains? f18-without "(ok (verbs (init ") 'STILL-ANSWERED 'refused)
+            (if (contains? f18-without "cli.sc") 'and-names-the-missing-file 'SAID-SOMETHING-ELSE))
+      '(refused and-names-the-missing-file))
+
+(want "F18 TWIN: and putting it back restores the answer"
+      (if (contains? (product-client "describe --wire" (string-append scratch "/f18-again.txt"))
+                     "(ok (verbs (init ")
+          'answered
+          (list 'said (file-text (string-append scratch "/f18-again.txt"))))
+      'answered)
+
 (sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch "; rm -f " socket))
 
 (printf "rows: ~a\n~a failures\nf0-ondemand complete\n" rows bad)

@@ -168,6 +168,65 @@
 
 (define (name-of entry) (string-append (car entry) "/" (cdr entry)))
 
+;; NEVER: THE PROGRAMS ARE NOT LIBRARIES AND SO ARE NOT COMPILED, BUT THE
+;; OUTPUT DIRECTORY IS USELESS WITHOUT THEM. `theourgia.sc` is the thin
+;; client a user runs; it starts `cli.sc` BESIDE ITSELF, `cli.sc` starts
+;; `eval-worker.sc` the same way, and `mcp/server.sc` is the MCP shell.
+;; Measured on an output directory built before this: with the source tree
+;; off the library path -- which is the whole point of shipping objects --
+;; running the thin client from the output gives
+;;
+;;     Exception in load: failed for <out>/theourgia/theourgia.sc:
+;;     no such file or directory
+;;
+;; and putting only the thin client there moves the same failure one step
+;; along, to `cli.sc`. They are found by path beside the program, not by
+;; the library path, so no amount of `.so` makes up for their absence.
+;;
+;; NOTE: THE RELATIVE LAYOUT IS PART OF IT. `mcp/server.sc` has to land in
+;; a `mcp/` directory under the package, because that is where its own
+;; `beside-this-program` arithmetic expects to start from.
+(define programs '("theourgia.sc" "cli.sc" "eval-worker.sc" "mcp/server.sc"))
+
+(define (copy-file! from to)
+  (let ((in (open-file-input-port from))
+        (out (open-file-output-port to (file-options no-fail))))
+    (let loop ()
+      (let ((bv (get-bytevector-n in 65536)))
+        (unless (eof-object? bv)
+          (put-bytevector out bv)
+          (loop))))
+    (close-port in)
+    (close-port out)))
+
+;; NEVER: A COPY THAT COPIED NOTHING MUST NOT LOOK LIKE A BUILD. It reports
+;; the number, and a missing program is a failure here rather than a
+;; puzzle for whoever runs the output directory a week later.
+(define (copy-programs!)
+  (let ((missing '()) (n 0))
+    (for-each
+      (lambda (rel)
+        (let* ((from (string-append root "/theourgia/" rel))
+               (to (string-append out-root "/theourgia/" rel))
+               (slash (let scan ((i (- (string-length rel) 1)))
+                        (cond ((< i 0) #f)
+                              ((char=? (string-ref rel i) #\/) i)
+                              (else (scan (- i 1)))))))
+          (when slash
+            (let ((d (string-append out-root "/theourgia/" (substring rel 0 slash))))
+              (unless (file-directory? d) (mkdir d))))
+          (if (file-exists? from)
+              (begin (when (file-exists? to) (delete-file to))
+                     (copy-file! from to)
+                     (set! n (+ n 1)))
+              (set! missing (cons rel missing)))))
+      programs)
+    (printf "copied ~a of ~a programs into ~a/theourgia\n" n (length programs) out-root)
+    (when (pair? missing)
+      (printf "MISSING PROGRAMS ~a:\n" (length missing))
+      (for-each (lambda (r) (printf "  ~a\n" r)) (reverse missing))
+      (exit 1))))
+
 (let pass ((todo libraries) (done 0))
   (let sweep ((fs todo) (deferred '()) (built 0) (errs '()))
     (cond
@@ -181,6 +240,7 @@
          (sweep (cdr fs) deferred (+ built 1) errs)))
       ((null? deferred)
        (printf "compiled ~a of ~a libraries into ~a\n" (+ done built) (length libraries) out-root)
+       (copy-programs!)
        (printf "build complete\n"))
       ((zero? built)
        ;; NEVER: NO PROGRESS MEANS IT IS NOT AN ORDERING PROBLEM. Say which
