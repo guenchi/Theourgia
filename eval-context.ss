@@ -21,7 +21,7 @@
   ;; The worker owns this detached read view. No store handle or IO capability
   ;; is exported into evaluated code.
 
-  ;; ⛔ EVERY WRITE THE SANDBOX MAKES IS FLUSHED BY THE WRAPPER, not by
+  ;; NEVER: EVERY WRITE THE SANDBOX MAKES IS FLUSHED BY THE WRAPPER, not by
   ;; the code that made it. The worker frames user output as `(out …)` /
   ;; `(err …)` on a custom port, and Chez BUFFERS before it ever calls
   ;; that port's `write!` -- measured: three separate calls,
@@ -31,7 +31,7 @@
   ;; -- 65,537 bytes and then an infinite loop -- would be decided by the
   ;; buffer rather than by the limit.
   ;;
-  ;; ⚠️ THE FLUSH CANNOT LIVE IN THE PORT. `make-custom-textual-output-port`
+  ;; NOTE: THE FLUSH CANNOT LIVE IN THE PORT. `make-custom-textual-output-port`
   ;; takes no buffer-mode in Chez 10.1 and `custom-port-buffer-size` may
   ;; not be zero, so "unbuffered" is not available there; and it must not
   ;; live in the user's hands, because a user who forgets is a user whose
@@ -53,14 +53,14 @@
   (define snapshot #f)
   (define overlay '())
 
-  ;; ⛔ THE OVERLAY IS APPLIED WHERE THE SANDBOX READS, not only where a
+  ;; NEVER: THE OVERLAY IS APPLIED WHERE THE SANDBOX READS, not only where a
   ;; library body is assembled. Measured with it only in the latter:
   ;; `eval --working --writer w1 '(block "…")'` answered the COMMITTED
   ;; src while the answer's own `(working-view …)` said the draft was in
   ;; the view -- the report and the value disagreeing about the same
   ;; request.
   ;;
-  ;; ⚠️ IT IS `working-read`'s RULE, not a second one: a block with a live
+  ;; NOTE: IT IS `working-read`'s RULE, not a second one: a block with a live
   ;; draft reads as that draft, everything else as what is committed.
   (define (eval-context! state drafts)
     (set! snapshot state)

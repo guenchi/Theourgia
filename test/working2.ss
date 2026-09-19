@@ -49,14 +49,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -79,7 +79,7 @@
 (define file (string-append dir "/" id))
 (define (read-bytes p) (call-with-port (open-file-input-port p) get-bytevector-all))
 (define binary (bytevector 255 0 10 128))
-;; ⭐ THE LIBRARY IS CALLED DIRECTLY HERE, SO THE WRITER IS PASSED
+;; KEY: THE LIBRARY IS CALLED DIRECTLY HERE, SO THE WRITER IS PASSED
 ;; DIRECTLY. `working-write!` takes it third, where this used to pass #f
 ;; and be given the store's local writer; it now refuses an unnamed
 ;; writer, and these two rows are about BYTES, not about identity.
@@ -260,7 +260,7 @@
 (want "WS-15 and it was never renamed into place"
       (has-line? child-lines
                  (string-append "(trace rename (" tmp " . " working-dir "/" id ") #f)")) #f)
-;; ⚠️ WHAT THIS STILL DOES NOT SEPARATE, written down rather than left
+;; NOTE: WHAT THIS STILL DOES NOT SEPARATE, written down rather than left
 ;; to be discovered: a partial write whose CLEANUP ALSO FAILED leaves the
 ;; same four readings, because `log.ss` swallows an unlink error and the
 ;; trace records an unlink only after the file is really gone. That takes
@@ -344,12 +344,12 @@
 (want "WS-26 corrupt storage is visible in the draft list" (cadr (call 'drafts)) 'working-unavailable)
 ;; ---- WS-27: the refusal belongs to the library, at every door ---------
 ;;
-;; ⭐ ONE RULE, ONE PLACE. `rpc.ss` keeps no copy of this check: a caller
+;; KEY: ONE RULE, ONE PLACE. `rpc.ss` keeps no copy of this check: a caller
 ;; that reaches `(theourgia working)` directly -- the evaluator does --
 ;; must be refused by the same rule and told the same thing, or the
 ;; library is a second entry point with no guard on it (§7.6.50 v249).
 ;;
-;; ⛔ ONE ROW WOULD NOT HAVE CAUGHT THIS. Eight entry points take a
+;; NEVER: ONE ROW WOULD NOT HAVE CAUGHT THIS. Eight entry points take a
 ;; writer and two of them, `working-snapshot` and `working-baseline`,
 ;; tested only `(not writer)`. `unbound` is a symbol and a symbol is
 ;; true, so both walked past the guard and used it AS a writer id: the
@@ -363,7 +363,7 @@
 ;; So there is a row per door, and they are not redundant: each one is
 ;; the only row that would go red if its own door lost the branch.
 
-;; ⚠️ ON A STORE OF ITS OWN. These rows sit at the end of the file, and
+;; NOTE: ON A STORE OF ITS OWN. These rows sit at the end of the file, and
 ;; by here WS-26 has deliberately corrupted the store it shares -- which
 ;; the eight refusals above survive (the writer is judged before the
 ;; drafts are touched, §7.6.50 v249), but the positive twin cannot: it
@@ -407,7 +407,7 @@
 (want "WS-27 working-commit! refuses an unnamed writer"
       (refusal (lambda () (working-commit! ws27-store #f (list ws27-id) "test" #f)))
       '(error writer-required))
-;; ⭐ THE TWO THAT WERE WRONG. Named apart from the six above because
+;; KEY: THE TWO THAT WERE WRONG. Named apart from the six above because
 ;; they are the reason the other six are written out one by one.
 (want "WS-27 working-snapshot refuses an unnamed writer"
       (refusal (lambda () (working-snapshot ws27-store #f #f)))
@@ -416,7 +416,7 @@
       (refusal (lambda () (working-baseline ws27-store #f #f)))
       '(error writer-required))
 
-;; ⛔ AND THE REFUSAL IS NOT MERELY "SOME ERROR". `working-unavailable`
+;; NEVER: AND THE REFUSAL IS NOT MERELY "SOME ERROR". `working-unavailable`
 ;; is what these two used to answer, and it is the value a durability
 ;; fault reports; a row that accepted any refusal would have passed
 ;; against the defect it exists for.
@@ -435,7 +435,7 @@
 
 ;; ---- WS-28: the writer is judged before the store is touched -------------
 ;;
-;; ⛔ THE ORDER CHANGES THE ANSWER, not just the cost. The entry points
+;; NEVER: THE ORDER CHANGES THE ANSWER, not just the cost. The entry points
 ;; bound `writer` and `state` in one `let`, so the store was opened and
 ;; folded first and the missing writer noticed afterwards. On a store that
 ;; cannot be opened, an unnamed writer was therefore told
@@ -443,7 +443,7 @@
 ;; one `working-fault-child.ss` keys its exit status on. A caller-fixable
 ;; mistake was reported as a storage failure.
 ;;
-;; ⚠️ THE TWIN IS WHAT KEEPS THE FIX HONEST: a NAMED writer on the same
+;; NOTE: THE TWIN IS WHAT KEEPS THE FIX HONEST: a NAMED writer on the same
 ;; unopenable store must still be told the storage failed. Without it,
 ;; answering `writer-required` for everything would pass.
 (define ws28-store (string-append root "/ws28"))
@@ -460,7 +460,7 @@
         (if (pair? a) (list (car a) (cadr a)) a))
       '(error working-unavailable))
 
-;; ⛔ AND THE SAME FOR ARGUMENT SHAPES. A block id is well formed or it
+;; NEVER: AND THE SAME FOR ARGUMENT SHAPES. A block id is well formed or it
 ;; is not, and the store has nothing to say about it -- but the check sat
 ;; after `open-and-reduce`, so on a store that cannot be opened a
 ;; malformed id was answered `working-unavailable` too. The caller's
@@ -470,7 +470,7 @@
         (if (pair? a) (list (car a) (cadr a)) a))
       '(error bad-request))
 
-;; ⚠️ `read` IS NOT IN THIS ROW AND THAT IS DELIBERATE. Its answer for an
+;; NOTE: `read` IS NOT IN THIS ROW AND THAT IS DELIBERATE. Its answer for an
 ;; unknown id is `unknown-id`, which is a fact about the store's contents
 ;; and cannot be known without opening it -- so `working-unavailable`
 ;; there is the true answer, not a misreport. Named so the difference is

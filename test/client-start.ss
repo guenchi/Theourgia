@@ -16,21 +16,21 @@
 ;; Starting the daemon a store has not got yet, and saying why when it
 ;; will not start.
 ;;
-;; ⭐ THE REASON IS THE DAEMON'S, NOT THE CLIENT'S. "It did not come up"
+;; KEY: THE REASON IS THE DAEMON'S, NOT THE CLIENT'S. "It did not come up"
 ;; is the one sentence a client can always produce and the one that helps
 ;; least: a socket path occupied by a file, a lock another daemon holds
 ;; and a store that will not open need three different things done about
 ;; them. So the daemon writes its refusal to a log the client named, and
 ;; the client hands that refusal back.
 ;;
-;; ⛔ AND ONLY WHAT THIS START WROTE. The log is appended across every
+;; NEVER: AND ONLY WHAT THIS START WROTE. The log is appended across every
 ;; start against a store, so a previous failure is sitting in it. The
 ;; client records the length before spawning and reads only past it; the
 ;; TWIN below is the row that fails if it does not, and it fails in the
 ;; direction that matters -- reporting a plausible, specific, wrong
 ;; reason for a start that in fact succeeded.
 ;;
-;; ⚠️ THE EXIT CODE IS NOT HERE. `75` belongs to the client PROGRAM,
+;; NOTE: THE EXIT CODE IS NOT HERE. `75` belongs to the client PROGRAM,
 ;; which does not exist yet; these rows pin what the library answers, and
 ;; the program's rows join them when it is written.
 
@@ -69,7 +69,7 @@
 (define log (serve-log-path store))
 (define cli "../cli.ss")
 
-;; ⛔ THE ARGV IS BUILT ONCE AND THE SOCKET IS ITS ONLY VARIABLE, so the
+;; NEVER: THE ARGV IS BUILT ONCE AND THE SOCKET IS ITS ONLY VARIABLE, so the
 ;; rows below differ in the thing they are about and in nothing else.
 (define (argv-for socket)
   (list "scheme" "--script" cli "serve" store
@@ -86,7 +86,7 @@
   (if (not (file-exists? path)) ""
       (let ((t (call-with-input-file path get-string-all))) (if (string? t) t ""))))
 
-;; ⛔ EVERY DAEMON THIS FILE CAUSED TO EXIST. Naming one store leaves any
+;; NEVER: EVERY DAEMON THIS FILE CAUSED TO EXIST. Naming one store leaves any
 ;; other the fixture made still running, and the pattern is this run's own
 ;; directory -- which carries this process's pid, so it cannot reach
 ;; another run's daemons.
@@ -100,7 +100,7 @@
       (ensure-daemon! (argv-for sock) store sock)
       'ready)
 
-;; ⛔ "READY" HAS TO MEAN A DAEMON THAT ANSWERS. The readiness test is a
+;; NEVER: "READY" HAS TO MEAN A DAEMON THAT ANSWERS. The readiness test is a
 ;; successful connection, and a connection succeeds against a socket that
 ;; is bound but not yet being read; this row is what says the difference
 ;; did not matter.
@@ -119,13 +119,13 @@
 
 ;; ---- CS-2 a start that is not needed ---------------------------------------
 ;;
-;; ⚠️ NOT MERELY "IT SAID READY". An implementation that spawned anyway
+;; NOTE: NOT MERELY "IT SAID READY". An implementation that spawned anyway
 ;; also says ready: the second process loses the daemon's lock and exits,
 ;; leaving one daemon and a refusal appended to the log. So the row
 ;; measures the LOG, which is where the difference shows -- measured, a
 ;; losing start appends `(error serve-busy (path ...))` to it.
 ;;
-;; ⚠️ AND IT WAITS BEFORE LOOKING, WHICH IS THE WEAK PART OF THIS ROW.
+;; NOTE: AND IT WAITS BEFORE LOOKING, WHICH IS THE WEAK PART OF THIS ROW.
 ;; Written without the wait it read the log the instant `ensure-daemon!`
 ;; returned and stayed GREEN against an implementation that spawned
 ;; unconditionally: that call returns as soon as the FIRST daemon
@@ -150,14 +150,14 @@
 
 ;; ---- CS-2 by counting instead of by waiting ------------------------------
 ;;
-;; ⭐ THE CLIENT ANNOUNCES EVERY PROCESS IT STARTS, at the moment it
+;; KEY: THE CLIENT ANNOUNCES EVERY PROCESS IT STARTS, at the moment it
 ;; starts it, so "did it start one?" is a count. The row above measures a
 ;; real side effect and is kept for that -- but it can only see the side
 ;; effect once the process it is about has got far enough to produce one,
 ;; and it cannot be made to settle the question by waiting longer. This
 ;; one is decided by the time `ensure-daemon!` has returned.
 ;;
-;; ⛔ AND IT IS RUN OUT OF PROCESS, because the trace goes to stderr and
+;; NEVER: AND IT IS RUN OUT OF PROCESS, because the trace goes to stderr and
 ;; a fixture cannot read its own.
 (define driver (string-append here "/drive.ss"))
 (call-with-output-file driver
@@ -196,7 +196,7 @@
 
 (kill-daemon!)
 
-;; ⛔ THE POSITIVE TWIN, without which the row above is passed by a
+;; NEVER: THE POSITIVE TWIN, without which the row above is passed by a
 ;; client that never starts anything at all.
 (want "CS-2 TWIN: with no daemon, exactly one is started"
       (spawn-events-during-a-run "cold")
@@ -213,7 +213,7 @@
       (ensure-daemon! (argv-for blocked) store blocked)
       (list 'error 'serve-path-occupied (list 'path blocked)))
 
-;; ⛔ AND THE FILE IS STILL THERE. A daemon that reported the path was
+;; NEVER: AND THE FILE IS STILL THERE. A daemon that reported the path was
 ;; occupied and then took it anyway would have destroyed whatever was
 ;; there, and this row would be the only thing to notice.
 (want "CS-3 and the file it refused to replace is untouched"
@@ -227,7 +227,7 @@
 ;; This start SUCCEEDS with errors already in the log, so it says that a
 ;; log full of old refusals does not by itself make a start look failed.
 ;;
-;; ⛔ IT IS NOT THE ROW THAT CATCHES READING THE WHOLE FILE, although it
+;; NEVER: IT IS NOT THE ROW THAT CATCHES READING THE WHOLE FILE, although it
 ;; was written believing it was. Measured: with the offset replaced by 0,
 ;; this row stays GREEN -- a start that succeeds never reaches the code
 ;; that reads the log at all, so nothing it does can be wrong. CS-5 is
@@ -252,7 +252,7 @@
 ;; has nothing to relay and says so in the generic form -- WITH the path,
 ;; so the reason is still one command away.
 ;;
-;; ⭐ AND THIS IS THE ROW THAT CATCHES READING THE WHOLE LOG, which is
+;; KEY: AND THIS IS THE ROW THAT CATCHES READING THE WHOLE LOG, which is
 ;; not where it was expected. The discriminating shape needs the stale
 ;; error to be the LAST error in the file, and that only happens when the
 ;; failing start writes nothing -- which is exactly this case. Measured
@@ -277,18 +277,18 @@
 
 ;; ---- CS-6 a close that fails after the answer -----------------------------
 ;;
-;; ⛔ MEASURED DEFECT: the close that ends an exchange sat inside the
+;; NEVER: MEASURED DEFECT: the close that ends an exchange sat inside the
 ;; guard that classifies failures, AFTER a complete answer had been read.
 ;; A close that raised threw the answer away and reported
 ;; `transport-error` -- "this may or may not have happened" -- for a
 ;; request that provably had; the guard clause then closed a second time,
 ;; and a second failure escaped the guard altogether.
 ;;
-;; ⚠️ THE FAILURE IS ARMED, NOT WAITED FOR. `close(2)` on a socket does
+;; NOTE: THE FAILURE IS ARMED, NOT WAITED FOR. `close(2)` on a socket does
 ;; not fail on demand, so `close-fail@client` makes it, and the client
 ;; names that step so the fault has somewhere to land.
 ;;
-;; ⚠️ BOTH RUNS USE `THEOURGIA_INJECT=on`, armed or not, so the twin is
+;; NOTE: BOTH RUNS USE `THEOURGIA_INJECT=on`, armed or not, so the twin is
 ;; the same build and not a different one.
 (define close-driver (string-append here "/close.ss"))
 (call-with-output-file close-driver
@@ -324,7 +324,7 @@
                            " > " out " 2> " out ".err"))
     (list (file-text out) (file-text (string-append out ".err")))))
 
-;; ⛔ "IT ANSWERED" IS NOT "IT ANSWERED THIS". A build that threw the real
+;; NEVER: "IT ANSWERED" IS NOT "IT ANSWERED THIS". A build that threw the real
 ;; reply away and returned some other answer would satisfy a row that only
 ;; looked for the word; what must survive the failed close is the outline
 ;; the daemon actually sent, so the driver prints the answer's own text and
@@ -342,7 +342,7 @@
       (outcome-with-close-fault #t)
       '(answer close-really-failed))
 
-;; ⛔ AND IT IS THE SAME ANSWER. The row above asks only that an answer came
+;; NEVER: AND IT IS THE SAME ANSWER. The row above asks only that an answer came
 ;; back; a build that discarded the reply and produced another one would
 ;; pass it. The bytes the daemon sent are compared with the bytes the same
 ;; call produces with nothing armed.
@@ -360,7 +360,7 @@
                 (else (list 'armed (body armed) 'clear (body clear))))))
       'same-bytes)
 
-;; ⛔ THE TWIN, or the row above passes on a build where the fault never
+;; NEVER: THE TWIN, or the row above passes on a build where the fault never
 ;; fired: the same build, the same call, nothing armed. It must also
 ;; answer -- and its second element is what tells the two runs apart.
 (want "CS-6 TWIN: and with nothing armed the same call answers with no close failure"
@@ -370,14 +370,14 @@
 
 ;; ---- CS-9 a write that moved no bytes did not send the request -----------
 ;;
-;; ⛔ EVERY FAILURE AFTER THE CONNECT USED TO BE "IT MAY HAVE HAPPENED".
+;; NEVER: EVERY FAILURE AFTER THE CONNECT USED TO BE "IT MAY HAVE HAPPENED".
 ;; That is the safe answer for a failure that could have left bytes on the
 ;; wire, and the wrong one for a write that refused before moving any: the
 ;; request provably never went out, and a caller told "unknown" cannot
 ;; retry something it was free to retry. What separates them is a COUNT,
 ;; not an errno -- `write-all!` reports its progress, and zero is zero.
 ;;
-;; ⚠️ THE FAILURE IS ARMED. `write-eio-first@client` refuses the first
+;; NOTE: THE FAILURE IS ARMED. `write-eio-first@client` refuses the first
 ;; write of the client's own step and lets the rest through, which is the
 ;; one shape this distinction is about.
 (want "CS-9 a first write that fails is reported as not sent"
@@ -387,14 +387,14 @@
               (else (list 'said (car r)))))
       'not-sent)
 
-;; ⛔ THE TWIN: the same build with nothing armed answers. Without it the
+;; NEVER: THE TWIN: the same build with nothing armed answers. Without it the
 ;; row above passes on a client that reports `not-sent` for everything.
 (want "CS-9 TWIN: and with nothing armed the same call is answered"
       (let ((r (outcome-under-fault "wclear" #f)))
         (if (contains? (car r) "answer") 'answer (list 'said (car r))))
       'answer)
 
-;; ⛔ AND THE OTHER SIDE OF THE COUNT, which is the half that decides
+;; NEVER: AND THE OTHER SIDE OF THE COUNT, which is the half that decides
 ;; whether this is a rule or a slogan. A write that fails AFTER some bytes
 ;; have gone out may have been carried out, and must stay unknown. With
 ;; only the row above, a client that answered `not-sent` for every write
@@ -411,7 +411,7 @@
 
 ;; ---- CS-7 the daemon's own words, after non-ASCII in the log --------------
 ;;
-;; ⛔ MEASURED DEFECT: the length taken before the spawn is a count of
+;; NEVER: MEASURED DEFECT: the length taken before the spawn is a count of
 ;; BYTES, and it was used as a `substring` index, which counts
 ;; CHARACTERS. With any non-ASCII already in the log the slice began too
 ;; far in and ate the front of the refusal that start had just written --
@@ -440,7 +440,7 @@
 
 ;; ---- CS-8 a run root that cannot be written to ----------------------------
 ;;
-;; ⛔ MEASURED DEFECT: the log's directory was made OUTSIDE the guard, so
+;; NEVER: MEASURED DEFECT: the log's directory was made OUTSIDE the guard, so
 ;; a run root that could not be written raised out of `call!` entirely --
 ;; past every outcome this library defines, to a caller with no handler
 ;; for it. It is a start that failed, and is now answered as one.
@@ -466,12 +466,12 @@
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;
-;; ⛔ `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
+;; NEVER: `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
 ;; walk itself is `import-walk.scm`, shared, so this is the same
-;; measurement taken in an extra place -- ⛔ not a second implementation
+;; measurement taken in an extra place -- NEVER: not a second implementation
 ;; of it.
 (define script-dir
   (let* ((self (car (command-line)))
@@ -522,7 +522,7 @@
       (closure-from 'client)
       '(client digest ffi render trace))
 
-;; ⛔ AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
+;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.ss`; what IT reaches is a separate fact from what the
 ;; `client` library reaches, and the rows above are about the library.
 ;; `arguments` is allowed and the reason is written in `closures.ss`: the
@@ -545,7 +545,7 @@
 
 
 (system (string-append "chmod 700 " ro))
-;; ⛔ AND IT IS TAKEN DOWN AT THE END, not only between rows. Whichever
+;; NEVER: AND IT IS TAKEN DOWN AT THE END, not only between rows. Whichever
 ;; daemon was alive when the last row finished used to survive the run:
 ;; measured by the suite's leak gate, which counts processes and is the
 ;; only thing here that was looking.

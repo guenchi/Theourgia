@@ -25,7 +25,7 @@
 ;; read with rc=255 -- a red about the caller's directory rather than
 ;; about the sources.
 ;;
-;; ⚠️ AND LOOKING BESIDE ITSELF FIRST WAS WRONG, because two of these
+;; NOTE: AND LOOKING BESIDE ITSELF FIRST WAS WRONG, because two of these
 ;; names exist twice. `test/code-suggest.ss` is a FIXTURE and
 ;; `code-suggest.ss` is the library it tests; a locator that takes the
 ;; first path that exists read the fixture, whose first datum is an

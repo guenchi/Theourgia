@@ -20,7 +20,7 @@
 ;; as Z did -- touches those files and no caller. A rule kept in
 ;; somebody's head is a rule until the first hurry; this reads the tree.
 ;;
-;; ⛔ IT DOES NOT GREP, IT READS EACH FILE AS DATA -- and the walk that
+;; NEVER: IT DOES NOT GREP, IT READS EACH FILE AS DATA -- and the walk that
 ;; does so lives in `import-walk.scm`, beside this file, because
 ;; `closures.ss` needs the same one. Why it cannot be a grep, and why it
 ;; is `load`ed rather than `include`d, are written there.
@@ -91,24 +91,24 @@
 
 ;; ---- the scan reaches into subdirectories, and it has to ---------------
 ;;
-;; ⛔ A NON-RECURSIVE SCAN HAS A DOOR IN IT. `source-files` lists one
+;; NEVER: A NON-RECURSIVE SCAN HAS A DOOR IN IT. `source-files` lists one
 ;; directory; a root library that imports a nested helper, and lets THAT
 ;; file import igropyr, leaves the set of root importers unchanged. All
 ;; four directions stay satisfied and the seam is gone. Nothing in this
 ;; tree does that today -- which is exactly when a hole is cheap to
 ;; close.
 ;;
-;; ⚠️ `test/` IS OUT OF SCOPE, ON PURPOSE. Fixtures are not the library:
+;; NOTE: `test/` IS OUT OF SCOPE, ON PURPOSE. Fixtures are not the library:
 ;; some of them import igropyr in order to MEASURE it (`q10`, `cli3`),
 ;; and requiring them to go through a facade would mean measuring the
 ;; facade instead of the thing. The rule is about what the core ships.
-;; ⚠️ THE RECURSION CARRIES ITS DIRECTORY. Written as a named `let` over
+;; NOTE: THE RECURSION CARRIES ITS DIRECTORY. Written as a named `let` over
 ;; entries alone, the inner call went back into the loop with the
 ;; SUBDIRECTORY's entries and the OUTER directory's path -- every nested
 ;; name was joined to the wrong parent, and the run stopped answering.
 ;; Measured: it had to be killed. A walker that takes the directory as
 ;; an argument cannot make that mistake.
-;; ⚠️ THE SAME EXTENSIONS THE SHARED WALKER KNOWS. This listed `.ss`
+;; NOTE: THE SAME EXTENSIONS THE SHARED WALKER KNOWS. This listed `.ss`
 ;; alone while `import-walk.scm` recognises `.ss`, `.sls`, `.sc` and
 ;; `.scm` -- so a nested `helper.sls` importing igropyr passed the deep
 ;; scan untouched, which is the hole this scan was added to close. One
@@ -127,7 +127,7 @@
       (else
        (let ((path (string-append dir "/" (car entries))))
          (cond
-           ;; ⛔ SYMLINKS ARE NOT DESCENDED, AND THE REASON IS IN THIS
+           ;; NEVER: SYMLINKS ARE NOT DESCENDED, AND THE REASON IS IN THIS
            ;; DIRECTORY. The checkout carries a self-link -- `theourgia`
            ;; pointing at `.`, so that `(theourgia x)` resolves from the
            ;; tree itself -- and a walk that follows it re-enters the
@@ -156,7 +156,7 @@
 (want "FG-01 the files importing igropyr are exactly the declared facades"
       importers declared)
 
-;; ⭐ THE SAME RULE, ASKED OF EVERY SOURCE THE CORE SHIPS. Root files are
+;; KEY: THE SAME RULE, ASKED OF EVERY SOURCE THE CORE SHIPS. Root files are
 ;; the population above; this one is "any file at all, however deep".
 ;; With the tree flat they agree -- and the day somebody adds a
 ;; subdirectory, this is the row that keeps the answer true.
@@ -178,7 +178,7 @@
               deep-importers)
       '())
 
-;; ⚠️ AND THE DEEP SCAN REALLY LOOKED. A walker that found nothing would
+;; NOTE: AND THE DEEP SCAN REALLY LOOKED. A walker that found nothing would
 ;; satisfy the row above by finding no importers at all.
 (want "FG-03 TWIN: the deep scan found the facades themselves"
       (length deep-importers) (length facade-names))

@@ -181,7 +181,7 @@
   ;; whether the evidence can be read at all would report `req-mismatch`
   ;; for a store that cannot say what it holds -- a client would then
   ;; "fix" its request id and execute the thing a second time.
-  ;; ⭐ THE SIZE COMES FROM THE PLAN WHEN THERE IS ONE.
+  ;; KEY: THE SIZE COMES FROM THE PLAN WHEN THERE IS ONE.
   ;;
   ;; A caller that is about to execute knows how many sub-operations it
   ;; is about to declare. A caller that is RETRYING does not: the thing
@@ -195,7 +195,7 @@
   ;; not move. When there is no plan the verdict is `execute` and the
   ;; caller's number is the only one there is.
   ;;
-  ;; ⛔ AND THIS IS WHY IDENTITY NEEDS NO DRAFT. With the count taken
+  ;; NEVER: AND THIS IS WHY IDENTITY NEEDS NO DRAFT. With the count taken
   ;; from the log, deciding who this request is uses `who`, the verb,
   ;; `after` and the versions it names -- all of which the client holds.
   ;; Reading a draft can then wait until the premises are checked, which
@@ -267,7 +267,7 @@
                    (if (eq? (car why) (quote settled))
                        (cdr why)
                        (list (quote unknown) why))))
-             ;; ⭐ THE ANSWER CARRIES THE PLAN, NOT ONLY THE HOLE.
+             ;; KEY: THE ANSWER CARRIES THE PLAN, NOT ONLY THE HOLE.
              ;; A caller that is going to finish this request needs the
              ;; frozen declaration -- the plan's own payload lists the
              ;; intents, with their text -- and the plan event the
@@ -275,7 +275,7 @@
              ;; only say `incomplete-request`, which is what it used to
              ;; say, and the work is finished by nobody.
              ;;
-             ;; ⛔ IT DOES NOT READ THE DRAFTS. The text is in the plan;
+             ;; NEVER: IT DOES NOT READ THE DRAFTS. The text is in the plan;
              ;; the drafts may since have been replaced, retired, or
              ;; deleted, and completing from them would carry out a
              ;; request the client never sent.
@@ -1314,7 +1314,7 @@
   ;; three-field item, a five-field item, and the earlier `(block .
   ;; version)` pair, which is a PAIR and not a list of four.
   ;;
-  ;; ⛔ IT DOES NOT CHECK CORRESPONDENCE WITH THE SUB-OPERATIONS. A plan
+  ;; NEVER: IT DOES NOT CHECK CORRESPONDENCE WITH THE SUB-OPERATIONS. A plan
   ;; is a shape here; whether each declared sub-operation has a
   ;; consumes item, and whether the blocks agree, is an admission
   ;; question asked where the sub-operations are known.

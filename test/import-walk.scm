@@ -22,7 +22,7 @@
 ;; host would not take, and over IMPROPER lists. A second copy drifts,
 ;; and the copy that drifts is the one nobody is currently reading.
 ;;
-;; ⛔ IT DOES NOT GREP, and that is the whole reason it exists. Measured
+;; NEVER: IT DOES NOT GREP, and that is the whole reason it exists. Measured
 ;; on the untouched tree before this batch: three root files carry
 ;; `(igropyr` in their TEXT -- `ffi.ss`, `wire.ss` and `log.ss` -- and
 ;; every one of those occurrences is a comment. A grep gate would have
@@ -30,7 +30,7 @@
 ;; where nothing imported igropyr at all. Read as data, a comment is not
 ;; a datum and `"(igropyr sexpr)"` is a string.
 ;;
-;; ⛔ IT IS LOADED, NOT INCLUDED. Chez's `include` resolves a relative
+;; NEVER: IT IS LOADED, NOT INCLUDED. Chez's `include` resolves a relative
 ;; path against the CURRENT DIRECTORY, not against the including file --
 ;; measured both ways: from `test/` it found this file, and from the
 ;; repository root the same script died with `Exception in include:
@@ -75,7 +75,7 @@
   (apply append (map (lambda (f) (imports-of prefix f)) (forms-of path))))
 
 ;; THE SOURCES IN A DIRECTORY, by the suffixes Chez is told to search.
-;; ⚠️ ONE LIST, READ BY BOTH SCANS. `facade-gate.ss` walks
+;; NOTE: ONE LIST, READ BY BOTH SCANS. `facade-gate.ss` walks
 ;; subdirectories with its own reader; when it carried its own copy of
 ;; this list -- `.ss` only -- a nested `helper.sls` importing igropyr
 ;; went unseen by the very check added to see it.

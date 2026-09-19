@@ -141,7 +141,7 @@
   ;; store computes it when a draft is saved, and the completion path
   ;; checks it against the text a plan froze.
   ;;
-  ;; ⚠️ THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD IS
+  ;; NOTE: THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD IS
   ;; A FIXED-WIDTH HEX DIGEST. `bytes` is arbitrary and comes first, so a
   ;; variable-width baseline would let two different pairs hash alike --
   ;; and a collision here answers "this is the draft you sent" for a
@@ -187,7 +187,7 @@
   ;; plan is the exception and completes at the plan event, because there
   ;; is no member to be later than.
   ;;
-  ;; ⭐ WHICH MEMBER: THE GREATEST, BY (writer, seq) -- NOT "the one that
+  ;; KEY: WHICH MEMBER: THE GREATEST, BY (writer, seq) -- NOT "the one that
   ;; happened to be applied last". Those agree for every plan this core
   ;; writes, whose members are consecutive records of one writer. They
   ;; would not agree for a plan whose members came from two writers, and
@@ -215,7 +215,7 @@
   ;; retired draft is left in: the file is gone, the consumption is
   ;; revoked, and the person wants their text back.
   ;;
-  ;; ⛔ IT IS NOT CONSUMPTION AND IT IS NOT REPLAY EVIDENCE. `consumed?`
+  ;; NEVER: IT IS NOT CONSUMPTION AND IT IS NOT REPLAY EVIDENCE. `consumed?`
   ;; reads `by-key`, which is fed from applied records only. This table
   ;; is read by `drafts` and by `restore`, to say "a plan named this,
   ;; here it is" and nothing more.
@@ -244,7 +244,7 @@
   ;; whole difference between this table and the other two.
   ;; WHICH PLAN A MEMBER BELONGS TO, noted when the member ARRIVES.
   ;;
-  ;; ⭐ A REVOKED CONSUMPTION IS OFTEN GATED AT THE MEMBER, NOT AT THE
+  ;; KEY: A REVOKED CONSUMPTION IS OFTEN GATED AT THE MEMBER, NOT AT THE
   ;; PLAN. A second record claiming a member's slot puts the MEMBERS in
   ;; conflict and leaves the plan itself applied; a lookup that used the
   ;; gated event as a plan key found nothing, so the draft the commit
@@ -282,7 +282,7 @@
   ;; The consumption is revoked, and the person's text is now only in the
   ;; log. `drafts` has to say so, or the work looks deleted.
   ;;
-  ;; ⭐ THE CANDIDATES ARE THE GATED PLANS, NOT EVERY VERSION EVER NAMED.
+  ;; KEY: THE CANDIDATES ARE THE GATED PLANS, NOT EVERY VERSION EVER NAMED.
   ;; Walking the whole `seen` table would be the packet scan again in
   ;; another shape -- a cost that grows with how long the writer has been
   ;; working. A revoked consumption is a plan that is GATED, and gates
@@ -302,7 +302,7 @@
          (cadddr (cdar es)))
         (else (loop (cdr es))))))
 
-  ;; ⚠️ ONE ENTRY PER VERSION, NOT PER GATED PLAN. Two plans claiming one
+  ;; NOTE: ONE ENTRY PER VERSION, NOT PER GATED PLAN. Two plans claiming one
   ;; identity are both gated and both name the same version, so a caller
   ;; that mapped over the gates listed the same revoked draft twice --
   ;; and a person reading `drafts` would have seen one piece of work
@@ -318,7 +318,7 @@
     (let ((c (reduction-consumption r)))
       (apply append
         (map (lambda (g)
-               ;; ⛔ ONLY A PLAN THAT WAS TAKEN BACK, NOT ONE THAT IS
+               ;; NEVER: ONLY A PLAN THAT WAS TAKEN BACK, NOT ONE THAT IS
                ;; WAITING. `pending-plan` means a dependency has not
                ;; arrived: nothing was consumed, nothing was retired, and
                ;; the draft is still on disk and still a draft. Reporting
@@ -396,7 +396,7 @@
   (define (state-consumed? r owner version)
     (let ((events (hashtable-ref (consumption-by-key (reduction-consumption r))
                                  (draft-key owner version) '())))
-      ;; ⭐ ONE PROBE PER PLAN THAT NAMED THIS EXACT VERSION, and the
+      ;; KEY: ONE PROBE PER PLAN THAT NAMED THIS EXACT VERSION, and the
       ;; count is on the trace so a row can read it. The question used to
       ;; be answered by opening every packet the writer had ever written,
       ;; which made a draft more expensive to read the longer the writer
@@ -424,7 +424,7 @@
                  (and entry (plan-entry-completion entry))))
              (hashtable-ref (consumption-by-key c) (draft-key owner version) '())))))
 
-  ;; ⭐ THE CAUSAL PARENT OF A CONSUMED DRAFT IS THE JOIN OF ITS PLAN'S
+  ;; KEY: THE CAUSAL PARENT OF A CONSUMED DRAFT IS THE JOIN OF ITS PLAN'S
   ;; MEMBER CUTS, not the cut of any one member.
   ;;
   ;; For every plan this core writes the two agree: the members are
@@ -492,7 +492,7 @@
   ;; carry are enough: a plan names its own consumes list and its
   ;; declared count, and a member's actor names the plan it belongs to.
   ;;
-  ;; ⛔ THIS IS NOT A SECOND SUPPLIER. It computes completion by the same
+  ;; NEVER: THIS IS NOT A SECOND SUPPLIER. It computes completion by the same
   ;; rule the incremental path uses -- the greatest member event, once
   ;; every declared member is covered by the snapshot's cut -- so the two
   ;; paths answer alike; that is what `rows->state` of a snapshot WITH
@@ -757,7 +757,7 @@
       ;; but gated has not been applied, and a plan whose members are
       ;; all present but not all applied has not completed.
       (let ((payload (rec-payload rec)) (actor (rec-actor rec)))
-        ;; ⛔ ONLY A PLAN THIS BUILD WILL APPLY. Registration used to run
+        ;; NEVER: ONLY A PLAN THIS BUILD WILL APPLY. Registration used to run
         ;; before `interpret!` asked `payload-reason`, so a plan whose
         ;; `consumes` did not cover its own sub-operations was noted as
         ;; malformed AND entered the index: the version it named came
@@ -1183,7 +1183,7 @@
            ;; that names a block must have a consumes item for that
            ;; block.
            ;;
-           ;; ⛔ NOT THE CONVERSE. A mixed commit may consume a draft
+           ;; NEVER: NOT THE CONVERSE. A mixed commit may consume a draft
            ;; whose bytes are what the block already says; it has no
            ;; sub-operation, and it is consumed all the same.
            ((plan) (plan-reason payload))
@@ -1193,7 +1193,7 @@
            ;; record that is merely newer than their binary.
            (else #f))))))
 
-  ;; ⚠️ ONLY THE SIXTH ELEMENT. The first version of this asked `plan?`
+  ;; NOTE: ONLY THE SIXTH ELEMENT. The first version of this asked `plan?`
   ;; about the whole payload, and `plan?` is stricter than what the
   ;; reduction has ever required of a plan record: `q1` publishes
   ;; `(plan "r1" "fp" (("w" . 1)) ())` as a bookkeeping record that this
@@ -1923,7 +1923,7 @@
                         (past-covers? (reduce-applied-cut r) (rec-writer rec) (rec-seq rec)))
                       (reverse (reduction-history r)))))
       (list (list 'pasts (compress-pasts r)))
-      ;; ⚠️ THIS ROW IS A SERIALISATION OF THE INDEX, NOT A SECOND
+      ;; NOTE: THIS ROW IS A SERIALISATION OF THE INDEX, NOT A SECOND
       ;; SUPPLIER OF IT. A snapshot may be cut while a plan is still
       ;; incomplete, so the bookkeeping that decides when it completes --
       ;; how many members were declared and which have been applied --
@@ -1990,7 +1990,7 @@
             (else (if #f #f))))
         rows)
       (reduction-gates-set! r (admission-gates (reduction-admission-index r)))
-      ;; ⭐ `seen` IS REFILLED EITHER WAY. It is about what a plan NAMED,
+      ;; KEY: `seen` IS REFILLED EITHER WAY. It is about what a plan NAMED,
       ;; which is a fact about the records the snapshot carries and not
       ;; about what was applied -- so it does not travel in the
       ;; `consumed` row, and a snapshot that does carry that row still

@@ -288,7 +288,7 @@
 ;; FROM THE APPEND'S OWN START. The session's takeover barrier flushes
 ;; and its delivery applies before any of this; folding them in would
 ;; make the row assert three mechanisms at once.
-;; ⚠️ THE STORE LOCK IS OBSERVED, NOT ASSUMED. The first version consed
+;; NOTE: THE STORE LOCK IS OBSERVED, NOT ASSUMED. The first version consed
 ;; the string "store-lock" onto the front of the observed list, so the
 ;; row asserted an event it had written itself: removing the acquisition
 ;; entirely would have left it green. The sequence is taken from the

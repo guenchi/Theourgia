@@ -21,14 +21,14 @@
 ;; can depend on, and replacing the dependency stops being a change to
 ;; these files alone.
 ;;
-;; ⛔ THE EXPECTED NAMES ARE NOT WRITTEN HERE. They are read from
+;; NEVER: THE EXPECTED NAMES ARE NOT WRITTEN HERE. They are read from
 ;; `facade-exports.sexp`, which is the copy of the design's table; a cell
 ;; that restated the list would be checking its own copy of it. What this
 ;; file contributes is the READING: the library's own `(export ...)`
 ;; form, taken from the source as DATA, so a rename or an addition is
 ;; seen whether or not anything imports it.
 ;;
-;; ⚠️ COMPARED IN BOTH DIRECTIONS. "Every declared name is exported" is
+;; NOTE: COMPARED IN BOTH DIRECTIONS. "Every declared name is exported" is
 ;; silent about the extra one, and the extra one is the whole point.
 
 (import (chezscheme))
@@ -73,7 +73,7 @@
 
 ;; THE LIBRARY'S OWN EXPORT FORM, from the source read as data.
 ;;
-;; ⚠️ `(export a b (rename (c d)))` IS LEGAL R6RS, so a renamed export
+;; NOTE: `(export a b (rename (c d)))` IS LEGAL R6RS, so a renamed export
 ;; contributes the name it is EXPORTED AS -- the second one. Taking the
 ;; head of the form would record the internal name and call the seam
 ;; clean while a different name leaked.
@@ -89,7 +89,7 @@
                (cond
                  ((null? body) 'no-export-form)
                  ((and (pair? (car body)) (eq? 'export (caar body)))
-                  ;; ⚠️ A `rename` FORM CARRIES ANY NUMBER OF PAIRS.
+                  ;; NOTE: A `rename` FORM CARRIES ANY NUMBER OF PAIRS.
                   ;; Taking only the first let a second renamed export --
                   ;; `(rename (a b) (c leaked))` -- escape the comparison
                   ;; entirely, which is the one thing this cell exists to
@@ -113,7 +113,7 @@
 
 (want "FE-00 the table names four libraries"
       (map car declared) '(sched net proc json))
-;; ⚠️ NOT THE COUNTS. Writing `(10 10 7)` here put a second copy of the
+;; NOTE: NOT THE COUNTS. Writing `(10 10 7)` here put a second copy of the
 ;; table in the cell -- the design changed `net` from ten names to nine,
 ;; the table followed, and this row went red about nothing. What it is
 ;; for is a table that parsed to nothing, so it asks that and no more.
@@ -133,13 +133,13 @@
 
 ;; ---- FE-02 the name that must NOT be there ------------------------------
 ;;
-;; ⭐ NAMED, BECAUSE IT IS THE ONE SOMEBODY WILL ADD. `conn-peer-ip` is
+;; KEY: NAMED, BECAUSE IT IS THE ONE SOMEBODY WILL ADD. `conn-peer-ip` is
 ;; in igropyr and answers #f on a unix socket; a daemon that reached for
 ;; it would be identifying its clients by a value that is always #f. The
 ;; row above already refuses it as "one extra name", but a reader who
 ;; hits THIS row learns why it is not there.
 
-;; ⚠️ IT ASSERTS THE READING FIRST. Written as "conn-peer-ip is not
+;; NOTE: IT ASSERTS THE READING FIRST. Written as "conn-peer-ip is not
 ;; among them", this row is GREEN WHEN THE LIBRARY DOES NOT EXIST --
 ;; `exports-of` answers a symbol, the membership test is false, and a
 ;; row about a leak passes because there is nothing to leak from.

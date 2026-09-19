@@ -25,7 +25,7 @@
 ;;              `snapshot` of that store answers `(error internal ...)`
 ;;   61 and up  the RECORD codec refuses the write; nothing is stored
 ;;
-;; ⭐ THE MIDDLE BAND IS THE INTERESTING ONE, and it is the reason this
+;; KEY: THE MIDDLE BAND IS THE INTERESTING ONE, and it is the reason this
 ;; fixture exists rather than a single row. A store that refused
 ;; everything from 59 upwards would pass any row written only about
 ;; "deep values fail"; so would one that wrote everything and described
@@ -44,7 +44,7 @@
 ;; unrelated limit. ND-06 is in this file so that both ends of that
 ;; subtraction are measured by the same run.
 ;;
-;; ⚠️ THEY ARE MEASURED, NOT DERIVED, and they are properties of the
+;; NOTE: THEY ARE MEASURED, NOT DERIVED, and they are properties of the
 ;; codec this core now forwards to. They moved once already: the values
 ;; here were re-measured after `wire.ss` became a forward onto igropyr,
 ;; and came back the same.

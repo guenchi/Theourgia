@@ -15,13 +15,13 @@
 
 ;; `describe`: what the verbs are, for something that has to ask.
 ;;
-;; ⭐ THE CATALOGUE IS A SECOND PLACE THAT KNOWS THE VERBS, and the first
+;; KEY: THE CATALOGUE IS A SECOND PLACE THAT KNOWS THE VERBS, and the first
 ;; row here is the only thing holding it honest. A verb added to the
 ;; dispatcher and not to the catalogue is callable and undocumented; one
 ;; added to the catalogue and not the dispatcher is advertised and
 ;; missing, which is worse -- a tool list is read and believed.
 ;;
-;; ⛔ IT IS COMPARED IN BOTH DIRECTIONS. "Every catalogue entry is a real
+;; NEVER: IT IS COMPARED IN BOTH DIRECTIONS. "Every catalogue entry is a real
 ;; verb" is satisfied by a catalogue with one entry in it.
 
 (import (chezscheme)
@@ -73,7 +73,7 @@
       (missing-from described (rpc-verbs))
       '())
 
-;; ⛔ AND THE COUNTS AGREE, which the two rows above do not by themselves
+;; NEVER: AND THE COUNTS AGREE, which the two rows above do not by themselves
 ;; guarantee: a catalogue that listed a verb twice passes both.
 (want "DS-1 and there are as many entries as verbs"
       (list (length described) (length (rpc-verbs)))
@@ -81,7 +81,7 @@
 
 ;; ---- DS-2 asking costs nothing ---------------------------------------------
 ;;
-;; ⭐ A CALLER ASKING WHAT THE VERBS ARE OFTEN HAS NO STORE. The MCP
+;; KEY: A CALLER ASKING WHAT THE VERBS ARE OFTEN HAS NO STORE. The MCP
 ;; shell builds its tool list before anyone has said which store they
 ;; mean, so a `describe` that needed one would make the shell's first
 ;; act a refusal.
@@ -89,7 +89,7 @@
       (rpc-ok? (rpc-dispatch (string-append here "/no-such-store") '(describe) "test"))
       #t)
 
-;; ⛔ AND IT DID NOT CREATE ONE ON THE WAY. "It answered" would also be
+;; NEVER: AND IT DID NOT CREATE ONE ON THE WAY. "It answered" would also be
 ;; true of an implementation that quietly made the store first.
 (want "DS-2 TWIN: and it did not create one"
       (if (file-exists? (string-append here "/no-such-store")) 'CREATED-IT 'left-it-alone)
@@ -101,13 +101,13 @@
 
 ;; ---- DS-2b it touches nothing ----------------------------------------------
 ;;
-;; ⛔ "IT ANSWERED WITHOUT A STORE" IS NOT THE SAME CLAIM AS "IT TOUCHED
+;; NEVER: "IT ANSWERED WITHOUT A STORE" IS NOT THE SAME CLAIM AS "IT TOUCHED
 ;; NOTHING". A `describe` that opened an existing store, took its lock and
 ;; wrote a snapshot would pass every row above -- the rows above only ever
 ;; gave it a store that was not there.
 ;;
-;; ⚠️ MEASURED AS EVERY FILE'S NAME *AND CONTENT*, before and after.
-;; ⛔ Not as "did it raise", which a read would not trip. ⛔ And not as a
+;; NOTE: MEASURED AS EVERY FILE'S NAME *AND CONTENT*, before and after.
+;; NEVER: Not as "did it raise", which a read would not trip. NEVER: And not as a
 ;; listing of NAMES, which was the first attempt: `insert` appends to a
 ;; log file that already exists, so a name listing compared equal across
 ;; a write and the twin below said so -- the instrument could not see the
@@ -127,7 +127,7 @@
           (list 'changed))
       'untouched)
 
-;; ⛔ AND THE LISTING REALLY WOULD HAVE NOTICED. Without this the row above
+;; NEVER: AND THE LISTING REALLY WOULD HAVE NOTICED. Without this the row above
 ;; is passed by a listing that is empty, or by one taken of the wrong
 ;; directory -- both of which compare equal to themselves.
 (want "DS-2b TWIN: and a verb that does write is seen by the same listing"
@@ -139,14 +139,14 @@
 
 ;; ---- DS-2c what a byte-for-byte listing cannot see -------------------------
 ;;
-;; ⛔ THE ROWS ABOVE COMPARE NAMES AND CONTENTS, and three of the things
+;; NEVER: THE ROWS ABOVE COMPARE NAMES AND CONTENTS, and three of the things
 ;; `describe` promises not to do leave both unchanged: opening a file and
 ;; reading it, taking a lock and releasing it, making a temporary file and
 ;; removing it again. The promise is "it does not open the store, take a
 ;; lock or write a byte" -- and only one third of that is measurable by
 ;; looking at the store afterwards.
 ;;
-;; ⚠️ SO THE INSTRUMENT IS THE TRACE, which reports the acts themselves:
+;; NOTE: SO THE INSTRUMENT IS THE TRACE, which reports the acts themselves:
 ;; `log-open`, `flock`, `unlock`, `fsync`. Measured for `outline` on this
 ;; same store: flock 1, log-open 1, fsync 6, unlock 1. For `describe`:
 ;; none at all.
@@ -169,7 +169,7 @@
         (if (zero? n) 'did-nothing-to-the-store (list 'events n)))
       'did-nothing-to-the-store)
 
-;; ⛔ AND THE INSTRUMENT REALLY SEES THOSE ACTS. Without this row the one
+;; NEVER: AND THE INSTRUMENT REALLY SEES THOSE ACTS. Without this row the one
 ;; above is passed by a build with tracing switched off, by a trace
 ;; written somewhere else, and by a verb that failed before it started.
 (want "DS-2c TWIN: and a verb that does touch the store is seen doing it"
@@ -191,7 +191,7 @@
           (else (loop (cdr es) (cons (car (car es)) bad)))))
       '())
 
-;; ⚠️ THE USAGE FORM NAMES THE VERB IT BELONGS TO. A catalogue whose
+;; NOTE: THE USAGE FORM NAMES THE VERB IT BELONGS TO. A catalogue whose
 ;; entries had drifted -- `read`'s usage filed under `refs` -- would pass
 ;; every row above.
 (want "DS-3 each usage form begins with its own verb"
@@ -205,7 +205,7 @@
 
 ;; ---- DS-4 the protocol is the one constant ---------------------------------
 ;;
-;; ⛔ BYTE FOR BYTE, not "contains something about writing". The MCP tool
+;; NEVER: BYTE FOR BYTE, not "contains something about writing". The MCP tool
 ;; descriptions are built from this same text; if `describe` handed out a
 ;; paraphrase, the shell and the README would be documenting two
 ;; different protocols and both would look right.
@@ -217,7 +217,7 @@
 
 ;; ---- DS-5 which verbs the protocol is about --------------------------------
 ;;
-;; ⚠️ NAMED, NOT COUNTED. "Two verbs are marked" would stay true if the
+;; NOTE: NAMED, NOT COUNTED. "Two verbs are marked" would stay true if the
 ;; mark moved to two other verbs.
 (want "DS-5 the protocol flag is set on exactly insert and write"
       (let loop ((es entries) (out '()))
@@ -228,19 +228,19 @@
 
 ;; ---- DS-6 the route, and the client's bootstrap list ----------------------
 ;;
-;; ⭐ EVERY ENTRY SAYS WHO CARRIES IT OUT. `daemon` means a client sends
+;; KEY: EVERY ENTRY SAYS WHO CARRIES IT OUT. `daemon` means a client sends
 ;; it over the socket; `local` means the client runs the server itself,
 ;; because there is nothing to send it to yet.
 ;;
-;; ⛔ THE DEFECT THIS EXISTS FOR: the MCP shell has no local route at all,
+;; NEVER: THE DEFECT THIS EXISTS FOR: the MCP shell has no local route at all,
 ;; so it offered `theourgia_init` as a tool, sent it to a daemon for a
 ;; store that did not exist, and the daemon could not start. The shell
 ;; could never create a store, and an agent reading the tool list was told
 ;; otherwise.
 ;;
-;; ⚠️ THE CLIENT PROGRAM KEEPS ITS OWN LIST and must: it needs to know
+;; NOTE: THE CLIENT PROGRAM KEEPS ITS OWN LIST and must: it needs to know
 ;; before it can ask anybody. So the two are compared, in both directions.
-;; ⛔ The list is READ OUT OF THE PROGRAM'S SOURCE rather than written
+;; NEVER: The list is READ OUT OF THE PROGRAM'S SOURCE rather than written
 ;; again here -- a copy in this file would agree with itself forever.
 
 (define client-source
@@ -284,7 +284,7 @@
       '())
 
 
-;; ⛔ AND EVERY ENTRY'S ROUTE IS A ROUTE. The comparisons above select the
+;; NEVER: AND EVERY ENTRY'S ROUTE IS A ROUTE. The comparisons above select the
 ;; entries whose route is exactly `local`, so a verb whose route is
 ;; MISSPELLED -- `deamon` -- silently leaves that set and matches
 ;; everything they ask. The shell then drops it from the tool list, which
@@ -299,7 +299,7 @@
                           (cons (list (car (car es)) (entry-field (car es) 'route)) bad)))))
       '())
 
-;; ⚠️ THE OTHER DIRECTION HAS AN EXEMPTION, AND IT IS NAMED. `serve` and
+;; NOTE: THE OTHER DIRECTION HAS AN EXEMPTION, AND IT IS NAMED. `serve` and
 ;; `eval` are commands of the server PROGRAM, not core verbs, so they are
 ;; not in the catalogue at all and cannot have a route. Only a client
 ;; local-verb that IS a core verb has to be marked local.
@@ -316,7 +316,7 @@
           (else (loop (cdr xs) (cons (list (car xs) 'routed-to-the-daemon) bad)))))
       '())
 
-;; ⛔ AND THE EXEMPTION IS NOT A HOLE: the two names it covers must really
+;; NEVER: AND THE EXEMPTION IS NOT A HOLE: the two names it covers must really
 ;; be absent from the catalogue. If `eval` ever became a core verb this
 ;; row goes red and somebody decides, rather than the exemption quietly
 ;; covering a verb that now has a route.

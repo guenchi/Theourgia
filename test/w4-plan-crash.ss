@@ -21,7 +21,7 @@
 ;; answer, retries.
 ;;
 ;; WHAT MUST HAPPEN: the retry completes the request from the plan's own
-;; frozen declaration. ⛔ It does not read the drafts. By then the same
+;; frozen declaration. NEVER: It does not read the drafts. By then the same
 ;; person may have written a new draft into the same slot, and carrying
 ;; THAT out would execute a request nobody sent.
 ;;
@@ -30,7 +30,7 @@
 ;; released, and the child is killed while it waits at the second. The
 ;; store is left exactly as a crash would leave it.
 ;;
-;; ⚠️ EVERY WAIT HERE IS BOUNDED. A fifo write with no reader blocks
+;; NOTE: EVERY WAIT HERE IS BOUNDED. A fifo write with no reader blocks
 ;; forever, and this suite has already lost fifteen minutes a fixture to
 ;; that: `cli1` spun out a bounded wait for children that had died and
 ;; then wrote to a fifo nobody would ever read. The whole dance runs
@@ -81,14 +81,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -156,7 +156,7 @@
       (lambda (p) (let ((line (get-line p)))
                     (if (eof-object? line) 'empty (string->number line)))))))
 
-;; ⭐ THE FIXTURE ASSERTS THAT THE CRASH HAPPENED WHERE IT MEANT TO.
+;; KEY: THE FIXTURE ASSERTS THAT THE CRASH HAPPENED WHERE IT MEANT TO.
 ;; Two barriers observed means the plan's append was released and the
 ;; child was waiting at the member's. One means it never got past the
 ;; plan; none means it never started. Any of those makes every row below
@@ -176,7 +176,7 @@
 
 ;; ---- the retry ------------------------------------------------------------
 
-;; ⚠️ THE RETRY IS SENT THE SAME WAY THE FIRST ATTEMPT WAS.
+;; NOTE: THE RETRY IS SENT THE SAME WAY THE FIRST ATTEMPT WAS.
 ;;
 ;; A request's fingerprint is taken over its argument STRINGS, so a
 ;; retry that spells its arguments differently is a different request --
@@ -206,7 +206,7 @@
            (store-evidence store (cons writer "R1")))
       '(plan 0))
 
-;; ⛔ AND THE LATER DRAFT IS STILL A DRAFT. It was never consumed: the
+;; NEVER: AND THE LATER DRAFT IS STILL A DRAFT. It was never consumed: the
 ;; request named v1, and the completion path does not look at the slot.
 (want "W4\" the later draft survives" (call 'read A "--working") '(ok (text "later text")))
 
@@ -214,7 +214,7 @@
 ;;
 ;; A plan says two things about the same draft: "this is the text" and
 ;; "this was version V of it", where V is sha256(text || based-on ||
-;; cut). ⛔ A REAL COMMIT CANNOT MAKE THEM DISAGREE -- it computes both
+;; cut). NEVER: A REAL COMMIT CANNOT MAKE THEM DISAGREE -- it computes both
 ;; from one envelope -- so the only input that separates "the completion
 ;; checks" from "the completion trusts" is a FORGED plan. That is not a
 ;; detour around the rule; it is the rule's only discriminating input.
@@ -302,7 +302,7 @@
 ;; calls `active-entries` before it reaches `with-store-write`, and that
 ;; opens every envelope in the writer's draft directory.
 ;;
-;; ⛔ THE ANSWERS ARE RIGHT AND THE READS REMAIN. A draft that cannot be
+;; NEVER: THE ANSWERS ARE RIGHT AND THE READS REMAIN. A draft that cannot be
 ;; read no longer answers ahead of the request's identity -- the failure
 ;; is caught and carried to `preflight`, which a completion never
 ;; reaches -- so what is left is a cost and a contract line, not a wrong

@@ -66,14 +66,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -143,7 +143,7 @@
                         (string-append (writer-directory store writer) "/000001.sexp"))
         get-bytevector-all)
       log-before)
-;; ⭐ AND IT DOES NOT RETIRE THE LATER DRAFT. A replay retires nothing:
+;; KEY: AND IT DOES NOT RETIRE THE LATER DRAFT. A replay retires nothing:
 ;; what this request consumed was retired by the execution it is a
 ;; replay of, and what is in the slot now is work nobody committed.
 ;; Measured -- before this was fixed the retry threw v2 away and a
@@ -156,10 +156,10 @@
 ;; A retry is the same request only if every part of its identity is the
 ;; same. Each row below changes ONE part and nothing else.
 ;;
-;; ⛔ EACH IS ITS OWN ROW. A single row that changed two things at once
+;; NEVER: EACH IS ITS OWN ROW. A single row that changed two things at once
 ;; would be green for a build that checked either of them.
 
-;; ⭐ IDENTITY BEFORE PREMISES, WHICH IS WHERE THIS ROW USED TO READ
+;; KEY: IDENTITY BEFORE PREMISES, WHICH IS WHERE THIS ROW USED TO READ
 ;; `no-draft`. §7.5.4 fixes the order, and `working-commit!` used to
 ;; answer about the drafts before the identity had been judged at all --
 ;; so a retry whose drafts its own first attempt had retired was told
@@ -189,13 +189,13 @@
 
 ;; ---- and which of the two answers comes first --------------------------
 ;;
-;; ⭐ FOUR LAYERS, IN THIS ORDER (§7.6.50 v249): well-formed (the verb
+;; KEY: FOUR LAYERS, IN THIS ORDER (§7.6.50 v249): well-formed (the verb
 ;; exists, the arity fits, the required identity fields are there) ->
 ;; request identity (replay, mismatch) -> premises (the base) ->
 ;; execution. So a resend that DROPPED a required field is answered
 ;; `writer-required`, not `req-mismatch`.
 ;;
-;; ⛔ NOT AN ARBITRARY TIE-BREAK. A fingerprint is computed over a
+;; NEVER: NOT AN ARBITRARY TIE-BREAK. A fingerprint is computed over a
 ;; well-formed request, and a request missing a required field has no
 ;; comparable one; a retry is by definition byte-identical, so something
 ;; with a field removed is not a retry of anything. Answering

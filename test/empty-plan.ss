@@ -72,7 +72,7 @@
 (rpc-dispatch store (list 'commit id "--req" "one-intent" "--cursor" cursor
                           "--working-version" one-version "--writer" writer)
               "test")
-;; ⚠️ THIS ROW SAID `single`, AND THE DESIGN TOOK THAT BACK.
+;; NOTE: THIS ROW SAID `single`, AND THE DESIGN TOOK THAT BACK.
 ;;
 ;; A commit of one block used to be written as a single record with no
 ;; plan; §7.5.9 makes a commit write a plan ALWAYS, one block or ten.

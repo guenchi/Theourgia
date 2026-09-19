@@ -349,7 +349,7 @@
 
   ;; THE SNIPPET IS THE FIRST LINE THAT HITS, title before src, with its
   ;; whitespace collapsed and cut to the limit.
-  ;; ⚠️ KEYWORDS COME FIRST IN THE LINES SEARCHED, so a block matched on
+  ;; NOTE: KEYWORDS COME FIRST IN THE LINES SEARCHED, so a block matched on
   ;; its keywords shows them. A snippet drawn from the prose for a
   ;; keyword hit would show a line that does not contain the word the
   ;; caller searched for, which reads as a wrong result.
@@ -379,7 +379,7 @@
                                (block (state-read state id))
                                (titles (field-strings block (quote title)))
                                (srcs (field-strings block (quote src)))
-                               ;; ⭐ KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
+                               ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
                                ;; SOURCE'S 1. They are the one field a
                                ;; writer chose FOR being found by, so a
                                ;; block whose keywords match is a better
@@ -388,7 +388,7 @@
                                (in-title (exists (lambda (tk) (any-hit? titles tk)) tokens))
                                (in-src (exists (lambda (tk) (any-hit? srcs tk)) tokens))
                                (in-kw (exists (lambda (tk) (any-hit? kws tk)) tokens))
-                               ;; ⛔ EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
+                               ;; NEVER: EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
                                ;; Keywords widen where a token may be
                                ;; found; they do not turn the query into
                                ;; an OR across tokens.
@@ -1443,7 +1443,7 @@
                                       delivered marks)
                         out))))))
 
-  ;; ⛔ PUBLISHED WHILE THE LOCK IS STILL HELD AND BEFORE THE ANSWER GOES
+  ;; NEVER: PUBLISHED WHILE THE LOCK IS STILL HELD AND BEFORE THE ANSWER GOES
   ;; BACK. Both halves are load-bearing. Under the lock, because a value
   ;; published after the unwind would describe a store another session
   ;; was already free to change. Before the answer, because that is what
@@ -1452,7 +1452,7 @@
   ;; has that evidence the new value is already the one every reader
   ;; sees.
   ;;
-  ;; ⭐ AND IT IS THE LIVE FOLD, NOT A REPLAY OF WHAT WAS JUST WRITTEN.
+  ;; KEY: AND IT IS THE LIVE FOLD, NOT A REPLAY OF WHAT WAS JUST WRITTEN.
   ;; `state` is the reduction this session has been applying records into
   ;; -- `reduce-apply!` updates it in place -- so it knows things a fresh
   ;; replay would have to rediscover, the consumption index of a plan
@@ -1460,19 +1460,19 @@
   ;; second supplier of the same fact, and the two would differ exactly
   ;; where this one is interesting.
   ;;
-  ;; ⚠️ PUBLISHING A MUTABLE OBJECT IS SAFE HERE FOR ONE REASON, AND IT
+  ;; NOTE: PUBLISHING A MUTABLE OBJECT IS SAFE HERE FOR ONE REASON, AND IT
   ;; IS WORTH WRITING DOWN BECAUSE IT READS LIKE A DEFECT: every call to
   ;; `with-store-write` builds its OWN `(reduce-empty)` and folds into
   ;; that, so once a value has been published nothing ever mutates it
-  ;; again. ⛔ It does not need a defensive copy, and a reader that
+  ;; again. NEVER: It does not need a defensive copy, and a reader that
   ;; changed it would be changing what every other reader sees -- which
   ;; is why the readers are handed it as a value they may not modify.
   ;;
-  ;; ⚠️ A RAISE PUBLISHES NOTHING. The body turns every failure it can
+  ;; NOTE: A RAISE PUBLISHES NOTHING. The body turns every failure it can
   ;; describe into an answer, so a raise that gets past it is one nothing
   ;; here can say the shape of -- and a value folded from a session in
   ;; that condition is not one to hand to readers.
-  ;; ⛔ AND THERE IS NO ROW BEHIND "IT MUST BE THE LIVE FOLD", because
+  ;; NEVER: AND THERE IS NO ROW BEHIND "IT MUST BE THE LIVE FOLD", because
   ;; the claim turned out not to be true. It was written down as "only
   ;; the live fold knows the consumption index of a plan that has just
   ;; finished", and that was hoped rather than measured. Measured, on a
@@ -1482,13 +1482,13 @@
   ;; ALL AGREE. The consumption index is rebuilt from the plan record,
   ;; which carries what it consumed, so a replay finds it.
   ;;
-  ;; ⭐ SO PUBLISHING THE LIVE FOLD IS AN ECONOMY, NOT A CORRECTNESS
+  ;; KEY: SO PUBLISHING THE LIVE FOLD IS AN ECONOMY, NOT A CORRECTNESS
   ;; PROPERTY: it saves folding the whole log a second time on every
-  ;; write. ⛔ A row here would have to be green against both versions,
+  ;; write. NEVER: A row here would have to be green against both versions,
   ;; and a row that cannot fail says nothing -- so the reason is written
   ;; here instead of a row being written that looks like cover.
   ;;
-  ;; ⚠️ THE OTHER VERSION ALSO CANNOT BE BUILT. This runs INSIDE the
+  ;; NOTE: THE OTHER VERSION ALSO CANNOT BE BUILT. This runs INSIDE the
   ;; store's lock; a `open-and-reduce` here would ask for the same lock
   ;; on a second descriptor, which flock refuses to the same process --
   ;; so under a daemon's non-blocking strategy it does not publish a
@@ -1498,7 +1498,7 @@
       (publish-hook state)
       answers))
 
-  ;; ⛔ A PLAIN VARIABLE SET ONCE, ⛔ NOT A PARAMETER. A parameter would
+  ;; NEVER: A PLAIN VARIABLE SET ONCE, NEVER: NOT A PARAMETER. A parameter would
   ;; say that this can differ between callers, and it cannot: there is
   ;; one publication for the whole VM and only one process ever gets
   ;; here. It would also be saying something untrue about how it is
@@ -1590,7 +1590,7 @@
               ;; reads the state and answers a list -- it writes nothing,
               ;; so asking it early costs nothing and changes nothing.
               (let* ((intents (proc state (session-view s)))
-                     ;; ⭐ A COMMIT IS A PLAN EVEN WHEN IT CARRIES ONE
+                     ;; KEY: A COMMIT IS A PLAN EVEN WHEN IT CARRIES ONE
                      ;; SUB-OPERATION, and both of the two places that
                      ;; decide that have to say so. This one gives the
                      ;; verdict the request's SIZE: passing #f for a
@@ -1632,7 +1632,7 @@
                                                    (and req (cursor-unreachable store s req)))))))
                           (cond
                             (bad (list bad))
-                            ;; ⭐ A PLAN THAT IS ALREADY PERSISTED IS
+                            ;; KEY: A PLAN THAT IS ALREADY PERSISTED IS
                             ;; FINISHED FROM THE PLAN. The premises are
                             ;; NOT checked again: the blocks this request
                             ;; already wrote have moved, and re-checking
@@ -1902,7 +1902,7 @@
   ;; started before it died. The members that are already there stay;
   ;; the ones that are not are written at their own declared indices,
   ;; under the same plan event, from the text the plan froze.
-  ;; ⛔ THE FROZEN TEXT IS CHECKED AGAINST THE NAME THE RECORD GAVE IT.
+  ;; NEVER: THE FROZEN TEXT IS CHECKED AGAINST THE NAME THE RECORD GAVE IT.
   ;;
   ;; A plan says both "this is the text" and "this was version V of the
   ;; draft", and V is `sha256(text || based-on || cut)`. If they disagree
@@ -2009,7 +2009,7 @@
                 ;; be refused for a reason that has nothing to do with
                 ;; them.
                 (begin
-                  ;; ⭐ THE ACTOR GOES IN. The replay path supplies it and
+                  ;; KEY: THE ACTOR GOES IN. The replay path supplies it and
                   ;; this one did not, so a reduction built by writing
                   ;; disagreed with the same reduction built by reading:
                   ;; the consumption index is fed from a record's actor --

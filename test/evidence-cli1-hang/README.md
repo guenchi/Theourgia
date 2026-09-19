@@ -15,7 +15,7 @@ ran out because the children were already dead, and the byte it then
 writes to `gate-locked` went to a fifo with no reader, which blocks
 until the runner's 900-second alarm.
 
-⛔ THE FIXTURE REPORTS THIS AS `(0 0)`, which reads as "the reader did
+NEVER: THE FIXTURE REPORTS THIS AS `(0 0)`, which reads as "the reader did
 not wait for the lock" -- a statement about lock behaviour, from a run in
 which neither process reached the library. That is why the first guess at
 the cause was machine load. See RUN.md, "A hang is the failure this

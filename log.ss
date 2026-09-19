@@ -344,20 +344,20 @@
 
   ;; ---- what this store looked like ----------------------------------------
   ;;
-  ;; ⛔ A CHEAP READING THAT CHANGES WHEN ANYTHING DURABLE CHANGES, taken
+  ;; NEVER: A CHEAP READING THAT CHANGES WHEN ANYTHING DURABLE CHANGES, taken
   ;; WITHOUT opening the log and WITHOUT taking the store's lock. It
   ;; exists so a reader holding a value loaded earlier can ask "is this
   ;; still what is on the disk" between requests: opening the log to find
   ;; out would cost more than the read it is protecting, and would take
   ;; the very lock the arrangement exists to stay out of.
   ;;
-  ;; ⚠️ IT LIVES HERE BECAUSE THE LAYOUT LIVES HERE. Spelling these paths
+  ;; NOTE: IT LIVES HERE BECAUSE THE LAYOUT LIVES HERE. Spelling these paths
   ;; out anywhere else would be a second place that knows where a
   ;; writer's manifest is -- and the day the layout moved, the copy would
   ;; go on watching files that no longer exist and report "unchanged"
   ;; for ever, which is the failure this is meant to catch.
   ;;
-  ;; ⚠️ A MISSING FILE IS A STATE, so it reads as #f rather than being
+  ;; NOTE: A MISSING FILE IS A STATE, so it reads as #f rather than being
   ;; left out: a `retired.sexp` APPEARING is exactly the kind of change
   ;; this has to notice, and an entry that is simply absent from both
   ;; snapshots compares equal to itself.

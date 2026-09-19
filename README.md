@@ -27,14 +27,14 @@ and its dependency -- into a directory of objects:
 
 where both arguments are the directory that *contains* `theourgia/`.
 Point `CHEZSCHEMELIBDIRS` at the output and `CHEZSCHEMELIBEXTS` at
-`.so`. ⚠️ Objects start about twelve times faster than source, because
+`.so`. NOTE: Objects start about twelve times faster than source, because
 they do not re-expand the libraries on every call.
 
-⛔ **The products do not belong in the source tree.** A stale `.so`
+NEVER: **The products do not belong in the source tree.** A stale `.so`
 beside a `.ss` is resolved in preference to it, so a tree holding both
 can be running code nobody has edited for a week.
 
-⚠️ **Packaging the whole program into one file is not done yet.** That
+NOTE: **Packaging the whole program into one file is not done yet.** That
 form would drop a library nothing statically references -- and `serve`,
 `eval` and forwarding are reached at run time by name, so they would
 stop resolving. It is recorded as F13; until then the shipped form is a
@@ -52,14 +52,14 @@ the daemon used to create it, so nothing needs to be told where it is --
 running an ordinary verb reaches the daemon automatically when one is
 there, and runs locally when one is not.
 
-⛔ **The daemon's answer is the CLI's answer, byte for byte.** Both call
+NEVER: **The daemon's answer is the CLI's answer, byte for byte.** Both call
 the same dispatcher; no verb, answer or error shape exists in one and not
 the other. Set `THEOURGIA_LOCAL=1` to skip the socket and answer in
 process even when a daemon is running.
 
 ## Global options
 
-⚠️ **These are accepted by EVERY verb**, and they are here rather than in
+NOTE: **These are accepted by EVERY verb**, and they are here rather than in
 each verb's line because repeating them thirty-three times would say they
 were somehow special to each one.
 
@@ -73,7 +73,7 @@ were somehow special to each one.
 | `--cursor <w:n>` | the position this request is composed against |
 
 `THEOURGIA_LOCAL=1` answers in this process even when a daemon's socket
-is there. ⚠️ It is a debugging path: it skips the daemon rather than
+is there. NOTE: It is a debugging path: it skips the daemon rather than
 doing something the daemon cannot.
 
 ## Writing for agents
@@ -218,10 +218,10 @@ for something that has to ask rather than be told: the MCP shell builds its
 tool list from this, so a tool description and the verb it describes cannot
 drift apart.
 
-It reads a table and runs nothing. ⛔ It does not open the store, take a lock
+It reads a table and runs nothing. NEVER: It does not open the store, take a lock
 or write a byte.
 
-⚠️ **The table needs no store; asking a daemon for it does.** Answered in
+NOTE: **The table needs no store; asking a daemon for it does.** Answered in
 process — which is what `theourgia describe` does when it runs the server
 locally — it works with no store at all. Asked over a socket, the request goes
 to *that store's* daemon, and a daemon for a store that does not exist cannot
@@ -236,7 +236,7 @@ runs in its own process. `init` is `local`, because it is what creates the
 store there would otherwise be nothing to send to.
 
 The `protocol` flag on an entry says that verb's description carries the
-writing protocol text. It is set on `insert` and `write`. ⚠️ It does not mean
+writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 "this verb changes the store" — `set` does that and is not marked.
 
 ### `conflicts`
@@ -275,7 +275,7 @@ parent's children; without it the block goes last. `--text` gives the
 block its `src` in the same request.
 
 `--keywords` gives it the words it should be found by -- three to eight
-of them, comma separated, as the protocol above says. ⛔ The value is
+of them, comma separated, as the protocol above says. NEVER: The value is
 stored as TEXT, exactly as it was written: `read` gives back the same
 string, spacing and commas included. Splitting it into words happens in
 `search`, which is the only reader that needs them; a store holding a
@@ -315,7 +315,7 @@ choosing; the store does not interpret it.
 
     (unlink <from> <rel> <to>)
 
-Removes that edge. ⚠️ The three positionals are the same three `link`
+Removes that edge. NOTE: The three positionals are the same three `link`
 takes, in the same order, and getting them out of order is not an error
 the store can see.
 
@@ -332,7 +332,7 @@ Defines one datum by name, optionally inside a library block.
 Prints the store's block tree as indented text: one line per block, its
 `<id>.<version>` and its title. `--depth` stops at that many levels.
 
-`--with-keywords` appends `  [<keywords>]` to each row that has them. ⚠️
+`--with-keywords` appends `  [<keywords>]` to each row that has them. NOTE:
 A block without the field prints no brackets: empty ones would say the
 writer chose no keywords, which is a different thing from a store written
 before the field existed. Without the option the listing is unchanged.
@@ -344,11 +344,11 @@ name and visible to nobody else until it is committed. A writer with
 drafts has a **working view**: the committed store, with its own drafts
 laid over the blocks they cover.
 
-⛔ **A writer id is held by one live agent at a time.** Two agents may
+NEVER: **A writer id is held by one live agent at a time.** Two agents may
 use one id across TIME -- a later session binds the same id and its
 `drafts` shows what the earlier one left -- but not at the same moment.
 
-⚠️ **If two do hold it at once, the later write replaces the earlier one
+NOTE: **If two do hold it at once, the later write replaces the earlier one
 and the core does not say so.** Measured: two clients writing a draft on
 one block under one writer id; the second write answered `ok`, and the
 first client's own `drafts` then reported the SECOND client's version as
@@ -363,7 +363,7 @@ of it** rather than sharing the id:
 From there each writes its own, and the two meet at `commit` through
 `--based-on`.
 
-⛔ **There is no machinery behind this rule** -- no record of who holds an
+NEVER: **There is no machinery behind this rule** -- no record of who holds an
 id, no lock, and nothing refuses a second process. It is a convention,
 stated here because the failure it prevents is silent.
 
@@ -383,7 +383,7 @@ onto a newer committed parent.
     (restore <version> ("--writer" <name>))
 
 Takes a version's bytes out of the log and puts them back as a draft.
-⚠️ It is its own verb rather than a flag on `write`, because it takes a
+NOTE: It is its own verb rather than a flag on `write`, because it takes a
 version and NO bytes: the bytes come from the log.
 
 A version is looked up in that writer's own revoked consumptions -- the
@@ -416,7 +416,7 @@ writer's drafts. `--working-version` may be given once per block to say
 which version of the draft is being committed; with exactly one block
 named, the bare version may be given.
 
-⚠️ **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
+NOTE: **The answer may carry `(behind ((<writer> . <seq>) ...))`** -- other
 writers who landed after this writer's drafts were taken. It is
 informational, and it is **absent** when nothing moved rather than
 present and empty: a field that is always there says nothing.
@@ -448,7 +448,7 @@ one block per top-level form -- rather than as text.
 
     (export-code <dir> ("--raw") ("--datum"))
 
-Writes the store out as source. ⛔ `--datum` and `--raw` together are
+Writes the store out as source. NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".
 
@@ -948,7 +948,7 @@ the committed store except by reading it.
     (error eval-exception (kind raised) (message "..."))
     (error bad-request (reason ...) (usage (eval ...)))
 
-⛔ **What the evaluation prints is DATA, carried in a field.** Text that
+NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
 never be mistaken for the answer itself.
 
@@ -956,7 +956,7 @@ never be mistaken for the answer itself.
 `--memory-bytes` 1 MiB..2 GiB (default 256 MiB), `--output-bytes`
 128..1 MiB (default 65536). The output quota counts DECODED user bytes
 across both streams -- what the user printed, not what the framing made
-of it. ⚠️ The memory budget is read by sampling the child's resident size
+of it. NOTE: The memory budget is read by sampling the child's resident size
 every 50ms, so it applies to an evaluation that lasts at least that long;
 one that finishes sooner has already ended.
 
@@ -966,7 +966,7 @@ coordinate the run can be repeated from, and "at some cut" is not one.
 Without `--working` the writer position is `#f` and the draft table is
 empty; the cut is still the committed state that was read.
 
-⛔ **`--working` is PINNED by default.** The view stands on the state the
+NEVER: **`--working` is PINNED by default.** The view stands on the state the
 writer's OWN drafts record -- the join of their cuts -- so a commit
 another writer made after those drafts does not walk into it, and the
 same unchanged draft answers the same way twice. `--latest` releases the
@@ -996,14 +996,14 @@ client would start a second daemon for a store that already had one.
 The key is the store's RESOLVED path, so every spelling of one store
 reaches one socket, and it is the same key before the store exists as
 after: the longest existing prefix is resolved and the components below
-it are appended. ⚠️ That last part is not a detail. `init` creates the
+it are appended. NOTE: That last part is not a detail. `init` creates the
 store, so a caller computing the socket path first and a caller computing
 it afterwards are the ordinary case; when those two disagreed, the second
 found no socket where it looked and ran the store locally instead --
 giving a correct answer, from the right store, with no sign that it had
 bypassed a daemon sitting right there.
 
-⚠️ The reason it is the run root rather than beside the store:
+NOTE: The reason it is the run root rather than beside the store:
 `sun_path` holds 104 bytes on macOS and FreeBSD, and a store may sit
 anywhere and be arbitrarily deep, so a store-adjacent socket under a long
 path simply fails to bind and the daemon reports `listener-down`.
@@ -1060,7 +1060,7 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_RUN` | `daemon.ss` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `cli.ss` | `1` answers in process even when a daemon's socket is there |
 | `THEOURGIA_SCHEME` | `cli.ss` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
-| `THEOURGIA_TRACE` | `ffi.ss` | `1` writes filesystem and dispatch events to stderr. ⚠️ Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
+| `THEOURGIA_TRACE` | `ffi.ss` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
 **Test-only, and two of them do not exist in an ordinary build.**
 
@@ -1068,7 +1068,7 @@ the transport's tag rather than on the answer's text.
 |---|---|
 | `THEOURGIA_INJECT` | `on` at EXPANSION time builds the fault-injection branches. With it unset or `off` there is no fault code in the object at all -- not a disabled branch, none |
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
-| `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. ⛔ Exists only inside the `THEOURGIA_INJECT=on` branch |
+| `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Read only by `test/` |
 | `THEOURGIA_LIBDIR` | read by `test/env.sh` and `test/paths.py`, not by any library. It is what makes a suite reading a PINNED one |
@@ -1088,7 +1088,7 @@ was found rather than left for a reader to discover.
     before it reports itself as an unbound identifier a hundred lines
     away. It is an OPTIONAL preflight: a machine with no `python3`
     prints `preflight: NOT CHECKED -- structure.py is here but no
-    python3 is` and the run continues. ⚠️ NOT CHECKED is not green -- it
+    python3 is` and the run continues. NOTE: NOT CHECKED is not green -- it
     says the reading has a hole in it and names the hole. Porting it to
     Scheme is not done.
   * **`W11-export-working` and `W11-cut-plus-working` have no cells.**

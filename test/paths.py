@@ -92,7 +92,7 @@ def _holds_libraries(directory):
     # whatever else is in it. `is_file()` matters: a DIRECTORY named
     # `rpc.ss` has the suffix too.
     #
-    # ⚠️ IT DOES NOT READ THE FILE, ON PURPOSE. A version of this matched
+    # NOTE: IT DOES NOT READ THE FILE, ON PURPOSE. A version of this matched
     # `(library (theourgia rpc)` with a regular expression, and a regular
     # expression is the wrong instrument for Scheme in both directions at
     # once: it accepted the declaration written inside a line comment, a
@@ -103,7 +103,7 @@ def _holds_libraries(directory):
     # A check that is wrong both ways is worse than a smaller one whose
     # limit is written down.
     #
-    # ⚠️ SO THIS IS A PRE-FLIGHT, NOT A PROOF. `rpc.ss` itself imports
+    # NOTE: SO THIS IS A PRE-FLIGHT, NOT A PROOF. `rpc.ss` itself imports
     # `(theourgia store)`, `(theourgia reduce)` and `(theourgia log)`;
     # answering "will this import" means running Chez, which is the thing
     # this check exists to avoid doing once per row. What it rules out is
@@ -173,7 +173,7 @@ def igropyr():
     platform)` through three facades of its own, so a staging directory
     holding only `theourgia/` resolves nothing past the first import.
 
-    ⚠️ IT DID NOT USED TO. `mcp-probe.py` carried a comment saying "the
+    NOTE: IT DID NOT USED TO. `mcp-probe.py` carried a comment saying "the
     core imports no such library any more, so leaving one there would
     let a reintroduced dependency resolve and go unremarked" -- true of
     the tree it was written against, false since the copies became

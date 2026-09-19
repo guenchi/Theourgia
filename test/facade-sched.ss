@@ -15,7 +15,7 @@
 
 ;; (theourgia sched) -- THE TIMEOUT CLAUSE IS NOT A CONSOLATION PRIZE.
 ;;
-;; ⛔ "`(after 0 ...)` RETURNS IMMEDIATELY" IS NOT A TEST. An
+;; NEVER: "`(after 0 ...)` RETURNS IMMEDIATELY" IS NOT A TEST. An
 ;; implementation that took the timeout branch every time would pass it,
 ;; and so would one that dropped the mailbox on the floor. igropyr scans
 ;; the queued messages BEFORE it considers the timeout, and that order is
@@ -63,7 +63,7 @@
 
       ;; ---- SC-02 an unmatched message is kept, not consumed ------------
       ;;
-      ;; ⭐ THE ROW THAT CATCHES A MAILBOX BEING DRAINED. A `receive` that
+      ;; KEY: THE ROW THAT CATCHES A MAILBOX BEING DRAINED. A `receive` that
       ;; threw away what it could not match would pass every row that only
       ;; asks whether the RIGHT message arrives.
       (send main (list 'unmatched 'keep-me))
@@ -91,7 +91,7 @@
 
       ;; ---- SC-04 and the timeout does fire when nothing comes ----------
       ;;
-      ;; ⛔ WITHOUT THIS the three rows above are all satisfied by a
+      ;; NEVER: WITHOUT THIS the three rows above are all satisfied by a
       ;; `receive` that never times out at all -- it would simply block,
       ;; and blocking looks like success until the day nothing arrives.
       (want "SC-04 TWIN: with an empty mailbox the timeout is what answers"
@@ -101,7 +101,7 @@
 
       ;; ---- SC-05 monitor: every ending is reported, with a name --------
       ;;
-      ;; ⛔ `monitor` AND `link` ARE NOT THE SAME PROMISE, and both are
+      ;; NEVER: `monitor` AND `link` ARE NOT THE SAME PROMISE, and both are
       ;; re-exported here with no row until now. A monitor reports EVERY
       ;; ending, normal or not, and the report carries WHICH process
       ;; ended -- a watcher of two children that could not tell them
@@ -124,7 +124,7 @@
       ;; The linked pair is built inside a process of its own, watched
       ;; from here, so that the cascade can be observed without this
       ;; process being the thing that dies.
-      ;; ⛔ AND THE CHILD MUST BE A SECOND PROCESS, RUNNING. Measured by
+      ;; NEVER: AND THE CHILD MUST BE A SECOND PROCESS, RUNNING. Measured by
       ;; the reviewer: with `spawn&link` replaced by
       ;; `(lambda (thunk) (thunk) (spawn (lambda () (if #f #f))))` --
       ;; which runs the body in the CALLER and links nothing -- every row
@@ -164,7 +164,7 @@
 
       ;; ---- SC-07 TWIN: a normal ending does NOT cascade ----------------
       ;;
-      ;; ⛔ WITHOUT THIS TWIN, SC-06 is satisfied by a `link` that kills
+      ;; NEVER: WITHOUT THIS TWIN, SC-06 is satisfied by a `link` that kills
       ;; its partner whenever it ends -- which would tear down half a
       ;; system every time a worker finished its work normally. The two
       ;; rows differ in ONE thing: how the linked process ends.
@@ -177,7 +177,7 @@
                             (receive (after 5000 'done)
                                      (`(ping ,from) (send from (list 'pong)) (live))))))))
              (ignored2 (monitor survivor)))
-        ;; ⚠️ THE SAME REQUIREMENT AS SC-06: the linked process has to be
+        ;; NOTE: THE SAME REQUIREMENT AS SC-06: the linked process has to be
         ;; a different one that really ran, or "ended normally" is only a
         ;; statement about the caller.
         (want "SC-07 the linked process is a second one, which ran"
@@ -191,7 +191,7 @@
                        (`(pong) 'still-running)
                        (`#(DOWN ,who ,why) (if (eq? who survivor) 'died-too 'someone-else)))
               'still-running)
-        ;; ⚠️ AND `process-alive?` IS ASKED THE SAME QUESTION SEPARATELY,
+        ;; NOTE: AND `process-alive?` IS ASKED THE SAME QUESTION SEPARATELY,
         ;; because the answer above could also come from a pong sent by a
         ;; process that died immediately afterwards.
         (want "SC-07 and process-alive? agrees about the one that survived"
@@ -200,13 +200,13 @@
 
       ;; ---- SC-08 `link` itself, not `spawn&link` ------------------------
       ;;
-      ;; ⛔ SC-06 AND SC-07 BOTH BUILD THEIR PAIR WITH `spawn&link`, which
+      ;; NEVER: SC-06 AND SC-07 BOTH BUILD THEIR PAIR WITH `spawn&link`, which
       ;; igropyr implements through its own internal linking -- so
       ;; replacing this facade's `link` export with something that does
       ;; nothing would leave both of them green. This row links two
       ;; processes that already exist, which is the only way to reach the
       ;; exported name.
-      ;; ⛔ AND THE CASCADE ALONE DOES NOT SAY THE LINK WORKED. Measured
+      ;; NEVER: AND THE CASCADE ALONE DOES NOT SAY THE LINK WORKED. Measured
       ;; by the reviewer, not by me: with `link` replaced by a definition
       ;; that raises, every row in this file still passed -- because a
       ;; partner that dies INSIDE `link` is also a partner that goes
@@ -232,7 +232,7 @@
                        (`(linked) (list 'linked (process-alive? partner)))
                        (`#(DOWN ,who ,why) (list 'went-down-while-linking (eq? who partner))))
               '(linked #t))
-        ;; ⛔ AND A LINK THAT KILLS ON A NORMAL ENDING WOULD PASS BOTH
+        ;; NEVER: AND A LINK THAT KILLS ON A NORMAL ENDING WOULD PASS BOTH
         ;; ROWS. SC-07 checks that only for `spawn&link`, which igropyr
         ;; implements by another route; this asks it of the exported
         ;; `link`, on a partner that ends the ordinary way.
@@ -269,7 +269,7 @@
 
       ;; ---- SC-09 TWIN: process-alive? about one that is NOT alive -------
       ;;
-      ;; ⛔ SC-07 ASKS IT ONLY ABOUT PROCESSES THAT ARE RUNNING, and
+      ;; NEVER: SC-07 ASKS IT ONLY ABOUT PROCESSES THAT ARE RUNNING, and
       ;; `(define (process-alive? p) #t)` answers those correctly. The
       ;; question is only worth asking if the answer can be no.
       (let* ((brief (spawn (lambda () (if #f #f))))

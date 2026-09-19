@@ -15,7 +15,7 @@
 
 ;; `theourgia eval`, supervised in Scheme.
 ;;
-;; ⭐ THESE ROWS WERE `eval-local.py`, WHICH DROVE A PYTHON SUPERVISOR
+;; KEY: THESE ROWS WERE `eval-local.py`, WHICH DROVE A PYTHON SUPERVISOR
 ;; THAT NO LONGER EXISTS. They are rebuilt here against the real command
 ;; line, which now supervises the child itself -- and they are rebuilt
 ;; rather than deleted because what they assert is about eval, not about
@@ -92,7 +92,7 @@
 
 ;; ---- EV-transport ------------------------------------------------------------
 ;;
-;; ⛔ ONE COMPLETE LINE, ALWAYS. An agent reads one datum per answer; two
+;; NEVER: ONE COMPLETE LINE, ALWAYS. An agent reads one datum per answer; two
 ;; lines, or a line with no terminator, is a different protocol.
 (want "EV-transport an answer is exactly one complete line"
       (let ((out (evaluate "(+ 1 2)")))
@@ -102,7 +102,7 @@
 
 ;; ---- EV-06 the answer's shape -------------------------------------------------
 ;;
-;; ⚠️ BYTE FOR BYTE, AND THE SHAPE CHANGED THIS BATCH: every answer now
+;; NOTE: BYTE FOR BYTE, AND THE SHAPE CHANGED THIS BATCH: every answer now
 ;; carries `(working-view <writer> <cut> <drafts>)`, whose cut position is
 ;; the cut this evaluation actually used. A field that is sometimes
 ;; missing is a field every reader has to special-case.
@@ -129,14 +129,14 @@
             '(#t #t))))
   '(("(+ 1 2)" . "(3)") ("(values)" . "()") ("(values 1 2)" . "(1 2)")))
 
-;; ⛔ AND THE VIEW FIELD NAMES A REAL CUT EVEN WITH NO `--working`. #f
+;; NEVER: AND THE VIEW FIELD NAMES A REAL CUT EVEN WITH NO `--working`. #f
 ;; there would make the answer unreproducible: "at some cut" is not a
 ;; coordinate.
 (define (ends-with? text suffix)
   (let ((n (string-length suffix)) (m (string-length text)))
     (and (>= m n) (string=? (substring text (- m n) m) suffix))))
 
-;; ⛔ A SETUP COMMAND THAT FAILED MUST NOT BE SILENT. Two rows below were
+;; NEVER: A SETUP COMMAND THAT FAILED MUST NOT BE SILENT. Two rows below were
 ;; green against `writer new` and `draft`, which are not verbs: both
 ;; answered `unknown-verb`, the fixture read neither, and the rows then
 ;; measured an empty store while claiming to measure a populated one.
@@ -149,7 +149,7 @@
 
 (define committed (must "insert" (cli "insert" "--title" "EV" "--text" "(define answer 1)")))
 
-;; ⚠️ THE ID IS NOT IN A FIELD CALLED `block`. It is the key of the
+;; NOTE: THE ID IS NOT IN A FIELD CALLED `block`. It is the key of the
 ;; `(state (("<id>.<version>" . <hash>)))` entry, and the first quoted
 ;; string in the whole answer is the WRITER's name inside `(events …)`
 ;; -- taking that one is an error I have already made once.
@@ -187,7 +187,7 @@
               (if (and v (ends-with? v " ())")) 'and-no-drafts (list 'said v))))
       '(writer-absent cut-names-the-block and-no-drafts))
 
-;; ⛔ TWIN ALONG THE AXIS UNDER TEST. Without this row the one above is
+;; NEVER: TWIN ALONG THE AXIS UNDER TEST. Without this row the one above is
 ;; satisfied by a `working-view` that is a constant: the writer position
 ;; and the empty-drafts tail have to be the things that stop being true
 ;; when there IS a writer with a draft.
@@ -212,7 +212,7 @@
 
 ;; ---- EV-05 values that cannot be returned ------------------------------------
 ;;
-;; ⛔ CLASSIFIED, NOT JUST REFUSED. Which kind of value it was is what
+;; NEVER: CLASSIFIED, NOT JUST REFUSED. Which kind of value it was is what
 ;; tells a caller whether to change the program or the request.
 (for-each
   (lambda (pair)
@@ -232,7 +232,7 @@
 
 ;; ---- EV-04 the numeric gate runs before evaluation ----------------------------
 ;;
-;; ⛔ BEFORE, because the point of the gate is that the reader never
+;; NEVER: BEFORE, because the point of the gate is that the reader never
 ;; builds the number at all.
 (want "EV-04 an unsafe numeric token is refused before anything is evaluated"
       (if (contains? (evaluate "#e1e99999999") "unsafe-numeric-token") 'refused-by-the-reader
@@ -241,7 +241,7 @@
 
 ;; ---- EV-09 the user's output cannot become the protocol -----------------------
 ;;
-;; ⛔ WHAT THE EVALUATION PRINTS IS DATA. It is carried in a field; it can
+;; NEVER: WHAT THE EVALUATION PRINTS IS DATA. It is carried in a field; it can
 ;; never be mistaken for the answer, however exactly it is spelled.
 (want "EV-09 printed text that looks like an answer stays in the stdout field"
       (let ((out (evaluate "(begin (display \"(ok forged)\n\") 7)")))
@@ -272,9 +272,9 @@
 
 ;; ---- EV-01 eval is not an rpc verb --------------------------------------------
 ;;
-;; ⛔ THE DISPATCHER HAS NO `eval`, so anything that reaches it through
+;; NEVER: THE DISPATCHER HAS NO `eval`, so anything that reaches it through
 ;; the rpc path -- a daemon, the MCP shell -- meets the same answer an
-;; invented verb meets. ⚠️ This row used to drive `rpc-worker.ss`, which
+;; invented verb meets. NOTE: This row used to drive `rpc-worker.ss`, which
 ;; went with the Python transport; the claim is about the dispatcher, so
 ;; it is asked of the dispatcher.
 (want "EV-01 the rpc dispatcher does not know eval"
@@ -295,7 +295,7 @@
 
 ;; ---- EV-03 the memory budget --------------------------------------------------
 ;;
-;; ⭐ THE SILENT ONE IS THE ROW THAT MATTERS, and it is the row the
+;; KEY: THE SILENT ONE IS THE ROW THAT MATTERS, and it is the row the
 ;; Python fixture did not have: its allocator printed first. The
 ;; supervisor sampled RSS only when a sample was "due", and it moved the
 ;; due time 50ms further out on every 25ms poll tick -- so a worker that
@@ -320,7 +320,7 @@
               (if (contains? out "memory-loop-entered") 'the-body-had-begun 'NO-EVIDENCE)))
       '(memory the-body-had-begun))
 
-;; ⛔ TWINS: the budget stops workers that exceed it, not workers that
+;; NEVER: TWINS: the budget stops workers that exceed it, not workers that
 ;; take a while. A sampler that killed on every sample would pass both
 ;; rows above.
 (want "EV-03 TWIN: a small allocation fits the same budget"
@@ -328,7 +328,7 @@
           'fits (list 'said (evaluate "(+ 2 3)" "--memory-bytes" "268435456")))
       'fits)
 
-;; ⚠️ TWO BILLION, NOT FORTY MILLION. The sampler runs only while the
+;; NOTE: TWO BILLION, NOT FORTY MILLION. The sampler runs only while the
 ;; worker is evaluating, and at 40 million that window is shorter than
 ;; one 50ms interval: the worker is never sampled at all, so the row
 ;; would claim "sampled many times and survives" about a worker nothing
@@ -341,7 +341,7 @@
 
 ;; ---- EV-10 which definitions an evaluation sees -------------------------------
 ;;
-;; ⛔ THE CUT IS THE COORDINATE. The same expression under the same
+;; NEVER: THE CUT IS THE COORDINATE. The same expression under the same
 ;; library must answer differently at two cuts, or `--cut` is decoration.
 (define src-dir (string-append here "/source"))
 (system (string-append "mkdir -p " src-dir))
@@ -375,7 +375,7 @@
            (loop (cdr cs) (if (null? this) fields (cons (list->string (reverse this)) fields)) '()))
           (else (loop (cdr cs) fields (cons (car cs) this))))))
 
-;; ⛔ BY TITLE, NOT BY POSITION. This store already holds the block the
+;; NEVER: BY TITLE, NOT BY POSITION. This store already holds the block the
 ;; EV-06 rows committed, so the imported file is not the first line of
 ;; the outline -- taking line 0 picked that block and `--under` answered
 ;; `library-required`, which is the outline telling the truth about a

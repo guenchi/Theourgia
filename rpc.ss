@@ -91,15 +91,15 @@
 
   ;; HOW TO WRITE INTO A STORE, IN ONE PLACE.
   ;;
-  ;; ⭐ THIS STRING IS THE ONLY COPY. The README's `## Writing for
+  ;; KEY: THIS STRING IS THE ONLY COPY. The README's `## Writing for
   ;; agents` section is this text, and the MCP shell's `insert` and
   ;; `write` tool descriptions begin with it. A protocol stated in three
   ;; places is three protocols the moment one of them is edited, and the
   ;; one a reader happens to meet is the one they will follow.
   ;;
-  ;; ⚠️ ENGLISH, like every other user-facing string in this library.
+  ;; NOTE: ENGLISH, like every other user-facing string in this library.
   ;;
-  ;; ⛔ EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.ss` compares it
+  ;; NEVER: EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.ss` compares it
   ;; to the COMMITTED README byte for byte, and `f1-protocol.ss` checks
   ;; each rule is still in it -- so a rule cannot be dropped quietly, and
   ;; the README cannot drift from it.
@@ -237,7 +237,7 @@
   ;; a second opinion about what an outline looks like -- and the two
   ;; would differ first at exactly the rows that are hardest to draw, the
   ;; ones in a structural conflict.
-  ;; ⚠️ THE SECOND REST ARGUMENT IS OPTIONAL SO EVERY EXISTING CALLER IS
+  ;; NOTE: THE SECOND REST ARGUMENT IS OPTIONAL SO EVERY EXISTING CALLER IS
   ;; UNCHANGED, and `--with-keywords` is off unless it is asked for. A
   ;; listing that grew a suffix by default would change the bytes of
   ;; every outline anybody has ever scripted against.
@@ -255,7 +255,7 @@
                (lambda (id)
                  (when with-keywords?
                    (let ((k (keywords-of id)))
-                     ;; ⛔ A BLOCK WITHOUT THE FIELD PRINTS NO BRACKETS.
+                     ;; NEVER: A BLOCK WITHOUT THE FIELD PRINTS NO BRACKETS.
                      ;; Empty brackets would say the writer chose no
                      ;; keywords, which is a different thing from a store
                      ;; written before the field existed.
@@ -392,7 +392,7 @@
                     (list 'insert
                           (if (or (not under) (string=? under "root")) 'root under)
                           after
-                          ;; ⛔ STORED AS THE CALLER WROTE IT. `read` gives
+                          ;; NEVER: STORED AS THE CALLER WROTE IT. `read` gives
                           ;; back the same bytes -- spacing, commas and
                           ;; all -- because a field that came back
                           ;; normalised would be a different string from
@@ -478,28 +478,28 @@
   ;; absent one are the same answer, and there is nowhere to forget.
   ;; ---- the catalogue -------------------------------------------------------
   ;;
-  ;; ⭐ WHAT THE VERBS ARE, FOR SOMETHING THAT HAS TO ASK. The MCP shell
+  ;; KEY: WHAT THE VERBS ARE, FOR SOMETHING THAT HAS TO ASK. The MCP shell
   ;; builds its tool list from this, and a caller can read it with
   ;; `describe`; both get it from here rather than each keeping a copy,
   ;; because a tool description that has drifted from the verb it
   ;; describes is worse than none -- it is read and believed.
   ;;
-  ;; ⛔ IT IS DATA AND IT RUNS NOTHING. Asking what the verbs are may not
+  ;; NEVER: IT IS DATA AND IT RUNS NOTHING. Asking what the verbs are may not
   ;; open the store, take a lock or write a byte.
   ;;
-  ;; ⚠️ AND IT IS A SECOND PLACE THAT KNOWS THE VERBS. The dispatcher is
+  ;; NOTE: AND IT IS A SECOND PLACE THAT KNOWS THE VERBS. The dispatcher is
   ;; the first. A verb added there and not here would be callable and
   ;; undocumented; one here and not there would be advertised and
   ;; missing. Nothing in the language stops either, so `describe.ss` has
   ;; a row that compares the two lists in both directions -- that row is
   ;; the only thing holding this table honest.
   ;;
-  ;; ⭐ THE FIFTH FIELD SAYS WHO CARRIES THE VERB OUT. `daemon` means a
+  ;; KEY: THE FIFTH FIELD SAYS WHO CARRIES THE VERB OUT. `daemon` means a
   ;; client sends it over the socket; `local` means the client runs the
   ;; server in its own process instead, because there is nothing to send
   ;; it to yet or because the work has to be this process's child.
   ;;
-  ;; ⛔ IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
+  ;; NEVER: IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
   ;; THE SHELL. `init` is what CREATES a store, so there is no daemon for
   ;; it to reach; the MCP shell has no local route at all, so it offered
   ;; `theourgia_init` as a tool, sent it to a daemon for a store that did
@@ -507,7 +507,7 @@
   ;; never create a store. The shell now lists only what it can actually
   ;; carry out, and a host creates the store once before starting it.
   ;;
-    ;; ⚠️ THE FOURTH FIELD IS CALLED `protocol`, AND THE NAME IS THE
+    ;; NOTE: THE FOURTH FIELD IS CALLED `protocol`, AND THE NAME IS THE
   ;; POINT. It says "this verb's description carries the writing protocol
   ;; text", which is a fact about what agents are told. It was first
   ;; called `writes`, meaning "changes the store" -- and under that name
@@ -522,7 +522,7 @@
             "Create a store in this directory." #f 'local)
       (list 'insert insert-usage
             "Add a block under a parent, with a title and optional text." #t 'daemon)
-      ;; ⚠️ NOT MARKED, ALTHOUGH `set <id> src <text>` DOES PUT PROSE IN.
+      ;; NOTE: NOT MARKED, ALTHOUGH `set <id> src <text>` DOES PUT PROSE IN.
       ;; §7.6.45 names the two verbs the protocol is attached to, and
       ;; this is not one of them. It is left as the specification has it
       ;; rather than widened here, because the mark is what the MCP tool
@@ -591,7 +591,7 @@
       (list 'describe '(describe)
             "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
 
-  ;; The catalogue as an answer. ⛔ The protocol is carried ONCE, beside
+  ;; The catalogue as an answer. NEVER: The protocol is carried ONCE, beside
   ;; the verbs, rather than repeated into each entry that needs it: the
   ;; entries say WHETHER it applies to them, and a reader that wants the
   ;; text reads it from the one place it is written.
@@ -650,7 +650,7 @@
               (if (= 1 (length args))
                   (working-restore! store state writer (car args))
                   (usage '(restore <version> ["--writer" <name>])))))
-      ;; ⛔ COMMIT ADVERTISES ADDITIVELY, BECAUSE IT HAS NO SHAPE TO GET
+      ;; NEVER: COMMIT ADVERTISES ADDITIVELY, BECAUSE IT HAS NO SHAPE TO GET
       ;; WRONG. Every other verb answers a usage form when its arity or
       ;; its positionals are wrong; `commit` accepts any number of block
       ;; ids, including none, so there is no such moment -- and until
@@ -968,14 +968,14 @@
   ;; this wrong in both directions at once -- leaving `tag` out refused
   ;; an identity the write path was already using, and putting it in
   ;; would go back to accepting one silently on the listing form.
-  ;; ⛔ A RELATIVE PATH IS RELATIVE TO THE CALLER, NOT TO THE SERVER. On
+  ;; NEVER: A RELATIVE PATH IS RELATIVE TO THE CALLER, NOT TO THE SERVER. On
   ;; the daemon route the process that reads the path is somewhere else
   ;; entirely -- it was started from whatever directory happened to be
   ;; current then -- so `import-code src` meant one directory to the
   ;; person typing it and another to the process acting on it. The
   ;; envelope carries the caller's directory; where there is none (the
   ;; command line, which is already in it) the path is used as it came.
-  ;; ⛔ WHICH ARGUMENTS ARE PATHS IS READ FROM THE USAGE FORM, not from a
+  ;; NEVER: WHICH ARGUMENTS ARE PATHS IS READ FROM THE USAGE FORM, not from a
   ;; list kept beside it. Six verbs take a path and only three had been
   ;; given the caller's directory, because the three were the ones in front
   ;; of me when the rule was written -- a list of names does not shout when
@@ -984,9 +984,9 @@
   ;; are what decides.
   ;;
   ;; A placeholder names a path when it is `<dir>`, `<file>`, or ends in
-  ;; `-file`. ⚠️ `<writer>`, `<segment>` and `<sha256>` are not paths and
+  ;; `-file`. NOTE: `<writer>`, `<segment>` and `<sha256>` are not paths and
   ;; must not be rewritten -- `publish` takes all four kinds in one line.
-  ;; ⚠️ THE ANGLE BRACKETS ARE PART OF THE SYMBOL. `<dir>` reads as a
+  ;; NOTE: THE ANGLE BRACKETS ARE PART OF THE SYMBOL. `<dir>` reads as a
   ;; symbol whose name is `"<dir>"`, brackets and all -- a rule written
   ;; against `"dir"` matched nothing at all, and the three verbs that had
   ;; been resolving paths by hand stopped resolving them. Measured: a
@@ -1097,7 +1097,7 @@
 
   ;; Parsed nodes are the CLI's internal handoff. All verb arguments and
   ;; their fingerprint are derived from the same tokenization.
-  ;; ⛔ `state` IS A VALUE THE CALLER ALREADY HOLDS, AND HANDLERS MAY NOT
+  ;; NEVER: `state` IS A VALUE THE CALLER ALREADY HOLDS, AND HANDLERS MAY NOT
   ;; CHANGE IT. #f means "there is none, load one" -- which is what every
   ;; caller that reaches a store by its path passes. A daemon passes the
   ;; reduction it published: one fold, shared by every reader, never
@@ -1105,7 +1105,7 @@
   ;; modifying what every other reader sees, in another process, with
   ;; nothing to report it.
   ;;
-  ;; ⚠️ AND IT IS ONLY EVER THE WHOLE STORE. A verb asking for a
+  ;; NOTE: AND IT IS ONLY EVER THE WHOLE STORE. A verb asking for a
   ;; historical cut is asking for a DIFFERENT reduction and still opens
   ;; the log for it; passing this one there would answer a question about
   ;; the past with the present.
@@ -1114,12 +1114,12 @@
 
   ;; ---- the envelope a request travels in ----------------------------------
   ;;
-  ;; ⛔ ONE PLACE PACKS IT. Two callers reach a daemon -- the command line
+  ;; NEVER: ONE PLACE PACKS IT. Two callers reach a daemon -- the command line
   ;; and the MCP shell -- and if each wrote out `(request store actor verb
   ;; args…)` for itself, the day the envelope grew a field would be the
   ;; day one of them quietly kept sending the old one.
   ;;
-  ;; ⚠️ AND IT PRODUCES THE BYTES, terminator included, because the
+  ;; NOTE: AND IT PRODUCES THE BYTES, terminator included, because the
   ;; terminator is part of the envelope. Measured on the version where it
   ;; was not: `render-wire` already ends with a newline and the caller
   ;; appended a second, so every forwarded request was followed by an
@@ -1127,7 +1127,7 @@
   ;; `(error bad-request (reason not-a-datum))` -- and closed the
   ;; connection. Nobody saw it, because that caller exits after the first
   ;; answer.
-  ;; ⛔ "NOBODY IS THERE" IS ONE QUESTION, ASKED IN ONE PLACE. `exchange`
+  ;; NEVER: "NOBODY IS THERE" IS ONE QUESTION, ASKED IN ONE PLACE. `exchange`
   ;; reports a failed connection and a failure mid-answer with the SAME
   ;; tag, `(transport-error <status>)`, and only the status tells them
   ;; apart -- so the two callers that fall back to running locally have
@@ -1137,7 +1137,7 @@
   ;;
   ;; -2 ENOENT (nothing at that path), -38 ENOTSOCK (something that is
   ;; not a socket), -61 ECONNREFUSED (a socket file whose daemon has
-  ;; gone). ⭐ All three measured on this platform against a real daemon,
+  ;; gone). KEY: All three measured on this platform against a real daemon,
   ;; the last by killing one with SIGKILL so it could not unlink its own
   ;; socket. -111 is the same refusal on Linux, where libuv reports that
   ;; errno instead; it is listed by name rather than left to be found by
@@ -1148,7 +1148,7 @@
          (memv (cadr outcome) '(-2 -38 -61 -111))
          #t))
 
-  ;; ⛔ `request-frame` IS NOT DEFINED HERE ANY MORE. It moved to
+  ;; NEVER: `request-frame` IS NOT DEFINED HERE ANY MORE. It moved to
   ;; `(theourgia client)` and is re-exported from this library so that no
   ;; caller had to change. The reason it moved is the same one that moved
   ;; `socket-path` there: the CLIENT has to pack the envelope and the
@@ -1157,7 +1157,7 @@
   ;; had to be written a second time on the other side, and two spellings
   ;; of one envelope is the defect this arrangement exists to prevent.
 
-  ;; ⭐ THE WRITER IS AN IDENTITY THE CALLER CARRIES, NOT A WORD IN ITS
+  ;; KEY: THE WRITER IS AN IDENTITY THE CALLER CARRIES, NOT A WORD IN ITS
   ;; ARGUMENTS. The daemon used to splice `--writer <name>` into the
   ;; argument list before parsing it, which meant a request whose own
   ;; text contained `--writer` -- as a block's bytes, or as anything
@@ -1167,7 +1167,7 @@
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
     (let* ((state (and (pair? rest) (car rest)))
            (default-writer (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
-           ;; ⛔ WHAT THE CALLER PIPED IN, AND WHERE THE CALLER WAS. Both
+           ;; NEVER: WHAT THE CALLER PIPED IN, AND WHERE THE CALLER WAS. Both
            ;; are facts about the process that made the request, and on
            ;; the daemon route that process is somewhere else entirely.
            ;; `argument-stdin` is the one rule that says which verbs read
@@ -1179,7 +1179,7 @@
                               (caddr rest)))
            (cwd (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
                      (pair? (cdddr rest)) (cadddr rest)))
-           ;; ⛔ A VERB THAT READS STANDARD INPUT AND WAS GIVEN NONE IS
+           ;; NEVER: A VERB THAT READS STANDARD INPUT AND WAS GIVEN NONE IS
            ;; TOLD SO. It used to run with the placeholder still in its
            ;; arguments, so `write <id> -` stored the literal "-" and
            ;; answered `(ok (saved ...))` -- the caller's bytes discarded
@@ -1201,14 +1201,14 @@
            ;; rather than working it out again.
            (writer (or (argument-option options "--writer") default-writer)))
       (cond
-        ;; ⛔ A VERB THAT CANNOT BE PRINTED IS REFUSED BEFORE IT IS
+        ;; NEVER: A VERB THAT CANNOT BE PRINTED IS REFUSED BEFORE IT IS
         ;; PRINTED, and this is the well-formedness layer, so it comes
         ;; first. A caller's verb can be any symbol; one they got wrong is
         ;; exactly the kind the wire writer will not emit -- `show me`
         ;; went out as `show\x20;me` and the reader that had asked the
         ;; question could not parse the answer to it.
         ;;
-        ;; ⭐ AND IT IS JUDGED HERE, IN THE PART BOTH ROUTES SHARE. The
+        ;; KEY: AND IT IS JUDGED HERE, IN THE PART BOTH ROUTES SHARE. The
         ;; reader's guard (`readable-shape?`) would refuse such a frame as
         ;; `not-a-datum` at a daemon, and a call made in this process
         ;; would never meet that guard at all -- so the same verb would
@@ -1216,7 +1216,7 @@
         ;; happened to be running. `daemon.ss` promises the two routes are
         ;; byte for byte the same answer; this is what keeps that true.
         ;;
-        ;; ⚠️ THE TWO LAYERS ANSWER DIFFERENT QUESTIONS AND BOTH STAY.
+        ;; NOTE: THE TWO LAYERS ANSWER DIFFERENT QUESTIONS AND BOTH STAY.
         ;; This one says "no daemon would accept this, so it is not sent";
         ;; the reader's guard says "these bytes are not something I will
         ;; hand to `read`", and it still answers a third-party client that
@@ -1232,12 +1232,12 @@
         ((or (argument-option options "--store") (argument-option options "--actor")
              (argument-option options "--wire") (argument-option options "--socket"))
          '(error bad-request transport-option-in-rpc))
-        ;; ⛔ ONLY THE SHAPE THAT USED TO BE SILENT. A verb whose input is
+        ;; NEVER: ONLY THE SHAPE THAT USED TO BE SILENT. A verb whose input is
         ;; simply absent answers its own usage line and always has; the one
         ;; that needed saying is an unfilled `-`, which was stored as the
         ;; text with `(ok (saved ...))` on top of it.
         ;;
-        ;; ⭐ AND STDIN A VERB DOES NOT READ IS IGNORED, NOT REFUSED. This
+        ;; KEY: AND STDIN A VERB DOES NOT READ IS IGNORED, NOT REFUSED. This
         ;; is a choice, and the reason is that the only caller who can get
         ;; here is one that put input in the envelope for a verb whose
         ;; argument form does not take any -- and a wrapper that forwards
@@ -1246,12 +1246,12 @@
         ;; verb for such a caller, which is the same shape as a runner
         ;; inheriting a terminal and reading input nobody meant to send.
         ;; A process ignores standard input it does not read; so does this.
-        ;; ⛔ AN UNFILLED `-` IS THE REFUSAL, and it is the branch below:
+        ;; NEVER: AN UNFILLED `-` IS THE REFUSAL, and it is the branch below:
         ;; there the caller ASKED for input and none came.
         ((and (not (procedure? stdin-reader))
               (argument-stdin-placeholder? verb nodes))
          '(error bad-request stdin-required))
-        ;; ⛔ TWO VERBS DO NOT NEED A STORE AND MUST NOT BE REFUSED FOR
+        ;; NEVER: TWO VERBS DO NOT NEED A STORE AND MUST NOT BE REFUSED FOR
         ;; NOT HAVING ONE. `init` is what creates it. `describe` answers
         ;; out of a table: asking what the verbs are may not open a
         ;; store, take a lock or write a byte, and a caller asking that

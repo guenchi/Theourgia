@@ -35,7 +35,7 @@
 #     depth is the first one that was swallowed, and the form before it
 #     is the one that failed to close.
 #
-# ⛔ IT REFUSES TO JUDGE WHAT IT CANNOT READ. This scanner knows about
+# NEVER: IT REFUSES TO JUDGE WHAT IT CANNOT READ. This scanner knows about
 # strings, escapes, line comments and character literals; it does NOT
 # know about `#|` block comments or `#;` datum comments. A file using
 # either is reported as NOT CHECKED, by name and with the reason, and
@@ -74,7 +74,7 @@ def scan(text):
                         "uses %s, which this scanner does not read"
                         % text[i:i + 2])
         if at_line_start and not c.isspace():
-            # ⚠️ THE INDENT IS MEASURED FROM THE START OF THE LINE, not
+            # NOTE: THE INDENT IS MEASURED FROM THE START OF THE LINE, not
             # from wherever the scan happens to be. Reading it off the
             # slice at the current position makes every first-on-its-line
             # `(define` look like column zero, whatever its indent -- and
@@ -153,7 +153,7 @@ def ordinal(n):
     return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
-# ⛔ THE GATE PROVES IT CAN STILL GO RED, ON EVERY RUN. "163 files, 0
+# NEVER: THE GATE PROVES IT CAN STILL GO RED, ON EVERY RUN. "163 files, 0
 # failures" is what a working gate prints and also what a gate that
 # matches nothing prints, and one of the two ways of being wrong here is
 # silent for as long as the tree happens to be sound. Measured: an
@@ -201,7 +201,7 @@ def self_check():
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     parent = os.path.dirname(here)
-    # ⚠️ AND THE SUBDIRECTORIES THAT HOLD SOURCES. `mcp/` was outside this
+    # NOTE: AND THE SUBDIRECTORIES THAT HOLD SOURCES. `mcp/` was outside this
     # list until the shell moved into it, so the one file added that batch
     # was the one file this gate could not see -- a gate that scans "the
     # tree" and means "two directories" is wrong in the place nobody
@@ -239,7 +239,7 @@ def main():
             print("FAIL %s: %s" % (shown, problem))
             failures += 1
     print("checked %d files" % (len(files) - len(skipped)))
-    # ⛔ A SKIP IS NAMED, WITH ITS REASON. A count of what ran is silent
+    # NEVER: A SKIP IS NAMED, WITH ITS REASON. A count of what ran is silent
     # about the file it did not read, and a file this gate cannot read is
     # exactly where a broken one would sit unnoticed.
     if skipped:

@@ -22,7 +22,7 @@
 (when (< (length args) 3)
   (printf "usage: working-fault-child <store> <block-id> <writer>\n")
   (exit 0))
-;; ⭐ THE WRITER COMES FROM THE PARENT, NOT FROM A DEFAULT HERE. A draft
+;; KEY: THE WRITER COMES FROM THE PARENT, NOT FROM A DEFAULT HERE. A draft
 ;; verb with no writer named is refused outright, and the refusal the
 ;; exit status below looks for is `working-unavailable` -- so a child
 ;; that guessed wrong would exit non-zero for a reason that has nothing

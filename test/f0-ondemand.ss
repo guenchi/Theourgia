@@ -15,7 +15,7 @@
 
 ;; What the command line loads before it knows what it was asked to do.
 ;;
-;; ⭐ EVERY `read` USED TO LOAD THE ACTOR SYSTEM, for the benefit of
+;; KEY: EVERY `read` USED TO LOAD THE ACTOR SYSTEM, for the benefit of
 ;; three verbs that were not being run. `cli.ss` imported
 ;; `(theourgia sched)`, `(theourgia net)`, `(theourgia daemon)` and
 ;; `(theourgia eval-supervise)` unconditionally; measured against the
@@ -23,7 +23,7 @@
 ;; and the reader this program documents itself for is an agent, which
 ;; makes one call after another.
 ;;
-;; ⚠️ THE STRUCTURAL ROW AND THE TIMING ROW ARE BOTH NEEDED, and neither
+;; NOTE: THE STRUCTURAL ROW AND THE TIMING ROW ARE BOTH NEEDED, and neither
 ;; implies the other. A build could import them again and still be quick
 ;; on a fast morning; a build could keep them out and be slow for an
 ;; unrelated reason. One says what is loaded, the other says what it
@@ -62,10 +62,10 @@
 
 ;; ---- F0-1: what the static closure holds --------------------------------------
 ;;
-;; ⛔ THE SAME WALKER `daemon-link-gate.ss` USES, and transitive for the
+;; NEVER: THE SAME WALKER `daemon-link-gate.ss` USES, and transitive for the
 ;; same reason: a library two imports away is loaded just as surely as
 ;; one written at the top of the file.
-;; ⛔ AN IMPORT THIS WALK CANNOT RESOLVE IS REPORTED, NOT DROPPED. The
+;; NEVER: AN IMPORT THIS WALK CANNOT RESOLVE IS REPORTED, NOT DROPPED. The
 ;; filter here used to be `(filter file-exists? ...)`, which silently
 ;; discarded any import whose source file it could not find -- so a
 ;; library that was renamed or moved would simply leave the closure, and
@@ -104,7 +104,7 @@
       (filter (lambda (h) (member h cli-closure)) heavy)
       '())
 
-;; ⛔ AND THE WALKER CAN SEE THEM WHEN THEY ARE THERE. Without this row
+;; NEVER: AND THE WALKER CAN SEE THEM WHEN THEY ARE THERE. Without this row
 ;; the one above is satisfied by a walker that finds nothing at all --
 ;; which is also what a changed import spelling would produce.
 (define daemon-closure (map basename (closure-of (string-append root "/daemon.ss"))))
@@ -121,7 +121,7 @@
 
 ;; ---- F0-2: what it costs ------------------------------------------------------
 ;;
-;; ⚠️ THE READING, THE MACHINE AND THE VERSION, because a duration is
+;; NOTE: THE READING, THE MACHINE AND THE VERSION, because a duration is
 ;; not a fact about a program on its own.
 ;;
 ;;   measured 2026-09-18, Darwin 25.3.0 arm64, Chez 10.1, this tree:
@@ -129,7 +129,7 @@
 ;;     theourgia 3017e45 (with them)                  691 ms/call
 ;;     this tree (loading them on demand)             454 ms/call
 ;;
-;; ⛔ MEASURED WITH A VERB THAT DOES NOT EXIST, so no store is opened and
+;; NEVER: MEASURED WITH A VERB THAT DOES NOT EXIST, so no store is opened and
 ;; nothing but the program's own loading is timed.
 (define budget-ms 495)
 
@@ -158,11 +158,11 @@
 
 ;; ---- F0-3: and the three paths that DO need them still work -------------------
 ;;
-;; ⛔ AN IMPLEMENTATION THAT SIMPLY DELETED THE IMPORTS WOULD PASS BOTH
+;; NEVER: AN IMPLEMENTATION THAT SIMPLY DELETED THE IMPORTS WOULD PASS BOTH
 ;; ROWS ABOVE. These are the rows it fails.
 (define scratch (string-append "/tmp/f0-" (number->string (get-process-id))))
 (define store (string-append scratch "/store"))
-;; ⚠️ SHORT ON PURPOSE. `sun_path` holds 104 bytes; a socket under this
+;; NOTE: SHORT ON PURPOSE. `sun_path` holds 104 bytes; a socket under this
 ;; suite's usual scratch directory is longer than that, and the daemon
 ;; then reports `listener-down` and exits -- which reads exactly like a
 ;; daemon that cannot start. Measured while writing this file, against
@@ -224,10 +224,10 @@
 (sh "sleep 1")
 (define serve-after (call-with-input-file (string-append scratch "/serve.txt") get-string-all))
 
-;; ⛔ THE ANSWER ALONE PROVES NOTHING. A forwarded call and a local one
+;; NEVER: THE ANSWER ALONE PROVES NOTHING. A forwarded call and a local one
 ;; answer with the same bytes on purpose, so a row reading only the
 ;; answer passes when the socket was ignored and the work was done here.
-;; ⚠️ Measured while writing this: with a socket path too long to bind,
+;; NOTE: Measured while writing this: with a socket path too long to bind,
 ;; these same calls answered normally, having quietly run locally.
 (want "F0-3 a call with a daemon present is answered BY the daemon, so net was loaded"
       (list (if (contains? forwarded "(ok (events") 'answered (list 'said forwarded))
@@ -238,14 +238,14 @@
 
 ;; ---- F0-4: and the same thing in the form it ships in --------------------------
 ;;
-;; ⭐ EVERYTHING ABOVE WAS MEASURED FROM SOURCE, AND THAT IS NOT WHAT A
+;; KEY: EVERYTHING ABOVE WAS MEASURED FROM SOURCE, AND THAT IS NOT WHAT A
 ;; USER RUNS. Development runs `--script` against `.ss`; a user gets
 ;; compiled objects. The difference matters twice over.
 ;;
 ;; **First, lazy loading has to still work.** `cli.ss` resolves
 ;; `(theourgia daemon)` at RUN time, and whether that works depends on
 ;; the library being findable -- which it is as a `.so` on the library
-;; path. ⛔ It would NOT be inside a whole-program package that dropped
+;; path. NEVER: It would NOT be inside a whole-program package that dropped
 ;; it for being statically unreferenced; that form is F13 and has no
 ;; reading here. These rows cover the `.so` form only, and say so.
 ;;
@@ -255,14 +255,14 @@
 ;;     source form   static imports 623 ms   on demand 435 ms   -188 ms
 ;;     .so form      static imports  51 ms   on demand  42 ms   -9 ms
 ;;
-;; ⚠️ SO THE 200 ms WAS MOSTLY EXPANSION, which compiled objects do not
+;; NOTE: SO THE 200 ms WAS MOSTLY EXPANSION, which compiled objects do not
 ;; pay. In the form a user runs this saves about 9 ms a call, not 200 --
 ;; still 18% of startup, still worth having, and the structural point
 ;; stands on its own: a `read` has no business loading the daemon. But a
 ;; note claiming 200 ms for users would be false, and F0-2's budget is a
 ;; SOURCE-form budget.
 ;;
-;; ⚠️ Also worth knowing: compiled objects start about twelve times
+;; NOTE: Also worth knowing: compiled objects start about twelve times
 ;; faster than source either way. Most of what F0 attacks is a cost only
 ;; developers pay.
 
@@ -282,7 +282,7 @@
       (if (contains? build-said "build complete") 'built (list 'said build-said))
       'built)
 
-;; ⛔ `.so` ONLY ON THE PATH, so nothing can fall back to source and make
+;; NEVER: `.so` ONLY ON THE PATH, so nothing can fall back to source and make
 ;; these rows describe the form they were meant to leave behind.
 (define (so-cli args out-file . env)
   (sh (string-append
@@ -304,7 +304,7 @@
                 'and-refuses-what-it-should 'NO))
       '(initialised and-refuses-what-it-should))
 
-;; ⭐ THE ROW THIS SECTION EXISTS FOR. `eval` reaches its supervisor
+;; KEY: THE ROW THIS SECTION EXISTS FOR. `eval` reaches its supervisor
 ;; through `(environment '(theourgia eval-supervise))` at run time; if
 ;; that cannot be resolved in this form the answer is an exception rather
 ;; than a value, and nothing above would have noticed.

@@ -15,7 +15,7 @@
 
 ;; `theourgia` -- the client program.
 ;;
-;; ⭐ IT KNOWS TRANSPORT AND NOTHING ELSE, and these rows are about that
+;; KEY: IT KNOWS TRANSPORT AND NOTHING ELSE, and these rows are about that
 ;; boundary: it finds the daemon, starts one when there is none, writes
 ;; back the bytes it was given and exits with the number it was handed.
 ;; Every row that could be satisfied by the client working something out
@@ -47,7 +47,7 @@
 
 (system (string-append "rm -rf " here "; mkdir -p " store " " here "/home " here "/run"))
 
-;; ⚠️ `THEOURGIA_TRACE=1` IS SET FOR EVERY RUN, INCLUDING THE DAEMON'S.
+;; NOTE: `THEOURGIA_TRACE=1` IS SET FOR EVERY RUN, INCLUDING THE DAEMON'S.
 ;; The client passes its environment on to the daemon it starts, so this
 ;; is what makes the daemon record who it served -- and that record is
 ;; the only thing that can tell the two routes apart, because they answer
@@ -61,7 +61,7 @@
   (if (not (file-exists? path)) ""
       (let ((t (call-with-input-file path get-string-all))) (if (string? t) t ""))))
 
-;; ⛔ AN ANSWER IS NOT ALWAYS THE ANSWER YOU EXPECTED. `assq` raises on
+;; NEVER: AN ANSWER IS NOT ALWAYS THE ANSWER YOU EXPECTED. `assq` raises on
 ;; anything that is not a proper list of pairs, and `(error no-store ...)`
 ;; is exactly that shape -- so a row that merely wanted a block id took
 ;; the whole fixture down when an earlier step had failed, and the failure
@@ -80,7 +80,7 @@
             ((string=? (substring text i (+ i n)) needle) #t)
             (else (loop (+ i 1)))))))
 
-;; ⛔ STDOUT AND STDERR ARE KEPT APART. Half of what is asked below is
+;; NEVER: STDOUT AND STDERR ARE KEPT APART. Half of what is asked below is
 ;; "did anything other than the answer reach stdout", and a helper that
 ;; merged the two could not answer it.
 (define n-run 0)
@@ -106,7 +106,7 @@
     (let ((t (file-text f)))
       (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
 
-;; ⛔ EVERY DAEMON THIS FILE CAUSED TO EXIST, not the one store that was
+;; NEVER: EVERY DAEMON THIS FILE CAUSED TO EXIST, not the one store that was
 ;; thought of when this was written. Rows added later make their own
 ;; stores -- a bound-identity store, a store for the relative-path case --
 ;; and a pattern naming one of them leaves the others running: measured,
@@ -125,7 +125,7 @@
       (if (contains? (out-of made) "(ok (store") 'created (list 'said (out-of made)))
       'created)
 
-;; ⛔ AND IT STARTED NOTHING. `init` is one of the three verbs that run in
+;; NEVER: AND IT STARTED NOTHING. `init` is one of the three verbs that run in
 ;; this process; a client that had tried the socket first would have
 ;; started a daemon for a store that did not exist yet.
 (want "P-1 TWIN: and no daemon was started to do it"
@@ -144,7 +144,7 @@
       (daemons-alive)
       "1")
 
-;; ⭐ THE ANSWER IS THE WHOLE OF STDOUT. The daemon this call started
+;; KEY: THE ANSWER IS THE WHOLE OF STDOUT. The daemon this call started
 ;; inherits the client's streams until it redirects them, and it prints a
 ;; line about its machine home on the way up -- measured, that line goes
 ;; to STDERR. If it ever goes to stdout instead, every caller parsing the
@@ -169,7 +169,7 @@
       (if (zero? (rc-of refused)) (list 'EXITED-ZERO (out-of refused)) 'non-zero)
       'non-zero)
 
-;; ⛔ AND THE REFUSAL IS STILL ON STDOUT, because it is the answer. A
+;; NEVER: AND THE REFUSAL IS STILL ON STDOUT, because it is the answer. A
 ;; client that treated a non-zero code as "something went wrong with me"
 ;; and wrote the text to stderr would break every caller that reads the
 ;; answer.
@@ -180,7 +180,7 @@
 
 ;; ---- P-4 the same answer as the server gives -------------------------------
 ;;
-;; ⭐ BYTE FOR BYTE, BOTH MODES. The client renders nothing: what it
+;; KEY: BYTE FOR BYTE, BOTH MODES. The client renders nothing: what it
 ;; writes is what the server rendered. If it ever started rendering, this
 ;; is the row that says so.
 (want "P-4 the client's bytes are the server's, in wire mode"
@@ -197,19 +197,19 @@
 
 ;; ---- P-5 THEOURGIA_LOCAL ---------------------------------------------------
 ;;
-;; ⚠️ THE ROW IS "IT DID NOT USE THE DAEMON", not "the answer was right":
+;; NOTE: THE ROW IS "IT DID NOT USE THE DAEMON", not "the answer was right":
 ;; the two routes give the same answer on purpose, so the answer cannot
 ;; tell them apart. The daemon says who it served, in its trace.
 (define dispatch-log (string-append here "/dispatch.txt"))
 
-;; ⛔ THE LOG IS WHERE THE CLIENT PUT IT, which is under the run root and
+;; NEVER: THE LOG IS WHERE THE CLIENT PUT IT, which is under the run root and
 ;; keyed on the store -- NOT beside the fixture. Written as
 ;; `<here>/serve.log` this counted a file that does not exist: `grep`
 ;; answered 0 both times, the two readings agreed, and the row asserting
 ;; "the daemon saw nothing" passed while measuring nothing at all. Its
 ;; twin is what caught it.
 ;;
-;; ⚠️ The key is a hash of the store's resolved path, so the directory is
+;; NOTE: The key is a hash of the store's resolved path, so the directory is
 ;; matched rather than computed -- computing it here would be this file
 ;; keeping its own copy of the client's rule.
 (define (dispatches)
@@ -248,7 +248,7 @@
 
 ;; ---- P-6 the separator ------------------------------------------------------
 ;;
-;; ⛔ NOTHING AFTER `--` IS AN OPTION, INCLUDING THE FOUR THIS PROGRAM
+;; NEVER: NOTHING AFTER `--` IS AN OPTION, INCLUDING THE FOUR THIS PROGRAM
 ;; UNDERSTANDS. The separator is how a caller passes a value that looks
 ;; like an option; a scanner that read past it took the very arguments the
 ;; caller had protected. Measured before the fix:
@@ -263,7 +263,7 @@
             (list 'said (out-of r))))
       'searched-for-the-literal)
 
-;; ⛔ AND IT REALLY WAS THE SEARCH TERM. Without this, the row above is
+;; NEVER: AND IT REALLY WAS THE SEARCH TERM. Without this, the row above is
 ;; also passed by a client that dropped the argument entirely and matched
 ;; on something else.
 (want "P-6 TWIN: a different literal after the separator finds nothing"
@@ -271,7 +271,7 @@
         (if (contains? (out-of r) "(ok (items))") 'no-hits (list 'said (out-of r))))
       'no-hits)
 
-;; ⛔ AND ROUTING BEFORE THE SEPARATOR STILL ROUTES. A scanner that
+;; NEVER: AND ROUTING BEFORE THE SEPARATOR STILL ROUTES. A scanner that
 ;; stopped reading options altogether would pass both rows above.
 (want "P-6 TWIN: options before the separator still work"
       (let ((r (client "" (string-append "outline --store " store " --wire"))))
@@ -280,7 +280,7 @@
 
 ;; ---- P-7 a socket path that cannot fit --------------------------------------
 ;;
-;; ⛔ A PATH THAT WILL NOT FIT IS AN ANSWER, NOT AN EXCEPTION. `sun_path`
+;; NEVER: A PATH THAT WILL NOT FIT IS AN ANSWER, NOT AN EXCEPTION. `sun_path`
 ;; holds 104 bytes; `sockaddr-un` refuses a longer one, correctly and
 ;; loudly -- but by raising, and nothing above caught it. A run root long
 ;; enough ended the program with
@@ -288,7 +288,7 @@
 ;; This program's whole contract is that stdout carries the answer and the
 ;; exit code is the verdict; a raw condition is neither.
 ;;
-;; ⚠️ AND IT IS `socket-path-too-long`, NOT `transport-unknown`. Nothing
+;; NOTE: AND IT IS `socket-path-too-long`, NOT `transport-unknown`. Nothing
 ;; was sent, so the outcome is not unknown -- it is known, and it is that
 ;; the request did not happen.
 (define long-run
@@ -319,7 +319,7 @@
 
 ;; ---- P-8 a store that is not there -----------------------------------------
 ;;
-;; ⛔ THE COMMON FAILURE HAS ITS OWN NAME. A daemon asked to serve a path
+;; NEVER: THE COMMON FAILURE HAS ITS OWN NAME. A daemon asked to serve a path
 ;; holding no store failed while opening it and reported
 ;; `(error store-load-failed (reason raised))` -- `raised` because the
 ;; condition carried no message, so the field meant to say why said only
@@ -338,7 +338,7 @@
 
 ;; ---- P-12 what the caller piped in reaches the verb that reads it ---------
 ;;
-;; ⛔ MEASURED DEFECT, AND ONE OF THEM WAS SILENT. The envelope has
+;; NEVER: MEASURED DEFECT, AND ONE OF THEM WAS SILENT. The envelope has
 ;; always carried a `stdin` field and the daemon never read it, so on the
 ;; default route `batch` -- whose intents ARE its standard input -- got
 ;; none and answered its usage line, and `write <id> -` stored the
@@ -346,10 +346,10 @@
 ;; the worse one: the caller's bytes were discarded and the answer said
 ;; the write had succeeded.
 ;;
-;; ⚠️ THE TWO ROUTES ARE COMPARED BYTE FOR BYTE, on one store, with an
+;; NOTE: THE TWO ROUTES ARE COMPARED BYTE FOR BYTE, on one store, with an
 ;; intent that fails the same way every time -- so the answer carries no
 ;; identifier that could differ between the runs for an innocent reason.
-;; ⛔ NOTHING HERE RUNS A STDIN-READING VERB WITHOUT GIVING IT STDIN.
+;; NEVER: NOTHING HERE RUNS A STDIN-READING VERB WITHOUT GIVING IT STDIN.
 ;; Two calls used to stand above this for no reason but to keep a counter
 ;; in step, and they ran `batch` with whatever standard input the SUITE
 ;; had. Under a terminal -- a run inside `screen` -- that never reaches
@@ -375,7 +375,7 @@
                   (else (list 'said text))))
           'a-batch-answer)
 
-    ;; ⛔ AND THE TWO ROUTES ANSWER THE SAME BYTES. "It worked on both"
+    ;; NEVER: AND THE TWO ROUTES ANSWER THE SAME BYTES. "It worked on both"
     ;; would also be true of two builds that disagreed about what the
     ;; intents meant.
     (want "P-12 and the daemon route answers exactly what the local route does"
@@ -384,7 +384,7 @@
               (list 'local (file-text lout) 'daemon (file-text dout)))
           'identical)))
 
-;; ⛔ AND THE SILENT ONE. `write <id> -` takes its bytes from standard
+;; NEVER: AND THE SILENT ONE. `write <id> -` takes its bytes from standard
 ;; input; with none arriving, "-" was stored as the text and the answer
 ;; said the write succeeded.
 (let* ((made (server "" (string-append "insert --title P12 --text old --store " store " --wire")))
@@ -408,7 +408,7 @@
 
 ;; ---- P-17 what a fixture inherits from whoever started the suite ---------
 ;;
-;; ⛔ MEASURED, AND THIS ENVIRONMENT HID IT. A verb whose input comes from
+;; NEVER: MEASURED, AND THIS ENVIRONMENT HID IT. A verb whose input comes from
 ;; standard input reads whatever standard input the fixture inherited. Run
 ;; from a terminal -- inside `screen` -- that never reaches end of file, so
 ;; the read waits forever: `client-program` hung at 21 of its 41 rows until
@@ -417,7 +417,7 @@
 ;; not a terminal, the same fixture passes, which is why it was green here
 ;; and red for the main session.
 ;;
-;; ⚠️ THE RULE IS THE RUNNER'S: every fixture is given `/dev/null`, and a
+;; NOTE: THE RULE IS THE RUNNER'S: every fixture is given `/dev/null`, and a
 ;; fixture that wants input hands it over itself. These two rows are the
 ;; measurement and the rule -- the first shows a terminal really does hang
 ;; this call, the second shows the runner really does redirect.
@@ -450,7 +450,7 @@
         (timed #t)
         'answered))
 
-;; ⛔ AND THE RUNNER IS WHAT SUPPLIES IT. The rows above are about a shell
+;; NEVER: AND THE RUNNER IS WHAT SUPPLIES IT. The rows above are about a shell
 ;; command; this one is about the suite every fixture is run by, so that
 ;; "fixtures get /dev/null" cannot quietly stop being true.
 (want "P-17 the suite runner gives every fixture /dev/null on standard input"
@@ -462,13 +462,13 @@
 
 ;; ---- P-18 the reply's second stream ---------------------------------------
 ;;
-;; ⛔ EVERY OTHER ROW HERE WOULD PASS ON A CLIENT THAT THREW `stderr`
+;; NEVER: EVERY OTHER ROW HERE WOULD PASS ON A CLIENT THAT THREW `stderr`
 ;; AWAY. The field is empty in every answer the core produces today, so a
 ;; build that never wrote it out looks exactly like one that does -- and
 ;; the field exists precisely because the client also runs the server
 ;; locally, where a real second stream exists and has to arrive somewhere.
 ;;
-;; ⚠️ A STAND-IN PEER PUTS SOMETHING IN IT, which no real verb does yet,
+;; NOTE: A STAND-IN PEER PUTS SOMETHING IN IT, which no real verb does yet,
 ;; and the row asks that it came out on the client's own stderr and NOT on
 ;; its stdout -- mixing the two is how a caller that parses the answer
 ;; starts parsing a diagnostic.
@@ -505,13 +505,13 @@
 
 ;; ---- P-16 a reply that reads forever -------------------------------------
 ;;
-;; ⛔ MEASURED DEFECT, AND IT HUNG THE CLIENT. Chez's reader accepts datum
+;; NEVER: MEASURED DEFECT, AND IT HUNG THE CLIENT. Chez's reader accepts datum
 ;; labels, so `#0=(answer (stdout "x") . #0#)` reads perfectly well and is
 ;; a CYCLE: every walk over it runs forever. Measured on the previous
 ;; build, this call never returned -- killed at a 20 second timeout, with
 ;; no answer and no refusal, from a peer that had only to write one line.
 ;;
-;; ⚠️ THE SAME BYTES GO TO BOTH PROGRAMS. Three programs read this reply
+;; NOTE: THE SAME BYTES GO TO BOTH PROGRAMS. Three programs read this reply
 ;; and each had its own reader; the rule that says what may be handed to
 ;; `read` now lives once in the library, and these two rows are the two
 ;; programs this fixture can drive.
@@ -556,17 +556,17 @@
 
 ;; ---- P-19 an exit status this process cannot leave with -------------------
 ;;
-;; ⛔ MEASURED, AND IT WAS SILENT IN TWO DIRECTIONS. The field was checked
+;; NEVER: MEASURED, AND IT WAS SILENT IN TWO DIRECTIONS. The field was checked
 ;; with `integer?`, which in Scheme is TRUE of `37.0`: a peer answering
 ;; that passed validation and the client left with 1 -- a failure, for an
 ;; answer that said 37. A number past what a status holds was worse:
 ;; `(exit 4294967337)` leaves with 41, truncated somewhere below us, so
 ;; the caller reads a status NOBODY chose and nothing anywhere says so.
 ;;
-;; ⭐ A NUMBER THIS PROCESS CANNOT RELAY IS A BAD ENVELOPE, not a small
+;; KEY: A NUMBER THIS PROCESS CANNOT RELAY IS A BAD ENVELOPE, not a small
 ;; problem with a good one. The client says `unreadable-answer` and leaves
 ;; non-zero, which is what it says about every other envelope it cannot
-;; act on, ⛔ rather than inventing a status.
+;; act on, NEVER: rather than inventing a status.
 (let* ((esock (string-append here "/exit.sock"))
        (epeer (string-append here "/exitpeer.ss"))
        (peer-saying
@@ -601,9 +601,9 @@
              (system (string-append "rm -f " esock " " epeer))
              (list (rc-of r) (out-of r))))))
 
-  ;; ⛔ THE TWIN COMES FIRST HERE, because without it the two rows below
+  ;; NEVER: THE TWIN COMES FIRST HERE, because without it the two rows below
   ;; are passed by a client that refuses every exit field there is. A
-  ;; status it CAN leave with must still be relayed, and ⛔ not flattened
+  ;; status it CAN leave with must still be relayed, and NEVER: not flattened
   ;; to 0 or 1 -- our own daemon writes only those two, so a row using one
   ;; of them would not notice a client that ignored the field entirely.
   (want "P-19 TWIN: a status this process can leave with is relayed exactly"
@@ -618,7 +618,7 @@
                     (list 'said (cadr r)))))
         '(non-zero named-it))
 
-  ;; ⚠️ THIS ONE IS THE DANGEROUS SHAPE: it does not fail, it SUCCEEDS
+  ;; NOTE: THIS ONE IS THE DANGEROUS SHAPE: it does not fail, it SUCCEEDS
   ;; with a number the peer never sent. 4294967337 is 41 once truncated.
   (want "P-19 a number past what a status holds is refused, not truncated"
         (let ((r (peer-saying "4294967337")))
@@ -629,7 +629,7 @@
 
 ;; ---- P-15 two spellings of one store are one store ------------------------
 ;;
-;; ⛔ MEASURED DEFECT, and it made the daemon unusable from inside its own
+;; NEVER: MEASURED DEFECT, and it made the daemon unusable from inside its own
 ;; store. The socket key has always been the RESOLVED path, so `--store .`
 ;; reaches the daemon serving `/abs/store`; the name inside the envelope
 ;; was whatever the caller typed, and the daemon compared that against its
@@ -641,7 +641,7 @@
 ;; The default for `--store` is `.`, so this is what a second caller in
 ;; the store's directory gets for every verb while a daemon is up.
 ;;
-;; ⚠️ THE DAEMON IS STARTED BY ITS ABSOLUTE PATH, from somewhere else, so
+;; NOTE: THE DAEMON IS STARTED BY ITS ABSOLUTE PATH, from somewhere else, so
 ;; the two spellings really do differ.
 (let* ((p15-store (string-append here "/p15-store"))
        (p15-other (string-append here "/p15-other"))
@@ -672,7 +672,7 @@
                 (else (list 'said text))))
         'served)
 
-  ;; ⛔ THE TWIN, and without it the two rows above are passed by a daemon
+  ;; NEVER: THE TWIN, and without it the two rows above are passed by a daemon
   ;; that has stopped checking which store it serves. A request for a
   ;; DIFFERENT store, aimed at this daemon's socket, must still be refused.
   (want "P-15 TWIN: a genuinely different store is still refused, and exits non-zero"
@@ -698,14 +698,14 @@
 
 ;; ---- P-13 a relative path is the CALLER'S ---------------------------------
 ;;
-;; ⛔ THE DAEMON IS IN WHATEVER DIRECTORY IT WAS STARTED FROM, which is
+;; NEVER: THE DAEMON IS IN WHATEVER DIRECTORY IT WAS STARTED FROM, which is
 ;; not where the caller is. `import-code src` meant one directory to the
 ;; person typing it and another to the process acting on it -- measured
 ;; on the previous build as `(error projection-invalid (reason
 ;; not-a-directory))` once the daemon had been started from somewhere
 ;; else.
 ;;
-;; ⚠️ THE DAEMON IS DELIBERATELY STARTED FROM ANOTHER DIRECTORY. Started
+;; NOTE: THE DAEMON IS DELIBERATELY STARTED FROM ANOTHER DIRECTORY. Started
 ;; by this very call, it inherits the caller's directory and the two
 ;; agree by accident -- which is why a first client that happens to be in
 ;; the right place hides this completely.
@@ -735,14 +735,14 @@
 
 ;; ---- P-11 a bound identity does not change the command line ---------------
 ;;
-;; ⛔ MEASURED DEFECT, found by running the documented first command. The
+;; NEVER: MEASURED DEFECT, found by running the documented first command. The
 ;; local route used to splice `--writer <name>` in after the verb
 ;; whenever `THEOURGIA_WRITER` was set. `init` has no such option, so
 ;; `theourgia init --store X` answered `(usage (init))` and exited 1 --
 ;; in every spelling, for as long as an identity was bound. The first
 ;; thing anyone does with this program could not be done.
 ;;
-;; ⚠️ IT IS THE SAME RULE AS THE ENVELOPE'S: the writer is an identity
+;; NOTE: IT IS THE SAME RULE AS THE ENVELOPE'S: the writer is an identity
 ;; the process carries, not a word in the arguments. On this route it
 ;; reaches the server through the environment it is already in.
 (let* ((wstore (string-append here "/bound-store"))
@@ -752,7 +752,7 @@
               (if (contains? (out-of bound) "(ok") 'ok (list 'said (out-of bound))))
         '(0 ok))
 
-  ;; ⛔ THE TWIN: the binding must still ARRIVE. A build that fixed the
+  ;; NEVER: THE TWIN: the binding must still ARRIVE. A build that fixed the
   ;; row above by ignoring `THEOURGIA_WRITER` altogether would pass it and
   ;; break every draft verb, which is what the binding is for. A draft
   ;; written under the bound identity has to be the draft it reads back.
@@ -765,7 +765,7 @@
                (and (pair? evs) (pair? (cadr evs))
                     (let ((ev (car (cadr evs))))
                       (string-append (car ev) "." (number->string (cdr ev))))))))
-    ;; ⚠️ A ROW WHOSE SETUP DID NOT HAPPEN SAYS SO. Where the row above is
+    ;; NOTE: A ROW WHOSE SETUP DID NOT HAPPEN SAYS SO. Where the row above is
     ;; red -- a build that refuses `init` with an identity bound -- there
     ;; is no block to write to, and a row that went ahead anyway took the
     ;; whole fixture down with a Scheme exception that named neither.
@@ -784,14 +784,14 @@
 
 ;; ---- P-9 the exit code is the SERVER'S, not a summary of it ---------------
 ;;
-;; ⛔ P-3 ABOVE CANNOT SAY THIS. It asks that success is 0 and that a
+;; NEVER: P-3 ABOVE CANNOT SAY THIS. It asks that success is 0 and that a
 ;; refusal is "not 0", and a client that answered 1 for every non-zero
 ;; code in the envelope would satisfy both -- while quietly destroying
 ;; the one thing the field is for, which is that the SERVER decides what
 ;; a verb's answer means. A distinctive code is the only way to tell
 ;; "relayed" from "reduced to a flag".
 ;;
-;; ⚠️ THE PEER IS A STAND-IN, not the daemon: the core never answers 37,
+;; NOTE: THE PEER IS A STAND-IN, not the daemon: the core never answers 37,
 ;; which is the point -- no real verb can produce this number by
 ;; accident, so seeing it proves it came through the envelope.
 (let ((codesock (string-append here "/code.sock"))
@@ -826,7 +826,7 @@
 
 ;; ---- P-14 a reply that is a datum but not an envelope --------------------
 ;;
-;; ⛔ MEASURED DEFECT: the fields were taken with `assq`, which demands a
+;; NEVER: MEASURED DEFECT: the fields were taken with `assq`, which demands a
 ;; proper list of pairs and raises on anything else. `(answer . broken)`
 ;; reads perfectly well as a datum, so it got past the reader and raised
 ;; "improperly formed alist" out of the program -- around the refusal that
@@ -868,11 +868,11 @@
         (asked-through "../theourgia.ss")
         '(named-it non-zero))
 
-  ;; ⛔ AND THE SAME FOR THE OTHER PROGRAM THAT READS THIS ENVELOPE. Three
+  ;; NEVER: AND THE SAME FOR THE OTHER PROGRAM THAT READS THIS ENVELOPE. Three
   ;; programs read it -- this one, the command line, and the MCP shell --
   ;; and each had its own copy of the field lookup, so the same defect was
   ;; fixed in two of them and left in the third. They now call one reader
-  ;; in the library. ⚠️ The command line forwards to a daemon only when a
+  ;; in the library. NOTE: The command line forwards to a daemon only when a
   ;; socket is there to forward to, which `--socket` provides here.
   (want "P-14 and the command line, reading the same envelope, refuses it too"
         (asked-through "../cli.ss")
@@ -881,13 +881,13 @@
 
 ;; ---- P-10 a request taken and never answered is not sent twice ------------
 ;;
-;; ⛔ WHAT MUST NOT HAPPEN IS A SECOND DISPATCH. The bytes went out, so
+;; NEVER: WHAT MUST NOT HAPPEN IS A SECOND DISPATCH. The bytes went out, so
 ;; the request may already have been carried out; asking again would do
 ;; it twice, and no answer this client can print is worth that. The rows
 ;; that exist for this all use daemons that answer, or dials that fail --
 ;; neither reaches the case.
 ;;
-;; ⚠️ THE PEER COUNTS THE FRAMES IT RECEIVES and writes the count where
+;; NOTE: THE PEER COUNTS THE FRAMES IT RECEIVES and writes the count where
 ;; this can read it, because "did it resend" is a fact about what arrived
 ;; at the other end, not about what the client printed.
 (let ((holdsock (string-append here "/hold.sock"))
@@ -928,7 +928,7 @@
           (list (if (= count 1) 'sent-once (list 'frames count))
                 (if (zero? (rc-of r)) 'EXITED-ZERO 'non-zero))
           '(sent-once non-zero))
-    ;; ⛔ AND IT SAYS THE OUTCOME IS UNKNOWN, not that nothing happened.
+    ;; NEVER: AND IT SAYS THE OUTCOME IS UNKNOWN, not that nothing happened.
     ;; The bytes went out; reporting `not-sent` here would be a claim
     ;; this client cannot make.
     (want "P-10 and it says so as an unknown outcome"
@@ -940,12 +940,12 @@
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;
-;; ⛔ `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
+;; NEVER: `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
 ;; walk itself is `import-walk.scm`, shared, so this is the same
-;; measurement taken in an extra place -- ⛔ not a second implementation
+;; measurement taken in an extra place -- NEVER: not a second implementation
 ;; of it.
 (define script-dir
   (let* ((self (car (command-line)))
@@ -996,7 +996,7 @@
       (closure-from 'client)
       '(client digest ffi render trace))
 
-;; ⛔ AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
+;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.ss`; what IT reaches is a separate fact from what the
 ;; `client` library reaches, and the rows above are about the library.
 ;; `arguments` is allowed and the reason is written in `closures.ss`: the

@@ -15,13 +15,13 @@
 
 ;; (theourgia proc) UNDER §7.6.32/§7.6.33.
 ;;
-;; ⭐ THE SEQUENCE IS THE TEST, NOT THE MAPPINGS. Every translation can be
+;; KEY: THE SEQUENCE IS THE TEST, NOT THE MAPPINGS. Every translation can be
 ;; right on its own while the adapter ends too early: igropyr's own P13
 ;; closes a child's stdout while it still runs, writes to stderr, then
 ;; exits. An adapter that treated the first EOF as the end would pass
 ;; every per-message row and lose everything after it.
 ;;
-;; ⛔ AND EVERY ENDING IS READ FROM `#(DOWN pid reason)`. There is no
+;; NEVER: AND EVERY ENDING IS READ FROM `#(DOWN pid reason)`. There is no
 ;; table of adapters to ask, which is the point: a count this library
 ;; kept about itself could be told that a live process was gone, and
 ;; when that happened two rows written for the leak went green together.
@@ -72,7 +72,7 @@
                     (else (list->string (reverse out)))))))
     (and (> (string-length d) 0) (string->number d))))
 
-;; ⚠️ ps ANSWERS IN KILOBYTES, this library in bytes. Written without the
+;; NOTE: ps ANSWERS IN KILOBYTES, this library in bytes. Written without the
 ;; conversion an earlier row called two readings that agreed exactly --
 ;; 2129920 and 2080 -- a disagreement by a factor of 1024.
 (define (agrees? pid ours)
@@ -88,7 +88,7 @@
 
       ;; ---- P-01 an ordinary child, start to finish --------------------
       ;;
-      ;; ⚠️ THE DOWN COMES LAST. Messages the adapter sent before it died
+      ;; NOTE: THE DOWN COMES LAST. Messages the adapter sent before it died
       ;; are ahead of the runtime's DOWN in this mailbox, so a consumer
       ;; that reads in order sees the child's whole story and then its
       ;; ending.
@@ -109,10 +109,10 @@
 
       ;; ---- P-02 a refusal igropyr RAISES ------------------------------
       ;;
-      ;; ⛔ AN EMPTY ARGV IS REJECTED BY RAISING, not by a return value,
+      ;; NEVER: AN EMPTY ARGV IS REJECTED BY RAISING, not by a return value,
       ;; and there is no guard in the adapter -- so the condition itself
       ;; becomes the death reason. §L⑥: a consumer must treat a reason it
-      ;; does not recognise as an unexpected ending and log it, ⛔ never
+      ;; does not recognise as an unexpected ending and log it, NEVER: never
       ;; match the set exhaustively.
       (let ((base-proc (proc-count))
             (base-procs (process-count)))
@@ -143,13 +143,13 @@
 
       ;; ---- P-03 TWIN: a caller that watches as well hears twice -------
       ;;
-      ;; ⛔ THE FACADE TAKES THE WATCH, AND A CALLER MAY TAKE ONE TOO --
+      ;; NEVER: THE FACADE TAKES THE WATCH, AND A CALLER MAY TAKE ONE TOO --
       ;; so that caller gets TWO DOWNs for the same pid, with the same
       ;; reason, and cannot demonitor the one whose object it never
       ;; received. That is not a defect to be fixed; it is the shape this
       ;; arrangement has, and consumers have to tolerate the second one.
       ;;
-      ;; ⭐ IT IS ASSERTED HERE, ONCE, ON PURPOSE. It used to be true
+      ;; KEY: IT IS ASSERTED HERE, ONCE, ON PURPOSE. It used to be true
       ;; accidentally at a dozen call sites, where the second DOWN was
       ;; nobody's business and simply sat in the mailbox until the NEXT
       ;; row read it -- eight rows across two fixtures reported reasons
@@ -169,7 +169,7 @@
                                (`(spawned ,r) (gather seen k))
                                (`#(DOWN ,w ,r) (gather (append seen (list (cons w r))) (+ k 1))))))
                 '(2 same-pid same-reason)))
-        ;; ⛔ AND A THIRD NEVER COMES. Two watches, two DOWNs -- a row
+        ;; NEVER: AND A THIRD NEVER COMES. Two watches, two DOWNs -- a row
         ;; that only counted "at least two" would pass against a facade
         ;; that watched twice itself.
         (want "P-03 TWIN: and no third DOWN follows"
@@ -180,11 +180,11 @@
 
       ;; ---- P-04 closing a worker ends the child -----------------------
       ;;
-      ;; ⚠️ §L⑦: CLOSING IS KILLING THE ADAPTER, so the child is signalled
+      ;; NOTE: §L⑦: CLOSING IS KILLING THE ADAPTER, so the child is signalled
       ;; by the runtime with SIGTERM -- not with a signal we chose. A
       ;; child that ignores SIGTERM is the guardian's problem, by group.
       ;;
-      ;; ⚠️ §L⑧: AFTERWARDS NOTHING MORE COMES FROM THAT REF. The adapter
+      ;; NOTE: §L⑧: AFTERWARDS NOTHING MORE COMES FROM THAT REF. The adapter
       ;; is gone, so there is nobody left to translate the child's exit;
       ;; already-queued messages remain observable and the DOWN is the
       ;; boundary in the mailbox.
@@ -253,7 +253,7 @@
 
       ;; ---- P-07 one completion per returned write ---------------------
       ;;
-      ;; ⚠️ igropyr ANSWERS #f FOR A WRITE IT CANNOT EVEN ATTEMPT, without
+      ;; NOTE: igropyr ANSWERS #f FOR A WRITE IT CANNOT EVEN ATTEMPT, without
       ;; ever running the completion -- so the facade supplies that one
       ;; itself. Otherwise a caller holding a token waits for something
       ;; nobody will send.
@@ -270,7 +270,7 @@
                       (`(worker-out ,r ,s ,bv) (wait n st))
                       (`(worker-eof ,r ,s) (wait n st)))))
                 '(1 0))
-          ;; ⛔ AND A WRITE igropyr REFUSES OUTRIGHT STILL COMPLETES.
+          ;; NEVER: AND A WRITE igropyr REFUSES OUTRIGHT STILL COMPLETES.
           ;; It answers #f without ever running the completion closure,
           ;; so the facade supplies that one itself -- otherwise a caller
           ;; holding a token waits for something nobody will ever send.
@@ -293,7 +293,7 @@
 
       ;; ---- P-08 the memory reading, against an outside one ------------
       ;;
-      ;; ⛔ A NUMBER IN A WIDE BAND IS NOT A READING: `(and (worker-alive?
+      ;; NEVER: A NUMBER IN A WIDE BAND IS NOT A READING: `(and (worker-alive?
       ;; ref) 1)` is a number in that band. Each child prints its own pid
       ;; and the row compares this library's reading with `ps` for that
       ;; same pid, and requires the one holding forty megabytes to read

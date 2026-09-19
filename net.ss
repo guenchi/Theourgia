@@ -15,21 +15,21 @@
 
 ;;; (theourgia net) -- the transport, one adapter process per connection.
 ;;;
-;;; ⭐ TERMINATION IS THE RUNTIME'S `DOWN`, NOT A MESSAGE THIS CODE SENDS.
+;;; KEY: TERMINATION IS THE RUNTIME'S `DOWN`, NOT A MESSAGE THIS CODE SENDS.
 ;;; An adapter owns its connection, so when it dies -- for any reason --
 ;;; igropyr closes what it owned, clears a dial still in flight and shuts
 ;;; a success that lands late, and delivers `#(DOWN pid reason)` to every
 ;;; monitor. Nothing here has to guarantee that notification, because the
 ;;; runtime already does.
 ;;;
-;;; ⛔ THERE ARE NO GUARDS IN AN ADAPTER'S BODY, and it never "retires".
+;;; NEVER: THERE ARE NO GUARDS IN AN ADAPTER'S BODY, and it never "retires".
 ;;; A raise is a death and a death is the notification; a deliberate end
 ;;; is `(kill (self) reason)`, which carries the reason to the monitors.
 ;;; An earlier design guarded every call and had the adapter deliver its
 ;;; own terminal message, and eight review rounds found the same class of
 ;;; defect over and over -- all of it downstream of those two decisions.
 ;;;
-;;; ⛔ AND NOTHING KEEPS A REGISTRY. There is no table of live adapters to
+;;; NEVER: AND NOTHING KEEPS A REGISTRY. There is no table of live adapters to
 ;;; fall out of step with the world, which is why a leak here is measured
 ;;; with the runtime's own counters -- `process-count`, `conn-count` --
 ;;; and not with a number this library maintains about itself. A table
@@ -57,7 +57,7 @@
                 spawn send self receive monitor demonitor kill
                 process-alive?))
 
-  ;; ⛔ IMMUTABLE, AND BUILT ONCE PER CONNECTION. Consumers compare these
+  ;; NEVER: IMMUTABLE, AND BUILT ONCE PER CONNECTION. Consumers compare these
   ;; with `eq?`, so a second record for one connection would be a second
   ;; identity for one thing. A mutable pair would be worse: its cdr could
   ;; be changed while `eq?` still answered yes, and a later verb would
@@ -66,7 +66,7 @@
     (fields (immutable conn conn-ref-conn)
             (immutable pid conn-ref-pid)))
 
-  ;; ⚠️ THE TOKEN IS PART OF A LISTENER'S IDENTITY. A handle's address is
+  ;; NOTE: THE TOKEN IS PART OF A LISTENER'S IDENTITY. A handle's address is
   ;; reused by whatever listens next, so `stop-listen!` given the handle
   ;; alone can close a listener that merely inherited the address. The
   ;; two-argument form is a no-op for an expired token, which is the
@@ -76,23 +76,23 @@
             (immutable token listen-ref-token)))
 
   ;; How long an accepted or dialled connection may sit with nobody
-  ;; reading it. ⚠️ It bounds OUR consumer's inaction, never the peer's.
+  ;; reading it. NOTE: It bounds OUR consumer's inaction, never the peer's.
   (define default-idle-ms 5000)
 
   (define (idle-of opts) (if (pair? opts) (car opts) default-idle-ms))
 
   ;; ---- listening ---------------------------------------------------------
   ;;
-  ;; ⭐ ALL OF OWNERSHIP HAPPENS INSIDE THE ACCEPT FRAME. igropyr runs
+  ;; KEY: ALL OF OWNERSHIP HAPPENS INSIDE THE ACCEPT FRAME. igropyr runs
   ;; this callback in the event loop, where nothing may yield, and all
   ;; three of these are allowed there: `spawn` enqueues and returns,
   ;; `conn-set-owner!` and `conn-on-close!` have their own regions.
   ;;
-  ;; ⚠️ THE REF IS PUBLISHED BY THE ADAPTER, not from here -- so by the
+  ;; NOTE: THE REF IS PUBLISHED BY THE ADAPTER, not from here -- so by the
   ;; time anyone can name the connection its owner is already the process
   ;; that serves it, whatever order the scheduler picks.
   ;;
-  ;; ⚠️ A RAISE IN THIS FRAME IS igropyr's TO CLEAN UP: its accept ladder
+  ;; NOTE: A RAISE IN THIS FRAME IS igropyr's TO CLEAN UP: its accept ladder
   ;; closes the in-flight connection when this callback throws, so a
   ;; failed allocation here leaves no ownerless connection behind.
   (define (listen! path backlog . opts)
@@ -108,7 +108,7 @@
   (define (stop-listen! lref)
     (tcp-stop-listen! (listen-ref-handle lref) (listen-ref-token lref)))
 
-  ;; ⚠️ AN EARLY SIGNAL, NOT A HEALTH VERDICT. It answers what the library
+  ;; NOTE: AN EARLY SIGNAL, NOT A HEALTH VERDICT. It answers what the library
   ;; believes about itself, and a listener that thinks it is accepting
   ;; while it is not is exactly the defect a self-answered question
   ;; cannot see. A supervisor still needs its own probe; this only makes
@@ -122,7 +122,7 @@
   ;; connection completes: there is no handover at all. Cancelling is
   ;; killing this pid, in flight or after -- the runtime clears the owner
   ;; and closes a success that arrives late.
-  ;; ⛔ THE WATCH IS TAKEN HERE, IN THE CALLER'S PROCESS, BEFORE THE pid
+  ;; NEVER: THE WATCH IS TAKEN HERE, IN THE CALLER'S PROCESS, BEFORE THE pid
   ;; IS RETURNED. A dial that fails does so on its own schedule, and
   ;; between `spawn` handing back a pid and a caller getting round to
   ;; `monitor` the adapter may already be dead -- a caller that simply
@@ -130,7 +130,7 @@
   ;; design gives this duty to the facade (§7.6.32 I); leaving it to
   ;; callers made it a thing each of them had to remember.
   ;;
-  ;; ⚠️ A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, same
+  ;; NOTE: A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, same
   ;; reason, and cannot demonitor a watch it never received the object
   ;; for. Consumers tolerate the second one; there is a row for it.
   (define (connect! path . opts)
@@ -145,7 +145,7 @@
   (define (dialling-adapter path custodian idle)
     (let ((me self)
           (cmon (monitor custodian)))
-      ;; ⛔ NO GUARD. A synchronous refusal from the dial is this
+      ;; NEVER: NO GUARD. A synchronous refusal from the dial is this
       ;; process's death reason, and the condition itself reaches the
       ;; monitors.
       (pipe-connect! path me)
@@ -160,7 +160,7 @@
 
   (define (accepted-adapter c custodian idle)
     (let ((me self))
-      ;; ⛔ FIRST IT CHECKS THAT THIS CONNECTION IS ITS OWN. Ownership is
+      ;; NEVER: FIRST IT CHECKS THAT THIS CONNECTION IS ITS OWN. Ownership is
       ;; assigned in the accept frame AFTER the spawn; if indexing it
       ;; failed, or anything after the spawn threw, igropyr has already
       ;; closed the connection -- and this process must not go on to
@@ -176,12 +176,12 @@
     (receive
       (after (max 0 (- deadline (real-time))) (kill self 'idle))
       (`(start ,tok ,from) (start-reading ref c target tmon from tok))
-      ;; ⛔ `stop` MUST MATCH HERE TOO, although there is nothing to stop.
+      ;; NEVER: `stop` MUST MATCH HERE TOO, although there is nothing to stop.
       ;; Left unmatched it stays in the mailbox and a later `start` is
       ;; taken ahead of it -- the phase would reorder a consumer's stop
       ;; and start, which is the one thing putting them on one channel is
       ;; meant to prevent.
-      ;; ⛔ `stop` DOES NOT MOVE THE TARGET. Only `start` does (§D): a
+      ;; NEVER: `stop` DOES NOT MOVE THE TARGET. Only `start` does (§D): a
       ;; process that stops a connection it does not own is asking for
       ;; backpressure, not asking to receive the bytes. Written the other
       ;; way this quietly handed the stream to whoever stopped it -- and
@@ -194,7 +194,7 @@
       (`(closed) (kill self 'closed))
       (`#(DOWN ,who ,r) (kill self (list 'target-down r)))))
 
-  ;; ⚠️ A STOP DOES NOT GO BACK TO THE IDLE DEADLINE. That bound is about
+  ;; NOTE: A STOP DOES NOT GO BACK TO THE IDLE DEADLINE. That bound is about
   ;; a consumer that never started; one that stops for backpressure is
   ;; not idle, and a resume is an ordinary start in this same phase.
   (define (started ref c target tmon)
@@ -224,7 +224,7 @@
       ((eq? target from) tmon)
       (else (when tmon (demonitor tmon)) (monitor from))))
 
-  ;; ⛔ A READ THAT DOES NOT START IS A DEATH. For an open connection
+  ;; NEVER: A READ THAT DOES NOT START IS A DEATH. For an open connection
   ;; igropyr counts a negative `uv_read_start`, answers #f, and closes
   ;; nothing and sends nothing -- so an adapter that answered
   ;; `not-reading` and waited would be waiting for a hook that will never
@@ -240,12 +240,12 @@
 
   ;; ---- the verbs, as a caller sees them ----------------------------------
   ;;
-  ;; ⭐ `start` AND `stop` ARE SYNCHRONOUS, AND THE WATCH IS BOUNDED. The
+  ;; KEY: `start` AND `stop` ARE SYNCHRONOUS, AND THE WATCH IS BOUNDED. The
   ;; caller monitors, sends, then waits for either the reply or the
   ;; adapter's DOWN, so no answer can be lost: a process that dies before
   ;; replying is reported by the runtime instead.
   ;;
-  ;; ⚠️ AND THE WATCH IS DROPPED AGAIN UNLESS THIS CALL BECAME THE
+  ;; NOTE: AND THE WATCH IS DROPPED AGAIN UNLESS THIS CALL BECAME THE
   ;; TARGET. `monitor` does not de-duplicate, so a consumer that stops
   ;; and starts once per frame would accumulate one watch -- and one
   ;; future DOWN -- per frame. Only the call that first makes this
@@ -256,7 +256,7 @@
   (define (conn-read-stop! ref)
     (call-verb ref 'stop #f))
 
-  ;; ⛔ UNIQUE BY VALUE, NOT BY IDENTITY. The reply is matched with `,@`,
+  ;; NEVER: UNIQUE BY VALUE, NOT BY IDENTITY. The reply is matched with `,@`,
   ;; which compares with `equal?` -- so `(list verb)` would make every
   ;; call's token equal to every other call's, and one caller's answer
   ;; could satisfy another's wait. The counter is library-wide and the
@@ -274,7 +274,7 @@
       (send pid (list verb tok self))
       (await-reply pid mon tok keep-when-new?)))
 
-  ;; ⛔ MATCHED BY VALUE, SO NOTHING ELSE IS TAKEN OUT OF THE MAILBOX.
+  ;; NEVER: MATCHED BY VALUE, SO NOTHING ELSE IS TAKEN OUT OF THE MAILBOX.
   ;; Written as "match anything, compare, recurse if it is not mine", the
   ;; comparison happens AFTER igropyr has already removed the message --
   ;; and a caller that is also watching its store or writer process would
@@ -282,7 +282,7 @@
   ;; behind. `,@tok` and `,@pid` match only this call's own reply and
   ;; this adapter's own death; everything else stays where it was.
   ;;
-  ;; ⚠️ THIS IS THE SAME DEFECT THE OLD `exchange` HAD, in a new place:
+  ;; NOTE: THIS IS THE SAME DEFECT THE OLD `exchange` HAD, in a new place:
   ;; reading the caller's mailbox and keeping what was not yours.
   (define (await-reply pid mon tok keep-when-new?)
     (receive
@@ -299,17 +299,17 @@
 
   ;; ---- writing and closing are direct calls ------------------------------
   ;;
-  ;; ⛔ THE ADAPTER IS NOT ON THE WRITE PATH. igropyr copies the bytes
+  ;; NEVER: THE ADAPTER IS NOT ON THE WRITE PATH. igropyr copies the bytes
   ;; inside this call, so nothing needs snapshotting; an exception stays
   ;; in this caller's own extent, where its guard can see it; and each
   ;; returned call produces exactly one completion, delivered by libuv
   ;; rather than by any code here.
   ;;
-  ;; ⚠️ THE COMPLETION CAN ARRIVE AFTER THE ADAPTER'S DOWN. The two
+  ;; NOTE: THE COMPLETION CAN ARRIVE AFTER THE ADAPTER'S DOWN. The two
   ;; travel by independent paths, and a write cancelled by a close
   ;; completes with ECANCELED whenever libuv reaches it.
   ;;
-  ;; ⚠️ AND A RAISE FROM HERE LEAVES THE CONNECTION USABLE -- EXCEPT
+  ;; NOTE: AND A RAISE FROM HERE LEAVES THE CONNECTION USABLE -- EXCEPT
   ;; WHERE A PREFIX IS ALREADY ON THE WIRE. igropyr treats those two
   ;; cases differently ON PURPOSE, and the difference is not an
   ;; inconsistency to report: when `uv_try_write` took nothing (EAGAIN),
@@ -329,7 +329,7 @@
                   (lambda (status) (send me (list 'written ref tok status))))))
 
   ;; Closing is killing the adapter, and the runtime closes what it
-  ;; owned. ⚠️ The same verb cancels a dial that has not completed: there
+  ;; owned. NOTE: The same verb cancels a dial that has not completed: there
   ;; is no connection yet, and killing the dialler is what cancels it.
   (define (conn-close! ref)
     (kill-if-alive (conn-ref-pid ref)))
@@ -343,19 +343,19 @@
   ;; library never reads the caller's mailbox.
   (define answer-limit (* 32 1024 1024))
 
-  ;; ⛔ WHERE AN ANSWER ENDS IS THE CALLER'S KNOWLEDGE, NOT THIS
+  ;; NEVER: WHERE AN ANSWER ENDS IS THE CALLER'S KNOWLEDGE, NOT THIS
   ;; LIBRARY'S. `complete?` is asked of the bytes received so far and
   ;; answers whether they are a whole answer; passing #f means "end at
   ;; eof", which is what a peer that closes after speaking gives you.
   ;;
-  ;; ⚠️ WITHOUT IT THIS COULD ONLY TALK TO PEERS THAT CLOSE. Measured
+  ;; NOTE: WITHOUT IT THIS COULD ONLY TALK TO PEERS THAT CLOSE. Measured
   ;; against the daemon, which is one frame one answer and holds the
   ;; connection open for the next: the eof-only version simply timed out,
   ;; because the answer was complete and nothing said so. A line-framed
   ;; caller passes a `complete?` that looks for its newline; this library
   ;; still knows nothing about lines.
   ;;
-  ;; ⚠️ COST, STATED: when `complete?` is given, the bytes so far are
+  ;; NOTE: COST, STATED: when `complete?` is given, the bytes so far are
   ;; assembled on every chunk so it can be asked about them -- quadratic
   ;; in the number of chunks. That is the right trade for framed answers,
   ;; which are small and usually arrive in one or two pieces; a caller
@@ -407,12 +407,12 @@
                 (let ((all (cons bv acc)))
                   (let ((whole (and (procedure? complete?) (join (reverse all)))))
                     (if (and whole (complete? whole))
-                        ;; ⚠️ THE ANSWER IS WHOLE, SO THIS SIDE IS DONE:
+                        ;; NOTE: THE ANSWER IS WHOLE, SO THIS SIDE IS DONE:
                         ;; the connection is closed here rather than left
                         ;; for a peer that is not going to close it.
                         (send caller (list 'exchange-result me (list 'answer whole)))
                         (collect c all n complete? deadline caller me))))))))
-          ;; ⛔ A PREFIX IS NOT AN ANSWER. When the caller said what a
+          ;; NEVER: A PREFIX IS NOT AN ANSWER. When the caller said what a
           ;; complete answer looks like, EOF arriving before one is a
           ;; TRANSPORT FAILURE, not a short success: handing back what
           ;; had arrived lets a consumer treat a truncated reply as the
@@ -420,7 +420,7 @@
           ;; successful text result, which is the worst shape a lost
           ;; answer can take.
           ;;
-          ;; ⚠️ WITHOUT `complete?` THE RULE IS UNCHANGED: a caller that
+          ;; NOTE: WITHOUT `complete?` THE RULE IS UNCHANGED: a caller that
           ;; said nothing about completeness is asking to read until the
           ;; peer closes, and EOF is exactly that answer.
           (`#(tcp-eof)

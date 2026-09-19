@@ -15,7 +15,7 @@
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit!
           working-restore! working-snapshot working-baseline
-          ;; ⚠️ EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
+          ;; NOTE: EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
           ;; the lock a write takes, and a seam holding a path spelled
           ;; independently would be holding a different file on the day
@@ -48,7 +48,7 @@
   ;; retry say "this exact draft" without anybody having saved a
   ;; correspondence.
   ;;
-  ;; ⚠️ THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD
+  ;; NOTE: THE CONCATENATION IS UNAMBIGUOUS ONLY BECAUSE THE MIDDLE FIELD
   ;; HAS A FIXED WIDTH. `bytes` is arbitrary and comes first, so if
   ;; `based-on` could be any length then (bytes="ab", based-on="c") and
   ;; (bytes="a", based-on="bc") would hash alike -- and a collision here
@@ -82,14 +82,14 @@
                   (store-writers store)))))
   ;; ---- whose drafts are these? ----------------------------------------------
   ;;
-  ;; ⭐ A REQUEST THAT NAMES NO WRITER IS REFUSED, and this is the one
+  ;; KEY: A REQUEST THAT NAMES NO WRITER IS REFUSED, and this is the one
   ;; place that decides it. `writer-for` above falls back to the store's
   ;; own log writer when nothing is supplied -- which is right for the
   ;; internal caller that wants "this store's writer", and catastrophic
   ;; for a request, because EVERY client that names no writer lands in the
   ;; same draft space.
   ;;
-  ;; ⛔ MEASURED, AND IT IS NOT MERELY SHARING -- IT IS SILENT OVERWRITE.
+  ;; NEVER: MEASURED, AND IT IS NOT MERELY SHARING -- IT IS SILENT OVERWRITE.
   ;; Two clients with different actors, both without `--writer`, writing a
   ;; draft on one block:
   ;;
@@ -98,16 +98,16 @@
   ;;   agent-one drafts -> (draft … (writer "esu85u1f") (version "e98b10f5…"))
   ;;
   ;; The second write replaced the first, and the first client's own
-  ;; `drafts` then reported the OTHER client's version as its own. ⛔
+  ;; `drafts` then reported the OTHER client's version as its own. NEVER:
   ;; Nothing anywhere said so: both writes answered `ok`, `drafts`
   ;; answered `ok`, and a version is a hash nobody checks against the one
   ;; they just wrote.
   ;;
-  ;; ⚠️ SO IT CANNOT BE LEFT TO CALLERS TO REMEMBER. A client that forgets
+  ;; NOTE: SO IT CANNOT BE LEFT TO CALLERS TO REMEMBER. A client that forgets
   ;; has no way to discover it from any answer it receives, which is why
   ;; the absence is refused rather than defaulted.
   ;;
-  ;; ⛔ AND THERE IS NO STANDALONE EXEMPTION. The local path refuses on the
+  ;; NEVER: AND THERE IS NO STANDALONE EXEMPTION. The local path refuses on the
   ;; same terms as the forwarded one; a rule with a "but not when there is
   ;; no daemon" clause is two rules.
   (define (requested-writer store supplied)
@@ -115,7 +115,7 @@
 
   (define (writer-required) '(error writer-required))
 
-  ;; ⛔ AND IT IS REFUSED BEFORE THE STORE IS TOUCHED. The entry points
+  ;; NEVER: AND IT IS REFUSED BEFORE THE STORE IS TOUCHED. The entry points
   ;; below bound `writer` and `state` in the same `let`, so opening and
   ;; folding the store happened first and only then was the missing
   ;; writer noticed. On a store that cannot be opened that turned a
@@ -124,10 +124,10 @@
   ;; durability fault reports and the one `working-fault-child.ss` keys
   ;; its exit status on.
   ;;
-  ;; ⚠️ `requested-writer` ALREADY SHORT-CIRCUITS on an absent writer, so
+  ;; NOTE: `requested-writer` ALREADY SHORT-CIRCUITS on an absent writer, so
   ;; this asks the same question one step earlier and nothing else
   ;; changes: the answer for a named writer is untouched.
-  ;; ⛔ AND THIS IS THE ONLY PLACE THAT DECIDES IT. Each entry point used
+  ;; NEVER: AND THIS IS THE ONLY PLACE THAT DECIDES IT. Each entry point used
   ;; to carry its own `(eq? writer 'unbound)` branch as well. Once the
   ;; guard moved out here those branches became unreachable -- one rule
   ;; with two suppliers, where the second can never fire and so can never
@@ -135,7 +135,7 @@
   (define (needing-writer supplied thunk)
     (if supplied (thunk) (writer-required)))
 
-  ;; ⛔ AND THE SAME FOR THE ARGUMENT SHAPES THAT DO NOT NEED THE STORE.
+  ;; NEVER: AND THE SAME FOR THE ARGUMENT SHAPES THAT DO NOT NEED THE STORE.
   ;; A block id is well formed or it is not, and the store has nothing to
   ;; say about it -- but the check sat after `open-and-reduce`, so on a
   ;; store that cannot be opened a malformed id was answered
@@ -173,11 +173,11 @@
   ;; same writer has renamed a new draft into that name in between. The
   ;; new draft is deleted and nothing says so.
   ;;
-  ;; ⛔ IT IS NOT THE UNIT OF CONCURRENCY. Concurrency between writers is
+  ;; NEVER: IT IS NOT THE UNIT OF CONCURRENCY. Concurrency between writers is
   ;; provided by giving them separate draft spaces (7.5.3); this is one
   ;; writer's own consistency between two of its own processes, and the
   ;; lock is held across no wait but the I/O of those two steps.
-  ;; ⛔ THE LOCK DOES NOT LIVE AMONG THE DRAFTS.
+  ;; NEVER: THE LOCK DOES NOT LIVE AMONG THE DRAFTS.
   ;;
   ;; It was `working/.lock`, and `discard` takes any `safe-id?` -- which
   ;; `.lock` is. A client could delete the lock file; the next two
@@ -204,7 +204,7 @@
            (let ((x (decode-file p)))
              (unless (and (entry? x) (equal? writer (list-ref x 2)) (equal? id (list-ref x 3)))
                (assertion-violation 'working "Corrupt working envelope" p))
-             ;; ⛔ RAISED, NOT RETURNED, so that every reader of an
+             ;; NEVER: RAISED, NOT RETURNED, so that every reader of an
              ;; envelope gets the check whether or not it remembered to
              ;; ask for it. `problem` turns it into the answer the
              ;; caller sees; an assertion-violation here would read as a
@@ -309,7 +309,7 @@
             ((and (or parent-writer parent-version)
                   (not (and parent-writer parent-version hash cut-text (safe-id? parent-writer))))
              '(error invalid-working-baseline))
-            ;; ⛔ A REBASE NAMES THE VERSION IT MERGED ONTO.
+            ;; NEVER: A REBASE NAMES THE VERSION IT MERGED ONTO.
             ;;
             ;; `--rebase` used to mean "take the block's hash as it is
             ;; this instant", and that is a claim the store cannot check
@@ -351,7 +351,7 @@
              (let* ((old (entry-at store writer id))
                     (reuse (and old (not rebase?) (not (consumed? store state old))))
                     (body (if (string? bytes) (string->utf8 bytes) bytes))
-                    ;; ⛔ A REBASE USES THE BASELINE IT NAMED. Both of
+                    ;; NEVER: A REBASE USES THE BASELINE IT NAMED. Both of
                     ;; these arms once required `(not rebase?)`, so an
                     ;; explicit rebase fell through to "now" -- it
                     ;; validated the version the client said it had
@@ -388,12 +388,12 @@
   ;; text is the committed src at the cut the item names -- it had no
   ;; sub-operation, so the plan carries nothing for it.
   ;;
-  ;; ⛔ THE VERSION IS RECOMPUTED BEFORE ANYTHING IS WRITTEN. The record
+  ;; NEVER: THE VERSION IS RECOMPUTED BEFORE ANYTHING IS WRITTEN. The record
   ;; says `version`, `based-on` and `cut`; if the text those name does
   ;; not hash to that version, the record and the text disagree and this
   ;; refuses rather than standing a draft on bytes nobody sent.
   ;;
-  ;; ⛔ AND THE BASELINE IS THE ONE THE RECORD HOLDS, not "now". A draft
+  ;; NEVER: AND THE BASELINE IS THE ONE THE RECORD HOLDS, not "now". A draft
   ;; restored onto the current hash would be a claim that it was edited
   ;; from the current text, and its next commit would overwrite whatever
   ;; happened in between without being refused.
@@ -457,7 +457,7 @@
                             '(error working-unavailable non-text-projection))
                         (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes b))))))))))))))))
 
-  ;; ⛔ NO `state` PARAMETER, AND THAT IS NOT AN OVERSIGHT. Every other
+  ;; NEVER: NO `state` PARAMETER, AND THAT IS NOT AN OVERSIGHT. Every other
   ;; verb in this family takes one because it folds the log to answer;
   ;; this one removes a file from a writer's own directory and never
   ;; looks at a reduction at all. A parameter it ignored would say it
@@ -482,7 +482,7 @@
   ;; copy of a fact, and it goes out of date the moment somebody else
   ;; commits.
   ;;
-  ;; ⛔ STALE COMES FIRST. If the baseline is no longer the block's
+  ;; NEVER: STALE COMES FIRST. If the baseline is no longer the block's
   ;; current hash then the draft is stale, and what its bytes happen to
   ;; equal is not the question -- the committed text it would be
   ;; compared against is not the one it was written on. A build that
@@ -494,19 +494,19 @@
                 (equal? (list-ref entry 7)
                         (if (string? src) (string->utf8 src) src))))))
 
-  ;; ⛔ THE WHOLE OF A WRITER'S LIVE DRAFTS, TAKEN AT ONE INSTANT, UNDER
+  ;; NEVER: THE WHOLE OF A WRITER'S LIVE DRAFTS, TAKEN AT ONE INSTANT, UNDER
   ;; THAT WRITER'S OWN LOCK. An evaluation runs against a view that must
   ;; not change under it: the committed side is pinned by the cut, which
   ;; loads deterministically, and the drafts are pinned by being copied
   ;; out here, before the child that will read them exists. A commit
   ;; landing mid-run changes neither.
   ;;
-  ;; ⚠️ THE LOCK IS HELD ONLY FOR THE COPY. Nothing holds it during the
+  ;; NOTE: THE LOCK IS HELD ONLY FOR THE COPY. Nothing holds it during the
   ;; evaluation -- §7.6 is explicit that a run takes no lock -- so what
   ;; this returns is a snapshot of that moment and says nothing about the
   ;; moment after it.
   ;;
-  ;; ⚠️ FOUR FIELDS, NOT ONE. The bytes are what the evaluation reads;
+  ;; NOTE: FOUR FIELDS, NOT ONE. The bytes are what the evaluation reads;
   ;; the version and the base are what the answer reports back, so a
   ;; caller can tell which draft it actually got.
   (define (working-snapshot store state supplied)
@@ -526,7 +526,7 @@
   ;; THE BASELINE OF A WRITER'S WORKING VIEW: the join of the cuts its
   ;; live drafts were written against.
   ;;
-  ;; ⛔ THIS IS WHAT `--working` EVALUATES AT, AND THE REASON IS THE
+  ;; NEVER: THIS IS WHAT `--working` EVALUATES AT, AND THE REASON IS THE
   ;; USER'S RULING: a writer's working view stands on the state ITS OWN
   ;; drafts record, so another writer's commit made after those drafts
   ;; does not walk into it. Evaluating at the current committed state
@@ -535,15 +535,15 @@
   ;; same unchanged draft can answer differently because somebody else
   ;; committed in between.
   ;;
-  ;; ⚠️ A JOIN, NOT ONE DRAFT'S CUT. The drafts may have been written at
+  ;; NOTE: A JOIN, NOT ONE DRAFT'S CUT. The drafts may have been written at
   ;; different times; the view has to contain all of them, and the join
   ;; is the only cut that does.
   ;;
-  ;; ⚠️ EMPTY WHEN THERE ARE NO DRAFTS, and the caller reads that as the
+  ;; NOTE: EMPTY WHEN THERE ARE NO DRAFTS, and the caller reads that as the
   ;; current committed state: a writer with nothing in progress has
   ;; nothing to be pinned to.
   ;;
-  ;; ⛔ THE ENTRY LAYOUT STAYS IN THIS FILE. `behind-item` folds the same
+  ;; NEVER: THE ENTRY LAYOUT STAYS IN THIS FILE. `behind-item` folds the same
   ;; field of the same entries; a caller doing it would be a second
   ;; place that knows an envelope's sixth element is its cut.
   (define (working-baseline store state supplied)
@@ -578,13 +578,13 @@
                              (list 'fresh fresh)
                              (list 'unchanged (unchanged? state e fresh)))))
                    (active-entries store writer state))
-              ;; ⛔ A REVOKED CONSUMPTION IS NOT A DRAFT, AND IT IS NOT
+              ;; NEVER: A REVOKED CONSUMPTION IS NOT A DRAFT, AND IT IS NOT
               ;; NOTHING. The file was retired by a commit that has since
               ;; been taken back; the bytes are in the plan record, and
               ;; `write --restore <version>` puts them back. Saying
               ;; nothing here is what makes the work look deleted.
               ;;
-              ;; ⛔ AND THE FILE IS NOT RESURRECTED BEHIND THE PERSON'S
+              ;; NEVER: AND THE FILE IS NOT RESURRECTED BEHIND THE PERSON'S
               ;; BACK. Whether to bring a draft back is theirs to decide;
               ;; a store that re-created files during a read would be
               ;; writing on a path nobody asked to write on.
@@ -622,7 +622,7 @@
         ((= 1 (length ids)) (cons (car ids) spec))
         (else #f))))
 
-  ;; ⛔ ONE VERSION PER BLOCK. Two values naming the same block leave
+  ;; NEVER: ONE VERSION PER BLOCK. Two values naming the same block leave
   ;; "which version did this request consume" without an answer -- and
   ;; the answer matters twice: the identity is taken over the pairs, and
   ;; RETIREMENT deletes the drafts whose version is among them. Accepting
@@ -647,7 +647,7 @@
   (define (versions-missing ids pairs)
     (filter (lambda (id) (not (assoc id pairs))) ids))
 
-  ;; ⛔ EVERY REFUSAL HERE IS A PREMISE, AND PREMISES COME SECOND.
+  ;; NEVER: EVERY REFUSAL HERE IS A PREMISE, AND PREMISES COME SECOND.
   ;;
   ;; §7.5.4 fixes the order: request identity, then premises, then
   ;; execution. These three -- the draft has gone, the draft moved under
@@ -684,7 +684,7 @@
       (unless (equal? bytes (string->utf8 text))
         (assertion-violation 'commit "The src field requires valid UTF-8" (list-ref e 3)))
       (list 'set (list-ref e 3) 'src text)))
-  ;; ⛔ ONLY THE DRAFTS THIS REQUEST CONSUMED.
+  ;; NEVER: ONLY THE DRAFTS THIS REQUEST CONSUMED.
   ;;
   ;; The entries were read when the request was assembled, and on a
   ;; COMPLETION -- a retry finishing a plan a dead process had written --
@@ -704,22 +704,22 @@
   ;; to decide whether to test again -- and the fact is free here: both
   ;; cuts are already in hand, so this reads no file and takes no lock.
   ;;
-  ;; ⛔ IT IS INFORMATION, NOT A VERDICT (§7.5.22, v161). It does not
+  ;; NEVER: IT IS INFORMATION, NOT A VERDICT (§7.5.22, v161). It does not
   ;; refuse, does not hold the commit back, and triggers nothing. The
   ;; earlier proposals -- refuse when behind, dry-run before committing
   ;; -- were both ruled out.
   ;;
-  ;; ⚠️ AND THIS WRITER IS NOT AMONG THE NAMES. Its own later records
+  ;; NOTE: AND THIS WRITER IS NOT AMONG THE NAMES. Its own later records
   ;; are its own work, not somebody moving underneath it; a commit that
   ;; told you that you are behind yourself would be noise in the one
   ;; place the answer is read. The case is reachable -- commit another
   ;; block between writing this draft and committing it -- so it is a
   ;; decision rather than an accident, and a row pins it.
   ;;
-  ;; ⚠️ ABSENT, NOT EMPTY, when nothing moved: `(behind ())` would be a
+  ;; NOTE: ABSENT, NOT EMPTY, when nothing moved: `(behind ())` would be a
   ;; field that is always there, and a field that is always there says
   ;; nothing.
-  ;; ⛔ NOTHING HERE MAY TURN A COMMIT THAT SUCCEEDED INTO A FAILURE.
+  ;; NEVER: NOTHING HERE MAY TURN A COMMIT THAT SUCCEEDED INTO A FAILURE.
   ;; `problem` wraps the whole verb and renders ANY raise as
   ;; `(error working-unavailable ...)`, so a cut this code cannot read --
   ;; a replacement envelope can carry `(bogus)` past `entry?`'s
@@ -728,12 +728,12 @@
   ;; An informational field is not worth that, so every failure here is
   ;; the field's absence.
   ;;
-  ;; ⚠️ THE CUT IS PASSED IN, NOT TAKEN FROM A REDUCTION THIS FUNCTION
+  ;; NOTE: THE CUT IS PASSED IN, NOT TAKEN FROM A REDUCTION THIS FUNCTION
   ;; CHOOSES. Which reduction it is decides whether the answer is right,
   ;; and the two available ones differ; the caller is where that is
   ;; visible, so it is decided there.
   ;;
-  ;; ⚠️ AND IT IS NOT A COVERAGE TEST. A writer whose entry in the cut
+  ;; NOTE: AND IT IS NOT A COVERAGE TEST. A writer whose entry in the cut
   ;; is EARLIER than the baseline's -- reachable after a retraction
   ;; rebuilds the applied cut -- is not named, because it did not move
   ;; after the baseline; it moved back. The field answers "who landed
@@ -751,7 +751,7 @@
              (list 'behind (list-sort (lambda (a b) (string<? (car a) (car b))) moved))))))
 
   (define (retire! store writer entries versions)
-    ;; ⭐ A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
+    ;; KEY: A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
     ;; envelopes were read at the top of the commit, and the store's
     ;; write session is already released by the time this runs -- so
     ;; another process belonging to the same writer can put a NEW draft
@@ -797,7 +797,7 @@
                                       (if (null? xs) out (loop (cdr xs) (if (member (car xs) out) out (cons (car xs) out)))))))))
            '(error bad-request duplicate-block))
           (else
-           ;; ⛔ NO PACKET. A commit used to write an immutable file
+           ;; NEVER: NO PACKET. A commit used to write an immutable file
            ;; beside the drafts, holding the request it had accepted and
            ;; the exact envelopes it had read, so that a retry could be
            ;; answered from it. The log now holds both: the plan record
@@ -809,7 +809,7 @@
            (let* ((after (or (assoc (writer-for store #f) (reduce-applied-cut state))
                              (cons (writer-for store #f) 0)))
                   (external (or supplied-req (make-write-request actor 'commit ids (fresh-id) after))))
-             ;; ⛔ A DRAFT THAT CANNOT BE READ IS A PREMISE, NOT AN
+             ;; NEVER: A DRAFT THAT CANNOT BE READ IS A PREMISE, NOT AN
              ;; IDENTITY.
              ;;
              ;; A corrupt envelope, or one whose bytes are not text,
@@ -853,7 +853,7 @@
                           (if (null? ids) all
                               (filter (lambda (e) (member (list-ref e 3) ids)) all)))))
                     (missing (filter (lambda (id) (not (exists (lambda (e) (equal? id (list-ref e 3))) entries))) selection))
-                    ;; ⭐ AN UNCHANGED DRAFT HAS NO SUB-OPERATION.
+                    ;; KEY: AN UNCHANGED DRAFT HAS NO SUB-OPERATION.
                     ;;
                     ;; Its bytes are what the block already says, so a
                     ;; `set` carrying them is a record that changes
@@ -863,7 +863,7 @@
                     ;; `consumes`: the draft is being retired, and a
                     ;; retry has to be able to say which one.
                     ;;
-                    ;; ⚠️ THE TEST IS THE SAME ONE `drafts` USES, and it
+                    ;; NOTE: THE TEST IS THE SAME ONE `drafts` USES, and it
                     ;; is `fresh` AND equal -- a stale draft is not
                     ;; unchanged whatever its bytes equal, because the
                     ;; text it would be compared against is not the one
@@ -884,7 +884,7 @@
                                                             "A draft could not be read")))))
                                     '()))
                         (map entry-intent changed)))
-                    ;; ⭐ THE IDENTITY IS TAKEN OVER THE VERSIONS, NOT
+                    ;; KEY: THE IDENTITY IS TAKEN OVER THE VERSIONS, NOT
                     ;; OVER THE DRAFTS' BYTES.
                     ;;
                     ;; It used to be the encoded envelopes. A retry
@@ -908,7 +908,7 @@
                     ;; same request, and a client that lists them the
                     ;; other way round on a retry is retrying, not
                     ;; sending something new.
-                    ;; ⛔ AND `pairs` HAS TO BE A LIST BEFORE ANYTHING
+                    ;; NEVER: AND `pairs` HAS TO BE A LIST BEFORE ANYTHING
                     ;; MAPS OVER IT. A duplicated or malformed
                     ;; `--working-version` leaves it #f, and building the
                     ;; effective request maps over it -- so the caller
@@ -921,7 +921,7 @@
                                          entries))))
                     (pairs (and given
                                 (list-sort (lambda (a b) (string<? (car a) (car b))) given)))
-                    ;; ⛔ THE CALLER'S ARGUMENT STRINGS ARE NOT IN IT.
+                    ;; NEVER: THE CALLER'S ARGUMENT STRINGS ARE NOT IN IT.
                     ;;
                     ;; §7.5.9 fixes the fingerprint's inputs: who, the
                     ;; verb, the draft writer, the ordered (block .
@@ -940,20 +940,20 @@
                                                  pairs))
                                       (list-ref external 4) (list-ref external 5)))))
                   (cond
-                    ;; ⛔ NO `no-draft` HERE. §7.5.4 fixes the order:
+                    ;; NEVER: NO `no-draft` HERE. §7.5.4 fixes the order:
                     ;; request identity first, premises second. A retry
                     ;; whose drafts were retired by the commit it is
                     ;; retrying must be told about its identity -- replay
                     ;; or mismatch -- and not that there is no draft.
                     ;; The check moved into the preflight, which runs
                     ;; after the verdict.
-                    ;; ⭐ A REQUEST THAT WILL CONSUME SOMETHING MUST SAY
+                    ;; KEY: A REQUEST THAT WILL CONSUME SOMETHING MUST SAY
                     ;; WHAT. Its identity is taken over the versions, and
                     ;; a retry from a new process has no draft left to
                     ;; read them from -- "infer once and reuse" has
                     ;; nowhere to keep the inference.
                     ;;
-                    ;; ⛔ NOT FOR A COMMIT THAT CONSUMES NOTHING. Zero
+                    ;; NEVER: NOT FOR A COMMIT THAT CONSUMES NOTHING. Zero
                     ;; drafts is a legitimate request: it writes an empty
                     ;; plan, which is that request's whole durable
                     ;; evidence, and there is no version to name.
@@ -961,7 +961,7 @@
                     ;; every row in `empty-plan.ss` with `bad-request`
                     ;; where the answer should have been about identity.
                     ((not pairs) '(error bad-request malformed-working-version))
-                    ;; ⭐ THE VERSIONS NAME THE SELECTION, AND THE
+                    ;; KEY: THE VERSIONS NAME THE SELECTION, AND THE
                     ;; SELECTION IS THE IDENTITY.
                     ;;
                     ;; The fingerprint is taken over the pairs, so two
@@ -988,7 +988,7 @@
                      (list 'error 'bad-request 'working-version-mismatch
                            (cons 'blocks (filter (lambda (b) (not (member b ids)))
                                                  (map car pairs)))))
-                    ;; ⚠️ THE BLOCK SET OF A REQUEST THAT NAMES VERSIONS
+                    ;; NOTE: THE BLOCK SET OF A REQUEST THAT NAMES VERSIONS
                     ;; IS THE SET IT NAMED. Deriving it from the drafts
                     ;; on disk made a NEW draft, written after the first
                     ;; attempt, turn a retry into `req-needs-versions` --
@@ -1009,7 +1009,7 @@
                     ;; With `--req` this is a request like any other and
                     ;; writes its empty plan, which is its whole durable
                     ;; evidence; without one there is nothing to record.
-                    ;; ⛔ NOT WHEN A DRAFT COULD NOT BE READ. "No
+                    ;; NEVER: NOT WHEN A DRAFT COULD NOT BE READ. "No
                     ;; sub-operations" and "the draft is damaged" are
                     ;; different answers, and this arm used to give the
                     ;; first for the second -- a non-text draft
@@ -1024,14 +1024,14 @@
                     ;; `(ok (items))` without either, and retired the
                     ;; drafts anyway.
                     ;;
-                    ;; ⛔ THE CHECK IS THE SAME FUNCTION, not a copy of
+                    ;; NEVER: THE CHECK IS THE SAME FUNCTION, not a copy of
                     ;; its rules: `preflight` is asked here exactly as
                     ;; the write path asks it.
                     ((and (not supplied-req) (null? intents) (not read-failure)
                           (preflight state entries missing ids pairs))
                      => (lambda (refusal) refusal))
                     ((and (not supplied-req) (null? intents) (not read-failure))
-                     ;; ⚠️ THIS ARM ANSWERS THE SAME QUESTION AND USED TO
+                     ;; NOTE: THIS ARM ANSWERS THE SAME QUESTION AND USED TO
                      ;; SKIP IT. Nothing is written here -- the request has
                      ;; no identity to record and no sub-operations -- but
                      ;; the drafts are still retired, so it IS a commit and
@@ -1061,7 +1061,7 @@
                                                       entries))))))
                        (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers)
                            (begin
-                             ;; ⛔ A REPLAY RETIRES NOTHING. The drafts
+                             ;; NEVER: A REPLAY RETIRES NOTHING. The drafts
                              ;; this request consumed were retired by the
                              ;; execution it is a replay of; what is in
                              ;; the slot now is a LATER draft, written by
@@ -1073,7 +1073,7 @@
                              (let ((replay? (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
                                                     answers)))
                                (unless replay? (retire! store writer entries pairs))
-                               ;; ⭐ THE CUT IS THE ONE THE WRITE PRODUCED, not the
+                               ;; KEY: THE CUT IS THE ONE THE WRITE PRODUCED, not the
                                ;; one this verb opened with. They differ, and the
                                ;; difference is the whole answer: appending this
                                ;; request's records can RELEASE a foreign record
@@ -1084,7 +1084,7 @@
                                ;; hands it to the thunk above -- the same object it
                                ;; folds into -- so `live` is that cut for free.
                                ;;
-                               ;; ⛔ AND A REPLAY GETS NO FIELD. Its drafts were
+                               ;; NEVER: AND A REPLAY GETS NO FIELD. Its drafts were
                                ;; retired by the execution it repeats, so `entries`
                                ;; is empty or holds a LATER draft: an empty
                                ;; baseline names every writer in the store, and a

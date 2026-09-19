@@ -1745,7 +1745,7 @@
 ;; the record layer frames it, and the emitter that builds a snapshot's
 ;; rows refuses it -- a value this store can hold and cannot describe.
 ;;
-;; ⚠️ IT USED TO BE A CHARACTER, `#\a`, AND THAT STOPPED BEING ONE.
+;; NOTE: IT USED TO BE A CHARACTER, `#\a`, AND THAT STOPPED BEING ONE.
 ;; Block hashing now goes through `storable-encode`, which writes a
 ;; character as the list ("#%char" 97) -- so a character is describable
 ;; after all, the `state` section below succeeded, and this row was red

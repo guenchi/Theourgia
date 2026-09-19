@@ -17,11 +17,13 @@
 ;;
 ;; THIS IS THE MECHANISM, NOT A DETAIL OF THE MESSAGE. The whole reason
 ;; a draft carries the state it was taken against is so that a second
-;; writer can be told what the first one did -- design.md 7.5.5: "块在
-;; commit5，先到者提交后变成 commit6；后到者带着 commit5 来，校验失败，把
-;; commit6 的提交信息交给他，合并之后再提交", and the W brief's line for
-;; the cells: "前提陈旧 ⇒ 拒绝且日志逐字节不变；拒绝里点名先提交者的
-;; record-id、actor、内容". The core does not merge and does not rebase;
+;; writer can be told what the first one did -- design.md 7.5.5: a block
+;; stands at commit5; the first writer commits and it becomes commit6; the
+;; second arrives holding commit5, fails the check, is handed commit6's
+;; commit information, and merges before committing again. The W brief's
+;; line for the cells: a stale premise is refused, the log is unchanged
+;; byte for byte, and the refusal names the first committer's record id,
+;; actor and content. The core does not merge and does not rebase;
 ;; handing the fact back IS the feature. A refusal that said only
 ;; `stale-baseline` would be correct and useless, and nothing asserted
 ;; otherwise: `working1.ss` checks the refusal's KIND and its `block`,
@@ -29,8 +31,10 @@
 ;; nothing that anyone was measuring.
 ;;
 ;; AND THE ANSWER IS BOUNDED, which is the other half of the same
-;; sentence: "有界：中间落了很多条时 since 只给身份与 actor 的清单加当前
-;; 内容，其余用 log/diff/read 取——拒绝的大小不能随历史长度增长." The
+;; sentence: it is bounded. When many records have landed in between,
+;; `since` gives the list of identities and actors plus the current
+;; content, and the rest is fetched with log, diff and read -- the size of
+;; a refusal must not grow with the length of the history. The
 ;; design fixes that a bound exists and that the answer says where the
 ;; rest is; the two numbers below (8 records, 8192 bytes) are
 ;; `baseline.ss`'s, and the rows name them so that changing one is a
@@ -46,7 +50,7 @@
 ;; the store's own earlier answer can fail to compute just as the answer
 ;; under test can. See q7.ss for the reading that produced this rule.
 ;;
-;; ⚠️ AND A RAISE IS A FAILURE EVEN WHEN BOTH SIDES RAISE THE SAME WAY.
+;; NOTE: AND A RAISE IS A FAILURE EVEN WHEN BOTH SIDES RAISE THE SAME WAY.
 ;; The form this was copied from wraps each side and then compares the
 ;; two wrapped values, so two identical raises are `equal?` and the row
 ;; prints `ok`. That is not a corner: both sides of several rows here go
@@ -92,7 +96,7 @@
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 (define n-store 0)
-;; ⭐ EACH STORE'S OWN WRITER IS REMEMBERED AT `init`, BECAUSE A DRAFT
+;; KEY: EACH STORE'S OWN WRITER IS REMEMBERED AT `init`, BECAUSE A DRAFT
 ;; VERB IS NO LONGER TOLD ONE BY DEFAULT. It used to fall back to the
 ;; store's local log writer, so every row below asked its question as
 ;; that writer without saying so; the core now refuses an unnamed writer
@@ -100,7 +104,7 @@
 ;; -- `no-draft`, `stale-baseline`, the count bound -- the refusals they
 ;; get, instead of replacing all of them with one about identity.
 ;;
-;; ⛔ AND A STORE WHOSE WRITER WAS NEVER RECORDED IS AN ERROR, NOT A
+;; NEVER: AND A STORE WHOSE WRITER WAS NEVER RECORDED IS AN ERROR, NOT A
 ;; FALLBACK TO #f. Silently omitting the option would turn whichever row
 ;; used that store into a test of `writer-required`, and it would still
 ;; be a refusal, and the row would still look like it was working.
@@ -242,7 +246,7 @@
 (define refusal4 (call d4 (list 'commit a4) "test"))
 (want "W3-10 ten earlier commits are cut to eight entries"
       (length (since-of refusal4)) 8)
-;; ⛔ W3-11's FIRST ROW IS RETIRED. It asserted the eight in INGESTION
+;; NEVER: W3-11's FIRST ROW IS RETIRED. It asserted the eight in INGESTION
 ;; order, newest first. §7.5.11 orders them causally instead -- the
 ;; winner first, then the rest as a reader would apply them -- because
 ;; ingestion order is an accident of who synced first, and the same two
@@ -267,7 +271,7 @@
       (field refusal4 'retrieve) (list 'retrieve (list 'log a4) (list 'read a4)))
 
 (printf "\n== the byte budget is retired; see since-contract.ss ==\n")
-;; ⛔ EVERY ROW FROM W3-14 TO W3-33 IS RETIRED, AND THIS IS WHERE THEY
+;; NEVER: EVERY ROW FROM W3-14 TO W3-33 IS RETIRED, AND THIS IS WHERE THEY
 ;; WERE. Their oracle was one rule: "take entries, newest first, until a
 ;; running byte total is used up; an entry that does not fit is passed
 ;; over." Each row measured a consequence of it -- the total is
@@ -283,7 +287,7 @@
 ;; `truncated` mark -- the one record the reader needed had been dropped
 ;; for being long, and the answer told them to go and look it up.
 ;;
-;; ⛔ THE EXPECTATIONS ARE NOT EDITED TO MATCH THE NEW RULE. A row whose
+;; NEVER: THE EXPECTATIONS ARE NOT EDITED TO MATCH THE NEW RULE. A row whose
 ;; question no longer exists does not have a new answer; it has a
 ;; successor that asks the question the new rule is about.
 ;;

@@ -204,7 +204,7 @@
 (define (decide evidence n) (request-decision ID FP WHO AFTER evidence '() n '()))
 (define two (list (cons 0 '(set "b" "t" "x")) (cons 1 '(set "c" "t" "y"))))
 
-;; ⚠️ A `complete` VERDICT CARRIES THE PLAN NOW. It used to be
+;; NOTE: A `complete` VERDICT CARRIES THE PLAN NOW. It used to be
 ;; `(complete <present-indices>)`, and the only thing a caller could do
 ;; with that was answer `incomplete-request`. §7.5.11 makes the caller
 ;; FINISH the request from the plan's own frozen declaration, so the

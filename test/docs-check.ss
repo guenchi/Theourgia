@@ -15,13 +15,13 @@
 
 ;; The README, checked against the tree it describes.
 ;;
-;; ⭐ THREE CLAIMS, EACH WITH ITS TRUTH TAKEN FROM THE PROGRAM: the verbs
+;; KEY: THREE CLAIMS, EACH WITH ITS TRUTH TAKEN FROM THE PROGRAM: the verbs
 ;; it documents, the options it advertises, and the environment variables
 ;; it lists. A README is the part of a repository that goes stale first,
 ;; because nothing runs it -- and the way it goes stale is not by saying
 ;; something false but by falling silent about something new.
 ;;
-;; ⛔ NONE OF THE THREE IS A LIST IN THIS FILE. A gate that carried its
+;; NEVER: NONE OF THE THREE IS A LIST IN THIS FILE. A gate that carried its
 ;; own copy of the verbs would go green on the day both copies were
 ;; wrong together.
 
@@ -84,9 +84,9 @@
 
 ;; ---- the README's verb headings -----------------------------------------------
 ;;
-;; ⛔ EVERY `###` IS A VERB SECTION, with no exemption list. Two headings
+;; NEVER: EVERY `###` IS A VERB SECTION, with no exemption list. Two headings
 ;; that were not verbs -- `published.sexp` and `incoming/` -- are `####`
-;; for exactly this reason. ⚠️ The alternative, "count the `###` whose
+;; for exactly this reason. NOTE: The alternative, "count the `###` whose
 ;; first word happens to be a verb", assumes the answer: a verb with no
 ;; section is then simply not counted, which is the one thing this row
 ;; exists to notice.
@@ -115,7 +115,7 @@
 
 ;; ---- the options it advertises ------------------------------------------------
 ;;
-;; ⛔ ONLY THE HEADING LINE AND THE INDENTED USAGE BLOCK COUNT AS AN
+;; NEVER: ONLY THE HEADING LINE AND THE INDENTED USAGE BLOCK COUNT AS AN
 ;; ADVERTISEMENT. Prose has to be able to NAME an option in order to say
 ;; something about it -- that it was broken, that it is the same spelling
 ;; another verb uses -- and a scanner reading the whole section cannot
@@ -124,7 +124,7 @@
 ;; advertising `--writer`.
 
 (define (dashed-tokens line)
-  ;; ⚠️ `--` MUST BE FOLLOWED BY A LETTER. Without that test the `---`
+  ;; NOTE: `--` MUST BE FOLLOWED BY A LETTER. Without that test the `---`
   ;; of a Markdown table row is an option, and the row reports a defect
   ;; in a table separator.
   (let loop ((i 0) (out '()))
@@ -169,7 +169,7 @@
       (filter (lambda (p) (not (accepted? (car p) (cadr p)))) advertised)
       '())
 
-;; ⛔ AND THE OTHER WAY. Without this row the README could advertise
+;; NEVER: AND THE OTHER WAY. Without this row the README could advertise
 ;; nothing at all and stay green -- which is how a document falls behind:
 ;; not by saying something false, but by never mentioning what arrived.
 (define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket"))
@@ -196,7 +196,7 @@
 
 ;; ---- DOC-4: the options every verb takes ---------------------------------------
 ;;
-;; ⭐ DOC-2 CANNOT SEE THESE. It asks, per verb, whether the options a
+;; KEY: DOC-2 CANNOT SEE THESE. It asks, per verb, whether the options a
 ;; verb advertises are accepted and whether the ones it accepts are
 ;; advertised -- and it excuses the common ones, because listing
 ;; `--store` under thirty-three verbs would say it was special to each.
@@ -204,7 +204,7 @@
 ;; falls through both directions. Measured: `--wire` was in no section of
 ;; the README at all while DOC-2 was green.
 ;;
-;; ⛔ BOTH WAYS, against the parser's own common list.
+;; NEVER: BOTH WAYS, against the parser's own common list.
 (define transport-options
   (let* ((text (file-text "../arguments.ss"))
          (at (index-of text "(append '(\"--store\"" 0)))
@@ -234,7 +234,7 @@
           'COULD-NOT-READ-ONE-OF-THEM)
       '())
 
-;; ⛔ AND THE OTHER WAY, so the section cannot list an option that is not
+;; NEVER: AND THE OTHER WAY, so the section cannot list an option that is not
 ;; global -- which would tell a reader every verb takes something only
 ;; one of them does.
 (want "DOC-4 every option that section lists really is taken by every verb"
@@ -247,13 +247,13 @@
 
 ;; ---- DOC-5: the holding rule reaches both readers ------------------------------
 ;;
-;; ⚠️ IT IS A CONVENTION WITH NO MACHINE BEHIND IT -- nothing records who
+;; NOTE: IT IS A CONVENTION WITH NO MACHINE BEHIND IT -- nothing records who
 ;; holds a writer id and nothing refuses a second process -- so the only
 ;; thing that can carry it is the text. It has to be in BOTH places: the
 ;; README for a person, and `write-protocol` for an agent, which is what
 ;; the MCP tool descriptions are built from.
 ;;
-;; ⛔ CHEAP ON PURPOSE. This file already holds both texts; the row is one
+;; NEVER: CHEAP ON PURPOSE. This file already holds both texts; the row is one
 ;; phrase looked for in each.
 (define holding-phrase "one agent at a time")
 
@@ -264,7 +264,7 @@
 
 ;; ---- the environment variables it lists ---------------------------------------
 ;;
-;; ⚠️ THE TRUTH SOURCE IS NOT ONLY THE LIBRARIES. `THEOURGIA_LIBDIR` has
+;; NOTE: THE TRUTH SOURCE IS NOT ONLY THE LIBRARIES. `THEOURGIA_LIBDIR` has
 ;; no `getenv` anywhere in Scheme -- `test/env.sh` and `test/paths.py`
 ;; read it -- and exempting it would have been a rule with one permanent
 ;; exception standing where the rule should be. The two files are read
@@ -277,7 +277,7 @@
           (map (lambda (f) (string-append dir "/" f)) (directory-list dir))))
 
 ;; An environment variable's name, wherever it is written: a run of
-;; capitals and underscores. ⚠️ The validity test is what keeps a
+;; capitals and underscores. NOTE: The validity test is what keeps a
 ;; mis-parse out of the set -- without it this gate read its own source,
 ;; which contains the literal "(getenv ", and produced a "variable" whose
 ;; name began with a close parenthesis and a newline.
@@ -302,7 +302,7 @@
        (let ((t (list->string (reverse acc))))
          (loop (+ i 1) '() (if (upper-token? t) (add-unique t out) out)))))))
 
-;; ⛔ A NAME ONLY COUNTS AS A CALL SITE IF `getenv` ASKED FOR IT. Any
+;; NEVER: A NAME ONLY COUNTS AS A CALL SITE IF `getenv` ASKED FOR IT. Any
 ;; capitalised word would otherwise qualify, and the row would be about
 ;; the README's prose rather than about the program.
 (define (getenv-names-in text)
@@ -321,9 +321,9 @@
                        (loop j (if (upper-token? t) (add-unique t out) out))))
                     (else (scan (+ j 1) (cons (string-ref text j) acc))))))))))
 
-;; ⚠️ `THEOURGIA_LIBDIR` IS READ BY NEITHER A `getenv` NOR A LIBRARY --
+;; NOTE: `THEOURGIA_LIBDIR` IS READ BY NEITHER A `getenv` NOR A LIBRARY --
 ;; `test/env.sh` and `test/paths.py` read it -- so those two files are
-;; read in their own idiom. ⛔ NOT by looking for capitalised words:
+;; read in their own idiom. NEVER: NOT by looking for capitalised words:
 ;; that version reported `COMPARING`, `DIRECTORIES` and `SOCKET_LIMIT`
 ;; as environment variables the README had failed to document, because a
 ;; comment and a constant are also capitals.
@@ -389,7 +389,7 @@
 
 ;; ---- the instrument -----------------------------------------------------------
 ;;
-;; ⛔ ALL FOUR ROWS ABOVE ARE SATISFIED BY READING NOTHING. An empty
+;; NEVER: ALL FOUR ROWS ABOVE ARE SATISFIED BY READING NOTHING. An empty
 ;; README, an unreadable path, a `directory-list` that came back short --
 ;; each of those makes every comparison above compare nothing with
 ;; nothing and print `ok`.

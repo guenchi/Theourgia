@@ -79,13 +79,13 @@
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 (define n-store 0)
-;; ⭐ EACH STORE'S OWN WRITER IS REMEMBERED AT `init`, BECAUSE A DRAFT
+;; KEY: EACH STORE'S OWN WRITER IS REMEMBERED AT `init`, BECAUSE A DRAFT
 ;; VERB IS NO LONGER TOLD ONE BY DEFAULT. It used to fall back to the
 ;; store's local log writer; the core now refuses an unnamed writer. The
 ;; rows here are about what `since` hands back with a refusal, so they
 ;; need the refusal they were written for and not one about identity.
 ;;
-;; ⛔ AND A STORE WHOSE WRITER WAS NEVER RECORDED IS AN ERROR, NOT A
+;; NEVER: AND A STORE WHOSE WRITER WAS NEVER RECORDED IS AN ERROR, NOT A
 ;; FALLBACK TO #f: that would quietly turn a row into a test of
 ;; `writer-required`, which is also a refusal, and it would still pass
 ;; `refuse!`.
@@ -175,7 +175,7 @@
 (want "SC-02 TWIN: the one dropped is the OLDEST, not the first"
       (exists (lambda (a) (equal? a "agent:0")) (actors-of r9)) #f)
 
-;; ⭐ AND THE SEVEN BEHIND THE WINNER ARE IN CAUSAL ORDER. Without this
+;; KEY: AND THE SEVEN BEHIND THE WINNER ARE IN CAUSAL ORDER. Without this
 ;; row a build that kept them newest-first -- which is the order the
 ;; window is chosen in -- passes every other assertion here: the count,
 ;; the mark, the winner and the absence of the oldest are all unchanged
@@ -207,7 +207,7 @@
 
 ;; ---- SC-03b two ingestion orders, one answer -----------------------------
 ;;
-;; ⭐ THIS IS THE ROW THE ORDERING RULE EXISTS FOR, and the rows above do
+;; KEY: THIS IS THE ROW THE ORDERING RULE EXISTS FOR, and the rows above do
 ;; not replace it: with one writer the causal order and the arrival order
 ;; are the same sequence, so both a causal implementation and an
 ;; ingestion-ordered one answer alike. The old `baseline.ss` sorted by
@@ -225,7 +225,7 @@
 (define creator
   (framed 1 '() "ordinary"
           '(put ((kind . section) (title . "A") (parent . root) (ord . 1)))))
-;; ⭐ THE WRITER NAMES RUN AGAINST THE CAUSAL ORDER, ON PURPOSE.
+;; KEY: THE WRITER NAMES RUN AGAINST THE CAUSAL ORDER, ON PURPOSE.
 ;;
 ;; The premise is written by `zzzzzzzz` and the dependent by `aaaaaaaa`,
 ;; so sorting by (writer, seq) -- which is what an ingestion-ordered
@@ -269,7 +269,7 @@
 
 ;; ---- SC-03c a concurrent record, which is what a comparator breaks on ----
 ;;
-;; ⚠️ SC-03 AND SC-03b USE CAUSAL CHAINS, AND A CHAIN CANNOT SEPARATE
+;; NOTE: SC-03 AND SC-03b USE CAUSAL CHAINS, AND A CHAIN CANNOT SEPARATE
 ;; THE TWO IMPLEMENTATIONS. "Causal, else lexical" only differs from a
 ;; ranked order when there is a pair the causal relation does NOT
 ;; relate: with `zzzzzzzz` before `aaaaaaaa` and `mmmmmmmm` concurrent
@@ -280,7 +280,7 @@
 ;; The winner depends on all three, so all four are relevant and the
 ;; three are ordered among themselves.
 
-;; ⭐ THE WRITER NAMES ARE CHOSEN SO THAT THE TWO IMPLEMENTATIONS ANSWER
+;; KEY: THE WRITER NAMES ARE CHOSEN SO THAT THE TWO IMPLEMENTATIONS ANSWER
 ;; DIFFERENTLY. premise=zzzzzzzz, dependent=aaaaaaaa, concurrent=wwwwwwww,
 ;; winner=mmmmmmmm. Measured on exactly this arrangement:
 ;;
@@ -317,7 +317,7 @@
 (want "SC-03c the winner is first in both"
       (list (car (actors-of r-fwd)) (car (actors-of r-rev)))
       '("agent:winner" "agent:winner"))
-;; ⭐ THE PREMISE BEFORE ITS DEPENDENT, IN BOTH -- which is the pair the
+;; KEY: THE PREMISE BEFORE ITS DEPENDENT, IN BOTH -- which is the pair the
 ;; cycling relation reverses.
 (define (position lst x)
   (let loop ((l lst) (i 0))
@@ -332,7 +332,7 @@
 
 ;; ---- SC-04 an oversized winner -------------------------------------------
 ;;
-;; ⭐ THE ENTRY STAYS. Under the byte budget this whole refusal came back
+;; KEY: THE ENTRY STAYS. Under the byte budget this whole refusal came back
 ;; with an empty `since` and a `truncated` mark: the one record the
 ;; reader needed had been dropped for being long.
 
@@ -342,7 +342,7 @@
 (define r-big (staged d4 a4 1 (lambda (i) big)))
 (want "SC-04 the single oversized commit is still an entry" (length (since-of r-big)) 1)
 (want "SC-04 its actor is intact" (actors-of r-big) '("agent:0"))
-;; ⭐ THE SIZE IS THE BODY'S BYTES, computed here from the body and not
+;; KEY: THE SIZE IS THE BODY'S BYTES, computed here from the body and not
 ;; from the store's own encoding of the record. An expectation that ran
 ;; the implementation's calculation would agree with it whatever that
 ;; calculation was -- and it did: this row read
@@ -384,7 +384,7 @@
 
 ;; ---- SC-05b the exact boundary, and escaping ------------------------------
 ;;
-;; ⚠️ THESE ROWS EXIST BECAUSE THE ONES ABOVE DID NOT PIN THE NUMBER.
+;; NOTE: THESE ROWS EXIST BECAUSE THE ONES ABOVE DID NOT PIN THE NUMBER.
 ;; 900 and 1200 bytes are both far from 1024: changing the limit to 1025
 ;; would leave every row above green. And a body of quotation marks is
 ;; the case that separates "the body's bytes" from "the encoded
@@ -414,7 +414,7 @@
 ;; still find the record. A build that blanked the identity of elided
 ;; entries passes SC-04, SC-06 and SC-07 as they were written.
 
-;; ⚠️ THE SHAPE OF AN IDENTITY IS NOT THE IDENTITY. An earlier version
+;; NOTE: THE SHAPE OF AN IDENTITY IS NOT THE IDENTITY. An earlier version
 ;; of this row asked only whether the entry carried a (string . integer)
 ;; pair -- which every forged pair does. Measured: replacing every
 ;; elided record's id with ("wrongxxx" . 0) satisfied it.
@@ -444,7 +444,7 @@
       (map (lambda (c) (and (pair? c) (eq? 'content (car c)) #t)) (contents-of r-mid))
       '(#f #f #t))
 
-;; ⭐ AND THE ELIDED ONE IS STILL THE RECORD IT WAS. SC-04b checks a
+;; KEY: AND THE ELIDED ONE IS STILL THE RECORD IT WAS. SC-04b checks a
 ;; singleton, where the entry is the winner; a build that blanked the
 ;; identity of NON-winner elided entries passes that one. Here the big
 ;; body belongs to agent:1, which the answer places LAST -- winner
@@ -488,11 +488,11 @@
 ;;
 ;; The hash can differ with NO record about this block after the draft's
 ;; cut: a commit was retracted, and the block went back to what it was.
-;; ⛔ An empty `since` alone leaves the client guessing whether the store
+;; NEVER: An empty `since` alone leaves the client guessing whether the store
 ;; forgot or there is genuinely nothing; the contract carries a reason
 ;; and a place to look instead.
 ;;
-;; ⚠️ THIS ROW EXISTS BECAUSE THE BRANCH HAD NO GUARD. Deleting the two
+;; NOTE: THIS ROW EXISTS BECAUSE THE BRANCH HAD NO GUARD. Deleting the two
 ;; lines that append the reason left every other row in this file green:
 ;; none of them constructs a refusal with zero relevant records.
 
@@ -542,7 +542,7 @@
 (want "SC-09 so it says why instead of leaving an empty list"
       (field r-none 'reason) '(reason candidate-set-changed))
 (want "SC-09 and where to look" (field r-none 'conflicts) (list 'conflicts a12))
-;; ⛔ AND IT IS NOT MARKED TRUNCATED. Nothing was omitted -- there was
+;; NEVER: AND IT IS NOT MARKED TRUNCATED. Nothing was omitted -- there was
 ;; nothing to omit -- and an answer that said otherwise would send the
 ;; reader to `log` for a history that holds no relevant record at all.
 (want "SC-09 TWIN: an empty answer is not a truncated one"

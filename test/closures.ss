@@ -28,7 +28,7 @@
 ;; sees a clean file. The property is a property of the CLOSURE, and the
 ;; closure is what this reads.
 ;;
-;; ⛔ NOT A GREP OVER THE FILE. The walk is `import-walk.scm`, shared
+;; NEVER: NOT A GREP OVER THE FILE. The walk is `import-walk.scm`, shared
 ;; with `facade-gate.ss`; why it reads the forms as data rather than the
 ;; text is written there.
 ;;
@@ -159,13 +159,13 @@
 
 ;; ---- C-1 the two thin things ----------------------------------------------
 ;;
-;; ⭐ A CLIENT MAY NOT LOAD THE SERVER IT IS TRYING TO TALK TO. That is
+;; KEY: A CLIENT MAY NOT LOAD THE SERVER IT IS TRYING TO TALK TO. That is
 ;; the whole reason the command line and the MCP shell were split off:
 ;; every call used to pay to load the dispatcher, the store, the actor
 ;; system and libuv, and then use none of them. These rows are what say
 ;; it is still true.
 ;;
-;; ⛔ NAMED, NOT COUNTED. "The closure is small" would stay true of a
+;; NEVER: NAMED, NOT COUNTED. "The closure is small" would stay true of a
 ;; closure that had swapped one of these libraries for another.
 
 (define server-side '(rpc sched net daemon store reduce log working))
@@ -182,7 +182,7 @@
       (closure 'client)
       '(client digest ffi render trace))
 
-;; ⭐ THE CONTROL ROW. Without it every row above is also passed by a
+;; KEY: THE CONTROL ROW. Without it every row above is also passed by a
 ;; walker that found no edges at all -- which is the state this file
 ;; would be in if the graph were built from the wrong directory.
 (want "C-1 CONTROL: the server side does reach all of it"
@@ -192,7 +192,7 @@
         (filter (lambda (n) (memq n '(store reduce log working))) missing))
       '())
 
-;; ⚠️ THE SHELL IS A PROGRAM, not a library, so its own import list is
+;; NOTE: THE SHELL IS A PROGRAM, not a library, so its own import list is
 ;; the seed. A row keyed on a library name would have silently measured
 ;; nothing at all.
 (define shell-imports
@@ -224,11 +224,11 @@
 
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------
 ;;
-;; ⚠️ A PROGRAM'S IMPORTS ARE ITS OWN, and the rows above are about the
+;; NOTE: A PROGRAM'S IMPORTS ARE ITS OWN, and the rows above are about the
 ;; `client` LIBRARY. `theourgia.ss` is what a person actually runs, and
 ;; what it reaches is a separate fact.
 ;;
-;; ⭐ `arguments` IS ALLOWED HERE, AND THE REASON IS THE POINT. The
+;; KEY: `arguments` IS ALLOWED HERE, AND THE REASON IS THE POINT. The
 ;; envelope carries what the caller piped in, and only the verb's own
 ;; table knows WHETHER a verb reads standard input -- `write <id> -` does
 ;; and `write <id> text` does not. The program asks that table rather than

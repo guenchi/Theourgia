@@ -1083,9 +1083,11 @@
 ;; does.
 ;;
 ;; THE SOURCE OF THE CHANGE, so this is a retirement and not a fixture
-;; that gave up: brief `q3-crash-consistency.md`, section 四 (空 plan) --
-;; "0 条子操作的请求写空 plan，重试 ⇒ replay；plan 记录被清单取消选择后重试
-;; ⇒ `unknown`". A request of nothing now writes exactly one record, an
+;; that gave up: brief `q3-crash-consistency.md`, section 4, on the empty
+;; plan. It fixes two answers: a request with no sub-operations writes an
+;; empty plan and a resend of it replays; a plan record deselected by the
+;; manifest and then resent answers `unknown`. A request of nothing now
+;; writes exactly one record, an
 ;; empty plan, and that record is what makes the resend a replay rather
 ;; than a second execution. Under the old rule a resend of an empty
 ;; request had nothing to find and did the work again.

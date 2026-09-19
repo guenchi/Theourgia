@@ -34,7 +34,7 @@
 ;;   always did, so "zero definitions" would fail a correct file. For
 ;;   them the check is the name list below.
 ;;
-;; ⚠️ WHERE THE NAME LIST COMES FROM, because this matters more than the
+;; NOTE: WHERE THE NAME LIST COMES FROM, because this matters more than the
 ;; list: it was MEASURED -- every `(define ...)` between the two
 ;; `COPIED FROM IGROPYR` markers as they stood at bc5547a. It was NOT
 ;; copied from those markers' own `extracted` headers, which are wrong:
@@ -116,7 +116,7 @@
 ;; library body, not the ones nested inside them.
 (define (library-body form)
   (if (and (pair? form) (eq? 'library (car form))) (cddddr form) '()))
-;; ⚠️ IT WALKS INTO `begin` AND COUNTS `define-syntax`. Reading only the
+;; NOTE: IT WALKS INTO `begin` AND COUNTS `define-syntax`. Reading only the
 ;; immediate library body, a definition wrapped in `(begin ...)` is
 ;; invisible and so is a macro -- so "sched defines nothing of its own"
 ;; was a rule anybody could step around by adding one pair of
@@ -170,7 +170,7 @@
 
 ;; ---- every facade, not only the three that were copies ----------------
 ;;
-;; ⚠️ THE LIST ABOVE IS A HISTORY, NOT A POLICY. It names definitions
+;; NOTE: THE LIST ABOVE IS A HISTORY, NOT A POLICY. It names definitions
 ;; that WERE copied out of igropyr and must not come back, so it says
 ;; nothing about a facade that never held a copy -- and `sched`, `net`
 ;; and `proc` never did. A facade could therefore import igropyr, export
@@ -195,19 +195,19 @@
 (want "D1-05 the facade list is the seven this tree declares"
       facade-names '(digest wire ffi sched net proc json))
 
-;; ⭐ ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
+;; KEY: ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
 ;; the file is read as data and every `define` in it counted.
 (want "D1-05 sched.ss defines nothing of its own"
       (defined-names (path-of 'sched)) '())
 
-;; ⚠️ AND THE OTHER TWO DO DEFINE THINGS, which is what makes the row
+;; NOTE: AND THE OTHER TWO DO DEFINE THINGS, which is what makes the row
 ;; above a statement about `sched` rather than about the reader. An
 ;; empty answer everywhere would satisfy it for the wrong reason.
 (want "D1-05 TWIN: net and proc do define their adapters"
       (map (lambda (n) (> (length (defined-names (path-of n))) 0)) '(net proc))
       '(#t #t))
 
-;; ⛔ AND NONE OF THE SIX REDEFINES A NAME IGROPYR OWNS. A facade whose
+;; NEVER: AND NONE OF THE SIX REDEFINES A NAME IGROPYR OWNS. A facade whose
 ;; own definition shadows the thing it forwards is the failure this
 ;; whole arrangement is for: callers would be depending on this tree's
 ;; copy of a primitive while the gate reported one clean seam.

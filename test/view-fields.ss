@@ -70,7 +70,7 @@
   (let ((p (and (fields read id) (assq key (fields read id))))) (and p (cdr p))))
 (define (has? read id key) (and (fields read id) (assq key (fields read id)) #t))
 
-;; ⚠️ A STORED `doc` HAS TO BE IN THE LANGUAGE'S COMMENT FORM. A plain
+;; NOTE: A STORED `doc` HAS TO BE IN THE LANGUAGE'S COMMENT FORM. A plain
 ;; string was refused with `(error malformed-intent (invalid-doc))` and
 ;; the fixture died on the next line reading an empty store -- the write
 ;; path validates a doc even when nothing derives one.
@@ -106,7 +106,7 @@
 ;; so that `names` being the whole list and `name` being the first of
 ;; them are two statements and not one.
 ;;
-;; ⚠️ IT IS NOT `define-values`, WHICH THIS READER DOES NOT NAME.
+;; NOTE: IT IS NOT `define-values`, WHICH THIS READER DOES NOT NAME.
 ;; Measured: `datum-names` handles `define`, `define-syntax` and
 ;; `define-record-type`, and answers `()` for `(define-values (a b)
 ;; (values 1 2))` -- a legal R6RS definition form. That is a gap in the

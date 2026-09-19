@@ -15,7 +15,7 @@
 
 ;; NOTHING IN THE DAEMON MAY LINK.
 ;;
-;; ⛔ A LINKED PROCESS THAT EXITS ABNORMALLY TAKES ITS PEER WITH IT, and
+;; NEVER: A LINKED PROCESS THAT EXITS ABNORMALLY TAKES ITS PEER WITH IT, and
 ;; it does so without asking: igropyr's `@kill` kills a linked process
 ;; that is not trapping exits, and that process has no say and no chance
 ;; to finish what it was writing. The daemon's whole shape is the
@@ -25,13 +25,13 @@
 ;; statement about the paths that happen to be tested rather than about
 ;; the program.
 ;;
-;; ⛔ SO THE RULE IS ABOUT WHAT IS IN SCOPE, NOT ABOUT WHAT IS CALLED.
+;; NEVER: SO THE RULE IS ABOUT WHAT IS IN SCOPE, NOT ABOUT WHAT IS CALLED.
 ;; "No call to `link`" is a question about every path; "the name `link`
 ;; is not imported here" is a question about the text, it is closed, and
 ;; it cannot be satisfied by a call that only runs on Tuesdays. What a
 ;; file has not imported it cannot write.
 ;;
-;; ⛔ AND IT CANNOT BE A GREP FOR `link`. Measured on this tree: the
+;; NEVER: AND IT CANNOT BE A GREP FOR `link`. Measured on this tree: the
 ;; symbol `link` appears as data in EIGHT files of the daemon's import
 ;; closure -- `reduce.ss` 5, `store.ss` 8, `rpc.ss` 3, `md.ss` 2,
 ;; `ffi.ss` 2, `request.ss`, `baseline.ss` -- and every one of those is
@@ -87,7 +87,7 @@
 
 ;; ---- the closure ----------------------------------------------------------
 ;;
-;; ⚠️ TRANSITIVE, because the rule is about what the daemon LOADS. A
+;; NOTE: TRANSITIVE, because the rule is about what the daemon LOADS. A
 ;; `link` two libraries away is in the same VM and links the same
 ;; processes as one written here.
 (define (closure-of path)
@@ -160,7 +160,7 @@
           'present 'MISSING)
       'present)
 
-;; ⛔ THE GATE PROVES IT CAN STILL SEE THE THING IT IS LOOKING FOR. A
+;; NEVER: THE GATE PROVES IT CAN STILL SEE THE THING IT IS LOOKING FOR. A
 ;; walker that quietly stopped matching would print this same clean
 ;; reading for ever, and the tree would go on looking compliant.
 (want "DL-03 a wholesale import of the scheduler is recognised"

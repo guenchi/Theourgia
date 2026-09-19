@@ -22,7 +22,7 @@
 ;;
 ;; SO THESE ROWS GO THROUGH `rpc-dispatch`, and through the three verbs
 ;; that show a name to a person -- `outline`, `read`, and `read
-;; --recursive`. ⛔ Not through `code-field`, which is a fourth caller
+;; --recursive`. NEVER: Not through `code-field`, which is a fourth caller
 ;; and would only say that ONE of them was rewired.
 ;;
 ;; AND EACH NAME IS READ TWICE, BEFORE AND AFTER THE SOURCE CHANGES. A

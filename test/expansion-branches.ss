@@ -82,7 +82,7 @@
             "(import (chezscheme) (theourgia ffi) (theourgia log) (theourgia store)\n"
             "        (theourgia wire) (theourgia digest))\n"
             "(display \"LOADED\")(newline)\n")))))
-    ;; ⛔ SAY WHICH VARIABLE IS MISSING. Built straight into the command,
+    ;; NEVER: SAY WHICH VARIABLE IS MISSING. Built straight into the command,
     ;; an unset one reaches `string-append` as #f and the row reports
     ;; "~s is not a string" -- which reads as "an expansion branch of this
     ;; tree does not build", a defect in the tree, when the truth is that

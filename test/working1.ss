@@ -17,7 +17,7 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either of them being told.
@@ -25,7 +25,7 @@
 ;; fallback would have chosen keeps every row below asking exactly what it
 ;; asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer
 ;; (WS-03/WS-04 use `draft002` to show drafts are scoped) must keep the
 ;; one it names, or those rows would stop being about two writers.
 (define draft-verbs '(write restore drafts discard commit))
@@ -57,7 +57,7 @@
     (map (lambda (name)
            (let ((p (string-append dir "/" name)))
              (cond
-               ;; ⛔ NOT THE DRAFTS, AND NOT THE LOCK THAT SERIALISES
+               ;; NEVER: NOT THE DRAFTS, AND NOT THE LOCK THAT SERIALISES
                ;; THEIR INSTALLATION. WS-01's property is that `write`
                ;; leaves the AUTHORITATIVE files byte-identical; a
                ;; zero-byte lock file, created once and never written
@@ -85,7 +85,7 @@
 
 (define cursor (string-append writer ":" (number->string (cdr (assoc writer (reduce-applied-cut (open-and-reduce store)))))))
 
-;; ⭐ A COMMIT CARRYING `--req` MUST NAME THE VERSION IT CONSUMES.
+;; KEY: A COMMIT CARRYING `--req` MUST NAME THE VERSION IT CONSUMES.
 ;;
 ;; §7.5.9: the request's identity is taken over the draft writer and the
 ;; ordered (block . version) list, so a retry from a new process can
@@ -106,7 +106,7 @@
 ;; a request id makes no retry promise and needs no version; whatever
 ;; else it answers, it does not answer this.
 ;;
-;; ⚠️ IT ASSERTS THE ABSENCE OF THIS REFUSAL RATHER THAN SUCCESS. `b`
+;; NOTE: IT ASSERTS THE ABSENCE OF THIS REFUSAL RATHER THAN SUCCESS. `b`
 ;; has no draft here, and giving it one would commit it -- which the
 ;; rows further down are still about.
 (want "WS-05 TWIN: without --req the version rule does not fire"
@@ -125,7 +125,7 @@
 (define replay (call 'commit a "--req" "working-request-1" "--cursor" cursor))
 (printf "replay observation ~s\n" replay)
 
-;; ⛔ THREE ROWS ARE RETIRED HERE, AND THIS IS WHERE THEY WERE.
+;; NEVER: THREE ROWS ARE RETIRED HERE, AND THIS IS WHERE THEY WERE.
 ;;
 ;; WS-07 "identity is checked before the old baseline", WS-08 "frozen
 ;; replay still succeeds" and WS-25 "changed retry arguments are
@@ -156,7 +156,7 @@
 ;; WS-17 below is NOT retired: it asserts that a replay leaves a later
 ;; draft alone, which is still true and still worth a row.
 (want "WS-08 a retry does not re-read a newer draft" (ok? (call 'write a "next")) #t)
-;; ⛔ WS-17 IS RETIRED FOR THE SAME REASON AS WP-04's SECOND ROW: it
+;; NEVER: WS-17 IS RETIRED FOR THE SAME REASON AS WP-04's SECOND ROW: it
 ;; reads back the draft it has just written, with no retry in between,
 ;; so "a replay retains subsequent edits" is a label rather than a
 ;; measurement. SUCCESSOR: `plan-completion.ss`, W4'.
@@ -168,7 +168,7 @@
 (want "WS-06 stale refusal names the block" (and (pair? stale) (assq 'block (filter pair? (cdr stale))) (cadr (assq 'block (filter pair? (cdr stale))))) a)
 (want "WS-06 stale refusal preserves log bytes" (snapshot (string-append store "/writers")) stale-before)
 (want "WS-14 ordinary write does not rebase" (begin (call 'write a "merged") (kind (call 'commit a))) 'stale-baseline)
-;; ⭐ A REBASE NAMES THE VERSION IT MERGED ONTO, and this row used to
+;; KEY: A REBASE NAMES THE VERSION IT MERGED ONTO, and this row used to
 ;; take "now" instead.
 ;;
 ;; §7.5.11: `--rebase` carries `--based-on H1 --working-cut C1` -- the

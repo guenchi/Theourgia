@@ -26,7 +26,7 @@
 ;; would have made every earlier commit consume nothing, and every draft
 ;; a failed retirement had left behind would have come back as a draft.
 ;;
-;; ⚠️ THE ROWS HERE ASSERT THE REPRESENTATION, not only the behaviour.
+;; NOTE: THE ROWS HERE ASSERT THE REPRESENTATION, not only the behaviour.
 ;; The packet implementation answers "is this draft still a draft"
 ;; correctly too; what it cannot do is put the answer in the log.
 
@@ -62,14 +62,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -108,7 +108,7 @@
 (define cursor
   (string-append writer ":"
                  (number->string (cdr (assoc writer (reduce-applied-cut (state)))))))
-;; ⭐ THE VERSION IS PASSED, BECAUSE THE REQUEST CARRIES `--req`.
+;; KEY: THE VERSION IS PASSED, BECAUSE THE REQUEST CARRIES `--req`.
 ;; A commit that promises a retry has its identity taken over the
 ;; versions it consumes, and a retry from a new process cannot read them
 ;; from a draft that its own first attempt retired.
@@ -167,7 +167,7 @@
 ;; repeats -- `--working-version <block>=<version>` -- and a commit
 ;; naming exactly one block may still give the bare version.
 ;;
-;; ⚠️ WITHOUT THIS THE MULTI-BLOCK CASE WAS UNREPRESENTABLE: the single
+;; NOTE: WITHOUT THIS THE MULTI-BLOCK CASE WAS UNREPRESENTABLE: the single
 ;; `--working-version` was honoured only when one block was named, and a
 ;; two-block commit with `--req` was refused whatever the client sent.
 
@@ -204,7 +204,7 @@
 
 ;; ---- CC-05 the lookup is bounded ------------------------------------------
 ;;
-;; ⭐ THE ROW READS A PROBE COUNT, NOT A TIME. `state-consumed?` puts one
+;; KEY: THE ROW READS A PROBE COUNT, NOT A TIME. `state-consumed?` puts one
 ;; trace event per plan that named the exact version it was asked about;
 ;; the packet implementation would have opened every packet the writer
 ;; ever wrote. A row that only checked the ANSWER is green for both.
@@ -245,7 +245,7 @@
 
 ;; ---- CC-07 the reduction that DID the writing agrees with a replay ------
 ;;
-;; ⚠️ EVERY ROW ABOVE READS A REPLAY. `(state)` calls `open-and-reduce`,
+;; NOTE: EVERY ROW ABOVE READS A REPLAY. `(state)` calls `open-and-reduce`,
 ;; which folds the records from disk -- so a build whose LIVE fold
 ;; disagrees with its replay passes all of them. That build existed: the
 ;; live write path called `reduce-apply!` without the record's actor, so
@@ -270,7 +270,7 @@
 
 ;; ---- CC-08 the fold that DOES the writing, asked directly ----------------
 ;;
-;; ⚠️ EVERY ROW ABOVE THIS ONE, CC-07 INCLUDED, READS A REPLAY. The
+;; NOTE: EVERY ROW ABOVE THIS ONE, CC-07 INCLUDED, READS A REPLAY. The
 ;; write path folds each record into a reduction of its own --
 ;; `with-store-write` allocates it (`reduce-empty`, store.ss) and calls
 ;; `reduce-apply!` with the record's ACTOR -- and a build that drops
@@ -278,7 +278,7 @@
 ;; says which plan a member belongs to; without it the index gets a
 ;; member that belongs to nothing.
 ;;
-;; ⛔ AND THE ONE I FIRST WROTE HERE WAS NOT A TEST OF IT. It turned the
+;; NEVER: AND THE ONE I FIRST WROTE HERE WAS NOT A TEST OF IT. It turned the
 ;; resident cache on, committed, and compared the reduction before the
 ;; write with the one after, on the theory that the write folds into the
 ;; cached object. It does not: `with-store-write` builds its own, and
@@ -286,7 +286,7 @@
 ;; The rows passed with both live `reduce-apply!` calls handed a bogus
 ;; actor -- they were about object lifetimes, not about consumption.
 ;;
-;; ⭐ THE REDUCTION IS HANDED TO THE CALLER. `proc` is called as
+;; KEY: THE REDUCTION IS HANDED TO THE CALLER. `proc` is called as
 ;; `(proc state view)`, and `state` IS the reduction being folded. No
 ;; verb in this tree keeps it -- which is why no fixture could see this
 ;; through `rpc-dispatch` -- so the fixture becomes that caller: it
@@ -321,7 +321,7 @@
 (want "CC-08 the fold that did the writing knows the draft was consumed"
       (state-consumed? live-state writer live-version) #t)
 
-;; ⛔ AND A REPLAY AGREES. The two folds are different code paths over
+;; NEVER: AND A REPLAY AGREES. The two folds are different code paths over
 ;; the same records, and the defect this section exists for is exactly
 ;; them disagreeing -- so the row above is worth nothing without one
 ;; that says what the answer should have been.

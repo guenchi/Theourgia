@@ -19,7 +19,7 @@
 ;; second writer be told what the first one did. The question is where
 ;; that state comes from.
 ;;
-;; ⛔ NOT "NOW". A client reads a block, edits for a while, and saves.
+;; NEVER: NOT "NOW". A client reads a block, edits for a while, and saves.
 ;; If the store recorded the block's hash AT SAVE TIME, then a commit
 ;; that landed in between becomes the draft's baseline -- and the draft's
 ;; own commit overwrites it without ever being refused. The client names
@@ -61,14 +61,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -144,7 +144,7 @@
 
 ;; ---- BR-03b the two ways a named cut fails are different answers --------
 ;;
-;; ⚠️ THESE ROWS EXIST BECAUSE A SEEDED CHANGE SURVIVED WITHOUT THEM.
+;; NOTE: THESE ROWS EXIST BECAUSE A SEEDED CHANGE SURVIVED WITHOUT THEM.
 ;; Deleting the "the cut cannot be used" arm left every row above green:
 ;; the arm below it caught everything the rows here reach, so the
 ;; distinction was implemented and unguarded.
@@ -156,7 +156,7 @@
       '(invalid-working-baseline (reason cut-unusable)))
 (want "BR-03b TWIN: and nothing was written" (envelope-bytes) before-unusable)
 
-;; ⚠️ AND A CUT THAT PARSES BUT NAMES EVENTS THIS STORE DOES NOT HAVE.
+;; NOTE: AND A CUT THAT PARSES BUT NAMES EVENTS THIS STORE DOES NOT HAVE.
 ;; "not-a-cut" fails at the parser, which is one way in; a well-formed
 ;; cut naming a writer the store never saw is the other, and a build
 ;; that tested `(not historical)` instead of `(not (reduction? ...))`
@@ -198,7 +198,7 @@
 
 ;; ---- BR-06 a rebase that names what it merged onto -----------------------
 
-;; ⭐ THE STORE MOVES ON BEFORE THE REBASE, AND THAT IS THE WHOLE ROW.
+;; KEY: THE STORE MOVES ON BEFORE THE REBASE, AND THAT IS THE WHOLE ROW.
 ;;
 ;; The client merged against (h1, c1). While they were merging, somebody
 ;; else committed, so the block is at h2 by the time they say `--rebase
@@ -206,7 +206,7 @@
 ;; and then records "now" saves h2 -- and the draft's own commit would
 ;; then overwrite that commit without being refused.
 ;;
-;; ⚠️ MEASURED: this row used to rebase onto (h1, c1) while they were
+;; NOTE: MEASURED: this row used to rebase onto (h1, c1) while they were
 ;; STILL CURRENT, and the implementation did record "now" -- the row was
 ;; green against the defect it was written for.
 (call 'set A "src" "theirs again")
@@ -217,7 +217,7 @@
       (rpc-ok? (call 'write A "merged" "--rebase" "--based-on" h1 "--working-cut" c1)) #t)
 (want "BR-06 and the envelope records THAT version, not the current one"
       (list-ref (assq 'projection (cdr (call 'read A "--working-info"))) 5) h1)
-;; ⭐ AND THE CUT IT NAMED, TOO. The hash alone does not pin it: a build
+;; KEY: AND THE CUT IT NAMED, TOO. The hash alone does not pin it: a build
 ;; that kept the named hash and took the CURRENT cut would satisfy the
 ;; row above and every refusal below, and its draft would carry a pair
 ;; that was never true together.
@@ -230,7 +230,7 @@
 
 ;; ---- BR-07 no baseline at all -------------------------------------------
 ;;
-;; A `write` with neither flag records "now". ⚠️ THAT IS A DECLARATION,
+;; A `write` with neither flag records "now". NOTE: THAT IS A DECLARATION,
 ;; not a proof -- the client is saying "I edited from the current text"
 ;; and nothing checks it. It is kept for the hand-typed case; the rows
 ;; above are why an editor should not use it.

@@ -16,12 +16,12 @@
 ;; The MCP shell, driven the way a client drives it: a real process, JSON
 ;; lines in on stdin, JSON lines out on stdout.
 ;;
-;; ⭐ EVERY ROW HERE TALKS TO A CHILD PROCESS. A row that called the
+;; KEY: EVERY ROW HERE TALKS TO A CHILD PROCESS. A row that called the
 ;; shell's procedures would be testing the library and would say nothing
 ;; about framing, about stdio, or about what a client actually receives.
 
 (import (chezscheme) (theourgia json)
-        ;; ⚠️ THE PRODUCT'S OWN SPAWN, used by MC-11's control to make a
+        ;; NOTE: THE PRODUCT'S OWN SPAWN, used by MC-11's control to make a
         ;; child that nothing waits for -- the only way this fixture can
         ;; produce one, measured.
         (only (theourgia ffi) spawn-detached! reap-children!))
@@ -33,7 +33,7 @@
   (if (equal? got expected)
       (printf "ok ~a\n" label)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" label got expected))))
-;; ⛔ A RAISE INSIDE A ROW IS THAT ROW FAILING, not the file ending: a
+;; NEVER: A RAISE INSIDE A ROW IS THAT ROW FAILING, not the file ending: a
 ;; fixture whose sixth row raises reports five passes and no failures.
 (define-syntax caught
   (syntax-rules ()
@@ -75,13 +75,13 @@
 
 ;; ---- driving the shell -------------------------------------------------------
 ;;
-;; ⚠️ THE CHILD IS KEPT OPEN. Several rows need to send one frame, look at
+;; NOTE: THE CHILD IS KEPT OPEN. Several rows need to send one frame, look at
 ;; what came back, and only then decide what to send next -- a helper that
 ;; wrote everything and read everything could not ask those questions.
 (define (start-shell . options)
   (let* ((store (if (pair? options) (car options) (string-append here "/store")))
          (socket (and (pair? options) (pair? (cdr options)) (cadr options)))
-         ;; ⛔ THE RUN ROOT IS THE FIXTURE'S, NOT THE USER'S. The shell
+         ;; NEVER: THE RUN ROOT IS THE FIXTURE'S, NOT THE USER'S. The shell
          ;; now starts a daemon when it cannot reach one, and a daemon
          ;; puts its socket and its log under the run root -- which
          ;; defaults to `$HOME/.theourgia/run`. Measured before this
@@ -164,7 +164,7 @@
 
 ;; ---- MC-lifecycle ------------------------------------------------------------
 ;;
-;; ⛔ NOTHING IS SERVED BEFORE THE HANDSHAKE IS FINISHED, and the
+;; NEVER: NOTHING IS SERVED BEFORE THE HANDSHAKE IS FINISHED, and the
 ;; handshake has two steps, not one. A shell that answered `tools/list`
 ;; after `initialize` but before the client's `notifications/initialized`
 ;; would be answering a client that has not said it is ready.
@@ -190,7 +190,7 @@
               (if (vector? (field (cadr out) "result" "tools")) 'a-list-of-tools 'no-tools))
         '(2 a-list-of-tools)))
 
-;; ⛔ AND THE NOTIFICATION ITSELF IS NEVER ANSWERED. Two frames in, two
+;; NEVER: AND THE NOTIFICATION ITSELF IS NEVER ANSWERED. Two frames in, two
 ;; answers out -- the middle one produced nothing, which is what the row
 ;; above counts.
 (let ((out (talk (list hello ready hello))))
@@ -200,7 +200,7 @@
 
 ;; ---- MC-04 the envelope ------------------------------------------------------
 ;;
-;; ⛔ SIX WAYS TO BE MALFORMED, AND NONE OF THEM DISPATCHES ANYTHING. Each
+;; NEVER: SIX WAYS TO BE MALFORMED, AND NONE OF THEM DISPATCHES ANYTHING. Each
 ;; is refused by the shell, in the JSON-RPC error channel, before the
 ;; core is asked anything at all.
 (define (call-with-arguments text)
@@ -218,19 +218,19 @@
         (map code-of out)
         '(#f -32602 -32602 -32602 -32602 -32602 -32600)))
 
-;; ⛔ AN UNKNOWN METHOD IS -32601, which is a different fact from a
+;; NEVER: AN UNKNOWN METHOD IS -32601, which is a different fact from a
 ;; malformed one and has to stay different.
 (let ((out (talk (list hello ready "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"no/such\"}"))))
   (want "MC-04 an unknown method is method-not-found, not invalid-params"
         (code-of (cadr out)) -32601))
 
-;; ⛔ A BROKEN LINE IS A PARSE ERROR, and the shell keeps going.
+;; NEVER: A BROKEN LINE IS A PARSE ERROR, and the shell keeps going.
 (let ((out (talk (list hello ready "{not json" "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}"))))
   (want "MC-04 a line that is not JSON is a parse error and the session survives"
         (list (code-of (cadr out)) (id-of (caddr out)))
         '(-32700 8)))
 
-;; ⚠️ AN ID COMES BACK AS IT WENT OUT, in its own type. A client matches
+;; NOTE: AN ID COMES BACK AS IT WENT OUT, in its own type. A client matches
 ;; replies by it, and a string that came back as a number would match
 ;; nothing.
 (let ((out (talk (list hello ready
@@ -242,7 +242,7 @@
 
 ;; ---- MC-03 a core refusal is a successful result -----------------------------
 ;;
-;; ⛔ THE COMMAND RAN AND WAS REFUSED, which is an answer. A shell that
+;; NEVER: THE COMMAND RAN AND WAS REFUSED, which is an answer. A shell that
 ;; turned it into a JSON-RPC error would be telling the client its
 ;; command could not be run.
 ;; The text a tool returned, dug out of the MCP result envelope.
@@ -264,7 +264,7 @@
                   (list 'said (text-of (cadr out)))))
         '(#f the-core-refusal)))
 
-;; ⛔ AND IT BRANCHES ON THE TRANSPORT'S TAG, NOT ON THE TEXT. A core
+;; NEVER: AND IT BRANCHES ON THE TRANSPORT'S TAG, NOT ON THE TEXT. A core
 ;; answer whose text happens to READ like a transport failure is still an
 ;; answer -- this one is produced on purpose, and a shell that matched on
 ;; the words would turn it into a JSON-RPC error.
@@ -279,12 +279,12 @@
 
 ;; ---- MC-argv-verbatim --------------------------------------------------------
 ;;
-;; ⛔ EVERY BYTE OF EVERY ARGUMENT ARRIVES AS IT WAS SENT: leading and
+;; NEVER: EVERY BYTE OF EVERY ARGUMENT ARRIVES AS IT WAS SENT: leading and
 ;; trailing spaces, an empty string, a newline inside an argument, shell
-;; metacharacters -- ⛔ nothing trimmed, normalised, split or expanded,
-;; and ⛔ nothing handed to a shell on the way.
+;; metacharacters -- NEVER: nothing trimmed, normalised, split or expanded,
+;; and NEVER: nothing handed to a shell on the way.
 ;;
-;; ⚠️ THE ORACLE IS THE COMMAND LINE, ⛔ NOT MY IDEA OF THE ANSWER.
+;; NOTE: THE ORACLE IS THE COMMAND LINE, NEVER: NOT MY IDEA OF THE ANSWER.
 ;; Measured by getting it wrong first: this row compared the argument
 ;; against the listing and failed, because the core renders non-ASCII
 ;; with its own `\x…;` escapes -- the argument HAD arrived intact and the
@@ -310,8 +310,8 @@
               " --store " store " --wire > " out " 2>&1"))
     (file-text out)))
 
-;; ⚠️ SINGLE QUOTES, WITH THE ONE ESCAPE THAT WORKS INSIDE THEM. This is
-;; the fixture handing bytes to a shell, ⛔ which is exactly what the
+;; NOTE: SINGLE QUOTES, WITH THE ONE ESCAPE THAT WORKS INSIDE THEM. This is
+;; the fixture handing bytes to a shell, NEVER: which is exactly what the
 ;; shell under test must never do -- the row would be worthless if the
 ;; comparison side mangled them.
 (define (shell-quote a)
@@ -333,7 +333,7 @@
       (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                              "scheme --script ../cli.ss init --store " st " > /dev/null 2>&1")))
     (list store2 store3))
-  ;; ⭐ `read <arg>` ON A FRESH STORE ECHOES THE ARGUMENT AND NOTHING
+  ;; KEY: `read <arg>` ON A FRESH STORE ECHOES THE ARGUMENT AND NOTHING
   ;; ELSE: `(error unknown-id "<arg>" (nearest ()))`. No writer name, no
   ;; hash, no sequence number -- so two routes into two different stores
   ;; are comparable, which is what an answer carrying ids is not.
@@ -352,11 +352,11 @@
           (map (lambda (m c) (if (equal? m c) 'same-as-the-cli (list 'differ m c)))
                through-mcp through-cli)
           '(same-as-the-cli same-as-the-cli same-as-the-cli same-as-the-cli))
-    ;; ⛔ AND ONE OF THEM IS PINNED LITERALLY. Two routes that agree can
+    ;; NEVER: AND ONE OF THEM IS PINNED LITERALLY. Two routes that agree can
     ;; agree about something wrong -- they share a dispatcher. The
     ;; expectation here comes from outside both: it is what the argument
     ;; is, spelled the way the core spells it back.
-    ;; ⚠️ THE SPELLING CHANGED WITH F3, AND THIS ROW IS THE RECORD OF IT.
+    ;; NOTE: THE SPELLING CHANGED WITH F3, AND THIS ROW IS THE RECORD OF IT.
     ;; It used to expect `\x6C49;\x5B57;\x1F600;`, because that is how the
     ;; core spelled a non-ASCII character back. Answers now carry the
     ;; characters themselves -- so this expectation is, more directly
@@ -365,7 +365,7 @@
     (want "MC-argv-verbatim and the echoed argument is exactly what was sent"
           (car through-mcp)
           "(error unknown-id \"  \x6c49;\x5b57;\x1f600;  \" (nearest ()))\n")
-    ;; ⛔ NOBODY LET A SHELL SEE IT. `${MC_SENTINEL}` has a value in this
+    ;; NEVER: NOBODY LET A SHELL SEE IT. `${MC_SENTINEL}` has a value in this
     ;; fixture's environment that would be visible if any layer had.
     (want "MC-argv-verbatim TWIN: no layer let a shell expand the argument"
           (if (exists (lambda (t) (and (string? t) (contains? t "EXPANDED-BY-A-SHELL")))
@@ -376,7 +376,7 @@
 
 ;; ---- MC-05 eval is not a tool ------------------------------------------------
 ;;
-;; ⛔ `eval` IS ABSENT FROM THE CATALOGUE AND INDISTINGUISHABLE FROM A
+;; NEVER: `eval` IS ABSENT FROM THE CATALOGUE AND INDISTINGUISHABLE FROM A
 ;; VERB THAT DOES NOT EXIST. A shell that refused it with a message of
 ;; its own would be telling a client that the capability is there and
 ;; withheld, which is a different fact and a worse one.
@@ -404,15 +404,15 @@
 
 ;; ---- MC-06 which route served it ---------------------------------------------
 ;;
-;; ⛔ THREE WAYS FOR A SOCKET NOT TO BE THERE, AND THE SHELL STARTS A
-;; DAEMON RATHER THAN SERVING THEM ITSELF. ⚠️ THIS ROW USED TO SAY THE
+;; NEVER: THREE WAYS FOR A SOCKET NOT TO BE THERE, AND THE SHELL STARTS A
+;; DAEMON RATHER THAN SERVING THEM ITSELF. NOTE: THIS ROW USED TO SAY THE
 ;; OPPOSITE -- "served locally, three ways" -- and it was right about the
 ;; shell that then existed: with no daemon it dispatched in its own
 ;; process, which meant every shell loaded the whole core to answer its
 ;; first call. That is the cost the split exists to avoid, so the shell
 ;; now starts a daemon the way the command line does (§7.6.50).
 ;;
-;; ⚠️ Each answer must still be the real one, so a shell that refused
+;; NOTE: Each answer must still be the real one, so a shell that refused
 ;; instead of starting one fails on the content rather than on a tag. The
 ;; path held by a REGULAR FILE is the one that cannot be served at all --
 ;; a daemon cannot bind there -- so it is the one that must come back
@@ -431,25 +431,25 @@
           (map (lambda (t) (if (starts-with-text? t "(ok (text") 'answered (list 'said t)))
                answers)
           '(answered))
-    ;; ⛔ AND A PATH A DAEMON CANNOT TAKE IS REPORTED, NOT WORKED AROUND.
+    ;; NEVER: AND A PATH A DAEMON CANNOT TAKE IS REPORTED, NOT WORKED AROUND.
     ;; Neither a regular file nor a directory can be bound; the old shell
     ;; answered anyway by running the verb itself, which is exactly the
     ;; fallback that is gone. What must NOT happen is a silent success.
     ;;
-    ;; ⚠️ BOTH KINDS, because they fail at different places -- the file
+    ;; NOTE: BOTH KINDS, because they fail at different places -- the file
     ;; is refused by the daemon's own check on what is already at the
     ;; path, the directory by `bind` itself -- and a build that handled
     ;; one and not the other would pass a row that named only one.
 ;; ---- MC-07 what the shell says when no server could be started -----------
     ;;
-    ;; ⛔ "EXECUTION MAY BE UNKNOWN" IS FALSE HERE, and it is what the
+    ;; NEVER: "EXECUTION MAY BE UNKNOWN" IS FALSE HERE, and it is what the
     ;; shell used to say. A server that would not start means the frame
     ;; never went out, so nothing ran -- and the only useful fact anyone
     ;; had, the server's own reason, was thrown away. The command-line
     ;; client relays that reason verbatim; the shell said something untrue
     ;; instead.
     ;;
-    ;; ⚠️ IT IS `tools/list` THAT SHOWS THIS, not a tool call: the shell
+    ;; NOTE: IT IS `tools/list` THAT SHOWS THIS, not a tool call: the shell
     ;; asks the server for its catalogue before it can turn a tool name
     ;; into a verb, so a server that will not start is met at that step.
     (want "MC-07 a server that would not start is reported in its own words"
@@ -463,12 +463,12 @@
                       (list 'said message))))
           '(the-servers-reason and-says-it-did-not-run))
 
-    ;; ⛔ AND THE TWIN: the sentence about an unknown outcome still exists,
+    ;; NEVER: AND THE TWIN: the sentence about an unknown outcome still exists,
     ;; for the case where it is true. Without this row the one above is
     ;; passed by a shell that simply stopped saying "unknown" -- and a
     ;; request that WAS sent and then lost must keep saying so.
     ;;
-    ;; ⚠️ THE PEER HERE READS THE FRAME AND CLOSES, which is "sent, then
+    ;; NOTE: THE PEER HERE READS THE FRAME AND CLOSES, which is "sent, then
     ;; lost" with nothing else in it. Written first with the fault
     ;; injector that parks a request, this row failed for a reason of the
     ;; injector's own and told me nothing about the shell.
@@ -484,7 +484,7 @@
                   "    (let serve ()"
                   "      (receive (after 20000 (exit 0))"
                   "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
-                  ;; ⛔ THE BYTES ARE READ AND THEN THE CONNECTION CLOSES.
+                  ;; NEVER: THE BYTES ARE READ AND THEN THE CONNECTION CLOSES.
                   ;; Reading first is what makes this "the request
                   ;; arrived", not "the dial failed".
                   "               (`(data ,r ,bv) (conn-close! r) (serve))"
@@ -516,19 +516,19 @@
                        'not-served)))
                (list regular folder))
           '(not-served not-served))
-    ;; ⛔ AND THE REGULAR FILE IS STILL THERE. Falling back must not mean
+    ;; NEVER: AND THE REGULAR FILE IS STILL THERE. Falling back must not mean
     ;; tidying up something that is not ours.
     (want "MC-06 TWIN: the regular file on the socket path was left alone"
           (file-text regular) "keep")))
 
 ;; ---- MC-daemon-reach ---------------------------------------------------------
 ;;
-;; ⭐ THIS IS THE ROW THE DAEMON DELIVERIES CARRIED AS A RISK. The Python
+;; KEY: THIS IS THE ROW THE DAEMON DELIVERIES CARRIED AS A RISK. The Python
 ;; shell spoke an envelope the Scheme daemon does not answer, so with a
 ;; daemon running MCP was unavailable -- measured then as
 ;; `(error transport-invalid-answer)`. This row is what closes it.
 ;;
-;; ⛔ THREE WITNESSES, because the answer alone proves nothing: the same
+;; NEVER: THREE WITNESSES, because the answer alone proves nothing: the same
 ;; verb answers the same way locally, which is the entire point of having
 ;; two routes. So the row also reads the DAEMON's own record that it
 ;; dispatched, and the SHELL's own trace for the absence of a local
@@ -565,7 +565,7 @@
 
 ;; ---- MC-frame-limit ----------------------------------------------------------
 ;;
-;; ⛔ THE LIMIT IS IN BYTES AND IT COUNTS THE TERMINATOR. A frame of
+;; NEVER: THE LIMIT IS IN BYTES AND IT COUNTS THE TERMINATOR. A frame of
 ;; exactly a mebibyte is legal; one byte more is refused -- and refused
 ;; without being parsed, so nothing is dispatched.
 (let* ((big (string-append here "/big.json"))
@@ -586,7 +586,7 @@
 
 ;; ---- a daemon whose first writer request parks ---------------------------
 ;;
-;; ⚠️ THE PAUSE HAS TO YIELD, ⛔ not block. A probe that slept on the
+;; NOTE: THE PAUSE HAS TO YIELD, NEVER: not block. A probe that slept on the
 ;; scheduler's thread would stop everything, and then a shell that
 ;; answered calls concurrently would look serial too -- the row would
 ;; pass against the implementation it exists to refuse. The daemon's
@@ -616,7 +616,7 @@
 
 ;; ---- MC-serial ---------------------------------------------------------------
 ;;
-;; ⛔ ONE CALL AT A TIME. Both frames are written before either is
+;; NEVER: ONE CALL AT A TIME. Both frames are written before either is
 ;; answered, and the slow one was sent first: a shell that served them
 ;; concurrently would answer the fast one first, because the slow one is
 ;; parked for a second and a half.
@@ -632,10 +632,10 @@
          (t1 (now-ms))
          (second (read-frame s)))
     (close-input! s)
-    ;; ⛔ AND SOMEBODY ELSE COULD GET ON WITH IT. While the first call was
+    ;; NEVER: AND SOMEBODY ELSE COULD GET ON WITH IT. While the first call was
     ;; parked, an independent caller reached the same daemon -- so "the
     ;; second answer waited" is a fact about this shell's serialisation,
-    ;; ⛔ not about a daemon that had stopped.
+    ;; NEVER: not about a daemon that had stopped.
     (let ((elsewhere (cli-answer-on (car d) (cadr d) (list "outline"))))
       (system (string-append "pkill -f " (caddr d) " 2>/dev/null"))
       (want "MC-serial the slow call is answered before the fast one is started"
@@ -651,8 +651,8 @@
 
 ;; ---- MC-eof-drain ------------------------------------------------------------
 ;;
-;; ⛔ A CALL THAT HAS BEEN ACCEPTED IS ANSWERED, even though the client
-;; has gone. ⚠️ The row closes stdin while the call is parked -- after the
+;; NEVER: A CALL THAT HAS BEEN ACCEPTED IS ANSWERED, even though the client
+;; has gone. NOTE: The row closes stdin while the call is parked -- after the
 ;; frame is in, before the answer is out -- which is the only window in
 ;; which "drain" means anything.
 (let* ((d (start-parking-daemon! "eofdrain"))
@@ -675,12 +675,12 @@
 
 ;; ---- MC-envelope-shared ------------------------------------------------------
 ;;
-;; ⛔ THE SHELL AND THE COMMAND LINE SEND THE SAME ENVELOPE, and the row
+;; NEVER: THE SHELL AND THE COMMAND LINE SEND THE SAME ENVELOPE, and the row
 ;; reads the BYTES rather than trusting that both call the same
 ;; procedure. A controlled listener records what arrives; the two routes
 ;; are driven at it in turn and what they sent is compared.
 ;;
-;; ⚠️ THE CAPTURE IS WHY THIS IS A ROW AND NOT A GREP. "Both call
+;; NOTE: THE CAPTURE IS WHY THIS IS A ROW AND NOT A GREP. "Both call
 ;; `request-frame`" is a fact about today's source; "both sent these
 ;; bytes" is a fact about the programs. The seed that proves it: give
 ;; `request-frame` an extra field, and both captures must change.
@@ -694,7 +694,7 @@
     (call-with-output-file peer
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
-          ;; ⛔ THE PEER ANSWERS `describe` BEFORE IT CAPTURES ANYTHING.
+          ;; NEVER: THE PEER ANSWERS `describe` BEFORE IT CAPTURES ANYTHING.
           ;; The shell asks for the catalogue before it can turn a tool
           ;; name into a verb, so the FIRST frame it sends is always
           ;; `describe` -- and a peer that recorded the first frame and
@@ -703,14 +703,14 @@
           ;; against the shell's `describe` envelope and reported that
           ;; the two routes disagreed, which was true and about nothing.
           ;;
-          ;; ⚠️ The catalogue it answers with is the smallest one that
+          ;; NOTE: The catalogue it answers with is the smallest one that
           ;; contains the tool this row calls. It is a STAND-IN for the
           ;; server, and the rows about what the real catalogue holds are
           ;; in `describe.ss`; what is being measured here is only the
           ;; bytes of the request that follows.
           (list "(import (chezscheme) (theourgia sched) (theourgia net))"
                 (string-append
-                  ;; ⚠️ THE STUB CARRIES EVERY FIELD THE SHELL READS, and
+                  ;; NOTE: THE STUB CARRIES EVERY FIELD THE SHELL READS, and
                   ;; `route` was added to that list after this was written.
                   ;; Without it the shell correctly dropped the verb --
                   ;; a tool it cannot carry out is not offered -- so no
@@ -723,7 +723,7 @@
                   "(route daemon))) "
                   "(protocol \\\\\\\"P\\\\\\\"))\\n\\\") (stderr \\\"\\\") "
                   "(exit 0))\n\"))")
-                ;; ⛔ WHICH FRAME TO ANSWER IS DECIDED BY WHAT IT IS, not
+                ;; NEVER: WHICH FRAME TO ANSWER IS DECIDED BY WHAT IT IS, not
                 ;; by whether it is the first. Written as "answer the
                 ;; first, record the second" this swallowed the COMMAND
                 ;; LINE's request: the CLI never asks for a catalogue, so
@@ -770,7 +770,7 @@
   (talk (list hello ready (call-tool "theourgia_read" '("x.1"))) cstore csock)
   (system (string-append "pkill -f " peer " 2>/dev/null"))
 
-;; ⚠️ THE COMMAND LINE IS DRIVEN WITH `--wire` HERE, and that is not a
+;; NOTE: THE COMMAND LINE IS DRIVEN WITH `--wire` HERE, and that is not a
   ;; convenience. The envelope now carries the MODE the caller wants its
   ;; answer rendered in, and the shell always wants `wire` because it
   ;; parses what comes back. A CLI run without `--wire` therefore sends a
@@ -783,23 +783,23 @@
                 (if (string=? a b) 'and-the-shell-sent-the-same (list 'differ a b))))
         '(the-cli-sent-something and-the-shell-sent-the-same))
 
-  ;; ⛔ AND IT IS THE ENVELOPE THE DAEMON PARSES, spelled out here once so
+  ;; NEVER: AND IT IS THE ENVELOPE THE DAEMON PARSES, spelled out here once so
   ;; that "both sent the same thing" cannot be satisfied by both sending
   ;; the same wrong thing.
-  ;; ⚠️ THE FIELDS ARE SPELLED OUT, INCLUDING THE ONES THAT ARE #f.
+  ;; NOTE: THE FIELDS ARE SPELLED OUT, INCLUDING THE ONES THAT ARE #f.
   ;; `writer`, `cwd` and `stdin` are absent here as a VALUE and not by
   ;; being left out: an envelope whose length varied with what the caller
   ;; happened to have would be one the reader had to guess about. Neither
   ;; route binds a writer in this row, so both say #f, and a build that
   ;; started omitting the field would fail here rather than at the far
   ;; end of a parse.
-  ;; ⚠️ THE STORE TRAVELS BY ITS RESOLVED NAME, so the expectation is the
+  ;; NOTE: THE STORE TRAVELS BY ITS RESOLVED NAME, so the expectation is the
   ;; resolved one -- and it is resolved by the SHELL, not by the library
   ;; under test. Asking `client.ss` what it would produce would compare
   ;; this file's copy of the rule with the rule itself and agree with any
   ;; answer. (`/tmp` is a symlink on this platform, which is what makes
   ;; the two spellings differ at all.)
-  ;; ⚠️ THE DIRECTORY IS IN THE ENVELOPE NOW, and it is this fixture's own,
+  ;; NOTE: THE DIRECTORY IS IN THE ENVELOPE NOW, and it is this fixture's own,
   ;; resolved by the shell rather than by the library under test.
   (want "MC-envelope-shared and the bytes are the request envelope, terminator and all"
         (file-text seen-mcp)
@@ -809,7 +809,7 @@
 
 ;; ---- MC-08 two ways a well-formed request was mishandled --------------------
 ;;
-;; ⛔ "PRESENT AND false" IS NOT "ABSENT". The parser answered #f for both
+;; NEVER: "PRESENT AND false" IS NOT "ABSENT". The parser answered #f for both
 ;; a missing `params` key and one whose value is `false`, so
 ;; `params: false` -- which the protocol does not allow -- was read as no
 ;; params and the call SUCCEEDED.
@@ -819,7 +819,7 @@
         (code-of (cadr out))
         -32602))
 
-;; ⛔ AND THE TWIN: no params at all is still fine, which is how every
+;; NEVER: AND THE TWIN: no params at all is still fine, which is how every
 ;; ordinary listing arrives.
 (let ((out (talk (list hello ready
                        "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}"))))
@@ -830,13 +830,13 @@
 
 ;; ---- MC-11 collecting the children a start leaves behind -----------------
 ;;
-;; ⛔ WHAT THIS ROW CAN ESTABLISH, AND WHAT IT CANNOT. `spawn-detached!`
+;; NEVER: WHAT THIS ROW CAN ESTABLISH, AND WHAT IT CANNOT. `spawn-detached!`
 ;; answers a pid and nothing waits for it, so a started process that exits
 ;; stays in the table until someone collects it -- measured by the review
 ;; on the primitive itself, with `/usr/bin/true` and `waitpid`. The shell
 ;; now collects before every call.
 ;;
-;; ⛔ THE SHELL'S OWN ACCUMULATION COULD NOT BE PRODUCED FROM OUTSIDE, and
+;; NEVER: THE SHELL'S OWN ACCUMULATION COULD NOT BE PRODUCED FROM OUTSIDE, and
 ;; a row claiming it would be green for a reason that is not the claim.
 ;; Measured twice while writing this, sampling every two seconds across a
 ;; whole call: the shell had NO children at all. A start happens only when
@@ -848,13 +848,13 @@
 ;; lock race -- two starts, the loser exiting at once -- which this fixture
 ;; cannot hold still.
 ;;
-;; ⚠️ SO THE ROW BELOW IS ABOUT THE COUNTING, NOT ABOUT THE SHELL. It
+;; NOTE: SO THE ROW BELOW IS ABOUT THE COUNTING, NOT ABOUT THE SHELL. It
 ;; proves the instrument can see an uncollected child; the claim that the
 ;; shell does not accumulate them rests on the review's measurement of the
 ;; primitive and on reading `ask`, and is written up as such in the
 ;; delivery notes rather than dressed as a measurement here.
 (begin
-  ;; ⚠️ THE INSTRUMENT IS `reap-children!` ITSELF, not a `ps` line. Asked
+  ;; NOTE: THE INSTRUMENT IS `reap-children!` ITSELF, not a `ps` line. Asked
   ;; as `ps -o stat=,ppid=`, the listing covers only the processes of the
   ;; asking terminal, so in a suite with no terminal it answered zero while
   ;; a child was demonstrably there -- measured, this row read BLIND in the
@@ -870,7 +870,7 @@
                   (if (= again 0) 'and-nothing-was-left (list 'still-there again)))))
         '(collected-it and-nothing-was-left))
 
-  ;; ⛔ AND IT ANSWERS ZERO WHEN THERE IS NOTHING, which is what makes the
+  ;; NEVER: AND IT ANSWERS ZERO WHEN THERE IS NOTHING, which is what makes the
   ;; count above evidence rather than a number that is always positive.
   (want "MC-11 CONTROL: with no child of its own it collects nothing"
         (reap-children!)
@@ -879,7 +879,7 @@
 
 ;; ---- MC-09 a tool call that could not be sent says whose id it answers ----
 ;;
-;; ⛔ MEASURED DEFECT. `catalogue` carries `start-failed` and `not-sent`
+;; NEVER: MEASURED DEFECT. `catalogue` carries `start-failed` and `not-sent`
 ;; out of itself deliberately -- the comment where it does says the
 ;; reason would otherwise be lost one layer before the place that reports
 ;; it -- and `tools/call` checked only for `unavailable`. The other two
@@ -889,7 +889,7 @@
 ;; that caused it, and the reason the catalogue had preserved was thrown
 ;; away exactly where it was meant to be used.
 ;;
-;; ⚠️ MC-06 CANNOT SAY THIS: it asks only that no outline result came
+;; NOTE: MC-06 CANNOT SAY THIS: it asks only that no outline result came
 ;; back, which is true of a null-id internal error as well.
 (let* ((badsock (string-append here "/not-a-socket-file"))
        (out (begin
@@ -902,7 +902,7 @@
   (want "MC-09 a tool call that could not be sent is answered under its own id"
         (if (contains? reply "\"id\":41") 'echoed (list 'said reply))
         'echoed)
-  ;; ⛔ AND IT SAYS THE TOOL DID NOT RUN. "Something went wrong" leaves
+  ;; NEVER: AND IT SAYS THE TOOL DID NOT RUN. "Something went wrong" leaves
   ;; the caller to decide whether to try again, which is the one thing it
   ;; must not have to guess about.
   (want "MC-09 and it says the request was not carried out"
@@ -910,7 +910,7 @@
             'said-it-did-not-run
             (list 'said message))
         'said-it-did-not-run)
-  ;; ⛔ THE TWIN: tools/list, the same failure, the same shape. The two
+  ;; NEVER: THE TWIN: tools/list, the same failure, the same shape. The two
   ;; branched differently for a whole release -- one of them handled all
   ;; three outcomes and the other did not -- so the rows have to compare
   ;; them rather than check each alone.
@@ -927,7 +927,7 @@
 
 ;; ---- MC-10 who refused: the core, or the daemon carrying the request -----
 ;;
-;; ⛔ §7.6.4 SAYS A CORE `(error ...)` IS A SUCCESSFUL TOOL CALL whose text
+;; NEVER: §7.6.4 SAYS A CORE `(error ...)` IS A SUCCESSFUL TOOL CALL whose text
 ;; is a refusal -- the agent asked, and the answer is no. A daemon that is
 ;; draining, or that lost the process serving the request, refuses in the
 ;; SAME envelope with the SAME shape, and those are not answers to the
@@ -935,7 +935,7 @@
 ;; with the refusal as their text, so a caller was told its request had
 ;; been carried out and answered when it had not been carried out at all.
 ;;
-;; ⚠️ THE ENVELOPE NOW CARRIES `origin`, and these two rows are the two
+;; NOTE: THE ENVELOPE NOW CARRIES `origin`, and these two rows are the two
 ;; sides of it. A stand-in peer answers, because a real daemon cannot be
 ;; made to produce both on demand.
 (let* ((osock (string-append here "/origin.sock"))
@@ -990,7 +990,7 @@
           (if (field reply "error" "message") 'an-error (list 'said reply))
           'an-error))
 
-  ;; ⛔ THE TWIN, AND IT IS THE RULE THAT MUST NOT BREAK. A core refusal
+  ;; NEVER: THE TWIN, AND IT IS THE RULE THAT MUST NOT BREAK. A core refusal
   ;; is a SUCCESSFUL call: the tool ran and its answer is no. A build that
   ;; turned every non-zero exit into an error would pass the row above and
   ;; fail this one -- which is exactly what §7.6.4 forbids.
@@ -1003,7 +1003,7 @@
                 (if (contains? reply "unknown-id") 'carries-the-refusal (list 'said reply)))
           '(a-result carries-the-refusal)))
 
-  ;; ⛔ AND THE FIELD IS WHAT DECIDES, NOT THE WORDS. The two rows above
+  ;; NEVER: AND THE FIELD IS WHAT DECIDES, NOT THE WORDS. The two rows above
   ;; use a transport refusal that SAYS `draining` and a core refusal that
   ;; says `unknown-id`, so a shell that read the text and recognised names
   ;; would pass both. These two send the SAME words under the two
@@ -1024,7 +1024,7 @@
           (if (field reply "error" "message") 'an-error (list 'said reply))
           'an-error)))
 
-;; ⛔ AN INTEGER-VALUED ID IS AN ID, HOWEVER IT WAS SPELLED. Requiring an
+;; NEVER: AN INTEGER-VALUED ID IS AN ID, HOWEVER IT WAS SPELLED. Requiring an
 ;; exact integer rejected `2.0` -- ordinary JSON for the number two -- and
 ;; answered with `id: null`, so a client matching replies by id could not
 ;; match its own.
@@ -1033,14 +1033,14 @@
         (if (contains? (cadr out) "\"error\"") (list 'refused (cadr out)) 'answered)
         'answered))
 
-;; ⚠️ AND THE ID COMES BACK AS IT WAS WRITTEN.
+;; NOTE: AND THE ID COMES BACK AS IT WAS WRITTEN.
 ;;
-;; ⛔ "NOT NULL" WAS NOT ENOUGH, and this row used to ask only that. A
+;; NEVER: "NOT NULL" WAS NOT ENOUGH, and this row used to ask only that. A
 ;; reply carrying `3`, or `"2.0"`, or an id of a different type passed it
 ;; -- every answer except the one failure it was named for. What a client
 ;; matches on is the id's exact text, so that is what is compared.
 ;;
-;; ⛔ AND ONE OF THESE CANNOT BE PRINTED BACK FROM THE PARSED NUMBER.
+;; NEVER: AND ONE OF THESE CANNOT BE PRINTED BACK FROM THE PARSED NUMBER.
 ;; `9007199254740993` is not representable as a double: parsing rounds it
 ;; to ...992, so a reply built by printing the parsed value answers a
 ;; DIFFERENT id (measured: `9.007199254740992e15`) and the client that
@@ -1060,7 +1060,7 @@
       (map echoes-id? '("2.0" "2e0" "9007199254740993.0"))
       '(echoed echoed echoed))
 
-;; ⛔ THE TWIN: an ordinary integer and a string id are unchanged by all
+;; NEVER: THE TWIN: an ordinary integer and a string id are unchanged by all
 ;; of this. Without them, "echo the token you were sent" is satisfied by a
 ;; build that has stopped parsing ids at all.
 (want "MC-08 TWIN: an ordinary integer id and a string id still echo"
@@ -1073,20 +1073,20 @@
 
 ;; ---- MC-12 a key is what it means, and a reply is always JSON ------------
 ;;
-;; ⛔ `"id"` IS JSON FOR `id`. The scan that finds the id's own token
+;; NEVER: `"id"` IS JSON FOR `id`. The scan that finds the id's own token
 ;; compared the key's SPELLING against `"id"`, so a host that escaped a
 ;; character in the key -- which JSON allows anywhere -- was not
 ;; recognised, and the reply fell back to printing the parsed value: the
 ;; one path the token echo exists to avoid.
 ;;
-;; ⭐ AND THE FALLBACK COULD WRITE SOMETHING THAT WAS NOT JSON. Chez
+;; KEY: AND THE FALLBACK COULD WRITE SOMETHING THAT WAS NOT JSON. Chez
 ;; prints a flonum with fewer significant bits than a full mantissa as
 ;; `5e-324|1`, and that bar is not JSON, so the whole line stopped being
 ;; parseable -- measured on the previous build:
 ;;
 ;;   {"jsonrpc":"2.0","id":5e-324|1,"result":{}}
 ;;
-;; ⚠️ SO THE ROW ASKS THE STRONGEST QUESTION AVAILABLE: not "does the text
+;; NOTE: SO THE ROW ASKS THE STRONGEST QUESTION AVAILABLE: not "does the text
 ;; look right" but "does this line parse at all". A client that cannot
 ;; read the frame has lost the session, not one answer.
 (define (ping-keyed key id)
@@ -1102,7 +1102,7 @@
                   (list 'said line))))
       '(parses echoed))
 
-;; ⛔ AND THE SAME VALUE WITH THE ORDINARY KEY, which reaches the printer
+;; NEVER: AND THE SAME VALUE WITH THE ORDINARY KEY, which reaches the printer
 ;; by a different road: here the echo succeeds, so this row is about the
 ;; value surviving at all. Both spellings must answer the same line.
 (want "MC-12 and the ordinary spelling of the key answers the same line"
@@ -1113,7 +1113,7 @@
                   (list 'differ a b))))
       '(parses same-answer))
 
-;; ⛔ TWIN: A KEY THAT MEANS SOMETHING ELSE IS STILL SOMETHING ELSE.
+;; NEVER: TWIN: A KEY THAT MEANS SOMETHING ELSE IS STILL SOMETHING ELSE.
 ;; Decoding the key must not turn the comparison into one that matches
 ;; anything: `"ie"` is `ie`, not `id`, and a request with no id is a
 ;; notification, which is answered with nothing at all.
@@ -1127,12 +1127,12 @@
 
 ;; ---- teardown ---------------------------------------------------------------
 ;;
-;; ⛔ EVERY DAEMON THIS FILE CAUSED TO EXIST IS TAKEN DOWN. The shell
+;; NEVER: EVERY DAEMON THIS FILE CAUSED TO EXIST IS TAKEN DOWN. The shell
 ;; starts one when it cannot reach one, so a run of this file leaves
 ;; daemons behind that no row mentions -- measured, fifteen of them after
 ;; five runs, each holding a socket and a log.
 ;;
-;; ⚠️ THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
+;; NOTE: THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
 ;; process's pid. A pattern like `serve` or `cli.ss` would also match the
 ;; daemons of a suite running beside this one, and of another session
 ;; entirely.

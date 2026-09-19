@@ -16,20 +16,20 @@
 ;; `serve --detach`: whether the daemon leaves the session that started
 ;; it, and what it does when it cannot.
 ;;
-;; ⭐ A DAEMON THE CLIENT STARTS MUST OUTLIVE THE CLIENT. A client runs
+;; KEY: A DAEMON THE CLIENT STARTS MUST OUTLIVE THE CLIENT. A client runs
 ;; for one call; the daemon it starts serves every call after that. If it
 ;; stayed in the client's session it would be taken down by anything
 ;; aimed at the client -- a ctrl-C, a shell closing -- and the next
 ;; client would start another one, which is the behaviour the single
 ;; daemon per store exists to prevent.
 ;;
-;; ⛔ AND ONLY UNDER `--detach`. A `serve` a person runs from a terminal
+;; NEVER: AND ONLY UNDER `--detach`. A `serve` a person runs from a terminal
 ;; keeps its session and its output, because that is how it is read. The
 ;; second row is not decoration: making the detach unconditional would
 ;; pass the first row and break every fixture that reads a foreground
 ;; daemon's diagnostics, and nothing else here would notice.
 ;;
-;; ⚠️ `setsid` CANNOT SUCCEED TWICE. A process that is already a session
+;; NOTE: `setsid` CANNOT SUCCEED TWICE. A process that is already a session
 ;; leader gets EPERM, and that is the normal state of a process started
 ;; by certain launchers -- so the third row starts one that way on
 ;; purpose. The refusal must be loud: a daemon that could not leave the
@@ -101,7 +101,7 @@
 (system (string-append "rm -rf " here "; mkdir -p " store " " here "/home"))
 (system (string-append (env-prefix "") " scheme --script " cli
                        " init --store " store " > /dev/null 2>&1"))
-;; ⚠️ A BLOCK, SO THAT "IT ANSWERED" IS DISTINGUISHABLE FROM "IT SAID
+;; NOTE: A BLOCK, SO THAT "IT ANSWERED" IS DISTINGUISHABLE FROM "IT SAID
 ;; NOTHING". `outline` on an empty store answers correctly with empty
 ;; text, and a row that only looked for a non-empty reply passed against
 ;; a daemon that was never reached -- which is what it did here, until
@@ -125,7 +125,7 @@
 (define dt-pid (trim (file-text dt-pidfile)))
 (define dt-sid (sid-of dt-pid (string-append here "/dtsid.txt")))
 
-;; ⛔ "NOT THE SAME AS MINE" IS ALSO TRUE OF A PROCESS THAT IS NOT
+;; NEVER: "NOT THE SAME AS MINE" IS ALSO TRUE OF A PROCESS THAT IS NOT
 ;; THERE. `sid-of` answers "unknown" when getsid fails, which is what it
 ;; does for a pid that has already exited -- so this row passed, once,
 ;; against a daemon that had refused to start at all. Whatever it is, it
@@ -137,14 +137,14 @@
         (else 'left-it))
       'left-it)
 
-;; ⭐ AND IT IS A SESSION LEADER, not merely somewhere else. "Different
+;; KEY: AND IT IS A SESSION LEADER, not merely somewhere else. "Different
 ;; from mine" would also be true of a process that had been adopted into
 ;; some third session by accident; leading its own is the property.
 (want "D-1 and it leads a session of its own"
       (if (string=? dt-sid dt-pid) 'leads-its-own (list dt-sid 'not dt-pid))
       'leads-its-own)
 
-;; ⛔ THE POINT OF ALL THIS: it still answers once the caller is gone.
+;; NEVER: THE POINT OF ALL THIS: it still answers once the caller is gone.
 ;; The rows above are about a number; this one is about the daemon.
 (define answer-file (string-append here "/answer.txt"))
 (system (string-append (env-prefix "") " scheme --script " cli
@@ -178,7 +178,7 @@
 ;;
 ;; The launcher makes ITSELF a session leader and then execs the CLI, so
 ;; the process that runs `--detach` is already leading a session and
-;; `setsid` answers EPERM. ⚠️ `setsid(1)` is not on macOS, which is why
+;; `setsid` answers EPERM. NOTE: `setsid(1)` is not on macOS, which is why
 ;; this is done with os.setsid in the launcher rather than a command.
 (define leader (string-append here "/leader.py"))
 (call-with-output-file leader
@@ -200,18 +200,18 @@
       (if (zero? d3-rc) (list 'EXITED-ZERO (file-text d3-out)) 'non-zero)
       'non-zero)
 
-;; ⛔ AND IT SAYS WHY. A non-zero exit on its own is satisfied by any
+;; NEVER: AND IT SAYS WHY. A non-zero exit on its own is satisfied by any
 ;; crash at all, including one that never reached the detach.
 (want "D-3 and it names the failure"
       (if (contains? (file-text d3-out) "detach-failed") 'named
           (list 'said (file-text d3-out)))
       'named)
 
-;; ⚠️ THE ERRNO IS THE PART THAT IS ACTIONABLE, and it is the part most
+;; NOTE: THE ERRNO IS THE PART THAT IS ACTIONABLE, and it is the part most
 ;; easily lost: `setsid!` raises an assertion carrying it as an irritant,
 ;; and a handler that caught the condition without reading the irritant
 ;; would report `unknown` here and still pass the row above.
-;; ⛔ THE ROW ASKS FOR THE NUMBER, NOT FOR THE ABSENCE OF A WORD. Written
+;; NEVER: THE ROW ASKS FOR THE NUMBER, NOT FOR THE ABSENCE OF A WORD. Written
 ;; as "the output does not say unknown" it passed while the detach was
 ;; not running at all -- an unrelated crash says neither "unknown" nor an
 ;; errno, and satisfied it. It has to see the errno itself.
@@ -223,7 +223,7 @@
           (else (list 'no-errno-at-all text))))
       'carried)
 
-;; ⛔ AND IT DID NOT GO ON TO SERVE. The refusal would be pointless if
+;; NEVER: AND IT DID NOT GO ON TO SERVE. The refusal would be pointless if
 ;; the process carried on and bound the socket anyway.
 (want "D-3 and no socket was left behind"
       (if (file-exists? (string-append here "/d3.sock")) 'SERVED-ANYWAY 'did-not-serve)
@@ -231,7 +231,7 @@
 
 ;; ---- D-4 detaching with stdio already closed -------------------------------
 ;;
-;; ⛔ A DESCRIPTOR OPENED WHILE 0, 1 OR 2 IS CLOSED CAN LAND ON ONE OF
+;; NEVER: A DESCRIPTOR OPENED WHILE 0, 1 OR 2 IS CLOSED CAN LAND ON ONE OF
 ;; THEM, and a later copy onto that number then changes what the other
 ;; variable refers to. The first version of `redirect-stdio!` was
 ;; justified by reasoning about which arrangements are safe; a reviewer
@@ -240,7 +240,7 @@
 ;; rather than answering it -- and this row is the arrangement that was
 ;; reported.
 ;;
-;; ⚠️ THE CHILD IS STARTED WITH STDIN CLOSED, which a shell will not do
+;; NOTE: THE CHILD IS STARTED WITH STDIN CLOSED, which a shell will not do
 ;; for you: `<&-` is not portable enough to rely on here, so the fork and
 ;; the close are done explicitly.
 (define closer (string-append here "/closed-stdin.py"))
@@ -267,7 +267,7 @@
       (if (file-exists? d4-sock) 'bound (list 'no-socket (file-text d4-log)))
       'bound)
 
-;; ⛔ AND ITS LOG IS ITS OWN. If the log descriptor had been overwritten,
+;; NEVER: AND ITS LOG IS ITS OWN. If the log descriptor had been overwritten,
 ;; this is where it would show: the file would be empty or hold something
 ;; that is not the daemon's line.
 (want "D-4 and its own first line reached the log it was given"
@@ -275,7 +275,7 @@
           (list 'log (file-text d4-log)))
       'its-own-line)
 
-;; ⛔ AND IT ANSWERS. Binding and logging would both be true of a daemon
+;; NEVER: AND IT ANSWERS. Binding and logging would both be true of a daemon
 ;; that then did nothing.
 (define d4-answer (string-append here "/d4-answer.txt"))
 (system (string-append (env-prefix "") " scheme --script " cli

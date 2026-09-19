@@ -15,7 +15,7 @@
 
 ;; THE PROCESS CALLS, ASSERTED BY THEIR EFFECTS.
 ;;
-;; ⛔ "THE CALL RETURNED" IS NOT A READING. Swapping two valid resource
+;; NEVER: "THE CALL RETURNED" IS NOT A READING. Swapping two valid resource
 ;; limits raises nothing; naming the wrong field of a kernel struct
 ;; returns a plausible number; signalling the wrong pid succeeds. Every
 ;; row here asks for something the call is supposed to have CHANGED, or
@@ -46,7 +46,7 @@
 (want "FF-01 this process is alive to signal 0"
       (process-alive-signal0? (get-process-id)) #t)
 
-;; ⚠️ A PID THAT CANNOT EXIST. Not a large number that might: pid 1 is
+;; NOTE: A PID THAT CANNOT EXIST. Not a large number that might: pid 1 is
 ;; init and answers EPERM, which is the case the predicate must call
 ;; ALIVE. This one is chosen to be absent, and the row below reads the
 ;; errno rather than the verdict, so "absent" is distinguished from
@@ -58,7 +58,7 @@
 (want "FF-01 and the predicate calls it dead"
       (process-alive-signal0? absent-pid) #f)
 
-;; ⭐ EPERM IS ALIVE, AND THIS IS THE ROW THAT SAYS SO. pid 1 exists and
+;; KEY: EPERM IS ALIVE, AND THIS IS THE ROW THAT SAYS SO. pid 1 exists and
 ;; is not ours; a predicate that read every failure as absence would
 ;; answer #f here and would report a running child as dead the moment
 ;; the child changed user.
@@ -69,7 +69,7 @@
 
 ;; ---- setrlimit: the two fields are not interchangeable ------------------
 ;;
-;; ⭐ TWO DISTINCT VALUES, read back separately. Written with one value
+;; KEY: TWO DISTINCT VALUES, read back separately. Written with one value
 ;; for both, an implementation that filled the struct backwards -- or
 ;; that wrote the same field twice -- would pass.
 
@@ -80,7 +80,7 @@
 (want "FF-02 and both fields come back, in that order"
       (getrlimit RLIMIT_CPU) '(3600 . 7200))
 
-;; ⛔ AND IT IS A ONE-WAY DOOR, which is why this runs last of the pair:
+;; NEVER: AND IT IS A ONE-WAY DOOR, which is why this runs last of the pair:
 ;; a hard limit cannot be raised again by an unprivileged process, so a
 ;; fixture that lowered it early would break every later row that wanted
 ;; a bigger one. Named here because the next person will want to move it.
@@ -93,14 +93,14 @@
 
 (want "FF-03 this process has a resident size" (and (number? rss) (> rss 0)) #t)
 
-;; ⭐ BYTES, NOT PAGES AND NOT KiB. A Chez process is tens of megabytes;
+;; KEY: BYTES, NOT PAGES AND NOT KiB. A Chez process is tens of megabytes;
 ;; the same number in KiB would be tens of thousands, and in pages tens
 ;; of thousands too. The window below is wide enough for any machine and
 ;; still excludes both wrong units by three orders of magnitude.
 (want "FF-03 and it is in BYTES"
       (list (> rss 4000000) (< rss 4000000000)) '(#t #t))
 
-;; ⭐ THE FIELD BESIDE IT IS THE ONE THAT PROVES THE OFFSET. A reader
+;; KEY: THE FIELD BESIDE IT IS THE ONE THAT PROVES THE OFFSET. A reader
 ;; that took the first field of the kernel's struct would report the
 ;; VIRTUAL size, which on this machine is four hundred gigabytes -- a
 ;; number that is positive, that grows with allocation, and that would
@@ -111,26 +111,26 @@
 
 ;; ---- the same reading, on the platform that is not this one ------------
 ;;
-;; ⚠️ THIS ROW ONLY RUNS ON FreeBSD, and it says so rather than passing
+;; NOTE: THIS ROW ONLY RUNS ON FreeBSD, and it says so rather than passing
 ;; quietly elsewhere. Both production machines are FreeBSD 15; the
 ;; reading there comes out of `kinfo_proc` at an offset that was
 ;; MEASURED on that machine (see `ffi.ss`), not read out of a header --
 ;; and an offset is a claim about a layout, so it is worth a row that
 ;; fails if the layout moves.
 ;;
-;; ⛔ WHAT IT IS NOT: a row that is green here. On this machine it
+;; NEVER: WHAT IT IS NOT: a row that is green here. On this machine it
 ;; announces that it did not run. A cell that reported success for a
 ;; platform it never touched would be the most comfortable kind of lie.
 ;; ---- FF-05 setsid, called for real ---------------------------------
 ;;
-;; ⛔ NOTHING IN THIS FILE CALLED IT. Every `signal-pid!` here used signal
+;; NEVER: NOTHING IN THIS FILE CALLED IT. Every `signal-pid!` here used signal
 ;; 0, and `setsid!` appeared in no row at all -- so an implementation that
 ;; returned a plausible number without asking the kernel for anything had
 ;; nothing to fail. It matters because the eval guardian kills a whole
 ;; process group: if the child never got its own session, `kill(-pgid)`
 ;; reaches the wrong processes, or none.
 ;;
-;; ⚠️ IN A CHILD, BECAUSE A PROCESS THAT LEADS A GROUP CANNOT. `setsid`
+;; NOTE: IN A CHILD, BECAUSE A PROCESS THAT LEADS A GROUP CANNOT. `setsid`
 ;; fails with EPERM when the caller is already a process-group leader,
 ;; and this fixture may or may not be one depending on how it was
 ;; started. A fresh child is never one.
@@ -156,7 +156,7 @@
              (list (and (number? sid) (> sid 0)) (= pid sid))))
       '(#t #t))
 
-;; ⛔ AND THE ROW ABOVE, ALONE, IS SATISFIED BY A LIE. `setsid!` answers
+;; NEVER: AND THE ROW ABOVE, ALONE, IS SATISFIED BY A LIE. `setsid!` answers
 ;; the new session id, which is the caller's own pid -- so
 ;; `(define (setsid!) (get-process-id))` passes it, having created no
 ;; session at all. The two readings below come from the kernel, through
@@ -190,7 +190,7 @@
            (rss-here (process-rss-bytes mine)))
       (want "FF-04 FreeBSD: this process has a resident size in bytes"
             (and (number? rss-here) (> rss-here 4000000) (< rss-here 4000000000)) #t)
-      ;; ⭐ AGAINST `ps`, TAKEN NOW. The offset was found by agreeing with
+      ;; KEY: AGAINST `ps`, TAKEN NOW. The offset was found by agreeing with
       ;; ps on two processes; the row that keeps it honest is the same
       ;; agreement, on this one, at this moment.
       (let* ((out (string-append "/tmp/ffi-ps-" (number->string mine)))

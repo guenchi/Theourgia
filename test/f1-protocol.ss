@@ -15,7 +15,7 @@
 
 ;; The write protocol, in one place and reaching three readers.
 ;;
-;; ⭐ THE POINT IS THAT THERE IS ONE COPY. `write-protocol` is exported by
+;; KEY: THE POINT IS THAT THERE IS ONE COPY. `write-protocol` is exported by
 ;; `(theourgia rpc)`; the README's `## Writing for agents` section is that
 ;; string; the MCP shell's `insert` and `write` descriptions begin with
 ;; it. Three statements of a protocol are three protocols as soon as one
@@ -60,13 +60,13 @@
 
 ;; ---- DOC-P1: the README section IS the constant -------------------------------
 ;;
-;; ⛔ READ FROM THE FILE ON DISK, NOT REGENERATED. A check that wrote the
+;; NEVER: READ FROM THE FILE ON DISK, NOT REGENERATED. A check that wrote the
 ;; section from the constant and then compared them would agree with
 ;; itself no matter what the committed README says, which is the one
 ;; thing this row exists to notice.
 (define readme (file-text "../README.md"))
 
-;; ⚠️ THE BLANK LINE BEFORE THE NEXT HEADING BELONGS TO THE DOCUMENT,
+;; NOTE: THE BLANK LINE BEFORE THE NEXT HEADING BELONGS TO THE DOCUMENT,
 ;; not to the protocol: Markdown needs it and the constant does not have
 ;; it. Taking it made the two differ by one byte -- a real difference,
 ;; and not the one this row is about.
@@ -85,9 +85,9 @@
 
 ;; ---- DOC-P2: and the protocol still says the seven things ---------------------
 ;;
-;; ⛔ DOC-P1 CANNOT SEE A RULE GO MISSING. It says the two copies agree;
+;; NEVER: DOC-P1 CANNOT SEE A RULE GO MISSING. It says the two copies agree;
 ;; delete a rule from the constant and regenerate the README and it stays
-;; green. ⚠️ This list is the seventh copy on purpose -- it is a list of
+;; green. NOTE: This list is the seventh copy on purpose -- it is a list of
 ;; what the protocol is FOR, kept outside the string so that dropping a
 ;; rule has to be done twice and deliberately.
 (define seven-rules
@@ -119,7 +119,7 @@
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
                        "scheme --script ../cli.ss init --store " here "/store --wire > /dev/null 2>&1"))
 
-;; ⚠️ THE REAL HANDSHAKE. `tools/list` before `notifications/initialized`
+;; NOTE: THE REAL HANDSHAKE. `tools/list` before `notifications/initialized`
 ;; is refused by the shell, deliberately -- so a row that skipped it
 ;; would be reading an error and finding no tools in it.
 (define tools-line
@@ -130,7 +130,7 @@
                            "THEOURGIA_RUN=" here "/run "
                            "scheme --script " shell " --store " here "/store < " here "/in.jsonl > "
                            here "/out.jsonl 2>" here "/err.txt"))
-    ;; ⛔ BY THE REQUEST ID, NOT BY THE WORD `tools`. The initialize
+    ;; NEVER: BY THE REQUEST ID, NOT BY THE WORD `tools`. The initialize
     ;; result announces `"capabilities":{"tools":{}}` on the FIRST line,
     ;; so a search for that word finds the handshake and reports that
     ;; the shell offers no tools at all.
@@ -164,13 +164,13 @@
           (list 'said (if tools-line (substring tools-line 0 (min 120 (string-length tools-line))) #f)))
       'listed)
 
-;; ⛔ THE VERB'S SENTENCE COMES FROM THE SERVER, NOT FROM A LITERAL HERE.
+;; NEVER: THE VERB'S SENTENCE COMES FROM THE SERVER, NOT FROM A LITERAL HERE.
 ;; This used to pin the string "Execute the core insert command" -- the
 ;; generic sentence the shell built for every verb, which said nothing
 ;; about the verb and was what §7.6.45 asked to be replaced. A row
 ;; holding that literal pins the thing the batch set out to remove.
 ;;
-;; ⚠️ SO THE EXPECTATION IS TAKEN FROM THE CATALOGUE, which is the one
+;; NOTE: SO THE EXPECTATION IS TAKEN FROM THE CATALOGUE, which is the one
 ;; supplier: the shell asks `describe` for it. What this row asserts is
 ;; that the shell did NOT write a sentence of its own -- a shell that
 ;; invented one would not match what the catalogue holds. That the
@@ -200,7 +200,7 @@
   (list (cons "theourgia_insert" 'insert)
         (cons "theourgia_write" 'write)))
 
-;; ⛔ AND A TOOL THAT DOES NOT WRITE DOES NOT CARRY IT. Without this row
+;; NEVER: AND A TOOL THAT DOES NOT WRITE DOES NOT CARRY IT. Without this row
 ;; the two above are satisfied by a shell that prefixes every description
 ;; -- which would put the rules for writing a block in front of `read`,
 ;; `search` and everything else an agent is choosing between.
@@ -223,13 +223,13 @@
 
 ;; ---- MC-P3 the descriptions came from the server, this time -------------
 ;;
-;; ⛔ EVERY ROW ABOVE COMPARES THE LISTING WITH THIS PROCESS'S OWN COPY of
+;; NEVER: EVERY ROW ABOVE COMPARES THE LISTING WITH THIS PROCESS'S OWN COPY of
 ;; `verb-catalogue` and `write-protocol` -- the same values the shell
 ;; would hold if it carried a hardcoded table, or a cached one from some
 ;; earlier run. They agree in this tree, and they would go on agreeing
 ;; after the shell stopped asking anyone.
 ;;
-;; ⚠️ SO THE PEER'S ANSWER IS MADE DIFFERENT FROM ANYTHING THIS TREE
+;; NOTE: SO THE PEER'S ANSWER IS MADE DIFFERENT FROM ANYTHING THIS TREE
 ;; CONTAINS. A marker that appears in no source file cannot be served
 ;; from a copy: if the shell shows it, it asked, and it used what came
 ;; back.
@@ -273,7 +273,7 @@
           (if (contains? text marker) 'came-from-the-server (list 'said-instead
                                                                   (substring text 0 (min 120 (string-length text)))))
           'came-from-the-server)
-    ;; ⛔ AND THE PROTOCOL TEXT TOO, which is the part an agent reads
+    ;; NEVER: AND THE PROTOCOL TEXT TOO, which is the part an agent reads
     ;; before it writes anything.
     (want "MC-P3 and so is the protocol text the descriptions carry"
           (if (contains? text (string-append marker "-PROTOCOL")) 'from-the-server 'A-LOCAL-COPY)
@@ -281,7 +281,7 @@
   (system (string-append "pkill -f " ppeer " 2>/dev/null")))
 
 (system (string-append "rm -rf " here))
-;; ⛔ THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
+;; NEVER: THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
 ;; run root is and must take down what it started. Before the shell was
 ;; rewritten it dispatched in its own process and started nothing, which
 ;; is why neither line was here. Measured without them: sockets and logs

@@ -27,13 +27,13 @@
 ;; libraries, before `digest.ss`, `wire.ss` and `ffi.ss` became forwards
 ;; onto igropyr and before the derived fields left the reduction.
 ;;
-;; ⭐ THE EXPECTATIONS COME FROM OUTSIDE THE TREE. All three were
+;; KEY: THE EXPECTATIONS COME FROM OUTSIDE THE TREE. All three were
 ;; computed by `mkpin.ss` against the library at d1655fe and written
 ;; into the brief for this batch; the store's own bytes are pinned
 ;; beside them in `pin-store.md5`. Nothing this suite runs produces
 ;; either file.
 ;;
-;; ⛔ SO THEY ARE NOT EDITED TO MATCH A READING. If the code changes
+;; NEVER: SO THEY ARE NOT EDITED TO MATCH A READING. If the code changes
 ;; what a stored block hashes to, the honest outcomes are a red row and
 ;; a ruling. An earlier draft of this fixture asserted sixty-four hex
 ;; digits of which it had been told eight and had invented fifty-six;
@@ -45,7 +45,7 @@
 ;; a hash taken over a store that is no longer the pinned one would be a
 ;; confident number about the wrong thing.
 
-;; ⛔ THE STORE IS COPIED BEFORE IT IS OPENED. Opening takes a lock and
+;; NEVER: THE STORE IS COPIED BEFORE IT IS OPENED. Opening takes a lock and
 ;; may write a snapshot; a fixture that did that to `pin-store/` would
 ;; leave the pin different from the pin the next run measures, and the
 ;; drift would be ours.
@@ -135,7 +135,7 @@
   (printf "rows: ~a\n~a failures\npin-store complete\n" rows bad)
   (exit 1))
 
-;; ⛔ AND IT IS CHECKED BEFORE THE STORE IS OPENED, WHICH IS WHERE THE
+;; NEVER: AND IT IS CHECKED BEFORE THE STORE IS OPENED, WHICH IS WHERE THE
 ;; FIRST VERSION HAD IT WRONG. The row sat after `open-and-reduce`, and
 ;; a byte appended to `meta.sexp` made the open RAISE -- so the fixture
 ;; died two rows in, printed no sentinel, and the guard written to name

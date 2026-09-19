@@ -15,12 +15,12 @@
 
 ;; What an answer looks like when it is not all ASCII.
 ;;
-;; ⭐ THE WIRE CARRIES UTF-8 NOW, not `\x6C49;`. Measured by the worker:
+;; KEY: THE WIRE CARRIES UTF-8 NOW, not `\x6C49;`. Measured by the worker:
 ;; escaping cost CJK 2.36 times the tokens, where the JSON envelope
 ;; around it costs 1.16 -- and the reader of these answers is an agent
 ;; paying by the token.
 ;;
-;; ⛔ AND THE DISK DID NOT MOVE. A record is serialised by
+;; NEVER: AND THE DISK DID NOT MOVE. A record is serialised by
 ;; `sexpr->string-extended` in `wire.ss`, which writes its own characters
 ;; and never consulted the print parameters. U4 is the guard: the two
 ;; paths are separate because somebody kept them separate, and only a
@@ -49,7 +49,7 @@
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (define here (string-append "/tmp/f3-" (number->string (get-process-id))))
 (define store (string-append here "/store"))
-;; ⚠️ SHORT: `sun_path` holds 104 bytes and this suite's usual scratch
+;; NOTE: SHORT: `sun_path` holds 104 bytes and this suite's usual scratch
 ;; path is longer, which makes a daemon report `listener-down` and look
 ;; broken.
 (define socket (string-append "/tmp/f3s-" (number->string (get-process-id)) ".sock"))
@@ -101,7 +101,7 @@
 
 ;; ---- U1: the bytes on the wire ------------------------------------------------
 ;;
-;; ⚠️ A SIMPLE FIXTURE FOR THE "NO `\\x`" HALF. The escape test below is
+;; NOTE: A SIMPLE FIXTURE FOR THE "NO `\\x`" HALF. The escape test below is
 ;; about a string that contains no backslash of its own; U2 carries the
 ;; awkward ones.
 (define cjk "\x6c49;\x5b57;")
@@ -124,7 +124,7 @@
 
 ;; ---- U2: and it reads back ----------------------------------------------------
 ;;
-;; ⛔ THE AWKWARD ONES. A quote, a backslash, a newline inside the text,
+;; NEVER: THE AWKWARD ONES. A quote, a backslash, a newline inside the text,
 ;; and the six literal characters `\x41;` -- which an implementation that
 ;; unescaped the whole answer would turn into `A`. Every one of them has
 ;; to survive the round trip and the reader has to reach EOF after one
@@ -153,12 +153,12 @@
 
 ;; ---- U4: and nothing about the disk changed -----------------------------------
 ;;
-;; ⛔ THE WHOLE RECORD, NOT THE PAYLOAD. An implementation that changed
+;; NEVER: THE WHOLE RECORD, NOT THE PAYLOAD. An implementation that changed
 ;; the escaping and updated the CRC to match would still decode to the
-;; same datum -- only the bytes catch it. ⚠️ The cross-core comparison
+;; same datum -- only the bytes catch it. NOTE: The cross-core comparison
 ;; (this tree against the core before F3, same payload) is in NOTES; what
 ;; this row guards is that the stored form stays what it is.
-;; ⚠️ FOUND, NOT GUESSED. A segment lives at
+;; NOTE: FOUND, NOT GUESSED. A segment lives at
 ;; `<store>/writers/<writer>/000001.sexp`, and an earlier version of this
 ;; row looked for it at the top of the store, found nothing, and reported
 ;; `NO-SEGMENT` -- which reads like a store that wrote nothing.
@@ -188,7 +188,7 @@
                 'ESCAPED-ON-DISK 'no-escape-on-disk))
       '(found-a-segment raw-on-disk no-escape-on-disk))
 
-;; ⛔ AND THE BYTES DO NOT MOVE WHEN SOMETHING IS ONLY READ. A printer
+;; NEVER: AND THE BYTES DO NOT MOVE WHEN SOMETHING IS ONLY READ. A printer
 ;; that had reached the disk path would rewrite a record on the next
 ;; write to that segment; this pins the segment across a read and a
 ;; further write of ASCII-only content.
@@ -203,7 +203,7 @@
 
 ;; ---- U5 and U3: the other two routes ------------------------------------------
 ;;
-;; ⛔ THREE ROUTES, ONE ANSWER. The point of collapsing the printers is
+;; NEVER: THREE ROUTES, ONE ANSWER. The point of collapsing the printers is
 ;; that these are the same bytes; a change made in the CLI alone would
 ;; leave the daemon and the shell spelling `\x6C49;`.
 (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
@@ -219,7 +219,7 @@
               " --store " store " --socket " socket " --wire > " out " 2>&1"))
     (file-text out)))
 
-;; ⛔ THE LOCAL ANSWER IS TAKEN AGAIN, HERE. Comparing against the one
+;; NEVER: THE LOCAL ANSWER IS TAKEN AGAIN, HERE. Comparing against the one
 ;; captured for U1 compared two different stores: the block U2 inserts
 ;; also contains these characters, so the daemon saw one more hit and the
 ;; row reported a difference between the routes that was a difference
@@ -257,7 +257,7 @@
 
 ;; ---- U6: what it saves, in bytes ----------------------------------------------
 ;;
-;; ⚠️ BYTES, NOT TOKENS, AND SAID SO. There is no tokeniser in this tree,
+;; NOTE: BYTES, NOT TOKENS, AND SAID SO. There is no tokeniser in this tree,
 ;; so this row reports the ratio it can actually measure -- the escaped
 ;; spelling against the raw one for the same answer. The token figure
 ;; (2.36x escaped, 1.16x for the JSON envelope) is the worker's, is
@@ -278,7 +278,7 @@
         (string-length wire-answer) escaped-length)
 
 (system (string-append "rm -rf " here "; rm -f " socket))
-;; ⛔ THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
+;; NEVER: THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
 ;; run root is and must take down what it started. Before the shell was
 ;; rewritten it dispatched in its own process and started nothing, which
 ;; is why neither line was here. Measured without them: sockets and logs

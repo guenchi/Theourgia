@@ -20,16 +20,16 @@ missing:
        CHEZSCHEMELIBDIRS CHEZSCHEMELIBEXTS is unset -- source test/env.sh first")
     REFUSING: nothing below this line would be a reading.
 
-⚠️ **This paragraph used to describe a different failure**, and the
+NOTE: **This paragraph used to describe a different failure**, and the
 difference is the point: it said an unsourced run gave "85 scripts at
 `rc=255` and `library (theourgia request) not found`", every script
 failing one at a time, which reads as everything being broken rather than
 as a variable that was never exported. The preflight now refuses before
 any of that. The count in that sentence had also stopped being true --
-⛔ a number restated in prose describes the run somebody once had, and
+NEVER: a number restated in prose describes the run somebody once had, and
 nothing tells it when the tree moves.
 
-⛔ **`THEOURGIA_LIBDIR` IS WHAT MAKES THE READING A PINNED ONE.** Without
+NEVER: **`THEOURGIA_LIBDIR` IS WHAT MAKES THE READING A PINNED ONE.** Without
 it the working trees are used, so the run measures whatever those trees
 happened to contain at that moment -- including a co-worker's edit
 landing halfway through. A reading taken that way says nothing about any
@@ -39,7 +39,7 @@ ones beside the reading.
 
 ## A design that loads at run time needs a reading in each shipped form
 
-⛔ **Two forms, two cells.** This tree runs from source in development
+NEVER: **Two forms, two cells.** This tree runs from source in development
 and ships as compiled objects. Anything that resolves a library at RUN
 time rather than by a static import behaves differently in the two, and
 a reading taken in one says nothing about the other.
@@ -54,7 +54,7 @@ statically. `f0-ondemand.ss` carries both readings -- F0-1 to F0-3 from
 source, F0-4 against objects built by `build.ss` with `.so` alone on the
 path.
 
-⚠️ **And a timing budget belongs to one form.** F0-2's budget is a
+NOTE: **And a timing budget belongs to one form.** F0-2's budget is a
 source-form budget. The same change measured 188 ms from source and 9 ms
 from objects; quoting the first as what a user saves would be false.
 
@@ -275,7 +275,7 @@ red preflight refuses the run. It still runs again inside the loop, so that
 every script in the directory is still classified exactly once and the
 count-back gate below stays true.
 
-⛔ **The preflight does not read the exit status.** Measured on the broken tree:
+NEVER: **The preflight does not read the exit status.** Measured on the broken tree:
 
     PREFLIGHT RED (rc=0 sentinel=1 hard=1 counters=1)
 

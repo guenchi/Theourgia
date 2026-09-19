@@ -16,7 +16,7 @@
 ;; The command line, forwarding to a daemon -- in Scheme, with no helper
 ;; process.
 ;;
-;; ⭐ EVERY ROW HERE RUNS THE REAL `cli.ss` AS A REAL PROCESS, the way a
+;; KEY: EVERY ROW HERE RUNS THE REAL `cli.ss` AS A REAL PROCESS, the way a
 ;; person does. A row that called its procedures would be testing the
 ;; library and would say nothing about argv, the environment, or which
 ;; program ends up doing the work.
@@ -31,7 +31,7 @@
   (if (equal? got expected)
       (printf "ok ~a\n" label)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" label got expected))))
-;; ⛔ A RAISE INSIDE A ROW IS THAT ROW FAILING, NOT THE FILE ENDING. A
+;; NEVER: A RAISE INSIDE A ROW IS THAT ROW FAILING, NOT THE FILE ENDING. A
 ;; fixture whose thirteenth row raises and takes the file with it reports
 ;; twelve passes and no failures, and the run's own sentinel check is the
 ;; only thing standing between that and a green reading.
@@ -47,12 +47,12 @@
 
 (define pid-text (number->string (get-process-id)))
 (define here (string-append "/tmp/cliforward-" pid-text))
-;; ⛔ THE RUN ROOT IS THIS FIXTURE'S OWN. `socket-path` puts a store's
+;; NEVER: THE RUN ROOT IS THIS FIXTURE'S OWN. `socket-path` puts a store's
 ;; socket under `THEOURGIA_RUN`, and unset that is `$HOME/.theourgia/run`
 ;; -- the real one. Measured before this line existed: every run of this
 ;; file left one more directory in the user's own run root.
 ;;
-;; ⚠️ IT IS SET IN THIS PROCESS *AND* PASSED TO EVERY SUBPROCESS. Set in
+;; NOTE: IT IS SET IN THIS PROCESS *AND* PASSED TO EVERY SUBPROCESS. Set in
 ;; only one of the two, the fixture and the programs it starts would
 ;; compute different socket paths for the same store -- which is exactly
 ;; the defect the rows about the key are about, recreated by the fixture.
@@ -60,11 +60,11 @@
 
 (define store-a (string-append here "/a"))
 (define store-b (string-append here "/b"))
-;; ⛔ THE PATH COMES FROM THE PRODUCT, NOT FROM THIS FILE. It used to be
+;; NEVER: THE PATH COMES FROM THE PRODUCT, NOT FROM THIS FILE. It used to be
 ;; `(string-append store-a "/socket")` -- the default as it stood when
 ;; this fixture was written -- so when the rule moved to the run root the
 ;; daemon listened where nothing looked, and F-02 reported the CLI
-;; answering locally. ⚠️ Rewriting it as the NEW path would be the same
+;; answering locally. NOTE: Rewriting it as the NEW path would be the same
 ;; mistake one version later: a cell that restates a rule is checking its
 ;; own copy of it.
 (define socket-a (socket-path store-a))
@@ -115,10 +115,10 @@
         "(display \"set up\\n\")"))
 (run-scheme! "" setup "" (string-append here "/setup.log"))
 
-;; ⭐ THE DAEMON SERVES B AND LISTENS WHERE A'S CLIENT WILL LOOK. That is
+;; KEY: THE DAEMON SERVES B AND LISTENS WHERE A'S CLIENT WILL LOOK. That is
 ;; what makes "did this answer come from the daemon" a question with a
 ;; one-word answer: `transport-store-mismatch` is a refusal only a daemon
-;; can produce, and ⛔ no local run can produce it, whatever else changes.
+;; can produce, and NEVER: no local run can produce it, whatever else changes.
 (write-script! serve-b
   (list "(import (chezscheme) (theourgia daemon))"
         (string-append "(serve \"" store-b "\" \"" socket-a "\")")))
@@ -139,7 +139,7 @@
 
 ;; ---- a python3 that shouts if anybody calls it ------------------------------
 ;;
-;; ⛔ THE ROW ASKS THE QUESTION DIRECTLY. "There is no python on this
+;; NEVER: THE ROW ASKS THE QUESTION DIRECTLY. "There is no python on this
 ;; path" is not something a grep of the source can settle -- the exec
 ;; used to be behind a runtime condition -- so the row puts a `python3`
 ;; of its own first on PATH, one that records having been called. A file
@@ -176,7 +176,7 @@
           (list 'said forwarded))
       'from-the-daemon)
 
-;; ⛔ AND NO PYTHON RAN. The answer above proves a daemon was reached; it
+;; NEVER: AND NO PYTHON RAN. The answer above proves a daemon was reached; it
 ;; does not say which program reached it, and for a batch whose point is
 ;; removing the helper that is the whole question.
 (want "F-03 and nothing on that path called python"
@@ -185,7 +185,7 @@
 
 ;; ---- F-04 THEOURGIA_LOCAL=1 does not forward -------------------------------
 ;;
-;; ⛔ THE TWIN. Without it, "it forwarded" is satisfied by a command line
+;; NEVER: THE TWIN. Without it, "it forwarded" is satisfied by a command line
 ;; that forwards unconditionally -- including when the caller has said
 ;; not to.
 (cli! "THEOURGIA_LOCAL=1" (string-append "outline --store " store-a) out-2)
@@ -200,7 +200,7 @@
 
 ;; ---- F-05 the forwarded answer is the local answer -------------------------
 ;;
-;; ⚠️ NOW THE DAEMON SERVES THE SAME STORE, so the two answers are
+;; NOTE: NOW THE DAEMON SERVES THE SAME STORE, so the two answers are
 ;; answers to the same question and comparing them means something.
 (write-script! serve-a
   (list "(import (chezscheme) (theourgia daemon))"
@@ -220,13 +220,13 @@
 
 ;; ---- F-07 a socket nobody is behind ----------------------------------------
 ;;
-;; ⛔ REACHING NOBODY IS A REASON TO RUN LOCALLY. The daemon above was
+;; NEVER: REACHING NOBODY IS A REASON TO RUN LOCALLY. The daemon above was
 ;; stopped; if it left its socket behind, or if one is left by a daemon
-;; that was killed, the command line must still answer -- ⛔ and from
+;; that was killed, the command line must still answer -- NEVER: and from
 ;; this store, not with a transport error.
-;; ⚠️ THE STALE SOCKET IS MADE THE WAY STALE SOCKETS HAPPEN: a daemon
+;; NOTE: THE STALE SOCKET IS MADE THE WAY STALE SOCKETS HAPPEN: a daemon
 ;; killed with a signal it cannot handle, so it never unlinks the file it
-;; bound. ⛔ Not by binding one with another tool -- which would be this
+;; bound. NEVER: Not by binding one with another tool -- which would be this
 ;; fixture asserting what a leftover looks like instead of producing one.
 (define daemon-again (start-daemon! serve-a (string-append here "/serve-a2.log")))
 (want "F-07 a daemon to kill without letting it tidy up" daemon-again 'up)
@@ -247,7 +247,7 @@
 
 ;; ---- F-13 several verbs, byte for byte -------------------------------------
 ;;
-;; ⛔ ONE VERB AGREEING IS NOT THE CLAIM. The claim is that the socket
+;; NEVER: ONE VERB AGREEING IS NOT THE CLAIM. The claim is that the socket
 ;; route does not implement anything of its own, and a route that had
 ;; its own idea about one verb would agree about the others. Measured
 ;; across four answers of different shapes: text, items, a check report
@@ -270,12 +270,12 @@
 
 ;; ---- F-15 a verb that cannot be printed ------------------------------------
 ;;
-;; ⛔ A CALLER'S VERB CAN BE ANY TEXT, and one they got wrong is exactly
+;; NEVER: A CALLER'S VERB CAN BE ANY TEXT, and one they got wrong is exactly
 ;; the kind the wire writer will not emit: `show me` went out as
 ;; `show\x20;me` and the reader that had asked the question could not
 ;; parse the answer to it.
 ;;
-;; ⭐ SO IT IS REFUSED IN THE PART BOTH ROUTES SHARE, before anything is
+;; KEY: SO IT IS REFUSED IN THE PART BOTH ROUTES SHARE, before anything is
 ;; printed. Judged only by the reader's guard it would have been
 ;; `not-a-datum` at a daemon and would never have met a guard at all in a
 ;; local call -- the same verb, two answers, depending on whether a daemon
@@ -294,13 +294,13 @@
         (let ((forwarded (file-text out-8)) (local (file-text out-9)))
           (list (if (string=? forwarded local) 'identical (list forwarded local))
                 (if (contains? local "unknown-verb") 'named-the-verb (list 'said local))
-                ;; ⛔ AND THE SPELLING COMES BACK AS A STRING. It is the
+                ;; NEVER: AND THE SPELLING COMES BACK AS A STRING. It is the
                 ;; text the caller typed, which is the only form of it
                 ;; that survives the wire.
                 (if (contains? local "\"show me\"") 'spelled-as-a-string 'SPELLING-LOST))))
       '(identical named-the-verb spelled-as-a-string))
 
-;; ⛔ AND A SPELLING MADE ONLY OF ALPHABET CHARACTERS THAT STILL CANNOT BE
+;; NEVER: AND A SPELLING MADE ONLY OF ALPHABET CHARACTERS THAT STILL CANNOT BE
 ;; PRINTED. `1` is letters-and-digits, so a check that only looked at
 ;; characters passed it -- and `write` emits it as `\x31;`, because Chez
 ;; escapes a symbol whose spelling would READ AS SOMETHING ELSE. The frame
@@ -310,7 +310,7 @@
 ;;   local     (error unknown-verb (spelling "1") (verbs ...))
 ;;   forwarded (error bad-request (reason not-a-datum))
 ;;
-;; ⭐ THE ROW ABOVE CANNOT CATCH THIS. `show me` holds a space, which is
+;; KEY: THE ROW ABOVE CANNOT CATCH THIS. `show me` holds a space, which is
 ;; outside the alphabet, so a character test already refused it; this one
 ;; is inside the alphabet and refused only because the writer says so.
 (want "F-15 a spelling the writer escapes is refused the same way by both routes"
@@ -323,25 +323,25 @@
                 (if (contains? local "not-a-datum") 'REFUSED-AS-BYTES 'refused-as-a-verb))))
       '(identical named-the-verb refused-as-a-verb))
 
-;; ⛔ AND THE TWO PROGRAMS AGREE, not merely the two routes. The spelling
+;; NEVER: AND THE TWO PROGRAMS AGREE, not merely the two routes. The spelling
 ;; is judged BEFORE the arguments are parsed, and the order follows from a
 ;; fact rather than a preference: the thin client knows no verb's option
 ;; table -- that is what makes it thin -- so it can never answer
 ;; `missing-option-value` for a verb-specific option, while `cli.ss` can.
 ;; The one order the two can share is the check that needs no table.
 ;;
-;; ⚠️ MEASURED WITH THE CHECK AFTER THE PARSE: one argv, two answers --
+;; NOTE: MEASURED WITH THE CHECK AFTER THE PARSE: one argv, two answers --
 ;;   cli.ss        (error bad-request missing-option-value "--store")
 ;;   theourgia.ss  (error bad-request unknown-verb (spelling "show me"))
-;; ⭐ AND THE EARLIER ROUND MISSED IT because it tried `--req`, an option
+;; KEY: AND THE EARLIER ROUND MISSED IT because it tried `--req`, an option
 ;; that takes no value, so the parse never failed. The same claim was true
 ;; all along under an input nobody had tried.
-;; ⛔ THE ARGV IS PASSED THROUGH UNTOUCHED, and the first version of this
+;; NEVER: THE ARGV IS PASSED THROUGH UNTOUCHED, and the first version of this
 ;; helper did not: it appended `--wire`, so `outline --store` became
 ;; `outline --store --wire` and `--store` ate the flag as its value. Both
 ;; programs then agreed on `(error no-store "--wire")` -- a true reading
 ;; of a command line the row never meant to send.
-;; ⚠️ AND NOTHING IS LOST BY LEAVING IT OFF HERE: measured, an error
+;; NOTE: AND NOTHING IS LOST BY LEAVING IT OFF HERE: measured, an error
 ;; renders the same in both modes; only an `ok` answer differs, and every
 ;; row below is about an error.
 (define (both-programs argv)
@@ -360,7 +360,7 @@
            (list "'show me' --store" "1 --store"))
       '(identical-unknown-verb identical-unknown-verb))
 
-;; ⛔ TWIN: AND THE CHECK DOES NOT SWALLOW EVERYTHING ELSE. A spelling that
+;; NEVER: TWIN: AND THE CHECK DOES NOT SWALLOW EVERYTHING ELSE. A spelling that
 ;; is fine, with the same missing option value, must still be answered as a
 ;; missing option value -- by both programs. Without this row, moving the
 ;; spelling check to the front is satisfied by one that calls every
@@ -372,7 +372,7 @@
               (else (list 'said (car pair)))))
       'identical-missing-value)
 
-;; ⛔ TWIN: A HYPHENATED VERB IS ORDINARY AND MUST STILL WORK. `-` is in
+;; NEVER: TWIN: A HYPHENATED VERB IS ORDINARY AND MUST STILL WORK. `-` is in
 ;; the alphabet because five verbs are spelled with it, so a guard that
 ;; refused it would refuse `split-suggest`, `import-code` and three more --
 ;; and this row is the reason the alphabet is not just letters.
@@ -389,13 +389,13 @@
 
 ;; ---- F-14 a peer that takes the request and then goes ----------------------
 ;;
-;; ⛔ CONNECTED AND THEN LOST IS NOT "NOBODY WAS THERE". The request went
-;; out; it may have been carried out. ⛔ The command line must NOT run it
+;; NEVER: CONNECTED AND THEN LOST IS NOT "NOBODY WAS THERE". The request went
+;; out; it may have been carried out. NEVER: The command line must NOT run it
 ;; again -- a caller told "that did not happen" would do it twice -- and
-;; ⛔ must not report success either. It says the answer could not be
+;; NEVER: must not report success either. It says the answer could not be
 ;; obtained, which is what "ask me again" means here.
 ;;
-;; ⚠️ TWO HALVES, AND THE SECOND IS THE ONE THAT MATTERS. "It said
+;; NOTE: TWO HALVES, AND THE SECOND IS THE ONE THAT MATTERS. "It said
 ;; transport-unknown" is satisfied by an implementation that also ran the
 ;; command locally and then threw the answer away; the trace is what says
 ;; it did not.
@@ -408,7 +408,7 @@
         "    (let serve ()"
         "      (receive (after 30000 'done)"
         "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
-        ;; ⛔ THE BYTES ARE READ AND THEN THE CONNECTION IS CLOSED. Reading
+        ;; NEVER: THE BYTES ARE READ AND THEN THE CONNECTION IS CLOSED. Reading
         ;; first is what makes this "the request arrived", not "the dial
         ;; failed".
         "               (`(data ,r ,bv) (conn-close! r) (serve))"
@@ -445,7 +445,7 @@
 
 ;; ---- F-10 `theourgia serve` is this program ---------------------------------
 ;;
-;; ⛔ THE VERB USED TO EXEC A PYTHON DAEMON. It is Scheme now, and the row
+;; NEVER: THE VERB USED TO EXEC A PYTHON DAEMON. It is Scheme now, and the row
 ;; asks the two questions that matter separately: did a daemon come up
 ;; that this command line can talk to, and did anything call python to
 ;; make that happen. Either one alone can be true while the other is

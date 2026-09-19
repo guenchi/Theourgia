@@ -34,7 +34,7 @@
 (want "WP-03 selected current version commits" (rpc-ok? (apply call args)) #t)
 (call 'write id "later" "--writer" "window-a")
 
-;; ⛔ WP-04's FIRST ROW IS RETIRED, AND ITS NAME SAYS WHY: "immutable
+;; NEVER: WP-04's FIRST ROW IS RETIRED, AND ITS NAME SAYS WHY: "immutable
 ;; packet replay". The packet is gone (§7.5.9); a retry after the drafts
 ;; were retired is answered by completing the frozen plan, and that path
 ;; lands with W4" in the step after this one. An expectation edited to
@@ -45,7 +45,7 @@
 ;;
 ;; The second row is kept: "a later draft survives a retry" is still the
 ;; property, and it is the half this file is about.
-;; ⛔ WP-04's SECOND ROW IS RETIRED TOO, AND FOR A PLAINER REASON THAN
+;; NEVER: WP-04's SECOND ROW IS RETIRED TOO, AND FOR A PLAINER REASON THAN
 ;; THE FIRST: it never performed the replay it claims to guard.
 ;;
 ;; It writes "later" and then reads it back. Nothing retries in between,

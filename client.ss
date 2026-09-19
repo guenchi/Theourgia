@@ -15,7 +15,7 @@
 ;;; (theourgia client) -- what a caller needs to reach a store, and
 ;;; nothing about what a store holds.
 ;;;
-;;; ⛔ THIS LIBRARY IMPORTS NEITHER THE CORE NOR THE ACTOR SYSTEM. A
+;;; NEVER: THIS LIBRARY IMPORTS NEITHER THE CORE NOR THE ACTOR SYSTEM. A
 ;;; client that had to load them would pay for the server it is trying to
 ;;; talk to; `f0-ondemand.ss` measured that cost at 200ms from source.
 ;;; The only things here are a path rule, a digest and the filesystem.
@@ -26,7 +26,7 @@
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
-          ;; ⚠️ `write` AND `call-with-string-output-port` ARE HERE FOR ONE
+          ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
           ;; prints as its own spelling, rather than carrying a second
           ;; model of when Chez escapes one.
@@ -46,20 +46,20 @@
 
   ;; ---- where a daemon's socket goes ----------------------------------------
   ;;
-  ;; ⭐ ONE FUNCTION, AND BOTH SIDES IMPORT IT. The daemon creates the
+  ;; KEY: ONE FUNCTION, AND BOTH SIDES IMPORT IT. The daemon creates the
   ;; socket and every client looks for it; if the rule is written twice
   ;; they are two rules, and the day they differ a client starts a second
   ;; daemon for a store that already has one.
   ;;
-  ;; ⚠️ NOT BESIDE THE STORE, and this is the reason rather than a
+  ;; NOTE: NOT BESIDE THE STORE, and this is the reason rather than a
   ;; preference: `sun_path` holds 104 bytes on macOS and FreeBSD. A store
   ;; may sit anywhere and be arbitrarily deep, so `<store>/socket` is a
   ;; path that simply fails to bind for stores that are otherwise fine --
   ;; the daemon then reports `listener-down` and looks broken.
   ;;
-  ;; ⚠️ AND THE STORE KEEPS NO POINTER FILE, so copying a store does not
+  ;; NOTE: AND THE STORE KEEPS NO POINTER FILE, so copying a store does not
   ;; carry a daemon with it.
-  ;; ⚠️ AN EMPTY VALUE IS NOT A ROOT, and `env-or` is where that rule
+  ;; NOTE: AN EMPTY VALUE IS NOT A ROOT, and `env-or` is where that rule
   ;; lives -- it was three separate length tests in three files until an
   ;; empty `THEOURGIA_RUN` put this socket directory at the filesystem
   ;; root and the daemon panicked trying to make it.
@@ -67,23 +67,23 @@
     (or (env-or "THEOURGIA_RUN")
         (string-append (or (env-or "HOME") "/tmp") "/.theourgia/run")))
 
-  ;; ⭐ THE KEY IS THE PATH'S ONE REAL NAME. Several spellings reach one
+  ;; KEY: THE KEY IS THE PATH'S ONE REAL NAME. Several spellings reach one
   ;; directory -- a trailing slash, a `.`, a symlink, a relative path --
   ;; and a key derived from the spelling gives one store several
   ;; identities, which means several daemons and several locks.
   ;;
-  ;; ⛔ MEASURED ON WHAT THIS REPLACES. The old key concatenated the
+  ;; NEVER: MEASURED ON WHAT THIS REPLACES. The old key concatenated the
   ;; spelling in front of the device and inode, so `/tmp/x`, `/tmp/x/`, a
   ;; symlink to it and `/tmp/./x` produced FOUR different keys while
   ;; `stat` reported one device and one inode for all four. Its comment
   ;; said two names for one store reach one socket; they reached four.
   ;;
-  ;; ⚠️ A STORE THAT DOES NOT EXIST YET STILL NEEDS A KEY -- `init` is a
+  ;; NOTE: A STORE THAT DOES NOT EXIST YET STILL NEEDS A KEY -- `init` is a
   ;; verb, and `serve` on a fresh directory is a thing people do. So the
   ;; LONGEST EXISTING PREFIX is resolved and the components below it are
   ;; appended.
   ;;
-  ;; ⛔ RESOLVING ONLY THE PARENT IS NOT ENOUGH, AND THE WAY IT FAILS IS
+  ;; NEVER: RESOLVING ONLY THE PARENT IS NOT ENOUGH, AND THE WAY IT FAILS IS
   ;; QUIET. This first stopped after one level, and the comment claimed
   ;; the un-resolvable case was "stable for as long as the store does not
   ;; exist" -- true, and beside the point: the key a store gets before it
@@ -115,13 +115,13 @@
                                    (car parts))
                     (cdr parts))))
 
-  ;; ⛔ `.` AND `..` BELOW THE RESOLVED PREFIX ARE NOT FOLDED LEXICALLY.
+  ;; NEVER: `.` AND `..` BELOW THE RESOLVED PREFIX ARE NOT FOLDED LEXICALLY.
   ;; Appended verbatim, `<dir>/x/a`, `<dir>/x/./a` and `<dir>/x/y/../a`
   ;; hashed to three different keys while the store did not exist, and
   ;; agreed the moment `realpath` could fold them -- a key that depends on
   ;; the spelling until the store appears.
   ;;
-  ;; ⛔ AND THE FIRST FIX FOR IT WAS JUSTIFIED BY A CLAIM THAT IS FALSE.
+  ;; NEVER: AND THE FIRST FIX FOR IT WAS JUSTIFIED BY A CLAIM THAT IS FALSE.
   ;; It folded `.` and `..` as text, on the reasoning that "the prefix
   ;; came from realpath so it holds no symlinks, and the components below
   ;; it do not exist and therefore cannot be any". The second half does
@@ -129,7 +129,7 @@
   ;; exist and may be a symlink, which lexical folding then never
   ;; resolves. It also let `..` walk above the filesystem root.
   ;;
-  ;; ⭐ SO EACH COMPONENT IS APPLIED TO A PATH THAT IS REAL AS FAR AS IT
+  ;; KEY: SO EACH COMPONENT IS APPLIED TO A PATH THAT IS REAL AS FAR AS IT
   ;; GOES, and resolved again as it is applied:
   ;;
   ;;   `.`   is dropped -- it names the same directory, whatever it is.
@@ -186,7 +186,7 @@
               ((string=? parent dir) store)
               (else (climb parent (cons base tail))))))))
 
-  ;; ⛔ THE KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
+  ;; NEVER: THE KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
   ;; case-insensitive filesystem it did. `resolved-name` resolves as far
   ;; as the path exists and keeps the caller's spelling for the rest, so
   ;; while the store is absent `.../Foo` and `.../foo` produce two names
@@ -195,13 +195,13 @@
   ;; still running. Measured on macOS, which is one of the two platforms
   ;; this ships to.
   ;;
-  ;; ⛔ AND IT IS ASKED OF THE FILESYSTEM, NOT ASSUMED FROM THE PLATFORM.
+  ;; NEVER: AND IT IS ASKED OF THE FILESYSTEM, NOT ASSUMED FROM THE PLATFORM.
   ;; A case-sensitive volume mounted on a case-insensitive machine is
   ;; ordinary, and folding there would give one key to two stores that
   ;; really are different -- the worse direction of the two. `unknown`
   ;; therefore folds nothing.
   ;;
-  ;; ⚠️ THE QUESTION IS PUT TO THE NEAREST EXISTING DIRECTORY, because a
+  ;; NOTE: THE QUESTION IS PUT TO THE NEAREST EXISTING DIRECTORY, because a
   ;; path that is not there yet has no filesystem to answer for it, and
   ;; the absent store is the whole case this exists for.
   (define (nearest-existing path)
@@ -223,12 +223,12 @@
     (string-append (run-root) "/" (store-key store) "/socket"))
   ;; ---- one call: connect, send a frame, read one answer, close -------------
   ;;
-  ;; ⛔ THIS IS ALL THE CLIENT KNOWS ABOUT THE PROTOCOL. It does not read
+  ;; NEVER: THIS IS ALL THE CLIENT KNOWS ABOUT THE PROTOCOL. It does not read
   ;; the answer, does not know which verbs exist and does not know what
   ;; any of them mean; it hands back the bytes between the frame it sent
   ;; and the newline that ended the reply.
   ;;
-  ;; ⚠️ ONE CONNECTION PER CALL, AND THAT IS NOT A SIMPLIFICATION TO BE
+  ;; NOTE: ONE CONNECTION PER CALL, AND THAT IS NOT A SIMPLIFICATION TO BE
   ;; OPTIMISED AWAY LATER. The daemon closes an idle connection after its
   ;; frame timeout, so a client that held one open to reuse would race
   ;; that close on every call after the first and lose whichever request
@@ -240,18 +240,18 @@
   ;; rather than a missing one.
   (define (answer-limit) (* 32 1024 1024))
 
-  ;; ⭐ POSITIVE libc ERRNO VALUES, MEASURED 2026-09-18 on macOS 25.3.0
+  ;; KEY: POSITIVE libc ERRNO VALUES, MEASURED 2026-09-18 on macOS 25.3.0
   ;; and FreeBSD 15.0-RELEASE, where all three agree:
   ;;
   ;;   ENOENT 2   ECONNREFUSED 61   ENOTSOCK 38
   ;;
-  ;; ⛔ NOT THE LIST IN `rpc.ss`. That one holds NEGATIVE libuv status
+  ;; NEVER: NOT THE LIST IN `rpc.ss`. That one holds NEGATIVE libuv status
   ;; codes (-2, -61, -111...), which is a different numbering from a
   ;; different library; -111 is there because Linux's ECONNREFUSED is
   ;; 111, and mixing the two would make a plain `read` failure look like
   ;; "no daemon" on one platform and nothing on another.
   ;;
-  ;; ⚠️ LINUX DIFFERS AND IS NOT MEASURED (ECONNREFUSED 111, ENOTSOCK
+  ;; NOTE: LINUX DIFFERS AND IS NOT MEASURED (ECONNREFUSED 111, ENOTSOCK
   ;; 88). It does not need a branch yet only because `sockaddr-un`
   ;; refuses to build an address there at all; when that platform is
   ;; measured, this list is the second place to change, and it says so
@@ -270,10 +270,10 @@
   ;;   (no-daemon <errno>)        nothing is listening; starting one is
   ;;                              a reasonable next move
   ;;   (transport-error <what>)   something else went wrong, and
-  ;;                              ⛔ retrying locally is NOT a reasonable
+  ;;                              NEVER: retrying locally is NOT a reasonable
   ;;                              next move: the request may have been
   ;;                              taken and acted on.
-;; ⛔ A PATH THAT CANNOT FIT IS AN ANSWER, NOT AN EXCEPTION. `sockaddr-un`
+;; NEVER: A PATH THAT CANNOT FIT IS AN ANSWER, NOT AN EXCEPTION. `sockaddr-un`
   ;; refuses a path longer than `sun_path`, correctly and loudly -- but it
   ;; refuses by raising, and nothing above caught it, so a run root long
   ;; enough to push the socket past 104 bytes ended the client with
@@ -284,7 +284,7 @@
   ;; stdout carries the answer and the exit code is the verdict; a raw
   ;; condition is neither.
   ;;
-  ;; ⚠️ CHECKED BEFORE CONNECTING, not caught afterwards. The length is
+  ;; NOTE: CHECKED BEFORE CONNECTING, not caught afterwards. The length is
   ;; knowable without touching the system, and reading it here means no
   ;; guess about which raised condition was which.
   (define (socket-path-fits? path)
@@ -298,7 +298,7 @@
 
   (define (call! path frame timeout-ms)
     (if (not (socket-path-fits? path))
-        ;; ⛔ `not-sent`, NOT `transport-error`. Nothing went out, so the
+        ;; NEVER: `not-sent`, NOT `transport-error`. Nothing went out, so the
         ;; outcome is not unknown -- it is known, and it is that this
         ;; request did not happen. Reported as a transport error the
         ;; caller was told "execution may be unknown", which is the same
@@ -307,18 +307,18 @@
         (list 'not-sent (path-too-long path))
         (call-on-socket path frame timeout-ms)))
 
-  ;; ⛔ ONLY A FAILURE TO CONNECT MAY BE CALLED `no-daemon`. The guard
+  ;; NEVER: ONLY A FAILURE TO CONNECT MAY BE CALLED `no-daemon`. The guard
   ;; used to enclose the exchange as well, so an error raised AFTER the
   ;; frame had gone out could be classified as "nothing was listening" --
   ;; and the caller answers that by starting a server and sending again.
   ;; A request whose outcome is unknown would have been repeated.
   ;;
-  ;; ⚠️ Whether an errno in that list can actually occur after a
+  ;; NOTE: Whether an errno in that list can actually occur after a
   ;; successful connect is beside the point: the classification must be
   ;; scoped to the step it describes, not to whatever the guard happens to
   ;; enclose.
   (define (call-on-socket path frame timeout-ms)
-    ;; ⛔ EVERYTHING THAT FAILS HERE FAILED BEFORE ANYTHING WAS SENT, and
+    ;; NEVER: EVERYTHING THAT FAILS HERE FAILED BEFORE ANYTHING WAS SENT, and
     ;; that is decided by WHERE the failure happened, not by which errno
     ;; it carried. Classified by errno, a connect failure outside the
     ;; three-name list was reported as a transport error -- which the
@@ -326,7 +326,7 @@
     ;; provably never left. EACCES on the socket's directory is the
     ;; ordinary way to reach that.
     ;;
-    ;; ⚠️ THE ERRNO STILL DECIDES ONE THING, and only one: whether it is
+    ;; NOTE: THE ERRNO STILL DECIDES ONE THING, and only one: whether it is
     ;; worth starting a server. "Was anything sent" and "should I start
     ;; one" are two questions, and they were being answered by one test.
     (let ((fd (guard (e ((fs-error? e)
@@ -340,19 +340,19 @@
                 (unix-socket-connect path timeout-ms))))
       (if (pair? fd)
           fd
-          ;; ⚠️ THE STEP HAS A NAME so that a failure in it can be armed.
+          ;; NOTE: THE STEP HAS A NAME so that a failure in it can be armed.
           ;; `close-fail@client` makes the close below refuse, which is
           ;; the only way to ask what this does when it does -- and what
           ;; it used to do was throw away a complete answer.
           (parameterize ((theourgia-stage 'client))
-          ;; ⛔ FROM HERE ON, EVERY FAILURE IS A TRANSPORT ERROR. The bytes
+          ;; NEVER: FROM HERE ON, EVERY FAILURE IS A TRANSPORT ERROR. The bytes
           ;; may have gone out, so the one thing this must never say is
           ;; that nobody was reached.
           (guard (e ((fs-error? e)
                      (close-noting-failure fd)
                      (list 'transport-error (fs-error-errno e))))
             (let ((outcome (exchange-on fd frame timeout-ms path)))
-              ;; ⛔ THE ANSWER IS THE RESULT, AND CLOSING CANNOT UNMAKE IT.
+              ;; NEVER: THE ANSWER IS THE RESULT, AND CLOSING CANNOT UNMAKE IT.
               ;; This close used to sit inside the guard with its failure
               ;; treated like any other: a close that raised threw away a
               ;; complete answer, reported `transport-error` -- "it may or
@@ -372,7 +372,7 @@
                #f))
       (fd-close fd)))
 
-  ;; ⛔ A REQUEST THAT DEMONSTRABLY DID NOT LEAVE IS `not-sent`, AND THE
+  ;; NEVER: A REQUEST THAT DEMONSTRABLY DID NOT LEAVE IS `not-sent`, AND THE
   ;; PROOF IS A COUNT. Every failure from here down used to be classified
   ;; by the guard above as `transport-error` -- "it may have been carried
   ;; out" -- including a write that failed before a single byte went out.
@@ -404,7 +404,7 @@
           (else
            (let ((chunk (fd-read fd 65536)))
              (cond
-               ;; ⛔ EOF BEFORE THE TERMINATOR IS NOT AN EMPTY ANSWER. The
+               ;; NEVER: EOF BEFORE THE TERMINATOR IS NOT AN EMPTY ANSWER. The
                ;; daemon may have taken the request and died after acting
                ;; on it, so what this reports is that the outcome is
                ;; UNKNOWN -- never that nothing happened.
@@ -413,7 +413,7 @@
                (else
                 (let ((chunks (cons chunk chunks))
                       (total (+ total (bytevector-length chunk))))
-                  ;; ⚠️ THE TERMINATOR IS THE LAST BYTE, not "a newline
+                  ;; NOTE: THE TERMINATOR IS THE LAST BYTE, not "a newline
                   ;; somewhere", which is the weaker rule `datum-line?`
                   ;; applies on the other two paths. Both are safe for
                   ;; the same reason -- the renderer writes a newline
@@ -421,7 +421,7 @@
                   ;; only raw byte 10 in an answer is the one that ends
                   ;; it -- and this one does not depend on that being
                   ;; true.
-                  ;; ⛔ THE CEILING IS CHECKED BEFORE THE ANSWER IS
+                  ;; NEVER: THE CEILING IS CHECKED BEFORE THE ANSWER IS
                   ;; RETURNED, not only at the top of the loop. Tested
                   ;; only there, a final chunk carrying the terminator
                   ;; came back whatever its size: the limit held for
@@ -444,13 +444,13 @@
 
   ;; ---- starting the daemon this store has not got yet ---------------------
   ;;
-  ;; ⭐ READINESS IS A SUCCESSFUL CONNECTION, not a file appearing. The
+  ;; KEY: READINESS IS A SUCCESSFUL CONNECTION, not a file appearing. The
   ;; socket exists from the moment it is bound, which is before the
   ;; daemon is listening on it, and a client that raced to the file would
   ;; connect into nothing and call the daemon broken.
   (define (start-budget-ms) 10000)
 
-  ;; The daemon's own output, beside its socket. ⛔ THE CLIENT DECIDES
+  ;; The daemon's own output, beside its socket. NEVER: THE CLIENT DECIDES
   ;; THIS AND PASSES IT: the daemon does not work the path out for
   ;; itself. Two sides deriving one path separately is the shape that
   ;; already cost a batch here -- a socket path computed before a store
@@ -459,7 +459,7 @@
   (define (serve-log-path store)
     (string-append (run-root) "/" (store-key store) "/serve.log"))
 
-  ;; ⚠️ ONLY WHAT THIS START WROTE. The log is appended to across every
+  ;; NOTE: ONLY WHAT THIS START WROTE. The log is appended to across every
   ;; start against this store, so the error from a previous failure is
   ;; sitting in it: reporting the last error in the whole file would
   ;; answer today's question with last week's answer, and it would look
@@ -469,7 +469,7 @@
     (if (file-exists? path) (file-size path) 0))
 
   (define (ensure-daemon! argv store socket)
-    ;; ⛔ ASK BEFORE STARTING ONE. Spawning unconditionally works -- the
+    ;; NEVER: ASK BEFORE STARTING ONE. Spawning unconditionally works -- the
     ;; second process loses the daemon's lock and exits, so there is
     ;; still exactly one -- but it costs a process start on every call
     ;; and, worse, it appends that loser's refusal to the log. That line
@@ -478,7 +478,7 @@
     ;; relayed, and a rule that has to keep saving you is one to stop
     ;; leaning on.
     (cond
-      ;; ⚠️ THE SAME REFUSAL BEFORE STARTING ANYTHING. Spawning a server
+      ;; NOTE: THE SAME REFUSAL BEFORE STARTING ANYTHING. Spawning a server
       ;; onto a path it cannot bind would leave it to fail in the log and
       ;; report itself as "would not start", which is true and hides the
       ;; one fact that would fix it.
@@ -491,13 +491,13 @@
            (before (log-length log-path)))
       (guard (e ((fs-error? e) (list 'error 'serve-start-failed
                                      (list 'spawn (fs-error-errno e)))))
-        ;; ⛔ MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE. It sat
+        ;; NEVER: MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE. It sat
         ;; outside this guard, so a run root that could not be written to
         ;; raised out of `call!` entirely -- past every outcome this
         ;; library defines, to a caller that has no handler for it. It is
         ;; a start that failed, and it is reported as one.
         (mkdir-p! (dirname-of log-path))
-        ;; ⭐ ONE EVENT PER PROCESS ACTUALLY STARTED, so "did it start
+        ;; KEY: ONE EVENT PER PROCESS ACTUALLY STARTED, so "did it start
         ;; one?" is a count and not a matter of looking soon enough.
         ;; Measured by waiting and then reading the log, the answer
         ;; depends on whether the process that lost the race had got as
@@ -520,7 +520,7 @@
         (fd-close fd)
         #t)))
 
-  ;; ⛔ THE DAEMON'S OWN WORDS, NOT A SENTENCE INVENTED HERE. `the socket
+  ;; NEVER: THE DAEMON'S OWN WORDS, NOT A SENTENCE INVENTED HERE. `the socket
   ;; path is occupied` and `the lock is held` are different situations
   ;; needing different things done, and a client that flattened both into
   ;; "it would not start" would be the only thing the caller ever saw.
@@ -532,7 +532,7 @@
 
   (define (last-error-in path from)
     (guard (e (#t #f))
-      ;; ⛔ THE LOG WAS WRITTEN BY ANOTHER PROCESS -- a daemon this client
+      ;; NEVER: THE LOG WAS WRITTEN BY ANOTHER PROCESS -- a daemon this client
       ;; started, possibly of another version -- so it is peer text like
       ;; any other and is asked the same question before being read.
       (let ((text (tail-of path from)))
@@ -542,7 +542,7 @@
             (let ((datum (guard (e (#t 'unreadable)) (read port))))
               (cond
                 ((eof-object? datum) found)
-                ;; ⚠️ A LINE THAT DOES NOT READ ENDS THE SCAN rather than
+                ;; NOTE: A LINE THAT DOES NOT READ ENDS THE SCAN rather than
                 ;; being skipped: after a partial write the reader is no
                 ;; longer positioned at a datum boundary, and carrying on
                 ;; would parse the remainder of one form as a whole one.
@@ -550,7 +550,7 @@
                 ((and (pair? datum) (eq? (car datum) 'error)) (scan datum))
                 (else (scan found))))))))))
 
-  ;; ⛔ THE OFFSET IS IN BYTES, SO THE SLICE IS TOO. `log-length` asks the
+  ;; NEVER: THE OFFSET IS IN BYTES, SO THE SLICE IS TOO. `log-length` asks the
   ;; filesystem for a size, which is a count of bytes; this used to use it
   ;; as a `substring` index, which counts characters. Any non-ASCII
   ;; already in the log made the two disagree and the slice started too
@@ -574,14 +574,14 @@
 
   ;; ---- the envelope a request travels in ----------------------------------
   ;;
-  ;; ⛔ ONE PLACE, AND THIS IS IT. The client packs it and the daemon
+  ;; NEVER: ONE PLACE, AND THIS IS IT. The client packs it and the daemon
   ;; unpacks it, which are two processes and two libraries; what must not
   ;; be two is the SHAPE. It lives here rather than in `rpc.ss` because
   ;; the client cannot import `rpc.ss` -- loading the dispatcher is the
   ;; cost this whole split exists to avoid -- and `rpc.ss` re-exports this
   ;; name so that nothing which used to get it from there had to change.
   ;;
-  ;; ⚠️ `(theourgia render)` IMPORTS NOTHING BUT `(chezscheme)`, which is
+  ;; NOTE: `(theourgia render)` IMPORTS NOTHING BUT `(chezscheme)`, which is
   ;; why reaching it from here does not undo the point of the split. That
   ;; is a fact about that library today, not a promise it makes; a day it
   ;; grows an import, this import is one of the places to look.
@@ -598,7 +598,7 @@
 
   (define (envelope-version) 1)
 
-  ;; ⛔ THE WIRE FORM IS POSITIONAL; THIS PROCEDURE IS NOT, and the
+  ;; NEVER: THE WIRE FORM IS POSITIONAL; THIS PROCEDURE IS NOT, and the
   ;; difference is deliberate. Five of the fields are strings standing
   ;; next to each other -- store, actor, writer, cwd, stdin -- and a
   ;; caller that swapped two of them would produce a frame that parses,
@@ -607,11 +607,11 @@
   ;; reports it. So the caller names its fields and only this procedure
   ;; knows their order.
   ;;
-  ;; ⚠️ `writer` IS ALWAYS PRESENT AND IS #f WHEN UNBOUND. Not omitted:
+  ;; NOTE: `writer` IS ALWAYS PRESENT AND IS #f WHEN UNBOUND. Not omitted:
   ;; an envelope whose length varies is one the reader has to guess
   ;; about, and "unbound" is a thing to say rather than a thing to leave
   ;; out. The core refuses a draft verb that arrives with #f there.
-  ;; ⛔ WHAT THE READER MAY BE HANDED, ASKED BEFORE IT IS HANDED ANYTHING.
+  ;; NEVER: WHAT THE READER MAY BE HANDED, ASKED BEFORE IT IS HANDED ANYTHING.
   ;; `read` implements the whole of Scheme's lexical syntax, and two parts
   ;; of it are not safe to run on bytes somebody else wrote:
   ;;
@@ -623,12 +623,12 @@
   ;;     perfectly well and then every walk over it runs forever: measured
   ;;     on the field reader below, a timeout at 8 s, no answer, no refusal.
   ;;
-  ;; ⛔ SO BOTH DIRECTIONS ARE GUARDED BY THIS ONE RULE. The daemon asks it
+  ;; NEVER: SO BOTH DIRECTIONS ARE GUARDED BY THIS ONE RULE. The daemon asks it
   ;; of a request and the three programs that read a reply ask it of a
   ;; reply: a request and a reply are read by the SAME reader, so what it
   ;; must not be handed is one fact and not two.
   ;;
-  ;; ⛔ A WHITELIST, AND THE REASON IS TWO ROUNDS OF THE SAME DEFECT. This
+  ;; NEVER: A WHITELIST, AND THE REASON IS TWO ROUNDS OF THE SAME DEFECT. This
   ;; was a blacklist: it knew where a string ends and named the constructs
   ;; that can hide a quote. Twice that list was short by one character.
   ;;
@@ -641,27 +641,27 @@
   ;;     `(\" #e1e100000)` passed too, which is the allocating literal this
   ;;     guard also exists to refuse.
   ;;
-  ;; ⭐ THE SECOND TIME IS THE ARGUMENT. A blacklist is a claim to have
+  ;; KEY: THE SECOND TIME IS THE ARGUMENT. A blacklist is a claim to have
   ;; enumerated a language's syntax, and the review that found the
   ;; backslash found it by reading Chez's lexical reference while this
   ;; file had generalised from the cases someone thought of. A third
   ;; character was only ever a matter of time.
   ;;
-  ;; ⛔ SO WHAT IS ALLOWED IS LISTED INSTEAD, and the set is deliberately
+  ;; NEVER: SO WHAT IS ALLOWED IS LISTED INSTEAD, and the set is deliberately
   ;; SMALLER THAN THE LANGUAGE: an envelope is machine-written and needs
   ;; parentheses, whitespace, strings, `#f`/`#t`, and the characters
   ;; symbols and numbers are spelled with. Anything else is refused
   ;; without being understood. Refusing something Chez would have read is
   ;; safe; reading something this does not model is not.
   ;;
-  ;; ⚠️ INSIDE A STRING NOTHING IS JUDGED. That is a caller's own text --
+  ;; NOTE: INSIDE A STRING NOTHING IS JUDGED. That is a caller's own text --
   ;; a title, a commit message, a block's body -- and an escape there
   ;; still consumes two characters.
   (define (symbol-char? c)
     (or (and (char<=? #\a c) (char<=? c #\z))
         (and (char<=? #\A c) (char<=? c #\Z))
         (and (char<=? #\0 c) (char<=? c #\9))
-        ;; ⚠️ SPELLED OUT RATHER THAN `memv`, because this library imports
+        ;; NOTE: SPELLED OUT RATHER THAN `memv`, because this library imports
         ;; a deliberately narrow set of primitives -- see the note on the
         ;; import list -- and a guard is the wrong place to widen it.
         (char=? c #\-) (char=? c #\.) (char=? c #\_) (char=? c #\?)
@@ -670,19 +670,19 @@
         (char=? c #\%) (char=? c #\&) (char=? c #\~) (char=? c #\^)
         (char=? c #\@) (char=? c #\$)))
 
-  ;; ⛔ ONE ALPHABET, TWO USERS. This says whether a name can be written
+  ;; NEVER: ONE ALPHABET, TWO USERS. This says whether a name can be written
   ;; as a symbol and read back as the same symbol. `readable-shape?` uses
   ;; the same characters to decide what it will hand to the reader, and
   ;; the dispatcher uses this to decide whether a verb can be printed at
   ;; all -- so the two cannot drift into disagreeing about what a symbol
   ;; is spelled with.
   ;;
-  ;; ⚠️ EMPTY IS NOT A SPELLING. `(string->symbol "")` is a symbol the
+  ;; NOTE: EMPTY IS NOT A SPELLING. `(string->symbol "")` is a symbol the
   ;; writer emits as `||`, which this guard refuses on the way back.
   (define (wire-safe-spelling? text)
     (and (string? text)
          (> (string-length text) 0)
-         ;; ⛔ THE WRITER IS ASKED, NOT MODELLED. A character test cannot
+         ;; NEVER: THE WRITER IS ASKED, NOT MODELLED. A character test cannot
          ;; answer this: Chez escapes a symbol whose spelling could be
          ;; READ AS SOMETHING ELSE, which is not a property of the
          ;; characters at all. Measured -- `a.b` and `x-` survive, while
@@ -692,11 +692,11 @@
          ;; then refused at the far end for the backslash, so the two
          ;; routes gave different answers for the same verb.
          ;;
-         ;; ⭐ THIS IS THE BLACKLIST LESSON ONE LEVEL UP. Twice a hand
+         ;; KEY: THIS IS THE BLACKLIST LESSON ONE LEVEL UP. Twice a hand
          ;; model of the language was short by one case; the fix is to
          ;; stop modelling and put the question to the writer itself.
          (string=? text (symbol-written (string->symbol text)))
-         ;; ⚠️ AND THE ALPHABET STILL APPLIES, because the two conditions
+         ;; NOTE: AND THE ALPHABET STILL APPLIES, because the two conditions
          ;; guard different ends. The writer says the spelling comes out
          ;; unchanged; the alphabet says the characters it comes out as
          ;; are ones `readable-shape?` will hand back to the reader. A
@@ -709,7 +709,7 @@
   (define (symbol-written sym)
     (call-with-string-output-port (lambda (port) (write sym port))))
 
-  ;; ⛔ ONE PLACE WORDS THIS REFUSAL, AND THREE CALLERS ASK IT. The
+  ;; NEVER: ONE PLACE WORDS THIS REFUSAL, AND THREE CALLERS ASK IT. The
   ;; dispatcher asks it in the layer both routes share; the command line
   ;; and the thin client ask it BEFORE deciding whether to forward,
   ;; because a frame carrying a verb they cannot print would be refused by
@@ -718,12 +718,12 @@
   ;; exactly that way while writing this: forwarded said `(error
   ;; bad-request (reason not-a-datum))`, local said the refusal below.
   ;;
-  ;; ⚠️ IT LIVES HERE AND NOT IN `(theourgia rpc)` because the thin client
+  ;; NOTE: IT LIVES HERE AND NOT IN `(theourgia rpc)` because the thin client
   ;; imports neither the core nor the actor system -- that is the whole
   ;; point of it -- and a refusal worded in the core would either be
   ;; copied or would drag the core into a program built to avoid it.
   ;;
-  ;; ⚠️ IT TAKES THE TEXT, NOT A SYMBOL: every caller has the spelling
+  ;; NOTE: IT TAKES THE TEXT, NOT A SYMBOL: every caller has the spelling
   ;; before it has a symbol, and a symbol made from unprintable text is
   ;; the thing being refused.
   (define (verb-spelling-error spelling)
@@ -747,7 +747,7 @@
                   ((char=? c #\") (scan (+ i 1) #f seen))
                   (else (scan (+ i 1) #t seen))))
                ((char=? c #\") (scan (+ i 1) #t #t))
-               ;; ⛔ `#` ONLY AS `#f` OR `#t`, AND ONLY WHEN WHAT FOLLOWS
+               ;; NEVER: `#` ONLY AS `#f` OR `#t`, AND ONLY WHEN WHAT FOLLOWS
                ;; ENDS IT. Every other dispatch form either allocates
                ;; before anything can judge it (`#e1e100000`), makes a
                ;; cycle (`#0=`), or hides a quote (`#\"`, `#|`, `#;`).
@@ -762,27 +762,27 @@
                ((symbol-char? c) (scan (+ i 1) #f #t))
                (else #f))))))))
 
-  ;; ⛔ WHAT THIS PROCESS CAN ACTUALLY LEAVE WITH, and nothing wider.
+  ;; NEVER: WHAT THIS PROCESS CAN ACTUALLY LEAVE WITH, and nothing wider.
   ;; The field was checked with `integer?`, which in Scheme is TRUE OF
   ;; `37.0` -- a flonum with an integral value -- and `exit` given that
   ;; leaves with 1. It also admitted numbers past what a status can hold:
-  ;; measured, `(exit 4294967337)` leaves with 41, ⛔ silently, because
+  ;; measured, `(exit 4294967337)` leaves with 41, NEVER: silently, because
   ;; the value is truncated somewhere below us. A peer's number that this
   ;; process cannot relay is not a small problem with the answer; it is an
   ;; envelope this version does not understand, and the caller is told
   ;; that rather than handed a status nobody chose.
   ;;
-  ;; ⚠️ 0..255 IS THE RANGE A PROCESS LEAVES WITH. Our own daemon writes
+  ;; NOTE: 0..255 IS THE RANGE A PROCESS LEAVES WITH. Our own daemon writes
   ;; only 0 or 1 here, so nothing legitimate is refused by this.
   ;;
-  ;; ⭐ AND IT IS ONE PROCEDURE, BECAUSE THE LAST ONE WAS NOT. The comment
+  ;; KEY: AND IT IS ONE PROCEDURE, BECAUSE THE LAST ONE WAS NOT. The comment
   ;; above `answer-field` records three copies of a lookup being fixed one
   ;; at a time; this predicate had two, and they were wrong in the same
   ;; way at the same time.
   (define (exit-code? n)
     (and (integer? n) (exact? n) (>= n 0) (<= n 255)))
 
-  ;; ⛔ ONE FIELD READER FOR THE THREE PROGRAMS THAT READ THIS ENVELOPE.
+  ;; NEVER: ONE FIELD READER FOR THE THREE PROGRAMS THAT READ THIS ENVELOPE.
   ;; What comes back was written by a peer, so its shape is not a given:
   ;; `assq` demands a proper list of pairs and raises on anything else, and
   ;; `(answer . broken)` -- a datum that reads perfectly well -- raised
@@ -793,7 +793,7 @@
   ;;
   ;; Answers the field's VALUE, or #f when there is no such field, when
   ;; the datum is not an answer, or when what arrived has no shape at all.
-  ;; ⛔ THE FIRST FIELD OF THAT NAME DECIDES, and a value that fails the
+  ;; NEVER: THE FIRST FIELD OF THAT NAME DECIDES, and a value that fails the
   ;; check is a refusal rather than a reason to keep looking. Written as
   ;; "scan until something satisfies `ok?`", an envelope carrying the same
   ;; field twice -- `(answer (exit "x") (exit 0))` -- would have been
@@ -829,7 +829,7 @@
         (assertion-violation 'request-frame "cwd is a string or #f" cwd))
       (unless (or (not stdin) (string? stdin))
         (assertion-violation 'request-frame "stdin is a string or #f" stdin))
-      ;; ⛔ THE STORE TRAVELS BY ITS RESOLVED NAME, and every frame is built
+      ;; NEVER: THE STORE TRAVELS BY ITS RESOLVED NAME, and every frame is built
       ;; here so that no caller can forget to. The socket key has always
       ;; been the resolved path -- which is how `--store .` reaches the
       ;; daemon serving `/abs/store` at all -- while the NAME inside the

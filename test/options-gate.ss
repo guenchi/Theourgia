@@ -15,21 +15,21 @@
 
 ;; Every verb's options, said once and checked in both directions.
 ;;
-;; ⭐ THE BUG THIS EXISTS FOR: `eval` had no entry in the option table,
+;; KEY: THE BUG THIS EXISTS FOR: `eval` had no entry in the option table,
 ;; so `eval --timeout-ms 5000 <source>` parsed `--timeout-ms` as a
 ;; POSITIONAL -- the evaluation's source became the string
 ;; "--timeout-ms" and the run failed with an exception rather than
 ;; refusing a limit. Nothing was red. Every cell that passed options to
 ;; `eval` passed ones the table happened to contain.
 ;;
-;; ⛔ A GATE THAT ONLY LISTED THE VERBS WOULD NOT HAVE CAUGHT IT. `eval`
+;; NEVER: A GATE THAT ONLY LISTED THE VERBS WOULD NOT HAVE CAUGHT IT. `eval`
 ;; is not in `rpc-verbs` -- it is the CLI's own verb, like `serve` -- so
 ;; a gate walking the dispatcher's verbs would have reported everything
 ;; well while the defect sat in the one verb it could not see. The verb
 ;; set here is therefore `rpc-verbs` UNION the CLI's own two, and the
 ;; second of those unions is the whole point.
 ;;
-;; ⚠️ THE TABLE IS NOT THE ORACLE, THE PARSER IS. Whether an option is
+;; NOTE: THE TABLE IS NOT THE ORACLE, THE PARSER IS. Whether an option is
 ;; accepted is measured by calling `parse-arguments` and reading what it
 ;; produced, not by re-reading the table this gate is meant to check. A
 ;; cell that restates the table checks its own copy of it.
@@ -50,7 +50,7 @@
              (display (string-append "FAIL " label ": "))
              (write got) (display " WANT ") (write expected) (newline))))
 
-;; ⛔ `want` IS A MACRO AND `caught` IS WHY. A procedural `want`
+;; NEVER: `want` IS A MACRO AND `caught` IS WHY. A procedural `want`
 ;; evaluates both arguments before the call, so a row whose expression
 ;; raises ENDS THE FILE -- the rows after it never run, and the ones
 ;; before it have already printed `ok`. The suite names fixtures that
@@ -88,7 +88,7 @@
         (let ((x (read)))
           (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
 
-;; ⛔ THE HEADER OF A `define` IS NOT A CALL. `(define (usage form) ...)`
+;; NEVER: THE HEADER OF A `define` IS NOT A CALL. `(define (usage form) ...)`
 ;; has a subform whose car is the symbol `usage`, and a walker that did
 ;; not know this would report the definition of `usage` itself as a usage
 ;; site it could not resolve -- one permanent unexplained entry, which is
@@ -140,7 +140,7 @@
 ;; would say it is special to that verb.
 (define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket"))
 
-;; ⚠️ NOT "TOP LEVEL": every definition in these files sits inside a
+;; NOTE: NOT "TOP LEVEL": every definition in these files sits inside a
 ;; `library` form, so a scan of the file's own top level finds nothing
 ;; and reports each such site as unreadable -- which is what this did,
 ;; and the two `insert` sites showed up as two more unresolvable ones.
@@ -156,7 +156,7 @@
                 ((and (eq? (car f) 'define) (eq? (cadr f) name)
                       (pair? (cddr f)) (quoted-list? (caddr f)))
                  (set! found (cadr (caddr f))))
-                ;; ⚠️ `(let ((<name> '<form>)) ...)` COUNTS TOO. `publish`
+                ;; NOTE: `(let ((<name> '<form>)) ...)` COUNTS TOO. `publish`
                 ;; binds its usage form in a `let` so that its two
                 ;; refusals cannot drift apart -- which is the reason
                 ;; this gate exists, done right -- and a resolver that
@@ -194,7 +194,7 @@
 
 (define rpc-usage (collect-usage rpc-data))
 
-;; ⚠️ A USAGE FORM NEED NOT BE PASSED TO `usage`. `commit` has no shape
+;; NOTE: A USAGE FORM NEED NOT BE PASSED TO `usage`. `commit` has no shape
 ;; to get wrong, so its form is appended to whatever refusal came back,
 ;; and `eval` and `serve` are the CLI's own verbs and never reach the
 ;; dispatcher at all. All three are found the same way: a definition
@@ -218,7 +218,7 @@
            (loop (cdr xs) (cons (car xs) acc)))
           (else (loop (cdr xs) acc)))))
 
-;; ⚠️ ONE USAGE SITE IS BUILT AT RUN TIME: `parse-edge` serves both
+;; NOTE: ONE USAGE SITE IS BUILT AT RUN TIME: `parse-edge` serves both
 ;; `link` and `unlink` and spells its form from the verb it was called
 ;; with. The number is pinned rather than ignored, because a SECOND one
 ;; has to be either resolvable or admitted here deliberately -- an
@@ -231,7 +231,7 @@
 (define cli-own-verbs '(eval serve))
 (define verbs-to-cover (append (rpc-verbs) cli-own-verbs))
 
-;; ⚠️ NAMED, WITH THE REASON IN THE NAME OF THE LIST, AND EACH LIST IS
+;; NOTE: NAMED, WITH THE REASON IN THE NAME OF THE LIST, AND EACH LIST IS
 ;; CHECKED FOR EQUALITY rather than membership: closing one of these
 ;; gaps turns its row red until the entry is deleted. A list that only
 ;; had to contain the gaps would let a fixed one sit in it for ever.
@@ -241,7 +241,7 @@
 ;; the running program instead of trusting this list.
 (define verbs-whose-usage-is-built-at-run-time '(link unlink))
 
-;; ⛔ EMPTY, AND IT STAYS THAT WAY. `commit` was the one entry: it
+;; NEVER: EMPTY, AND IT STAYS THAT WAY. `commit` was the one entry: it
 ;; answered no usage form at all, because its handler delegates and it
 ;; has no arity to get wrong. It now appends one to its refusals. A verb
 ;; added here again is a verb whose spelling the program will not say.
@@ -250,7 +250,7 @@
 (define verbs-whose-spelling-is-the-verb
   (append verbs-whose-usage-is-built-at-run-time verbs-with-no-usage-form-yet))
 
-;; ---- 甲: every verb the program answers to is advertised somewhere ------------
+;; ---- A: every verb the program answers to is advertised somewhere -------------
 
 (define verbs-without-usage
   (let loop ((xs verbs-to-cover) (out '()))
@@ -263,7 +263,7 @@
 (want "GATE-A every verb the program answers to has a usage form"
       verbs-without-usage '())
 
-;; ⛔ THE EXEMPTION IS NOT TAKEN ON TRUST. `link` and `unlink` are
+;; NEVER: THE EXEMPTION IS NOT TAKEN ON TRUST. `link` and `unlink` are
 ;; excused from the static check because their form is built at run
 ;; time; this row makes the running program produce it. Without it the
 ;; exemption would be indistinguishable from "this verb advertises
@@ -292,7 +292,7 @@
 (want "GATE-A every usage site could be read, or is one of the pinned run-time ones"
       unresolved expected-unresolved)
 
-;; ---- 乙 direction 1: what a usage form advertises, the parser accepts ---------
+;; ---- B direction 1: what a usage form advertises, the parser accepts ---------
 
 (define (accepted? verb option)
   (let ((nodes (parse-arguments verb (list option "x"))))
@@ -313,7 +313,7 @@
 (want "GATE-B1 every option a usage form advertises is accepted by the parser"
       advertised-but-refused '())
 
-;; ---- 乙 direction 2: what the parser accepts, a usage form advertises ---------
+;; ---- B direction 2: what the parser accepts, a usage form advertises ---------
 
 (define accepted-but-unadvertised
   (let loop ((vs verbs-to-cover) (out '()))
@@ -329,7 +329,7 @@
                                 all-spellings)))
           (loop (cdr vs) (append (reverse (map (lambda (o) (list verb o)) missing)) out))))))
 
-;; ⛔ EMPTY, AND COMPARED FOR EQUALITY SO IT STAYS EMPTY. Seventeen
+;; NEVER: EMPTY, AND COMPARED FOR EQUALITY SO IT STAYS EMPTY. Seventeen
 ;; options were accepted by the parser and named in no usage form: a
 ;; caller who misspelled one was told what was wrong with the value and
 ;; never what the verb accepts. They are all advertised now. The list is
@@ -344,18 +344,18 @@
 
 ;; ---- B3: what a handler READS, the parser accepts -----------------------------
 ;;
-;; ⭐ THE DIRECTION THE FIRST TWO DO NOT COVER, AND THE ONE THE DEFECT
+;; KEY: THE DIRECTION THE FIRST TWO DO NOT COVER, AND THE ONE THE DEFECT
 ;; THIS GATE EXISTS FOR WAS IN. `eval`'s handler read `--timeout-ms`
 ;; while the table had no `eval` entry at all; `restore`'s handler read
 ;; `--writer` while the table listed it for `read`, `drafts` and
 ;; `discard` only. Both were found by reading, not by a row.
 ;;
-;; ⛔ B1 AND B2 WERE GREEN THROUGHOUT. It is not that the gate did not
+;; NEVER: B1 AND B2 WERE GREEN THROUGHOUT. It is not that the gate did not
 ;; run -- it is that the gate did not ask this question. A usage form
 ;; and an option table can agree with each other perfectly while the
 ;; handler reaches for a third thing neither of them mentions.
 ;;
-;; ⚠️ WHAT A MISMATCH DOES IS QUIET. The token is not refused; it is
+;; NOTE: WHAT A MISMATCH DOES IS QUIET. The token is not refused; it is
 ;; parsed as a POSITIONAL. So the verb sees extra positionals and
 ;; answers a usage form, or -- worse, and this is what `eval` did --
 ;; takes the option's own spelling as its argument and runs with it.
@@ -370,7 +370,7 @@
 (define rpc-text (call-with-input-file "../rpc.ss" get-string-all))
 (define cli-text (call-with-input-file "../cli.ss" get-string-all))
 
-;; ⛔ SCOPED TO THE VERB TABLE, NOT TO THE FILE. A scan for `(cons '`
+;; NEVER: SCOPED TO THE VERB TABLE, NOT TO THE FILE. A scan for `(cons '`
 ;; across the whole of `rpc.ss` also matches `(cons 'items ...)` and
 ;; `(cons 'src text)` in the helpers, and then attributes to those
 ;; imaginary verbs every option read after them -- which is exactly what
@@ -396,7 +396,7 @@
 
 ;; Every `(argument-option options "--x")` between one verb's `(cons '`
 ;; and the next one's belongs to that verb.
-;; ⚠️ THREE READER NAMES, NOT ONE. `eval`'s limits are read through
+;; NOTE: THREE READER NAMES, NOT ONE. `eval`'s limits are read through
 ;; `eval-number`, not `argument-option` -- so a scanner that knew only
 ;; the latter missed `--timeout-ms`, `--memory-bytes` and
 ;; `--output-bytes`, which is to say it missed the exact option the
@@ -443,7 +443,7 @@
             (loop (+ i 1)
                   (append (reverse (map (lambda (o) (list (car this) o)) opts)) out)))))))
 
-;; ⚠️ `eval` IS NOT IN THAT TABLE -- it is the CLI's own verb -- and it
+;; NOTE: `eval` IS NOT IN THAT TABLE -- it is the CLI's own verb -- and it
 ;; is the reason this row exists: its handler read `--timeout-ms` while
 ;; the option table had no `eval` entry at all. `cli.ss` is scanned as
 ;; one handler, and only the spellings `eval` itself takes are attributed
@@ -462,9 +462,9 @@
 (want "GATE-B3 every option a handler reads is one the parser accepts"
       read-but-refused '())
 
-;; ⛔ AND THE SWEEP HAS TO HAVE FOUND SOMETHING TO SWEEP. An empty
+;; NEVER: AND THE SWEEP HAS TO HAVE FOUND SOMETHING TO SWEEP. An empty
 ;; `handler-reads` satisfies the row above and says nothing at all.
-;; ⚠️ THE TWO NAMED WITNESSES USED TO BE `(write "--writer")` AND
+;; NOTE: THE TWO NAMED WITNESSES USED TO BE `(write "--writer")` AND
 ;; `(restore "--writer")`, and they are gone on purpose: the writer is no
 ;; longer an option a handler reads. It arrives as a dispatch position and
 ;; the ONE place that reads `--writer` is the dispatcher, which is not a
@@ -479,7 +479,7 @@
 
 ;; ---- the gate's own instrument ------------------------------------------------
 ;;
-;; ⛔ AN EMPTY SWEEP IS WHAT A BROKEN GATE LOOKS LIKE. All four rows
+;; NEVER: AN EMPTY SWEEP IS WHAT A BROKEN GATE LOOKS LIKE. All four rows
 ;; above are satisfied by reading nothing at all: no verbs, no usage
 ;; forms, no spellings. These say the instrument was loaded.
 (want "GATE-0 the gate read a verb list, usage forms and option spellings"
@@ -488,7 +488,7 @@
             (> (length all-spellings) 20))
       '(#t #t #t))
 
-;; ⛔ AND THAT IT CAN SAY NO. `--title` belongs to `insert`; if the probe
+;; NEVER: AND THAT IT CAN SAY NO. `--title` belongs to `insert`; if the probe
 ;; called every option accepted for every verb, both directions above
 ;; would be vacuous.
 (want "GATE-0 the probe distinguishes a verb's own option from another's"

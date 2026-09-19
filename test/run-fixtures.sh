@@ -18,7 +18,7 @@ mkdir -p "$out"
 
 # ---- what this run must not leave behind ------------------------------------
 #
-# ⭐ A FIXTURE THAT WRITES INTO THE USER'S OWN DIRECTORIES, OR LEAVES A
+# KEY: A FIXTURE THAT WRITES INTO THE USER'S OWN DIRECTORIES, OR LEAVES A
 # DAEMON RUNNING, BREAKS NOTHING AND REDDENS NOTHING. Three fixtures in
 # this tree did both at once and every row in every one of them stayed
 # green: the daemons they leaked held sockets and logs under
@@ -27,11 +27,11 @@ mkdir -p "$out"
 # path when nothing says otherwise. Fifteen daemons and thirty-three
 # directories accumulated before anybody counted.
 #
-# ⛔ SO IT IS COUNTED HERE RATHER THAN BY A PERSON. The same hole turned
+# NEVER: SO IT IS COUNTED HERE RATHER THAN BY A PERSON. The same hole turned
 # up in three separate fixtures; after the third, "we will notice" stopped
 # being a plan.
 #
-# ⚠️ THE CRITERION IS GROWTH, NOT A TOTAL. Another session's daemons may
+# NOTE: THE CRITERION IS GROWTH, NOT A TOTAL. Another session's daemons may
 # be running and the user's run root may legitimately hold something;
 # what this run is answerable for is the difference it made.
 real_run_root="$HOME/.theourgia/run"
@@ -40,20 +40,20 @@ count_schemes() { pgrep -f "scheme --script" 2>/dev/null | wc -l | tr -d " "; }
 run_root_before=$(count_run_root)
 schemes_before=$(count_schemes)
 
-# ⭐ AND A FLOOR UNDER ALL OF IT: every fixture this runner starts gets a
+# KEY: AND A FLOOR UNDER ALL OF IT: every fixture this runner starts gets a
 # run root of its own, here, before any of them runs. Six fixtures had to
 # be corrected one at a time because the product computes
 # `$HOME/.theourgia/run` when nothing says otherwise, and each was found
 # only by counting what had appeared in it. A seventh should not have to
 # be found that way.
 #
-# ⚠️ THIS DOES NOT REPLACE THE FIXTURES' OWN. They set `THEOURGIA_RUN` to
+# NOTE: THIS DOES NOT REPLACE THE FIXTURES' OWN. They set `THEOURGIA_RUN` to
 # their own directory because they must not disturb EACH OTHER -- two
 # fixtures sharing one run root share sockets and locks. This is the
 # floor for a fixture that sets nothing, not a substitute for the ones
 # that do.
 #
-# ⚠️ AND IT DOES NOT REPLACE THE GATE EITHER. The gate still judges by
+# NOTE: AND IT DOES NOT REPLACE THE GATE EITHER. The gate still judges by
 # growth in the REAL run root: what it catches now is something that
 # overrode or escaped this, which is exactly the case nobody would think
 # to look for.
@@ -153,14 +153,14 @@ fi
 # alarm, once per fault-injection fixture, three and a half hours before
 # reaching the two-second gate that names it.
 #
-# ⛔ A RED PREFLIGHT STOPS THE RUN. Every later reading would be about a
+# NEVER: A RED PREFLIGHT STOPS THE RUN. Every later reading would be about a
 # tree that cannot be built in one of the two shapes it ships in.
 #
 # It is NOT excluded from the loop below: it runs again there, as an
 # ordinary fixture, so that the classifier still sees every script in
 # this directory exactly once and the count-back gate stays true. Two
 # seconds is a cheap price for leaving that invariant alone.
-# ⛔ AND IT IS NOT JUDGED BY ITS EXIT STATUS. Measured: on a tree whose
+# NEVER: AND IT IS NOT JUDGED BY ITS EXIT STATUS. Measured: on a tree whose
 # injected branch would not build, `expansion-branches.ss` printed the
 # unbound identifier, the file and the line -- and exited 0. It has no
 # `(exit ...)` at all, and neither do fifty-eight of the other fixtures
@@ -201,21 +201,21 @@ fi
 # the cause -- and the whole file still balanced, because a second edit
 # had one closer too many.
 #
-# ⛔ IT RUNS BEFORE THE LOOP for the same reason expansion-branches does:
+# NEVER: IT RUNS BEFORE THE LOOP for the same reason expansion-branches does:
 # a tree in that state produces a hundred fixtures failing to import
 # something, which reads as a broken environment. One line naming the
 # file and the first definition that was swallowed is the difference.
 #
-# ⚠️ IT IS NOT IN `*.ss`, so it does not run again in the loop and the
+# NOTE: IT IS NOT IN `*.ss`, so it does not run again in the loop and the
 # count-back below is untouched.
-# ⚠️ AND IT IS THE ONE CHECK IN THIS SUITE THAT NEEDS PYTHON. Every
+# NOTE: AND IT IS THE ONE CHECK IN THIS SUITE THAT NEEDS PYTHON. Every
 # other thing here runs under Chez. A machine without `python3` must be
 # able to take a reading -- so a missing interpreter prints NOT CHECKED
 # and the run continues, exactly as a missing `structure.py` does.
-# ⛔ THE TWO CASES SAY DIFFERENT WORDS ON PURPOSE: "the file is not here"
+# NEVER: THE TWO CASES SAY DIFFERENT WORDS ON PURPOSE: "the file is not here"
 # and "nothing here can run it" send a reader to different places, and
 # one message for both would send them to the wrong one half the time.
-# ⚠️ NOT CHECKED IS NOT GREEN. It says this reading does not cover the
+# NOTE: NOT CHECKED IS NOT GREEN. It says this reading does not cover the
 # thing the check covers; porting it to Scheme is in the README's KNOWN
 # OPEN, and until then a run on a machine with no python3 is a reading
 # with a hole in it that names itself.
@@ -241,7 +241,7 @@ else
   echo "preflight: NOT CHECKED -- structure.py is not in this directory"
 fi
 
-# ⛔ PYTHON FIXTURES RUN TOO, AND THEY DID NOT USED TO. This loop was
+# NEVER: PYTHON FIXTURES RUN TOO, AND THEY DID NOT USED TO. This loop was
 # `for f in *.ss`, so ten fixtures in this directory -- every MCP cell,
 # the daemon lifecycle cells, the eval cells, `q8-cli`,
 # `working-processes`, `datum-processes` -- were never run by any suite.
@@ -251,7 +251,7 @@ fi
 # reading had ever said so. "The environment could satisfy it and it was
 # not run" is a defect, not an opt-in.
 #
-# ⚠️ THE THREE CRITERIA ARE THE SAME for both kinds, and so is the
+# NOTE: THE THREE CRITERIA ARE THE SAME for both kinds, and so is the
 # classifier: a sentinel line, no non-zero counter, no hard line. What
 # differs is only the interpreter.
 bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0
@@ -260,11 +260,11 @@ for f in *.ss *.py; do
     *.ss) n=${f%.ss}; runner="scheme --script";;
     *.py) n=${f%.py}; runner="python3";;
   esac
-  # ⚠️ `paths.py` IS A HELPER, NOT A FIXTURE: it is imported by the
+  # NOTE: `paths.py` IS A HELPER, NOT A FIXTURE: it is imported by the
   # others and prints no sentinel of its own. It is named here rather
   # than detected, because "imports nothing and prints nothing" is also
   # what a broken fixture looks like.
-  # ⚠️ THREE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
+  # NOTE: THREE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
   # the python fixtures; `structure` is the preflight above; and
   # `reduce-hash-check` is a filter `reduce1.ss` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
@@ -273,7 +273,7 @@ for f in *.ss *.py; do
     paths|structure|reduce-hash-check) helpers="$helpers $n"; continue;;
   esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
-  # ⛔ STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the
+  # NEVER: STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the
   # runner, it is whatever the person running the suite happened to have:
   # under a terminal -- a run inside `screen` -- a fixture that reaches a
   # verb reading standard input waits for an end of file that never comes,
@@ -282,7 +282,7 @@ for f in *.ss *.py; do
   # gate reported the three processes the hung chain held; the same
   # fixture with `</dev/null` answered 38 of 38 in 25 seconds.
   #
-  # ⚠️ A FIXTURE THAT NEEDS INPUT MUST HAND IT OVER ITSELF -- a pipe, a
+  # NOTE: A FIXTURE THAT NEEDS INPUT MUST HAND IT OVER ITSELF -- a pipe, a
   # here-string, a file -- rather than inheriting whatever is there. What
   # a run measures may not depend on where it was started from.
   perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$out/$n.out" 2>&1 < /dev/null
@@ -304,7 +304,7 @@ for f in *.ss *.py; do
   # no hard line, no non-zero counter, and one of the two exit statuses
   # this directory's probes actually use.
   #
-  # ⛔ AND THE TWO ARE MEASURED, NOT CHOSEN. Requiring 0 alone reclassified
+  # NEVER: AND THE TWO ARE MEASURED, NOT CHOSEN. Requiring 0 alone reclassified
   # nine of the fourteen probes as red in one run -- `barrier-probe`,
   # `dirfault`, `dirflush`, `fault-file`, `fault-pipe`, `probe`, `row`,
   # `shared-lock` and `stagefault` all print `usage: <name>.ss ...` and
@@ -439,7 +439,7 @@ while read -r name rows lines digest || [ -n "$name" ]; do
   l=$(wc -l < "$out/$name.out" | tr -d " ")
   [ "$r" = "$rows" ] && [ "$l" = "$lines" ] || drift="$drift $name($rows/$lines->$r/$l)"
 done < rows-baseline.txt
-# ⚠️ THE md5 SECTION ANNOUNCES THAT IT RAN. Silence here used to be
+# NOTE: THE md5 SECTION ANNOUNCES THAT IT RAN. Silence here used to be
 # indistinguishable from "this check did not get to run", which is
 # exactly what had been happening.
 if [ -n "$missing" ]; then
@@ -457,7 +457,7 @@ fi
 if [ -n "$drift" ]; then
   echo "row baseline, counts that differ in this environment:$drift"
 fi
-# ⛔ THIS SETS A FLAG AND DOES NOT EXIT. Every check after the fixtures
+# NEVER: THIS SETS A FLAG AND DOES NOT EXIT. Every check after the fixtures
 # have run reports on the SAME run, and a check that leaves early hides
 # every check behind it. That is not hypothetical here: this file already
 # had the missing-name check exiting before any md5 was compared, so a run
@@ -518,7 +518,7 @@ echo "unguarded by construction ($(echo $byproc | wc -w | tr -d " ") fixtures de
 # that and a bad delivery was a person reading the number.
 # ---- and the two counts again ------------------------------------------------
 #
-# ⚠️ A SETTLE BEFORE THE SECOND READING. A daemon told to go does not go
+# NOTE: A SETTLE BEFORE THE SECOND READING. A daemon told to go does not go
 # instantly, and a run that counted the moment its last fixture returned
 # would report its own tidy-up as a leak.
 sleep 3

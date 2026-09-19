@@ -63,7 +63,7 @@
   (define (value-options verb)
     (append '("--store" "--actor" "--req" "--cursor" "--socket")
       (case verb
-        ;; ⛔ WHERE A DETACHED DAEMON'S OUTPUT GOES IS THE CLIENT'S
+        ;; NEVER: WHERE A DETACHED DAEMON'S OUTPUT GOES IS THE CLIENT'S
         ;; DECISION, so it is a value the client passes and not something
         ;; the daemon works out for itself. The client has to read that
         ;; file afterwards to report why a start failed; two sides
@@ -73,7 +73,7 @@
         ((serve) '("--log"))
         (else '()))
       (case verb
-        ;; ⚠️ `--keywords` IS A VALUE OPTION AND ITS VALUE IS TEXT. The
+        ;; NOTE: `--keywords` IS A VALUE OPTION AND ITS VALUE IS TEXT. The
         ;; field holds what the caller typed, commas and all; the
         ;; splitting happens in `search`, which is the only reader that
         ;; needs tokens. Parsing it here would mean the store held a
@@ -86,7 +86,7 @@
         ((def) '("--under"))
         ((commit) '("--writer" "--working-version"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))
-        ;; ⚠️ `restore` IS IN THIS GROUP BECAUSE ITS HANDLER READS
+        ;; NOTE: `restore` IS IN THIS GROUP BECAUSE ITS HANDLER READS
         ;; `--writer`, and it was not. The token then parsed as a
         ;; POSITIONAL: `restore <version> --writer w1` arrived with three
         ;; positionals, failed the arity check and answered a usage form,
@@ -94,7 +94,7 @@
         ;; slot from the command line. Same shape as the `eval` entry
         ;; below -- a handler reading an option this table does not list.
         ((read drafts discard restore) '("--writer"))
-        ;; ⚠️ ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
+        ;; NOTE: ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
         ;; evaluation became the string "--timeout-ms" and the run failed
@@ -118,7 +118,7 @@
 
   (define (flag-options verb)
     (cons "--wire" (case verb
-      ;; ⚠️ `--detach` CHANGES WHAT THE PROCESS DOES BEFORE IT SERVES, not
+      ;; NOTE: `--detach` CHANGES WHAT THE PROCESS DOES BEFORE IT SERVES, not
       ;; how it answers: it leaves the caller's session, drops the
       ;; caller's stdio and then behaves exactly like the foreground
       ;; form. A `serve` started by hand must keep its terminal, so this
@@ -129,7 +129,7 @@
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.
       ;;
-      ;; ⚠️ THIS COMMENT USED TO CLAIM `--latest` WAS "the same spelling
+      ;; NOTE: THIS COMMENT USED TO CLAIM `--latest` WAS "the same spelling
       ;; the read verbs already use". It was not: `latest` appeared
       ;; nowhere in the dispatcher, the flag was accepted by this table
       ;; and read by no code at all, and the DEFAULT was the floating
@@ -146,8 +146,13 @@
   ;; `--` ENDS THE OPTIONS AND NOTHING AFTER IT IS ONE. It is kept as a
   ;; node rather than dropped, because `argument-strings` has to hand
   ;; back what the caller wrote: the request fingerprint is taken over
-  ;; those strings, and a reader that silently removed a token would
-  ;; give two spellings of one command two different identities.
+  ;; those strings.
+  ;; NOTE: AND THE CONSEQUENCE RUNS THE OTHER WAY FROM WHAT THIS COMMENT
+  ;; USED TO SAY. It claimed that dropping the token would give two
+  ;; spellings of one command two identities; dropping it does the
+  ;; opposite -- `("b" "text")` and `("--" "b" "text")` would come back as
+  ;; the same strings and so take the SAME fingerprint. Keeping the node
+  ;; is what lets the two spellings stay distinguishable.
   (define (parse-arguments verb args)
     (let loop ((xs args) (seen '()) (out '()) (literal? #f))
       (cond
@@ -221,7 +226,7 @@
   ;; its usage line: two ways of saying what the batch is cannot both be
   ;; honoured, and picking one quietly would mean the text a caller
   ;; actually passed was discarded without a word.
-  ;; ⭐ ASKED OF THE RULE ITSELF, so there is no second list of which
+  ;; KEY: ASKED OF THE RULE ITSELF, so there is no second list of which
   ;; verbs read standard input. The reader handed in records that it was
   ;; called and answers an empty string; whatever `argument-stdin` builds
   ;; with that is thrown away, and what is kept is whether it asked. A
@@ -232,14 +237,14 @@
       (argument-stdin verb nodes (lambda () (set! asked #t) ""))
       asked))
 
-  ;; ⛔ AN UNFILLED `-`, WHICH IS THE CASE THAT USED TO BE SILENT. A verb
+  ;; NEVER: AN UNFILLED `-`, WHICH IS THE CASE THAT USED TO BE SILENT. A verb
   ;; that reads standard input and was sent none has two shapes. `batch`
   ;; with nothing on either side answers its own usage line, which names
   ;; what is missing and always has. `write <id> -` did not: the
   ;; placeholder stayed in the arguments and was stored AS the text, and
   ;; the answer said the write had succeeded.
   ;;
-  ;; ⚠️ ASKED OF `argument-stdin` ITSELF rather than from a second list of
+  ;; NOTE: ASKED OF `argument-stdin` ITSELF rather than from a second list of
   ;; verbs: the input is offered as a sentinel, and the question is whether
   ;; a `-` that was there has been replaced by it.
   (define (argument-stdin-placeholder? verb nodes)
@@ -260,7 +265,7 @@
 
   (define (argument-stdin verb nodes read-text)
     (case verb
-      ;; ⛔ APPENDED WHETHER OR NOT SOMETHING IS ALREADY THERE, and that is
+      ;; NEVER: APPENDED WHETHER OR NOT SOMETHING IS ALREADY THERE, and that is
       ;; the rule: intents given BOTH as an argument and on standard input
       ;; are two answers to one question, so the verb sees two positionals
       ;; and answers its usage line. Made conditional, the argument won and
@@ -269,7 +274,7 @@
       ((batch) (append nodes (list (list 'pos (read-text)))))
       ((def) (if (= (length (argument-positionals nodes)) 1)
                  (append nodes (list (list 'pos (read-text)))) nodes))
-      ;; ⛔ THE BYTES ARE THE SECOND POSITIONAL, AND ONLY THAT ONE.
+      ;; NEVER: THE BYTES ARE THE SECOND POSITIONAL, AND ONLY THAT ONE.
       ;; Written as "every positional spelled `-`", a block whose id is
       ;; literally `-` had its NAME replaced by the caller's standard
       ;; input -- so the write went to a block named by whatever had been

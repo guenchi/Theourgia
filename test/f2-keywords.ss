@@ -15,7 +15,7 @@
 
 ;; `keywords`: a field a writer chooses to be found by.
 ;;
-;; ⛔ THE FIELD IS TEXT AND STAYS TEXT. What the caller wrote is what
+;; NEVER: THE FIELD IS TEXT AND STAYS TEXT. What the caller wrote is what
 ;; `read` gives back -- spacing, commas and all. The splitting into
 ;; tokens happens in `search`, which is the only reader that needs them;
 ;; a store holding a normalised form could not give back what was sent.
@@ -91,13 +91,13 @@
 
 ;; ---- K5: what goes in is what comes out ---------------------------------------
 ;;
-;; ⛔ BYTE FOR BYTE, INCLUDING THE SPACES. An implementation that split
+;; NEVER: BYTE FOR BYTE, INCLUDING THE SPACES. An implementation that split
 ;; the value into a list, trimmed it, or lower-cased it would pass a row
 ;; that only asked "are the words there".
 (define odd-keywords "  Alpha, \x3b2; ,\x6c49;\x5b57;  ")
 (define k5-id (id-of (cli "insert" "--title" "K5" "--text" "prose" "--keywords" odd-keywords)))
 
-;; ⚠️ THE ANSWER IS READ AS A DATUM, not compared as text. The wire may
+;; NOTE: THE ANSWER IS READ AS A DATUM, not compared as text. The wire may
 ;; write a non-ASCII character raw or as `\x3B2;`, and this fixture's own
 ;; `write` may choose the other one -- comparing the two renderings
 ;; compares the printers, not the field. Reading gives the string back
@@ -115,7 +115,7 @@
         (if (equal? got odd-keywords) 'byte-for-byte (list 'said got)))
       'byte-for-byte)
 
-;; ⛔ AND `set` REPLACES THE INDEX, NOT ONLY THE FIELD. An implementation
+;; NEVER: AND `set` REPLACES THE INDEX, NOT ONLY THE FIELD. An implementation
 ;; that indexed the words at insert time and never revisited them would
 ;; keep answering for the old ones.
 (cli "set" k5-id "keywords" "replacement")
@@ -127,7 +127,7 @@
 
 ;; ---- K1/K2: the scoring, against the rule in store.ss --------------------------
 ;;
-;; ⚠️ THE TWINS ARE THE ROW. A single "it was found" passes for an
+;; NOTE: THE TWINS ARE THE ROW. A single "it was found" passes for an
 ;; implementation that scores keywords like source, or that turns the
 ;; query into an OR across tokens.
 (define k1-id (id-of (cli "insert" "--title" "unrelated" "--text" "nothing here"
@@ -160,10 +160,10 @@
 
 ;; ---- K3: the listing, when it is asked ----------------------------------------
 ;;
-;; ⚠️ BOTH PRINTERS. `outline-text` draws the tree in one place and the
+;; NOTE: BOTH PRINTERS. `outline-text` draws the tree in one place and the
 ;; `orphans:` rows in another; a suffix added to one of them only is the
 ;; kind of thing a single-row cell does not see.
-;; ⚠️ TWO PARENTS, BECAUSE ONE OF THEM HAS TO SURVIVE. `del` is how an
+;; NOTE: TWO PARENTS, BECAUSE ONE OF THEM HAS TO SURVIVE. `del` is how an
 ;; orphan is made here -- a block whose parent is deleted -- and an
 ;; earlier version of this fixture deleted the only keyworded parent it
 ;; had, then asserted the tree still listed it. The tree row and the
@@ -188,7 +188,7 @@
 
 ;; ---- K4: and without the option, nothing moved --------------------------------
 ;;
-;; ⛔ THE SHAPE IS FROZEN, NOT THE IDS. Block ids are generated, so a
+;; NEVER: THE SHAPE IS FROZEN, NOT THE IDS. Block ids are generated, so a
 ;; byte comparison against a recorded listing would be a comparison
 ;; against a coin toss; the ids are replaced by a fixed marker and what
 ;; is compared is every other byte -- which is where a suffix, a changed
@@ -218,7 +218,7 @@
 
 ;; ---- K6: a store written before the field existed ------------------------------
 ;;
-;; ⚠️ EVERY BLOCK HERE HAS NO `keywords`, which is what every store
+;; NOTE: EVERY BLOCK HERE HAS NO `keywords`, which is what every store
 ;; written before this batch looks like.
 (define old-store (string-append here "/old"))
 (system (string-append "mkdir -p " old-store))

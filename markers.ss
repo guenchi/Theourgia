@@ -39,7 +39,7 @@
 ;;; the next person to add a lookup inside those two hops would restore
 ;;; the dependency with nothing to notice.
 ;;;
-;;; ⭐ SO THE GRAMMAR MOVED DOWN HERE INSTEAD OF BEING FENCED OFF ABOVE.
+;;; KEY: SO THE GRAMMAR MOVED DOWN HERE INSTEAD OF BEING FENCED OFF ABOVE.
 ;;; A gate that said "the reduction does not import the language table"
 ;;; while the table sat two hops away would be saying more than it can
 ;;; prove. With these definitions in a library that CANNOT reach it, the

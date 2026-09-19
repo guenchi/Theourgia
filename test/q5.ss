@@ -100,7 +100,7 @@
                  (list 'plan "req-1" FP AFTER entries) 'valid-history #t '()))
 (define two (list (cons 0 '(set "b" "t" "x")) (cons 1 '(set "c" "t" "y"))))
 
-;; ⚠️ A `complete` VERDICT CARRIES THE PLAN NOW, and these rows say so.
+;; NOTE: A `complete` VERDICT CARRIES THE PLAN NOW, and these rows say so.
 ;;
 ;; It used to be `(complete <present-indices>)`, and the only thing a
 ;; caller could do with that was answer `incomplete-request`. §7.5.11

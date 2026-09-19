@@ -21,14 +21,14 @@
 ;; whether to test again. The fact costs nothing to produce: both cuts
 ;; are already in hand when the answer is built.
 ;;
-;; ⛔ IT IS INFORMATION, NOT A VERDICT. It does not refuse, does not
+;; NEVER: IT IS INFORMATION, NOT A VERDICT. It does not refuse, does not
 ;; hold the commit back, and triggers nothing (§7.5.22, v161: the
 ;; earlier "refuse when behind" and "dry-run before committing" were
 ;; both ruled out). A build that turns it into a refusal fails the first
 ;; row here, which is why that row asserts the commit SUCCEEDED before
 ;; it looks at the field.
 ;;
-;; ⭐ WHAT THE SEEDS SAY, measured against this file:
+;; KEY: WHAT THE SEEDS SAY, measured against this file:
 ;;
 ;;     make it a refusal                  4 red, first "the commit succeeds"
 ;;     append the field always            2 red, both twins, `(behind ())`
@@ -45,7 +45,7 @@
 ;;                                        `working-unavailable` for a commit
 ;;                                        whose records are already durable.
 ;;
-;; ⚠️ AND ITS ABSENCE IS PART OF THE SHAPE. A baseline that is not
+;; NOTE: AND ITS ABSENCE IS PART OF THE SHAPE. A baseline that is not
 ;; behind gets no `behind` item at all -- not an empty one. The twin
 ;; below is what makes the first row about the field rather than about
 ;; the code path that always appends it.
@@ -80,14 +80,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -123,7 +123,7 @@
 (call 'write A "a text")
 (define a-version (version-of A))
 
-;; ⚠️ THE OTHER WRITER IS A PUBLISHED RECORD, not a second `call`. This
+;; NOTE: THE OTHER WRITER IS A PUBLISHED RECORD, not a second `call`. This
 ;; store's own writer is the only one `rpc-dispatch` writes as, so the
 ;; only way to have somebody else's record land after this draft's
 ;; baseline is to put one in another writer's stream directly.
@@ -138,7 +138,7 @@
 (define answer
   (call 'commit A "--req" "R1" "--cursor" (cursor-now) "--working-version" a-version))
 
-;; ⛔ SUCCEEDED FIRST. A build that refuses when the baseline is behind
+;; NEVER: SUCCEEDED FIRST. A build that refuses when the baseline is behind
 ;; fails here, before the shape of the field is looked at.
 (want "W11-behind the commit succeeds" (rpc-ok? answer) #t)
 (want "W11-behind and the block really holds the committed text"
@@ -149,7 +149,7 @@
 
 ;; ---- the twin: a baseline that is not behind gets no item ------------
 ;;
-;; ⭐ WITHOUT THIS ROW the one above is also green for a build that
+;; KEY: WITHOUT THIS ROW the one above is also green for a build that
 ;; appends `(behind ...)` to every commit -- and then the field says
 ;; nothing, because it is always there.
 
@@ -163,7 +163,7 @@
 
 ;; ---- the writer is not behind itself ---------------------------------
 ;;
-;; ⭐ A DECISION, NOT AN ACCIDENT, and this is the row that says so.
+;; KEY: A DECISION, NOT AN ACCIDENT, and this is the row that says so.
 ;; The rule reads "every writer with records after the baseline", and
 ;; taken literally that includes THIS writer: commit another block
 ;; between writing a draft and committing it and your own cut has moved.
@@ -190,14 +190,14 @@
 
 ;; ---- two of them, named in a fixed order ------------------------------
 ;;
-;; ⚠️ SORTED, because the answer is compared byte for byte by the CLI's
+;; NOTE: SORTED, because the answer is compared byte for byte by the CLI's
 ;; `--wire` cells and by the daemon's; a set that comes out in hashtable
 ;; order is a different answer on a different day.
 
 (define E (insert "E"))
 (call 'write E "e text")
 (define e-version (version-of E))
-;; ⚠️ BOTH RECORDS LAND AFTER THIS DRAFT'S BASELINE, and the first
+;; NOTE: BOTH RECORDS LAND AFTER THIS DRAFT'S BASELINE, and the first
 ;; version of this section forgot that. `movedzzz`'s earlier record was
 ;; already in the cut when E's draft was written, so it is not behind
 ;; anything -- the answer named one writer and the row wanted two. The
@@ -207,7 +207,7 @@
 (define foreign2
   (encode-record 1 1789000000011 "someone-else" '()
                  (storable-encode (list 'set B 'src "and another"))))
-;; ⚠️ SEQ 2, AND SEGMENT 2. `encode-record`'s first argument is the
+;; NOTE: SEQ 2, AND SEGMENT 2. `encode-record`'s first argument is the
 ;; record's SEQUENCE and `log-publish!`'s third is the SEGMENT; the
 ;; first version of this record reused seq 1, which is the same sequence
 ;; with different bytes and is exactly what the publish path calls a
@@ -217,7 +217,7 @@
 (define foreign3
   (encode-record 2 1789000000012 "someone-else" '(("movedzzz" . 1))
                  (storable-encode (list 'set B 'src "moved again"))))
-;; ⚠️ EIGHT CHARACTERS. A writer id is exactly 8 base36 characters
+;; NOTE: EIGHT CHARACTERS. A writer id is exactly 8 base36 characters
 ;; (log.ss `writer-id?`), and `log-publish!` answers `refused` to
 ;; anything else -- which is what the first version of this row got,
 ;; with a nine-letter name chosen only because it sorts first.
@@ -233,7 +233,7 @@
 
 ;; ---- the writer our own write releases --------------------------------
 ;;
-;; ⭐ THIS IS WHY THE CUT COMES FROM THE WRITE, NOT FROM THE OPEN. A
+;; KEY: THIS IS WHY THE CUT COMES FROM THE WRITE, NOT FROM THE OPEN. A
 ;; foreign record can be waiting on a record THIS WRITER has not made
 ;; yet: it is in the store, it is not applied, and the reduction this
 ;; verb opened with does not have it. Appending this commit's own
@@ -255,13 +255,13 @@
                  (storable-encode (list 'set B 'src "released by your own record"))))
 (want "W11-behind the waiting record publishes"
       (car (log-publish! store "waitszzz" 1 pending (segment-sha pending))) 'published)
-;; ⛔ AND IT IS NOT APPLIED YET. Without this the row below would pass
+;; NEVER: AND IT IS NOT APPLIED YET. Without this the row below would pass
 ;; for a build that reads the opening cut, because the record would
 ;; already be in it.
 (want "W11-behind and it is NOT in the applied cut before the commit"
       (assoc "waitszzz" (reduce-applied-cut (state))) #f)
 
-;; ⚠️ THE CURSOR IS KEPT, because the retry below has to be the SAME
+;; NOTE: THE CURSOR IS KEPT, because the retry below has to be the SAME
 ;; request. A resend with a fresh cursor is a DIFFERENT request that
 ;; reuses an id, and the store says so: measured, `(error req-mismatch
 ;; ...)`. Request identity is taken over the cursor and the versions,
@@ -275,7 +275,7 @@
 
 ;; ---- a replay is not asked who moved ----------------------------------
 ;;
-;; ⛔ ITS DRAFTS ARE GONE, so `entries` is empty and an empty baseline
+;; NEVER: ITS DRAFTS ARE GONE, so `entries` is empty and an empty baseline
 ;; makes every writer in the store look like a mover. The commit this
 ;; repeats already answered the question.
 
@@ -295,7 +295,7 @@
 ;; there is no single baseline -- the rule says the JOIN of theirs, and
 ;; a join takes the greater sequence per writer.
 ;;
-;; ⚠️ WHICH MEANS THE JOIN CAN HIDE THE OLDER DRAFT'S STALENESS: commit
+;; NOTE: WHICH MEANS THE JOIN CAN HIDE THE OLDER DRAFT'S STALENESS: commit
 ;; an old draft together with a fresh one and the writer that moved
 ;; between them is NOT named, because the fresh draft's baseline covers
 ;; it. That is what the rule says and the pair of rows below pins both
@@ -313,7 +313,7 @@
 (call 'write I "i text")
 (define i-version (version-of I))
 
-;; ⚠️ `<block>=<version>` WHEN THERE IS MORE THAN ONE. A bare version is
+;; NOTE: `<block>=<version>` WHEN THERE IS MORE THAN ONE. A bare version is
 ;; only unambiguous for a single block; with two ids the parser answers
 ;; `(error bad-request malformed-working-version)`, which is what the
 ;; first version of this row got.
@@ -342,7 +342,7 @@
 
 ;; ---- the commit that writes nothing at all ---------------------------
 ;;
-;; ⭐ A SECOND SUCCESS BRANCH, AND IT USED TO SKIP THE FIELD. A commit
+;; KEY: A SECOND SUCCESS BRANCH, AND IT USED TO SKIP THE FIELD. A commit
 ;; with no `--req` whose drafts produce no sub-operations writes no
 ;; record -- and still retires the drafts, so it is a commit and owes
 ;; the same fact. Reported by codex (E step 0, finding 6).
@@ -352,7 +352,7 @@
 
 (define K (insert "K"))
 (call 'write K "old")
-;; ⚠️ `unchanged` IS A FIELD, NOT A KIND. Every active entry comes back
+;; NOTE: `unchanged` IS A FIELD, NOT A KIND. Every active entry comes back
 ;; as `draft`; whether it would write anything is `(unchanged #t)`
 ;; inside it. The first version of this row asked for a kind and got
 ;; `(draft)`, which says nothing about the arm being exercised.

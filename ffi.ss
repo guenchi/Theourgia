@@ -359,7 +359,7 @@
   ;; stays portable to a host with no environment; this is the one place
   ;; that knows there is one.
   (define trace-switch-installed
-    ;; ⛔ THIS OVERWRITES ANY `trace-enable!` MADE BEFORE THIS LIBRARY
+    ;; NEVER: THIS OVERWRITES ANY `trace-enable!` MADE BEFORE THIS LIBRARY
     ;; LOADS. A program that calls `(trace-enable! #t)` and then reaches
     ;; a path that first loads this file gets its setting replaced by
     ;; whatever the environment says -- and the failure is silent:
@@ -468,14 +468,14 @@
   ;; than being silently in force.
   ;; AN ENVIRONMENT VARIABLE THAT IS SET TO NOTHING IS NOT SET.
   ;;
-  ;; ⛔ `(or (getenv "X") default)` GETS THIS WRONG, and the wrong answer
+  ;; NEVER: `(or (getenv "X") default)` GETS THIS WRONG, and the wrong answer
   ;; is not a small one: `""` is a string and therefore true, so `X=` in
   ;; an environment means the empty path rather than the default. Measured
   ;; in `(theourgia client)`: an empty `THEOURGIA_RUN` put the daemon's
   ;; socket directory at the filesystem ROOT, and it panicked at boot
   ;; trying to make it.
   ;;
-  ;; ⚠️ THREE PLACES TESTED THE LENGTH SEPARATELY BEFORE THIS EXISTED --
+  ;; NOTE: THREE PLACES TESTED THE LENGTH SEPARATELY BEFORE THIS EXISTED --
   ;; here, `environment-actor` and the run root -- which is three
   ;; suppliers of one rule, and the fourth reader is the one that forgets.
   (define (env-or name . fallback)
@@ -523,7 +523,7 @@
   (define c-close (foreign-procedure "close" (int) int))
   (define c-fsync (foreign-procedure "fsync" (int) int))
   (define c-fcntl (foreign-procedure "fcntl" (int int int) int))
-  ;; ⛔ `fcntl` IS VARIADIC AND THIS BINDING IS NOT. The third argument's
+  ;; NEVER: `fcntl` IS VARIADIC AND THIS BINDING IS NOT. The third argument's
   ;; calling convention for a variadic C function is not the one a fixed
   ;; three-int binding uses, and on macOS ARM64 the two differ -- so
   ;; `F_DUPFD`'s "lowest descriptor at or above N" was not reliably given
@@ -590,7 +590,7 @@
           (assertion-violation 'setsid! "setsid failed" (errno))
           r)))
 
-  ;; ⭐ SO THAT THE EFFECT CAN BE READ SOMEWHERE OTHER THAN THE RETURN
+  ;; KEY: SO THAT THE EFFECT CAN BE READ SOMEWHERE OTHER THAN THE RETURN
   ;; VALUE. `setsid!` answers the new session id, which is also the
   ;; caller's own pid -- so a row that compares the two is satisfied by
   ;; an implementation that returns the pid and starts no session at all.
@@ -609,7 +609,7 @@
     (let ((r (c-kill pid signum)))
       (if (= r 0) 0 (errno))))
 
-  ;; ⚠️ EPERM MEANS ALIVE. `kill(pid, 0)` asks the kernel whether a
+  ;; NOTE: EPERM MEANS ALIVE. `kill(pid, 0)` asks the kernel whether a
   ;; process exists that this one may signal; a process owned by somebody
   ;; else answers EPERM, and reading that as "gone" is how a sampler
   ;; decides a running child has died. ESRCH, and only ESRCH, is absence.
@@ -646,13 +646,13 @@
 
   ;; ---- resident size, per platform ----------------------------------------
   ;;
-  ;; ⚠️ BYTES, ON EVERY PLATFORM. macOS reports bytes, FreeBSD and Linux
+  ;; NOTE: BYTES, ON EVERY PLATFORM. macOS reports bytes, FreeBSD and Linux
   ;; report PAGES, and a reading that forgot to multiply is still a
   ;; positive number that grows with the child's allocations -- it would
   ;; pass any cell that only asks for "positive and rising", and would
   ;; then let a child four thousand times over its limit run free.
   ;;
-  ;; ⚠️ #f WHEN IT CANNOT BE READ, never 0. "I could not look" and "it is
+  ;; NOTE: #f WHEN IT CANNOT BE READ, never 0. "I could not look" and "it is
   ;; using nothing" are opposite facts, and a sampler that treats the
   ;; first as the second reports a healthy child for a process that has
   ;; gone.
@@ -683,7 +683,7 @@
                                     (loop (cdr cs) '() (if (null? cur) out (cons (list->string (reverse cur)) out))))
                                    (else (loop (cdr cs) (cons (car cs) cur) out))))))
                (and (pair? (cdr parts))
-                    ;; ⚠️ THE PAGE SIZE IS ASKED FOR, not written down.
+                    ;; NOTE: THE PAGE SIZE IS ASKED FOR, not written down.
                     ;; statm counts pages, and 4096 is only the common
                     ;; case: on a machine with 16 KiB pages a hardcoded
                     ;; 4096 under-reports every reading by four, quietly
@@ -694,7 +694,7 @@
   ;; FreeBSD keeps it in `kinfo_proc`, reached through sysctl, and the
   ;; offset of `ki_rssize` is not derivable from a header at runtime.
   ;;
-  ;; ⭐ SO IT WAS MEASURED, ON THE MACHINE IT HAS TO WORK ON. A probe
+  ;; KEY: SO IT WAS MEASURED, ON THE MACHINE IT HAS TO WORK ON. A probe
   ;; started two children -- one touching a large allocation, one not --
   ;; read `ps -o rss=` for both at the same moment, and scanned the whole
   ;; struct for a slot that reproduced BOTH readings. FreeBSD 15.0-RELEASE,
@@ -703,7 +703,7 @@
   ;;     offset 264, read as PAGES: big 57465 -> 224 MiB (ps: 224 MiB)
   ;;                                small  5767 ->  23 MiB (ps:  23 MiB)
   ;;
-  ;; ⚠️ READ AS 64 BITS, AND THE FIRST ANSWER HERE WAS WRONG. This said
+  ;; NOTE: READ AS 64 BITS, AND THE FIRST ANSWER HERE WAS WRONG. This said
   ;; 32 bits, reasoning that the 64-bit read matched only because the
   ;; next field happened to be zero. The header settles it the other way:
   ;; `/usr/include/x86/_types.h` defines `__segsz_t` as `__int64_t` under
@@ -713,7 +713,7 @@
   ;; readings is not evidence when both would agree on small values.
   ;; A 32-bit read would truncate above 2^32 pages.
   ;;
-  ;; ⚠️ AND THE STRUCT SIZE IS CHECKED, because an offset is a claim about
+  ;; NOTE: AND THE STRUCT SIZE IS CHECKED, because an offset is a claim about
   ;; a layout. sysctl reports 1088 bytes there; a kernel that returns a
   ;; different size is one this offset was never measured against, and
   ;; answering #f is the honest response to that.
@@ -744,7 +744,7 @@
                 (= (bytevector-u64-native-ref len 0) KINFO_PROC-SIZE)
                 (* (bytevector-u64-native-ref buf KI_RSSIZE-OFFSET) (c-getpagesize))))))
 
-  ;; ⛔ AND ZERO IS NOT A READING. Every branch below can answer 0 for a
+  ;; NEVER: AND ZERO IS NOT A READING. Every branch below can answer 0 for a
   ;; process that is on its way out -- Linux prints `0 0 0 0 0 0 0` in
   ;; statm once the task has no memory descriptor -- and 0 is true in
   ;; Scheme, so it would be handed back as a measurement rather than as
@@ -760,13 +760,13 @@
 
 ;; ---- detaching: where a daemon's own output goes ------------------------
   ;;
-  ;; ⛔ A DAEMON MAY NOT KEEP ITS PARENT'S STDOUT. It outlives the client
+  ;; NEVER: A DAEMON MAY NOT KEEP ITS PARENT'S STDOUT. It outlives the client
   ;; that started it, and a descriptor it holds is one the client's own
   ;; caller is waiting on: a shell that started a client and read its
   ;; output would not see end-of-file until the DAEMON exited too, which
   ;; can be hours.
   ;;
-  ;; ⛔ AND IT MAY NOT GO TO /dev/null EITHER, which is what this did
+  ;; NEVER: AND IT MAY NOT GO TO /dev/null EITHER, which is what this did
   ;; first. Everything a daemon has to say about why it would not start
   ;; -- the socket path is occupied, the lock is held, the store will not
   ;; open -- is said AFTER this point, so discarding it left a client
@@ -775,20 +775,20 @@
   ;; an occupied path says `(error serve-path-occupied (path ...))`; the
   ;; same run detached said nothing at all, anywhere.
   ;;
-  ;; ⭐ APPEND, NOT TRUNCATE. Several starts against one store share this
+  ;; KEY: APPEND, NOT TRUNCATE. Several starts against one store share this
   ;; file, and a start that truncated it would erase the record of the
   ;; failure that made the caller try again.
   ;;
-  ;; ⚠️ STDIN IS NOT THE LOG. It goes to /dev/null: a daemon that read
+  ;; NOTE: STDIN IS NOT THE LOG. It goes to /dev/null: a daemon that read
   ;; from its own log would be reading whatever it had just written.
-  ;; ⚠️ THE ORDER MATTERS AND IS DELIBERATE. `/dev/null` is put on 0
+  ;; NOTE: THE ORDER MATTERS AND IS DELIBERATE. `/dev/null` is put on 0
   ;; BEFORE the log is put on 1 and 2, so that if the log's descriptor
   ;; happens to be 1 or 2 -- which it can be when those were closed on
   ;; entry -- the copy onto 0 has already been made and nothing is lost.
   ;;
-  ;; ⛔ AND THE TWO DESCRIPTORS ARE CLOSED ON EVERY WAY OUT, including the
+  ;; NEVER: AND THE TWO DESCRIPTORS ARE CLOSED ON EVERY WAY OUT, including the
   ;; failing ones. A raised `dup2` used to leave both open.
-;; ⭐ BOTH DESCRIPTORS ARE MOVED ABOVE 0,1,2 BEFORE ANY COPYING. Opened
+;; KEY: BOTH DESCRIPTORS ARE MOVED ABOVE 0,1,2 BEFORE ANY COPYING. Opened
   ;; while some of those three are closed, either can land ON one of the
   ;; targets, and then a later `dup2` onto that number changes what the
   ;; other variable refers to. Reasoning about which arrangements are safe
@@ -796,11 +796,11 @@
   ;; overwrite twice against that reasoning; moving them out of the way
   ;; first removes the question instead of answering it.
   ;;
-  ;; ⚠️ `F_DUPFD` gives the lowest free descriptor AT OR ABOVE the number
+  ;; NOTE: `F_DUPFD` gives the lowest free descriptor AT OR ABOVE the number
   ;; asked for, which is exactly "somewhere that is not 0, 1 or 2".
   (define F_DUPFD 0)
 
-  ;; ⛔ THE DESCRIPTOR HANDED IN IS THIS PROCEDURE'S TO ACCOUNT FOR. On
+  ;; NEVER: THE DESCRIPTOR HANDED IN IS THIS PROCEDURE'S TO ACCOUNT FOR. On
   ;; the success path it is closed after being duplicated higher up; when
   ;; `F_DUPFD` failed it used to be left open while the failure was
   ;; raised, and the caller -- which never saw a value -- had nothing to
@@ -825,7 +825,7 @@
                n)
               (else (loop (cons n held) n)))))))
 
-  ;; ⛔ OPENING IS PART OF WHAT CAN FAIL. Both descriptors were acquired
+  ;; NEVER: OPENING IS PART OF WHAT CAN FAIL. Both descriptors were acquired
   ;; in the `let` that binds them -- outside the guard below -- so a
   ;; failure to open the SECOND left the first open with nothing holding
   ;; it: measured, the log opened as fd 42 and stayed open when
@@ -846,9 +846,9 @@
                     (when (= -1 (c-dup2 log-fd target))
                       (raise (fs-err 'dup2 log-path (errno)))))
                   '(1 2)))
-      ;; ⚠️ UNCONDITIONAL NOW: both were moved above 2, so neither is one
+      ;; NOTE: UNCONDITIONAL NOW: both were moved above 2, so neither is one
       ;; of the descriptors just installed.
-      ;; ⛔ AND EACH RELEASE STANDS ALONE. Written as two calls in a row, a
+      ;; NEVER: AND EACH RELEASE STANDS ALONE. Written as two calls in a row, a
       ;; failure closing the first one skipped the second and leaked it --
       ;; the descriptor that could not be released taking with it one that
       ;; could.
@@ -857,30 +857,30 @@
 
   ;; ---- starting a daemon without becoming one -----------------------------
   ;;
-  ;; ⛔ NOT `execvp`. `exec-argv!` REPLACES this process, which is right
+  ;; NEVER: NOT `execvp`. `exec-argv!` REPLACES this process, which is right
   ;; for a launcher and wrong for a client: the client has a call to make
   ;; once the daemon is up, and a process that exec'd into the daemon is
   ;; not there to make it.
   ;;
-  ;; ⭐ MEASURED, 2026-09-18, on both platforms this ships to:
+  ;; KEY: MEASURED, 2026-09-18, on both platforms this ships to:
   ;;
   ;;                                    macOS 25.3.0   FreeBSD 15.0-RELEASE
   ;;   sizeof posix_spawnattr_t              8                  8
   ;;   sizeof posix_spawn_file_actions_t     8                  8
   ;;   POSIX_SPAWN_SETSID                 1024            NOT DEFINED
   ;;
-  ;; ⚠️ SO THE SESSION IS NOT SET HERE. Both attribute types are
+  ;; NOTE: SO THE SESSION IS NOT SET HERE. Both attribute types are
   ;; pointer-sized handles and both are passed as NULL, because the one
   ;; attribute this would have wanted does not exist on FreeBSD 15 -- the
   ;; child leaves the session itself, first thing, under `--detach`. The
   ;; window that leaves is described where the child does it.
   ;;
-  ;; ⚠️ THE ENVIRONMENT IS PASSED EXPLICITLY, because `posix_spawn` has
+  ;; NOTE: THE ENVIRONMENT IS PASSED EXPLICITLY, because `posix_spawn` has
   ;; no "inherit" and a NULL envp is an EMPTY environment, not the
   ;; caller's -- a daemon started that way would lose THEOURGIA_HOME and
   ;; open a different store than the client asked about, silently.
   ;;
-  ;; ⚠️ `environ` IS ONLY THERE ONCE libc IS LOADED. `foreign-entry?`
+  ;; NOTE: `environ` IS ONLY THERE ONCE libc IS LOADED. `foreign-entry?`
   ;; answers #f for every one of these symbols in a process that has not
   ;; touched the library yet, which reads exactly like "this platform
   ;; does not have it". The library is loaded by the time any of this
@@ -909,7 +909,7 @@
             (bytevector-u32-native-ref pid-out 0)
             (raise (fs-err 'spawn (car argv) rc))))))
 
-  ;; ⛔ A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
+  ;; NEVER: A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
   ;; THAT STARTED IT. `spawn-detached!` answers a pid and nothing ever
   ;; waits for it, so when that process exits -- and the loser of the
   ;; daemon's lock race exits at once, every time -- the kernel keeps its
@@ -917,14 +917,14 @@
   ;; nothing: it exits and init inherits the entry. A shell that serves a
   ;; whole session does not exit, and the entries accumulate.
   ;;
-  ;; ⚠️ IT COLLECTS ANY EXITED CHILD rather than a remembered pid. A
+  ;; NOTE: IT COLLECTS ANY EXITED CHILD rather than a remembered pid. A
   ;; caller keeping a list of "its own" pids would have one more thing to
   ;; keep correct, and every child of these callers is started here.
   ;;
-  ;; ⚠️ ANSWERS HOW MANY IT COLLECTED, so a row can assert that it did
+  ;; NOTE: ANSWERS HOW MANY IT COLLECTED, so a row can assert that it did
   ;; something rather than that it did not raise.
   ;;
-  ;; ⭐ WNOHANG MEASURED: 0x1 on macOS (sys/wait.h, MacOSX.sdk) and on
+  ;; KEY: WNOHANG MEASURED: 0x1 on macOS (sys/wait.h, MacOSX.sdk) and on
   ;; FreeBSD 15; it is 1 wherever this ships.
   (define WNOHANG 1)
 
@@ -939,14 +939,14 @@
 
   ;; ---- does this filesystem distinguish Foo from foo -----------------------
   ;;
-  ;; ⛔ A STORE'S KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
+  ;; NEVER: A STORE'S KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
   ;; case-insensitive filesystem it did: the part of the path that does
   ;; not exist yet keeps whatever case the caller typed, and `realpath`
   ;; returns the filesystem's own spelling once it does exist. `Foo` and
   ;; `foo` are one store there, and they were getting two keys -- and one
   ;; of those keys changed the moment the store was created.
   ;;
-  ;; ⭐ MEASURED, 2026-09-18, on both platforms this ships to:
+  ;; KEY: MEASURED, 2026-09-18, on both platforms this ships to:
   ;;
   ;;                            macOS 25.3.0        FreeBSD 15.0-RELEASE
   ;;   _PC_CASE_SENSITIVE            11              not defined at all
@@ -955,7 +955,7 @@
   ;;                                                  unassigned; grep of
   ;;                                                  /usr/include: 0 files)
   ;;
-  ;; ⛔ SO THE NUMBER IS NOT PASSED WHERE IT MEANS NOTHING. Asking with a
+  ;; NEVER: SO THE NUMBER IS NOT PASSED WHERE IT MEANS NOTHING. Asking with a
   ;; name a platform never defined is how a platform assumption becomes a
   ;; general one; it is asked only where it was measured, and everywhere
   ;; else the answer is `unknown`.
@@ -984,13 +984,13 @@
 
   ;; ---- a unix socket, for a client that must not import a server ----------
   ;;
-  ;; ⛔ THE CLIENT MAY NOT REACH THE ACTOR SYSTEM'S NETWORKING. A caller
+  ;; NEVER: THE CLIENT MAY NOT REACH THE ACTOR SYSTEM'S NETWORKING. A caller
   ;; that had to load it would pay for the server it is trying to talk
   ;; to, which is the whole point of the split -- so the five calls a
   ;; blocking client needs are here, in the layer that already owns the
   ;; libc surface, and `(theourgia client)` imports nothing else.
   ;;
-  ;; ⭐ EVERY CONSTANT BELOW WAS COMPILED AND PRINTED ON THE PLATFORM IT
+  ;; KEY: EVERY CONSTANT BELOW WAS COMPILED AND PRINTED ON THE PLATFORM IT
   ;; DESCRIBES, 2026-09-18, not read from a table:
   ;;
   ;;                        macOS 25.3.0 arm64   FreeBSD 15.0-RELEASE amd64
@@ -1006,14 +1006,14 @@
   ;;   tv_sec           offset 0, 8 bytes       offset 0, 8 bytes
   ;;   tv_usec          offset 8, 4 bytes       offset 8, 8 bytes
   ;;
-  ;; ⚠️ THE ONE DIFFERENCE IS tv_usec's WIDTH, AND IT NEEDS NO BRANCH.
+  ;; NOTE: THE ONE DIFFERENCE IS tv_usec's WIDTH, AND IT NEEDS NO BRANCH.
   ;; The field sits at offset 8 of a 16-byte struct on both, so one
   ;; little-endian 64-bit store puts the value in the low four bytes and
   ;; zeros above it: on FreeBSD those four bytes are the rest of the
   ;; field, on macOS they are padding. This holds for any microsecond
   ;; count below 2^32, which is every timeout this client can express.
   ;;
-  ;; ⛔ LINUX IS NOT MEASURED, and it is NOT the same shape: it has no
+  ;; NEVER: LINUX IS NOT MEASURED, and it is NOT the same shape: it has no
   ;; sun_len, its sun_family is two bytes at offset 0, and SOL_SOCKET
   ;; and the two timeout options have different values. Rather than ship
   ;; a guess that would connect to the wrong address quietly, the layout
@@ -1035,7 +1035,7 @@
     (let ((k (machine-kind)))
       (or (string=? k "darwin") (string=? k "freebsd"))))
 
-  ;; ⚠️ THE LENGTH LIMIT IS PART OF THE ABI, NOT A STYLE RULE. `sun_path`
+  ;; NOTE: THE LENGTH LIMIT IS PART OF THE ABI, NOT A STYLE RULE. `sun_path`
   ;; holds 104 bytes INCLUDING the terminator, and a path that does not
   ;; fit is not truncated by the kernel into something harmless -- it
   ;; binds or connects to a different name. Scratch directories are long
@@ -1076,10 +1076,10 @@
         (list SO_RCVTIMEO SO_SNDTIMEO))))
 
   ;; Answers a connected descriptor, or raises a durable-error carrying
-  ;; the errno. ⛔ IT DOES NOT CLASSIFY THE ERRNO: which failures mean
+  ;; the errno. NEVER: IT DOES NOT CLASSIFY THE ERRNO: which failures mean
   ;; "no daemon, start one" and which mean "stop" is the client's rule
   ;; and lives with the client, in one list.
-  ;; ⛔ THE ADDRESS IS BUILT BEFORE THE DESCRIPTOR EXISTS. `let` does not
+  ;; NEVER: THE ADDRESS IS BUILT BEFORE THE DESCRIPTOR EXISTS. `let` does not
   ;; order its bindings, so with the socket opened first a `sockaddr-un`
   ;; that refused -- a path too long for `sun_path` -- left that
   ;; descriptor open with nothing holding it: measured, a 104-character
@@ -1090,7 +1090,7 @@
            (fd (c-socket AF_UNIX SOCK_STREAM 0)))
       (when (= fd -1)
         (raise (fs-err 'socket path (errno))))
-      ;; ⛔ A DESCRIPTOR THAT HAS BEEN ALLOCATED IS CLOSED ON EVERY WAY OUT.
+      ;; NEVER: A DESCRIPTOR THAT HAS BEEN ALLOCATED IS CLOSED ON EVERY WAY OUT.
       ;; `socket-timeout!` raises when `setsockopt` fails, and the socket
       ;; opened two lines above was left open -- a client that retried
       ;; would leak one per attempt.
@@ -1529,7 +1529,7 @@
        ;; HANG, because `cli1` starts two children that die instantly
        ;; and then writes to a fifo nothing will ever read.
        ;;
-       ;; ⛔ SO NOTHING IN HERE IS COVERED BY A RUN WITH INJECTION OFF.
+       ;; NEVER: SO NOTHING IN HERE IS COVERED BY A RUN WITH INJECTION OFF.
        ;; A change to this library is measured with THEOURGIA_INJECT=on
        ;; as well, or it is not measured.
 
@@ -1598,7 +1598,7 @@
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) #t)))
 
-     ;; ⚠️ NOT ONE-SHOT. What this exists to ask is whether a close
+     ;; NOTE: NOT ONE-SHOT. What this exists to ask is whether a close
      ;; failure changes anything, and a caller that closed twice on its
      ;; way out would get one failure and one success from a one-shot
      ;; fault -- which is the shape that hid the defect in the first
@@ -1786,7 +1786,7 @@
     (let ((subject (subject-of fd '())))
       (forget-fd! fd)
       (let ((rc (c-close fd)))
-        ;; ⚠️ THE DESCRIPTOR IS REALLY CLOSED, and the failure is injected
+        ;; NOTE: THE DESCRIPTOR IS REALLY CLOSED, and the failure is injected
         ;; after: a fault that skipped the close would leak one per call,
         ;; and the leak rather than the refusal is what a row would end up
         ;; measuring.
@@ -2032,12 +2032,12 @@
   ;; deriving an identity from the spelling gives that one file several
   ;; identities.
   ;;
-  ;; ⭐ MEASURED, on the key the daemon used to compute: `/tmp/x`,
+  ;; KEY: MEASURED, on the key the daemon used to compute: `/tmp/x`,
   ;; `/tmp/x/`, a symlink to it and `/tmp/./x` produced FOUR different
   ;; keys, although `stat` reported the same device and inode for all
   ;; four -- because the spelling was concatenated in front of them.
   ;;
-  ;; ⚠️ IT ANSWERS #f FOR A PATH THAT IS NOT THERE, rather than raising:
+  ;; NOTE: IT ANSWERS #f FOR A PATH THAT IS NOT THERE, rather than raising:
   ;; a caller asking "what is this really called" about something that
   ;; does not exist has an answer to give, and it is not an error.
   ;; `PATH_MAX` is 1024 on macOS and 4096 on Linux; the buffer is the
@@ -2060,7 +2060,7 @@
   ;; socket" -- and Chez answers "regular file?" and "directory?" but not
   ;; this one.
   ;;
-  ;; ⛔ THE OFFSET IS PER PLATFORM AND IS NOT DERIVABLE AT RUN TIME, the
+  ;; NEVER: THE OFFSET IS PER PLATFORM AND IS NOT DERIVABLE AT RUN TIME, the
   ;; same difficulty `rss-freebsd` states above. Each one is the field
   ;; order that platform's `sys/stat.h` declares, and the order is the
   ;; provenance -- an offset with no field list behind it is a number
@@ -2080,31 +2080,31 @@
   ;;     | mode_t st_mode (uint16, 2) | ...
   ;;     ⇒ st_mode at 24, 16 bits.
   ;;
-  ;; ⚠️ `st_ino` AT 8 ON ALL THREE is what `path-device-inode` already
+  ;; NOTE: `st_ino` AT 8 ON ALL THREE is what `path-device-inode` already
   ;; relies on, so two of these three field lists were load bearing
   ;; before this predicate existed.
   ;;
-  ;; ⭐ MEASURED ON TWO OF THE THREE, 2026-09-18, by statting a socket, a
+  ;; KEY: MEASURED ON TWO OF THE THREE, 2026-09-18, by statting a socket, a
   ;; fifo, a regular file and a directory and reading every candidate
   ;; offset:
   ;;
-  ;;   macOS 25.3.0 arm64   offset 4, 16 bits:  C1ED 11A4 81A4 41ED  ✓
+  ;;   macOS 25.3.0 arm64   offset 4, 16 bits:  C1ED 11A4 81A4 41ED  ok
   ;;                        offset 24:          reads 0
-  ;;   FreeBSD 15.0-RELEASE offset 24, 16 bits: C1ED 11A4 81A4 41ED  ✓
+  ;;   FreeBSD 15.0-RELEASE offset 24, 16 bits: C1ED 11A4 81A4 41ED  ok
   ;;                        offset 4:           reads 0
   ;;
-  ;; ⛔ LINUX IS NOT MEASURED. There is no Linux host to hand; its entry
+  ;; NEVER: LINUX IS NOT MEASURED. There is no Linux host to hand; its entry
   ;; is read from the glibc field list above and nothing else. `DS-1` in
   ;; `daemon-socket.ss` is what will say so, on the first machine that
   ;; runs it there.
   ;;
-  ;; ⚠️ AND ON FreeBSD A 32-BIT READ AT 24 ALSO MATCHED, because the two
+  ;; NOTE: AND ON FreeBSD A 32-BIT READ AT 24 ALSO MATCHED, because the two
   ;; bytes after the 16-bit field happen to be zero for these four kinds.
   ;; So that platform's WIDTH is not pinned by this measurement -- only
   ;; its offset is. A width wrong in the other direction would show on a
   ;; mode whose neighbouring bytes are not zero.
   ;;
-  ;; ⚠️ SO IT IS CHECKED BY A CELL RATHER THAN TRUSTED. `daemon-socket.ss`
+  ;; NOTE: SO IT IS CHECKED BY A CELL RATHER THAN TRUSTED. `daemon-socket.ss`
   ;; makes a socket, a fifo, a regular file and a directory on one path in
   ;; turn and asks this predicate about each; an offset wrong on some
   ;; platform fails there, rather than showing up as a daemon unlinking
@@ -2248,7 +2248,7 @@
           (trace-event! 'flock subject #f))
         (make-lock-handle path mode fd #t))))
 
-  ;; ⛔ THE ATTEMPT THAT NEVER WAITS. `lock-acquire!` blocks when the lock
+  ;; NEVER: THE ATTEMPT THAT NEVER WAITS. `lock-acquire!` blocks when the lock
   ;; is held, and blocking is exactly what an actor may not do: the flock
   ;; runs on the scheduler's own thread, so a process parked in it stops
   ;; every other process in the VM -- including the one that would have
@@ -2311,7 +2311,7 @@
   ;;
   ;; BUILT ON THE PAIR ABOVE so the acquisition sequence has one
   ;; implementation. What this adds is the release, on every path out.
-  ;; ⛔ HOW A LOCK IS TAKEN IS THE PROGRAM'S DECISION, NOT THIS FILE'S.
+  ;; NEVER: HOW A LOCK IS TAKEN IS THE PROGRAM'S DECISION, NOT THIS FILE'S.
   ;; The default is the blocking acquire, so every existing caller --
   ;; the CLI above all -- behaves exactly as before. A daemon sets this
   ;; once, for its whole lifetime, to an attempt that never waits: an
@@ -2319,7 +2319,7 @@
   ;; stops every other process in the VM, including the one that would
   ;; have released the lock.
   ;;
-  ;; ⚠️ AND IT IS SET, NOT PARAMETERIZED AROUND A PROCESS. Measured:
+  ;; NOTE: AND IT IS SET, NOT PARAMETERIZED AROUND A PROCESS. Measured:
   ;; Chez parameters are per OS THREAD, and green threads share one --
   ;; so a `parameterize` in one actor is visible to every actor that
   ;; runs during its extent, and gone again afterwards. Neither half is
@@ -2327,7 +2327,7 @@
   ;; default is that nothing in the CLI ever sets this.
   (define current-lock-acquire (make-parameter lock-acquire!))
 
-  ;; ⛔ THE PAIR IS OVERRIDDEN TOGETHER OR NOT AT ALL. A strategy in
+  ;; NEVER: THE PAIR IS OVERRIDDEN TOGETHER OR NOT AT ALL. A strategy in
   ;; which somebody other than the caller opens the descriptor must
   ;; also be the one to close it: a release that ran here would shut a
   ;; descriptor its owner still has in a table, and the number would be

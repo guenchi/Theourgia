@@ -20,14 +20,14 @@
 ;; writer may rename a new draft into that name in between -- and then
 ;; the delete removes work nobody committed, silently.
 ;;
-;; ⭐ THE SCHEDULE HAS TO OBSERVE THE BLOCKING, and that is the whole
+;; KEY: THE SCHEDULE HAS TO OBSERVE THE BLOCKING, and that is the whole
 ;; reason this fixture is shaped the way it is. "Install v2 first, then
 ;; retire" would also leave v2 standing -- on a build with no lock at
 ;; all, because the compare would simply fail. The row that discriminates
 ;; is the one where the retiring process is INSIDE the lock, past its
 ;; comparison, and the writing process is seen to WAIT.
 ;;
-;; ⚠️ EVERY WAIT IS BOUNDED. A fifo with no reader blocks forever, and
+;; NOTE: EVERY WAIT IS BOUNDED. A fifo with no reader blocks forever, and
 ;; this suite has lost fifteen minutes a fixture to exactly that. The
 ;; dance runs under one alarm and kills its children on any exit.
 
@@ -72,14 +72,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -165,11 +165,11 @@
 (want "W6-retire-race the retiring process stopped inside the lock"
       (and (member "retirer-inside yes" lines) #t) #t)
 
-;; ⭐ THE DISCRIMINATING ROW. A build with no lock lets the write finish
+;; KEY: THE DISCRIMINATING ROW. A build with no lock lets the write finish
 ;; while the retirer sits at the barrier, and this reads `no`.
-;; ⭐ THE READING IS THE LOCK'S OWN EVENT, NOT THE PROCESS'S LIVENESS.
+;; KEY: THE READING IS THE LOCK'S OWN EVENT, NOT THE PROCESS'S LIVENESS.
 ;;
-;; ⚠️ IT USED TO BE `kill -0`. A process that is alive may be waiting on
+;; NOTE: IT USED TO BE `kill -0`. A process that is alive may be waiting on
 ;; the lock, or doing anything else -- compiling, opening files, sleeping
 ;; on a slow disk. With the lock removed and the writer merely delayed
 ;; before installing, every row here could pass. `ffi.ss` emits
@@ -190,7 +190,7 @@
 
 ;; ---- the lock is not a draft, and cannot be deleted as one ---------------
 ;;
-;; ⛔ IT USED TO BE `working/.lock`, AND `discard` TOOK IT. `safe-id?`
+;; NEVER: IT USED TO BE `working/.lock`, AND `discard` TOOK IT. `safe-id?`
 ;; admits `.lock`, so a client could delete the file the two steps above
 ;; serialise on -- after which the next processes create and lock
 ;; DIFFERENT inodes and the race comes back with nothing to show for it.
@@ -210,7 +210,7 @@
 
 ;; ---- W6b THE COMPARISON, WHICH THE LOCK HIDES -----------------------------
 ;;
-;; ⭐ THE DANCE ABOVE NEVER EXERCISES THE ENVELOPE COMPARISON. It arms
+;; KEY: THE DANCE ABOVE NEVER EXERCISES THE ENVELOPE COMPARISON. It arms
 ;; `retire-locked`, which fires INSIDE the lock and AFTER the compare has
 ;; already agreed, so the replacement draft cannot exist yet when the
 ;; compare runs: the writer is still waiting on the lock. Delete the
@@ -222,7 +222,7 @@
 ;; lands in that gap is a draft the retirer never read. `before-retire`
 ;; stops the commit exactly there.
 ;;
-;; ⚠️ IT CANNOT BE STOPPED ANY EARLIER THAN THAT, and the first attempt
+;; NOTE: IT CANNOT BE STOPPED ANY EARLIER THAN THAT, and the first attempt
 ;; here tried: armed at `before-append`, the commit still holds the
 ;; store's write session, so the second process blocked trying to read
 ;; the store and the two waited on each other until the alarm. The gap
@@ -267,7 +267,7 @@
         "while [ $i -lt 400000 ] && ! grep -q 'barrier before-retire' '" btrace "' 2>/dev/null; do i=$((i+1)); done\n"
         "grep -q 'barrier before-retire' '" btrace "' 2>/dev/null && echo 'retirer-paused yes' >> '" breport "' || echo 'retirer-paused no' >> '" breport "'\n"
         ;; THE REPLACEMENT, WHICH MUST FINISH WHILE THE OTHER IS STOPPED.
-        ;; ⚠️ UNDER ITS OWN ALARM. It is the one step that can block --
+        ;; NOTE: UNDER ITS OWN ALARM. It is the one step that can block --
         ;; on the draft lock, if the build being measured takes the lock
         ;; earlier than this one does -- and the controller's alarm
         ;; reaches the controller, not its children. Without this a
@@ -280,7 +280,7 @@
         "md5 -q '" bdraft "' >> '" breport "' 2>/dev/null || echo no-draft >> '" breport "'\n"
         "sh -c 'for k in 1 2 3 4; do printf x > \"" bfifo "\"; done' &\n"
         "f=$!\n"
-        ;; ⛔ AND THE RETIRER'S EXIT STATUS IS PART OF THE REPORT. A
+        ;; NEVER: AND THE RETIRER'S EXIT STATUS IS PART OF THE REPORT. A
         ;; child that DIES at the barrier leaves the commit durable, the
         ;; barrier line in the trace and the replacement standing -- all
         ;; of which read exactly like the comparison having worked. The
@@ -305,18 +305,18 @@
       (and (member "retirer-paused yes" blines) #t) #t)
 (want "W6b and the replacement was written while it was stopped"
       (and (member "replacement-rc 0" blines) #t) #t)
-;; ⛔ AND THE RETIRER RAN TO THE END. Every row below is about what it
+;; NEVER: AND THE RETIRER RAN TO THE END. Every row below is about what it
 ;; did NOT delete, and a process that died at the barrier deletes
 ;; nothing either.
 (want "W6b TWIN: and the retiring process finished, rather than dying parked"
       (and (member "retirer-rc 0" blines) #t) #t)
 
-;; ⭐ THE ROW THE COMPARISON OWNS. The retirer read `b1 text`; what is
+;; KEY: THE ROW THE COMPARISON OWNS. The retirer read `b1 text`; what is
 ;; in the slot is `b2 text`, written by a process it never saw. Without
 ;; the envelope comparison the unlink takes the replacement, and this
 ;; reads `#f`.
 (want "W6b the replacement is still there afterwards" (file-exists? bdraft) #t)
-;; ⚠️ THE DIGEST IS TAKEN AGAIN, NOT MERELY LOOKED FOR. An earlier
+;; NOTE: THE DIGEST IS TAKEN AGAIN, NOT MERELY LOOKED FOR. An earlier
 ;; version of this row checked that a 32-character line was in the
 ;; report and that the file could still be read, which is true of any
 ;; file at all -- including one the retirer had deleted and the writer
@@ -326,7 +326,7 @@
   (guard (e (#t #f))
     (call-with-input-file (string-append root "/md5-after") get-line)))
 (define md5-before (find (lambda (l) (= 32 (string-length l))) blines))
-;; ⚠️ BOTH SIDES ARE REQUIRED TO BE DIGESTS INSIDE THE COMPARISON. A
+;; NOTE: BOTH SIDES ARE REQUIRED TO BE DIGESTS INSIDE THE COMPARISON. A
 ;; version of this row compared `(list md5-after recorded)` against
 ;; `(list md5-after md5-after)`: with no digest in the report and none
 ;; readable now, both sides are `(#f #f)` and the row passes about two

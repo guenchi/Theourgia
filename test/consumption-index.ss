@@ -20,7 +20,7 @@
 ;; packet per request, which meant two stores to keep in step and a scan
 ;; of all the packets on every read of a draft.
 ;;
-;; ⚠️ NOTHING IN THIS CORE WRITES A SIX-ELEMENT PLAN YET. These rows put
+;; NOTE: NOTHING IN THIS CORE WRITES A SIX-ELEMENT PLAN YET. These rows put
 ;; the records into a reduction directly, which is what the index is
 ;; built from, and they are here before the writer exists on purpose: a
 ;; reader that cannot yet be produced is a reader nobody has measured.
@@ -139,7 +139,7 @@
 
 ;; ---- CI-05 a snapshot without the row -------------------------------------
 ;;
-;; ⭐ THE TWO PATHS HAVE TO AGREE. One reads the row; the other rebuilds
+;; KEY: THE TWO PATHS HAVE TO AGREE. One reads the row; the other rebuilds
 ;; from the records the snapshot carries. A cell that only checked the
 ;; first would be green against a build whose second path returns
 ;; nothing, and that build makes every consumed draft visible again.
@@ -211,7 +211,7 @@
 ;; old index across a rebuild would pass every row above, and would then
 ;; disagree with the records exactly when a record was taken back.
 ;;
-;; ⚠️ THE ROW HAS TO MAKE THE REBUILD HAPPEN. An unrelated arrival does
+;; NOTE: THE ROW HAS TO MAKE THE REBUILD HAPPEN. An unrelated arrival does
 ;; not: a rebuild is forced only by a record that reverses a membership
 ;; that was already applied. The first version of this row appended an
 ;; ordinary record, took the rebuild path never, and compared the index
@@ -282,7 +282,7 @@
 
 ;; ---- CI-10 a plan's records are one writer's, in sequence ---------------
 ;;
-;; ⚠️ AN EARLIER VERSION OF THIS SECTION SAID A CROSS-WRITER MEMBER IS
+;; NOTE: AN EARLIER VERSION OF THIS SECTION SAID A CROSS-WRITER MEMBER IS
 ;; REFUSED, AND MEASURED IT. The measurement was of the wrong thing: the
 ;; record it built named `splitaaa.1` as its dependency while its
 ;; predecessor in the plan was `splitaaa.2`, so what `plan-order`
@@ -325,9 +325,9 @@
                  (map cdr (list-ref (car (state-consumption split)) 4)))
       '(("splitaaa" . 2) ("splitbbb" . 1)))
 
-;; ⚠️ IN THIS PARTICULAR ARRANGEMENT the two rules agree, because the
+;; NOTE: IN THIS PARTICULAR ARRANGEMENT the two rules agree, because the
 ;; greatest member by (writer, seq) is also the last one applied, so its
-;; cut already covers the other. ⛔ THAT IS NOT A GENERAL FACT -- I
+;; cut already covers the other. NEVER: THAT IS NOT A GENERAL FACT -- I
 ;; recorded it as one, twice, and it is false; see CI-12 below, where
 ;; the chain runs the other way and the join reaches a member the
 ;; completion event's own cut does not.
@@ -342,7 +342,7 @@
         (list (>= (or (reach own "splitbbb") -1) 1)
               (>= (or (reach own "splitaaa") -1) 2)))
       '(#t #t))
-;; ⚠️ COMPARED AS SETS. A cut is an association list and the join
+;; NOTE: COMPARED AS SETS. A cut is an association list and the join
 ;; rebuilds it, so the two carry the same reaches in a different
 ;; spelling; comparing the lists as written would be asserting the order
 ;; of an alist.
@@ -353,7 +353,7 @@
 
 ;; ---- CI-12 the greatest member, and why the join is not the same -------
 ;;
-;; ⚠️ TWO EARLIER EXPLANATIONS IN THIS FILE WERE WRONG, and the second
+;; NOTE: TWO EARLIER EXPLANATIONS IN THIS FILE WERE WRONG, and the second
 ;; was wrong in a way that hid a real difference.
 ;;
 ;;   First: "a member from another writer is refused." It is not -- what
@@ -364,7 +364,7 @@
 ;;   `zplan000.2` above `amemb000.1`, while the causal chain runs the
 ;;   other way -- z's member first, a's member after it.
 ;;
-;; ⭐ SO THIS IS THE CASE THAT SEPARATES EVERYTHING. The greatest member
+;; KEY: SO THIS IS THE CASE THAT SEPARATES EVERYTHING. The greatest member
 ;; is `zplan000.2`, whose own cut does NOT contain `amemb000.1`; the
 ;; join of both member cuts does. And "the greatest" is not "the last
 ;; applied" here either, so a build that recorded whichever member
@@ -391,12 +391,12 @@
 (want "CI-12 TWIN: and the LAST APPLIED is amemb000.1"
       (state-consumed? chain "dw" "vc") #t)
 
-;; ⭐ COMPLETION IS THE GREATEST, NOT THE LAST APPLIED. A build that
+;; KEY: COMPLETION IS THE GREATEST, NOT THE LAST APPLIED. A build that
 ;; recorded the last member to arrive answers `("amemb000" . 1)`.
 (want "CI-12 completion is the greatest member by (writer, seq)"
       (list-ref (car (state-consumption chain)) 5) (cons "zplan000" 2))
 
-;; ⭐ AND THE PARENT CUT IS THE JOIN, WHICH THE GREATEST MEMBER'S CUT IS
+;; KEY: AND THE PARENT CUT IS THE JOIN, WHICH THE GREATEST MEMBER'S CUT IS
 ;; NOT. This is the row that was missing: the join reaches amemb000.1
 ;; and the completion event's own cut does not.
 (define chain-parent (car (state-consumed-parent-cuts chain "dw" "vc")))
@@ -413,7 +413,7 @@
 
 ;; ---- CI-13 the snapshot really carries the index -------------------------
 ;;
-;; ⚠️ CI-04 AND CI-05 BETWEEN THEM DID NOT REQUIRE THE ROW TO EXIST.
+;; NOTE: CI-04 AND CI-05 BETWEEN THEM DID NOT REQUIRE THE ROW TO EXIST.
 ;; Removing it from `state->rows` left both green, because the absent-row
 ;; path rebuilds from `request-history` and answers the same. The row has
 ;; to be asked for by name.
@@ -464,7 +464,7 @@
 
 ;; ---- CI-15 a late duplicate MEMBER, and what drafts must still show ------
 ;;
-;; ⚠️ MEASURED GAP: the rows above all revoke by putting the PLAN in
+;; NOTE: MEASURED GAP: the rows above all revoke by putting the PLAN in
 ;; conflict. A second record claiming a MEMBER's slot leaves the plan
 ;; applied and gates the members -- and the lookup that resolves a gated
 ;; event to its plan found nothing, so a draft the commit had already
@@ -491,7 +491,7 @@
 (want "CI-15 TWIN: and the plan record itself is not gated"
       (assoc (cons "dupm0000" 1) (reduce-gates dup)) #f)
 (want "CI-15 the consumption is withdrawn" (state-consumed? dup "dw" "vd") #f)
-;; ⭐ AND THE DRAFT IS DISCOVERABLE. Its file is gone -- the commit
+;; KEY: AND THE DRAFT IS DISCOVERABLE. Its file is gone -- the commit
 ;; retired it -- so `drafts` has to be able to say `revoked`, and
 ;; `restore` has to be able to find it.
 (want "CI-15 and the version is reported as revoked"
@@ -499,7 +499,7 @@
 
 ;; ---- CI-16 what a PENDING plan is not -------------------------------------
 ;;
-;; ⚠️ Replacing the gate filter with #t left all 55 rows green: nothing
+;; NOTE: Replacing the gate filter with #t left all 55 rows green: nothing
 ;; asked `state-revoked` about a plan that is merely waiting.
 
 ;; A FRESH ONE: the `waiting` reduction above has since had its
@@ -522,7 +522,7 @@
 
 ;; ---- CI-17 `seen` survives a rebuild, not only a snapshot -----------------
 ;;
-;; ⚠️ Removing `fill-seen-from-history!` from `rebuild-request-state!`
+;; NOTE: Removing `fill-seen-from-history!` from `rebuild-request-state!`
 ;; left every row green: CI-14 asks about a snapshot, and nothing asked
 ;; after a membership reversal, which is the other path that clears it.
 

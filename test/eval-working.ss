@@ -15,7 +15,7 @@
 
 ;; Evaluating against a writer's working view.
 ;;
-;; ⭐ EVERY ROW HERE RUNS THE REAL COMMAND LINE AS A PROCESS. The view is
+;; KEY: EVERY ROW HERE RUNS THE REAL COMMAND LINE AS A PROCESS. The view is
 ;; built before a child exists and carried into it as bytes; a row that
 ;; called the libraries would be testing neither of those.
 
@@ -56,7 +56,7 @@
             ((string=? (substring text i (+ i n)) needle) #t)
             (else (loop (+ i 1)))))))
 
-;; ⚠️ SINGLE QUOTES, so the fixture never hands a shell anything to
+;; NOTE: SINGLE QUOTES, so the fixture never hands a shell anything to
 ;; expand -- the programs under test must receive the bytes as written.
 (define (quoted a)
   (string-append "'"
@@ -90,7 +90,7 @@
 (cli "init")
 (define inserted (cli "insert" "--title" "W11" "--text" "(define answer 1)"))
 
-;; ⛔ THE ID COMES FROM THE `state` FIELD, not from the first quoted thing
+;; NEVER: THE ID COMES FROM THE `state` FIELD, not from the first quoted thing
 ;; in the answer. Measured by getting it wrong: the first `("` in an
 ;; insert's answer is inside `(events (("i64pwro4" . 1)))` -- the WRITER's
 ;; name -- and every row downstream then asked about a block that does not
@@ -98,7 +98,7 @@
 ;; The `(working-view ...)` field of an answer, as text, and the cut
 ;; position inside it.
 ;;
-;; ⛔ BY BALANCED PARENTHESES, NOT BY THE FIRST `)`. The cut is itself a
+;; NEVER: BY BALANCED PARENTHESES, NOT BY THE FIRST `)`. The cut is itself a
 ;; list of pairs, so a scan stopping at the first closer would return
 ;; `(("id" . 1` and every comparison against it would be about a prefix.
 (define (balanced text i)
@@ -147,7 +147,7 @@
       'have-a-block)
 
 ;; Two writers, two different drafts of the same block.
-;; ⚠️ COMMITTED BEFORE ANY DRAFT IS TAKEN, AND THAT ORDER IS NOW LOAD
+;; NOTE: COMMITTED BEFORE ANY DRAFT IS TAKEN, AND THAT ORDER IS NOW LOAD
 ;; BEARING. `W11-overlay-wins` reads this block under w1's view; since
 ;; the view is pinned to the baseline of w1's own drafts, a block
 ;; committed AFTER them is not in it -- which is what
@@ -162,7 +162,7 @@
 
 ;; ---- W11-working-view --------------------------------------------------------
 ;;
-;; ⛔ EACH WRITER SEES ITS OWN DRAFT AND NOBODY ELSE'S. Two writers with a
+;; NEVER: EACH WRITER SEES ITS OWN DRAFT AND NOBODY ELSE'S. Two writers with a
 ;; draft of the same block is the case where an overlay that read the
 ;; wrong directory still looks like it works -- both answers would be
 ;; drafts, just the wrong one.
@@ -176,9 +176,9 @@
 
 ;; ---- W11-report-agrees -------------------------------------------------------
 ;;
-;; ⛔ THE ANSWER MUST NOT CONTRADICT ITSELF. `(working-view …)` lists the
+;; NEVER: THE ANSWER MUST NOT CONTRADICT ITSELF. `(working-view …)` lists the
 ;; drafts the evaluation was given; the value is what it actually read.
-;; ⚠️ Measured with the overlay wired only into `--under`: the report said
+;; NOTE: Measured with the overlay wired only into `--under`: the report said
 ;; the draft was in the view and the value was the COMMITTED source --
 ;; both halves "succeeded" and nothing was red. A row that only looked at
 ;; one of them cannot see that.
@@ -189,10 +189,10 @@
                 (list 'read (field-of as-w1 "src"))))
       '(reported-w1 and-read-w1s-draft))
 
-;; ⛔ TWIN: WITHOUT `--working` THE REPORT CLAIMS NOTHING AND THE VALUE IS
+;; NEVER: TWIN: WITHOUT `--working` THE REPORT CLAIMS NOTHING AND THE VALUE IS
 ;; COMMITTED. Without it, "the two agree" is satisfied by an answer that
 ;; reports nothing and reads nothing.
-;; ⚠️ THE EXPECTATION FOLLOWS A RULING, NOT THE CODE. This row used to
+;; NOTE: THE EXPECTATION FOLLOWS A RULING, NOT THE CODE. This row used to
 ;; require `(working-view #f #f ())`: writer absent, CUT ABSENT, no
 ;; drafts. v218 settled that the cut position always carries the cut the
 ;; evaluation actually used, because that is the coordinate the answer
@@ -208,7 +208,7 @@
 
 ;; ---- W11-overlay-wins --------------------------------------------------------
 ;;
-;; ⛔ A BLOCK WITH NO DRAFT STILL READS AS COMMITTED, in the same answer
+;; NEVER: A BLOCK WITH NO DRAFT STILL READS AS COMMITTED, in the same answer
 ;; as one that has a draft. An overlay that replaced the whole view
 ;; rather than the blocks it covers would lose the rest of the store.
 (want "W11-overlay-wins a block without a draft still reads as committed under a view"
@@ -219,17 +219,17 @@
 
 ;; ---- W11-snapshot-not-live ---------------------------------------------------
 ;;
-;; ⚠️ RENAMED. This row was called `W11-pinned-by-default`, which is the
+;; NOTE: RENAMED. This row was called `W11-pinned-by-default`, which is the
 ;; name of a DIFFERENT property -- the one three rows below, where the
 ;; view is pinned to the baseline of the writer's own drafts. What this
 ;; one is about is that each run carries its own COPY rather than reading
 ;; a live directory. Two senses of "pinned", and the old name made this
 ;; row read as coverage of the other.
 ;;
-;; ⛔ THE VIEW IS FIXED WHEN THE EVALUATION STARTS. The draft is changed
+;; NEVER: THE VIEW IS FIXED WHEN THE EVALUATION STARTS. The draft is changed
 ;; while nothing is running and read again: a second run sees the new
 ;; one, which is what says the first run saw a SNAPSHOT rather than a
-;; live directory. ⚠️ This row does not need a race to mean something --
+;; live directory. NOTE: This row does not need a race to mean something --
 ;; what it pins is that each run carries its own copy.
 (cli "write" "--writer" "w1" block-id "(define answer 22)")
 (want "W11-snapshot-not-live a later draft is read by a later run, not an earlier one"
@@ -241,7 +241,7 @@
 
 ;; ---- W11-no-lock-during-run --------------------------------------------------
 ;;
-;; ⛔ NOTHING IS HELD WHILE THE EVALUATION RUNS. A writer's draft lock is
+;; NEVER: NOTHING IS HELD WHILE THE EVALUATION RUNS. A writer's draft lock is
 ;; taken for the copy and released; if it were held for the run, this
 ;; write -- issued while a slow evaluation is in flight -- would block
 ;; until the evaluation ended.
@@ -252,7 +252,7 @@
           " --store " store " --wire > " here "/slow.txt 2>&1 &"))
 (system "sleep 1")
 
-;; ⛔ THE PREMISE IS CHECKED, NOT ASSUMED. Most of a run's wall time is
+;; NEVER: THE PREMISE IS CHECKED, NOT ASSUMED. Most of a run's wall time is
 ;; two Chez processes loading this library from source, and the
 ;; EVALUATION itself is only the part after that. Measured: a loop to
 ;; forty million -- what this row used to launch -- evaluates in under
@@ -272,7 +272,7 @@
       'wrote-during-the-run)
 (system "sleep 20")
 
-;; ⛔ AND THE EVALUATION IT RAN BESIDE HAS TO HAVE SUCCEEDED. If the
+;; NEVER: AND THE EVALUATION IT RAN BESIDE HAS TO HAVE SUCCEEDED. If the
 ;; write had disturbed it -- or if the launch had failed outright and
 ;; left an empty file, which is also what "still running" looks like --
 ;; the row above would still be green.
@@ -283,10 +283,10 @@
 
 ;; ---- W11-pinned-by-default, W11-latest, W11-cut-overrides --------------------
 ;;
-;; ⛔ A WRITER'S WORKING VIEW STANDS ON THE STATE ITS OWN DRAFTS RECORD.
+;; NEVER: A WRITER'S WORKING VIEW STANDS ON THE STATE ITS OWN DRAFTS RECORD.
 ;; A third writer takes a draft, and only then is a new block committed.
 ;; Pinned, that block is not in the view; `--latest` asks for the current
-;; state and it is. ⚠️ Until this batch the tree always evaluated at the
+;; state and it is. NOTE: Until this batch the tree always evaluated at the
 ;; current state -- the `--latest` behaviour, as the default -- and
 ;; `--latest` itself was accepted by the parser and read by nothing.
 (cli "write" "--writer" "w3" block-id "(define answer 3)")
@@ -305,7 +305,7 @@
         (if (contains? out "(define later 7)") 'in-view (list 'said out)))
       'in-view)
 
-;; ⛔ TWIN: PINNING IS NOT "SEES NOTHING". The writer's own draft is in
+;; NEVER: TWIN: PINNING IS NOT "SEES NOTHING". The writer's own draft is in
 ;; the pinned view -- otherwise the row above is satisfied by a view that
 ;; is simply empty, which is a different defect answering to the same
 ;; reading.
@@ -315,7 +315,7 @@
         (if (contains? out "(define answer 3)") 'own-draft-visible (list 'said out)))
       'own-draft-visible)
 
-;; ⛔ AND THE REPORTED CUT IS THE ONE IT USED, so the two runs above are
+;; NEVER: AND THE REPORTED CUT IS THE ONE IT USED, so the two runs above are
 ;; distinguishable from the answer alone and not only by what they read.
 (want "W11-pinned-by-default the reported cut differs between pinned and latest"
       (let ((pinned (cli "eval" "--working" "--writer" "w3" "(+ 1 2)"))
@@ -327,7 +327,7 @@
             (list (view-of pinned) (view-of latest))))
       'two-coordinates)
 
-;; ⛔ AN EXPLICIT COORDINATE WINS OVER BOTH, and asking for two at once
+;; NEVER: AN EXPLICIT COORDINATE WINS OVER BOTH, and asking for two at once
 ;; is refused rather than resolved by a precedence rule -- a rule would
 ;; make one of the two spellings silently do nothing, which is the defect
 ;; this batch removed.
@@ -344,7 +344,7 @@
 
 ;; ---- what is NOT covered here ------------------------------------------------
 ;;
-;; ⛔ `W11-export-working` AND `W11-cut-plus-working` BELONG TO VERBS THIS
+;; NEVER: `W11-export-working` AND `W11-cut-plus-working` BELONG TO VERBS THIS
 ;; FIXTURE DOES NOT DRIVE (`export-code`, and `eval --cut` combined with a
 ;; view beyond the row above). They are named here so their absence is a
 ;; decision on the record rather than an oversight.

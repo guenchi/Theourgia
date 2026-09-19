@@ -15,12 +15,12 @@
 
 ;; What the daemon will and will not remove from its socket path.
 ;;
-;; ⛔ IT UNLINKS ONLY A SOCKET, and the test for that is `stat`'s type
+;; NEVER: IT UNLINKS ONLY A SOCKET, and the test for that is `stat`'s type
 ;; bits. It used to be "a regular file or a directory is somebody else's,
 ;; everything else may go" -- and those are not complements. A fifo is
 ;; neither, measured, so it fell through and was removed.
 ;;
-;; ⚠️ AND THE OFFSET OF `st_mode` IS PER PLATFORM, not derivable at run
+;; NOTE: AND THE OFFSET OF `st_mode` IS PER PLATFORM, not derivable at run
 ;; time. `file-is-socket?` carries three of them. The first section here
 ;; is what catches a wrong one: four kinds of thing on one path, each
 ;; asked about. On a platform whose offset is wrong these rows fail,
@@ -65,7 +65,7 @@
 
 ;; ---- the predicate, against all four kinds ------------------------------------
 ;;
-;; ⛔ ALL FOUR, ON ONE PATH, IN TURN. Asking only about a socket would
+;; NEVER: ALL FOUR, ON ONE PATH, IN TURN. Asking only about a socket would
 ;; pass for a predicate that answers #t to everything.
 (define (kinds-of name make)
   (let ((p (string-append here "/" name)))
@@ -78,7 +78,7 @@
                                   "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])\" " p)))
       '(#t #f #f))
 
-;; ⭐ THE ROW THE CHANGE IS FOR. A fifo answers #f to BOTH of the
+;; KEY: THE ROW THE CHANGE IS FOR. A fifo answers #f to BOTH of the
 ;; questions the old guard asked, so it was treated as removable.
 (want "DS-1 a fifo is none of the three, which is why the old test let it through"
       (kinds-of "f" (lambda (p) (string-append "mkfifo " p)))
@@ -94,13 +94,13 @@
 
 ;; ---- and what the daemon does with each ---------------------------------------
 ;;
-;; ⚠️ A SHORT PATH: `sun_path` holds 104 bytes, and this suite's usual
+;; NOTE: A SHORT PATH: `sun_path` holds 104 bytes, and this suite's usual
 ;; scratch directory is longer -- a daemon there reports `listener-down`
 ;; and looks broken for a reason that has nothing to do with this row.
 (define (serve-onto path)
   (let ((out (string-append here "/serve.txt")))
     (system (string-append "rm -f " out))
-    ;; ⚠️ THE ASSIGNMENTS GO INSIDE THE SUBSHELL. `VAR=x ( cmd & )` is a
+    ;; NOTE: THE ASSIGNMENTS GO INSIDE THE SUBSHELL. `VAR=x ( cmd & )` is a
     ;; syntax error, and the shell reports it on stderr while `system`
     ;; returns as though something ran -- the rows then read "the daemon
     ;; said nothing", which looks like a daemon that failed to start.
@@ -116,7 +116,7 @@
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
                        "scheme --script ../cli.ss init --store " here "/store --wire > /dev/null 2>&1"))
 
-;; ⛔ A FIFO ON THE PATH IS NOT THIS DAEMON'S TO REMOVE. Before the
+;; NEVER: A FIFO ON THE PATH IS NOT THIS DAEMON'S TO REMOVE. Before the
 ;; change it was unlinked and the daemon started on top of it.
 (define fifo (string-append "/tmp/dsf-" (number->string (get-process-id))))
 (system (string-append "rm -f " fifo "; mkfifo " fifo))
@@ -129,7 +129,7 @@
 
 (system (string-append "rm -f " fifo))
 
-;; ⛔ TWIN: AND A STALE SOCKET IS STILL CLEARED. Without this row the one
+;; NEVER: TWIN: AND A STALE SOCKET IS STILL CLEARED. Without this row the one
 ;; above is satisfied by a daemon that refuses every path it finds
 ;; occupied -- which would mean a crashed daemon's leftover socket stopped
 ;; the next one for ever.
@@ -144,7 +144,7 @@
 
 (system (string-append "rm -f " stale))
 
-;; ⛔ AND A REGULAR FILE IS STILL REFUSED, which is the case the original
+;; NEVER: AND A REGULAR FILE IS STILL REFUSED, which is the case the original
 ;; guard was written for and must not be lost.
 (define plain (string-append "/tmp/dsp-" (number->string (get-process-id))))
 (system (string-append "rm -f " plain "; touch " plain))
@@ -157,7 +157,7 @@
 
 ;; ---- DS-3 a daemon that cannot bind never said it was serving ------------
 ;;
-;; ⭐ THE ABSENCE IS THE ASSERTION. `(serving ...)` used to be reported
+;; KEY: THE ABSENCE IS THE ASSERTION. `(serving ...)` used to be reported
 ;; when the listener PROCESS was spawned, which is before `listen!` is
 ;; called -- so a daemon that could not bind printed
 ;;
@@ -168,11 +168,11 @@
 ;; believes. It is now reported on the `bound` message the listener sends
 ;; after `listen!` returns.
 ;;
-;; ⛔ A ROW THAT ONLY LOOKED FOR THE `exiting` LINE WOULD STILL PASS with
+;; NEVER: A ROW THAT ONLY LOOKED FOR THE `exiting` LINE WOULD STILL PASS with
 ;; the old order: both lines were there. What has to be true is that the
 ;; first one is NOT.
 ;;
-;; ⚠️ AND THE PATH HAS TO BE ONE THAT FAILS AT `bind`, NOT ONE THAT IS
+;; NOTE: AND THE PATH HAS TO BE ONE THAT FAILS AT `bind`, NOT ONE THAT IS
 ;; REFUSED BEFORE IT. Written first against a REGULAR FILE, this row
 ;; stayed green under the old order -- an occupied path is refused before
 ;; any listener is spawned, so `serving` was never printed either way and

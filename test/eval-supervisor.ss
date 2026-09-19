@@ -16,7 +16,7 @@
 ;; Each limit branch of the supervisor, reached by a worker that would
 ;; have finished on its own.
 ;;
-;; ⭐ THE BUDGET IS THE CONTROLLED INPUT, NOT THE INSTRUMENT. The Python
+;; KEY: THE BUDGET IS THE CONTROLLED INPUT, NOT THE INSTRUMENT. The Python
 ;; fixture these rows replace reached the same two branches by replacing
 ;; the product's clock with one that jumped and its RSS reader with one
 ;; that returned a number no process had. That is the one thing this
@@ -40,7 +40,7 @@
       (printf "ok ~a\n" label)
       (begin (set! bad (+ bad 1)) (printf "FAIL ~a: ~s WANT ~s\n" label got expected))))
 
-;; ⛔ `want` IS A MACRO AND `caught` IS WHY. A procedural `want`
+;; NEVER: `want` IS A MACRO AND `caught` IS WHY. A procedural `want`
 ;; evaluates both arguments before the call, so a row whose expression
 ;; raises ENDS THE FILE -- the rows after it never run, and the ones
 ;; before it have already printed `ok`. The suite names fixtures that
@@ -94,7 +94,7 @@
 ;; A worker that returns a value, and spends about a second EVALUATING,
 ;; so that the sampler gets many turns while it is alive.
 ;;
-;; ⚠️ THE COUNT IS NOT ARBITRARY AND A SMALLER ONE BREAKS THE ROW
+;; NOTE: THE COUNT IS NOT ARBITRARY AND A SMALLER ONE BREAKS THE ROW
 ;; SILENTLY. Most of a run's wall time is two Chez processes loading
 ;; this library from source; the sampler only exists between the
 ;; worker's `ready` and its answer. At 40 million iterations that window
@@ -108,7 +108,7 @@
 
 ;; ---- the deadline branch ------------------------------------------------------
 ;;
-;; ⛔ THE WORKER HERE WOULD HAVE ANSWERED. The row is about the
+;; NEVER: THE WORKER HERE WOULD HAVE ANSWERED. The row is about the
 ;; supervisor stopping it, so an infinite loop would not distinguish a
 ;; supervisor that enforces the deadline from one that merely never
 ;; returns.
@@ -120,9 +120,9 @@
 
 ;; ---- the memory branch --------------------------------------------------------
 ;;
-;; ⛔ ONE MEBIBYTE IS THE FLOOR THE ARGUMENT TABLE ALLOWS, and every Chez
+;; NEVER: ONE MEBIBYTE IS THE FLOOR THE ARGUMENT TABLE ALLOWS, and every Chez
 ;; process is tens of times larger, so the sample really is over budget.
-;; ⚠️ The worker must outlive one sampling interval, which is why it is
+;; NOTE: The worker must outlive one sampling interval, which is why it is
 ;; the slow finite one and not `(+ 1 2)`: a worker that exits first is
 ;; answered from its exit, and the row would pass or fail on a race.
 (want "SUP-02 a budget below the worker's real size stops it at a sample"
@@ -133,7 +133,7 @@
 
 ;; ---- the twin -----------------------------------------------------------------
 ;;
-;; ⛔ WITHOUT THIS ROW the two above are satisfied by a supervisor that
+;; NEVER: WITHOUT THIS ROW the two above are satisfied by a supervisor that
 ;; stops every worker it starts. The same two workers, with budgets they
 ;; fit inside, have to come back with their values -- which also says
 ;; that what decided the two rows above was the budget and not the

@@ -119,7 +119,7 @@
          (p (and b (assq key (cdr (assq 'fields b))))))
     (and p (cdr p))))
 
-;; ⚠️ IMPORTING ONE FILE STORES TWO BLOCKS: a `file` wrapper and the
+;; NOTE: IMPORTING ONE FILE STORES TWO BLOCKS: a `file` wrapper and the
 ;; `code` block inside it. The first version of this took the first id
 ;; `state-datum` returned, which is the WRAPPER -- and `view-read`
 ;; passes a non-`code` block through untouched, so every derived field
@@ -181,7 +181,7 @@
 
 ;; HV-03. THE OTHER DIRECTION, ON THE SAME BLOCK.
 ;;
-;; ⚠️ IT HAS TO BE THE SAME BLOCK. The first version of this imported a
+;; NOTE: IT HAS TO BE THE SAME BLOCK. The first version of this imported a
 ;; second file with one byte changed and compared the two hashes --
 ;; which proves nothing: `block-hash` is taken over `block->datum`, and
 ;; that includes the block's `position` and `edges`, so TWO DISTINCT

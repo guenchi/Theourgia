@@ -16,7 +16,7 @@
 ;; The evaluation worker: one child process, three pipes, and nothing of
 ;; the store's write side in scope.
 ;;
-;; ⛔ THE ORDER AT THE TOP OF THIS FILE IS THE WHOLE SAFETY ARGUMENT, and
+;; NEVER: THE ORDER AT THE TOP OF THIS FILE IS THE WHOLE SAFETY ARGUMENT, and
 ;; it is not an ordering anybody may tidy:
 ;;
 ;;   1. `setsid!` -- a session of our own, so the supervisor can signal
@@ -26,12 +26,12 @@
 ;;   3. `(ready <pgid>)` -- only now, because the supervisor reads it as
 ;;      "the group exists and the limits are on". Before it arrives the
 ;;      supervisor may only kill this pid; after it, the whole group.
-;;   4. `go` -- the supervisor's acknowledgement. ⛔ Nothing is read and
+;;   4. `go` -- the supervisor's acknowledgement. NEVER: Nothing is read and
 ;;      no grandchild may be started before it: between `ready` being
 ;;      sent and `go` coming back, the supervisor is deciding whether
 ;;      this worker exists at all.
 ;;
-;; ⛔ THREE DESCRIPTORS, AND THE USER GETS NEITHER OF THE OTHER TWO.
+;; NEVER: THREE DESCRIPTORS, AND THE USER GETS NEITHER OF THE OTHER TWO.
 ;; stdout is the protocol and nothing else; the user's output and errors
 ;; go to stderr wrapped in `(out …)` / `(err …)` frames written by this
 ;; file, outside the sandbox. Evaluated code is handed the wrappers, so
@@ -45,7 +45,7 @@
 (define store (car args))
 (define cut-text (cadr args))
 (define under (caddr args))
-;; ⚠️ THE CPU CEILING ARRIVES IN argv, and it has to: it must be installed
+;; NOTE: THE CPU CEILING ARRIVES IN argv, and it has to: it must be installed
 ;; before `ready`, `ready` comes before `go`, and `go` is the first thing
 ;; the supervisor sends. There is no earlier channel than the argument
 ;; vector.
@@ -54,7 +54,7 @@
 
 ;; ---- the protocol stream ----------------------------------------------------
 ;;
-;; ⛔ HELD IN A NAME THE SANDBOX NEVER SEES.
+;; NEVER: HELD IN A NAME THE SANDBOX NEVER SEES.
 (define protocol (standard-output-port))
 
 (define (say-datum! value)
@@ -71,7 +71,7 @@
 
 ;; ---- the user's two streams, framed -----------------------------------------
 ;;
-;; ⚠️ FLUSHED AFTER EVERY WRITE, INSIDE THE WRAPPER. Chez 10.1's
+;; NOTE: FLUSHED AFTER EVERY WRITE, INSIDE THE WRAPPER. Chez 10.1's
 ;; `make-custom-textual-output-port` will not take a buffer-mode and
 ;; `custom-port-buffer-size` may not be zero, so "unbuffered" has to be
 ;; arranged by flushing here -- where the user cannot decline it.
@@ -108,7 +108,7 @@
 
 (define pgid (setsid!))
 (define cpu-status (setrlimit! RLIMIT_CPU cpu-seconds cpu-seconds))
-;; ⚠️ SAID OUT LOUD, so a row can see that the ceiling went on before any
+;; NOTE: SAID OUT LOUD, so a row can see that the ceiling went on before any
 ;; source was sent. `EV-CPU-before-input` starts this worker with an
 ;; inherited unlimited limit and waits for this line before handing over
 ;; the source; without it the row would have to take the ordering on
@@ -117,13 +117,13 @@
                              (if (= cpu-status 0) "" " (refused)")))
 (say-datum! (list 'ready pgid))
 
-;; ⛔ NOTHING BELOW THIS LINE RUNS UNTIL THE SUPERVISOR SAYS SO.
+;; NEVER: NOTHING BELOW THIS LINE RUNS UNTIL THE SUPERVISOR SAYS SO.
 (define go (read (current-input-port)))
 (unless (eq? go 'go)
   (say-datum! '(error eval-worker-unavailable (reason handshake)))
   (exit 1))
 
-;; ⚠️ TWO MORE DATUMS, IN THIS ORDER: the view, then the source. `read`
+;; NOTE: TWO MORE DATUMS, IN THIS ORDER: the view, then the source. `read`
 ;; is the framing -- there is no second framing scheme to keep in step,
 ;; and a draft body that is arbitrary binary survives it (measured:
 ;; bytevectors, embedded NUL, CRLF and non-BMP characters all round-trip).
@@ -165,7 +165,7 @@
         (else (refuse 'unsupported))))
     (visit value 0)))
 
-;; ⛔ THE OVERLAY IS THE SAME RULE `working-read` USES: a block with a live
+;; NEVER: THE OVERLAY IS THE SAME RULE `working-read` USES: a block with a live
 ;; draft reads as that draft, everything else as what is committed. The
 ;; drafts came with the request, snapshotted before this process existed,
 ;; so a commit landing during the run cannot change what is evaluated.
@@ -209,8 +209,8 @@
                        (eval body env)))
                    list)))
         (do ((xs vs (cdr xs)) (i 0 (+ i 1))) ((null? xs)) (limited-value? (car xs) i))
-        ;; ⛔ THE CUT POSITION CARRIES THE CUT THIS EVALUATION ACTUALLY
-        ;; USED, ⛔ never #f. It is the coordinate that makes the run
+        ;; NEVER: THE CUT POSITION CARRIES THE CUT THIS EVALUATION ACTUALLY
+        ;; USED, NEVER: never #f. It is the coordinate that makes the run
         ;; reproducible -- ask again at this cut, with these drafts, and
         ;; the same thing is read -- and it is what `pinned-by-default`
         ;; and `--latest` are judged by. The request's own `--cut` is an

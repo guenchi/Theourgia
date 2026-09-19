@@ -28,19 +28,19 @@ text: a core answer whose text happens to read `(error transport-unknown
 
 The `theourgia_insert` and `theourgia_write` tools carry the core's
 write protocol in their `description`, ahead of the sentence naming the
-verb. ⛔ It is not written here and not written in the shell: it is
+verb. NEVER: It is not written here and not written in the shell: it is
 `write-protocol`, exported by `(theourgia rpc)`, and the README's
 `## Writing for agents` section is the same string. An agent choosing a
 tool from `tools/list` reads the description and nothing else, so the
 rules for writing a block have to be in it.
 
-⚠️ Only those two tools carry it. It is about writing a block, and on
+NOTE: Only those two tools carry it. It is about writing a block, and on
 `read` or `search` it would be noise in the place an agent is choosing
 from.
 
 ## Before you start it
 
-⚠️ **Create the store first.** This shell has no local route: everything it
+NOTE: **Create the store first.** This shell has no local route: everything it
 lists, it sends to that store's daemon, and a daemon for a store that does not
 exist cannot start. Run
 
@@ -55,7 +55,7 @@ One per verb the core's `describe` reports as routed to the daemon, asked
 again on every call — a verb added to the core is a tool this shell can see
 without a restart.
 
-⛔ **A verb this shell cannot carry out is not offered.** `describe` marks each
+NEVER: **A verb this shell cannot carry out is not offered.** `describe` marks each
 verb `daemon` or `local`; the ones marked `local` are the ones a client runs
 in its own process, and this shell has no such route. `init` is the case that
 matters: offered as a tool it could never succeed, because it is what creates
@@ -77,7 +77,7 @@ tool list would have been told a capability existed.
 Every request goes over the socket in the envelope `request-frame` packs —
 the same one the command line sends, from the same procedure.
 
-⚠️ **This shell no longer dispatches in its own process.** It used to, when it
+NOTE: **This shell no longer dispatches in its own process.** It used to, when it
 could not reach a daemon, which meant every shell loaded the whole core to
 serve its first call — the cost the client/server split exists to avoid. With
 nothing listening it now *starts* a daemon, exactly as the command line does.

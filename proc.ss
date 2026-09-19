@@ -15,17 +15,17 @@
 
 ;;; (theourgia proc) -- child processes, one adapter process per child.
 ;;;
-;;; ⭐ THE SAME SHAPE AS `net`, AND THE SAME REASON. The adapter owns the
+;;; KEY: THE SAME SHAPE AS `net`, AND THE SAME REASON. The adapter owns the
 ;;; child, so its death is what ends the child: igropyr signals a dying
 ;;; owner's children and delivers `#(DOWN pid reason)` to the monitors.
 ;;; Nothing here retires, guards, or keeps a registry.
 ;;;
-;;; ⛔ AND NO VERB GOES THROUGH THE ADAPTER AT ALL. `net` needs `start`
+;;; NEVER: AND NO VERB GOES THROUGH THE ADAPTER AT ALL. `net` needs `start`
 ;;; and `stop` because they move the target and the read state; a child's
 ;;; reads begin at birth and its target never moves, so writing, closing
 ;;; stdin, signalling and closing are all direct calls.
 ;;;
-;;; ⚠️ CLOSING IS KILLING THE ADAPTER, here as in `net`. It cannot be a
+;;; NOTE: CLOSING IS KILLING THE ADAPTER, here as in `net`. It cannot be a
 ;;; direct `tcp-close!`: a child's pipes have no free hook slot -- the
 ;;; library owns it -- so killing the owner is the one spelling that
 ;;; works on both sides.
@@ -52,21 +52,21 @@
   ;; and there is no state in which a child exists with no adapter, or an
   ;; adapter waits for a child that was refused.
   ;;
-  ;; ⚠️ THE CALLER GETS A pid, NOT A ref. The ref arrives as `(spawned
+  ;; NOTE: THE CALLER GETS A pid, NOT A ref. The ref arrives as `(spawned
   ;; ref)` once the child exists; a refusal arrives as the adapter's DOWN
   ;; carrying `(spawn-refused reason)`.
   ;;
-  ;; ⛔ AND THIS FACADE TAKES THE WATCH, IN THE CALLER'S PROCESS, BEFORE
+  ;; NEVER: AND THIS FACADE TAKES THE WATCH, IN THE CALLER'S PROCESS, BEFORE
   ;; IT RETURNS. A refusal is immediate, so between `spawn` returning a
   ;; pid and a caller getting round to `monitor` there is a window in
   ;; which the adapter has already died -- and a caller that simply
-  ;; forgot would then wait for a message that will never come. ⚠️ This
+  ;; forgot would then wait for a message that will never come. NOTE: This
   ;; comment used to say "the caller monitors that pid", which moved a
   ;; duty the design gives to the facade (§7.6.32 I) onto every caller;
   ;; it read perfectly and every caller dutifully did it by hand, which
   ;; is why nobody noticed the ones that would not have.
   ;;
-  ;; ⚠️ A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, with the
+  ;; NOTE: A CALLER THAT ALSO MONITORS GETS TWO DOWNs for this pid, with the
   ;; same reason. That is inherent -- it cannot demonitor a watch whose
   ;; object it never received -- and consumers have to tolerate the
   ;; second one. There is a row for each half.
@@ -78,7 +78,7 @@
   (define (worker-adapter file argv opts target)
     (let ((me self))
       (monitor target)
-      ;; ⛔ NO GUARD: igropyr refuses an empty argv, a bad cwd or a bad
+      ;; NEVER: NO GUARD: igropyr refuses an empty argv, a bad cwd or a bad
       ;; env by RAISING, and that raise is this process's death reason.
       ;; A returned `(failed . reason)` is the same ending by another
       ;; road, so it is spelled the same way.
@@ -89,7 +89,7 @@
           (send target (list 'spawned ref))
           (serving ref p target #f #f #f)))))
 
-  ;; ⛔ A STREAM'S EOF IS NOT THE CHILD'S END, and the child's exit is not
+  ;; NEVER: A STREAM'S EOF IS NOT THE CHILD'S END, and the child's exit is not
   ;; the streams' end. igropyr's own P13 sequence closes stdout while the
   ;; child still runs, writes to stderr, and only then exits; a
   ;; grandchild can hold a pipe open long after its parent is reaped.
@@ -123,7 +123,7 @@
 
   ;; ---- the verbs, all direct --------------------------------------------
   ;;
-  ;; ⚠️ EXACTLY ONE COMPLETION PER RETURNED CALL. igropyr answers a write
+  ;; NOTE: EXACTLY ONE COMPLETION PER RETURNED CALL. igropyr answers a write
   ;; it cannot even attempt by returning #f without ever running the
   ;; completion, so the facade supplies that one itself -- otherwise a
   ;; caller holding a token would wait for something nobody will send.
@@ -139,14 +139,14 @@
 
   (define (worker-kill! ref signum) (proc-kill! (worker-ref-proc ref) signum))
 
-  ;; ⚠️ SIGTERM, NOT A SIGNAL OF OUR CHOOSING: closing kills the adapter,
+  ;; NOTE: SIGTERM, NOT A SIGNAL OF OUR CHOOSING: closing kills the adapter,
   ;; and igropyr signals a dead owner's children with SIGTERM. A child
   ;; that ignores it is the eval guardian's business, by process group.
   (define (worker-close! ref)
     (let ((pid (worker-ref-pid ref)))
       (when (process-alive? pid) (kill pid 'closed))))
 
-  ;; ⛔ LIVENESS IS ASKED OF THE OPERATING SYSTEM, not of igropyr's
+  ;; NEVER: LIVENESS IS ASKED OF THE OPERATING SYSTEM, not of igropyr's
   ;; record: between a child dying and the exit callback running, that
   ;; record still reads as running, and a sampler trusting it would
   ;; report memory for a process that no longer exists.

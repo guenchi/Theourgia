@@ -20,7 +20,7 @@
 ;; baseline had different names and a retry could only say which draft
 ;; it meant if somebody had stored the correspondence.
 ;;
-;; ⭐ THE ADDRESS IS COMPUTED HERE, INDEPENDENTLY. The concatenation
+;; KEY: THE ADDRESS IS COMPUTED HERE, INDEPENDENTLY. The concatenation
 ;; order and the encoding of each part are written into this file, not
 ;; taken from the core -- a row that asked the core for the version and
 ;; compared it with the core's version would be green for a build that
@@ -64,14 +64,14 @@
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
 
-;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; KEY: THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
 ;; verb that was not told which writer it speaks for used to fall back to
 ;; this store's own local log writer, so two agents that never passed
 ;; `--writer` shared one draft space without either being told. The core
 ;; now refuses that call instead; naming the same writer the old fallback
 ;; would have chosen keeps every row below asking what it asked before.
 ;;
-;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; NEVER: AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
 ;; naming it to make a point, and must keep the one it names.
 (define draft-verbs '(write restore drafts discard commit))
 
@@ -109,7 +109,7 @@
 (define (env-cut e) (list-ref e 6))
 (define (env-bytes e) (list-ref e 7))
 
-;; ⭐ THE ADDRESS FUNCTION, WRITTEN OUT. bytes first, then the baseline
+;; KEY: THE ADDRESS FUNCTION, WRITTEN OUT. bytes first, then the baseline
 ;; hash, then the cut in the store's own encoding, all as one byte
 ;; string, sha256, hex.
 (define (address bytes based-on cut)
@@ -241,7 +241,7 @@
       (flag (draft-of C) 'unchanged) #f)
 (want "WV-09 and it is not fresh either" (flag (draft-of C) 'fresh) #f)
 
-;; ⭐ WV-09b ISOLATES THE BASELINE, WHICH WV-09 DOES NOT. Above, the
+;; KEY: WV-09b ISOLATES THE BASELINE, WHICH WV-09 DOES NOT. Above, the
 ;; committed text changed too, so comparing bytes alone already answers
 ;; "not unchanged" -- a build that never looked at the baseline passes
 ;; it. Measured: seeding `unchanged?` to ignore `fresh` left every row
@@ -269,7 +269,7 @@
 
 ;; ---- WV-10 committing a draft that changes nothing ------------------------
 ;;
-;; ⚠️ THE RULE WAS DERIVED FOR `drafts` AND NOT WIRED INTO `commit`.
+;; NOTE: THE RULE WAS DERIVED FOR `drafts` AND NOT WIRED INTO `commit`.
 ;; An unchanged draft still produced a `set` carrying bytes the block
 ;; already had -- a record that changes nothing, written into the log
 ;; forever. §7.5.11: no record without `--req`, an empty plan with one.

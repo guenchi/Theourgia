@@ -15,7 +15,7 @@
 
 ;; `theourgia serve` -- the daemon, over a real unix socket.
 ;;
-;; ⭐ EVERY ROW HERE TALKS TO A DAEMON IN ANOTHER OS PROCESS, over the
+;; KEY: EVERY ROW HERE TALKS TO A DAEMON IN ANOTHER OS PROCESS, over the
 ;; socket, exactly as a client does. A row that called the daemon's own
 ;; procedures in this process would be testing the library, not the
 ;; thing a client meets.
@@ -54,7 +54,7 @@
           ((= (bytevector-u8-ref bv i) 10) #t)
           (else (loop (+ i 1))))))
 
-;; ⚠️ THE DAEMON IS A SEPARATE OS PROCESS, started the way a user starts
+;; NOTE: THE DAEMON IS A SEPARATE OS PROCESS, started the way a user starts
 ;; it. Running it inside this scheduler would share a scheduler with its
 ;; clients, and every timing row would be measuring the wrong thing.
 (define (start-daemon!)
@@ -77,18 +77,18 @@
 (define (stop-daemon!)
   (system (string-append "pkill -f " runner " 2>/dev/null")))
 
-;; ⚠️ COUNTED PREFIXES ARE A TRAP: `(substring text 0 30)` against a
+;; NOTE: COUNTED PREFIXES ARE A TRAP: `(substring text 0 30)` against a
 ;; thirty-one character tag compares the wrong thing and the row reports
 ;; the answer as "other" while the answer was right. Measured, on the
 ;; store-mismatch row.
-;; ⭐ THE FIRST ANSWER OUT OF A RUN OF THEM. Rows that read a connection
+;; KEY: THE FIRST ANSWER OUT OF A RUN OF THEM. Rows that read a connection
 ;; until it closes get every answer that arrived, concatenated; several
 ;; of them ask what the FIRST one was. Reading the first envelope and
 ;; taking its `stdout` keeps that question exact -- a substring search
 ;; over the whole accumulation would be answered by any of the answers,
 ;; which is a different and weaker question.
 ;;
-;; ⚠️ TEXT THAT IS NOT AN ENVELOPE COMES BACK UNCHANGED, so a row looking
+;; NOTE: TEXT THAT IS NOT AN ENVELOPE COMES BACK UNCHANGED, so a row looking
 ;; at something else still sees it, and a malformed reply appears as
 ;; itself rather than as "".
 (define (first-answer-text acc)
@@ -103,7 +103,7 @@
                   acc))
             acc))))
 
-;; ⛔ WHICH SIDE SPOKE, out of the same envelope. A refusal the daemon
+;; NEVER: WHICH SIDE SPOKE, out of the same envelope. A refusal the daemon
 ;; makes and an answer the core computed arrive in one shape, and the
 ;; only thing that tells them apart is this field -- so a row about a
 ;; refusal has to read it, or it is a row about the text alone.
@@ -124,7 +124,7 @@
     (and (>= (string-length text) n)
          (string=? (substring text 0 n) prefix))))
 
-;; ⛔ AN EMPTY FILE READS AS #!eof, NOT AS "". Measured: the lock rows
+;; NEVER: AN EMPTY FILE READS AS #!eof, NOT AS "". Measured: the lock rows
 ;; look at a holder's log the instant it is created, `get-string-all`
 ;; handed back the eof object, and `string-length` inside the first
 ;; comparison took the WHOLE fixture down with a boot panic -- after
@@ -147,7 +147,7 @@
 ;; (trace-text . what-the-client-got). `fault` arms our conn seam; #f is
 ;; the same build unarmed.
 ;;
-;; ⚠️ BOTH RUNS USE `THEOURGIA_INJECT=on`, so the twin is the same
+;; NOTE: BOTH RUNS USE `THEOURGIA_INJECT=on`, so the twin is the same
 ;; expansion branch as the armed one -- otherwise it would be testing a
 ;; different build and could not say anything about this one.
 ;; A fault spec with the punctuation taken out, for use in a filename.
@@ -157,7 +157,7 @@
          (string->list text))))
 
 (define (start-tagged-daemon! suffix fault)
-  ;; ⚠️ THE TAG CARRIES THE FAULT, so two armed runs do not collide on
+  ;; NOTE: THE TAG CARRIES THE FAULT, so two armed runs do not collide on
   ;; one runner file -- `call-with-output-file` refuses an existing one,
   ;; and that refusal killed the whole fixture rather than one row.
   (let* ((tag (string-append pid-text "-" suffix))
@@ -165,7 +165,7 @@
          (sk (string-append "/tmp/dmn-c" tag ".sock"))
          (rn (string-append "/tmp/dmn-c" tag ".ss"))
          (lg (string-append "/tmp/dmn-c" tag ".log"))
-         ;; ⚠️ THE DAEMON WRITES ITS OWN PID AND THE SHELL WRITES ITS
+         ;; NOTE: THE DAEMON WRITES ITS OWN PID AND THE SHELL WRITES ITS
          ;; EXIT CODE. A row about signals needs to send one to THIS
          ;; daemon -- `pkill -f` would hit any other run's -- and a row
          ;; about shutting down needs the code it left with, which is
@@ -177,7 +177,7 @@
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
           (list "(import (chezscheme) (theourgia daemon) (theourgia rpc))"
-                ;; ⚠️ `'truncate`, BECAUSE A RUNNER MAY BE STARTED TWICE.
+                ;; NOTE: `'truncate`, BECAUSE A RUNNER MAY BE STARTED TWICE.
                 ;; `call-with-output-file` refuses an existing file, and
                 ;; the takeover row starts this same runner a second
                 ;; time -- measured: the second daemon died on the pid
@@ -188,14 +188,14 @@
                                "\" (lambda (p) (write (get-process-id) p)) 'truncate)")
                 (string-append "(rpc-dispatch \"" st "\" '(init) \"tester\")")
                 (string-append "(serve \"" st "\" \"" sk "\")")))))
-    ;; ⛔ TRACING IS TURNED ON BY THE ENVIRONMENT, NOT BY A CALL. The
+    ;; NEVER: TRACING IS TURNED ON BY THE ENVIRONMENT, NOT BY A CALL. The
     ;; platform layer calls `trace-enable!` from THEOURGIA_TRACE when it
     ;; LOADS, so a `(trace-enable! #t)` written before the libraries are
     ;; loaded is overwritten by that initialisation -- measured: the flag
     ;; read #t in the runner and #f inside the scheduler, and every trace
     ;; call then wrote nothing while returning perfectly normally.
     ;;
-    ;; ⚠️ EVERY RUN USES `THEOURGIA_INJECT=on`, armed or not, so a twin is
+    ;; NOTE: EVERY RUN USES `THEOURGIA_INJECT=on`, armed or not, so a twin is
     ;; the same expansion branch as the row it is a twin of -- otherwise
     ;; it would be testing a different build and could say nothing about
     ;; this one.
@@ -220,7 +220,7 @@
          (begin (system (string-append "kill -" name " " (number->string pid)))
                 'sent))))
 
-;; ⛔ WAITS FOR THE EXIT CODE, WITH A BOUND, and says which of the two
+;; NEVER: WAITS FOR THE EXIT CODE, WITH A BOUND, and says which of the two
 ;; things happened. "It did not exit" and "it exited with 0" are
 ;; different answers and a row that cannot tell them apart is not a row
 ;; about shutting down.
@@ -240,10 +240,10 @@
   (system (string-append "pkill -f " (caddr d) " 2>/dev/null")))
 
 ;; One request to a daemon started above, with the answer's text and the
-;; time it took. ⚠️ The time includes connecting, because that is what a
+;; time it took. NOTE: The time includes connecting, because that is what a
 ;; client waits: a row that timed only the dispatch would be measuring
 ;; something no client can observe.
-;; ⛔ THE ENVELOPE IS SPELLED IN ONE PLACE IN THIS FILE. The rows below
+;; NEVER: THE ENVELOPE IS SPELLED IN ONE PLACE IN THIS FILE. The rows below
 ;; send deliberately malformed VERBS and argument lists, which
 ;; `request-frame` cannot build and should not -- it refuses them, which
 ;; is correct of it and useless here. So the frame is written out, and
@@ -253,21 +253,21 @@
 ;;
 ;;   (request <version> <store> <actor> <writer> <mode> <cwd> <stdin> ...)
 ;;
-;; ⚠️ `#f wire #f #f` IS "no writer, answer me in wire form, no cwd, no
+;; NOTE: `#f wire #f #f` IS "no writer, answer me in wire form, no cwd, no
 ;; stdin" -- each a value, none omitted.
-;; ⛔ THE ROWS BELOW ARE ABOUT THE CORE'S ANSWER, and the core's answer
+;; NEVER: THE ROWS BELOW ARE ABOUT THE CORE'S ANSWER, and the core's answer
 ;; is the text inside the answer envelope's `stdout`. Unwrapping it here
 ;; keeps every one of them asking exactly what it asked before the
 ;; envelope existed -- the alternative was rewriting two dozen expected
 ;; strings, which would have turned a transport change into a rewrite of
 ;; what each row believes.
 ;;
-;; ⚠️ WHAT CANNOT BE UNWRAPPED COMES BACK AS IT ARRIVED. A malformed or
+;; NOTE: WHAT CANNOT BE UNWRAPPED COMES BACK AS IT ARRIVED. A malformed or
 ;; unexpected reply then shows up as itself in the failure message,
 ;; rather than as an empty string that reads like "the daemon said
 ;; nothing".
 ;;
-;; ⚠️ AND THIS IS NOT USED BY `ask-until-eof`, which counts answers and
+;; NOTE: AND THIS IS NOT USED BY `ask-until-eof`, which counts answers and
 ;; looks for the terminator: those rows are about the raw bytes on the
 ;; connection, and unwrapping would erase the thing they measure.
 (define (answer-text bv)
@@ -310,7 +310,7 @@
 ;; Starts a daemon of its own, asks it one question, and answers with
 ;; (trace-text . what-the-client-got). `fault` arms our conn seam; #f is
 ;; the same build unarmed.
-;; ⚠️ THE VERB IS THE CALLER'S, because which process serves it is now
+;; NOTE: THE VERB IS THE CALLER'S, because which process serves it is now
 ;; part of what a row is asking about. `outline` is answered by the
 ;; connection's own process from the published value and never reaches
 ;; the store -- so a row that has to make the STORE process do something
@@ -332,7 +332,7 @@
       (list (tagged-log d) got
             (if still-there 'socket-still-there 'socket-gone)))))
 
-;; ⚠️ THE LOCK IS HELD BY ANOTHER OS PROCESS, because that is the only
+;; NOTE: THE LOCK IS HELD BY ANOTHER OS PROCESS, because that is the only
 ;; thing the daemon can actually meet: a holder inside this scheduler
 ;; would be competing with the rows for the same green threads, and a
 ;; holder inside the daemon would not be somebody else at all.
@@ -351,7 +351,7 @@
     (system (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "'"
                            " scheme --script " rn " > " lg " 2>&1 &"))
-    ;; ⛔ WAIT FOR "HELD", NOT FOR A GUESS. A row that fired its requests
+    ;; NEVER: WAIT FOR "HELD", NOT FOR A GUESS. A row that fired its requests
     ;; before the holder had the lock would measure an uncontended
     ;; daemon and pass no matter what the locking strategy did.
     (let up ((k 0))
@@ -369,7 +369,7 @@
               (list 'transport r)))))
 
 ;; Two frames on ONE connection, the second sent only after the first has
-;; been answered. ⚠️ `exchange` opens a connection per call, and "the same
+;; been answered. NOTE: `exchange` opens a connection per call, and "the same
 ;; connection" is part of what read-your-writes claims, so a row about it
 ;; cannot be built out of two exchanges.
 (define (two-step sock first-text second-text)
@@ -428,7 +428,7 @@
     (file-text lg)))
 
 ;; Waits, with a bound, for the daemon to say it has published again.
-;; ⛔ THE ROW WAITS FOR THE DAEMON TO SAY SO, ⛔ not for the outside
+;; NEVER: THE ROW WAITS FOR THE DAEMON TO SAY SO, NEVER: not for the outside
 ;; commit's lock to be released. Those are different instants: the
 ;; reload is asked for by a read that has already been answered, and it
 ;; happens when the store process gets to it. Asserting anything about
@@ -441,7 +441,7 @@
             (else (sleep-ms 50) (wait (+ k 1)))))))
 
 ;; Sends whatever it is given on ONE connection and reads to EOF, so the
-;; row can say how many answers arrived. ⛔ `exchange` stops at the first
+;; row can say how many answers arrived. NEVER: `exchange` stops at the first
 ;; complete line, which cannot tell "one answer" from "one answer and
 ;; then another": counting is the whole question for a rule that says a
 ;; request gets exactly one answerer.
@@ -481,7 +481,7 @@
 
       ;; ---- D-01 TWIN: the build said nothing ---------------------------
       ;;
-      ;; ⛔ A COMPILE WARNING FROM THE CHILD IS EVIDENCE, AND IT WAS
+      ;; NEVER: A COMPILE WARNING FROM THE CHILD IS EVIDENCE, AND IT WAS
       ;; BURIED. An edit once left a five-argument call against a
       ;; seven-argument definition; Chez said so -- "possible incorrect
       ;; argument count in call (watch-loop ...)" -- and the daemon then
@@ -505,7 +505,7 @@
 
       ;; ---- D-03 two frames in one write --------------------------------
       ;;
-      ;; ⛔ ONE READ CAN CARRY TWO FRAMES. An implementation that took the
+      ;; NEVER: ONE READ CAN CARRY TWO FRAMES. An implementation that took the
       ;; bytes before the first newline and dropped the rest would lose a
       ;; request that had already arrived -- silently, and only when a
       ;; client sends two quickly. Measured on the first version of this
@@ -550,7 +550,7 @@
 
       ;; ---- D-04 a frame past the limit ---------------------------------
       ;;
-      ;; ⛔ REFUSED BEFORE IT IS PARSED, and the connection goes with it:
+      ;; NEVER: REFUSED BEFORE IT IS PARSED, and the connection goes with it:
       ;; an over-long frame is not dispatched at all.
       (spawn
         (lambda ()
@@ -585,7 +585,7 @@
 
       ;; ---- D-05 a second daemon on the same store ---------------------
       ;;
-      ;; ⛔ THE LOCK IS THE ONLY ARBITER, and it is the kernel's: no pid
+      ;; NEVER: THE LOCK IS THE ONLY ARBITER, and it is the kernel's: no pid
       ;; file, no age check. A second daemon says so and leaves with 75,
       ;; so a client that finds no answer falls back to running locally.
       (let* ((runner2 (string-append "/tmp/dmn-run2-" pid-text ".ss"))
@@ -608,7 +608,7 @@
 
       ;; ---- D-06 something that is not a socket on the path ------------
       ;;
-      ;; ⛔ A REGULAR FILE THERE IS SOMEBODY ELSE'S. Removing it to make
+      ;; NEVER: A REGULAR FILE THERE IS SOMEBODY ELSE'S. Removing it to make
       ;; room would be this daemon destroying data it does not own, so it
       ;; refuses -- and the row checks the file is still there afterwards.
       (let* ((occupied (string-append "/tmp/dmn-occupied-" pid-text))
@@ -634,7 +634,7 @@
 
       ;; ---- D-07 a frame that never finishes ---------------------------
       ;;
-      ;; ⚠️ THE BUDGET IS THE WHOLE FRAME, NOT THE GAP BETWEEN BYTES. A
+      ;; NOTE: THE BUDGET IS THE WHOLE FRAME, NOT THE GAP BETWEEN BYTES. A
       ;; client sending one byte every second is never idle, so a per-gap
       ;; timer would let it hold a connection for ever.
       (spawn
@@ -669,7 +669,7 @@
 
       ;; ---- D-08 a request meant for another store ---------------------
       ;;
-      ;; ⛔ REFUSED, NOT EXECUTED. A client reaches a daemon by deriving
+      ;; NEVER: REFUSED, NOT EXECUTED. A client reaches a daemon by deriving
       ;; the socket from its store, and `--socket P` lets it reach one
       ;; directly -- so a request for store B can arrive at a daemon
       ;; serving store A. Without the store in the envelope it would be
@@ -686,7 +686,7 @@
                   (list 'transport r)))
             'refused)
 
-      ;; ⚠️ AND THE ONE THAT NAMES THIS STORE STILL WORKS -- without this
+      ;; NOTE: AND THE ONE THAT NAMES THIS STORE STILL WORKS -- without this
       ;; twin, a daemon that refused every request would pass the row
       ;; above.
       (want "D-08 TWIN: and a request naming this store is still served"
@@ -700,14 +700,14 @@
 
       ;; ---- D-09 a conn process that dies says why ---------------------
       ;;
-      ;; ⛔ "EOF AND NO ANSWER" IS WHAT A CLIENT SEES WHETHER THE PEER
+      ;; NEVER: "EOF AND NO ANSWER" IS WHAT A CLIENT SEES WHETHER THE PEER
       ;; SIMPLY LEFT OR SOMETHING CRASHED. The reason travels in a
       ;; `#(DOWN pid reason)` nobody else reads, so main writes it to the
       ;; trace and the two stop looking alike. Measured the hard way: an
       ;; arity mistake in a conn process appeared only as a client
       ;; getting EOF, three rounds away from its cause.
       ;;
-      ;; ⚠️ THE SEAM IS OURS, and it had to be. Four attempts through
+      ;; NOTE: THE SEAM IS OURS, and it had to be. Four attempts through
       ;; igropyr's write seams produced nothing, for a structural reason:
       ;; an answer this size goes out whole inside `try_write`, so the
       ;; queued path where those faults live is never reached. The
@@ -719,7 +719,7 @@
                         (list 'trace-said (car crashed))))
               '(no-answer named-the-reason)))
 
-      ;; ⛔ TWIN: THE SAME BUILD, NOT ARMED, ANSWERS NORMALLY AND WRITES
+      ;; NEVER: TWIN: THE SAME BUILD, NOT ARMED, ANSWERS NORMALLY AND WRITES
       ;; NOTHING. Without it the row above is satisfied by a daemon that
       ;; crashed for some other reason, or that traces every ending.
       (let ((quiet (run-daemon-with #f "outline")))
@@ -731,15 +731,15 @@
 
       ;; ---- D-10 the store process dies -------------------------------
       ;;
-      ;; ⛔ WITHOUT THE STORE THERE IS NOTHING TO ANSWER WITH, so the
+      ;; NEVER: WITHOUT THE STORE THERE IS NOTHING TO ANSWER WITH, so the
       ;; daemon says so and leaves with 75 -- it does not sit there
       ;; accepting connections it cannot serve. A client that finds no
       ;; socket next time runs locally, which is the whole point of
       ;; leaving rather than lingering.
       ;;
-      ;; ⚠️ THE IN-FLIGHT REQUEST IS ANSWERED `transport-unknown`, not
+      ;; NOTE: THE IN-FLIGHT REQUEST IS ANSWERED `transport-unknown`, not
       ;; `failed`: the request may have been executed before the process
-      ;; died. ⛔ Something that may have happened must never be reported
+      ;; died. NEVER: Something that may have happened must never be reported
       ;; as not having happened.
       (let ((dead-store (run-daemon-with "store-raise@conn" "insert \"--title\" \"STORE-RAISE-PROBE\"")))
         (want "D-10 a store that dies takes the daemon with it, and says why"
@@ -754,14 +754,14 @@
 
       ;; ---- D-11 / D-12 somebody else is holding the store lock --------
       ;;
-      ;; ⛔ NOTHING INSIDE A DAEMON MAY PARK ON `flock`. That call runs on
+      ;; NEVER: NOTHING INSIDE A DAEMON MAY PARK ON `flock`. That call runs on
       ;; the scheduler's own thread, so a process waiting there stops
       ;; every other process in the VM -- including the one that would
       ;; have released the lock, and including main. The daemon therefore
       ;; sets one locking strategy for itself: try, yield, try again, and
       ;; give up on a budget.
       ;;
-      ;; ⚠️ THE TIMES ARE THE POINT, not the answers. An implementation
+      ;; NOTE: THE TIMES ARE THE POINT, not the answers. An implementation
       ;; that never takes the lock at all answers the first row's request
       ;; at once, and one that never retries answers the second row
       ;; `store-busy` at once -- both with exactly the text these rows
@@ -776,7 +776,7 @@
                    (lambda ()
                      (let ((r (timed-ask socket "(request 1 \"/tmp/some-other-store\" \"tester\" #f wire #f #f outline)\n" 4000)))
                        (send main (list 'other (car r) (cadr r))))))
-                 ;; ⛔ A WRITE, NOT A READ. Since reads are answered from
+                 ;; NEVER: A WRITE, NOT A READ. Since reads are answered from
                  ;; the published value in the connection's own process,
                  ;; a read takes no lock at all and would be answered at
                  ;; once however long somebody else held it -- which is
@@ -814,7 +814,7 @@
                 '(held waited-for-the-lock and-then-served answered-while-held)))
 
         ;; A hold longer than the budget: this request is refused, and
-        ;; ⛔ refused as an answer -- `store-busy` is an ordinary state of
+        ;; NEVER: refused as an answer -- `store-busy` is an ordinary state of
         ;; the world, not a crash and not `internal`.
         (let ((r (contended 6 (string-append pid-text "-long") 12000)))
           (want "D-12 a lock held past the budget answers store-busy, and only that request"
@@ -832,7 +832,7 @@
 
       ;; ---- D-12 TWIN: the CLI, on the same lock, still waits ----------
       ;;
-      ;; ⭐ THE STRATEGY IS THE DAEMON'S, NOT THE LOCKING LAYER'S. The
+      ;; KEY: THE STRATEGY IS THE DAEMON'S, NOT THE LOCKING LAYER'S. The
       ;; reason the CLI is unchanged is not that it was excluded: it is
       ;; that NOBODY IN THE CLI EVER SETS THAT PARAMETER, so it still
       ;; reads its default, which is the blocking `flock`. A CLI run has
@@ -840,7 +840,7 @@
       ;; the right answer there and giving up at five seconds would be a
       ;; regression.
       ;;
-      ;; ⚠️ THE HOLD IS LONGER THAN THE DAEMON'S BUDGET ON PURPOSE. That
+      ;; NOTE: THE HOLD IS LONGER THAN THE DAEMON'S BUDGET ON PURPOSE. That
       ;; is the whole discrimination: at the same instant on the same
       ;; lock the daemon has already answered `store-busy` and the CLI
       ;; has not answered at all.
@@ -854,7 +854,7 @@
           (lambda (port)
             (for-each (lambda (l) (display l port) (newline port))
               (list "(import (chezscheme) (theourgia rpc))"
-                    ;; ⛔ INIT BEFORE THE HOLDER TAKES THE LOCK: creating
+                    ;; NEVER: INIT BEFORE THE HOLDER TAKES THE LOCK: creating
                     ;; the store takes it too, and a store whose lock file
                     ;; does not exist yet cannot be held by anybody.
                     (string-append "(when (equal? \"init\" (car (command-line-arguments)))"
@@ -877,19 +877,19 @@
 
       ;; ---- D-13 a connection that ends in the middle of a frame -------
       ;;
-      ;; ⛔ A FRAME IS FINISHED BY ITS NEWLINE, NOT BY THE CONNECTION
+      ;; NEVER: A FRAME IS FINISHED BY ITS NEWLINE, NOT BY THE CONNECTION
       ;; ENDING. The bytes below are a complete datum and a legal write;
       ;; only the newline is missing. An implementation that flushed what
       ;; it had when the peer went away would RUN that write -- and the
       ;; client, having already gone, would never learn that it had
-      ;; happened. ⛔ A request nobody can be told the answer to must not
+      ;; happened. NEVER: A request nobody can be told the answer to must not
       ;; be executed.
       ;;
-      ;; ⚠️ THE ROW WAITS FOR THE WRITE TO BE ACKNOWLEDGED BEFORE CLOSING,
+      ;; NOTE: THE ROW WAITS FOR THE WRITE TO BE ACKNOWLEDGED BEFORE CLOSING,
       ;; because a row whose bytes never left the client would pass
       ;; against any daemon at all.
       ;;
-      ;; ⚠️ AND IT WAITS OUT THE FRAME BUDGET BEFORE LOOKING. Flushing on
+      ;; NOTE: AND IT WAITS OUT THE FRAME BUDGET BEFORE LOOKING. Flushing on
       ;; EOF and flushing when the frame's clock runs out are two
       ;; different mistakes; a row that looked immediately would only
       ;; catch the first.
@@ -928,7 +928,7 @@
                           (list 'transport r))))))
             'not-run)
 
-      ;; ⛔ TWIN: THE SAME BYTES WITH THE NEWLINE DO RUN. Without it the
+      ;; NEVER: TWIN: THE SAME BYTES WITH THE NEWLINE DO RUN. Without it the
       ;; row above is satisfied by a daemon that refuses every insert, by
       ;; one whose outline never shows anything, and by a canary that was
       ;; never a legal request in the first place.
@@ -953,20 +953,20 @@
 
       ;; ---- D-14 a writer process killed while holding a lock ----------
       ;;
-      ;; ⛔ A KILLED ACTOR RUNS NO UNWINDS, AND AN OS DESCRIPTOR DOES NOT
+      ;; NEVER: A KILLED ACTOR RUNS NO UNWINDS, AND AN OS DESCRIPTOR DOES NOT
       ;; DIE WITH IT. That is the whole reason the descriptors are main's:
       ;; a process that opened its own and was then killed would leave the
       ;; store locked for as long as this daemon lives, and every later
       ;; request would answer `store-busy` for a holder that no longer
       ;; exists.
       ;;
-      ;; ⚠️ THE SECOND REQUEST IS THE READING, AND ITS CLOCK IS THE
+      ;; NOTE: THE SECOND REQUEST IS THE READING, AND ITS CLOCK IS THE
       ;; DISCRIMINATION. "It answered" is satisfied by a daemon that
       ;; waited out the whole five-second budget and got the lock only
       ;; because the kernel dropped it when the process exited; what the
       ;; rule claims is that main closed it, which is immediate.
       ;;
-      ;; ⚠️ AND IT IS `drafts`, a verb that really takes the store lock
+      ;; NOTE: AND IT IS `drafts`, a verb that really takes the store lock
       ;; (`working-list` opens and reduces the store, which takes it): a
       ;; verb that needed no lock would answer at once whether or not the
       ;; descriptor leaked.
@@ -993,7 +993,7 @@
                     (if alive 'daemon-still-up 'DAEMON-GONE))
               '(that-writers-request-failed served-again at-once named-the-reason daemon-still-up)))
 
-      ;; ⛔ TWIN: THE SAME BUILD, NOT ARMED. Without it the row above is
+      ;; NEVER: TWIN: THE SAME BUILD, NOT ARMED. Without it the row above is
       ;; satisfied by a daemon on which `drafts --writer w1` answers `ok`
       ;; the second time because it answers `ok` every time and the first
       ;; answer was a coincidence of some other failure.
@@ -1011,16 +1011,16 @@
 
       ;; ---- D-15 a writer that dies after it has let go ----------------
       ;;
-      ;; ⛔ THE TIDY-UP MUST CLOSE NOTHING. The dangerous shape is a
+      ;; NEVER: THE TIDY-UP MUST CLOSE NOTHING. The dangerous shape is a
       ;; descriptor closed by its user and only afterwards struck from the
       ;; table: in between, the number is free, this same VM can be given
       ;; it by the next `open`, and the tidy-up then closes a descriptor
       ;; belonging to somebody else. Main doing both in one handler is
       ;; what removes that window.
       ;;
-      ;; ⚠️ WHAT THIS ROW CAN AND CANNOT SEE. It shows that a writer
+      ;; NOTE: WHAT THIS ROW CAN AND CANNOT SEE. It shows that a writer
       ;; dying with nothing registered costs nothing: the store is not
-      ;; left locked and another writer is served. It does ⛔ NOT catch a
+      ;; left locked and another writer is served. It does NEVER: NOT catch a
       ;; tidy-up that closed a live descriptor belonging to a DIFFERENT
       ;; writer, because arranging for that writer to be holding one at
       ;; the instant of the death needs a second seam that makes it sit
@@ -1057,7 +1057,7 @@
 
       ;; ---- D-16 one writer tidied up while another is inside a lock ---
       ;;
-      ;; ⛔ TIDYING UP AFTER ONE PROCESS MUST NOT TOUCH ANOTHER'S
+      ;; NEVER: TIDYING UP AFTER ONE PROCESS MUST NOT TOUCH ANOTHER'S
       ;; DESCRIPTOR. This is the whole reason main holds lock HANDLES and
       ;; releases them BY OWNER: a tidy-up that went by anything less
       ;; specific -- a bare descriptor number it had written down, or
@@ -1066,14 +1066,14 @@
       ;; next thing to happen would be two writers in one working
       ;; directory at once.
       ;;
-      ;; ⚠️ THE READING IS TAKEN AFTER THE DEATH AND BEFORE THE WAKING.
+      ;; NOTE: THE READING IS TAKEN AFTER THE DEATH AND BEFORE THE WAKING.
       ;; Asking whether the lock is held before the other writer died
       ;; would measure nothing: of course it is held. The row waits for
       ;; the second writer to answer and die, gives main time to tidy up,
       ;; and only then tries the lock -- so a `#f` here is evidence about
       ;; the tidy-up and not about the holder.
       ;;
-      ;; ⚠️ AND THE PARK IS IN THE DRAFT LOCK, NOT THE STORE LOCK: the
+      ;; NOTE: AND THE PARK IS IN THE DRAFT LOCK, NOT THE STORE LOCK: the
       ;; other writer has to be SERVED while this one is parked, and
       ;; being served needs the store lock. Parking there would serialise
       ;; the two and leave no interleaving to look at.
@@ -1120,18 +1120,18 @@
 
       ;; ---- D-17 a client sees its own write ---------------------------
       ;;
-      ;; ⛔ THE VALUE IS PUBLISHED BEFORE THE ANSWER GOES BACK, and this
+      ;; NEVER: THE VALUE IS PUBLISHED BEFORE THE ANSWER GOES BACK, and this
       ;; is the whole of why that ordering matters. The answer to a write
       ;; is the client's evidence that the write happened; if publication
       ;; came after it, a client could be told "done" and then be handed
       ;; a value that does not contain it -- by the same daemon, on the
       ;; same connection, one frame later.
       ;;
-      ;; ⚠️ ON ONE CONNECTION, AND THE SECOND FRAME IS SENT ONLY AFTER
+      ;; NOTE: ON ONE CONNECTION, AND THE SECOND FRAME IS SENT ONLY AFTER
       ;; THE FIRST IS ANSWERED. Two exchanges would be two connections
       ;; and a different claim.
       ;;
-      ;; ⚠️ AND THE READ IS SERVED BY A DIFFERENT PROCESS FROM THE WRITE
+      ;; NOTE: AND THE READ IS SERVED BY A DIFFERENT PROCESS FROM THE WRITE
       ;; -- the write by the store process, the read by the connection's
       ;; own, out of the published value. That is what makes this a
       ;; question at all.
@@ -1148,14 +1148,14 @@
 
       ;; ---- D-18 somebody else commits ---------------------------------
       ;;
-      ;; ⛔ THE DAEMON DOES NOT HOLD THE STORE, so another process can
+      ;; NEVER: THE DAEMON DOES NOT HOLD THE STORE, so another process can
       ;; commit to it at any time. A reader that never noticed would go
       ;; on answering from a fold made before that commit for as long as
       ;; the daemon lived. What notices is a cheap stat comparison on the
       ;; read path; what acts on it is the store process, later.
       ;;
-      ;; ⛔ THE ROW WAITS FOR THE DAEMON TO SAY IT HAS PUBLISHED AGAIN,
-      ;; ⛔ NOT for the outside commit to finish. Those are different
+      ;; NEVER: THE ROW WAITS FOR THE DAEMON TO SAY IT HAS PUBLISHED AGAIN,
+      ;; NEVER: NOT for the outside commit to finish. Those are different
       ;; instants, and only the first one is a fact about this daemon.
       (let* ((d (start-tagged-daemon! "extern" #f))
              (before (ask-tagged d "outline" 8000))
@@ -1178,14 +1178,14 @@
                     (if alive 'daemon-still-up 'DAEMON-GONE))
               '(served-before outside-committed published and-then-visible daemon-still-up))
 
-        ;; ⛔ TWIN: THE READ THAT NOTICED IS STILL ANSWERED FROM THE OLD
+        ;; NEVER: TWIN: THE READ THAT NOTICED IS STILL ANSWERED FROM THE OLD
         ;; VALUE. Without this row, "reads are answered from what is
         ;; published" is satisfied by a daemon that reloads under the
         ;; store's lock before answering every read -- which is the
         ;; behaviour this design exists to avoid, and which would pass
         ;; the row above with room to spare.
         ;;
-        ;; ⚠️ IT IS A READING OF THE ANSWER ALREADY TAKEN ABOVE, not a
+        ;; NOTE: IT IS A READING OF THE ANSWER ALREADY TAKEN ABOVE, not a
         ;; second request: asking again would be asking after the reload.
         (want "D-18 TWIN: the read that triggered the reload still answered the value it had"
               (if (and (string? (cadr triggering)) (starts-with? (cadr triggering) "(ok"))
@@ -1197,14 +1197,14 @@
 
       ;; ---- D-19 one SIGTERM, a clean drain ----------------------------
       ;;
-      ;; ⛔ WHAT IS RUNNING FINISHES; WHAT HAS NOT STARTED IS REFUSED;
+      ;; NEVER: WHAT IS RUNNING FINISHES; WHAT HAS NOT STARTED IS REFUSED;
       ;; THE SOCKET IS TIDIED. A daemon that dropped the request it was
       ;; in the middle of would leave a client that had been told
       ;; nothing about work that may well have been done -- and a daemon
       ;; that left its socket behind makes the next client wait on a
       ;; path with nobody on it before it falls back.
       ;;
-      ;; ⚠️ A CLEAN DRAIN LEAVES WITH 0. 75 is what a second signal and a
+      ;; NOTE: A CLEAN DRAIN LEAVES WITH 0. 75 is what a second signal and a
       ;; drain that ran out of time leave with; a row that accepted any
       ;; exit code would not tell those apart.
       (let* ((d (start-tagged-daemon! "drain" #f))
@@ -1226,12 +1226,12 @@
 
       ;; ---- D-20 a second signal does not wait -------------------------
       ;;
-      ;; ⛔ 75, AND WITHOUT WAITING OUT THE BUDGET. Asking twice is asking
+      ;; NEVER: 75, AND WITHOUT WAITING OUT THE BUDGET. Asking twice is asking
       ;; to stop now; a daemon that finished its five-second drain anyway
       ;; and then reported 75 would be doing the opposite of what it was
       ;; asked while printing the right number.
       ;;
-      ;; ⚠️ THE SEAM IS A REQUEST THAT WILL NOT COME BACK -- the writer
+      ;; NOTE: THE SEAM IS A REQUEST THAT WILL NOT COME BACK -- the writer
       ;; parked inside its draft lock -- because otherwise the drain is
       ;; over before a second signal could mean anything.
       (let* ((d (start-tagged-daemon! "twice" "writer-hold@conn")))
@@ -1250,9 +1250,9 @@
 
       ;; ---- D-21 the watchdog -----------------------------------------
       ;;
-      ;; ⛔ A DRAIN THAT CANNOT FINISH STILL ENDS. The seam parks a
+      ;; NEVER: A DRAIN THAT CANNOT FINISH STILL ENDS. The seam parks a
       ;; request inside a lock for longer than the whole budget, so the
-      ;; only way out is the clock. ⚠️ Without a clock main would wait for
+      ;; only way out is the clock. NOTE: Without a clock main would wait for
       ;; a message that is never coming, and "it exits within five
       ;; seconds" would be a promise kept only by requests that were
       ;; going to finish anyway.
@@ -1271,20 +1271,20 @@
 
       ;; ---- D-22 a frame that arrives during a drain -------------------
       ;;
-      ;; ⛔ CLOSED, ⛔ NOT DISPATCHED. The frame below is a WRITE, so a
+      ;; NEVER: CLOSED, NEVER: NOT DISPATCHED. The frame below is a WRITE, so a
       ;; daemon that ran it would be changing the store after it had been
       ;; told to stop -- and the client, whose connection is closing,
       ;; would never learn that it had.
       ;; ---- D-22b what a MALFORMED frame is told during a drain --------
       ;;
-      ;; ⛔ DRAINING IS A PREMISE AND IS JUDGED LAST. Answered before the
+      ;; NEVER: DRAINING IS A PREMISE AND IS JUDGED LAST. Answered before the
       ;; frame was parsed, a malformed frame that was already buffered
       ;; when a drain began was told `draining` -- which says "your
       ;; request was fine and we are not taking it now", when it was never
       ;; a request at all. §7.6.50 v249 fixes the order: well-formed, then
       ;; whose store, then premises.
       ;;
-      ;; ⚠️ THE SECOND FRAME IS SENT IN THE SAME WRITE AS THE FIRST, which
+      ;; NOTE: THE SECOND FRAME IS SENT IN THE SAME WRITE AS THE FIRST, which
       ;; is the only way to reach the branch this row is about. Written as
       ;; a fresh connection opened during the drain, it answered
       ;; `connection-closed` every time: a new connection during a drain
@@ -1327,7 +1327,7 @@
                                   (starts-with? (cadr during) "(error draining"))
                              'answered-draining)
                             (else (list 'said (cadr during))))
-                      ;; ⛔ ASKED OF THE STORE, NOT OF THE LOG. Whether a
+                      ;; NEVER: ASKED OF THE STORE, NOT OF THE LOG. Whether a
                       ;; write ran is a fact about what is on the disk;
                       ;; the daemon's own output is where it would say so
                       ;; if it chose to, which is not the same question.
@@ -1340,14 +1340,14 @@
 
       ;; ---- D-23 a frame already in the buffer when the drain starts ---
       ;;
-      ;; ⛔ ANSWERED `draining`, ⛔ NOT RUN AND ⛔ NOT DROPPED. Both frames
+      ;; NEVER: ANSWERED `draining`, NEVER: NOT RUN AND NEVER: NOT DROPPED. Both frames
       ;; below arrive in ONE write, so the second is sitting in this
       ;; connection's buffer, parsed by nobody, while the first is being
       ;; served. A daemon that ran it would be working after it was told
       ;; to stop; one that simply closed would leave a client unable to
       ;; tell a refusal from a lost connection.
       ;;
-      ;; ⚠️ THE ROW COUNTS THE ANSWERS. "The second was refused" and "the
+      ;; NOTE: THE ROW COUNTS THE ANSWERS. "The second was refused" and "the
       ;; second was refused twice" are different facts, and a reader that
       ;; stopped at the first newline could not tell them apart -- which
       ;; is the whole of what "one request, one answerer" claims.
@@ -1381,14 +1381,14 @@
 
       ;; ---- D-33 the limit measures a frame, not the buffer ------------
       ;;
-      ;; ⛔ `daemon.ss` SAYS "IT IS THE FRAME THAT IS MEASURED, NOT THE
+      ;; NEVER: `daemon.ss` SAYS "IT IS THE FRAME THAT IS MEASURED, NOT THE
       ;; BUFFER" and nothing asked it. Several frames arrive in one read
       ;; whenever a client writes them together, and a ceiling applied to
       ;; what has accumulated would refuse requests that are each
       ;; perfectly ordinary -- the failure appearing only under load,
       ;; which is where it is hardest to read.
       ;;
-      ;; ⚠️ TWO FRAMES OF 700 KB: each is well under the megabyte limit
+      ;; NOTE: TWO FRAMES OF 700 KB: each is well under the megabyte limit
       ;; and together they are well over it. Both must be answered.
       (let* ((d (start-tagged-daemon! "buffered" #f))
              (big (lambda ()
@@ -1411,20 +1411,20 @@
 
       ;; ---- D-35 a drain does not finish underneath a local read -------
       ;;
-      ;; ⛔ MAIN CANNOT SEE THIS REQUEST AT ALL. `outline` is answered by
+      ;; NEVER: MAIN CANNOT SEE THIS REQUEST AT ALL. `outline` is answered by
       ;; the connection's own process, which never asks `may-execute?`
       ;; and never appears in `state-running` -- so "nothing is running"
       ;; is TRUE while this read is half done. What stops the daemon
       ;; leaving underneath it is the other half of the condition: the
       ;; connection is still registered.
       ;;
-      ;; ⚠️ THE SEAM IS WHY THIS IS MEASURABLE. A local read answers in
+      ;; NOTE: THE SEAM IS WHY THIS IS MEASURABLE. A local read answers in
       ;; tens of milliseconds, so without a park the drain and the read
       ;; cannot be ordered by any clock -- the row would have been green
       ;; whichever way round they really happened. `conn-hold` parks
       ;; inside the read for longer than the sequence being measured.
       ;;
-      ;; ⭐ AND THE READING IS AN ORDER, NOT A DURATION: the answer must
+      ;; KEY: AND THE READING IS AN ORDER, NOT A DURATION: the answer must
       ;; arrive, and the exit must come after it. A row that only asked
       ;; "did it exit 0" passes on a daemon that left before answering.
       (let* ((d (start-tagged-daemon! "conndrain" "conn-hold@conn"))
@@ -1445,12 +1445,12 @@
             (`(r ,what)
              (let ((code (tagged-exit d 12000)))
                (stop-tagged-daemon! d)
-               ;; ⛔ THE READING IS THAT THE ANSWER ARRIVED AT ALL. A
+               ;; NEVER: THE READING IS THAT THE ANSWER ARRIVED AT ALL. A
                ;; daemon that declared the drain over while this read was
                ;; parked would have left, taking the connection with it,
                ;; and this client would have got EOF and no answer -- so
                ;; "it was answered" IS "it did not leave underneath it".
-               ;; ⚠️ ⛔ AND NOT A COMPARISON OF TWO CLOCKS: the exit can
+               ;; NOTE: NEVER: AND NOT A COMPARISON OF TWO CLOCKS: the exit can
                ;; only be waited for after the answer has been received,
                ;; so "the exit came later" would be true however the two
                ;; really fell out. A guard whose reference value is read
@@ -1464,12 +1464,12 @@
                      '(the-read-was-answered (exited 0)))))
             (`#(DOWN ,w ,y) (gather)))))
 
-      ;; ⛔ TWIN: AND THAT READING CAN GO RED. The row above is worth
+      ;; NEVER: TWIN: AND THAT READING CAN GO RED. The row above is worth
       ;; nothing unless an unanswered read is something this fixture can
       ;; actually see, and the watchdog is what makes it visible: a park
       ;; LONGER than the whole drain budget leaves the clock as the only
       ;; way out, main exits 75, and the read that was parked gets
-      ;; nothing. ⭐ Same seam, same sequence, one number different.
+      ;; nothing. KEY: Same seam, same sequence, one number different.
       (let* ((d (start-tagged-daemon! "conndrainlong" "conn-hold-long@conn")))
         (spawn (lambda ()
                  (send main (list 'r (ask-until-eof
@@ -1498,20 +1498,20 @@
 
       ;; ---- D-34 the writer that routes is the one the request names ---
       ;;
-      ;; ⛔ ONE WRITER'S WORK IN ONE PROCESS, HOWEVER THE WRITER WAS
+      ;; NEVER: ONE WRITER'S WORK IN ONE PROCESS, HOWEVER THE WRITER WAS
       ;; NAMED. A writer has a process of its own so that its drafts are
       ;; serialised somewhere; two ways of naming the same writer that
       ;; end in two different processes serialise nothing, and the two
       ;; are indistinguishable from the client's side -- the answers are
       ;; the same until the day two of them interleave.
       ;;
-      ;; ⚠️ THE INSTRUMENT IS A FAULT THAT ONLY THE WRITER PROCESS HAS.
+      ;; NOTE: THE INSTRUMENT IS A FAULT THAT ONLY THE WRITER PROCESS HAS.
       ;; `writer-raise` is consulted inside `writer-loop` and nowhere
       ;; else, so an armed build answers one way if the request reached
       ;; that process and another way if it was served by the store --
-      ;; ⭐ which is the question, and it is not a question about timing.
+      ;; KEY: which is the question, and it is not a question about timing.
       ;;
-      ;; ⚠️ AND `drafts` IS A WRITER-LOCAL VERB WITH NO `--writer` IN ITS
+      ;; NOTE: AND `drafts` IS A WRITER-LOCAL VERB WITH NO `--writer` IN ITS
       ;; ARGUMENTS: the name is in the envelope only. That is the shape
       ;; that stopped routing when the writer left the argument list.
       (let* ((d (start-tagged-daemon! "wenv" "writer-raise@conn"))
@@ -1528,7 +1528,7 @@
                         'NO-SUCH-REASON))
               '(the-writers-process-took-it named-the-reason)))
 
-      ;; ⛔ TWIN: THE ENVELOPE'S WRITER MUST NOT WIDEN THE GATE. Only
+      ;; NEVER: TWIN: THE ENVELOPE'S WRITER MUST NOT WIDEN THE GATE. Only
       ;; draft verbs belong to a writer's process; everything else is the
       ;; store's. A default applied outside that gate routes every verb
       ;; from a client that happens to name a writer into that writer's
@@ -1536,7 +1536,7 @@
       ;; row above is satisfied by it, because it too ends in the
       ;; writer's process.
       ;;
-      ;; ⚠️ SAME ARMED BUILD, SAME ENVELOPE, A VERB THE STORE SERVES.
+      ;; NOTE: SAME ARMED BUILD, SAME ENVELOPE, A VERB THE STORE SERVES.
       ;; If `describe` reaches the writer it raises, and this reads it.
       (let* ((d (start-tagged-daemon! "wenvstore" "writer-raise@conn"))
              (said (ask-tagged-as d "w1" "describe" 8000))
@@ -1553,14 +1553,14 @@
 
       ;; ---- D-32 well-formed is judged before draining -----------------
       ;;
-      ;; ⛔ FOUR LAYERS, AND THE DAEMON IS NOT EXEMPT FROM THEM (§7.6.50).
+      ;; NEVER: FOUR LAYERS, AND THE DAEMON IS NOT EXEMPT FROM THEM (§7.6.50).
       ;; `draining` says "this daemon is going, ask another one" -- an
       ;; answer that invites the caller to try again. A request whose
       ;; arguments do not parse will be refused by every daemon there
       ;; will ever be, so saying `draining` to it sends the caller round a
       ;; loop that cannot end differently.
       ;;
-      ;; ⚠️ THE SECOND FRAME IS THE ONE UNDER TEST, and it is malformed in
+      ;; NOTE: THE SECOND FRAME IS THE ONE UNDER TEST, and it is malformed in
       ;; a way the PARSER owns -- a repeated `--writer`, which `drafts`
       ;; does not take twice. D-23 above is this row's twin: the same
       ;; harness, a second frame that parses, and `draining` is then the
@@ -1591,14 +1591,14 @@
 
       ;; ---- D-24 a request queued behind one in a writer ---------------
       ;;
-      ;; ⛔ THE EXECUTOR DECIDES, NOT THE CONNECTION. A is parked inside
+      ;; NEVER: THE EXECUTOR DECIDES, NOT THE CONNECTION. A is parked inside
       ;; the writer's lock; B is in the same writer's mailbox behind it.
       ;; The drain begins while both exist. When A finishes, B has still
       ;; not started -- so B is the case the rule is about, and the
       ;; process that answers it is the writer, which is the only one
       ;; that knows B had not begun.
       ;;
-      ;; ⚠️ A IS ALLOWED TO FINISH. It may already have changed something;
+      ;; NOTE: A IS ALLOWED TO FINISH. It may already have changed something;
       ;; a daemon that refused it after it had begun would be reporting
       ;; work that was done as work that was not.
       (let* ((d (start-tagged-daemon! "wqueued" "writer-hold@conn")))
@@ -1631,7 +1631,7 @@
                                 'the-queued-one-was-refused
                                 (list 'b-said b))
                             (if (= 1 (cadr b)) 'exactly-one-answer (list 'answers (cadr b)))
-                            ;; ⛔ AND IT IS THE TRANSPORT SPEAKING, NOT THE
+                            ;; NEVER: AND IT IS THE TRANSPORT SPEAKING, NOT THE
                             ;; CORE. Nothing dispatched this request: the
                             ;; writer refused it before it began. An
                             ;; envelope that calls it the core's makes a
@@ -1639,7 +1639,7 @@
                             ;; its answer" -- which is how a refusal became
                             ;; a tool result reported as carried out.
                             (list 'origin (first-answer-origin (car b)))
-                            ;; ⛔ AND THE OTHER HALF, IN THE SAME ROW. A is
+                            ;; NEVER: AND THE OTHER HALF, IN THE SAME ROW. A is
                             ;; the request that DID run, and its answer is
                             ;; the core's. Without this, "the transport
                             ;; spoke" is satisfied by a build that says so
@@ -1661,13 +1661,13 @@
 
       ;; ---- D-25 a read while somebody else holds the store ------------
       ;;
-      ;; ⭐ FIFTY MILLISECONDS, AND IT IS ONLY TRUE BECAUSE READS STOPPED
+      ;; KEY: FIFTY MILLISECONDS, AND IT IS ONLY TRUE BECAUSE READS STOPPED
       ;; TOUCHING THE LOCK. Before the published value existed, a read
       ;; during somebody else's exclusive hold waited for that holder --
       ;; measured on this very fixture at 2950 ms. The promise is not
       ;; that the daemon is fast; it is that a reader asks nobody.
       ;;
-      ;; ⚠️ THE TWIN IS A WRITE IN THE SAME WINDOW. Without it, a daemon
+      ;; NOTE: THE TWIN IS A WRITE IN THE SAME WINDOW. Without it, a daemon
       ;; that ignored the store lock altogether would pass this row --
       ;; and would be answering reads quickly by being wrong.
       (let* ((tag (string-append pid-text "-fifty"))
@@ -1700,7 +1700,7 @@
 
       ;; ---- D-26 a hold longer than the budget -------------------------
       ;;
-      ;; ⛔ ONE `store-busy`, ON THE BUDGET, AND ⛔ ONLY FOR THE WRITE. The
+      ;; NEVER: ONE `store-busy`, ON THE BUDGET, AND NEVER: ONLY FOR THE WRITE. The
       ;; reader in the same window is not waiting for anything and must
       ;; not be made to: that is the whole difference the published value
       ;; buys, and a row that only looked at the write would not see it.
@@ -1735,21 +1735,21 @@
 
       ;; ---- D-27 the envelope a forwarding caller actually sends --------
       ;;
-      ;; ⛔ ONE FRAME, ONE ANSWER, AND THE CONNECTION STAYS. The bytes here
+      ;; NEVER: ONE FRAME, ONE ANSWER, AND THE CONNECTION STAYS. The bytes here
       ;; are not written out by this row -- they are whatever
       ;; `request-frame` produces, which is what the command line and the
       ;; MCP shell both send. A row that spelled the envelope itself would
       ;; be checking its own copy.
       ;;
-      ;; ⚠️ MEASURED ON THE VERSION THAT PACKED IT AT THE CALL SITE:
+      ;; NOTE: MEASURED ON THE VERSION THAT PACKED IT AT THE CALL SITE:
       ;; `render-wire` already ends with a newline and the caller appended
       ;; a second, so every forwarded request carried an EMPTY FRAME
       ;; behind it. The daemon answered both --
       ;; `(ok (text ""))\n(error bad-request (reason not-a-datum))\n` --
       ;; and closed. Nobody saw it: that caller exits after the first
-      ;; answer. ⭐ The reading that separates the two is "how many
-      ;; answers, and did the peer close", ⛔ not "was the answer right".
-      ;; ⚠️ READING TO EOF IS THE POINT, AND SO IS NOT REACHING IT. A
+      ;; answer. KEY: The reading that separates the two is "how many
+      ;; answers, and did the peer close", NEVER: not "was the answer right".
+      ;; NOTE: READING TO EOF IS THE POINT, AND SO IS NOT REACHING IT. A
       ;; well-formed single frame leaves the connection open, so this
       ;; helper times out -- and the timeout is the evidence. The failing
       ;; shape is the opposite: a string means EOF arrived, which is what
@@ -1775,9 +1775,9 @@
 
       ;; ---- D-28 one frame, two writes ---------------------------------
       ;;
-      ;; ⛔ A FRAME IS NOT A WRITE. D-03 is the other direction -- two
+      ;; NEVER: A FRAME IS NOT A WRITE. D-03 is the other direction -- two
       ;; frames arriving in one write; this is one frame split across
-      ;; two, ⚠️ with the cut INSIDE a UTF-8 sequence, which is where a
+      ;; two, NOTE: with the cut INSIDE a UTF-8 sequence, which is where a
       ;; reader that decoded as it went would break.
       (spawn
         (lambda ()
@@ -1816,9 +1816,9 @@
 
       ;; ---- D-29 a legal datum that is not a request -------------------
       ;;
-      ;; ⛔ WELL-FORMED IS NOT THE SAME AS MEANINGFUL. `(hello)` reads
+      ;; NEVER: WELL-FORMED IS NOT THE SAME AS MEANINGFUL. `(hello)` reads
       ;; perfectly; it is simply not the envelope, and it is refused by
-      ;; shape rather than by parse failure. ⚠️ D-13's frame was
+      ;; shape rather than by parse failure. NOTE: D-13's frame was
       ;; unterminated and D-04's was too long -- this one is neither.
       (want "D-29 a datum that reads but is not a request is refused by shape"
             (let ((r (exchange socket (string->utf8 "(hello)\n") line-complete? 4000)))
@@ -1831,7 +1831,7 @@
 
       ;; ---- D-30 two clients writing at once ---------------------------
       ;;
-      ;; ⛔ BOTH COMMIT AND THEIR ANSWERS ARE DIFFERENT. The store process
+      ;; NEVER: BOTH COMMIT AND THEIR ANSWERS ARE DIFFERENT. The store process
       ;; serialises them, so neither is lost and neither is answered with
       ;; the other's receipt -- a daemon that shared one answer between
       ;; concurrent writers would pass a row that only counted successes.
@@ -1860,8 +1860,8 @@
 
       ;; ---- D-31 taking over a socket a killed daemon left behind ------
       ;;
-      ;; ⛔ THE NEXT DAEMON TAKES OVER, and the evidence is that it
-      ;; answers -- ⚠️ not that the file is there, which it was before it
+      ;; NEVER: THE NEXT DAEMON TAKES OVER, and the evidence is that it
+      ;; answers -- NOTE: not that the file is there, which it was before it
       ;; started. A daemon that refused because something was already at
       ;; the path would leave a store unusable until somebody tidied up
       ;; by hand.
@@ -1891,7 +1891,7 @@
                   '(served-before socket-was-left and-the-new-one-answers)))))
 
       (stop-daemon!)
-      ;; ⛔ THIS RUN CLEANS UP AFTER ITSELF, BY ITS OWN PID. Every row
+      ;; NEVER: THIS RUN CLEANS UP AFTER ITSELF, BY ITS OWN PID. Every row
       ;; here that starts a daemon leaves a store, a socket, a runner and
       ;; a log behind, and they accumulated: a thousand two hundred of
       ;; them after one day's work. That is not tidiness -- the fixtures
@@ -1901,16 +1901,16 @@
       ;; against a directory left by a run three hours earlier that had
       ;; happened to get the same pid.
       ;;
-      ;; ⚠️ BY PID PREFIX, so it removes this run's files and ⛔ nothing
+      ;; NOTE: BY PID PREFIX, so it removes this run's files and NEVER: nothing
       ;; belonging to a run going on beside it.
-      ;; ⛔ THE PROCESSES GO FIRST, AND THEY WERE NOT GOING AT ALL. This
+      ;; NEVER: THE PROCESSES GO FIRST, AND THEY WERE NOT GOING AT ALL. This
       ;; tidy-up removed the FILES and left the daemons that were using
       ;; them running -- found as an orphaned `scheme --script
       ;; /tmp/dmn-run-NNNN.ss`, parent 1, five minutes into a suite run
       ;; that had nothing to do with it, competing for the machine with
       ;; whatever was actually being measured.
       ;;
-      ;; ⚠️ BEFORE the `rm`, so nothing is still writing the files being
+      ;; NOTE: BEFORE the `rm`, so nothing is still writing the files being
       ;; removed; and by the same pid prefix, so a run going on beside
       ;; this one is not touched.
       (system (string-append "pkill -f 'dmn-run.*" pid-text "' 2>/dev/null"))
@@ -1920,7 +1920,7 @@
                              " /tmp/dmn-run*-" pid-text ".ss /tmp/dmn-log*-" pid-text ".txt"
                              " /tmp/dmn-occupied-" pid-text " /tmp/.dmn-*" pid-text "*.lock"
                              " 2>/dev/null"))
-      ;; ⛔ AND IT IS ASSERTED, not assumed. "I issued a kill" is not the
+      ;; NEVER: AND IT IS ASSERTED, not assumed. "I issued a kill" is not the
       ;; same claim as "nothing is left running", and it is the second
       ;; one the next run depends on.
       (let ((left (string-append "/tmp/dmn-left-" pid-text ".txt")))

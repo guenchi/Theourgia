@@ -16,25 +16,25 @@
   (export render-wire render-human answer-printing!)
   (import (chezscheme))
 
-  ;; ⭐ ONE PRINTER FOR EVERY ANSWER THIS SYSTEM GIVES. There used to be
+  ;; KEY: ONE PRINTER FOR EVERY ANSWER THIS SYSTEM GIVES. There used to be
   ;; three: this one, a copy of it in `mcp/server.ss`, and a bare `write`
   ;; in `daemon.ss` that set nothing at all -- so the same answer could
   ;; leave by three routes in two spellings, and the daemon's was already
   ;; the odd one out.
   ;;
-  ;; ⭐ NON-ASCII GOES OUT AS UTF-8, NOT AS `\x6C49;`. Measured by the
+  ;; KEY: NON-ASCII GOES OUT AS UTF-8, NOT AS `\x6C49;`. Measured by the
   ;; worker: escaping made CJK cost 2.36 times the tokens, where the JSON
   ;; envelope around it costs 1.16. The reader of these answers is an
   ;; agent paying by the token.
   ;;
-  ;; ⛔ SET ONCE PER PROCESS, NOT `parameterize`d AROUND THE WRITE. Chez
+  ;; NEVER: SET ONCE PER PROCESS, NOT `parameterize`d AROUND THE WRITE. Chez
   ;; parameters are per OS THREAD, and every green thread on that thread
   ;; shares them (7.6.36, measured) -- so a printer that set them for the
   ;; duration of its own call would be setting them for whatever else was
   ;; running. Each entry point calls this once, before it answers
   ;; anything.
   ;;
-  ;; ⛔ THIS DOES NOT TOUCH WHAT IS WRITTEN TO DISK. A record is
+  ;; NEVER: THIS DOES NOT TOUCH WHAT IS WRITTEN TO DISK. A record is
   ;; serialised by `sexpr->string-extended` in `wire.ss`, which writes
   ;; its own characters and has never consulted these parameters. `U4`
   ;; compares the bytes of a stored record before and after, and it is a

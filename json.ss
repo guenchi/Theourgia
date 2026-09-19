@@ -20,7 +20,7 @@
 ;;; Every use this core makes of igropyr goes through one, so replacing
 ;;; the dependency changes these files and no caller.
 ;;;
-;;; ⛔ FOUR NAMES, NOT THE SEVENTEEN `(igropyr json)` OFFERS. The core
+;;; NEVER: FOUR NAMES, NOT THE SEVENTEEN `(igropyr json)` OFFERS. The core
 ;;; speaks JSON in exactly one place -- the MCP shell, where JSON is the
 ;;; JSON-RPC envelope and the payload inside it is S-expression text
 ;;; (§7.6.4, §7.6.37). Reading a frame and writing a reply needs to parse,
@@ -28,20 +28,20 @@
 ;;; structurally, so `json-set`, `json-drop`, `json-push`, `json-insert`
 ;;; and `json-update` with their starred forms are deliberately absent.
 ;;;
-;;; ⚠️ THE LIST IS THE MEASURABLE ANSWER to "what does this core use
+;;; NOTE: THE LIST IS THE MEASURABLE ANSWER to "what does this core use
 ;;; igropyr's JSON for", and re-exporting wholesale would make it say
 ;;; nothing while quietly widening what a replacement has to provide.
 ;;; `test/facade-exports.sexp` pins these four literally, so widening
 ;;; this list is a change somebody has to make on purpose.
 
-;;; ⚠️ THE TWO ACCESSORS ARE NOT A PAIR OF THE SAME THING, and their
+;;; NOTE: THE TWO ACCESSORS ARE NOT A PAIR OF THE SAME THING, and their
 ;;; names suggest otherwise. `json-ref` is a MACRO over a written-out
 ;;; path -- `(json-ref x "a" 1 "b")` -- and `json-ref*` is a PROCEDURE
 ;;; taking ONE step, `(json-ref* x k [absent])`. Measured by getting it
 ;;; wrong: `(json-ref* d "a" 1 "b")` is an arity error, not a deep
 ;;; lookup. Both are here because the shell needs both shapes.
 
-;;; ⭐ THE REPRESENTATION, MEASURED RATHER THAN GUESSED, because the two
+;;; KEY: THE REPRESENTATION, MEASURED RATHER THAN GUESSED, because the two
 ;;; empties are exactly where a guess goes wrong:
 ;;;
 ;;;   object   an alist of (key . value); the EMPTY object is `()`
@@ -54,7 +54,7 @@
 ;;; belongs. Measured by getting it wrong: the shell read `argv` as a
 ;;; list and refused every legal call with -32602.
 ;;;
-;;; ⚠️ `json->string` WRITES RAW UTF-8, not `\uXXXX`. Both are valid JSON
+;;; NOTE: `json->string` WRITES RAW UTF-8, not `\uXXXX`. Both are valid JSON
 ;;; and decode to the same string; a consumer comparing bytes against
 ;;; another writer's output has to know which one it is looking at.
 

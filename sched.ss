@@ -26,7 +26,7 @@
 ;;; wholesale re-export would make the list say nothing about what this
 ;;; core uses, and would widen what a replacement has to provide.
 ;;;
-;;; ⚠️ `receive` IS SYNTAX, AND ITS `(after ms ...)` CLAUSE IS PART OF
+;;; NOTE: `receive` IS SYNTAX, AND ITS `(after ms ...)` CLAUSE IS PART OF
 ;;; THAT SYNTAX -- not a procedure this file could wrap. Re-exporting the
 ;;; macro keeps the clause working; wrapping `receive` in a procedure
 ;;; would take the clause away and there would be no timeout at all.

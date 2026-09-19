@@ -15,7 +15,7 @@
 
 ;; (theourgia net) UNDER §7.6.32/§7.6.33.
 ;;
-;; ⭐ EVERY TERMINAL FACT IN THIS FILE IS READ FROM A `#(DOWN pid reason)`,
+;; KEY: EVERY TERMINAL FACT IN THIS FILE IS READ FROM A `#(DOWN pid reason)`,
 ;; and every leak is read from the RUNTIME's counters -- `process-count`,
 ;; `conn-count` -- never from a number this library keeps about itself.
 ;; The library it replaces kept such a number, and a "fix" that told it a
@@ -85,7 +85,7 @@
 
       ;; ---- N-01 a verb on a dead adapter answers, it does not hang ------
       ;;
-      ;; ⛔ THE FACADE MONITORS BEFORE IT SENDS. `send` to a dead process
+      ;; NEVER: THE FACADE MONITORS BEFORE IT SENDS. `send` to a dead process
       ;; is silently discarded, so a verb that only sent would wait for a
       ;; reply that nobody is left to make. Monitoring first means the
       ;; runtime's DOWN is the answer -- and `monitor` on an already dead
@@ -107,14 +107,14 @@
       ;; This is the daemon's rule "a conn process dies, its connection
       ;; closes" with nothing of ours in between: the adapter monitors
       ;; its target, dies with it, and the runtime closes what it owned.
-      ;; ⚠️ Read from `conn-count`, the runtime's own number.
-      ;; ⚠️ A SHORT UNSTARTED-READ DEADLINE, BECAUSE THIS ROW IS NOT ABOUT
+      ;; NOTE: Read from `conn-count`, the runtime's own number.
+      ;; NOTE: A SHORT UNSTARTED-READ DEADLINE, BECAUSE THIS ROW IS NOT ABOUT
       ;; THE ACCEPTED SIDE. Nobody here reads the accepted connection, so
       ;; its adapter waits out the default five seconds before giving up
       ;; -- and `settles-to` runs out of patience at four. Measured: with
       ;; a twenty-second window every row passed, so `conn-count` DOES
       ;; come home; what failed was the row's clock, not the teardown.
-      ;; ⛔ The answer is not a longer wait everywhere -- that makes every
+      ;; NEVER: The answer is not a longer wait everywhere -- that makes every
       ;; leak row slower to fail -- it is telling this listener to stop
       ;; waiting for a reader that is never coming.
       (let ((p (sock "b")))
@@ -148,7 +148,7 @@
 
       ;; ---- N-03 accepted and never started ---------------------------
       ;;
-      ;; ⚠️ THE DEADLINE IS ABOUT OUR OWN CONSUMER, not about the peer: a
+      ;; NOTE: THE DEADLINE IS ABOUT OUR OWN CONSUMER, not about the peer: a
       ;; connection nobody ever reads is one this library must not hold.
       (let ((p (sock "c")))
         (spawn
@@ -158,7 +158,7 @@
               (receive
                 (after 6000 (send main (list 'idle 'no-accept)))
                 (`(accepted ,ref)
-                 ;; ⚠️ AND IT MONITORS THE ADAPTER ITSELF. A process that
+                 ;; NOTE: AND IT MONITORS THE ADAPTER ITSELF. A process that
                  ;; only holds a ref and never calls a verb is told
                  ;; nothing -- that is §L②, deliberate: the standing
                  ;; watch is the one a `start` leaves behind, and this
@@ -183,7 +183,7 @@
 
       ;; ---- N-04 write, then change the buffer -------------------------
       ;;
-      ;; ⛔ THE BYTES ARE COPIED INSIDE `tcp-write!`, so a caller may
+      ;; NEVER: THE BYTES ARE COPIED INSIDE `tcp-write!`, so a caller may
       ;; reuse its buffer the instant the call returns. An earlier design
       ;; put writes through the adapter as messages, where enqueueing
       ;; does NOT copy -- and this row is what that design would have
@@ -225,7 +225,7 @@
 
       ;; ---- N-05 two writers, one connection ---------------------------
       ;;
-      ;; ⛔ EACH `conn-write!` IS ONE libuv REQUEST, so two writers
+      ;; NEVER: EACH `conn-write!` IS ONE libuv REQUEST, so two writers
       ;; interleave at request granularity and never inside a message. A
       ;; design that split a write into chunks and waited between them
       ;; would put one writer's bytes inside another's -- which igropyr's
@@ -274,7 +274,7 @@
 
       ;; ---- N-06 a killed adapter cancels its queued writes -----------
       ;;
-      ;; ⭐ §L①: THE COMPLETION AND THE DOWN TRAVEL SEPARATELY, so both
+      ;; KEY: §L①: THE COMPLETION AND THE DOWN TRAVEL SEPARATELY, so both
       ;; arrive and their order is not fixed. What IS fixed is that every
       ;; returned write call completes exactly once -- here with
       ;; ECANCELED, because uv_close cancels each queued request.
@@ -328,7 +328,7 @@
 
       ;; ---- N-07 start moves the target --------------------------------
       ;;
-      ;; ⚠️ A SECOND `start` FROM ANOTHER PROCESS IS NOT REFUSED: moving
+      ;; NOTE: A SECOND `start` FROM ANOTHER PROCESS IS NOT REFUSED: moving
       ;; the target is how a listener hands a connection to the process
       ;; that will serve it. The adapter drops the old watch and takes a
       ;; new one, so the connection follows whoever is reading it.
@@ -409,7 +409,7 @@
               'nothing))
 
       ;; ---- N-09 dialling a path nobody is listening on ----------------
-      ;; ⚠️ NO `monitor` HERE: `connect!` takes the watch in this process
+      ;; NOTE: NO `monitor` HERE: `connect!` takes the watch in this process
       ;; before it returns. A second one owned by the same process
       ;; delivers a SECOND DOWN for the same pid, and a row that stops at
       ;; the first leaves the other in the mailbox for the NEXT row --
@@ -440,7 +440,7 @@
 
       ;; ---- N-11 many connections, and the counters come home ----------
       ;;
-      ;; ⛔ READ FROM THE RUNTIME, NOT FROM US. There is no table here to
+      ;; NEVER: READ FROM THE RUNTIME, NOT FROM US. There is no table here to
       ;; agree with itself.
       (let ((p (sock "many")))
         (spawn (lambda ()
@@ -453,7 +453,7 @@
                                (serve))
                               (`(data ,r ,bv) (conn-write! r bv 'echo) (serve))
                               (`(written ,r ,t ,st) (serve))
-                              ;; ⚠️ THE SERVER CLOSES ON EOF, AND IT HAS TO.
+                              ;; NOTE: THE SERVER CLOSES ON EOF, AND IT HAS TO.
                               ;; A half-close is not the end of the
                               ;; connection here (N-08 depends on that),
                               ;; so nothing closes this side unless the
@@ -485,7 +485,7 @@
 
       ;; ---- N-12 the monitor a verb leaves behind is bounded -----------
       ;;
-      ;; ⛔ `monitor` DOES NOT DE-DUPLICATE. A consumer that stops and
+      ;; NEVER: `monitor` DOES NOT DE-DUPLICATE. A consumer that stops and
       ;; starts once per frame would otherwise accumulate one watch, and
       ;; one future DOWN, per frame -- a slow leak that only shows up as
       ;; a storm of DOWNs when the connection finally ends. Only the
@@ -567,20 +567,20 @@
 
       ;; ---- N-15 stopping a listener ------------------------------------
       ;;
-      ;; ⚠️ §L③: THE LISTENER OUTLIVES THE PROCESS THAT MADE IT. libuv
+      ;; NOTE: §L③: THE LISTENER OUTLIVES THE PROCESS THAT MADE IT. libuv
       ;; goes on accepting, and each new connection's adapter finds its
       ;; target dead, dies at once and hands the connection back -- so a
       ;; supervisor has to call `stop-listen!` when the listener process
       ;; goes, which is what this row is about.
       ;;
-      ;; ⚠️ AND `stop-listen!` CARRIES ITS TOKEN. A handle's address is
+      ;; NOTE: AND `stop-listen!` CARRIES ITS TOKEN. A handle's address is
       ;; reused by whatever listens next, so the handle alone could stop
       ;; somebody else's listener; the two-argument form is a no-op once
       ;; the token has expired.
       (let* ((p (sock "stop"))
              (lref (listen! p 16)))
         (sleep-ms 100)
-        ;; ⚠️ AND THE DOWN THIS ROW'S OWN CLOSE PRODUCES IS DRAINED HERE.
+        ;; NOTE: AND THE DOWN THIS ROW'S OWN CLOSE PRODUCES IS DRAINED HERE.
         ;; `connect!` watches the adapter on this process's behalf, so
         ;; closing the connection delivers `#(DOWN adapter closed)` --
         ;; wanted or not. A row that dials, closes and walks away leaves
@@ -608,7 +608,7 @@
                            (`(connected ,pp ,ref) (conn-close! ref) 'still-accepting)
                            (`(accepted ,ref) (wait)))))
               'refused)
-        ;; ⚠️ AND STOPPING IT TWICE IS NOT AN ERROR: the second call's
+        ;; NOTE: AND STOPPING IT TWICE IS NOT AN ERROR: the second call's
         ;; token no longer matches anything, which is exactly the case
         ;; the two-argument form exists to make harmless.
         (want "N-15 stopping an already stopped listener is a no-op"
@@ -617,13 +617,13 @@
 
       ;; ---- N-16 a stop from somebody who is not the target -----------
       ;;
-      ;; ⛔ ONLY `start` MOVES THE TARGET. A process that stops a
+      ;; NEVER: ONLY `start` MOVES THE TARGET. A process that stops a
       ;; connection it does not own is asking for backpressure, not
       ;; asking to be given the stream -- and it must not be left with a
       ;; standing watch either, since only the start that made you the
       ;; target keeps one.
       ;;
-      ;; ⚠️ EVERY OTHER ROW STOPS FROM THE PROCESS THAT IS ALREADY THE
+      ;; NOTE: EVERY OTHER ROW STOPS FROM THE PROCESS THAT IS ALREADY THE
       ;; TARGET, where both mistakes are invisible: moving the target to
       ;; its current holder is a no-op, and the watch is dropped anyway.
       ;; Measured -- the mutation for the watch rule SURVIVED until this
@@ -639,7 +639,7 @@
                              (let s ()
                                (receive (after 9000 'done)
                                         (`(data ,r ,bv) (send main (list 'server-heard (utf8->string bv))) (s))
-                                        ;; ⚠️ A STOP STOPS THE READS WHOEVER ASKED FOR IT,
+                                        ;; NOTE: A STOP STOPS THE READS WHOEVER ASKED FOR IT,
                                         ;; so the target resumes before the row can ask
                                         ;; where the bytes go. Without this the twin read
                                         ;; `no-answer` and said nothing about the target.
@@ -686,13 +686,13 @@
 
       ;; ---- N-17 an answer that ends without the peer closing ----------
       ;;
-      ;; ⛔ THE CASE THE eof-ONLY VERSION COULD NOT SERVE. A daemon is one
+      ;; NEVER: THE CASE THE eof-ONLY VERSION COULD NOT SERVE. A daemon is one
       ;; frame one answer and keeps the connection open for the next, so
       ;; nothing ever closes it -- and an exchange that could only end at
       ;; eof simply timed out with a complete answer in its hands.
       ;; Measured against the real daemon before this argument existed.
       ;;
-      ;; ⚠️ AND THE KNOWLEDGE STAYS WITH THE CALLER: `net` is not told
+      ;; NOTE: AND THE KNOWLEDGE STAYS WITH THE CALLER: `net` is not told
       ;; what a line is, it is handed a question about bytes.
       (let ((p (sock "frame")))
         (spawn (lambda ()
@@ -724,7 +724,7 @@
                          (`#(DOWN ,w ,r) (wait))))
               '("LINE\n" before-the-deadline))
 
-        ;; ⛔ TWIN: WITH NO PREDICATE IT STILL ENDS AT eof, which is what
+        ;; NEVER: TWIN: WITH NO PREDICATE IT STILL ENDS AT eof, which is what
         ;; a peer that closes after speaking gives. Without this the row
         ;; above is satisfied by an implementation that ignored eof.
         (let ((q (sock "closes")))
@@ -753,18 +753,18 @@
 
       ;; ---- N-18 a verb does not eat the caller's other mail -----------
       ;;
-      ;; ⛔ THE CALLER OF A VERB IS USUALLY WATCHING OTHER PROCESSES TOO.
+      ;; NEVER: THE CALLER OF A VERB IS USUALLY WATCHING OTHER PROCESSES TOO.
       ;; A daemon's conn process monitors its store and its writer; if a
       ;; `stop` that happens to sit behind one of their DOWNs takes that
       ;; DOWN out of the mailbox while deciding it was not its own, the
       ;; conn never learns that its store died.
       ;;
-      ;; ⚠️ igropyr REMOVES A MESSAGE WHEN THE PATTERN MATCHES, so
+      ;; NOTE: igropyr REMOVES A MESSAGE WHEN THE PATTERN MATCHES, so
       ;; "match anything, compare, recurse" has already consumed it by
       ;; the time the comparison runs. The reply is matched BY VALUE
       ;; instead, and what is not ours stays where it was.
       ;;
-      ;; ⭐ Found in the frozen e1-r1 by the reviewer, not by me -- and it
+      ;; KEY: Found in the frozen e1-r1 by the reviewer, not by me -- and it
       ;; is the same defect the old `exchange` had, in a new place.
       (let ((p (sock "mail")))
         (spawn (lambda ()
@@ -794,16 +794,16 @@
 
       ;; ---- N-20 a peer that closes before the answer is whole ----------
       ;;
-      ;; ⛔ A PREFIX IS NOT AN ANSWER. A caller that supplied `complete?`
+      ;; NEVER: A PREFIX IS NOT AN ANSWER. A caller that supplied `complete?`
       ;; has said what a whole answer looks like; if the connection ends
       ;; before one arrives, what it has is a FRAGMENT, and handing it
       ;; back as `(answer …)` invites the consumer to act on a truncated
-      ;; reply. ⭐ The consumer this was found for is the MCP shell, which
+      ;; reply. KEY: The consumer this was found for is the MCP shell, which
       ;; branches on the tag: a prefix arriving as `answer` becomes a
       ;; SUCCESSFUL text result, which is the worst shape a lost answer
       ;; can take.
       ;;
-      ;; ⚠️ THREE WAYS TO BE INCOMPLETE, and they are three rows because
+      ;; NOTE: THREE WAYS TO BE INCOMPLETE, and they are three rows because
       ;; they fail in three places: nothing at all, half a datum, and a
       ;; whole datum whose terminator never came. An implementation that
       ;; only checked for emptiness passes the first and fails the others.
@@ -852,7 +852,7 @@
                 (ask p)
                 '(transport-error incomplete-answer)))
 
-        ;; ⭐ THE DISCRIMINATING ROW OF THE FIVE. The one that looks like
+        ;; KEY: THE DISCRIMINATING ROW OF THE FIVE. The one that looks like
         ;; an answer. Every byte of the datum is
         ;; here; only the newline the caller defined as the end is
         ;; missing. This is the row a "is it non-empty" implementation
@@ -864,7 +864,7 @@
                 (ask p)
                 '(transport-error incomplete-answer)))
 
-        ;; ⛔ TWIN: THE SAME PEER, ONE BYTE MORE, AND IT SUCCEEDS -- and it
+        ;; NEVER: TWIN: THE SAME PEER, ONE BYTE MORE, AND IT SUCCEEDS -- and it
         ;; succeeds BEFORE any close, which is what says the completeness
         ;; test is what ended the exchange rather than the disconnection.
         (let ((p (sock "eof-whole")))
@@ -876,7 +876,7 @@
                               (`(data ,r ,bv)
                                (conn-write! r (string->utf8 "(ok (text \"\"))\n") 'a)
                                (serve))
-                              ;; ⛔ AND IT STAYS OPEN. Closing here would
+                              ;; NEVER: AND IT STAYS OPEN. Closing here would
                               ;; make EOF a second reason the exchange
                               ;; could have ended, and the row could not
                               ;; say which one did.
@@ -891,7 +891,7 @@
                       (list 'other r)))
                 "(ok (text \"\"))\n"))
 
-        ;; ⛔ TWIN: NO `complete?`, NO CHANGE. A caller that said nothing
+        ;; NEVER: TWIN: NO `complete?`, NO CHANGE. A caller that said nothing
         ;; about completeness is asking to read until the peer closes, and
         ;; for that caller EOF is the answer -- the same bytes that are a
         ;; failure above.
@@ -912,15 +912,15 @@
 
       ;; ---- N-19 a read that will not start ----------------------------
       ;;
-      ;; ⛔ igropyr COUNTS A NEGATIVE `uv_read_start` AND ANSWERS #f: it
+      ;; NEVER: igropyr COUNTS A NEGATIVE `uv_read_start` AND ANSWERS #f: it
       ;; does not close the connection and it sends no message. So an
       ;; adapter that answered `not-reading` and waited would be waiting
       ;; for a hook that is never going to run -- it dies instead, and
       ;; the runtime hands the connection back.
       ;;
-      ;; ⚠️ IT RUNS IN A CHILD, WITH INJECTION ON. The seam only exists in
+      ;; NOTE: IT RUNS IN A CHILD, WITH INJECTION ON. The seam only exists in
       ;; a build expanded with `IGROPYR_INJECT=on`, and this suite is not.
-      ;; ⛔ A row that quietly skipped itself when the variable was unset
+      ;; NEVER: A row that quietly skipped itself when the variable was unset
       ;; would be the kind of green that means nothing; the child always
       ;; runs, and its absence of output is a failure with a reading.
       (let* ((src (string-append "/tmp/n19-" (number->string (get-process-id)) ".ss"))
@@ -968,7 +968,7 @@
         (system (string-append "IGROPYR_INJECT=on CHEZSCHEMELIBDIRS=" dirs
                                " CHEZSCHEMELIBEXTS='" exts "'"
                                " scheme --script " src " > " out " 2>&1"))
-        ;; ⚠️ THE CHILD PRINTS A BANNER FIRST -- a build with injection on
+        ;; NOTE: THE CHILD PRINTS A BANNER FIRST -- a build with injection on
         ;; says so -- so the row reads the LAST datum, not the first.
         (want "N-19 a read that will not start ends the adapter and gives the connection back"
               (guard (e (#t (list 'unreadable (condition-text e))))

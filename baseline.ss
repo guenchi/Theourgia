@@ -49,7 +49,7 @@
   ;; AN ENTRY IS NEVER DROPPED FOR BEING BIG. Its identity and its actor
   ;; are what make it findable; only the content is replaced, by
   ;; `(content elided <bytes>)`, so the reader knows there is something
-  ;; there and how much of it. ⛔ An oversized entry TAKES ITS SLOT --
+  ;; there and how much of it. NEVER: An oversized entry TAKES ITS SLOT --
   ;; skipping it to reach an older, smaller one would answer a different
   ;; question than "the most recent eight".
   ;;
@@ -66,7 +66,7 @@
   ;;
   ;; AND A REFUSAL WITH NO ENTRIES AT ALL SAYS WHY. The hash can differ
   ;; with no record about this block after the draft's cut: a conflict
-  ;; was retracted, the applied cut moved back. ⛔ An empty `since` alone
+  ;; was retracted, the applied cut moved back. NEVER: An empty `since` alone
   ;; leaves the client guessing, so that case carries its own reason and
   ;; a place to look.
   (define content-limit 1024)
@@ -83,7 +83,7 @@
   ;; CONCURRENT, and a total order has to come from somewhere: the pair
   ;; (writer, seq) is used, which is a fact about the records rather than
   ;; about the order they arrived in.
-  ;; ⛔ A COMPARATOR MADE OF "CAUSAL, ELSE LEXICAL" IS NOT AN ORDER.
+  ;; NEVER: A COMPARATOR MADE OF "CAUSAL, ELSE LEXICAL" IS NOT AN ORDER.
   ;;
   ;; Causality is partial. Falling back to the writer's name for the
   ;; pairs it does not relate produces a relation that CYCLES: with
@@ -96,7 +96,7 @@
   ;; Measured on three records plus a dependent winner: the two
   ;; deliveries put z and a the other way round.
   ;;
-  ;; ⭐ SO THE ORDER IS A KEY, NOT A COMPARISON. Each record is ranked by
+  ;; KEY: SO THE ORDER IS A KEY, NOT A COMPARISON. Each record is ranked by
   ;; how much of the history its own causal cut covers; a record that
   ;; causally precedes another covers strictly less, so this key REFINES
   ;; causality, and being a key it is transitive by construction. The
@@ -115,7 +115,7 @@
             ((not (string=? (cadr ra) (cadr rb))) (string>? (cadr ra) (cadr rb)))
             (else (> (caddr ra) (caddr rb))))))
 
-  ;; ⚠️ THE LIMIT IS ON THE BODY'S BYTES, NOT ON THE ENCODED CONTENT.
+  ;; NOTE: THE LIMIT IS ON THE BODY'S BYTES, NOT ON THE ENCODED CONTENT.
   ;;
   ;; They are not close to each other: a body of 1024 quotation marks
   ;; encodes to 2066 bytes, because every quote is escaped. Measuring the
