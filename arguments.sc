@@ -53,7 +53,7 @@
   ;; it mis-parses: the new option becomes a positional and its value
   ;; becomes another positional, so the verb answers its usage line and
   ;; the caller is told the form is wrong when the form was right. The
-  ;; usage forms in `rpc.ss` are the other place; they and these must
+  ;; usage forms in `rpc.sc` are the other place; they and these must
   ;; name the same options, and nothing enforces it but a case.
   ;;
   ;; The split is by arity and not by verb: an option that takes a value

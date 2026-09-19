@@ -39,8 +39,8 @@
 ;;; layer was doing anyway.
 ;;;
 ;;; WHO CALLS WHICH. Anything answering a person or an editor wants the
-;;; view: `rpc.ss`'s `read`, `outline` and `title-of`, and
-;;; `code-project.ss`'s `code-field`. Anything deciding what is stored,
+;;; view: `rpc.sc`'s `read`, `outline` and `title-of`, and
+;;; `code-project.sc`'s `code-field`. Anything deciding what is stored,
 ;;; what conflicts or what a hash is over wants `state-read`.
 
 (library (theourgia view)

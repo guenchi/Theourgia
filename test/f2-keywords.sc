@@ -57,7 +57,7 @@
   (let ((out (string-append here "/out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss "
+              "scheme --script ../cli.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " store " --wire > " out " 2>&1"))
     (file-text out)))
@@ -66,7 +66,7 @@
   (let ((out (string-append here "/plain.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss "
+              "scheme --script ../cli.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " store " > " out " 2>&1"))
     (file-text out)))
@@ -125,7 +125,7 @@
             (if (contains? (cli "search" "Alpha") k5-id) 'OLD-WORD-STILL-HITS 'old-word-gone))
       '(new-word-hits old-word-gone))
 
-;; ---- K1/K2: the scoring, against the rule in store.ss --------------------------
+;; ---- K1/K2: the scoring, against the rule in store.sc --------------------------
 ;;
 ;; NOTE: THE TWINS ARE THE ROW. A single "it was found" passes for an
 ;; implementation that scores keywords like source, or that turns the
@@ -226,7 +226,7 @@
   (let ((out (string-append here "/old.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss "
+              "scheme --script ../cli.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " old-store " > " out " 2>&1"))
     (file-text out)))

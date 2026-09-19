@@ -106,7 +106,7 @@
       '())
 
 ;; ---- MC-P1: the two writing tools carry it ------------------------------------
-(define shell "../mcp/server.ss")
+(define shell "../mcp/server.sc")
 
 (define init
   (string-append "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
@@ -117,7 +117,7 @@
 
 (system (string-append "rm -rf " here "; mkdir -p " here "/store"))
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-                       "scheme --script ../cli.ss init --store " here "/store --wire > /dev/null 2>&1"))
+                       "scheme --script ../cli.sc init --store " here "/store --wire > /dev/null 2>&1"))
 
 ;; NOTE: THE REAL HANDSHAKE. `tools/list` before `notifications/initialized`
 ;; is refused by the shell, deliberately -- so a row that skipped it
@@ -175,7 +175,7 @@
 ;; that the shell did NOT write a sentence of its own -- a shell that
 ;; invented one would not match what the catalogue holds. That the
 ;; catalogue's sentences are present and non-empty is asserted separately,
-;; in `describe.ss`, so this row is not the only thing standing behind
+;; in `describe.sc`, so this row is not the only thing standing behind
 ;; them.
 (define (catalogue-description verb)
   (let look ((es (verb-catalogue)))

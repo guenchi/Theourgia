@@ -109,7 +109,7 @@
   (let ((args (cdr (command-line))))
     (if (null? args)
         (begin
-          (printf "usage: row.ss <gensym|circular|stray|reentry>\n")
+          (printf "usage: row.sc <gensym|circular|stray|reentry>\n")
           (exit 2))
         (string->symbol (car args)))))
 

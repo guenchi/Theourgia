@@ -84,14 +84,14 @@
     ;; The fixture writes a note whose text is deliberately not ASCII, to
     ;; show that a note's bytes survive the round trip unchanged. The
     ;; Chinese is the test datum itself.
-    (cons "test/client-start.ss" 429)))
+    (cons "test/client-start.sc" 429)))
 
 ;; NEVER: THE EXCEPTION IS THE ONE PATH NAMED, NOT ANY PATH THAT ENDS IN IT.
 ;; The first version compared suffixes, and a review found it exempting
-;; vendor/test/client-start.ss and contest/client-start.ss as well: anyone
+;; vendor/test/client-start.sc and contest/client-start.sc as well: anyone
 ;; adding a path whose last characters happened to match inherited line 429's
 ;; permission to hold Chinese. The walk is rooted at ".." so a path arrives
-;; as "../test/client-start.ss"; that one prefix is stripped, and what is
+;; as "../test/client-start.sc"; that one prefix is stripped, and what is
 ;; left must equal the named path exactly.
 (define (root-relative path)
   (if (and (>= (string-length path) 3) (string=? (substring path 0 3) "../"))
@@ -380,8 +380,8 @@
   (let ((filler (let loop ((i 0) (out (quote ())))
                   (if (= i 428) (apply string-append out)
                       (loop (+ i 1) (cons ";; filler\n" out))))))
-    (put! (string-append d "/vendor/test/client-start.ss") (string-append filler ";; \x4E2D;\n"))
-    (put! (string-append d "/contest/client-start.ss") (string-append filler ";; \x4E2D;\n"))
+    (put! (string-append d "/vendor/test/client-start.sc") (string-append filler ";; \x4E2D;\n"))
+    (put! (string-append d "/contest/client-start.sc") (string-append filler ";; \x4E2D;\n"))
     (put! (string-append d "/unrelated.ss") (string-append filler ";; \x4E2D;\n")))
   (want "ASCII-2 TWIN: at the excepted LINE, a path merely ending in the excepted one is still refused"
         (length (caddr (scan d))) 3))
@@ -389,7 +389,7 @@
 ;; NEVER: AND A NAMED EXCEPTION IS THE ONLY WAY A CJK LINE PASSES.
 (let ((d (fresh! "exception")))
   (system (string-append "mkdir -p " d "/test"))
-  (put! (string-append d "/test/client-start.ss")
+  (put! (string-append d "/test/client-start.sc")
         (string-append (apply string-append
                               (map (lambda (i) ";; filler\n")
                                    (quote (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))))

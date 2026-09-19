@@ -15,7 +15,7 @@
 
 ;; THE DERIVED FIELDS STILL ARRIVE, BY THE ROUTE A CALLER USES.
 ;;
-;; `view-fields.ss` asks `view-read` directly. That is the layer the
+;; `view-fields.sc` asks `view-read` directly. That is the layer the
 ;; split created, and a tree in which every caller had been left on
 ;; `state-read` would pass every row of it: the derivation would work
 ;; perfectly and nobody would see it.

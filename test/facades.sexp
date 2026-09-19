@@ -6,10 +6,10 @@
 ;; libraries and fixtures that import `(theourgia digest)`.
 ;;
 ;; TWO RULES READ THIS ONE LIST, so adding a facade is one edit:
-;;   * `facade-gate.ss` requires the set of root sources importing
+;;   * `facade-gate.sc` requires the set of root sources importing
 ;;     igropyr to equal this list exactly -- in BOTH directions, and it
-;;     also requires each name here to exist as a root `.ss`;
-;;   * `facades.ss` requires the copied definitions to be gone from them.
+;;     also requires each name here to exist as a root `.sc`;
+;;   * `facades.sc` requires the copied definitions to be gone from them.
 ;;
 ;; IT IS A LIST OF NAMES, which is the kind of rule that stays silent
 ;; about what it forgot -- so the gate is what shouts, not this file.

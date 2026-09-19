@@ -114,7 +114,7 @@
 ;; NOTE: THIS ROW ONLY RUNS ON FreeBSD, and it says so rather than passing
 ;; quietly elsewhere. Both production machines are FreeBSD 15; the
 ;; reading there comes out of `kinfo_proc` at an offset that was
-;; MEASURED on that machine (see `ffi.ss`), not read out of a header --
+;; MEASURED on that machine (see `ffi.sc`), not read out of a header --
 ;; and an offset is a claim about a layout, so it is worth a row that
 ;; fails if the layout moves.
 ;;
@@ -211,7 +211,7 @@
 "
             here
             "     It is measured where it matters (both production machines are FreeBSD 15);
-     the offset 264/pages came from a probe run there, and ffi.ss refuses to
+     the offset 264/pages came from a probe run there, and ffi.sc refuses to
      answer at all if the struct size is not the 1088 that probe saw."))
 
 (printf "rows: ~a\n~a failures\nfacade-ffi complete\n" rows bad)

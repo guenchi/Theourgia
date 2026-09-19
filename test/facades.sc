@@ -23,12 +23,12 @@
 ;;
 ;; TWO KINDS OF FACADE, BECAUSE THEY ARE NOT THE SAME SHAPE:
 ;;
-;;   `digest.ss` is a PURE forward -- a library header, an import and an
+;;   `digest.sc` is a PURE forward -- a library header, an import and an
 ;;   export, and nothing else. For it the check is the strong one: zero
 ;;   top-level definitions. That catches the private helpers (`mask32`,
 ;;   `rotr32`, `sha256-k` ...) without naming them.
 ;;
-;;   `wire.ss` and `ffi.ss` are this core's OWN libraries that happen to
+;;   `wire.sc` and `ffi.sc` are this core's OWN libraries that happen to
 ;;   be the single seam for one area of igropyr each. `encode-record`,
 ;;   `exec-argv!` and a hundred and eighty others live in them and
 ;;   always did, so "zero definitions" would fail a correct file. For
@@ -38,7 +38,7 @@
 ;; list: it was MEASURED -- every `(define ...)` between the two
 ;; `COPIED FROM IGROPYR` markers as they stood at bc5547a. It was NOT
 ;; copied from those markers' own `extracted` headers, which are wrong:
-;; `wire.ss`'s header named fifteen definitions and the region defined
+;; `wire.sc`'s header named fifteen definitions and the region defined
 ;; THIRTY-THREE. The eighteen it never mentioned -- `parse-atom`,
 ;; `token->number`, `ws?`, `parse-list` and the rest -- would have been
 ;; free to come back with nothing to notice.
@@ -84,7 +84,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 
 ;; Measured at bc5547a, between the two markers. See the note above on
 ;; why this is not the markers' own list.
@@ -144,10 +144,10 @@
         ((eq? 'import (car form)) (igropyr-in (cdr form)))
         (else (append (imports-of (car form)) (imports-of (cdr form))))))
 
-(define (path-of name) (string-append root "/" (symbol->string name) ".ss"))
+(define (path-of name) (string-append root "/" (symbol->string name) ".sc"))
 
 ;; -- the pure forward -------------------------------------------------
-(want "D1-01 digest.ss defines nothing of its own"
+(want "D1-01 digest.sc defines nothing of its own"
       (defined-names (path-of 'digest)) '())
 (want "D1-01 and it takes sha256 and bytevector->hex from igropyr"
       (map car (apply append (map imports-of (forms-of (path-of 'digest)))))
@@ -161,10 +161,10 @@
            (here (defined-names (path-of name)))
            (left (filter (lambda (n) (memq n here)) gone)))
       (want (string-append "D1-02 no copied definition is left in "
-                           (symbol->string name) ".ss")
+                           (symbol->string name) ".sc")
             left '())
       (want (string-append "D1-02 and " (symbol->string name)
-                           ".ss imports igropyr")
+                           ".sc imports igropyr")
             (pair? (apply append (map imports-of (forms-of (path-of name))))) #t)))
   (map (lambda (e) (list (car e) (cdr e))) copied-definitions))
 
@@ -197,7 +197,7 @@
 
 ;; KEY: ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
 ;; the file is read as data and every `define` in it counted.
-(want "D1-05 sched.ss defines nothing of its own"
+(want "D1-05 sched.sc defines nothing of its own"
       (defined-names (path-of 'sched)) '())
 
 ;; NOTE: AND THE OTHER TWO DO DEFINE THINGS, which is what makes the row
@@ -223,15 +223,15 @@
     (let* ((here (defined-names (path-of name)))
            (clash (filter (lambda (n) (memq n igropyr-primitive-names)) here)))
       (want (string-append "D1-06 " (symbol->string name)
-                           ".ss defines no name igropyr owns")
+                           ".sc defines no name igropyr owns")
             clash '())))
   facade-names)
 
 ;; -- the twin ---------------------------------------------------------
-;; `crc32.ss` was never a copy: it is this tree's own digest, and it must
+;; `crc32.sc` was never a copy: it is this tree's own digest, and it must
 ;; still carry its definitions. Without this row the two checks above are
 ;; also satisfied by a tree in which every library has been emptied.
-(want "D1-03 TWIN: crc32.ss still defines its own algorithm"
+(want "D1-03 TWIN: crc32.sc still defines its own algorithm"
       (> (length (defined-names (path-of 'crc32))) 3) #t)
 (want "D1-03 TWIN: and it imports no igropyr"
       (apply append (map imports-of (forms-of (path-of 'crc32)))) '())
@@ -243,9 +243,9 @@
   (let ((form (car (forms-of path))))
     (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
                (cdr (caddr form)))))
-(want "D1-04 digest.ss exports exactly what the core uses"
+(want "D1-04 digest.sc exports exactly what the core uses"
       (exports-of (path-of 'digest)) '(bytevector->hex sha256))
-(want "D1-04 wire.ss exports what it exported before the change"
+(want "D1-04 wire.sc exports what it exported before the change"
       (exports-of (path-of 'wire))
       '(decode-line encode-record escape-newlines sexpr->string-extended
         storable-decode storable-encode string->sexpr-extended

@@ -16,7 +16,7 @@
 ;; The command line, forwarding to a daemon -- in Scheme, with no helper
 ;; process.
 ;;
-;; KEY: EVERY ROW HERE RUNS THE REAL `cli.ss` AS A REAL PROCESS, the way a
+;; KEY: EVERY ROW HERE RUNS THE REAL `cli.sc` AS A REAL PROCESS, the way a
 ;; person does. A row that called its procedures would be testing the
 ;; library and would say nothing about argv, the environment, or which
 ;; program ends up doing the work.
@@ -157,7 +157,7 @@
 
 (define (cli! extra args out)
   (system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH " extra))
-                         " scheme --script ../cli.ss " args " > " out " 2>&1")))
+                         " scheme --script ../cli.sc " args " > " out " 2>&1")))
 
 (define out-1 (string-append here "/out1.txt"))
 (define out-2 (string-append here "/out2.txt"))
@@ -279,7 +279,7 @@
 ;; printed. Judged only by the reader's guard it would have been
 ;; `not-a-datum` at a daemon and would never have met a guard at all in a
 ;; local call -- the same verb, two answers, depending on whether a daemon
-;; happened to be running. `daemon.ss` promises these two routes give byte
+;; happened to be running. `daemon.sc` promises these two routes give byte
 ;; for byte the same answer, and this row is that promise for the case
 ;; that nearly broke it.
 (define out-8 (string-append here "/out8.txt"))
@@ -327,12 +327,12 @@
 ;; is judged BEFORE the arguments are parsed, and the order follows from a
 ;; fact rather than a preference: the thin client knows no verb's option
 ;; table -- that is what makes it thin -- so it can never answer
-;; `missing-option-value` for a verb-specific option, while `cli.ss` can.
+;; `missing-option-value` for a verb-specific option, while `cli.sc` can.
 ;; The one order the two can share is the check that needs no table.
 ;;
 ;; NOTE: MEASURED WITH THE CHECK AFTER THE PARSE: one argv, two answers --
-;;   cli.ss        (error bad-request missing-option-value "--store")
-;;   theourgia.ss  (error bad-request unknown-verb (spelling "show me"))
+;;   cli.sc        (error bad-request missing-option-value "--store")
+;;   theourgia.sc  (error bad-request unknown-verb (spelling "show me"))
 ;; KEY: AND THE EARLIER ROUND MISSED IT because it tried `--req`, an option
 ;; that takes no value, so the parse never failed. The same claim was true
 ;; all along under an input nobody had tried.
@@ -348,7 +348,7 @@
   (cli! "THEOURGIA_LOCAL=1" argv out-8)
   (let ((by-cli (file-text out-8)))
     (system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH THEOURGIA_LOCAL=1 "))
-                           " scheme --script ../theourgia.ss " argv " > " out-9 " 2>&1"))
+                           " scheme --script ../theourgia.sc " argv " > " out-9 " 2>&1"))
     (list by-cli (file-text out-9))))
 
 (want "F-16 an unprintable verb answers the same from both programs, whatever follows it"
@@ -425,7 +425,7 @@
 (define out-8 (string-append here "/out8.txt"))
 (define trace-8 (string-append here "/trace8.txt"))
 (system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH THEOURGIA_TRACE=1 "))
-                       " scheme --script ../cli.ss insert --title LOST-ANSWER-CANARY --store " store-a
+                       " scheme --script ../cli.sc insert --title LOST-ANSWER-CANARY --store " store-a
                        " > " out-8 " 2>" trace-8))
 (want "F-14 a request that was taken and then lost is reported as unknown"
       (if (contains? (file-text out-8) "transport-unknown")
@@ -455,7 +455,7 @@
 (when (file-exists? marker) (delete-file marker))
 (system (string-append "rm -f " socket-a))
 (system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH "))
-                       " scheme --script ../cli.ss serve " store-a
+                       " scheme --script ../cli.sc serve " store-a
                        " --socket " socket-a " > " serve-log " 2>&1 &"))
 (define serve-verb-up
   (let wait ((k 0))
@@ -474,7 +474,7 @@
       (if (file-exists? marker) (list 'called-python (file-text marker)) 'no-python)
       'no-python)
 
-(system (string-append "pkill -f \"cli.ss serve " store-a "\" 2>/dev/null"))
+(system (string-append "pkill -f \"cli.sc serve " store-a "\" 2>/dev/null"))
 
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\ncli-forward complete\n" rows bad)

@@ -1092,7 +1092,7 @@
 ;; than a second execution. Under the old rule a resend of an empty
 ;; request had nothing to find and did the work again.
 ;;
-;; WHO ASKS THE RETIRED QUESTIONS NOW: `empty-plan.ss`, rows QE-01 (the
+;; WHO ASKS THE RETIRED QUESTIONS NOW: `empty-plan.sc`, rows QE-01 (the
 ;; first answer names the durable empty plan; the retry replays it and
 ;; appends nothing), QE-06 (zero operations write one empty plan, and one
 ;; operation still uses `single` with no plan) and QE-03 (a pending empty

@@ -49,7 +49,7 @@
 (define here (string-append "/tmp/mcpshell-" pid-text))
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define shell "../mcp/server.ss")
+(define shell "../mcp/server.sc")
 
 ;; The canonical path of a directory, asked of the shell rather than of
 ;; the library whose answer this file is checking.
@@ -156,10 +156,10 @@
 (system (string-append "rm -rf " here "; mkdir -p " here "/store"))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-          "scheme --script ../cli.ss init --store " here "/store > /dev/null 2>&1"))
+          "scheme --script ../cli.sc init --store " here "/store > /dev/null 2>&1"))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-          "THEOURGIA_LOCAL=1 scheme --script ../cli.ss insert --title MC-CANARY --store "
+          "THEOURGIA_LOCAL=1 scheme --script ../cli.sc insert --title MC-CANARY --store "
           here "/store > /dev/null 2>&1"))
 
 ;; ---- MC-lifecycle ------------------------------------------------------------
@@ -295,7 +295,7 @@
   (let ((out (string-append here "/cli-out2.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../cli.ss " (car argv)
+              "scheme --script ../cli.sc " (car argv)
               (apply string-append (map (lambda (a) (string-append " " (shell-quote a))) (cdr argv)))
               " --store " store " --socket " socket " --wire > " out " 2>&1"))
     (file-text out)))
@@ -304,7 +304,7 @@
   (let ((out (string-append here "/cli-out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss " (car argv)
+              "scheme --script ../cli.sc " (car argv)
               (apply string-append
                      (map (lambda (a) (string-append " " (shell-quote a))) (cdr argv)))
               " --store " store " --wire > " out " 2>&1"))
@@ -331,7 +331,7 @@
     (lambda (st)
       (system (string-append "rm -rf " st "; mkdir -p " st))
       (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                             "scheme --script ../cli.ss init --store " st " > /dev/null 2>&1")))
+                             "scheme --script ../cli.sc init --store " st " > /dev/null 2>&1")))
     (list store2 store3))
   ;; KEY: `read <arg>` ON A FRESH STORE ECHOES THE ARGUMENT AND NOTHING
   ;; ELSE: `(error unknown-id "<arg>" (nearest ()))`. No writer name, no
@@ -706,7 +706,7 @@
           ;; NOTE: The catalogue it answers with is the smallest one that
           ;; contains the tool this row calls. It is a STAND-IN for the
           ;; server, and the rows about what the real catalogue holds are
-          ;; in `describe.ss`; what is being measured here is only the
+          ;; in `describe.sc`; what is being measured here is only the
           ;; bytes of the request that follows.
           (list "(import (chezscheme) (theourgia sched) (theourgia net))"
                 (string-append
@@ -763,7 +763,7 @@
 
   (start-capture! seen-cli)
   (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                         "scheme --script ../cli.ss read x.1 --wire --store " cstore
+                         "scheme --script ../cli.sc read x.1 --wire --store " cstore
                          " --socket " csock " > /dev/null 2>&1"))
   (system (string-append "pkill -f " peer " 2>/dev/null"))
   (start-capture! seen-mcp)
@@ -795,7 +795,7 @@
   ;; end of a parse.
   ;; NOTE: THE STORE TRAVELS BY ITS RESOLVED NAME, so the expectation is the
   ;; resolved one -- and it is resolved by the SHELL, not by the library
-  ;; under test. Asking `client.ss` what it would produce would compare
+  ;; under test. Asking `client.sc` what it would produce would compare
   ;; this file's copy of the rule with the rule itself and agree with any
   ;; answer. (`/tmp` is a symlink on this platform, which is what makes
   ;; the two spellings differ at all.)
@@ -1133,7 +1133,7 @@
 ;; five runs, each holding a socket and a log.
 ;;
 ;; NOTE: THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
-;; process's pid. A pattern like `serve` or `cli.ss` would also match the
+;; process's pid. A pattern like `serve` or `cli.sc` would also match the
 ;; daemons of a suite running beside this one, and of another session
 ;; entirely.
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))

@@ -35,7 +35,7 @@
 ;;     empty `since` for the client to guess at.
 ;;
 ;; THESE ROWS ARE THE NAMED SUCCESSORS of the group retired in
-;; `working3.ss`: W3-11 and W3-14 through W3-33, whose oracle was "pick
+;; `working3.sc`: W3-11 and W3-14 through W3-33, whose oracle was "pick
 ;; entries until the byte budget runs out".
 
 (import (chezscheme) (theourgia rpc) (theourgia store)
@@ -210,7 +210,7 @@
 ;; KEY: THIS IS THE ROW THE ORDERING RULE EXISTS FOR, and the rows above do
 ;; not replace it: with one writer the causal order and the arrival order
 ;; are the same sequence, so both a causal implementation and an
-;; ingestion-ordered one answer alike. The old `baseline.ss` sorted by
+;; ingestion-ordered one answer alike. The old `baseline.sc` sorted by
 ;; ingestion and passed a "z depends on a, z arrived first" row; only a
 ;; schedule where the PREMISE ARRIVES SECOND separates them.
 ;;
@@ -230,7 +230,7 @@
 ;; The premise is written by `zzzzzzzz` and the dependent by `aaaaaaaa`,
 ;; so sorting by (writer, seq) -- which is what an ingestion-ordered
 ;; implementation does -- puts them the WRONG way round. Measured: with
-;; the names the other way, seeding `baseline.ss` back to ingestion order
+;; the names the other way, seeding `baseline.sc` back to ingestion order
 ;; left every row here green, because the names happened to agree with
 ;; causality and the cell was asserting a coincidence.
 (define rec-a

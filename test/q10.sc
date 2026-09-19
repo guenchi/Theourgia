@@ -160,13 +160,13 @@
 ;; ONLY THE STORE'S OWN SOURCES ARE COPIED. The dependencies stay where
 ;; they are and are found by putting the copy first on the path, so this
 ;; fixture never has a second opinion about what (igropyr ...) is.
-(system (string-append "cp " pin "/theourgia/*.ss " lib "/theourgia/"))
+(system (string-append "cp " pin "/theourgia/*.sc " lib "/theourgia/"))
 ;; AND THE COPY IS COUNTED BEFORE ANYTHING IS MEASURED AGAINST IT. A
 ;; fixture that scaffolds a copy and then measures the ORIGINAL reports
 ;; the store's own behaviour as the scaffolded one; nothing downstream
 ;; can tell those apart, because both answer.
 (let ((n (let ((out (string-append scratch "/copied.txt")))
-           (system (string-append "ls " lib "/theourgia/*.ss 2>/dev/null | wc -l > " out))
+           (system (string-append "ls " lib "/theourgia/*.sc 2>/dev/null | wc -l > " out))
            (string->number
              (let ((t (file->string out)))
                (let loop ((i 0))
@@ -190,7 +190,7 @@
 (define libdirs
   (string-append lib ":" (getenv "CHEZSCHEMELIBDIRS")))
 
-(define probe (string-append scratch "/probe.ss"))
+(define probe (string-append scratch "/probe.sc"))
 ;; TWO PHASES IN ONE SCRIPT, BECAUSE THE FAULT IS ONE-SHOT. A request
 ;; needs a cursor that names a record this store has, so something must
 ;; be written before the batch can be sent -- and if that write happens
@@ -282,7 +282,7 @@
 ;; receipt is durable, and nothing guards it between there and the
 ;; answer. Made to raise, it puts the store in the one state this arm
 ;; exists to describe: bytes written, work not finished.
-(replace-once (string-append lib "/theourgia/reduce.ss")
+(replace-once (string-append lib "/theourgia/reduce.sc")
   "  (define (reduce-apply! r writer seq deps payload . rest)\n    (let ((have (assoc writer (reduction-applied r))))"
   (string-append
     "  (define (reduce-apply! r writer seq deps payload . rest)\n"

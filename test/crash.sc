@@ -582,6 +582,6 @@
 ;; if it fails: a device that reports its own failures only in text can be
 ;; loaded by a case that never looks.
 (let ((argv (command-line)))
-  (when (and (pair? argv) (crash-has-substring? (car argv) "crash.ss"))
+  (when (and (pair? argv) (crash-has-substring? (car argv) "crash.sc"))
     (let ((failures (crash-self-check)))
       (when (> failures 0) (exit 1)))))

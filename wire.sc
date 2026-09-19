@@ -116,7 +116,7 @@
   ;; WHAT STAYS IS THE CORE'S OWN. `storable-encode`, `encode-record`,
   ;; `decode-line` and the rest are this tree's, not igropyr's -- so this
   ;; file is a library that also happens to be a seam, not a facade of
-  ;; the kind `digest.ss` is. `test/facades.sexp` lists the files that
+  ;; the kind `digest.sc` is. `test/facades.sexp` lists the files that
   ;; may import igropyr; it does not claim they are all empty of code.
 
 

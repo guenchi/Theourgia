@@ -59,7 +59,7 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1)))))))
     (if cut (substring self 0 cut) ".")))
-(define cli (string-append script-dir "/../cli.ss"))
+(define cli (string-append script-dir "/../cli.sc"))
 
 (define root (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                             "/retire-race-" (number->string (get-process-id))))
@@ -172,7 +172,7 @@
 ;; NOTE: IT USED TO BE `kill -0`. A process that is alive may be waiting on
 ;; the lock, or doing anything else -- compiling, opening files, sleeping
 ;; on a slow disk. With the lock removed and the writer merely delayed
-;; before installing, every row here could pass. `ffi.ss` emits
+;; before installing, every row here could pass. `ffi.sc` emits
 ;; `lock-wait` when, and only when, a `flock` did not succeed
 ;; immediately; that event is the whole discriminating power of this
 ;; fixture.

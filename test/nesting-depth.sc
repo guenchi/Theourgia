@@ -46,7 +46,7 @@
 ;;
 ;; NOTE: THEY ARE MEASURED, NOT DERIVED, and they are properties of the
 ;; codec this core now forwards to. They moved once already: the values
-;; here were re-measured after `wire.ss` became a forward onto igropyr,
+;; here were re-measured after `wire.sc` became a forward onto igropyr,
 ;; and came back the same.
 ;;
 ;; THE CLI IS DRIVEN THROUGH A SUBPROCESS, in the shape `cli1`, `cli2`
@@ -81,7 +81,7 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1)))))))
     (if cut (substring self 0 cut) ".")))
-(define cli (string-append script-dir "/../cli.ss"))
+(define cli (string-append script-dir "/../cli.sc"))
 
 (define scratch (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                                "/nesting-depth-" (number->string (get-process-id))))

@@ -69,7 +69,7 @@
   (let ((out (string-append here "/out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss "
+              "scheme --script ../cli.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " store " --wire > " out " 2>&1"))
     (file-text out)))
@@ -247,7 +247,7 @@
 ;; until the evaluation ended.
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-          "scheme --script ../cli.ss eval --working --writer w1 --timeout-ms 20000 "
+          "scheme --script ../cli.sc eval --working --writer w1 --timeout-ms 20000 "
           (quoted "(let loop ((i 0)) (if (< i 2000000000) (loop (+ i 1)) 'done))")
           " --store " store " --wire > " here "/slow.txt 2>&1 &"))
 (system "sleep 1")

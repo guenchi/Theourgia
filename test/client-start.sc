@@ -67,7 +67,7 @@
 
 (define sock (socket-path store))
 (define log (serve-log-path store))
-(define cli "../cli.ss")
+(define cli "../cli.sc")
 
 ;; NEVER: THE ARGV IS BUILT ONCE AND THE SOCKET IS ITS ONLY VARIABLE, so the
 ;; rows below differ in the thing they are about and in nothing else.
@@ -466,7 +466,7 @@
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;
-;; NEVER: `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
+;; NEVER: `closures.sc` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
@@ -482,7 +482,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.scm"))
 
 (define import-graph
@@ -523,16 +523,16 @@
       '(client digest ffi render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
-;; `theourgia.ss`; what IT reaches is a separate fact from what the
+;; `theourgia.sc`; what IT reaches is a separate fact from what the
 ;; `client` library reaches, and the rows above are about the library.
-;; `arguments` is allowed and the reason is written in `closures.ss`: the
+;; `arguments` is allowed and the reason is written in `closures.sc`: the
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
 (want "IMPORTS and the client program's closure is exactly what it should be"
       (let ((program-imports
               (map cadr (filter (lambda (r) (pair? (cdr r)))
                                 (imports-of-file 'theourgia
-                                                 (string-append tree-root "/theourgia.ss"))))))
+                                                 (string-append tree-root "/theourgia.sc"))))))
         (let loop ((todo program-imports) (seen '()))
           (cond
             ((null? todo)

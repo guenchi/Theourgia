@@ -27,7 +27,7 @@
 ;; retry is answered from the log alone.
 ;;
 ;; THESE ROWS ARE THE NAMED SUCCESSORS of three rows retired in
-;; `working1.ss` and one in `working-projection.ss`:
+;; `working1.sc` and one in `working-projection.sc`:
 ;;
 ;;   W4'  <- WS-07 "identity is checked before the old baseline"
 ;;           WS-08 "frozen replay still succeeds"

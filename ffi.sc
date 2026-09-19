@@ -1018,7 +1018,7 @@
   ;; and the two timeout options have different values. Rather than ship
   ;; a guess that would connect to the wrong address quietly, the layout
   ;; below refuses to build an address on a platform it has not been
-  ;; measured on. The first Linux machine to run `client-socket.ss` gets
+  ;; measured on. The first Linux machine to run `client-socket.sc` gets
   ;; a named refusal, not a silent misconnect.
   (define AF_UNIX 1)
   (define SOCK_STREAM 1)
@@ -2095,7 +2095,7 @@
   ;;
   ;; NEVER: LINUX IS NOT MEASURED. There is no Linux host to hand; its entry
   ;; is read from the glibc field list above and nothing else. `DS-1` in
-  ;; `daemon-socket.ss` is what will say so, on the first machine that
+  ;; `daemon-socket.sc` is what will say so, on the first machine that
   ;; runs it there.
   ;;
   ;; NOTE: AND ON FreeBSD A 32-BIT READ AT 24 ALSO MATCHED, because the two
@@ -2104,7 +2104,7 @@
   ;; its offset is. A width wrong in the other direction would show on a
   ;; mode whose neighbouring bytes are not zero.
   ;;
-  ;; NOTE: SO IT IS CHECKED BY A CELL RATHER THAN TRUSTED. `daemon-socket.ss`
+  ;; NOTE: SO IT IS CHECKED BY A CELL RATHER THAN TRUSTED. `daemon-socket.sc`
   ;; makes a socket, a fifo, a regular file and a directory on one path in
   ;; turn and asks this predicate about each; an offset wrong on some
   ;; platform fails there, rather than showing up as a daemon unlinking

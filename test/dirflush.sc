@@ -24,7 +24,7 @@
 (define d
   (let ((args (cdr (command-line))))
     (if (null? args)
-        (begin (printf "usage: dirflush.ss <directory>\n") (exit 2))
+        (begin (printf "usage: dirflush.sc <directory>\n") (exit 2))
         (car args))))
 (system (string-append "rm -rf " d "; mkdir -p " d "/segdir " d "/regdir"))
 (parameterize ((theourgia-trace? #t))

@@ -15,14 +15,14 @@
 
 ;; Every branch this tree can expand into, loaded once.
 ;;
-;; `ffi.ss` has one `meta-cond`, on `THEOURGIA_INJECT`, so the library has
+;; `ffi.sc` has one `meta-cond`, on `THEOURGIA_INJECT`, so the library has
 ;; two forms and only one of them is expanded by any given run. A name
 ;; defined in the injected branch and again at the top level does not
 ;; collide until injection is on -- and then the library does not load at
 ;; all.
 ;;
 ;; THAT IS EXACTLY WHAT HAPPENED. A copy brought a `string-contains?` to
-;; the top of `ffi.ss` while the injected branch already had one. Every
+;; the top of `ffi.sc` while the injected branch already had one. Every
 ;; ordinary run stayed green; fourteen fault-injection fixtures failed
 ;; together, at the end of a full suite, and the first guess at the cause
 ;; was timing. The fixtures that eventually caught it are real guards, but
@@ -73,7 +73,7 @@
 ;; THE CHILD IS A SEPARATE PROCESS, because expansion happens once per
 ;; process and this fixture has already expanded the library its own way.
 (define (loads-under? inject)
-  (let ((src (string-append scratch "/probe.ss"))
+  (let ((src (string-append scratch "/probe.sc"))
         (out (string-append scratch "/probe.out")))
     (call-with-port (open-file-output-port src (file-options no-fail))
       (lambda (o)

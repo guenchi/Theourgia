@@ -28,7 +28,7 @@
 (define dir
   (let ((args (cdr (command-line))))
     (if (null? args)
-        (begin (printf "usage: fault-file.ss <directory>\n") (exit 2))
+        (begin (printf "usage: fault-file.sc <directory>\n") (exit 2))
         (car args))))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "/reg"))
 (define log (string-append dir "/000001.sexp"))

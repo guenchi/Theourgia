@@ -99,8 +99,8 @@
   ;;
   ;; NOTE: ENGLISH, like every other user-facing string in this library.
   ;;
-  ;; NEVER: EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.ss` compares it
-  ;; to the COMMITTED README byte for byte, and `f1-protocol.ss` checks
+  ;; NEVER: EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.sc` compares it
+  ;; to the COMMITTED README byte for byte, and `f1-protocol.sc` checks
   ;; each rule is still in it -- so a rule cannot be dropped quietly, and
   ;; the README cannot drift from it.
   (define write-protocol
@@ -490,7 +490,7 @@
   ;; NOTE: AND IT IS A SECOND PLACE THAT KNOWS THE VERBS. The dispatcher is
   ;; the first. A verb added there and not here would be callable and
   ;; undocumented; one here and not there would be advertised and
-  ;; missing. Nothing in the language stops either, so `describe.ss` has
+  ;; missing. Nothing in the language stops either, so `describe.sc` has
   ;; a row that compares the two lists in both directions -- that row is
   ;; the only thing holding this table honest.
   ;;
@@ -1213,7 +1213,7 @@
         ;; `not-a-datum` at a daemon, and a call made in this process
         ;; would never meet that guard at all -- so the same verb would
         ;; have got two different answers depending on whether a daemon
-        ;; happened to be running. `daemon.ss` promises the two routes are
+        ;; happened to be running. `daemon.sc` promises the two routes are
         ;; byte for byte the same answer; this is what keeps that true.
         ;;
         ;; NOTE: THE TWO LAYERS ANSWER DIFFERENT QUESTIONS AND BOTH STAY.

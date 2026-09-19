@@ -120,11 +120,11 @@
 (system (string-append "rm -rf " scratch "; mkdir -p " scratch "/store"))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-          "scheme --script ../cli.ss init --store " scratch "/store > /dev/null 2>&1"))
+          "scheme --script ../cli.sc init --store " scratch "/store > /dev/null 2>&1"))
 
-(define arguments-data (read-data "../arguments.ss"))
-(define rpc-data (read-data "../rpc.ss"))
-(define cli-data (read-data "../cli.ss"))
+(define arguments-data (read-data "../arguments.sc"))
+(define rpc-data (read-data "../rpc.sc"))
+(define cli-data (read-data "../cli.sc"))
 
 ;; EVERY OPTION SPELLING THE TABLE KNOWS, as data. This is the set the
 ;; probe sweeps; it is read from the table because the table is where a
@@ -272,7 +272,7 @@
   (let ((out (string-append scratch "/link.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.ss link a b c d --store " scratch "/store --wire > "
+              "scheme --script ../cli.sc link a b c d --store " scratch "/store --wire > "
               out " 2>&1"))
     (file-text out)))
 
@@ -367,11 +367,11 @@
             ((string=? (substring text j (+ j n)) needle) j)
             (else (scan (+ j 1)))))))
 
-(define rpc-text (call-with-input-file "../rpc.ss" get-string-all))
-(define cli-text (call-with-input-file "../cli.ss" get-string-all))
+(define rpc-text (call-with-input-file "../rpc.sc" get-string-all))
+(define cli-text (call-with-input-file "../cli.sc" get-string-all))
 
 ;; NEVER: SCOPED TO THE VERB TABLE, NOT TO THE FILE. A scan for `(cons '`
-;; across the whole of `rpc.ss` also matches `(cons 'items ...)` and
+;; across the whole of `rpc.sc` also matches `(cons 'items ...)` and
 ;; `(cons 'src text)` in the helpers, and then attributes to those
 ;; imaginary verbs every option read after them -- which is exactly what
 ;; the first version of this row did, reporting seven failures for two
@@ -445,7 +445,7 @@
 
 ;; NOTE: `eval` IS NOT IN THAT TABLE -- it is the CLI's own verb -- and it
 ;; is the reason this row exists: its handler read `--timeout-ms` while
-;; the option table had no `eval` entry at all. `cli.ss` is scanned as
+;; the option table had no `eval` entry at all. `cli.sc` is scanned as
 ;; one handler, and only the spellings `eval` itself takes are attributed
 ;; to it, because that file also reads options on behalf of other verbs.
 (define cli-reads

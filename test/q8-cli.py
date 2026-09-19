@@ -23,7 +23,7 @@ visible rather than merely absent:
 import json, os, pathlib, subprocess, tempfile
 lib = pathlib.Path(os.environ.get('THEOURGIA_LIBDIR', pathlib.Path(__file__).resolve().parents[2]))
 root = pathlib.Path(tempfile.mkdtemp(prefix='theourgia-q8-'))
-env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib), CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj', THEOURGIA_INJECT='on')
+env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib), CHEZSCHEMELIBEXTS='.sc::.no-obj', THEOURGIA_INJECT='on')
 env.pop('THEOURGIA_FAULT', None)
 failures = 0
 rows = []
@@ -34,7 +34,7 @@ def check(name, ok):
 def call(s, args, data=None, fault=None, actor='review'):
     e = dict(env, THEOURGIA_HOME=str(s.parent/'machine'))
     if fault: e['THEOURGIA_FAULT'] = fault
-    argv = ['scheme','--script',str(lib/'theourgia/cli.ss'),args[0],'--store',str(s)]
+    argv = ['scheme','--script',str(lib/'theourgia/cli.sc'),args[0],'--store',str(s)]
     if actor is not None: argv += ['--actor',actor]
     # `input=None` INHERITS THIS PROCESS'S STDIN, it does not close it.
     # Most calls here pass no payload, and a verb that reads standard
@@ -120,7 +120,7 @@ for mode,fault in [('plain',None),('tracked',None),('plain','report-fail@report'
     case=root/('report-'+mode+'-'+str(bool(fault)));case.mkdir();(case/'store').mkdir();(case/'machine').mkdir()
     e=dict(env,THEOURGIA_HOME=str(case/'machine'))
     if fault:e['THEOURGIA_FAULT']=fault
-    result=subprocess.run(['scheme','--script',str(pathlib.Path(__file__).with_name('q8-report.ss')),str(case/'store'),mode],env=e,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,stdin=subprocess.DEVNULL)
+    result=subprocess.run(['scheme','--script',str(pathlib.Path(__file__).with_name('q8-report.sc')),str(case/'store'),mode],env=e,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=45,stdin=subprocess.DEVNULL)
     check('report and outline '+mode+' '+str(fault),result.returncode==0 and '(failures 0)' in result.stdout.decode())
     rows.append(dict(mode=mode,fault=fault,exit=result.returncode,stdout=result.stdout.decode(),stderr=result.stderr.decode()))
 (root/'results.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2))

@@ -21,7 +21,7 @@
 # naming something defined much further down -- reported at the place
 # that USES it, never at the place that swallowed it.
 #
-# MEASURED, on daemon.ss, 2026-09-18: one `)` missing at the end of
+# MEASURED, on daemon.sc, 2026-09-18: one `)` missing at the end of
 # `watch-loop` swallowed twenty-six later definitions, and Chez said
 # `unbound identifier directory-of at line 219` -- a hundred and eighty
 # lines from the cause. The whole file's parentheses still balanced,
@@ -212,7 +212,7 @@ def main():
         if not os.path.isdir(directory):
             continue
         for name in sorted(os.listdir(directory)):
-            if name.endswith(".ss") or name.endswith(".sls"):
+            if name.endswith(".sc") or name.endswith(".sls"):
                 files.append(os.path.join(directory, name))
     if not files:
         print("FAIL structure: no Scheme sources found to check")

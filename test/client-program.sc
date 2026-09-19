@@ -93,8 +93,8 @@
                                     " " args " > " out " 2> " err))))
     (list rc (file-text out) (file-text err))))
 
-(define (client extra args) (run! "../theourgia.ss" extra args))
-(define (server extra args) (run! "../cli.ss" extra args))
+(define (client extra args) (run! "../theourgia.sc" extra args))
+(define (server extra args) (run! "../cli.sc" extra args))
 
 (define (rc-of r) (car r))
 (define (out-of r) (cadr r))
@@ -296,7 +296,7 @@
                  (let build ((n 116) (out "")) (if (zero? n) out (build (- n 1) (string-append out "r"))))))
 
 (define too-long-run
-  (run! "../theourgia.ss"
+  (run! "../theourgia.sc"
         (string-append "THEOURGIA_RUN=" long-run " ")
         (string-append "outline --store " store " --wire")))
 
@@ -364,7 +364,7 @@
   (let* ((lout (string-append here "/batch-local.out"))
          (dout (string-append here "/batch-daemon.out"))
          (cmd (lambda (extra out)
-                (string-append echo (env-prefix extra) " scheme --script ../theourgia.ss "
+                (string-append echo (env-prefix extra) " scheme --script ../theourgia.sc "
                                "batch --store " store " --wire > " out " 2>/dev/null"))))
     (system (cmd "THEOURGIA_LOCAL=1 " lout))
     (system (cmd "" dout))
@@ -396,7 +396,7 @@
        (out (string-append here "/dash.out")))
   (system (string-append "printf 'PIPED-BYTES' | "
                          (env-prefix "THEOURGIA_WRITER=w1 ")
-                         " scheme --script ../theourgia.ss write " id " - --store " store
+                         " scheme --script ../theourgia.sc write " id " - --store " store
                          " --wire > " out " 2>/dev/null"))
   (want "P-12 a write that takes its bytes from standard input stores those bytes"
         (let ((back (client "THEOURGIA_WRITER=w1 "
@@ -429,7 +429,7 @@
                       (put-string port
                         (string-append
                           "#!/bin/sh\n"
-                          (env-prefix "") " timeout 12 scheme --script ../theourgia.ss "
+                          (env-prefix "") " timeout 12 scheme --script ../theourgia.sc "
                           "batch --store " store " --wire"
                           (if redirect " < /dev/null" "") " > /dev/null 2>&1\n"
                           "echo rc=$? \n")))
@@ -546,10 +546,10 @@
                           (else (list 'said (out-of r))))
                     (if (zero? (rc-of r)) 'EXITED-ZERO 'non-zero))))))
     (want "P-16 a reply that would read forever is refused by the client program"
-          (answered "../theourgia.ss")
+          (answered "../theourgia.sc")
           '(named-it non-zero))
     (want "P-16 and by the command line, which reads the same reply"
-          (answered "../cli.ss")
+          (answered "../cli.sc")
           '(named-it non-zero)))
   (system (string-append "pkill -f " cpeer " 2>/dev/null")))
 
@@ -594,7 +594,7 @@
              (cond ((file-exists? esock) 'up)
                    ((> k 300) 'never)
                    (else (system "sleep 0.05") (up (+ k 1)))))
-           (let ((r (run! "../theourgia.ss" ""
+           (let ((r (run! "../theourgia.sc" ""
                           (string-append "outline --store " store
                                          " --socket " esock " --wire"))))
              (system (string-append "pkill -f " epeer " 2>/dev/null"))
@@ -649,7 +649,7 @@
                  (let ((out (string-append here "/p15-" tag ".out")))
                    (system (string-append "cd " dir " && " (env-prefix "")
                                           " scheme --script "
-                                          (string-append (current-directory) "/../theourgia.ss")
+                                          (string-append (current-directory) "/../theourgia.sc")
                                           " outline --store " spelling " --wire > " out " 2>&1"))
                    (file-text out)))))
   (system (string-append "mkdir -p " p15-store " " p15-other))
@@ -679,14 +679,14 @@
         (let* ((out (string-append here "/p15-other.out"))
                (sock (string-append here "/p15.sock"))
                (rc (begin
-                     (system (string-append (env-prefix "") " scheme --script ../cli.ss serve "
+                     (system (string-append (env-prefix "") " scheme --script ../cli.sc serve "
                                             p15-store " --socket " sock
                                             " > /dev/null 2>&1 &"))
                      (let up ((k 0))
                        (cond ((file-exists? sock) 'up)
                              ((> k 300) 'never)
                              (else (system "sleep 0.05") (up (+ k 1)))))
-                     (system (string-append (env-prefix "") " scheme --script ../theourgia.ss "
+                     (system (string-append (env-prefix "") " scheme --script ../theourgia.sc "
                                             "outline --store " p15-other " --socket " sock
                                             " --wire > " out " 2>&1"))))
                (text (file-text out)))
@@ -716,14 +716,14 @@
   (system (string-append "mkdir -p " dir-a " " dir-b "/src; "
                          "printf 'content that only exists under B\\n' > " dir-b "/src/a.txt"))
   (system (string-append "cd " dir-a " && " (env-prefix "")
-                         " scheme --script " (string-append (current-directory) "/../theourgia.ss")
+                         " scheme --script " (string-append (current-directory) "/../theourgia.sc")
                          " init --store " cwd-store " > /dev/null 2>&1"))
   ;; Warm the daemon up FROM A, so its directory is A and not B.
   (system (string-append "cd " dir-a " && " (env-prefix "")
-                         " scheme --script " (string-append (current-directory) "/../theourgia.ss")
+                         " scheme --script " (string-append (current-directory) "/../theourgia.sc")
                          " outline --store " cwd-store " --wire > /dev/null 2>&1"))
   (system (string-append "cd " dir-b " && " (env-prefix "")
-                         " scheme --script " (string-append (current-directory) "/../theourgia.ss")
+                         " scheme --script " (string-append (current-directory) "/../theourgia.sc")
                          " import-code src --store " cwd-store " --wire > " out " 2>/dev/null"))
   (want "P-13 a relative path is read where the caller is, not where the daemon is"
         (let ((text (file-text out)))
@@ -865,7 +865,7 @@
                     (if (zero? (rc-of r)) 'EXITED-ZERO 'non-zero))))))
 
   (want "P-14 a reply that is not an envelope is refused, not raised"
-        (asked-through "../theourgia.ss")
+        (asked-through "../theourgia.sc")
         '(named-it non-zero))
 
   ;; NEVER: AND THE SAME FOR THE OTHER PROGRAM THAT READS THIS ENVELOPE. Three
@@ -875,7 +875,7 @@
   ;; in the library. NOTE: The command line forwards to a daemon only when a
   ;; socket is there to forward to, which `--socket` provides here.
   (want "P-14 and the command line, reading the same envelope, refuses it too"
-        (asked-through "../cli.ss")
+        (asked-through "../cli.sc")
         '(named-it non-zero)))
   (system (string-append "pkill -f " rpeer " 2>/dev/null")))
 
@@ -940,7 +940,7 @@
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;
-;; NEVER: `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
+;; NEVER: `closures.sc` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
@@ -956,7 +956,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.scm"))
 
 (define import-graph
@@ -997,16 +997,16 @@
       '(client digest ffi render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
-;; `theourgia.ss`; what IT reaches is a separate fact from what the
+;; `theourgia.sc`; what IT reaches is a separate fact from what the
 ;; `client` library reaches, and the rows above are about the library.
-;; `arguments` is allowed and the reason is written in `closures.ss`: the
+;; `arguments` is allowed and the reason is written in `closures.sc`: the
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
 (want "IMPORTS and the client program's closure is exactly what it should be"
       (let ((program-imports
               (map cadr (filter (lambda (r) (pair? (cdr r)))
                                 (imports-of-file 'theourgia
-                                                 (string-append tree-root "/theourgia.ss"))))))
+                                                 (string-append tree-root "/theourgia.sc"))))))
         (let loop ((todo program-imports) (seen '()))
           (cond
             ((null? todo)

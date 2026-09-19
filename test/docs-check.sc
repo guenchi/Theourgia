@@ -175,7 +175,7 @@
 (define common-options '("--store" "--wire" "--actor" "--req" "--cursor" "--socket"))
 
 (define every-spelling
-  (let ((text (file-text "../arguments.ss")))
+  (let ((text (file-text "../arguments.sc")))
     (fold-left (lambda (acc l) (append (dashed-tokens l) acc)) '() (lines-of text))))
 
 (define unadvertised
@@ -206,7 +206,7 @@
 ;;
 ;; NEVER: BOTH WAYS, against the parser's own common list.
 (define transport-options
-  (let* ((text (file-text "../arguments.ss"))
+  (let* ((text (file-text "../arguments.sc"))
          (at (index-of text "(append '(\"--store\"" 0)))
     (and at
          (let ((end (index-of text ")" at)))
@@ -273,7 +273,7 @@
 (define (scheme-sources dir)
   (filter (lambda (f)
             (let ((n (string-length f)))
-              (and (> n 3) (string=? (substring f (- n 3) n) ".ss"))))
+              (and (> n 3) (string=? (substring f (- n 3) n) ".sc"))))
           (map (lambda (f) (string-append dir "/" f)) (directory-list dir))))
 
 ;; An environment variable's name, wherever it is written: a run of

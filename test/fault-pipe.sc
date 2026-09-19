@@ -33,7 +33,7 @@
 (define (fault-pipe-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: fault-pipe.ss <directory>\n") (exit 2))
+        (begin (printf "usage: fault-pipe.sc <directory>\n") (exit 2))
         (cadr a))))
 (define dir (fault-pipe-argument))
 (system (string-append "rm -rf " dir "; mkdir -p " dir "; mkfifo " dir "/f"))

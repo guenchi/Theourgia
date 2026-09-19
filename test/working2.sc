@@ -33,7 +33,7 @@
 ;; survives: the shell arguments here are quoted, and the trace is
 ;; compared as text rather than read back as Scheme -- spaces, quotes,
 ;; colons and parentheses were all measured round-tripping intact.
-;; (q7.ss refuses much more, for a different reason: it builds shell
+;; (q7.sc refuses much more, for a different reason: it builds shell
 ;; commands that are NOT quoted.)
 (let loop ((i 0))
   (when (< i (string-length root))
@@ -129,12 +129,12 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1))))))
          (dir (if cut (substring self 0 cut) "."))
-         (p (string-append dir "/working-fault-child.ss")))
+         (p (string-append dir "/working-fault-child.sc")))
     (if (file-exists? p) p
         (assertion-violation 'working2
-          "working-fault-child.ss is not beside this fixture" p))))
+          "working-fault-child.sc is not beside this fixture" p))))
 ;; AND THE RUN IS READ, NOT ONLY ITS EXIT STATUS. `working-unavailable`
-;; is what `working.ss` answers for EVERY exception on that path,
+;; is what `working.sc` answers for EVERY exception on that path,
 ;; including one raised before a temporary is ever created -- and such a
 ;; failure also leaves the old envelope alone and leaves one draft
 ;; standing, so the three rows after it agree with it. The exit status
@@ -205,7 +205,7 @@
       (has-line? child-lines
                  (string-append "(theourgia fault-injection-armed " fault ")")) #t)
 ;; FOUR EVENTS ABOUT ONE FILE, AND THE SET OF THEM IS THE STATEMENT.
-;; `working.ss` answers `working-unavailable` for every exception on this
+;; `working.sc` answers `working-unavailable` for every exception on this
 ;; path, so the answer cannot say which step raised. The trace can, but
 ;; only taken together -- measured, one fault per run, on a store of this
 ;; shape:
@@ -262,7 +262,7 @@
                  (string-append "(trace rename (" tmp " . " working-dir "/" id ") #f)")) #f)
 ;; NOTE: WHAT THIS STILL DOES NOT SEPARATE, written down rather than left
 ;; to be discovered: a partial write whose CLEANUP ALSO FAILED leaves the
-;; same four readings, because `log.ss` swallows an unlink error and the
+;; same four readings, because `log.sc` swallows an unlink error and the
 ;; trace records an unlink only after the file is really gone. That takes
 ;; two faults at once, and this fixture arms one; with one fault the
 ;; readings above are measured to separate all three shapes. A row for
@@ -344,7 +344,7 @@
 (want "WS-26 corrupt storage is visible in the draft list" (cadr (call 'drafts)) 'working-unavailable)
 ;; ---- WS-27: the refusal belongs to the library, at every door ---------
 ;;
-;; KEY: ONE RULE, ONE PLACE. `rpc.ss` keeps no copy of this check: a caller
+;; KEY: ONE RULE, ONE PLACE. `rpc.sc` keeps no copy of this check: a caller
 ;; that reaches `(theourgia working)` directly -- the evaluator does --
 ;; must be refused by the same rule and told the same thing, or the
 ;; library is a second entry point with no guard on it (§7.6.50 v249).
@@ -355,10 +355,10 @@
 ;; true, so both walked past the guard and used it AS a writer id: the
 ;; answer was `working-unavailable` carrying an unformatted
 ;; "~s is not a string". That is not a near miss --
-;; `working-fault-child.ss` decides whether an injected durability fault
+;; `working-fault-child.sc` decides whether an injected durability fault
 ;; fired by looking for exactly `working-unavailable`, so an unnamed
 ;; writer and a failed flush were the same answer. Both are reachable
-;; from `cli.ss` (`eval --working` with no `--writer`).
+;; from `cli.sc` (`eval --working` with no `--writer`).
 ;;
 ;; So there is a row per door, and they are not redundant: each one is
 ;; the only row that would go red if its own door lost the branch.
@@ -440,7 +440,7 @@
 ;; folded first and the missing writer noticed afterwards. On a store that
 ;; cannot be opened, an unnamed writer was therefore told
 ;; `working-unavailable` -- the value a durability fault reports, and the
-;; one `working-fault-child.ss` keys its exit status on. A caller-fixable
+;; one `working-fault-child.sc` keys its exit status on. A caller-fixable
 ;; mistake was reported as a storage failure.
 ;;
 ;; NOTE: THE TWIN IS WHAT KEEPS THE FIX HONEST: a NAMED writer on the same

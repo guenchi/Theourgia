@@ -17,8 +17,8 @@
   (import (chezscheme))
 
   ;; KEY: ONE PRINTER FOR EVERY ANSWER THIS SYSTEM GIVES. There used to be
-  ;; three: this one, a copy of it in `mcp/server.ss`, and a bare `write`
-  ;; in `daemon.ss` that set nothing at all -- so the same answer could
+  ;; three: this one, a copy of it in `mcp/server.sc`, and a bare `write`
+  ;; in `daemon.sc` that set nothing at all -- so the same answer could
   ;; leave by three routes in two spellings, and the daemon's was already
   ;; the odd one out.
   ;;
@@ -35,7 +35,7 @@
   ;; anything.
   ;;
   ;; NEVER: THIS DOES NOT TOUCH WHAT IS WRITTEN TO DISK. A record is
-  ;; serialised by `sexpr->string-extended` in `wire.ss`, which writes
+  ;; serialised by `sexpr->string-extended` in `wire.sc`, which writes
   ;; its own characters and has never consulted these parameters. `U4`
   ;; compares the bytes of a stored record before and after, and it is a
   ;; guard rather than a formality: the two paths are separate because

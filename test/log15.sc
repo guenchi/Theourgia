@@ -112,7 +112,7 @@
                     ((char=? (string-ref script i) #\/) i)
                     (else (loop (- i 1)))))))
     (if n (substring script 0 n) ".")))
-(load (string-append here "/crash.ss"))
+(load (string-append here "/crash.sc"))
 (define bad 0)
 (define (want-1 label got expect)
   (let ((ok (equal? got expect)))
@@ -306,7 +306,7 @@
         out))))
 
 (printf "== the device is trusted only after its own self-check ==\n")
-;; crash.ss checks itself against hand-computed answers when it is run as
+;; crash.sc checks itself against hand-computed answers when it is run as
 ;; a script; this row is here so a case that USES it fails loudly if that
 ;; ever stops being true.
 ;; NOT MERELY procedure? -- that accepts a device that does nothing at

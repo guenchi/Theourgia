@@ -14,7 +14,7 @@
 
 ;; READING THIS TREE'S IMPORTS AS DATA. ONE COPY, TWO GATES.
 ;;
-;; `facade-gate.ss` asks which root files reach igropyr; `closures.ss`
+;; `facade-gate.sc` asks which root files reach igropyr; `closures.sc`
 ;; asks what a library's transitive import closure contains. Those are
 ;; the same walk over the same shape, and the walk is not obvious enough
 ;; to be written twice: it has to go into `only`/`except`/`rename`/
@@ -24,7 +24,7 @@
 ;;
 ;; NEVER: IT DOES NOT GREP, and that is the whole reason it exists. Measured
 ;; on the untouched tree before this batch: three root files carry
-;; `(igropyr` in their TEXT -- `ffi.ss`, `wire.ss` and `log.ss` -- and
+;; `(igropyr` in their TEXT -- `ffi.sc`, `wire.sc` and `log.sc` -- and
 ;; every one of those occurrences is a comment. A grep gate would have
 ;; named three files, one of them not even under discussion, on a tree
 ;; where nothing imported igropyr at all. Read as data, a comment is not
@@ -40,7 +40,7 @@
 ;; and hands `load` an absolute path.
 
 ;; EVERY FORM IN THE FILE, not just the first. A library is one form; a
-;; top-level program (`cli.ss`, `rpc-worker.ss`, `eval-worker.ss`) is a
+;; top-level program (`cli.sc`, `rpc-worker.ss`, `eval-worker.sc`) is a
 ;; bare `(import ...)` followed by many, and its import is as much a use
 ;; of a dependency as a library's.
 (define (forms-of path)
@@ -75,7 +75,7 @@
   (apply append (map (lambda (f) (imports-of prefix f)) (forms-of path))))
 
 ;; THE SOURCES IN A DIRECTORY, by the suffixes Chez is told to search.
-;; NOTE: ONE LIST, READ BY BOTH SCANS. `facade-gate.ss` walks
+;; NOTE: ONE LIST, READ BY BOTH SCANS. `facade-gate.sc` walks
 ;; subdirectories with its own reader; when it carried its own copy of
 ;; this list -- `.ss` only -- a nested `helper.sls` importing igropyr
 ;; went unseen by the very check added to see it.

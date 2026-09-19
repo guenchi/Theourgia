@@ -15,7 +15,7 @@
 
 ;; A STORE WRITTEN BY AN EARLIER BUILD, AND THE HASHES IT HAD THEN.
 ;;
-;; `hash-view.ss` shows that the language table is not in the hash. That
+;; `hash-view.sc` shows that the language table is not in the hash. That
 ;; is a statement about two readings taken by the SAME build, minutes
 ;; apart, and it stays true of a build whose hashing has drifted as a
 ;; whole: both readings drift together.
@@ -24,7 +24,7 @@
 ;; store written on 2026-09-17, and its two block hashes and its state
 ;; hash were computed BY THE LIBRARY AT `d1655fe` -- the commit at which
 ;; the core still carried its own copies of the three vendored
-;; libraries, before `digest.ss`, `wire.ss` and `ffi.ss` became forwards
+;; libraries, before `digest.sc`, `wire.sc` and `ffi.sc` became forwards
 ;; onto igropyr and before the derived fields left the reduction.
 ;;
 ;; KEY: THE EXPECTATIONS COME FROM OUTSIDE THE TREE. All three were

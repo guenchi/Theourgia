@@ -53,7 +53,7 @@
           ;; have: a connection dying must cost that connection. Every
           ;; watch here is a `monitor`, and the way that rule is kept is
           ;; that the name is not in scope to be written -- NEVER: not that
-          ;; somebody remembered. `test/daemon-link-gate.ss` reads this
+          ;; somebody remembered. `test/daemon-link-gate.sc` reads this
           ;; import as data and refuses a wholesale one.
           (only (theourgia sched)
                 start-scheduler spawn receive send self monitor sleep-ms)
@@ -779,7 +779,7 @@
   ;; -- `raised` because the condition carried no message, so the field
   ;; meant to say why said only that something had. The local path has
   ;; always answered `(error no-store <path>)` for this, from `no-store?`
-  ;; in `rpc.ss`; the two routes disagreed about the most ordinary
+  ;; in `rpc.sc`; the two routes disagreed about the most ordinary
   ;; failure there is, and the daemon's version told nobody anything.
   (define (store-here? store)
     (file-exists? (string-append store "/meta.sexp")))
@@ -1503,7 +1503,7 @@
          ;;
          ;; NEVER: IT WAS NOT REACHING ANYTHING DANGEROUS -- measured, the
          ;; dispatcher refuses a non-string argument itself
-         ;; (`rpc.ss`, `arguments-not-strings`) and the daemon goes on
+         ;; (`rpc.sc`, `arguments-not-strings`) and the daemon goes on
          ;; serving. This is the reader being symmetric with the packer,
          ;; not a repair of a crash, and the row that covers it asserts
          ;; the answer that actually comes back rather than a predicted
@@ -1569,7 +1569,7 @@
   ;; NEVER: AND THE ORIGIN IS AN ARGUMENT, NOT A CONSTANT. It used to be
   ;; `'core` for everything written here, so a request the writer refused
   ;; while draining -- nothing dispatched, nothing ran -- arrived at the
-  ;; client labelled as the core's own answer. `mcp/server.ss` reads this
+  ;; client labelled as the core's own answer. `mcp/server.sc` reads this
   ;; field to decide whether a tool call was carried out, and a refusal
   ;; wearing `core` is reported to a caller as a result: the request was
   ;; not done, and the caller was told it was. Measured: D-24's queued

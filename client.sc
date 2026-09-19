@@ -17,7 +17,7 @@
 ;;;
 ;;; NEVER: THIS LIBRARY IMPORTS NEITHER THE CORE NOR THE ACTOR SYSTEM. A
 ;;; client that had to load them would pay for the server it is trying to
-;;; talk to; `f0-ondemand.ss` measured that cost at 200ms from source.
+;;; talk to; `f0-ondemand.sc` measured that cost at 200ms from source.
 ;;; The only things here are a path rule, a digest and the filesystem.
 (library (theourgia client)
   (export socket-path run-root store-key
@@ -245,7 +245,7 @@
   ;;
   ;;   ENOENT 2   ECONNREFUSED 61   ENOTSOCK 38
   ;;
-  ;; NEVER: NOT THE LIST IN `rpc.ss`. That one holds NEGATIVE libuv status
+  ;; NEVER: NOT THE LIST IN `rpc.sc`. That one holds NEGATIVE libuv status
   ;; codes (-2, -61, -111...), which is a different numbering from a
   ;; different library; -111 is there because Linux's ECONNREFUSED is
   ;; 111, and mixing the two would make a plain `read` failure look like
@@ -576,9 +576,9 @@
   ;;
   ;; NEVER: ONE PLACE, AND THIS IS IT. The client packs it and the daemon
   ;; unpacks it, which are two processes and two libraries; what must not
-  ;; be two is the SHAPE. It lives here rather than in `rpc.ss` because
-  ;; the client cannot import `rpc.ss` -- loading the dispatcher is the
-  ;; cost this whole split exists to avoid -- and `rpc.ss` re-exports this
+  ;; be two is the SHAPE. It lives here rather than in `rpc.sc` because
+  ;; the client cannot import `rpc.sc` -- loading the dispatcher is the
+  ;; cost this whole split exists to avoid -- and `rpc.sc` re-exports this
   ;; name so that nothing which used to get it from there had to change.
   ;;
   ;; NOTE: `(theourgia render)` IMPORTS NOTHING BUT `(chezscheme)`, which is

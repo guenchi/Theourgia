@@ -26,12 +26,12 @@
 ;; about the sources.
 ;;
 ;; NOTE: AND LOOKING BESIDE ITSELF FIRST WAS WRONG, because two of these
-;; names exist twice. `test/code-suggest.ss` is a FIXTURE and
-;; `code-suggest.ss` is the library it tests; a locator that takes the
+;; names exist twice. `test/code-suggest.sc` is a FIXTURE and
+;; `code-suggest.sc` is the library it tests; a locator that takes the
 ;; first path that exists read the fixture, whose first datum is an
 ;; `(import ...)` form, and both audits then walked it and found
 ;; nothing. All four rows printed `ok` while the library they name went
-;; unread. (`code-markers.ss` is the same pair, and is not in either
+;; unread. (`code-markers.sc` is the same pair, and is not in either
 ;; list today -- which is luck, not a design.)
 ;;
 ;; So a candidate is accepted only if its first datum is
@@ -75,8 +75,8 @@
 ;; three-element literal, which is three whatever the locator does.
 ;; These name what came back.
 (define (names-read files) (map (lambda (f) (library-name (source-form f))) files))
-(define numeric-files '("text-code.ss" "regex.ss" "languages.ss"))
-(define branch-files '("text-code.ss" "code-project.ss" "code-suggest.ss"))
+(define numeric-files '("text-code.sc" "regex.sc" "languages.sc"))
+(define branch-files '("text-code.sc" "code-project.sc" "code-suggest.sc"))
 
 (define numeric-sites '())
 (define language-sites '())

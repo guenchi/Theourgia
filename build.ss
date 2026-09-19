@@ -19,22 +19,22 @@
 ;;
 ;; NOTE: BOTH ARGUMENTS ARE THE DIRECTORY THAT *CONTAINS* `theourgia/`, not
 ;; the source directory itself. That is what Chez means by a library
-;; directory: `(theourgia store)` is looked up as `theourgia/store.ss`
+;; directory: `(theourgia store)` is looked up as `theourgia/store.sc`
 ;; underneath it. Passing the source directory compiled seven libraries
 ;; into a doubled path and stopped.
 ;;
 ;; KEY: THIS IS THE FORM THE THING SHIPS IN. Development runs from source;
 ;; a user gets compiled objects. Those differ in one way that matters
-;; here: `cli.ss` finds `(theourgia daemon)` at RUN TIME, when a `serve`
+;; here: `cli.sc` finds `(theourgia daemon)` at RUN TIME, when a `serve`
 ;; is asked for, and whether that works depends on the library being
 ;; FINDABLE -- which it is as a `.so` on the library path, and is not
 ;; inside a whole-program package that left it out for being statically
 ;; unreferenced.
 ;;
 ;; NEVER: SO THE LAZY LOADING NEEDS A READING IN THIS FORM TOO, not only from
-;; source. `f0-ondemand.ss` takes one; `RUN.md` states the rule.
+;; source. `f0-ondemand.sc` takes one; `RUN.md` states the rule.
 ;;
-;; NOTE: PRODUCTS DO NOT GO IN THE SOURCE TREE. A stale `.so` beside a `.ss`
+;; NOTE: PRODUCTS DO NOT GO IN THE SOURCE TREE. A stale `.so` beside a `.sc`
 ;; is resolved in preference to it, so a tree holding both can be running
 ;; code nobody has edited for a week.
 
@@ -64,7 +64,7 @@
               (unless (file-directory? d) (mkdir d))))
           packages)
 
-;; NOTE: A LIBRARY, NOT EVERY `.ss`. `cli.ss` and `build.ss` are programs --
+;; NOTE: A LIBRARY, NOT EVERY `.ss`. `cli.sc` and `build.ss` are programs --
 ;; they have no library form and `compile-library` refuses them. The test
 ;; is the file's own first form.
 (define (declares-a-library? path)
@@ -78,7 +78,8 @@
               ((and (pair? x) (eq? (car x) 'library)) #t)
               (else (loop)))))))))
 
-;; NOTE: TWO SUFFIXES: this tree writes `.ss`, igropyr writes `.sc`.
+;; NOTE: BOTH SUFFIXES ARE STILL ACCEPTED. This tree and igropyr both
+;; write `.sc` now; `.ss` stays here so an older tree still compiles.
 (define (source-suffix? f)
   (let ((n (string-length f)))
     (and (> n 3)

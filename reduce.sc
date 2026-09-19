@@ -168,7 +168,7 @@
   ;; ---- what a commit consumed ----------------------------------------------
   ;;
   ;; A plan may name the draft versions its request took as input
-  ;; (`request.ss`, `consumes?`). A draft is CONSUMED once such a plan
+  ;; (`request.sc`, `consumes?`). A draft is CONSUMED once such a plan
   ;; has completed, and the log is the only place that says so: the
   ;; earlier design kept an immutable packet beside each draft, which
   ;; meant two stores to keep in step and a scan of all of them on every

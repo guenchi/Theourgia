@@ -32,7 +32,7 @@
 ;; verdict anyone can reach: every call to a durability primitive or to
 ;; one of the helpers that wrap it names its stage in the stage
 ;; position, and that argument is either a quoted stage from the list
-;; ffi.ss keeps, or the identifier `stage` -- which is only legal inside
+;; ffi.sc keeps, or the identifier `stage` -- which is only legal inside
 ;; a definition that takes `stage` as a formal, and every call to such a
 ;; definition is itself checked by this same rule.
 ;;
@@ -43,7 +43,7 @@
 ;; it is making a whole-program claim that quietly stops being true. A
 ;; required argument is answerable by looking at the line.
 ;;
-;; THE LIST OF STAGES IS READ OUT OF ffi.ss, not restated here. A second
+;; THE LIST OF STAGES IS READ OUT OF ffi.sc, not restated here. A second
 ;; copy of it would be a second answer to "is this a real stage", and
 ;; this file exists because a second answer is what goes wrong.
 
@@ -56,7 +56,7 @@
         (let ((d (read p)))
           (if (eof-object? d) (reverse out) (loop (cons d out))))))))
 
-;; (define known-stages '(...)) wherever ffi.ss keeps it.
+;; (define known-stages '(...)) wherever ffi.sc keeps it.
 (define (known-stages-from path)
   (let walk ((forms (read-forms path)))
     (cond
@@ -99,17 +99,17 @@
                   "source is neither beside this checker nor one level up"
                   (list beside above))))))
 
-(define ffi-source (source-path "ffi.ss"))
+(define ffi-source (source-path "ffi.sc"))
 
 (define sources
   (map source-path
        (let ((extra (cdr (command-line))))
-         (if (null? extra) '("log.ss" "store.ss") extra))))
+         (if (null? extra) '("log.sc" "store.sc") extra))))
 
 (define known-stages
   (or (known-stages-from ffi-source)
       (assertion-violation 'stage-gate
-        "ffi.ss does not define known-stages where this expects it" ffi-source)))
+        "ffi.sc does not define known-stages where this expects it" ffi-source)))
 
 (define (literal-stage? x)
   (and (pair? x) (eq? (car x) 'quote) (pair? (cdr x))

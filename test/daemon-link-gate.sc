@@ -33,8 +33,8 @@
 ;;
 ;; NEVER: AND IT CANNOT BE A GREP FOR `link`. Measured on this tree: the
 ;; symbol `link` appears as data in EIGHT files of the daemon's import
-;; closure -- `reduce.ss` 5, `store.ss` 8, `rpc.ss` 3, `md.ss` 2,
-;; `ffi.ss` 2, `request.ss`, `baseline.ss` -- and every one of those is
+;; closure -- `reduce.sc` 5, `store.sc` 8, `rpc.sc` 3, `md.sc` 2,
+;; `ffi.sc` 2, `request.sc`, `baseline.sc` -- and every one of those is
 ;; either the document verb `link`/`unlink` or a filesystem link. A grep
 ;; gate would have been permanently red about seven files with nothing
 ;; wrong with them, which is the same as having no gate.
@@ -83,7 +83,7 @@
     names))
 
 (define (source-of name)
-  (string-append root "/" (symbol->string name) ".ss"))
+  (string-append root "/" (symbol->string name) ".sc"))
 
 ;; ---- the closure ----------------------------------------------------------
 ;;
@@ -102,7 +102,7 @@
                             (map (lambda (l) (source-of (cadr l))) libs))))
          (walk (append next (cdr todo)) (cons here seen)))))))
 
-(define daemon-closure (closure-of (string-append root "/daemon.ss")))
+(define daemon-closure (closure-of (string-append root "/daemon.sc")))
 
 (define (basename path)
   (let loop ((i (- (string-length path) 1)))
@@ -111,7 +111,7 @@
           (else (loop (- i 1))))))
 
 (define (facade? path)
-  (exists (lambda (f) (string=? (basename path) (string-append (symbol->string f) ".ss")))
+  (exists (lambda (f) (string=? (basename path) (string-append (symbol->string f) ".sc")))
           facades))
 
 ;; ---- the question ---------------------------------------------------------
@@ -155,8 +155,8 @@
       (if (> (length daemon-closure) 10) 'walked (list 'only (length daemon-closure)))
       'walked)
 
-(want "DL-02 daemon.ss itself is in it"
-      (if (exists (lambda (p) (string=? (basename p) "daemon.ss")) daemon-closure)
+(want "DL-02 daemon.sc itself is in it"
+      (if (exists (lambda (p) (string=? (basename p) "daemon.sc")) daemon-closure)
           'present 'MISSING)
       'present)
 

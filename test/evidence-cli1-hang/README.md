@@ -1,14 +1,14 @@
 # `cli1` wedged, 2026-09-17
 
 Captured from the live process of a suite run that had been stopped at
-`cli1.ss` for four minutes, before it was killed. The defect it was
+`cli1.sc` for four minutes, before it was killed. The defect it was
 reacting to was a missing `string-contains?` in the injected branch of
-`ffi.ss`; `cli1` could not say so.
+`ffi.sc`; `cli1` could not say so.
 
     sh.txt          EARLY 0 / WAITED 0 -- neither child was ever observed
     p-locked.trace  two lines; the second is the load exception
     q-locked.trace  the same, for the second child
-    holder.ss       the child both of them ran
+    holder.sc       the child both of them ran
 
 `sh.txt` is the whole reading: the fixture's bounded spin (`i < 4000`)
 ran out because the children were already dead, and the byte it then

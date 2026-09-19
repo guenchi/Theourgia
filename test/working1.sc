@@ -137,7 +137,7 @@
 ;; §7.5.9 takes the packet away. The log holds both facts now -- the
 ;; plan freezes the declared text, and its `consumes` names the versions
 ;; the request took -- so a retry is answered by completing the frozen
-;; plan. Until that path exists (`store.ss` answers `incomplete-request`
+;; plan. Until that path exists (`store.sc` answers `incomplete-request`
 ;; today) there is nothing for these rows to assert, and an expectation
 ;; edited to match the gap would be asserting the gap.
 ;;
@@ -159,7 +159,7 @@
 ;; NEVER: WS-17 IS RETIRED FOR THE SAME REASON AS WP-04's SECOND ROW: it
 ;; reads back the draft it has just written, with no retry in between,
 ;; so "a replay retains subsequent edits" is a label rather than a
-;; measurement. SUCCESSOR: `plan-completion.ss`, W4'.
+;; measurement. SUCCESSOR: `plan-completion.sc`, W4'.
 
 (call 'set a "src" "concurrent")
 (define stale-before (snapshot (string-append store "/writers")))

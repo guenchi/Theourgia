@@ -59,7 +59,7 @@
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
 (define store (string-append here "/store"))
 (define sock (string-append here "/s.sock"))
-(define cli "../cli.ss")
+(define cli "../cli.sc")
 
 (rpc-dispatch store '(init) "test")
 (define block
@@ -689,7 +689,7 @@
 
 ;; NEVER: AND IT IS `not-a-datum`, THE SAME REASON AS SYNTAX THAT WILL NOT
 ;; READ. The grouping is deliberate and is written down at the refusal
-;; (`daemon.ss`, above `parse-frame`): the vocabulary separates "no datum
+;; (`daemon.sc`, above `parse-frame`): the vocabulary separates "no datum
 ;; came out of these bytes" from "a datum came out and its fields are not
 ;; an envelope", which is the distinction a caller can act on. Bytes that
 ;; will not decode and bytes that will not parse are the same fact on

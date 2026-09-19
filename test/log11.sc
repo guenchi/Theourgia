@@ -713,7 +713,7 @@
 (want "every session takes and releases exactly one store lock"
       (list (count-of k-trace "flock") (count-of k-trace "unlock"))
       (list 1 1))
-;; create / rename / link / unlink are emitted by ffi.ss for the crash
+;; create / rename / link / unlink are emitted by ffi.sc for the crash
 ;; model. atomic-write! is the one path in this batch that makes a
 ;; directory entry appear, so it is what shows their shape.
 (define entry-trace

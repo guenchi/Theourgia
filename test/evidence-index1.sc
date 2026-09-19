@@ -72,7 +72,7 @@
 (want "QI-09 snapshot persists a derived identity checkpoint" (file-exists? checkpoint) #t)
 ;; THE CHILD IS FOUND BESIDE THIS SCRIPT, NOT UNDER THE CURRENT
 ;; DIRECTORY. The runner starts every fixture from `test/`, where
-;; `test/evidence-index-child.ss` does not exist -- the shell then
+;; `test/evidence-index-child.sc` does not exist -- the shell then
 ;; reported a missing file, `code` was non-zero, and every row that used
 ;; the child read `(child-failed 1)`: a red about the caller's directory
 ;; rather than about the index.
@@ -84,10 +84,10 @@
                       (else (loop (- i 1)))))))
     (if cut (substring self 0 cut) ".")))
 (define child-script
-  (let ((p (string-append script-dir "/evidence-index-child.ss")))
+  (let ((p (string-append script-dir "/evidence-index-child.sc")))
     (if (file-exists? p) p
         (assertion-violation 'evidence-index1
-          "evidence-index-child.ss is not beside this fixture" p))))
+          "evidence-index-child.sc is not beside this fixture" p))))
 ;; EVERY PATH IN THE COMMAND IS QUOTED. These are concatenated into a
 ;; shell command line, and one of them is now derived from the path this
 ;; script was started with -- so a space anywhere above the delivery

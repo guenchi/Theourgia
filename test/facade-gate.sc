@@ -22,7 +22,7 @@
 ;;
 ;; NEVER: IT DOES NOT GREP, IT READS EACH FILE AS DATA -- and the walk that
 ;; does so lives in `import-walk.scm`, beside this file, because
-;; `closures.ss` needs the same one. Why it cannot be a grep, and why it
+;; `closures.sc` needs the same one. Why it cannot be a grep, and why it
 ;; is `load`ed rather than `include`d, are written there.
 ;;
 ;; WHAT IT WALKS INTO. An import may name a library directly or wrap it
@@ -36,7 +36,7 @@
 ;;   a name in facades.sexp  -> that root file exists
 ;;   a name in facades.sexp  -> it really does import igropyr
 ;;   a root file imports it  -> its name is in facades.sexp
-;;   a name in facades.sexp  -> no copied definition left in it  (facades.ss)
+;;   a name in facades.sexp  -> no copied definition left in it  (facades.sc)
 ;;
 ;; The first three are here. Two sides -- the list and the tree -- and
 ;; both directions of each; there is no fifth way for them to disagree.
@@ -79,7 +79,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 
 (define facade-names
   (call-with-input-file (string-append script-dir "/facades.sexp") read))
@@ -184,7 +184,7 @@
       (length deep-importers) (length facade-names))
 
 (want "FG-02 every declared facade exists as a root source"
-      (filter (lambda (n) (not (file-exists? (string-append root "/" (symbol->string n) ".ss"))))
+      (filter (lambda (n) (not (file-exists? (string-append root "/" (symbol->string n) ".sc"))))
               facade-names)
       '())
 

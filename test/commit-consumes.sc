@@ -272,7 +272,7 @@
 ;;
 ;; NOTE: EVERY ROW ABOVE THIS ONE, CC-07 INCLUDED, READS A REPLAY. The
 ;; write path folds each record into a reduction of its own --
-;; `with-store-write` allocates it (`reduce-empty`, store.ss) and calls
+;; `with-store-write` allocates it (`reduce-empty`, store.sc) and calls
 ;; `reduce-apply!` with the record's ACTOR -- and a build that drops
 ;; that actor completes no plan in THAT reduction. It is the actor that
 ;; says which plan a member belongs to; without it the index gets a

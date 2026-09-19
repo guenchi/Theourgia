@@ -22,7 +22,7 @@
 ;; into the log, so it has to mean the same thing in every build of this
 ;; core -- and `register-language!` edits a table at runtime.
 ;;
-;; IT USED TO ASK THE TABLE. `datum-metadata.ss` looked the language up
+;; IT USED TO ASK THE TABLE. `datum-metadata.sc` looked the language up
 ;; by name and took its comment prefix from the entry, so re-registering
 ;; Scheme with a different line comment changed the verdict: `;; @block
 ;; w.1` stopped being seen as a marker. A store that accepted that
@@ -40,7 +40,7 @@
 ;; these rows are about is the very one the predicate used to read. So
 ;; the table is asked, directly, whether it changed.
 ;;
-;; THE STRUCTURAL HALF IS IN `closures.ss`. Caching `language-for-name`
+;; THE STRUCTURAL HALF IS IN `closures.sc`. Caching `language-for-name`
 ;; into a constant at load time would pass every row here and still put
 ;; the table in the answer; CL-02 and CL-03 assert that neither
 ;; `markers` nor `datum-metadata` can reach `languages` at all.

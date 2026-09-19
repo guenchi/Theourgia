@@ -23,13 +23,13 @@
 ;; one build would stop agreeing with the same store read by the next.
 ;;
 ;; THE RULE IS ABOUT REACHING, NOT ABOUT CALLING, so nothing local can
-;; witness it. `reduce.ss` never named `languages`; it named
-;; `text-code`, which names `languages`. A reviewer reading `reduce.ss`
+;; witness it. `reduce.sc` never named `languages`; it named
+;; `text-code`, which names `languages`. A reviewer reading `reduce.sc`
 ;; sees a clean file. The property is a property of the CLOSURE, and the
 ;; closure is what this reads.
 ;;
 ;; NEVER: NOT A GREP OVER THE FILE. The walk is `import-walk.scm`, shared
-;; with `facade-gate.ss`; why it reads the forms as data rather than the
+;; with `facade-gate.sc`; why it reads the forms as data rather than the
 ;; text is written there.
 ;;
 ;; THE FOURTH ROW IS THE TWIN, AND IT IS THE POINT OF THE OTHER THREE.
@@ -76,7 +76,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 
 (load (string-append script-dir "/import-walk.scm"))
 
@@ -147,7 +147,7 @@
 ;; reducer, not deleted; if it had been deleted the three rows above
 ;; would read exactly the same.
 ;;
-;; THE THREE NAMES ARE THE THREE IMPORTS `reduce.ss` LOST, taken from
+;; THE THREE NAMES ARE THE THREE IMPORTS `reduce.sc` LOST, taken from
 ;; the change rather than from a reading of the answer: an expectation
 ;; copied from what the instrument prints cannot disagree with it. The
 ;; other two derived names are NOT here and must not be -- `code-project`
@@ -197,7 +197,7 @@
 ;; nothing at all.
 (define shell-imports
   (map cadr (filter (lambda (r) (pair? (cdr r)))
-                    (imports-of-file 'theourgia (string-append root "/mcp/server.ss")))))
+                    (imports-of-file 'theourgia (string-append root "/mcp/server.sc")))))
 
 (define (closure-of-all starts)
   (let loop ((todo starts) (seen '()))
@@ -225,7 +225,7 @@
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------
 ;;
 ;; NOTE: A PROGRAM'S IMPORTS ARE ITS OWN, and the rows above are about the
-;; `client` LIBRARY. `theourgia.ss` is what a person actually runs, and
+;; `client` LIBRARY. `theourgia.sc` is what a person actually runs, and
 ;; what it reaches is a separate fact.
 ;;
 ;; KEY: `arguments` IS ALLOWED HERE, AND THE REASON IS THE POINT. The
@@ -239,7 +239,7 @@
 ;; exists to keep true.
 (define program-imports
   (map cadr (filter (lambda (r) (pair? (cdr r)))
-                    (imports-of-file 'theourgia (string-append root "/theourgia.ss")))))
+                    (imports-of-file 'theourgia (string-append root "/theourgia.sc")))))
 
 (want "C-2 the client program imports something at all"
       (if (null? program-imports) 'NOTHING-WAS-READ 'read-its-imports)

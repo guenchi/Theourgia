@@ -19,4 +19,4 @@ if [ -n "$THEOURGIA_LIBDIR" ]; then
 else
   export CHEZSCHEMELIBDIRS=/Users/guenchi/Workshop
 fi
-export CHEZSCHEMELIBEXTS=".ss::.sls::.sc::.scm"
+export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"

@@ -14,9 +14,9 @@ scratch = paths.scratch("working-processes-")
 # build does not include `.sc` -- so a library directory paths.py had
 # accepted for holding `rpc.sc` would have resolved nothing here.
 env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib),
-           CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj',
+           CHEZSCHEMELIBEXTS='.sc::.no-obj',
            THEOURGIA_HOME=str(scratch / "home"))
-script = Path(__file__).resolve().parent / "working-process-child.ss"
+script = Path(__file__).resolve().parent / "working-process-child.sc"
 store = str(scratch / "store")
 setup = subprocess.run(["scheme", "--script", str(script), "setup", store], env=env,
                        capture_output=True, text=True, timeout=20, check=True,stdin=subprocess.DEVNULL)

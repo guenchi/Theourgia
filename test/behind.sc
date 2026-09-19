@@ -218,7 +218,7 @@
   (encode-record 2 1789000000012 "someone-else" '(("movedzzz" . 1))
                  (storable-encode (list 'set B 'src "moved again"))))
 ;; NOTE: EIGHT CHARACTERS. A writer id is exactly 8 base36 characters
-;; (log.ss `writer-id?`), and `log-publish!` answers `refused` to
+;; (log.sc `writer-id?`), and `log-publish!` answers `refused` to
 ;; anything else -- which is what the first version of this row got,
 ;; with a nine-letter name chosen only because it sorts first.
 (want "W11-behind a second foreign writer publishes"

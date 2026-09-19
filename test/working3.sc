@@ -26,7 +26,7 @@
 ;; actor and content. The core does not merge and does not rebase;
 ;; handing the fact back IS the feature. A refusal that said only
 ;; `stale-baseline` would be correct and useless, and nothing asserted
-;; otherwise: `working1.ss` checks the refusal's KIND and its `block`,
+;; otherwise: `working1.sc` checks the refusal's KIND and its `block`,
 ;; and every other fixture stops there, so emptying `since` broke
 ;; nothing that anyone was measuring.
 ;;
@@ -37,7 +37,7 @@
 ;; a refusal must not grow with the length of the history. The
 ;; design fixes that a bound exists and that the answer says where the
 ;; rest is; the two numbers below (8 records, 8192 bytes) are
-;; `baseline.ss`'s, and the rows name them so that changing one is a
+;; `baseline.sc`'s, and the rows name them so that changing one is a
 ;; decision somebody makes rather than a drift nobody sees.
 
 (import (chezscheme) (theourgia rpc) (theourgia store)
@@ -48,7 +48,7 @@
 ;; A ROW THAT RAISES IS A FAILED ROW, NOT A FAILED FILE -- and both
 ;; sides are guarded, because a row whose expectation is derived from
 ;; the store's own earlier answer can fail to compute just as the answer
-;; under test can. See q7.ss for the reading that produced this rule.
+;; under test can. See q7.sc for the reading that produced this rule.
 ;;
 ;; NOTE: AND A RAISE IS A FAILURE EVEN WHEN BOTH SIDES RAISE THE SAME WAY.
 ;; The form this was copied from wraps each side and then compares the
@@ -253,7 +253,7 @@
 ;; records delivered the other way round would otherwise give a
 ;; different answer to the same question.
 ;;
-;; SUCCESSOR: `since-contract.ss`, SC-03 (a -> b -> z, two ingestion
+;; SUCCESSOR: `since-contract.sc`, SC-03 (a -> b -> z, two ingestion
 ;; orders, one answer) and SC-01/SC-02 (the winner is first and is the
 ;; newest).
 ;;
@@ -270,7 +270,7 @@
 (want "W3-13 a cut answer says where the rest is"
       (field refusal4 'retrieve) (list 'retrieve (list 'log a4) (list 'read a4)))
 
-(printf "\n== the byte budget is retired; see since-contract.ss ==\n")
+(printf "\n== the byte budget is retired; see since-contract.sc ==\n")
 ;; NEVER: EVERY ROW FROM W3-14 TO W3-33 IS RETIRED, AND THIS IS WHERE THEY
 ;; WERE. Their oracle was one rule: "take entries, newest first, until a
 ;; running byte total is used up; an entry that does not fit is passed
@@ -291,7 +291,7 @@
 ;; question no longer exists does not have a new answer; it has a
 ;; successor that asks the question the new rule is about.
 ;;
-;; SUCCESSORS, by name, in `since-contract.ss`:
+;; SUCCESSORS, by name, in `since-contract.sc`:
 ;;
 ;;   W3-14, W3-15        -> SC-04 (an oversized winner keeps its entry,
 ;;                          content elided, not truncated)

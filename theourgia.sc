@@ -149,12 +149,12 @@
 ;; suppressed itself whenever the caller's own text contained `--writer`.
 ;;
 ;; The writer travels in the environment instead, where this process
-;; already found it, and `cli.ss` reads it as the dispatcher's default.
+;; already found it, and `cli.sc` reads it as the dispatcher's default.
 ;; `exec` keeps the environment, so there is nothing to pass on.
 (define (run-server-here! argv)
   (exec-server! (cons (scheme-binary)
                       (cons "--script"
-                            (cons (beside-this-program "cli.ss") argv)))))
+                            (cons (beside-this-program "cli.sc") argv)))))
 
 (define (exec-server! args)
   (let* ((width (foreign-sizeof 'void*))
@@ -345,7 +345,7 @@
 ;; that file afterwards to say why a start failed, so it is the one that
 ;; names it.
 (define (server-argv store socket)
-  (list (scheme-binary) "--script" (beside-this-program "cli.ss")
+  (list (scheme-binary) "--script" (beside-this-program "cli.sc")
         "serve" store
         "--socket" socket
         "--detach" "--log" (serve-log-path store)))

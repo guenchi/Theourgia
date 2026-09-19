@@ -1381,7 +1381,7 @@
 
       ;; ---- D-33 the limit measures a frame, not the buffer ------------
       ;;
-      ;; NEVER: `daemon.ss` SAYS "IT IS THE FRAME THAT IS MEASURED, NOT THE
+      ;; NEVER: `daemon.sc` SAYS "IT IS THE FRAME THAT IS MEASURED, NOT THE
       ;; BUFFER" and nothing asked it. Several frames arrive in one read
       ;; whenever a client writes them together, and a ceiling applied to
       ;; what has accumulated would refuse requests that are each

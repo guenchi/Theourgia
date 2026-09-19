@@ -33,7 +33,7 @@
 ;; are never part of either.
 (import (chezscheme) (theourgia rpc) (theourgia arguments) (theourgia render)
         ;; NEVER: ONLY WHAT IT USES, AND `link` IS NOT IN IT: see the same
-        ;; note in daemon.ss. Forwarding runs one exchange and exits;
+        ;; note in daemon.sc. Forwarding runs one exchange and exits;
         ;; nothing here has a peer to be linked to.
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
@@ -348,7 +348,7 @@
 ;; the CLI's own -- they are not in `rpc-verbs`, so the dispatcher's
 ;; usage forms say nothing about them -- and until this batch a caller
 ;; who misspelled an option got a refusal that named no alternative.
-;; `options-gate.ss` reads these two forms as data and checks every
+;; `options-gate.sc` reads these two forms as data and checks every
 ;; option in them against `parse-arguments`, in both directions, which
 ;; is what makes them a claim rather than a comment: the bug that
 ;; prompted the gate was `eval --timeout-ms` parsing as a positional
@@ -413,7 +413,7 @@
                                  (cons 'output-bytes output)
                                  (cons 'view (eval-view nodes store cut))
                                  (cons 'scheme (scheme-binary))
-                                 (cons 'worker (beside-this-program "eval-worker.ss"))))
+                                 (cons 'worker (beside-this-program "eval-worker.sc"))))
                          wire?)))))))))))
 
 ;; NOTE: THE INTERPRETER THIS PROGRAM IS ITSELF RUNNING UNDER, so a tree

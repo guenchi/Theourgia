@@ -64,7 +64,7 @@ mkdir -p "$THEOURGIA_RUN"
 # before the run rather than after the delivery.
 #
 # A DELIVERY IS ONE FLAT DIRECTORY -- the libraries sit beside the
-# fixtures -- so two files called `code-suggest.ss` cannot both be in it.
+# fixtures -- so two files called `code-suggest.sc` cannot both be in it.
 # Building one copied the fixtures and then the libraries into the same
 # place and the second copy silently replaced the first; which of the two
 # survived depended on the order, and NEITHER outcome is necessarily red:
@@ -73,8 +73,8 @@ mkdir -p "$THEOURGIA_RUN"
 # nothing compares against.
 #
 # IT ALSO BROKE A FIXTURE IN THE REPOSITORY, where the two directories
-# are separate. `code-text-audit.ss` looks for a library beside itself
-# before looking one level up, found `test/code-suggest.ss`, walked the
+# are separate. `code-text-audit.sc` looks for a library beside itself
+# before looking one level up, found `test/code-suggest.sc`, walked the
 # fixture instead of the library, found nothing to complain about, and
 # printed four green rows.
 #
@@ -83,7 +83,7 @@ mkdir -p "$THEOURGIA_RUN"
 # happened -- so this prints that it did not run instead of printing
 # nothing, which would read as a pass.
 # WHAT COUNTS AS A LIBRARY DIRECTORY IS "IT HOLDS SOURCES", not "it
-# holds cli.ss". Keying the whole comparison on one filename meant a
+# holds cli.sc". Keying the whole comparison on one filename meant a
 # parent full of libraries with that one file missing or renamed took
 # the NOT CHECKED branch and the run continued.
 # THE LIBRARY DIRECTORY IS CHECKED BEFORE ANYTHING RUNS. The core reaches
@@ -121,9 +121,9 @@ if [ -n "$pinned" ]; then
 fi
 
 libdir=..
-if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.ss > /dev/null 2>&1; then
+if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.sc > /dev/null 2>&1; then
   clash=""
-  for f in *.ss; do
+  for f in *.sc; do
     [ -f "$libdir/$f" ] && clash="$clash $f"
   done
   if [ -n "$clash" ]; then
@@ -131,7 +131,7 @@ if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.ss > /dev/null 2>&
     echo "REFUSING: a flat delivery cannot hold both copies."
     exit 1
   fi
-  echo "fixture/library names: no clash against $(ls "$libdir"/*.ss | wc -l | tr -d " ") libraries"
+  echo "fixture/library names: no clash against $(ls "$libdir"/*.sc | wc -l | tr -d " ") libraries"
 else
   echo "fixture/library names: NOT CHECKED -- no separate library directory beside this one"
 fi
@@ -139,13 +139,13 @@ fi
 # SYMPTOM. This is the same repair as moving the structural gates above
 # the verdict: a check is worth what it is worth AT THE MOMENT IT RUNS.
 #
-# `expansion-branches.ss` loads each expansion branch of this tree -- the
+# `expansion-branches.sc` loads each expansion branch of this tree -- the
 # one with THEOURGIA_INJECT unset and the one with it on -- and answers
 # in about two seconds, naming the file and line when a branch will not
 # build. Nothing else here asks that question early.
 #
 # MEASURED, AND THIS IS WHY IT IS FIRST. A facade change left
-# `string-contains?` unbound inside the injected branch of `ffi.ss`.
+# `string-contains?` unbound inside the injected branch of `ffi.sc`.
 # Every ordinary fixture stayed green. `cli1`, which sorts EARLIER than
 # `expansion-branches`, starts two children that then died on load,
 # spun out its bounded wait for them, and blocked forever writing to a
@@ -161,7 +161,7 @@ fi
 # this directory exactly once and the count-back gate stays true. Two
 # seconds is a cheap price for leaving that invariant alone.
 # NEVER: AND IT IS NOT JUDGED BY ITS EXIT STATUS. Measured: on a tree whose
-# injected branch would not build, `expansion-branches.ss` printed the
+# injected branch would not build, `expansion-branches.sc` printed the
 # unbound identifier, the file and the line -- and exited 0. It has no
 # `(exit ...)` at all, and neither do fifty-eight of the other fixtures
 # here: THIS SUITE DECIDES ON OUTPUT, not on status, and the loop below
@@ -171,8 +171,8 @@ fi
 # So the preflight applies the loop's own four measures, in one place
 # rather than two: the sentinel, the hard lines, the counters, the
 # status.
-if [ -f expansion-branches.ss ]; then
-  perl -e 'alarm 120; exec @ARGV' scheme --script expansion-branches.ss > "$out/preflight.out" 2>&1
+if [ -f expansion-branches.sc ]; then
+  perl -e 'alarm 120; exec @ARGV' scheme --script expansion-branches.sc > "$out/preflight.out" 2>&1
   pf_rc=$?
   pf_sent=$(grep -c "^expansion-branches complete" "$out/preflight.out")
   pf_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/preflight.out")
@@ -187,7 +187,7 @@ if [ -f expansion-branches.ss ]; then
     exit 1
   fi
 else
-  echo "preflight: NOT CHECKED -- expansion-branches.ss is not in this directory"
+  echo "preflight: NOT CHECKED -- expansion-branches.sc is not in this directory"
 fi
 
 # THE SECOND PREFLIGHT, AND IT ANSWERS A QUESTION NOTHING ELSE ASKS.
@@ -195,7 +195,7 @@ fi
 # A MISSING CLOSER IS NOT A SYNTAX ERROR: the reader takes it, and the
 # definitions after the short form become part of its body. What comes
 # out is an "unbound identifier" naming something defined far below,
-# reported where it is USED. Measured on daemon.ss, 2026-09-18: one `)`
+# reported where it is USED. Measured on daemon.sc, 2026-09-18: one `)`
 # swallowed twenty-six definitions and the report was `unbound
 # identifier directory-of at line 219`, a hundred and eighty lines from
 # the cause -- and the whole file still balanced, because a second edit
@@ -206,7 +206,7 @@ fi
 # something, which reads as a broken environment. One line naming the
 # file and the first definition that was swallowed is the difference.
 #
-# NOTE: IT IS NOT IN `*.ss`, so it does not run again in the loop and the
+# NOTE: IT IS NOT IN `*.sc`, so it does not run again in the loop and the
 # count-back below is untouched.
 # NOTE: AND IT IS THE ONE CHECK IN THIS SUITE THAT NEEDS PYTHON. Every
 # other thing here runs under Chez. A machine without `python3` must be
@@ -255,9 +255,9 @@ fi
 # classifier: a sentinel line, no non-zero counter, no hard line. What
 # differs is only the interpreter.
 bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0
-for f in *.ss *.py; do
+for f in *.sc *.py; do
   case "$f" in
-    *.ss) n=${f%.ss}; runner="scheme --script";;
+    *.sc) n=${f%.sc}; runner="scheme --script";;
     *.py) n=${f%.py}; runner="python3";;
   esac
   # NOTE: `paths.py` IS A HELPER, NOT A FIXTURE: it is imported by the
@@ -266,7 +266,7 @@ for f in *.ss *.py; do
   # what a broken fixture looks like.
   # NOTE: THREE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
   # the python fixtures; `structure` is the preflight above; and
-  # `reduce-hash-check` is a filter `reduce1.ss` pipes bytes through --
+  # `reduce-hash-check` is a filter `reduce1.sc` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
   # broken fixture looks like, so the list says which it is.
   case "$n" in
@@ -307,7 +307,7 @@ for f in *.ss *.py; do
   # NEVER: AND THE TWO ARE MEASURED, NOT CHOSEN. Requiring 0 alone reclassified
   # nine of the fourteen probes as red in one run -- `barrier-probe`,
   # `dirfault`, `dirflush`, `fault-file`, `fault-pipe`, `probe`, `row`,
-  # `shared-lock` and `stagefault` all print `usage: <name>.ss ...` and
+  # `shared-lock` and `stagefault` all print `usage: <name>.sc ...` and
   # exit 2, which is their convention; `q8-report` and the five scripts
   # added this batch exit 0. Both are usage exits and neither is a
   # failure. Anything else -- including a signal, which is 128 and up --
@@ -343,7 +343,7 @@ done
 # "clean run that exits non-zero" in the other -- the second was reported
 # as a defect in an unrelated gate before the cause was found. ONE RUNNER
 # AT A TIME IN A DIRECTORY.
-total=$(ls *.ss *.py | wc -l | tr -d " ")
+total=$(ls *.sc *.py | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
 echo "fixtures run: $ran   not-green: $bad   (of those, $pyran are python)"
@@ -394,8 +394,8 @@ if [ ! -r rows-baseline.txt ]; then
   exit 1
 fi
 missing=""
-for f in *.ss; do
-  n=${f%.ss}
+for f in *.sc; do
+  n=${f%.sc}
   [ -f "$out/$n.out" ] || continue
   grep -q "^rows: " "$out/$n.out" || continue
   grep -q "^$n " rows-baseline.txt 2>/dev/null || missing="$missing $n"
@@ -430,8 +430,8 @@ stale=""; drift=""
 # check, which is the one that refuses.
 while read -r name rows lines digest || [ -n "$name" ]; do
   [ -n "$name" ] || continue
-  [ -f "$name.ss" ] || { stale="$stale $name(gone)"; continue; }
-  now=$(md5 -q "$name.ss")
+  [ -f "$name.sc" ] || { stale="$stale $name(gone)"; continue; }
+  now=$(md5 -q "$name.sc")
   if [ "$now" != "$digest" ]; then stale="$stale $name"; continue; fi
   [ -f "$out/$name.out" ] || continue
   r=$(grep "^rows: " "$out/$name.out" | tail -1 | sed "s/^rows: //")
@@ -472,8 +472,8 @@ fi
 # do not are invisible to it -- the same shape of silence it exists to
 # close -- so they are counted and named here rather than left out.
 counted=0; uncounted=""
-for f in *.ss; do
-  n=${f%.ss}
+for f in *.sc; do
+  n=${f%.sc}
   [ -f "$out/$n.out" ] || continue
   case " $libs $probes " in *" $n "*) continue;; esac
   if grep -q "^rows: " "$out/$n.out"; then counted=$((counted+1))
@@ -482,14 +482,14 @@ done
 echo "row counts: $counted fixture(s) print one; $(echo $uncounted | wc -w | tr -d " ") do not:$uncounted"
 
 ungirded=""
-for f in *.ss; do
+for f in *.sc; do
   grep -q "^ *(define-syntax want$" "$f" || continue
   # MATCHED AS A WHOLE LINE, NOT AS A SUBSTRING. Checked with
   # `grep -q "define-syntax caught"` this stayed silent for a file whose
   # macro had been renamed to `caught-disabled` -- the check's own first
   # reading was a false silence, which is the one failure a check of this
   # kind must not have.
-  grep -q "^ *(define-syntax caught$" "$f" || ungirded="$ungirded ${f%.ss}"
+  grep -q "^ *(define-syntax caught$" "$f" || ungirded="$ungirded ${f%.sc}"
 done
 guard_bad=0
 if [ -n "$ungirded" ]; then
@@ -504,9 +504,9 @@ fi
 # they are counted and named -- the absence is a reading rather than a
 # silence, and the number is what a decision can be made against.
 byproc=""
-for f in *.ss; do
+for f in *.sc; do
   grep -q "^ *(define (want " "$f" || continue
-  byproc="$byproc ${f%.ss}"
+  byproc="$byproc ${f%.sc}"
 done
 echo "unguarded by construction ($(echo $byproc | wc -w | tr -d " ") fixtures define want as a procedure):$byproc"
 

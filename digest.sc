@@ -31,7 +31,7 @@
 ;;; offers: re-exporting the library wholesale would make the list say
 ;;; nothing, and would quietly widen what a replacement has to provide.
 ;;; `sha1`, the HMACs, PBKDF2 and the base64 family are deliberately not
-;;; here -- base64 is in `wire.ss`, where the codec that needs it lives.
+;;; here -- base64 is in `wire.sc`, where the codec that needs it lives.
 
 (library (theourgia digest)
   (export sha256 bytevector->hex)

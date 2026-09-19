@@ -121,7 +121,7 @@
   ;; writer noticed. On a store that cannot be opened that turned a
   ;; caller-fixable mistake into a storage failure -- measured, an
   ;; unnamed writer answered `working-unavailable`, which is the value a
-  ;; durability fault reports and the one `working-fault-child.ss` keys
+  ;; durability fault reports and the one `working-fault-child.sc` keys
   ;; its exit status on.
   ;;
   ;; NOTE: `requested-writer` ALREADY SHORT-CIRCUITS on an absent writer, so
@@ -894,7 +894,7 @@
                     ;; differ, the fingerprint differs with them, and a
                     ;; retry of a request that succeeded was answered
                     ;; `req-mismatch`. Measured, as W4' in
-                    ;; `plan-completion.ss`.
+                    ;; `plan-completion.sc`.
                     ;;
                     ;; §7.5.9 puts who, the verb, the draft writer, the
                     ;; ORDERED (block . version) list and `after` in the
@@ -958,7 +958,7 @@
                     ;; plan, which is that request's whole durable
                     ;; evidence, and there is no version to name.
                     ;; Measured -- requiring one unconditionally refused
-                    ;; every row in `empty-plan.ss` with `bad-request`
+                    ;; every row in `empty-plan.sc` with `bad-request`
                     ;; where the answer should have been about identity.
                     ((not pairs) '(error bad-request malformed-working-version))
                     ;; KEY: THE VERSIONS NAME THE SELECTION, AND THE

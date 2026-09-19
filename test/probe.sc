@@ -25,7 +25,7 @@
 (define (probe-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: probe.ss <lock-path>\n") (exit 2))
+        (begin (printf "usage: probe.sc <lock-path>\n") (exit 2))
         (cadr a))))
 (define lock (probe-argument))
 ;; Bounded from outside by an alarm: if this prints nothing, the lock

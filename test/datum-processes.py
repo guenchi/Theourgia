@@ -11,9 +11,9 @@ area = paths.scratch('datum-process-')
 store, source = area / 'store', area / 'source'
 source.mkdir()
 (source / 'library.sc').write_text('(library (process-fixture) (export x) (import (rnrs))\n;; preserved docs\n(define x #\\space))\n')
-env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib), CHEZSCHEMELIBEXTS='.ss::.no-obj:.sc::.no-obj', THEOURGIA_HOME=str(area / 'home'))
+env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib), CHEZSCHEMELIBEXTS='.sc::.no-obj', THEOURGIA_HOME=str(area / 'home'))
 def run(*args):
-    r = subprocess.run(['scheme', '--script', str(core / 'cli.ss'), *args, '--store', str(store)], env=env, capture_output=True, timeout=20,stdin=subprocess.DEVNULL)
+    r = subprocess.run(['scheme', '--script', str(core / 'cli.sc'), *args, '--store', str(store)], env=env, capture_output=True, timeout=20,stdin=subprocess.DEVNULL)
     assert r.returncode == 0, (r.stdout, r.stderr)
     return r.stdout
 run('init')

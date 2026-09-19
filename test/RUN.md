@@ -44,13 +44,13 @@ and ships as compiled objects. Anything that resolves a library at RUN
 time rather than by a static import behaves differently in the two, and
 a reading taken in one says nothing about the other.
 
-`cli.ss` is the case that produced the rule: it reaches
+`cli.sc` is the case that produced the rule: it reaches
 `(theourgia daemon)`, `(theourgia eval-supervise)`, `(theourgia sched)`
 and `(theourgia net)` through `(environment ...)` when a `serve`, an
 `eval` or a forwarded call asks for them. From source that resolves to a
-`.ss`; from objects to a `.so`; inside a whole-program package it would
+`.sc`; from objects to a `.so`; inside a whole-program package it would
 not resolve at all, because nothing references those libraries
-statically. `f0-ondemand.ss` carries both readings -- F0-1 to F0-3 from
+statically. `f0-ondemand.sc` carries both readings -- F0-1 to F0-3 from
 source, F0-4 against objects built by `build.ss` with `.so` alone on the
 path.
 
@@ -60,7 +60,7 @@ from objects; quoting the first as what a user saves would be false.
 
 ## The Python fixtures are in that number, and three files are not fixtures
 
-`run-fixtures.sh` loops over `*.ss *.py`, so the Python fixtures are
+`run-fixtures.sh` loops over `*.sc *.py`, so the Python fixtures are
 covered by its exit status and need no separate invocation. They did not
 used to be: the loop was `for f in *.ss`, ten fixtures were run only when
 somebody remembered, and on the day the loop was widened two of them were
@@ -73,14 +73,14 @@ prints no sentinel" is also what a broken fixture looks like:
 
   * `paths.py` is imported by the others;
   * `structure.py` is the preflight that reads every file's paren depth;
-  * `reduce-hash-check.py` is a filter `reduce1.ss` pipes bytes through.
+  * `reduce-hash-check.py` is a filter `reduce1.sc` pipes bytes through.
 
 The fixtures proper are `datum-processes`, `q8-cli` and
 `working-processes`. Each prints its rows and ends with `<name>
 complete`, the same contract the Scheme fixtures keep.
 
 **What used to be here.** `eval-local` and `eval-supervisor` are now
-`eval-local.ss` and `eval-supervisor.ss`; the Python supervisor they
+`eval-local.sc` and `eval-supervisor.sc`; the Python supervisor they
 drove, `local.py`, is gone, and so is `rpc-worker.ss`. The daemon and MCP
 fixtures went the same way in the two batches before this one. A list of
 names in prose is the part of a document that goes stale first, which is
@@ -111,7 +111,7 @@ transport does not treat as "no daemon here", so every call came back
 `(error transport-unavailable)` and the probe then in this directory
 reported the core catalog unavailable -- a sentence about the store
 produced by the length of a directory name. That probe has since been
-replaced by `mcp-shell.ss`; the substitution in `paths.py` stays because
+replaced by `mcp-shell.sc`; the substitution in `paths.py` stays because
 the hazard belongs to the platform, not to the fixture that met it.
 
 **Every child they start is given an empty stdin.** `batch` reads its
@@ -160,7 +160,7 @@ holding only `theourgia/` resolves nothing past the first import, so a
 fixture that stages one has to link the dependency in beside it. The
 comment where this was first written down used to say the opposite --
 correctly, for the tree it was written against -- and the fixture failed
-with `cli.ss init` exiting 255 when that stopped being true. A comment
+with `cli.sc init` exiting 255 when that stopped being true. A comment
 asserting the current state of a tree decays silently, and that one did.
 
 ## One file in this directory is a tool, not a fixture
@@ -174,14 +174,14 @@ record it as a probe.
 with no caller is a tool nobody is measuring -- so it went too rather
 than staying in this paragraph indefinitely.
 
-## Non-`.ss` files a delivery has to carry
+## Non-`.sc` files a delivery has to carry
 
 `consts.c`, `rows-baseline.txt`, `vendored-sources.txt`, the nine Python
 fixtures, `q8-cli.py` (driven on its own, not one of the nine),
-`paths.py`, **`import-walk.scm`** -- which `facade-gate.ss` and
-`closures.ss` both `load`, and which neither can run without --
+`paths.py`, **`import-walk.scm`** -- which `facade-gate.sc` and
+`closures.sc` both `load`, and which neither can run without --
 **`evidence-cli1-hang/`**, which this file cites above, and
-**`vectors/`**, ten language files `code-text.ss` imports. The last of
+**`vectors/`**, ten language files `code-text.sc` imports. The last of
 those were read from `../theourgos/`, a different and closed repository,
 so that fixture could only run on a machine that had it checked out
 beside this one.
@@ -243,7 +243,7 @@ stops the whole run, naming both hashes, if it does not.
 
 ## A hang is the failure this harness reports worst
 
-`log.ss` carries a sentence about taking a lock against yourself: *"a lock does
+`log.sc` carries a sentence about taking a lock against yourself: *"a lock does
 not fail, it hangs, and a hang is the failure a suite reports worst. It hung the
 first time this was wired up."* It hung again on 2026-09-12, in a probe, because
 a raise got past the line that released the session and the next session waited
@@ -259,7 +259,7 @@ processes are left rather than only at what files were written.
 
 ### And it hung again, for a defect two seconds away from being named
 
-On 2026-09-17 a facade change removed `string-contains?` from `ffi.ss`, leaving
+On 2026-09-17 a facade change removed `string-contains?` from `ffi.sc`, leaving
 one reference to it inside the branch that is expanded only when
 `THEOURGIA_INJECT` is on. No ordinary fixture noticed. `cli1` starts two child
 processes, waits for one of them to reach a barrier with a **bounded** spin, and
@@ -267,10 +267,10 @@ then writes a byte to a fifo — so when both children died on load it spun out
 its bound and blocked forever on a write with no reader. The suite read a
 missing identifier as a 900-second alarm, and it would have read it that way
 once per fault-injection fixture: about three and a half hours before reaching
-`expansion-branches.ss`, which answers the same question in two seconds and
+`expansion-branches.sc`, which answers the same question in two seconds and
 names the file and the line.
 
-**So `expansion-branches.ss` now runs as a preflight**, before the loop, and a
+**So `expansion-branches.sc` now runs as a preflight**, before the loop, and a
 red preflight refuses the run. It still runs again inside the loop, so that
 every script in the directory is still classified exactly once and the
 count-back gate below stays true.
@@ -279,7 +279,7 @@ NEVER: **The preflight does not read the exit status.** Measured on the broken t
 
     PREFLIGHT RED (rc=0 sentinel=1 hard=1 counters=1)
 
-`expansion-branches.ss` printed `1 failures` and exited **0** — it has no
+`expansion-branches.sc` printed `1 failures` and exited **0** — it has no
 `(exit ...)` at all, and neither do fifty-eight of the other fixtures here. This
 suite decides on output, and a preflight written as `if scheme --script ...`
 would have been green on the exact tree that produced that reading. The
@@ -427,7 +427,7 @@ accepts reaches them without anyone updating a copy of it.
 ## One runner at a time in a fixture directory
 
 The runner classifies every script in the directory it is given, then counts
-the classes back against `ls *.ss`. Two runners in one directory will disagree
+the classes back against `ls *.sc`. Two runners in one directory will disagree
 with themselves: a file that appears between the loop and the count makes the
 totals differ, and a file removed while a run is pending makes that run die
 with no output at all.

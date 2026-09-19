@@ -60,7 +60,7 @@
 (define pid-text (number->string (get-process-id)))
 (define here (string-append "/tmp/detach-" pid-text))
 (define store (string-append here "/store"))
-(define cli "../cli.ss")
+(define cli "../cli.sc")
 
 (define (env-prefix extra)
   (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "

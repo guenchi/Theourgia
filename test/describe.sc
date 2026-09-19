@@ -155,7 +155,7 @@
     (system (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
                            "THEOURGIA_HOME=" here "/home THEOURGIA_TRACE=1 "
-                           "scheme --script ../cli.ss " verb " --store " store
+                           "scheme --script ../cli.sc " verb " --store " store
                            " --wire > /dev/null 2> " out))
     (let* ((text (call-with-input-file out get-string-all))
            (n (string-length text)))
@@ -244,7 +244,7 @@
 ;; again here -- a copy in this file would agree with itself forever.
 
 (define client-source
-  (let ((p (string-append root-dir "/theourgia.ss")))
+  (let ((p (string-append root-dir "/theourgia.sc")))
     (if (file-exists? p) (call-with-input-file p get-string-all) "")))
 
 (define (local-verbs-of-client text)

@@ -16,7 +16,7 @@
 (import (chezscheme))
 
 ;; THE SOURCE IS FOUND FROM THIS SCRIPT, NOT FROM THE CURRENT DIRECTORY.
-;; The runner starts every fixture from `test/`, so `"project.ss"` named
+;; The runner starts every fixture from `test/`, so `"project.sc"` named
 ;; nothing and this file died at its first form with rc=255 -- a red that
 ;; is about the caller's directory rather than about the audit. The two
 ;; layouts the suite is run in are the repository (fixtures under test/,
@@ -41,7 +41,7 @@
 
 ;; The Scheme reader excludes comments and treats strings as leaves.
 ;; Audit the entire binding body, rejecting any new use or shadowing of line.
-(define form (call-with-input-file (source-file "project.ss") read))
+(define form (call-with-input-file (source-file "project.sc") read))
 (define definition
   (find (lambda (x) (and (pair? x) (eq? 'define (car x))
                          (equal? '(strip-recovery text) (cadr x)))) (cddddr form)))

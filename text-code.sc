@@ -18,9 +18,9 @@
   ;; The byte helpers moved to (theourgia markers), which
   ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
   ;; (theourgia wire), and nothing else. That, not "it imports nothing",
-  ;; is the property the move was made for, and `test/closures.ss` reads
+  ;; is the property the move was made for, and `test/closures.sc` reads
   ;; it off the import graph. The names come back here unchanged, so no
-  ;; caller of this library changed. See markers.ss for why.
+  ;; caller of this library changed. See markers.sc for why.
   (import (only (theourgia markers) byte-slice bytes-append byte-lines safe-utf8 string-prefix-at?)
           (rnrs) (theourgia languages) (theourgia regex))
   (define patterns (make-hashtable string-hash string=?))

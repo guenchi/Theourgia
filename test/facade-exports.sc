@@ -15,7 +15,7 @@
 
 ;; THE FORWARDING LIBRARIES EXPORT WHAT THE DESIGN SAYS, EXACTLY.
 ;;
-;; `facade-gate.ss` answers "who may touch igropyr". This answers the
+;; `facade-gate.sc` answers "who may touch igropyr". This answers the
 ;; other half: WHAT those facades hand on. A facade that exports one
 ;; extra name has widened the seam -- the name is now something a caller
 ;; can depend on, and replacing the dependency stops being a change to
@@ -60,7 +60,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 
 (define declared (call-with-input-file (string-append script-dir "/facade-exports.sexp") read))
 
@@ -78,7 +78,7 @@
 ;; head of the form would record the internal name and call the seam
 ;; clean while a different name leaked.
 (define (exports-of name)
-  (let ((path (string-append root "/" (symbol->string name) ".ss")))
+  (let ((path (string-append root "/" (symbol->string name) ".sc")))
     (if (not (file-exists? path))
         'no-such-library
         (let loop ((fs (forms-of path)))

@@ -16,7 +16,7 @@
 ;; What the command line loads before it knows what it was asked to do.
 ;;
 ;; KEY: EVERY `read` USED TO LOAD THE ACTOR SYSTEM, for the benefit of
-;; three verbs that were not being run. `cli.ss` imported
+;; three verbs that were not being run. `cli.sc` imported
 ;; `(theourgia sched)`, `(theourgia net)`, `(theourgia daemon)` and
 ;; `(theourgia eval-supervise)` unconditionally; measured against the
 ;; same libraries, that was 652ms to start against 452ms without them,
@@ -58,11 +58,11 @@
 (load (string-append script-dir "/import-walk.scm"))
 
 (define root (string-append script-dir "/.."))
-(define (source-of name) (string-append root "/" (symbol->string name) ".ss"))
+(define (source-of name) (string-append root "/" (symbol->string name) ".sc"))
 
 ;; ---- F0-1: what the static closure holds --------------------------------------
 ;;
-;; NEVER: THE SAME WALKER `daemon-link-gate.ss` USES, and transitive for the
+;; NEVER: THE SAME WALKER `daemon-link-gate.sc` USES, and transitive for the
 ;; same reason: a library two imports away is loaded just as surely as
 ;; one written at the top of the file.
 ;; NEVER: AN IMPORT THIS WALK CANNOT RESOLVE IS REPORTED, NOT DROPPED. The
@@ -96,9 +96,9 @@
           ((char=? (string-ref path i) #\/) (substring path (+ i 1) (string-length path)))
           (else (loop (- i 1))))))
 
-(define heavy '("sched.ss" "net.ss" "daemon.ss" "eval-supervise.ss"))
+(define heavy '("sched.sc" "net.sc" "daemon.sc" "eval-supervise.sc"))
 
-(define cli-closure (map basename (closure-of (string-append root "/cli.ss"))))
+(define cli-closure (map basename (closure-of (string-append root "/cli.sc"))))
 
 (want "F0-1 the command line's static closure holds none of the four heavy libraries"
       (filter (lambda (h) (member h cli-closure)) heavy)
@@ -107,15 +107,15 @@
 ;; NEVER: AND THE WALKER CAN SEE THEM WHEN THEY ARE THERE. Without this row
 ;; the one above is satisfied by a walker that finds nothing at all --
 ;; which is also what a changed import spelling would produce.
-(define daemon-closure (map basename (closure-of (string-append root "/daemon.ss"))))
+(define daemon-closure (map basename (closure-of (string-append root "/daemon.sc"))))
 
 (want "F0-1 every import in both closures resolved to a file"
       unresolved-imports
       '())
 
 (want "F0-1 CONTROL: the same walk finds those libraries in the daemon's own closure"
-      (list (and (member "sched.ss" daemon-closure) #t)
-            (and (member "net.ss" daemon-closure) #t)
+      (list (and (member "sched.sc" daemon-closure) #t)
+            (and (member "net.sc" daemon-closure) #t)
             (> (length cli-closure) 5))
       '(#t #t #t))
 
@@ -142,7 +142,7 @@
     (system (string-append
               "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
               " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-              "scheme --script " root "/cli.ss no-such-verb --wire > /dev/null 2>&1"))
+              "scheme --script " root "/cli.sc no-such-verb --wire > /dev/null 2>&1"))
     (- (real-time) start)))
 
 (define timings (let loop ((n 10) (out '())) (if (zero? n) out (loop (- n 1) (cons (one-call-ms) out)))))
@@ -179,7 +179,7 @@
         (if (pair? env) (car env) "")
         " CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
         " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-        "scheme --script " root "/cli.ss " args " > " out-file " 2>&1"))
+        "scheme --script " root "/cli.sc " args " > " out-file " 2>&1"))
   (let ((t (call-with-input-file out-file get-string-all))) (if (string? t) t "")))
 
 (define (contains? text needle)
@@ -205,7 +205,7 @@
 ;; produces the same bytes, deliberately.
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                    " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-                   "scheme --script " root "/cli.ss serve " store " --socket " socket
+                   "scheme --script " root "/cli.sc serve " store " --socket " socket
                    " > " scratch "/serve.txt 2>&1 & echo $! > " scratch "/serve.pid )"))
 (sh "sleep 5")
 
@@ -239,10 +239,10 @@
 ;; ---- F0-4: and the same thing in the form it ships in --------------------------
 ;;
 ;; KEY: EVERYTHING ABOVE WAS MEASURED FROM SOURCE, AND THAT IS NOT WHAT A
-;; USER RUNS. Development runs `--script` against `.ss`; a user gets
+;; USER RUNS. Development runs `--script` against `.sc`; a user gets
 ;; compiled objects. The difference matters twice over.
 ;;
-;; **First, lazy loading has to still work.** `cli.ss` resolves
+;; **First, lazy loading has to still work.** `cli.sc` resolves
 ;; `(theourgia daemon)` at RUN time, and whether that works depends on
 ;; the library being findable -- which it is as a `.so` on the library
 ;; path. NEVER: It would NOT be inside a whole-program package that dropped
@@ -250,7 +250,7 @@
 ;; reading here. These rows cover the `.so` form only, and say so.
 ;;
 ;; **Second, the saving is much smaller there.** Same machine, same
-;; objects, only `cli.ss` differing:
+;; objects, only `cli.sc` differing:
 ;;
 ;;     source form   static imports 623 ms   on demand 435 ms   -188 ms
 ;;     .so form      static imports  51 ms   on demand  42 ms   -9 ms
@@ -288,7 +288,7 @@
   (sh (string-append
         (if (pair? env) (car env) "")
         " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-        "scheme --script " root "/cli.ss " args " > " out-file " 2>&1"))
+        "scheme --script " root "/cli.sc " args " > " out-file " 2>&1"))
   (file-text out-file))
 
 (define so-store (string-append scratch "/so-store"))
@@ -318,7 +318,7 @@
 (define so-socket (string-append "/tmp/f0so-" (number->string (get-process-id)) ".sock"))
 (sh (string-append "rm -f " so-socket))
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-                   "scheme --script " root "/cli.ss serve " so-store " --socket " so-socket
+                   "scheme --script " root "/cli.sc serve " so-store " --socket " so-socket
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
 (sh "sleep 5")
 

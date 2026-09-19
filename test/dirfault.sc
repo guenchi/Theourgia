@@ -27,7 +27,7 @@
 (define (dirfault-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: dirfault.ss <directory>\n") (exit 2))
+        (begin (printf "usage: dirfault.sc <directory>\n") (exit 2))
         (cadr a))))
 (define d (dirfault-argument))
 (system (string-append "rm -rf " d "; mkdir -p " d))

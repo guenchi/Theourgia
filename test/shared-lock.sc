@@ -24,7 +24,7 @@
 (define (shared-lock-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: shared-lock.ss <lock-path>\n") (exit 2))
+        (begin (printf "usage: shared-lock.sc <lock-path>\n") (exit 2))
         (cadr a))))
 (with-shared-lock (shared-lock-argument) (lambda (fd) (void)))
 

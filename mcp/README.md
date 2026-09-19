@@ -4,7 +4,7 @@
 MCP `2025-11-25` over stdio, in front of the same dispatcher the command
 line uses.
 
-    scheme --script mcp/server.ss --store /path/to/store
+    scheme --script mcp/server.sc --store /path/to/store
 
 ## What a tool returns
 

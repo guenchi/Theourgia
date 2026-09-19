@@ -1,6 +1,6 @@
 """Where a Python fixture finds the core, the library path and its scratch.
 
-THE FIXTURES ARE NOT RUN BY `run-fixtures.sh`. It runs `*.ss`; these are
+THE FIXTURES ARE NOT RUN BY `run-fixtures.sh`. It runs `*.sc`; these are
 `*.py`, started by hand, and `RUN.md` says how. That is why their paths
 went wrong quietly: nothing in the suite's exit status covers them.
 
@@ -9,7 +9,7 @@ from `Path(__file__).resolve().parents[2]`, which in the tree these
 fixtures were written in held `theourgia/`, `igropyr/` and
 `implementation/` side by side:
 
-  * the CORE sources -- `cli.ss`, `daemon.ss`, `mcp/server.ss`. That is
+  * the CORE sources -- `cli.sc`, `daemon.sc`, `mcp/server.sc`. That is
     `parents[1]`, always, and it does not depend on what sits beside the
     repository.
   * the LIBRARY PATH handed to Chez. `THEOURGIA_LIBDIR` when the caller
@@ -35,15 +35,15 @@ _here = Path(__file__).resolve().parent
 
 
 def core():
-    """The directory holding cli.ss, daemon.ss and mcp/."""
+    """The directory holding cli.sc, daemon.sc and mcp/."""
     return _here.parent
 
 
 # THE SUFFIXES ARE THE ONES THE CALLERS ACTUALLY SEARCH FOR. Every
-# fixture here sets CHEZSCHEMELIBEXTS to `.ss::.no-obj:.sc::.no-obj`, so
+# fixture here sets CHEZSCHEMELIBEXTS to `.sc::.no-obj`, so
 # a directory whose libraries are all `.sls` would satisfy a wider test
 # and still resolve nothing for these runs.
-_LIBRARY_SUFFIXES = ('.ss', '.sc')
+_LIBRARY_SUFFIXES = ('.sc',)
 
 
 def _source_dirs(value):
@@ -87,10 +87,10 @@ def _holds_libraries(directory):
     if not here.is_dir():
         return False
     # IT ASKS FOR THE LIBRARY THE CORE IMPORTS FIRST, BY NAME AND SIZE.
-    # `cli.ss` imports `(theourgia rpc)` before anything else, so a
+    # `cli.sc` imports `(theourgia rpc)` before anything else, so a
     # directory without a non-empty `rpc` source cannot start a run
     # whatever else is in it. `is_file()` matters: a DIRECTORY named
-    # `rpc.ss` has the suffix too.
+    # `rpc.sc` has the suffix too.
     #
     # NOTE: IT DOES NOT READ THE FILE, ON PURPOSE. A version of this matched
     # `(library (theourgia rpc)` with a regular expression, and a regular
@@ -103,7 +103,7 @@ def _holds_libraries(directory):
     # A check that is wrong both ways is worse than a smaller one whose
     # limit is written down.
     #
-    # NOTE: SO THIS IS A PRE-FLIGHT, NOT A PROOF. `rpc.ss` itself imports
+    # NOTE: SO THIS IS A PRE-FLIGHT, NOT A PROOF. `rpc.sc` itself imports
     # `(theourgia store)`, `(theourgia reduce)` and `(theourgia log)`;
     # answering "will this import" means running Chez, which is the thing
     # this check exists to avoid doing once per row. What it rules out is
@@ -150,12 +150,12 @@ def _igropyr_in(directory):
     The same shape as `_holds_libraries`, and for the same reason: a
     plain file or an empty directory of that name satisfies `exists()`
     and resolves nothing. `crypto.sc` is asked for because it is the
-    first igropyr library the core reaches, through `digest.ss`.
+    first igropyr library the core reaches, through `digest.sc`.
     """
     here = directory / 'igropyr'
     if not here.is_dir():
         return False
-    for suffix in ('.sc', '.ss', '.sls'):
+    for suffix in ('.sc', '.sls'):
         source = here / f'crypto{suffix}'
         try:
             if source.is_file() and source.stat().st_size > 0:
@@ -177,7 +177,7 @@ def igropyr():
     core imports no such library any more, so leaving one there would
     let a reintroduced dependency resolve and go unremarked" -- true of
     the tree it was written against, false since the copies became
-    forwards, and the fixture failed with `cli.ss init` exiting 255.
+    forwards, and the fixture failed with `cli.sc init` exiting 255.
     """
     for candidate in _source_dirs(libdir()):
         if _igropyr_in(candidate):

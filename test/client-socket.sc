@@ -21,8 +21,8 @@
 ;; already has one.
 ;;
 ;; NEVER: AND IT WAS WRITTEN TWICE, WITH THE COPIES DISAGREEING. Until this
-;; batch `cli.ss` and `mcp/server.ss` defaulted to `<store>/socket` while
-;; `daemon.ss` had a run-root rule that nothing reached -- so the rule the
+;; batch `cli.sc` and `mcp/server.sc` defaulted to `<store>/socket` while
+;; `daemon.sc` had a run-root rule that nothing reached -- so the rule the
 ;; README described was never the rule that ran.
 
 (import (chezscheme)
@@ -157,14 +157,14 @@
   (system (string-append
             (if (pair? env) (car env) "")
             " CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-            "scheme --script ../cli.ss " args " > " out-file " 2>&1"))
+            "scheme --script ../cli.sc " args " > " out-file " 2>&1"))
   (file-text out-file))
 
 (cli (string-append "init --store " store " --wire") (string-append here "/init.txt")
      "THEOURGIA_LOCAL=1")
 
 (system (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../cli.ss serve " store
+                       "scheme --script ../cli.sc serve " store
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/pid )"))
 (system "sleep 5")
 
@@ -509,7 +509,7 @@
 
 ;; ---- the client's import closure, asserted where the client is worked on --
 ;;
-;; NEVER: `closures.ss` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
+;; NEVER: `closures.sc` HAS THIS ROW, AND IT IS NOT WHERE THE WORK HAPPENS.
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
@@ -525,7 +525,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.ss")) up script-dir)))
+    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.scm"))
 
 (define import-graph
@@ -566,16 +566,16 @@
       '(client digest ffi render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
-;; `theourgia.ss`; what IT reaches is a separate fact from what the
+;; `theourgia.sc`; what IT reaches is a separate fact from what the
 ;; `client` library reaches, and the rows above are about the library.
-;; `arguments` is allowed and the reason is written in `closures.ss`: the
+;; `arguments` is allowed and the reason is written in `closures.sc`: the
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
 (want "IMPORTS and the client program's closure is exactly what it should be"
       (let ((program-imports
               (map cadr (filter (lambda (r) (pair? (cdr r)))
                                 (imports-of-file 'theourgia
-                                                 (string-append tree-root "/theourgia.ss"))))))
+                                                 (string-append tree-root "/theourgia.sc"))))))
         (let loop ((todo program-imports) (seen '()))
           (cond
             ((null? todo)

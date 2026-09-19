@@ -54,7 +54,7 @@
 ;; whose label names a behaviour it does not exercise is a guard nobody
 ;; has.
 ;;
-;; SUCCESSOR: `plan-completion.ss`, W4' -- "the retry is a replay", "it
+;; SUCCESSOR: `plan-completion.sc`, W4' -- "the retry is a replay", "it
 ;; wrote nothing", "and the new draft is untouched" -- which does retry.
 (define old-snapshot (assq 'projection (cdr (call 'read id "--working-info" "--writer" "window-new"))))
 (define old-hash (list-ref old-snapshot 5))

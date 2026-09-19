@@ -21,7 +21,7 @@
 ;; paying by the token.
 ;;
 ;; NEVER: AND THE DISK DID NOT MOVE. A record is serialised by
-;; `sexpr->string-extended` in `wire.ss`, which writes its own characters
+;; `sexpr->string-extended` in `wire.sc`, which writes its own characters
 ;; and never consulted the print parameters. U4 is the guard: the two
 ;; paths are separate because somebody kept them separate, and only a
 ;; reading says they still are.
@@ -70,7 +70,7 @@
 (define (cli-to out . args)
   (system (string-append
             "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-            "scheme --script ../cli.ss "
+            "scheme --script ../cli.sc "
             (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
             "--store " store " --wire > " out " 2>&1"))
   (file-text out))
@@ -207,7 +207,7 @@
 ;; that these are the same bytes; a change made in the CLI alone would
 ;; leave the daemon and the shell spelling `\x6C49;`.
 (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../cli.ss serve " store " --socket " socket
+                       "scheme --script ../cli.sc serve " store " --socket " socket
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/serve.pid )"))
 (system "sleep 5")
 
@@ -215,7 +215,7 @@
   (let ((out (string-append here "/daemon.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../cli.ss search " (quoted cjk)
+              "scheme --script ../cli.sc search " (quoted cjk)
               " --store " store " --socket " socket " --wire > " out " 2>&1"))
     (file-text out)))
 
@@ -245,7 +245,7 @@
                                                call "\n"))))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                            "THEOURGIA_RUN=" here "/run "
-                           "scheme --script ../mcp/server.ss --store " store " < " in " > " out " 2>&1"))
+                           "scheme --script ../mcp/server.sc --store " store " < " in " > " out " 2>&1"))
     (file-text out)))
 
 (want "U3 the MCP shell's text carries the characters, not an escape"

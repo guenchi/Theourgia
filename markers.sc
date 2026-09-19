@@ -46,14 +46,14 @@
 ;;; gate over the transitive closure says exactly what it proves.
 ;;;
 ;;; NOTHING WAS COPIED TO GET HERE. Each definition moved out of the file
-;;; that held it -- the byte helpers from `text-code.ss`, the alist
-;;; accessor from `languages.ss`, the grammar from `code-markers.ss` --
+;;; that held it -- the byte helpers from `text-code.sc`, the alist
+;;; accessor from `languages.sc`, the grammar from `code-markers.sc` --
 ;;; and those three now import them back and re-export them under the
 ;;; same names, so not one of their callers changed.
 ;;;
 ;;; `language-property` IS NOT A TABLE LOOKUP. It reads a field out of an
 ;;; entry it is handed. Which entry that is -- one from the table, or the
-;;; fixed doc wrapping in `datum-metadata.ss` -- is the caller's business,
+;;; fixed doc wrapping in `datum-metadata.sc` -- is the caller's business,
 ;;; and that is why it can live below the table rather than beside it.
 
 (library (theourgia markers)

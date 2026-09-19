@@ -29,7 +29,7 @@
 (define (barrier-probe-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: barrier-probe.ss <barrier-name>\n") (exit 2))
+        (begin (printf "usage: barrier-probe.sc <barrier-name>\n") (exit 2))
         (cadr a))))
 (barrier! (string->symbol (barrier-probe-argument)))
 (printf "parked for ~a seconds\n" (exact->inexact (- (now) t0)))

@@ -30,7 +30,7 @@
 (define (stagefault-argument)
   (let ((a (command-line)))
     (if (null? (cdr a))
-        (begin (printf "usage: stagefault.ss <directory>\n") (exit 2))
+        (begin (printf "usage: stagefault.sc <directory>\n") (exit 2))
         (cadr a))))
 (define d (stagefault-argument))
 (system (string-append "rm -rf " d "; mkdir -p " d))

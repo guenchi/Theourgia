@@ -18,7 +18,7 @@
 ;; The command line and a caller over a socket ask the same questions of
 ;; the same store. Before this library they answered them separately, and
 ;; the duplication was already visible -- `nearest-ids` was built twice
-;; inside cli.ss, once for `read` and once for `read --md`. What these
+;; inside cli.sc, once for `read` and once for `read --md`. What these
 ;; rows are for is the property that replaced it: THERE IS ONLY ONE PLACE
 ;; THAT ANSWERS, so the two cannot disagree.
 ;;
@@ -180,8 +180,8 @@
 
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.ss sit side by side; in the
-;; repository the fixtures are under test/ and cli.ss is at the root.
+;; delivery directory the fixture and cli.sc sit side by side; in the
+;; repository the fixtures are under test/ and cli.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
@@ -189,16 +189,16 @@
 ;; row discover it separately.
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.ss sit side by side; in the
-;; repository the fixtures are under test/ and cli.ss is at the root.
+;; delivery directory the fixture and cli.sc sit side by side; in the
+;; repository the fixtures are under test/ and cli.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
 ;; AND IF NEITHER EXISTS IT SAYS SO AT ONCE, rather than letting each
 ;; row discover it separately.
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.ss sit side by side; in the
-;; repository the fixtures are under test/ and cli.ss is at the root.
+;; delivery directory the fixture and cli.sc sit side by side; in the
+;; repository the fixtures are under test/ and cli.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
@@ -211,18 +211,18 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1))))))
          (dir (if cut (substring self 0 cut) "."))
-         (beside (string-append dir "/cli.ss"))
-         (above (string-append dir "/../cli.ss")))
+         (beside (string-append dir "/cli.sc"))
+         (above (string-append dir "/../cli.sc")))
     (cond
       ((file-exists? beside) beside)
       ((file-exists? above) above)
       (else (assertion-violation 'rpc1
-              "cli.ss is neither beside this fixture nor one level up"
+              "cli.sc is neither beside this fixture nor one level up"
               (list beside above))))))
 
 ;; AND THE READING SAYS WHICH PROGRAM IT MEASURED. The locator is right
 ;; -- each layout has exactly one answer -- but the answer never appeared
-;; in the output, so a copy of cli.ss sitting beside this fixture was
+;; in the output, so a copy of cli.sc sitting beside this fixture was
 ;; being tested instead of the working tree for a day before anyone
 ;; noticed, and every row read green the whole time. A run that names its
 ;; subject shows the drift on its first line.
@@ -347,7 +347,7 @@
 (printf "\n== S4: the command and the dispatcher answer the same question ==\n")
 ;; THE ROW THIS BATCH EXISTS FOR. Before the dispatcher the two answered
 ;; separately, and the duplication was already in the tree: `nearest-ids`
-;; was built twice inside cli.ss. An implementation that kept a second
+;; was built twice inside cli.sc. An implementation that kept a second
 ;; opinion anywhere fails here without anyone having to guess where.
 ;;
 ;; The comparison is on what the CLI PRINTS against what the dispatcher
