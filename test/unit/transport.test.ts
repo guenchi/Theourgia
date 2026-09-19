@@ -21,10 +21,21 @@
 import * as assert from 'assert';
 import * as path from 'path';
 import { Client, appendsARecord } from '../../src/client';
-import { LIBRARY_EXTENSIONS } from '../../src/config';
-import { CliTransport, GRACE_MS, SocketTransport, TransportError } from '../../src/transport';
+import {
+  CLIENT_PROGRAM,
+  FALLBACK_PROGRAM,
+  LIBRARY_EXTENSIONS,
+  PRODUCT_EXTENSIONS,
+  WITNESS_PRODUCT,
+  WITNESS_SOURCE,
+  clientPath,
+  coreFormOf,
+  environmentFor,
+  libraryExtensionsFor
+} from '../../src/config';
+import { CliTransport, GRACE_MS, TransportError } from '../../src/transport';
 import { readBlock, stringField } from '../../src/blocks';
-import { clause, headName, initWire, isSym } from '../../src/wire';
+import { answerOf, initWire, isSym } from '../../src/wire';
 import { FakeCore, childrenStillRunning } from '../support/fake';
 
 describe('T1 an answer and a verdict are separate things', () => {
@@ -43,10 +54,10 @@ describe('T1 an answer and a verdict are separate things', () => {
     assert.strictEqual(answer.rc, 1);
     assert.strictEqual(answer.ok, false);
     assert.strictEqual(answer.answers.length, 1);
-    assert.strictEqual(headName(answer.answers[0]), 'error');
-    const current = clause(answer.answers[0], 'current');
-    assert.ok(current !== null);
-    assert.strictEqual((current as unknown[])[1], 'h');
+    assert.notStrictEqual(answerOf(answer.answers[0], 'error'), null);
+    const current = answerOf(answer.answers[0], 'error')?.whole('current');
+    assert.ok(current !== undefined && current.read);
+    assert.strictEqual(current.items[1], 'h');
   });
 
   it('does not turn a refusal by the core into a transport failure', async () => {
@@ -175,7 +186,7 @@ describe('T3 a core that does not answer is stopped, and noise is not an answer'
     const client = new Client(new CliTransport(core.config(), core.env()));
     const answer = await client.request('conflicts', []);
     assert.strictEqual(answer.answers.length, 1);
-    assert.strictEqual(headName(answer.answers[0]), 'orphan');
+    assert.notStrictEqual(answerOf(answer.answers[0], 'orphan'), null);
     assert.ok(answer.stderr.includes('entirely unrelated'));
   });
 
@@ -207,6 +218,15 @@ describe('T4 the argument vector and the environment are what the core expects',
   });
   afterEach(() => core?.dispose());
 
+  /*
+   * ⚠️ THE PROGRAM IN THIS ROW CHANGED WITH plugin-r2 AND THE ORDER DID
+   * NOT. What this cell is about is the order -- the verb first, the
+   * store and actor last -- because a store option placed ahead of the
+   * verb is taken AS the verb. The program is now the thin client
+   * (design 7.6.53); the assertion about it lives in its own row above,
+   * and this one keeps the path only so that the vector is compared
+   * whole.
+   */
   it('puts the verb first and the store and actor options last', async () => {
     core = new FakeCore([{ match: ['read'], stdout: '(ok ((id . "a.2") (deleted . #f) (fields) (position root . 0) (edges)))\n', rc: 0 }]);
     const config = core.config({ actor: 'someone' });
@@ -216,7 +236,7 @@ describe('T4 the argument vector and the environment are what the core expects',
     assert.strictEqual(logged.length, 1);
     assert.deepStrictEqual(logged[0].argv, [
       '--script',
-      path.join(config.corePath, 'cli.ss'),
+      path.join(config.corePath, CLIENT_PROGRAM),
       'read',
       'a.2',
       '--md',
@@ -251,14 +271,157 @@ describe('T4 the argument vector and the environment are what the core expects',
     );
   });
 
-  it('sends nothing at all when the socket transport is selected', async () => {
-    core = new FakeCore([{ match: ['outline'], stdout: '', rc: 0 }]);
-    const client = new Client(new SocketTransport());
-    await assert.rejects(
-      () => client.request('outline', []),
-      (e: unknown) => e instanceof TransportError && e.failure === 'unsupported'
+  /*
+   * THE CELL FOR THE SOCKET TRANSPORT IS GONE WITH THE CLASS.
+   *
+   * It asserted that an unimplemented adapter refused rather than
+   * quietly falling back to the command line -- a good thing to assert
+   * while a setting could select it. When `transport` lost its `socket`
+   * value the class became unreachable from anywhere, and a green cell
+   * over a class nothing can reach measures nothing at all. Both are
+   * gone; the socket belongs to the core's thin client, and a second
+   * implementation of its envelope here would be a third packer of the
+   * same bytes. Ruled by the main session.
+   */
+});
+
+/*
+ * T1 OF plugin-r2: THE PROGRAM IS THE THIN CLIENT, AND WHO WE ARE
+ * TRAVELS IN THE ENVIRONMENT. (design 7.6.50, 7.6.53)
+ *
+ * The extension used to run `cli.ss`, which loads the whole core into a
+ * fresh process for every request. `theourgia.ss` is the thin client:
+ * it knows the transport and nothing else, finds or starts the daemon,
+ * and prints what the daemon rendered. Measured on this machine against
+ * the g-r5 core, one `outline`: 618 ms through `cli.ss` from source,
+ * 56 ms through `cli.ss` from a product directory, 35 ms through the
+ * thin client and a daemon.
+ *
+ * ⚠️ THE IDENTITIES GO IN THE ENVIRONMENT, NOT IN THE ARGUMENT VECTOR.
+ * The client scans argv for four transport options and passes the rest
+ * through untouched; `--writer` is deliberately not one of them, and a
+ * writer spliced into argv by this extension would arrive at a verb
+ * whose option table does not take it and come back as usage (design
+ * 7.6.50 v262 -- it happened to the core's own shell and made it
+ * unusable).
+ */
+describe('plugin-r2 T1 the thin client is the program, and identity is bound by the environment', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * ⭐ THIS IS THE ONE CELL THAT SPELLS THE NAMES, and it is meant to.
+   *
+   * The core has ruled two renamings -- every library `.ss` becomes
+   * `.sc`, and the entry points split so that `cli.ss` goes away -- so
+   * the names live in `src/config.ts` and everything else in this tree
+   * reads them from there. A rename then edits one file and turns this
+   * cell red, which is a reading somebody has to look at, rather than
+   * being followed silently everywhere at once.
+   */
+  it('runs theourgia.ss rather than cli.ss', async () => {
+    assert.strictEqual(CLIENT_PROGRAM, 'theourgia.ss');
+    assert.strictEqual(FALLBACK_PROGRAM, 'cli.ss');
+    assert.strictEqual(WITNESS_SOURCE, 'client.ss');
+    assert.strictEqual(WITNESS_PRODUCT, 'client.so');
+    core = new FakeCore([{ match: ['outline'], stdout: '- a.1  One\n', rc: 0 }]);
+    const config = core.config();
+    const client = new Client(new CliTransport(config, core.env()));
+    await client.request('outline', []);
+    const logged = core.calls().filter((c) => c.event === 'answer');
+    assert.strictEqual(logged.length, 1);
+    assert.strictEqual(
+      logged[0].argv[1],
+      path.join(config.corePath, CLIENT_PROGRAM),
+      'the extension is still starting the whole core for every request'
     );
-    assert.deepStrictEqual(core.requests(), []);
+    assert.strictEqual(clientPath(config), path.join(config.corePath, CLIENT_PROGRAM));
+  });
+
+  it('carries the actor and the writer in the environment and not in the argument vector', async () => {
+    core = new FakeCore([{ match: ['write'], stdout: '(ok (version "v1"))\n', rc: 0 }]);
+    const config = core.config({ actor: 'someone', writer: 'a-draft-space' });
+    const client = new Client(new CliTransport(config, core.env()));
+    await client.request('write', ['a.2', 'src', 'text']);
+    const logged = core.calls().filter((c) => c.event === 'answer')[0];
+    assert.strictEqual(logged.env.THEOURGIA_ACTOR, 'someone');
+    assert.strictEqual(logged.env.THEOURGIA_WRITER, 'a-draft-space');
+    assert.ok(
+      !logged.argv.includes('--writer'),
+      'a writer spliced into the argument vector reaches verbs whose option table refuses it'
+    );
+  });
+
+  /*
+   * ⚠️ THE WRITER DOES NOT FALL BACK TO ANYTHING IN THE CORE, and it
+   * does here -- for a different reason and at a different layer. The
+   * core refuses an unbound writer (`writer-required`) so that two
+   * agents cannot silently share one draft space; this extension is ONE
+   * agent, one window, and the setting's default is the actor's name so
+   * that a user who has not thought about draft spaces still has one.
+   * Two windows that want separate spaces set the setting.
+   */
+  it('defaults the writer to the actor, since one window is one agent', () => {
+    core = new FakeCore([]);
+    const config = core.config({ actor: 'someone', writer: '' });
+    const env = environmentFor(config, {}, { has: (n: string) => n === WITNESS_SOURCE });
+    assert.strictEqual(env.THEOURGIA_WRITER, 'someone');
+  });
+});
+
+/*
+ * ⚠️ WHICH EXTENSION LIST DEPENDS ON WHAT THE DIRECTORY IS, and both
+ * answers are needed for a reason that has a reading behind it.
+ *
+ * Measured on this machine, g-r5 core:
+ *   - the no-object list against a product directory:
+ *     `Exception: library (theourgia client) not found` -- so "corePath
+ *     may be a product directory" is unreachable under it;
+ *   - `.so` first against a source tree holding a stale object: a
+ *     `trace.ss` replaced by a line that is not Scheme at all was
+ *     ignored, the stale `trace.so` ran, and `outline` answered
+ *     normally. The hazard the no-object list was written for is real
+ *     and it is silent.
+ *
+ * So the list is chosen from what the directory holds, and when both
+ * are there the source wins -- that IS the stale-object case, and the
+ * safe direction is the loud one. `client` is the witness because it is
+ * the library the thin client itself imports; its form is the form the
+ * client will run in.
+ */
+describe('plugin-r2 T1 the extension list is chosen from what the core directory holds', () => {
+  const held = (...names: string[]) => ({ has: (n: string) => names.includes(n) });
+
+  it('calls a directory of sources a source directory', () => {
+    assert.deepStrictEqual(coreFormOf(held(WITNESS_SOURCE, FALLBACK_PROGRAM, CLIENT_PROGRAM)), { form: 'source' });
+    assert.strictEqual(libraryExtensionsFor({ form: 'source' }), LIBRARY_EXTENSIONS);
+    assert.ok(!LIBRARY_EXTENSIONS.includes('.so'));
+  });
+
+  it('calls a directory of objects a product directory', () => {
+    assert.deepStrictEqual(coreFormOf(held(WITNESS_PRODUCT, FALLBACK_PROGRAM, CLIENT_PROGRAM)), { form: 'product' });
+    assert.strictEqual(libraryExtensionsFor({ form: 'product' }), PRODUCT_EXTENSIONS);
+    assert.ok(PRODUCT_EXTENSIONS.startsWith('.so'));
+  });
+
+  it('prefers the source when a stale object is lying beside it', () => {
+    assert.deepStrictEqual(
+      coreFormOf(held(WITNESS_SOURCE, WITNESS_PRODUCT, FALLBACK_PROGRAM, CLIENT_PROGRAM)),
+      { form: 'source' },
+      'the object would be loaded in preference to the source it no longer matches'
+    );
+  });
+
+  /*
+   * ⚠️ AND A DIRECTORY THAT IS NEITHER IS SAID, NOT GUESSED. Picking a
+   * list for it would send the user a library-not-found exception from
+   * inside Chez about a path they would have to work backwards from.
+   */
+  it('says so when the directory holds neither', () => {
+    assert.deepStrictEqual(coreFormOf(held('readme.txt')), { form: 'neither' });
   });
 });
 
@@ -377,5 +540,51 @@ describe('a verb that appends a record is known by what it does, not by its name
     assert.strictEqual(appendsARecord('outline', []), false);
     assert.strictEqual(appendsARecord('conflicts', []), false);
     assert.strictEqual(appendsARecord('check', []), false);
+  });
+});
+
+/*
+ * plugin-r2: an envelope this client asked for, and two of them came
+ * back.
+ *
+ * `interpret` unwraps when the REQUEST carried `--wire` and the head is
+ * `ok` -- the repair that stopped it deciding from the shape of what
+ * came back. The decoder refuses a duplicated clause, and until a
+ * sixteenth review round it refused it by answering null, which this
+ * reader could not tell from "no envelope here": the whole form was then
+ * handed on as the answers, and a reader downstream took its first
+ * element for the answer to the request.
+ */
+describe('plugin-r2 two envelopes are not one answer', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('refuses an answer carrying two item lists rather than handing on the whole form', async () => {
+    core = new FakeCore([
+      {
+        match: ['read'],
+        stdout: '(ok (items ((id . "a.1") (fields (src . "one")))) (items ((id . "a.1") (fields (src . "two")))))\n',
+        rc: 0
+      }
+    ]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    await assert.rejects(
+      () => client.request('read', ['a.1', '--wire']),
+      /two item lists/,
+      'an answer with two item lists was handed on instead of refused'
+    );
+  });
+
+  it('still opens the envelope when there is one of it', async () => {
+    core = new FakeCore([
+      { match: ['read'], stdout: '(ok (items ((id . "a.1") (fields (src . "one")))))\n', rc: 0 }
+    ]);
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const answer = await client.request('read', ['a.1', '--wire']);
+    assert.strictEqual(answer.answers.length, 1);
+    assert.ok(answer.envelope !== null, 'the envelope was not recorded');
   });
 });

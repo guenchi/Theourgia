@@ -19,20 +19,20 @@ import {withExclusive} from './fsops';
 
 /*
  * What happens when the user saves: one snapshot, verified, sent once.
- * (§12.19.4, §12.17.3, §12.15 结构二)
+ * (section 12.19.4, section 12.17.3, section 12.15 structure two)
  *
  * ONLY A CLEAN DOCUMENT IS SENT, AND ONLY ITS SNAPSHOT. When the
  * handler runs with `isDirty` false, `getText()` is the text of the
  * last COMPLETED save, so there is no torn read and no second reading:
  * the snapshot is taken once and that same value is what goes out.
  * Dirty means the user typed again after saving -- the next save will
- * carry the newer text, so this one sends nothing. (§12.19.4)
+ * carry the newer text, so this one sends nothing. (section 12.19.4)
  *
  * THE BYTES ON DISK ARE EVIDENCE, NOT CONTENT. They are read only to
  * check that they decode strictly as UTF-8, carry no BOM, and equal the
  * snapshot; `acknowledged-raw` is their digest. If any of that fails,
  * nothing is sent and the next save tries again -- a misjudged torn
- * read costs one save, never the wrong content. (§12.17.3)
+ * read costs one save, never the wrong content. (section 12.17.3)
  */
 
 import { FileOps } from './fsops';
@@ -55,7 +55,7 @@ export interface SaveDocument {
 /*
  * Why nothing was sent, named. Each of these has a different thing for
  * the user to do, and C5/C17 exist because a single "not sent" would
- * let an implementation confuse them. (§12.17.3, §12.13.4)
+ * let an implementation confuse them. (section 12.17.3, section 12.13.4)
  */
 export type Refusal =
   | { because: 'document-dirty' }
@@ -68,7 +68,7 @@ export type Refusal =
   /*
    * The sidecar says `publishing`: the file and the record do not yet
    * describe one another, so the prefix cannot be trusted to split
-   * against. (§12.7.3, C3)
+   * against. (section 12.7.3, C3)
    */
   | { because: 'publication-incomplete' }
   | { because: 'unresolved' }
@@ -108,7 +108,7 @@ export type SaveDecision =
 
 /*
  * Whether the outbox entry may now be removed, and if not, why. The
- * entry outlives anything this cannot record. (§12.7.4, C7, C20)
+ * entry outlives anything this cannot record. (section 12.7.4, C7, C20)
  */
 /*
  * WHY A RECORD BESIDE THE FILE COULD NOT BE WRITTEN. Named as a type
@@ -123,7 +123,7 @@ export type Unrecorded =
   | 'file-moved'
   | 'split-changed'
   /*
-   * TWO SENDS CLAIM ONE NUMBER. (§13.3)
+   * TWO SENDS CLAIM ONE NUMBER. (section 13.3)
    *
    * The baseline holds this send's number under a different request, so
    * the two records disagree about what the number means -- and nothing
@@ -214,7 +214,7 @@ export class Saving {
    * Decides, without sending anything: take the snapshot once, verify
    * the disk bytes against it, split against the sidecar's prefix.
    * Returning a decision rather than performing it is what lets a cell
-   * assert "zero sends" without watching a transport. (§12.19.4, C5,
+   * assert "zero sends" without watching a transport. (section 12.19.4, C5,
    * C17)
    */
   private requireOwnership(file:string):void {
@@ -245,7 +245,7 @@ export class Saving {
     /*
      * THE SNAPSHOT IS TAKEN ONCE, HERE, and this value is what goes out.
      * Reading the document again after the checks below would mean the
-     * bytes verified are not the bytes sent. (§12.19.4)
+     * bytes verified are not the bytes sent. (section 12.19.4)
      */
     const snapshot = document.getText();
 
@@ -278,7 +278,7 @@ export class Saving {
        * STRICTLY. `Buffer.toString('utf8')` substitutes U+FFFD for an
        * invalid sequence and returns a perfectly good string, so a
        * check written as "decode and compare" passes whenever the
-       * replacement lands outside the compared region. (§12.17.3)
+       * replacement lands outside the compared region. (section 12.17.3)
        */
       decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch (e) {
@@ -294,7 +294,7 @@ export class Saving {
      * first meant a buffer the editor writes as CRLF never matched a
      * prefix the store gave as LF, so every save of such a file was
      * refused as "the heading changed" -- by the extension, about a
-     * change the user had not made. §12.17.3 puts the EOL handling
+     * change the user had not made. section 12.17.3 puts the EOL handling
      * first for exactly this reason: the comparison and the split both
      * happen on the normalised text.
      *
@@ -345,7 +345,7 @@ export class Saving {
   }
 
   /*
-   * X1c ⑨: AN ANSWER TO A REQUEST THIS WINDOW DID NOT SEND.
+   * X1c (9): AN ANSWER TO A REQUEST THIS WINDOW DID NOT SEND.
    *
    * A retry after a restart carries a request the queue remembers and
    * this process does not: nothing in memory says which file it was
@@ -367,7 +367,7 @@ export class Saving {
    * ⚠️ IT DOES NOT WRITE. Recording goes through `recordAnswer` like
    * every other acknowledgement, so the order -- record first, entry
    * second -- stays in one place. A function that both recognised and
-   * recorded would be a second critical section. (§12.7.4, C7)
+   * recorded would be a second critical section. (section 12.7.4, C7)
    */
   public recognise(file: string, sentText: string): { rawDigest: string; sentDigest: string } | null {
     /*
@@ -435,19 +435,19 @@ export class Saving {
    * The record beside the file is written FIRST; the outbox entry is
    * removed only if that succeeded. A build that dequeued first and
    * then crashed would have destroyed its own means of retrying -- the
-   * request is gone and the store may or may not hold it. (§12.7.4, C7)
+   * request is gone and the store may or may not hold it. (section 12.7.4, C7)
    *
    * IT RE-READS THE FILE INSIDE THE SECTION. The editor is not on the
    * chain; if the bytes moved while the answer was in flight, the
    * acknowledgement would describe a version that is no longer there,
-   * so the write is abandoned and the ENTRY IS KEPT. (§12.11.1, C20)
+   * so the write is abandoned and the ENTRY IS KEPT. (section 12.11.1, C20)
    *
    * A `req-mismatch` KEEPS THE ENTRY TOO, marked unresolved: the store
    * is saying it has a different request under that id, which nobody
-   * here can resolve by retrying. (§12.9, C7)
+   * here can resolve by retrying. (section 12.9, C7)
    */
   /*
-   * A SEND IS OVER AND NOTHING ELSE IS RECORDED. (§13.2, R5.6)
+   * A SEND IS OVER AND NOTHING ELSE IS RECORDED. (section 13.2, R5.6)
    *
    * ⚠️ A REFUSAL HAS TO WRITE EXACTLY ONE THING. The store declined the
    * write, so no baseline may be written -- the bytes are still only in
@@ -486,7 +486,7 @@ export class Saving {
       sentDigest: string;
       mismatch: boolean;
       /*
-       * WHICH SEND THIS ANSWER IS ABOUT. (§13.3)
+       * WHICH SEND THIS ANSWER IS ABOUT. (section 13.3)
        *
        * The record beside a file keeps two different things apart: what
        * the store has CONFIRMED, and what the file now holds. The first
@@ -525,14 +525,14 @@ export class Saving {
       /*
        * THE STORE HAS A DIFFERENT REQUEST UNDER THAT NAME. Nobody here
        * can settle that by retrying, so the entry stays and the file is
-       * marked for a person to look at. (§12.9)
+       * marked for a person to look at. (section 12.9)
        */
       /*
        * ⚠️ AND THE NUMBER STAYS OUT. This send has not settled -- the
        * store is saying it cannot say what happened to it -- so removing
        * it from `outstanding` would make the block read as though
        * nothing were in flight, which is the one thing that is certainly
-       * false here. (§13.2)
+       * false here. (section 13.2)
        */
       writeSidecar(this.files, file, { ...read.sidecar, unresolved: true });
       return { dequeued: false, because: 'req-mismatch' };
@@ -563,7 +563,7 @@ export class Saving {
       /*
        * THE BYTES MOVED WHILE THE ANSWER WAS IN FLIGHT. Recording an
        * acknowledgement against them would mark a draft as sent, so the
-       * write is abandoned and the ENTRY IS KEPT. (§12.11.1, C20)
+       * write is abandoned and the ENTRY IS KEPT. (section 12.11.1, C20)
        */
       return { dequeued: false, because: 'file-moved' };
     }
@@ -571,7 +571,7 @@ export class Saving {
       /*
        * A LATE REPLAY IS A DUPLICATE, NOT AN ERROR. The request has been
        * settled; the cursor stays where the newer answer put it, and the
-       * entry goes. (§12.7.4)
+       * entry goes. (section 12.7.4)
        */
       dequeue();
       return { dequeued: true };
@@ -624,7 +624,7 @@ export class Saving {
      */
     /*
      * ⚠️ WHICH SEND THE STORE CONFIRMED, AND WHETHER IT REPLACES WHAT
-     * WAS THERE. (§13.3)
+     * WAS THERE. (section 13.3)
      *
      * The axis is `highWater`, not the baseline's own number: an answer
      * for an older send arriving late must not rebuild a baseline that
@@ -649,7 +649,7 @@ export class Saving {
      * number and writing it down leaves the next start free to hand it
      * out again. Settling quietly would make one of the two sends
      * disappear; this marks the record and keeps the entry, which is
-     * what §13 asks for when two of our own records disagree.
+     * what section 13 asks for when two of our own records disagree.
      */
     const baseline = read.sidecar.confirmed;
     if (
@@ -690,7 +690,7 @@ export class Saving {
        * ⚠️ THE OLDER FIELDS ARE WRITTEN TOO, and they are a projection
        * of this same act rather than a second record of it: one write,
        * one instant, derived from the same answer. They are what the
-       * build before §13 reads, and what this build's own draft listing
+       * build before section 13 reads, and what this build's own draft listing
        * still reads until it moves to the pure function. When it does,
        * these become write-only compatibility and can go.
        */

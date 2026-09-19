@@ -66,7 +66,7 @@ export interface Core {
   /*
    * The queue is per session AND per store: a queue carries one cursor
    * and a cursor belongs to one store, so a session that writes to two
-   * of them needs two. (§12.9 as amended after the editor measured it.)
+   * of them needs two. (section 12.9 as amended after the editor measured it.)
    */
   outboxPath(store: string): string;
   storeHash(store: string): string;
@@ -101,7 +101,7 @@ export function activateCore(deps: CoreDeps): Core {
      * Every path that writes a record beside a block passes the
      * ownership rule, and the rule needs to know who is asking. The one
      * `Sessions` makes for a draft scan does not write and is built
-     * without it. (§13, r3-3)
+     * without it. (section 13, r3-3)
      */
     publisher: new Publisher(deps.files, deps.documents, {
       owners: new Owners(deps.files),

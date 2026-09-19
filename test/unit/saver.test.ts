@@ -62,7 +62,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Client } from '../../src/client';
 import { Outbox, OutboxWriteError } from '../../src/outbox';
-import { RETRY_CAP, Saver, Settle } from '../../src/saver';
+import { RETRYABLE_REFUSALS, RETRY_CAP, SETTINGS_REFUSALS, Saver, Settle } from '../../src/saver';
 import { CliTransport } from '../../src/transport';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
@@ -1415,5 +1415,189 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
      */
     assert.ok(sent.length >= 3, 'the save queued behind it must go out once the unknown is settled');
     assert.notStrictEqual(idOf(sent[2]), held, 'and it is a different request, with its own id');
+  });
+});
+
+/*
+ * plugin-r2: THE TRANSPORT'S OWN REFUSALS, AND THE TWO THAT A RETRY
+ * CANNOT HELP. (design 7.6.50, ruled 2026-09-19)
+ *
+ * The thin client answers `not-sent` only when it can prove no byte
+ * left, and relays such an answer under its own name. Four of those
+ * names join the "not now" family -- the store never saw the bytes, so
+ * the same request goes again. Two others are settings: the store
+ * directory, and the length of the run-root path the socket is computed
+ * under. Neither changes because time passed.
+ */
+describe('plugin-r2 S-transport a refusal from the transport is not a refusal of the write', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('keeps the entry and retries when nothing was sent', async () => {
+    const r = rig([{ match: ['set'], stdout: '(error connect-failed (errno 2) (carried-out no))\n', rc: 75 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'pending');
+    assert.strictEqual(r.outbox.entries.length, 1, 'a send that never left settled the entry');
+    assert.strictEqual(r.outbox.entries[0].req, outcome.req, 'the retry would go under a new id');
+  });
+
+  /*
+   * ⚠️ PARKED AT ONCE, NOT AFTER FIVE. Five attempts against a store
+   * directory that does not exist are five identical failures and a
+   * slower arrival at the same place. The message names the setting and
+   * what to do with it, because that is the only thing that can change
+   * the answer.
+   */
+  it('parks a refusal that only a setting can answer, with the setting named', async () => {
+    const r = rig([{ match: ['set'], stdout: '(error store-not-found (store "/nowhere"))\n', rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.keptForAPerson, true);
+    const held = r.outbox.entries;
+    assert.strictEqual(held.length, 1, 'the save was thrown away rather than kept');
+    assert.strictEqual(held[0].state, 'parked');
+    assert.match(String(held[0].lastError), /theourgia\.store/);
+    assert.match(outcome.message, /theourgia\.store/);
+  });
+
+  it('parks a socket path the operating system will not take, and says what to shorten', async () => {
+    const r = rig([
+      { match: ['set'], stdout: '(error socket-path-too-long (path "/x") (length 126) (max 104))\n', rc: 75 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(r.outbox.entries[0].state, 'parked');
+    assert.match(outcome.message, /THEOURGIA_RUN/);
+  });
+
+  /*
+   * ⚠️ A NAME THIS BUILD HAS NEVER HEARD, FROM THE CLIENT'S OWN EXIT
+   * CODE, IS UNKNOWN AND NOT REFUSED.
+   *
+   * When a daemon fails to start the client answers with the last
+   * `(error ...)` in the log it just wrote -- whatever the core happened
+   * to write there. The set of names that can arrive that way is not a
+   * list this extension can hold. Exit 75 says the client refused on its
+   * own account; an unrecognised name at 75 is a transport-side refusal
+   * this build has not met, and recording it as `refused` would be
+   * recording a determination nobody made.
+   */
+  it('reads an unknown name at the client’s own exit code as an outcome nobody knows', async () => {
+    const r = rig([
+      { match: ['set'], stdout: '(error some-name-from-a-newer-core (detail "x"))\n', rc: 75 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'pending', 'an unknown transport refusal settled the entry');
+    assert.strictEqual(r.outbox.entries.length, 1);
+    assert.strictEqual(r.outbox.entries[0].req, outcome.req);
+  });
+
+  /*
+   * ⚠️ THE TWIN THAT KEEPS THE EXIT CODE MEANING SOMETHING. The same
+   * unknown name at an ordinary exit code is the STORE refusing with a
+   * word this build does not know -- an `(error ...)` is the protocol's
+   * way of saying the write did not happen -- and that settles.
+   */
+  it('reads the same unknown name at an ordinary exit code as a refusal', async () => {
+    const r = rig([
+      { match: ['set'], stdout: '(error some-name-from-a-newer-core (detail "x"))\n', rc: 1 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'refused');
+  });
+
+  /*
+   * ⚠️ THE GUARD BEHIND THE CLASSIFIER'S ANSWER. `classifyRefusal`
+   * answers `refused` for both families so that the census over the
+   * core's refusals does not read them as unclassified -- and nothing
+   * in the running extension may ever reach that answer with one of
+   * them. This row drives a real Saver with every name in both tables
+   * and asserts the entry survived. Delete an interception in `send`
+   * and exactly this reddens.
+   */
+  it('lets no name in either family settle the entry', async () => {
+    for (const kind of [...RETRYABLE_REFUSALS, ...Object.keys(SETTINGS_REFUSALS)]) {
+      const r = rig([{ match: ['set'], stdout: `(error ${kind} (detail "x"))\n`, rc: 75 }]);
+      core = r.core;
+      await r.saver.save('a.2', 'src', 'body2\n');
+      assert.strictEqual(
+        r.outbox.entries.length,
+        1,
+        `${kind} settled the entry; it is classified as a refusal and must be intercepted first`
+      );
+      core.dispose();
+    }
+  });
+});
+
+/*
+ * plugin-r2: THE WAY BACK FROM A PARKED SETTING IS THE SETTING.
+ *
+ * An entry parked because the store directory does not exist is waiting
+ * for one thing only: somebody to change the setting. So a configuration
+ * change is what releases it -- once. If the setting still does not
+ * answer, the same rule parks it again on the same attempt, which is why
+ * "once" needs no counter.
+ */
+describe('plugin-r2 S-settings a configuration change releases what only a setting can release', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const GONE = '(error store-not-found (store "/nowhere"))\n';
+
+  it('sends a parked entry exactly once more, and parks it again when nothing was fixed', async () => {
+    const r = rig([
+      { match: ['set'], stdout: GONE, rc: 1, once: true },
+      { match: ['set'], stdout: GONE, rc: 1, once: true }
+    ]);
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(r.outbox.entries[0].state, 'parked');
+    const beforeRelease = setCalls(core).length;
+
+    const released = r.outbox.unparkAll();
+    assert.strictEqual(released, 1, 'the release did not report what it released');
+    await r.saver.retry();
+
+    assert.strictEqual(
+      setCalls(core).length,
+      beforeRelease + 1,
+      'a released entry went out a number of times other than once'
+    );
+    assert.strictEqual(
+      r.outbox.entries[0].state,
+      'parked',
+      'the setting was not fixed, so the entry belongs back where it was'
+    );
+  });
+
+  /*
+   * ⚠️ THE TWIN THAT KEEPS THE RELEASE FROM BEING A TIMER. Draining
+   * without a release must not touch a parked entry -- that is the whole
+   * point of parking it rather than leaving it pending.
+   */
+  it('does not send a parked entry on an ordinary drain', async () => {
+    const r = rig([{ match: ['set'], stdout: GONE, rc: 1, once: true }]);
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'body2\n');
+    const afterPark = setCalls(core).length;
+    await r.saver.retry();
+    assert.strictEqual(setCalls(core).length, afterPark, 'a parked entry went out without a release');
+  });
+
+  it('reports nothing to release when nothing is parked', async () => {
+    const r = rig([{ match: ['set'], stdout: wrote(8), rc: 0 }]);
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(r.outbox.unparkAll(), 0);
   });
 });

@@ -47,6 +47,7 @@ import {
 import { ImportTarget, SessionIdentity, Sessions, systemStartTime } from '../../src/sessions';
 import { Notice } from '../../src/status';
 import { OutboxEntry } from '../../src/outbox';
+import { nodeFileOps } from '../../src/fsops';
 import { RecordingFs } from '../support/recording-fs';
 import { Client } from '../../src/client';
 import { CliTransport } from '../../src/transport';
@@ -1034,5 +1035,160 @@ describe('review 34 a destination that has stopped being this window’s queue',
       /2 were written for other stores and are still there/,
       `the second run did not say where the rest are: ${chooser.said[0].text}`
     );
+  });
+});
+
+/*
+ * plugin-r2: the recovery listing does not turn "I could not look" into
+ * "there is nothing here".
+ *
+ * ⭐ THE SENTENCE THIS DENIES IS THE ONE THAT MATTERS. "No other window
+ * has left anything here" is what a person acts on by closing the
+ * question -- and the unsent work of another window is exactly what it
+ * would be denying the existence of. Both defects below were measured by
+ * a review round and both repairs went in without a cell; a mutation run
+ * confirmed that removing either left every cell in this tree green.
+ */
+describe('plugin-r2 a listing that could not be read is not an empty one', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  /*
+   * ⚠️ A REAL FAILURE, not a stubbed one. A directory with no execute
+   * permission cannot be listed, and `readdirSync` raises EACCES on it.
+   * Running as root defeats that, so the cell says it could not set the
+   * situation up rather than passing on a reading it did not take.
+   */
+  it('refuses a sessions directory it cannot read, rather than announcing there is none', () => {
+    const storage = scratch();
+    const root = path.join(storage, 'sessions');
+    fs.mkdirSync(root, { recursive: true });
+    fs.mkdirSync(path.join(root, 'S-dead'));
+    fs.chmodSync(root, 0o000);
+    try {
+      let raised: unknown = null;
+      try {
+        nodeFileOps.list(root);
+      } catch (e) {
+        raised = e;
+      }
+      if (raised === null) {
+        assert.fail(
+          `${root} could be listed although it has no permissions, so this machine cannot ` +
+            'produce the failure this cell is about'
+        );
+      }
+      assert.notStrictEqual((raised as NodeJS.ErrnoException).code, 'ENOENT');
+    } finally {
+      fs.chmodSync(root, 0o700);
+    }
+  });
+
+  /*
+   * THE TWIN: a sessions directory that is NOT THERE really is empty, and
+   * that is how every first run looks. Without it the cell above would
+   * pass on a reader that refuses everything.
+   */
+  it('still reads an absent sessions directory as holding nothing', () => {
+    assert.deepStrictEqual(nodeFileOps.list(path.join(scratch(), 'sessions')), []);
+  });
+
+  /*
+   * ⭐ AND A QUEUE THAT PARSED INTO THE WRONG SHAPE IS NOT AN EMPTY
+   * ONE. The catch beside this line says exactly that about a queue that
+   * will not parse; the counting line said the opposite about one that
+   * parses into something unexpected, so the session vanished from the
+   * listing altogether.
+   */
+  it('keeps a window whose queue holds no list of entries', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const dir = path.join(storage, 'sessions', 'S-dead', 'h');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'outbox.json'), '{"entries":"bad"}', 'utf8');
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const rows = await sessions.others();
+    assert.strictEqual(rows.length, 1, 'a window with an unreadable queue vanished from the list');
+    assert.ok(
+      rows[0].pendingEntries > 0,
+      'a queue this build cannot read was counted as holding nothing'
+    );
+  });
+});
+
+/*
+ * plugin-r2: a queue whose presence could not be established is offered,
+ * not dropped.
+ *
+ * ⭐ THE DROP HAPPENED BEFORE THE READER THAT WAS REPAIRED. `exists` is
+ * `fs.existsSync`, which answers false for a path whose ancestry cannot
+ * be searched exactly as it does for one that is not there -- so an
+ * unreadable queue never reached the reader that refuses unreadable
+ * queues. Measured in a fourteenth review round: the migration guard
+ * then reported that no send was in flight. `presenceOf`, which tells
+ * the two apart, had been sitting beside `exists` the whole time.
+ */
+describe('plugin-r2 a queue whose presence is unknown is still offered', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  it('offers a queue it could not look at, so the reader downstream refuses it', () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const sessions = new Sessions(
+      {
+        ...nodeFileOps,
+        /*
+         * A PRESENCE THAT CANNOT BE ESTABLISHED, which is what an
+         * unsearchable ancestry produces. The rest of the fixture is
+         * the real filesystem.
+         */
+        presenceOf: () => ({ known: false as const }),
+        list: () => ['h'],
+        isDirectory: () => true
+      },
+      storage
+    );
+    const paths = sessions.outboxPathsFor('S-dead');
+    /*
+     * ⛔ `length >= 1` IS TRUE OF EITHER PATH ALONE.
+     *
+     * Measured in a fifteenth review round: with this stub, dropping
+     * `out.push(legacy)` passed, and so did dropping `out.push(candidate)`.
+     * There are two queues a window can hold -- the one written beside
+     * the session and the one written under a writer's directory -- and
+     * a cell that accepts either one accepts losing the other. Both are
+     * named.
+     */
+    assert.deepStrictEqual(
+      paths.map((file) => path.relative(storage, file)).sort(),
+      [
+        path.join('sessions', 'S-dead', 'h', 'outbox.json'),
+        path.join('sessions', 'S-dead', 'outbox.json')
+      ].sort(),
+      'a queue whose presence could not be established was dropped before anything could refuse it'
+    );
+  });
+
+  /*
+   * THE TWIN: a queue that is genuinely absent is still not offered, or
+   * every session in the listing would carry phantom work.
+   */
+  it('still leaves out a queue that is genuinely not there', () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const sessions = new Sessions(
+      {
+        ...nodeFileOps,
+        presenceOf: () => ({ known: true as const, there: false }),
+        list: () => ['h'],
+        isDirectory: () => true
+      },
+      storage
+    );
+    assert.deepStrictEqual(sessions.outboxPathsFor('S-dead'), []);
   });
 });

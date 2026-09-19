@@ -17,15 +17,38 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
   readback supplies the immutable version selected by `commit`, carrying a request id
   and cursor through an outbox written before transmission.
 * A **status bar** entry with the store, the actor, the cursor, the number of conflicts
-  and the number of saves whose outcome is not known.
+  and the number of saves whose outcome is not known. When the store cannot be reached
+  at all, the tooltip carries the core's own sentence rather than a question mark: a
+  refusal such as `serve-path-occupied (path "...")` names a directory you can remove.
+* **Searching**: the magnifying glass in the outline's title bar, or
+  `theourgia: Search Blocks`, asks the core's `search` for blocks whose title, keywords
+  or text hold every word you type. One hit opens; several are offered in a list, best
+  score first, each showing its keywords or a cut of its text.
+* **Keywords in the outline**: a block that has any shows them beside its id. They come
+  from the block's own record, not from `outline --with-keywords` -- see *What it
+  refuses to guess at*.
 
 ## What it does not do yet
 
 * No graph view, no link editing, no title editing. Editing the heading line of a block
   is refused with a message rather than half-applied; changing a title is
   `set <id> title`, which is not in this batch.
-* The core has a daemon, but this extension's direct `socket` adapter remains
-  unimplemented; select `cli` here.
+* **Going to a definition by name** is not here. It wants the core's `whereis`, which
+  the core does not have yet. Rather than contribute a command that answers "not
+  implemented", this extension asks the core what it can do -- `describe` returns the
+  catalogue -- so the entry will appear when the verb does. Nothing needs removing when
+  it lands.
+* **A store that more than one instance has written to cannot be written to by a window
+  that meets it afterwards.** A store gets a second log writer when a copy of it is
+  adopted elsewhere and a segment published back; the core does not yet say which of
+  them is local, so a window with no cursor of its own is told so and refuses to write
+  rather than guess. A window that was already writing keeps its cursor and carries on.
+* This extension has no direct socket adapter of its own, and does not want one.
+  The socket belongs to the core's `(theourgia client)`, and the thin client is
+  its adapter; a second implementation of that envelope in TypeScript would be a
+  third packer of the same bytes, kept in step by hand. The unimplemented adapter
+  that used to sit here has been removed along with its cell -- when the
+  `transport` setting stopped offering `socket`, nothing could reach either.
 * Working drafts retain their original block hash and causal cut. Commit refuses a
   stale baseline; accepting a new baseline is an explicit reconcile/rebase action.
 * No cache. Every view asks the core.
@@ -57,20 +80,52 @@ of them is a decision rather than an oversight:
 
 | Setting | What it is |
 |---|---|
-| `theourgia.corePath` | The directory holding `cli.ss`. Required. |
+| `theourgia.corePath` | The directory holding the core. Required. Either form works -- see below. |
 | `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. The core imports `(igropyr crypto)`, `(igropyr platform)` and `(igropyr sexpr)`, so the directory holding `igropyr/` belongs here or the core exits before reading an argument. |
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
+| `theourgia.writer` | The draft space this window writes into. Defaults to the actor. See *One agent, one writer id*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
-| `theourgia.transport` | `cli` (the default) or `socket` (not implemented). |
+| `theourgia.transport` | `client` (the default) runs the thin client; `cli` runs `cli.ss` directly and is kept for one version as a way back. |
+
+### A checkout or a product directory
+
+`theourgia.corePath` may be either a checkout of the core -- the library sources beside
+`cli.ss` and `theourgia.ss` -- or a directory the core's `build.ss` produced, holding
+the compiled libraries beside the same two scripts. **The extension reads the directory
+and decides**: a `client.ss` in it means sources, a `client.so` means products, and the
+extension sets `CHEZSCHEMELIBEXTS` accordingly. A directory with neither is refused by
+name rather than left to fail inside Chez with a message about a library.
+
+It is worth pointing it at a product directory. Measured on one machine, one request:
+about 460 ms reading the core from source, about 40 to 50 ms from a product directory,
+about 30 ms once a daemon is up.
+
+### One agent, one writer id
+
+A writer id is a draft space. Two windows that share one keep overwriting each other's
+unsent drafts of the same block, silently -- a later session may bind an id and carry on
+with its drafts, which is what makes recovery possible and is also what makes sharing
+one dangerous. Give a second window its own `theourgia.writer` when it should keep
+separate drafts of the same blocks.
+
+The id is passed to the core through the environment, as `THEOURGIA_WRITER`, together
+with `THEOURGIA_ACTOR`. It is deliberately not spliced into the argument vector: the
+verbs that do not take a `--writer` option refuse one, and a client that added it
+everywhere would turn ordinary requests into usage lines.
 
 ## How a request is made
+
+This extension runs the core's **thin client**, `theourgia.ss`. The thin client finds
+the daemon for the store, or starts one, and sends it the request; the extension holds
+no socket code and no envelope of its own. Starting, stopping, the exit codes and the
+words a failure is reported in all belong to the client, and the extension relays them.
 
 The command line takes its verb from the first argument and only then scans for options,
 so the argument vector is
 
-    <scheme> --script <corePath>/cli.ss <verb> <args...> --store <store> --actor <actor>
+    <scheme> --script <corePath>/theourgia.ss <verb> <args...> --store <store> --actor <actor>
 
 An option placed before the verb is taken *as* the verb, and the core answers
 `(error unknown-verb ...)`.
@@ -83,7 +138,21 @@ opinion the core also holds. Over a socket the whole answer would arrive and the
 would not be needed.
 
 **The exit code is the verdict.** An answer beginning with `ok` that came with a non-zero
-exit is not a confirmed write.
+exit is not a confirmed write. Exit code 75 is the thin client's own: the request was
+refused before the store saw it, and the answer says why.
+
+### One request asks for the machine rendering
+
+A `commit` is sent with `--wire`. The human rendering drops every clause beside `items`,
+and one of those clauses is `(behind ((<writer> . <seq>) ...))` -- which log writers have
+landed records since this save's draft took its baseline. With `--wire` the answer
+arrives wrapped, `(ok (items (ok ...)) (behind ...))`, so the client hands the item on as
+the answer exactly as before and puts the form round it beside it.
+
+`behind` names **other instances of the store**, not other people. Every agent writing
+into one store on one machine appends through the same log writer, so a colleague's
+commit does not appear here; what appears is a copy of the store that was adopted
+elsewhere and had a segment of its log published back. The notice says so.
 
 ## Saving, and what happens when the answer is lost
 
@@ -198,6 +267,12 @@ and its line. The root cause is still that the outline is a rendering with no es
 the fix belongs in the core; until then this client does not read anything from it that a
 title could forge.
 
+**Keywords are read the same way.** `outline --with-keywords` prints them, and this
+extension does not read them from there: a title holding two spaces and a bracket can
+forge that field as easily as it can forge a mark. The block is already being read for
+its title, and its record carries its keywords, so they arrive by the channel a title
+cannot reach.
+
 ## The s-expression reader
 
 `src/vendor/goeteia/sexpr.mjs` is a verbatim copy of goeteia's `rt/sexpr.mjs`, held to
@@ -223,6 +298,23 @@ the export, this copy goes and a dependency takes its place.
 
 Recorded here rather than left to be rediscovered. Each of these is a place where a cell
 exists and proves less than its name suggests, or where no cell exists at all.
+
+* **The sentence a successful save shows.** `behind` is measured end to end -- a store,
+  a copy of it adopted elsewhere, a segment published back, and the next commit through
+  this extension's own save path carrying the notice -- but that is a cell against the
+  core, not a cell inside an editor. The notice reaches a user through
+  `showInformationMessage`, and nothing in an editor-hosted run can read one. What is
+  covered is that the clause arrives, is read, drops the writer the commit itself
+  advanced, and becomes the sentence; what is not covered is that the sentence is put on
+  the screen.
+
+* **A daemon that cannot be started, during a save.** The editor-hosted cell for this
+  obstructs the socket path and reads the words back out of the status this extension
+  hands to a caller. It gets there through the conflict count's own asking, because a
+  save that meets the obstruction never reaches the queue -- the request that fails is
+  the one that asks where the cursor is, before anything is written down. That is the
+  right behaviour and it means the save path's own report of the failure, which goes to
+  a message box, is not what the cell reads.
 
 * **The test host's own storage.** The editor-hosted runner empties the extension's
   `globalStorage` under its profile before every start, and refuses to start if it
@@ -303,6 +395,20 @@ THEOURGIA_CORE=/path/to/theourgia THEOURGIA_LIBDIRS=/path/holding/igropyr npm ru
 # the cells that need an editor
 THEOURGIA_CORE=/path/to/theourgia THEOURGIA_LIBDIRS=/path/holding/igropyr npm run test:integration
 ```
+
+**The cells start daemons, and they are accounted for.** Every fixture that reaches a
+real core gives the core a run root and a home of its own under a temporary directory,
+and stops by pid the daemons that directory gave rise to. Two gates stand behind that
+rather than anybody's memory: one cell asserts that a fixture's daemon is visible before
+it is stopped and gone afterwards, and a hook over the whole suite asserts that no
+process of this run is left and that your own `~/.theourgia/run` did not **grow**. Growth,
+not total: whatever is in that directory when a run starts belongs to whoever put it
+there.
+
+It is growth and pids because it has happened. When these cells were first turned onto
+the shipping transport the fixtures set no run root, and one run left thirteen daemons
+running and thirteen directories in the user's own. Nothing went red. It was cleaned up
+by hand.
 
 **This extension needs a core that has request tracking.** Every save carries `--req <id>
 --cursor <writer>:<seq>`, and a core without those options answers `(usage (set <id> <field>

@@ -100,8 +100,15 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['census.test.ts', 17],
   ['chain.test.ts', 6],
-  ['commands.test.ts', 5],
+  ['commands.test.ts', 8],
   ['cursor.test.ts', 8],
+  /*
+   * ADDED in plugin-r2: the decoder's own cells, and the census over the
+   * two readers that have no head to name. The other half of that
+   * census is the compiler: `clause`, `clauseRest`, `clauseValue` and
+   * `headName` are no longer exported from wire.ts.
+   */
+  ['decoding.test.ts', 12],
   ['dependency-sexpr.test.ts', 15],
   ['documents.test.ts', 8],
   ['durability.test.ts', 33],
@@ -111,14 +118,35 @@ const AT_LEAST: Array<[string, number]> = [
   ['outline.test.ts', 48],
   ['ownership.test.ts', 18],
   ['publication.test.ts', 67],
-  ['recovery.test.ts', 28],
-  ['real-core.test.ts', 14],
+  ['recovery.test.ts', 34],
+  ['real-core.test.ts', 19],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them.
    */
   ['refusals.test.ts', 3],
-  ['saver.test.ts', 41],
+  /*
+   * ADDED in plugin-r2: the gate that keeps comments in ASCII, and the
+   * cell that proves the gate can tell a comment from a string.
+   */
+  /*
+   * ADDED in plugin-r2: the census that stops an inability being
+   * answered as an absence -- the supplier for a shape thirteen review
+   * rounds found in twelve places.
+   */
+  ['absence.test.ts', 4],
+  /*
+   * ADDED in plugin-r2: the gate that watches the user's own
+   * `~/.theourgia/run` across the whole suite, and the two cells that
+   * keep the gate honest.
+   */
+  ['run-root.test.ts', 9],
+  /*
+   * ADDED in plugin-r2: reading a search answer and a verb catalogue,
+   * what a search does, and the envelope --wire puts round a commit.
+   */
+  ['search.test.ts', 70],
+  ['saver.test.ts', 54],
   ['saving.test.ts', 34],
   ['sending.test.ts', 20],
   ['sequences.test.ts', 15],
@@ -129,9 +157,18 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['settling.test.ts', 23],
   ['sessions.test.ts', 100],
-  ['shapes.test.ts', 63],
+  ['shapes.test.ts', 68],
   ['tombstones.test.ts', 11],
-  ['transport.test.ts', 20],
+  /*
+   * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket
+   * transport went with the class. It asserted that an unimplemented
+   * adapter refused rather than falling back, which was worth asserting
+   * while a setting could select it; when `transport` stopped offering
+   * `socket` the class became unreachable and the cell measured nothing.
+   * A number that goes down is meant to be argued for, which is what
+   * this comment is.
+   */
+  ['transport.test.ts', 26],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]
 ];

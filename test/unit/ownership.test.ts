@@ -510,7 +510,7 @@ describe('O1 nothing takes ownership without the session layer', () => {
  *
  * ⚠️ AND A CENSUS CANNOT PROVE THE FENCE WORKS. It can only say that
  * each write site has a check before it; whether the check is still
- * true when the write lands is the lease problem, which §13 names and
+ * true when the write lands is the lease problem, which section 13 names and
  * does not solve. The cells that transfer ownership under a paused
  * writer are the other half of this and belong with the settling work.
  */

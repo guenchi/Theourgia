@@ -31,6 +31,7 @@ import { parseOutline } from '../../src/outline';
 import {
   FORCE_CLAIM_CONFIRMATION,
   adoptedNotice,
+  behindNotice,
   discardedNotice,
   forceClaimNotice,
   prefixRefusedNotice,
@@ -49,7 +50,7 @@ import {
   ESCAPED_ECHO,
   RULED_EXAMPLE
 } from '../support/refusal-shape';
-import { Datum, asInteger, headName, initWire, parseAnswers, wire } from '../../src/wire';
+import { Datum, answerOf, asInteger, initWire, parseAnswers, wire } from '../../src/wire';
 
 describe('an outline line this client cannot read stops the outline', () => {
   before(async () => {
@@ -201,7 +202,7 @@ describe('every sentence that counts something says it in English at one', () =>
     cursor: 'w:7',
     conflicts: 0,
     pending: 0,
-    blocked: null
+    blocked: null, unreachable: null
   };
 
   it('counts one conflict and one unresolved save without a parenthesis', () => {
@@ -252,7 +253,7 @@ describe('a queue nobody could read is not a queue with nothing in it', () => {
     actor: 'someone',
     cursor: 'w:7',
     conflicts: 0,
-    blocked: null
+    blocked: null, unreachable: null
   };
 
   /*
@@ -290,7 +291,7 @@ describe('a conflict count nobody could fetch is not a count of zero', () => {
     actor: 'someone',
     cursor: 'w:7',
     pending: 0,
-    blocked: null
+    blocked: null, unreachable: null
   };
 
   it('says the question could not be put', () => {
@@ -814,7 +815,7 @@ describe('U8 every error answer the core can produce is readable by this client'
     it(`reads back the refusal of ${what}`, () => {
       const read = parseAnswers(`${answer}\n`);
       assert.strictEqual(read.length, 1, `${answer} did not read back as one datum`);
-      assert.strictEqual(headName(read[0]), 'error', `${answer} did not read back as an error`);
+      assert.notStrictEqual(answerOf(read[0], 'error'), null, `${answer} did not read back as an error`);
     });
   }
 
@@ -1115,5 +1116,95 @@ describe('every bucket a takeover counts is something the user is told', () => {
         `${name} is empty and was recited anyway: ${text}`
       );
     }
+  });
+});
+
+/*
+ * plugin-r2 T2: WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED.
+ * (design 7.5.22 v161/v167)
+ *
+ * A successful commit can carry `(behind ((<writer> . <seq>) ...))`: the
+ * writers whose records reached the store after this save's draft took
+ * its baseline. The core is explicit about what it is and is not --
+ * informational, never a refusal, never an action; a commit that
+ * carries it succeeded. It names OTHER writers only, and a baseline
+ * that is not behind carries no clause at all.
+ *
+ * ⚠️ AND A CLAUSE THE CORE COULD NOT BUILD IS SIMPLY ABSENT. The core
+ * answers a successful commit with no `behind` rather than an error
+ * when it cannot compute one, so a reader that threw on a shape it did
+ * not expect would turn a success into a failure at the one moment the
+ * user is watching.
+ */
+describe('plugin-r2 T2 a commit says who landed after its baseline', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const answerOf = (text: string): Datum => parseAnswers(`${text}\n`)[0];
+
+  /*
+   * ⭐ THE WRITER AND THE COUNT ARE ASSERTED TOGETHER, in the words
+   * they appear in.
+   *
+   * Measured in a thirteenth review round: with `/other/` and `/3/`
+   * checked separately, replacing every `${one.writer}` with a constant
+   * left this passing -- the notice named the wrong writer and the
+   * number was still somewhere in the sentence. A notice about who
+   * landed records that does not name who is a notice about nothing.
+   */
+  it('names one writer and counts its records', () => {
+    const notice = String(
+      behindNotice(answerOf('(ok (events (("w" . 6))) (behind (("other" . 3))))'))
+    );
+    assert.match(notice, /other has 3 records/, notice);
+  });
+
+  /*
+   * ⚠️ ONE RECORD GETS ITS OWN SENTENCE. A template that reads "3
+   * records" at three and "1 records" at one is a template that cannot
+   * be wrong about the number and is wrong about the language, and this
+   * tree has been bitten by exactly that shape.
+   */
+  it('writes a whole sentence at one record, not a template with a 1 in it', () => {
+    const notice = String(behindNotice(answerOf('(ok (events (("w" . 6))) (behind (("other" . 1))))')));
+    /*
+     * ⭐ AND IT STILL NAMES THE WRITER AND THE COUNT. Checking only
+     * that "record" appears and "records" does not let the whole
+     * rendering be replaced by a constant phrase -- measured in a
+     * thirteenth review round with `a record landed`, which satisfies
+     * both.
+     */
+    assert.match(notice, /other has 1 record\b/, notice);
+    assert.doesNotMatch(notice, /\brecords\b/, 'the singular reads as a template with a 1 in it');
+  });
+
+  /*
+   * ⭐ EACH WRITER KEEPS ITS OWN COUNT. Measured in a thirteenth review
+   * round: rendering every writer with the FIRST one's number showed
+   * alice and bob as 2 records each, and a cell that asked only for the
+   * two names passed.
+   */
+  it('names every writer when more than one landed, each with its own count', () => {
+    const notice = String(
+      behindNotice(answerOf('(ok (events (("w" . 6))) (behind (("alice" . 2) ("bob" . 5))))'))
+    );
+    assert.match(notice, /alice has 2 records/, notice);
+    assert.match(notice, /bob has 5 records/, notice);
+  });
+
+  /*
+   * THE TWIN. A commit whose baseline was fresh carries no clause, and
+   * the user is told nothing -- a notice on every save would be noise
+   * with no action behind it.
+   */
+  it('says nothing when the answer carries no such clause', () => {
+    assert.strictEqual(behindNotice(answerOf('(ok (events (("w" . 6))) (replay #f))')), null);
+  });
+
+  it('says nothing about a clause it cannot read, rather than failing the save', () => {
+    assert.strictEqual(behindNotice(answerOf('(ok (events (("w" . 6))) (behind))')), null);
+    assert.strictEqual(behindNotice(answerOf('(ok (events (("w" . 6))) (behind "nonsense"))')), null);
+    assert.strictEqual(behindNotice(answerOf('(ok (events (("w" . 6))) (behind (("other" . "x"))))')), null);
   });
 });

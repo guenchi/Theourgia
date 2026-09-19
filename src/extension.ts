@@ -36,7 +36,7 @@ import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
 import { Client } from './client';
-import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
+import { CoreConfig, DEFAULT_TIMEOUT_MS, TransportKind, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
@@ -44,15 +44,17 @@ import {
   OPEN_BLOCK,
   OTHER_SESSIONS,
   RECONCILE_BLOCK,
+  SEARCH_BLOCKS,
   REFRESH_OUTLINE,
   RETRY_OUTBOX,
   SHOW_STATUS
 } from './commands';
 import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
+import { Hit, runSearch } from './search';
 import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
 import { Tombstones } from './tombstones';
-import { nodeFileOps } from './fsops';
+import { coreDirectoryAt, nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
@@ -83,8 +85,9 @@ function readConfig(): CoreConfig {
     libDirs: settings.get<string[]>('libDirs', []) ?? [],
     store: settings.get<string>('store', ''),
     actor: actor.length > 0 ? actor : defaultActor(),
+    writer: settings.get<string>('writer', ''),
     timeoutMs: settings.get<number>('timeoutMs', DEFAULT_TIMEOUT_MS),
-    transport: settings.get<'cli' | 'socket'>('transport', 'cli')
+    transport: settings.get<TransportKind>('transport', 'client')
   };
 }
 
@@ -126,7 +129,15 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
         : vscode.TreeItemCollapsibleState.None
     );
     item.id = node.id;
-    item.description = node.id;
+    /*
+     * THE ID, AND THE BLOCK'S KEYWORDS WHEN IT HAS ANY. They come off the
+     * block's record rather than out of `outline --with-keywords`,
+     * because the outline is a rendering in which only an id cannot be
+     * forged by a title -- see `src/outline.ts` -- and the block is
+     * already being read for its title anyway.
+     */
+    item.description =
+      node.keywords.length > 0 ? `${node.id}  ${node.keywords}` : node.id;
     item.contextValue = 'theourgia.block';
     const tooltip = nodeTooltip(node.id, node.marks, node.fieldConflict);
     if (tooltip !== null) {
@@ -164,8 +175,19 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     let marksKnown: boolean;
     try {
       if (node === undefined) {
-        nodes = await this.model.roots();
-        marksKnown = true;
+        /*
+         * ⛔ `marksKnown` WAS A LITERAL `true` HERE.
+         *
+         * The root listing asks for the same marks the subtree listing
+         * does, and reported them known whatever came back. Measured in
+         * a sixteenth review round: a conflicts answer this build could
+         * only partly read drew every top-level block as sound, while
+         * the same answer one level down said the marks were not known.
+         * It comes from the listing now, at both levels.
+         */
+        const listing = await this.model.roots();
+        nodes = listing.nodes;
+        marksKnown = listing.marksKnown;
       } else {
         const listing = await this.model.childrenOf(node.id);
         nodes = listing.nodes;
@@ -244,7 +266,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * A session directory per extension host is what makes the in-process
    * chain sufficient: no other process writes these paths, so ordering
    * them here is ordering all of their writers. The id is made once, at
-   * activation, and never reused. (§12.9)
+   * activation, and never reused. (section 12.9)
    */
   /*
    * ONE ENTRY POINT, SHARED WITH THE HARNESS. Everything activation does
@@ -315,6 +337,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let saver: Saver | null = null;
   let conflicts: number | null = null;
   /*
+   * THE LAST REASON THE STORE COULD NOT BE ASKED, in the core's own
+   * words, or null when the last asking worked. See StatusFacts.
+   */
+  let unreachable: string | null = null;
+  /*
    * WHICH SETTINGS A REQUEST WAS MADE UNDER. Every request here is
    * awaited, and a setting can change while one is in flight: a block
    * read from one store would then be written into a file named after
@@ -332,8 +359,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * conflicts -- which is the one reading a user would act on.
      */
     conflicts = null;
+    /*
+     * WHAT WAS WRONG WITH THE OLD STORE IS NOT KNOWN ABOUT THE NEW ONE,
+     * for the same reason the conflict count goes: a sentence about a
+     * store the user has left, standing beside the name of the one they
+     * are in, is a reading somebody would act on.
+     */
+    unreachable = null;
     config = readConfig();
-    const problems = problemsWith(config);
+    /*
+     * ⚠️ THE DIRECTORY IS PROBED HERE, and this call is the reason the
+     * argument stopped being optional: it was made with one argument, so
+     * the refusal about a corePath holding neither sources nor products
+     * was unreachable from the running extension. Found in a third
+     * review round.
+     */
+    const problems = problemsWith(config, coreDirectoryAt(config.corePath));
     if (problems.length > 0) {
       client = null;
       model = null;
@@ -350,7 +391,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     /*
      * THE QUEUE IS THIS SESSION'S. One writer -- this process -- so it
      * needs no lock; a queue outside the sessions, however it were
-     * numbered, would be two windows writing one file again. (§12.9,
+     * numbered, would be two windows writing one file again. (section 12.9,
      * C16)
      */
     outbox = new Outbox(core.outboxPath(config.store), files);
@@ -371,7 +412,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * order, so the order exists in one place.
      */
     /*
-     * X1c ⑨: THE FILE AN ANSWER IS ABOUT, WHEN THIS WINDOW NEVER SENT IT.
+     * X1c (9): THE FILE AN ANSWER IS ABOUT, WHEN THIS WINDOW NEVER SENT IT.
      *
      * A retry after a restart names a request the queue remembers and
      * this process does not, so `pendingSaves` is empty for it. The
@@ -524,7 +565,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * settings had just broken while saves sat unsent on disk.
        */
       pending: outbox === null ? null : outbox.pendingCount,
-      blocked: saver?.blockedBecause ?? null
+      blocked: saver?.blockedBecause ?? null,
+      unreachable
     };
   }
 
@@ -551,15 +593,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const asked = generation;
     let found: number | null;
+    let because: string | null = null;
     try {
       found = await model.conflictCount();
     } catch (e) {
       found = null;
+      /*
+       * ⭐ THE REASON IS KEPT, NOT ONLY THE FAILURE. This catch used to
+       * discard `e` and leave a question mark on the status bar, and the
+       * thing discarded was the core's own sentence -- `serve-path-
+       * occupied (path "...")` names a directory the user can remove.
+       * "Something went wrong" is not something anybody can act on.
+       */
+      because = e instanceof Error ? e.message : String(e);
     }
     if (asked !== generation) {
       return;
     }
     conflicts = found;
+    unreachable = because;
     paint();
   }
 
@@ -634,7 +686,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     /*
      * THE PUBLICATION AND EVERYTHING THAT READS IT ARE ON ONE CHAIN,
      * keyed by the directory these versions share, so a save arriving
-     * for this block waits rather than interleaving. (§12.11.1)
+     * for this block waits rather than interleaving. (section 12.11.1)
      */
     const outcome = await chain.run(directory, async () => {
       const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,document.prefix);
@@ -649,7 +701,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (outcome.file !== null && !files.exists(outcome.file)) return;
       /*
        * The editor holds the path this would have written. Showing what
-       * is there is the answer; writing is not. (§12.13.1)
+       * is there is the answer; writing is not. (section 12.13.1)
        */
       if (outcome.file !== null) {
         const already = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
@@ -675,8 +727,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    *
    * NOTHING HERE REWRITES OR REMOVES THE FILE THE USER IS LOOKING AT.
    * Both actions publish a NEW version and leave the old one alone,
-   * because that file is the only copy of what they typed. (§12.15
-   * 结构一, §12.11.7)
+   * because that file is the only copy of what they typed. (section 12.15
+   * structure one, section 12.11.7)
    *
    * IT TAKES AN OPTIONAL PATH so that it can be reached from somewhere
    * other than the active editor, and answers with the notice it showed
@@ -752,7 +804,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     /*
      * ON THE CHAIN, because it reads the file and may publish beside it,
      * and a save arriving for this block has to wait rather than
-     * interleave with it. (§12.11.1)
+     * interleave with it. (section 12.11.1)
      */
     const outcome = await chain.run(directory, async () => {
       const result=publisher.reconcile(file,document.prefix,document.text);
@@ -895,7 +947,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * with no record, or one whose publication never finished, or one
    * holding a third version, is refused BY NAME -- the one thing that
    * must not happen is a save that quietly does nothing, because that is
-   * indistinguishable from one that worked. (§12.19.4, §12.17.3)
+   * indistinguishable from one that worked. (section 12.19.4, section 12.17.3)
    */
   /*
    * THE EDITOR, REDUCED TO THE THREE THINGS THE RECOVERY FLOW NEEDS.
@@ -979,7 +1031,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (sidecar === null) {
       /*
        * NOT OURS. A file the user saved somewhere else is not a block,
-       * and this handler leaves it entirely alone. (§12.13.4)
+       * and this handler leaves it entirely alone. (section 12.13.4)
        */
       if (!file.startsWith(sessions.directoryFor(sessionId, '', '').replace(/\/+$/, ''))) {
         return;
@@ -1011,7 +1063,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * store from the file's own record, takes the next sequence number,
      * writes it down durably, and freezes the lot into a record. After
      * this callback returns, nothing on the save path reads the
-     * settings, the document or the sidecar again. (§13.1)
+     * settings, the document or the sidecar again. (section 13.1)
      */
     const accepted = await chain.run(path.dirname(file), async () => {
       // A reconciliation ahead of this save may have changed the split or origin.
@@ -1090,7 +1142,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     /*
      * ⚠️ A NUMBER THAT WAS SPENT ON A SEND THAT NEVER LEFT IS GIVEN
-     * BACK. (§13.1, I7)
+     * BACK. (section 13.1, I7)
      *
      * The sequence is taken and written down before anything is queued,
      * so that no send can carry a number nobody recorded. When the
@@ -1116,6 +1168,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * acknowledgement would be a second place for the order to be wrong.
      */
     show(saveNotice(outcome, accepted.decision.normalised));
+    /*
+     * ⚠️ AND WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS SAID
+     * AFTER IT, AS ITS OWN SENTENCE.
+     *
+     * The store tells us, on a commit that SUCCEEDED, which other
+     * writers reached it after this save's draft took its baseline. It
+     * asks nothing of the user -- their save worked -- so it is an
+     * information notice and it comes after the one about the save,
+     * never instead of it. On a save whose baseline was fresh there is
+     * no clause and nothing is shown.
+     */
+    if (outcome.behind !== undefined) {
+      show({ level: 'information', text: outcome.behind });
+    }
     paint();
   }
 
@@ -1138,6 +1204,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand(OTHER_SESSIONS.id, () =>
       chooseAndRecover(sessions, editorChooser, adoptingInto())
     ),
+    /*
+     * WHAT A SEARCH DOES IS IN `src/search.ts`, where a cell can drive
+     * it. This hands it the editor and the model and returns what it
+     * decided, for the same reason `showStatus` returns its facts: a
+     * decision that is only shown is a decision nothing can read.
+     *
+     * ⚠️ THE MODEL IS READ AT THE MOMENT THE COMMAND RUNS. It is
+     * replaced whenever the settings change, and a search is several
+     * awaits long; capturing it here means the hits and the block that
+     * is opened come from one store.
+     */
+    vscode.commands.registerCommand(SEARCH_BLOCKS.id, () => {
+      /*
+       * ⛔ THE HIT BELONGS TO THE STORE IT WAS FOUND IN.
+       *
+       * A search is several awaits long -- a box the user types into, a
+       * list they choose from -- and a settings change replaces the model
+       * and bumps the generation in the middle of it. The open used to
+       * hand the id to `openBlock` with no generation at all, and
+       * `openBlock` takes one precisely so that it can refuse an id from
+       * a store the user has left. Measured in a review round: with the
+       * box held open and the store changed from A to B, an id found in
+       * A was read against B. The generation is taken when the command
+       * starts, which is when the search is about the store it is about.
+       */
+      const asked = generation;
+      return runSearch(model, {
+        ask: (prompt: string) =>
+          Promise.resolve(vscode.window.showInputBox({ prompt, placeHolder: 'stale baseline' })),
+        pick: async (hits: Hit[], placeHolder: string) => {
+          const picked = await vscode.window.showQuickPick(
+            hits.map((hit) => ({
+              label: hit.id,
+              description: `score ${hit.score}`,
+              detail: hit.note,
+              value: hit
+            })),
+            { placeHolder, matchOnDetail: true }
+          );
+          return picked?.value;
+        },
+        say: (text: string, level: 'information' | 'error') => show({ level, text }),
+        open: async (id: string) => {
+          await vscode.commands.executeCommand(OPEN_BLOCK.id, id, asked);
+        }
+      });
+    }),
     /*
      * THE SAVER THAT RAN IS THE SAVER THAT IS REPORTED. `saver` is
      * rebuilt whenever the settings change, and a retry is an await --
@@ -1201,6 +1314,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidSaveTextDocument(onSaved),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('theourgia')) {
+        /*
+         * ⚠️ A SETTINGS CHANGE IS THE ONE EVENT THAT CAN ANSWER A PARKED
+         * ENTRY, so it is the one that releases them.
+         *
+         * Some entries are parked because nothing they can wait for will
+         * change the answer: the store directory does not exist, the
+         * socket path is longer than the operating system allows. The
+         * user's way out of those is to edit a setting -- and editing it
+         * IS this event, so there is no recovery command to teach. If
+         * the change did not help, the drain below parks them again on
+         * the same attempt.
+         *
+         * It is done before `rebuild` because rebuild replaces the queue
+         * object; releasing on the old one and draining with the new one
+         * would be two objects over one file, which this tree has paid
+         * for before.
+         */
+        if (outbox !== null) {
+          try {
+            outbox.unparkAll();
+          } catch (error) {
+            reportFailure(error);
+          }
+        }
         rebuild();
       }
     })

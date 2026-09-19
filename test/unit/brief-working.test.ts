@@ -7,7 +7,7 @@ import {Saver} from '../../src/saver';
 import {nodeFileOps} from '../../src/fsops';
 import {Publisher, digestOfBytes} from '../../src/publication';
 import {recordFor} from '../../src/record';
-import {clauseValue, readEvent} from '../../src/wire';
+import {answerOf, readEvent} from '../../src/wire';
 import {eventFromWrite} from '../../src/cursor';
 
 describe('WS-28/31 W is the real plugin body authority',function(){
@@ -16,7 +16,7 @@ describe('WS-28/31 W is the real plugin body authority',function(){
     const store=await RealStore.make('working-handoff');
     try {
       const inserted=await store.client.request('insert',['--title','A','--text','old']);
-      const ev=readEvent((clauseValue(inserted.answers[0],'events') as unknown[])[0]);assert.ok(ev);
+      const ev=readEvent((answerOf(inserted.answers[0],'ok')?.value('events') as unknown[])[0]);assert.ok(ev);
       const id=`${ev.writer}.${ev.seq}`,prefix='# A\n';
       const old=new Working(store.client,'window-old'),fresh=new Working(store.client,'window-fresh');
       const displayed=await old.read(id,prefix);
@@ -34,7 +34,7 @@ describe('WS-28/31 W is the real plugin body authority',function(){
     const store=await RealStore.make('working-plugin');
     try{
       const inserted=await store.client.request('insert',['--title','A','--text','old']);
-      const events=clauseValue(inserted.answers[0],'events') as unknown[];
+      const events=answerOf(inserted.answers[0],'ok')?.value('events') as unknown[];
       const ev=readEvent(events[0]);assert.ok(ev);
       const id=`${ev.writer}.${ev.seq}`,prefix='# A\n';
       const a=new Working(store.client,'window-test-a'),b=new Working(store.client,'window-test-b');

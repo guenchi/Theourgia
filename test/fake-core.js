@@ -106,9 +106,19 @@ const base = {
   coreArgv,
   pid: process.pid,
   cwd: process.cwd(),
+  /*
+   * ⚠️ EVERY VARIABLE THE CLIENT SETS IS RECORDED, not only the two the
+   * first cells asked about. The identities travel in the environment
+   * now (design 7.6.50: the writer is deliberately NOT an argument), so
+   * a stand-in that logged only the library path could not witness the
+   * binding at all -- and a cell that cannot see a thing reads the same
+   * as a thing that is not there.
+   */
   env: {
     CHEZSCHEMELIBDIRS: process.env.CHEZSCHEMELIBDIRS || null,
-    CHEZSCHEMELIBEXTS: process.env.CHEZSCHEMELIBEXTS || null
+    CHEZSCHEMELIBEXTS: process.env.CHEZSCHEMELIBEXTS || null,
+    THEOURGIA_ACTOR: process.env.THEOURGIA_ACTOR || null,
+    THEOURGIA_WRITER: process.env.THEOURGIA_WRITER || null
   },
   watched: watched(),
   started

@@ -15,7 +15,7 @@
  */
 
 /*
- * WHAT A SAVE IS ABOUT, CAPTURED ONCE. (§13.1)
+ * WHAT A SAVE IS ABOUT, CAPTURED ONCE. (section 13.1)
  *
  * Who (which store), what (which file, which bytes) and which send
  * (which request, which sequence number) are read at ONE instant --

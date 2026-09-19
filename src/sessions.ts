@@ -17,19 +17,19 @@
 /*
  * Session directories: whose files these are, whether that session is
  * still running, and what a user may do about one that is not.
- * (§12.9, §12.11.3-5, §12.19, §12.21.4, §12.23)
+ * (sections 12.9, 12.11.3-5, 12.19, 12.21.4 and 12.23)
  *
  * A SESSION DIRECTORY IS PRIVATE TO ONE EXTENSION HOST. Block files are
  * never shared between processes, which is what makes the in-process
  * chain sufficient and what makes S7 unreachable rather than guarded
  * against. The price is stated and not hidden: two windows editing one
  * block both save, and the store takes the later one -- that is a store
- * question, and X1b answers it. (§12.9)
+ * question, and X1b answers it. (section 12.9)
  *
  * NOTHING HERE DELETES ANYTHING. This extension never unlinks and never
  * renames a file it published. The single operation that moves anything
  * is a user-initiated discard of a whole DEAD session directory, to a
- * uniquely named place under `trash/`. (§12.23)
+ * uniquely named place under `trash/`. (section 12.23)
  */
 
 import { execFileSync } from 'child_process';
@@ -38,7 +38,7 @@ import * as path from 'path';
 import { checkOneComponent } from './paths';
 import { FileOps, withExclusive } from './fsops';
 import {cleanupTemporary, cleanupFailure} from './temporary';
-import { Outbox, OutboxEntry } from './outbox';
+import { Outbox, OutboxEntry, readQueueFile } from './outbox';
 import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
@@ -49,7 +49,7 @@ import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publicat
  *
  * THE COMMAND IS GIVEN A DEADLINE. It is another program; one that hangs
  * would hang the window, and the honest answer to a command that did not
- * return is "cannot tell", not "dead". (§12.11.4, §12.13.5)
+ * return is "cannot tell", not "dead". (section 12.11.4, section 12.13.5)
  */
 export type StartTimeReader = (pid: number) => number | null;
 
@@ -73,7 +73,7 @@ export const systemStartTime: StartTimeReader = (pid) => {
 /*
  * THE COMPARISON CARRIES A SECOND OF SLACK, because the platform
  * commands report whole seconds and the value recorded at activation
- * may have been rounded the other way. (§12.13.5)
+ * may have been rounded the other way. (section 12.13.5)
  */
 function sameStart(recorded: number | null, now: number | null): boolean | null {
   /*
@@ -102,7 +102,7 @@ export interface SessionIdentity {
    * The start time of that pid, as epoch seconds, normalised. It is
    * what tells a reused pid from the original holder, and comparing it
    * carries a one-second tolerance because the platform commands report
-   * whole seconds. (§12.13.5)
+   * whole seconds. (section 12.13.5)
    */
   startedAt: number | null;
   nonce: string;
@@ -112,7 +112,7 @@ export interface SessionIdentity {
 /*
  * Three states and the reason for each. "Cannot tell" is not "dead" and
  * not "alive": it is answered when the platform will not say, and the
- * caller errs towards alive and SAYS SO. (§12.21.4, C8/C19)
+ * caller errs towards alive and SAYS SO. (section 12.21.4, C8/C19)
  */
 /*
  * ⚠️ THE UNDECIDABLE CASES ARE THREE AND THEY ARE NOT THE SAME NEWS.
@@ -126,7 +126,7 @@ export interface SessionIdentity {
  * They were one value. That mattered the moment a way out of the second
  * kind was offered, because offering it for the first would be offering
  * to duplicate a request over a reading this machine could have simply
- * taken again a second later. (§12.9, U-claim)
+ * taken again a second later. (section 12.9, U-claim)
  */
 export type Liveness =
   | { alive: true; because: 'identity-matches' | 'identity-matches-permission-denied' }
@@ -143,7 +143,7 @@ export type Liveness =
 
 /*
  * A session other than this one, as the "other sessions" list shows it.
- * (§12.19.1)
+ * (section 12.19.1)
  */
 /*
  * ⚠️ `identity` IS NULL WHEN THE WINDOW LEFT NO READABLE RECORD, AND THE
@@ -184,13 +184,13 @@ export type ClaimOutcome =
  * Which claim an import belongs to. Importing is tied to the token that
  * was won, not to the session id: a later generation takes the NEXT
  * sequence number, and an import that named only the dead session could
- * not tell the two apart. (§12.11.3, C8)
+ * not tell the two apart. (section 12.11.3, C8)
  */
 /*
  * WHERE IMPORTED ENTRIES GO. It is the adopting session's own queue,
  * reached through whatever holds it -- the `Saver`'s serial chain in the
  * extension, a plain `Outbox` in a cell -- so that an import cannot race
- * a save that is already in flight. (§12.11.3, P1-1)
+ * a save that is already in flight. (section 12.11.3, P1-1)
  */
 export interface ImportTarget {
   has(req: string): boolean;
@@ -207,7 +207,7 @@ export interface ClaimToken {
  * Adopting twice keeps the marker that is there. Re-creating it would
  * be a second write to a create-once token, and C19 exists because an
  * implementation that overwrote it would look identical from outside.
- * (§12.19.3, C19)
+ * (section 12.19.3, C19)
  */
 export type AdoptOutcome =
   | { adopted: true; marker: string }
@@ -216,7 +216,7 @@ export type AdoptOutcome =
 /*
  * `liveAdopters` travels with the refusal AND with the success, because
  * the confirmation the user is shown has to name the windows that still
- * have documents open in that directory. (§12.19.1, §12.23)
+ * have documents open in that directory. (section 12.19.1, section 12.23)
  */
 /*
  * THE TWO SENTENCES ARE FIXED AND THEY TRAVEL WITH THE ANSWER. One says
@@ -225,7 +225,7 @@ export type AdoptOutcome =
  * window, may still be applied and cannot be recalled from here.
  * Neither is decoration: a user deciding to discard is deciding on the
  * strength of the listing, and the listing is only about this disk.
- * (§12.21.3, §12.22.2)
+ * (section 12.21.3, section 12.22.2)
  */
 export const DISCARD_BACKUP_NOTE =
   'The editor may hold unsaved edits in its own backups that this listing does not show; ' +
@@ -464,7 +464,7 @@ export class Sessions {
    * this window cannot tell whose -- it may be being written right now,
    * or a read may have failed. Collapsing the two into `null` made
    * `claim` and `discard` skip the liveness check entirely and act on a
-   * session that might be running. (§12.21.4, C19)
+   * session that might be running. (section 12.21.4, C19)
    */
   private identityOf(sessionId: string): { known: true; identity: SessionIdentity } | { known: false; because: 'absent' | 'unreadable' } {
     const file = this.identityFile(sessionId);
@@ -543,7 +543,7 @@ export class Sessions {
   /*
    * `<globalStorage>/sessions/<session-id>/<store-hash>/<id>/`. The id
    * is a uuid made at activation, so two hosts never share a path.
-   * (§12.9)
+   * (section 12.9)
    */
   public directoryFor(sessionId: string, storeHash: string, blockId: string): string {
     return path.join(this.sessionDirectory(sessionId), storeHash, blockId);
@@ -551,7 +551,7 @@ export class Sessions {
 
   /*
    * Writes `session.json` with pid, that pid's start time and a nonce.
-   * (§12.9, §12.11.4)
+   * (section 12.9, section 12.11.4)
    */
   public begin(sessionId: string, stores: string[]): SessionIdentity {
     return withExclusive(this.sessionDirectory(sessionId), (): SessionIdentity => {
@@ -644,13 +644,13 @@ export class Sessions {
    * is dead with no further question; a pid that is PRESENT may be a
    * reused one, so its start time is compared then. Reversing the two
    * makes a reused pid read as alive for ever, which is the state a
-   * reboot leaves behind. (§12.15 修补, §12.21.4, C19)
+   * reboot leaves behind. (section 12.15 the repair, section 12.21.4, C19)
    *
    * EPERM IS NOT A REASON TO STOP ASKING. It says the pid exists and
    * belongs to someone else -- which a REUSED pid also does. So it
    * goes to the same start-time comparison as the no-throw case, and
    * only its outcome decides. Treating EPERM as alive on its own was
-   * in the first draft of this file and contradicts §12.21.4. (C19)
+   * in the first draft of this file and contradicts section 12.21.4. (C19)
    *
    * IT AWAITS because the start time comes from another program (`ps`,
    * or PowerShell on Windows). A synchronous signature would force
@@ -670,7 +670,8 @@ export class Sessions {
       if (code === 'ESRCH') {
         /*
          * THE PID IS NOT THERE. Nothing else needs asking, and asking
-         * would only add a way to fail. (§12.15 修补, §12.21.4)
+         * would only add a way to fail. (section 12.15 the repair,
+         * section 12.21.4)
          */
         return { alive: false, because: 'pid-absent' };
       }
@@ -720,9 +721,9 @@ export class Sessions {
   /*
    * `sessions/<session-id>/<store-hash>/outbox.json`. Normal windows have
    * separate paths. Recovery can reach an old window's queue, so its
-   * mutations still require the session-scoped kernel lock. (§12.9, C16)
+   * mutations still require the session-scoped kernel lock. (section 12.9, C16)
    *
-   * ⚠️ AND ONE PER STORE, WHICH §12.9's WORDING DOES NOT SAY. A queue
+   * ⚠️ AND ONE PER STORE, WHICH section 12.9's WORDING DOES NOT SAY. A queue
    * carries a cursor, and a cursor belongs to one store: with a single
    * queue per session, switching the store left the saver holding a
    * position the new store had never issued, and every save came back
@@ -759,8 +760,8 @@ export class Sessions {
      * session. Production names are digests and cannot do this; nothing
      * made that a requirement. Found in review.
      *
-     * ⚠️ THE RULE ITSELF LIVES IN `paths.ts`. §13's tombstones compose a
-     * store name AND a request id into a path under the storage root,
+     * ⚠️ THE RULE ITSELF LIVES IN `paths.ts`. Section 13's tombstones
+     * compose a store name AND a request id into a path under the root,
      * and the request id comes off another session's queue file -- not
      * this program's to trust. Two copies of a rule about untrusted
      * input is one copy that gets repaired and one that does not.
@@ -880,9 +881,15 @@ export class Sessions {
     if (relative.length!==3 || relative.some(p=>p==='..'||p==='')) return true;
     for (const file of this.outboxPathsFor(relative[0])) {
       try {
-        const raw=JSON.parse(this.files.readText(file));
-        if (!Array.isArray(raw.entries)) return true;
-        if (raw.entries.some((entry: {id?:string;record?:{file?:string}})=>entry.id===relative[2] || entry.record?.file && path.dirname(entry.record.file)===directory)) return true;
+        /*
+         * ⛔ THROUGH THE QUEUE'S OWN READER, for the reason above. A
+         * malformed entry used simply to fail to match, and failing to
+         * match is what this reader reports as "no relevant send is in
+         * flight" -- which lets a migration proceed over work nobody
+         * could read. Measured in a thirteenth review round.
+         */
+        const raw=readQueueFile(JSON.parse(this.files.readText(file)));
+        if (raw.entries.some((entry)=>entry.id===relative[2] || entry.record?.file && path.dirname(entry.record.file)===directory)) return true;
       } catch {return true;}
     }
     return false;
@@ -891,13 +898,31 @@ export class Sessions {
   public outboxPathsFor(sessionId: string): string[] {
     const out: string[] = [];
     const session = this.sessionDirectory(sessionId);
+    /*
+     * ⛔ A PATH THIS COULD NOT LOOK AT IS NOT A PATH WITH NO QUEUE.
+     *
+     * `exists` is `fs.existsSync`, which answers false for a path whose
+     * ancestry cannot be searched as readily as for one that is not
+     * there -- so an unreadable queue was dropped HERE, before the
+     * reader repaired a round earlier ever saw it. Measured in a
+     * fourteenth review round: with an unsearchable store directory,
+     * this returned no paths at all and the migration guard then
+     * reported that no send was in flight.
+     *
+     * `presenceOf` is the reader that tells the two apart, and it has
+     * been sitting beside `exists` the whole time. A queue whose
+     * presence is unknown is offered, so that the reader downstream
+     * refuses it rather than nobody seeing it.
+     */
     const legacy = path.join(session, 'outbox.json');
-    if (this.files.exists(legacy)) {
+    const legacyThere = this.files.presenceOf(legacy);
+    if (!legacyThere.known || legacyThere.there) {
       out.push(legacy);
     }
     for (const name of this.files.list(session)) {
       const candidate = path.join(session, name, 'outbox.json');
-      if (this.files.isDirectory(path.join(session, name)) && this.files.exists(candidate)) {
+      const there = this.files.presenceOf(candidate);
+      if (this.files.isDirectory(path.join(session, name)) && (!there.known || there.there)) {
         out.push(candidate);
       }
     }
@@ -908,8 +933,21 @@ export class Sessions {
     let total = 0;
     for (const file of this.outboxPathsFor(sessionId)) {
       try {
-        const raw = JSON.parse(this.files.readText(file)) as { entries?: unknown[] };
-        total += Array.isArray(raw.entries) ? raw.entries.length : 0;
+        /*
+         * ⛔ THROUGH THE QUEUE'S OWN READER, not a second opinion
+         * about what a queue is.
+         *
+         * This had its own checks, and they were looser: a file
+         * declaring an unsupported version, or an entry without a
+         * cursor, read as an empty queue here while `Outbox.load`
+         * refused the same bytes. Two readers, opposite verdicts, one
+         * file -- and the verdict this one gave was the reassuring one,
+         * so the window vanished from the recovery listing. Measured in
+         * a thirteenth review round, one round after the first repair
+         * to this line added a check of its own instead of calling the
+         * authority.
+         */
+        total += readQueueFile(JSON.parse(this.files.readText(file))).entries.length;
       } catch (e) {
         /*
          * A QUEUE THIS BUILD CANNOT READ IS NOT AN EMPTY ONE, and the
@@ -925,14 +963,14 @@ export class Sessions {
    * `sessions/<dead-id>.claim.<n>`, published by writing a temporary
    * file and `link`ing it into place: a create-once token whose content
    * is complete the moment it is visible. Only offered for a session
-   * judged dead. (§12.13.5, §12.11.3, C8)
+   * judged dead. (section 12.13.5, section 12.11.3, C8)
    *
    * THE SEQUENCE IS NOT THE CALLER'S TO CHOOSE. This reads the tokens
    * that exist: if the newest claimant is still alive the answer is
    * `already-claimed`; otherwise it creates the next number and returns
    * it. A caller that passed a number would have to read the directory
    * to pick one, and two callers reading before either writes is the
-   * race the token exists to settle. (§12.11.3)
+   * race the token exists to settle. (section 12.11.3)
    */
   /*
    * ⚠️ `forced` IS THE WAY OUT OF ONE UNDECIDABLE AND NOT OF THE OTHERS.
@@ -976,7 +1014,7 @@ export class Sessions {
      * THE SESSION BEING TAKEN OVER MUST BE JUDGED DEAD, and a record
      * that cannot be read is not a judgement. Treating "unreadable" as
      * "no such session" let a claim proceed against a window that might
-     * still be draining its queue -- which double-sends. (§12.9)
+     * still be draining its queue -- which double-sends. (section 12.9)
      */
     const liveness = this.livenessOfSessionNow(deadSessionId);
     if ('alive' in liveness) {
@@ -988,7 +1026,7 @@ export class Sessions {
        * A RECORD THAT WILL NOT READ, OR A START TIME THIS MACHINE COULD
        * NOT OBTAIN, IS NOT A JUDGEMENT. Treating either as "no such
        * session" let a claim proceed against a window that might still
-       * be draining its queue -- which double-sends. (§12.9)
+       * be draining its queue -- which double-sends. (section 12.9)
        */
       return { claimed: false, because: 'undecidable' };
     } else if (this.files.exists(this.sessionDirectory(deadSessionId))) {
@@ -1047,7 +1085,7 @@ export class Sessions {
        * A TOKEN WHOSE HOLDER IS STILL RUNNING IS THE ANSWER. One whose
        * holder has died is not: the next window takes the next number
        * and carries on, so an interrupted takeover is not the end of
-       * the queue. (§12.11.3)
+       * the queue. (section 12.11.3)
        */
       const written = this.files.readText(path.join(this.sessionsRoot(), newest));
       const holder = written.split('\n')[0];
@@ -1089,7 +1127,7 @@ export class Sessions {
        * first is still draining, and this window is not a second one. It
        * keeps the sequence it already has rather than taking another,
        * because a new number would say a new generation took over.
-       * (§12.11.3)
+       * (section 12.11.3)
        */
       if (this.mine !== null && holder === this.mine && stamp !== '' && stamp === this.nonce) {
         return {
@@ -1102,7 +1140,7 @@ export class Sessions {
        * A HOLDER THIS WINDOW CANNOT IDENTIFY COUNTS AS RUNNING. Erring
        * the other way means taking over a queue somebody may still be
        * draining, which double-sends; erring this way costs a takeover
-       * that is not offered, and the listing says so. (§12.9)
+       * that is not offered, and the listing says so. (section 12.9)
        */
       const state = this.livenessOfSessionNow(holder);
       if (!('alive' in state) || state.alive) {
@@ -1134,7 +1172,7 @@ export class Sessions {
   /*
    * Copies the dead session's outbox entries into this one's, skipping
    * any whose `req` is already present, and marks them `imported-by` in
-   * the source. Never started without a user asking. (§12.11.3, C13)
+   * the source. Never started without a user asking. (section 12.11.3, C13)
    */
   /*
    * TAKING OVER A DEAD SESSION'S QUEUE, THROUGH THE QUEUE'S OWN CODE.
@@ -1147,11 +1185,11 @@ export class Sessions {
    * so a save already in flight wrote its own idea of the queue back
    * afterwards and the imported entries vanished. A second
    * implementation of a thing that took a dozen rounds to get right is
-   * not a shortcut. (§12.11.3)
+   * not a shortcut. (section 12.11.3)
    *
    * THE IMPORT IS TIED TO THE TOKEN THAT WAS WON, and the source entries
    * are marked with it, so which generation of takeover carried an entry
-   * is recorded rather than guessed. (§12.11.3, P2-5)
+   * is recorded rather than guessed. (section 12.11.3, P2-5)
    */
   /*
    * ⚠️ ONE STORE'S QUEUE, NOT ALL OF THEM.
@@ -1427,7 +1465,7 @@ export class Sessions {
       /*
        * THE DIRECTORY IS NOT RE-CREATED. The user discarded it; putting
        * a marker beside files that are now in the trash would say
-       * something untrue about where the documents live. (§12.19.3)
+       * something untrue about where the documents live. (section 12.19.3)
        */
       return { adopted: false, because: 'directory-gone' };
     }
@@ -1437,7 +1475,7 @@ export class Sessions {
     }
     /*
      * THE TEMPORARY NAME IS NOT A MARKER NAME. Calling it
-     * `adopted-by.<sid>.tmp-…` put it inside the prefix the listing
+     * `adopted-by.<sid>.tmp-...` put it inside the prefix the listing
      * scans, so the half-written file was reported as a second window
      * with documents open -- a warning about a window that does not
      * exist, in the confirmation a user reads before discarding.
@@ -1458,7 +1496,7 @@ export class Sessions {
    * Moves a whole DEAD session directory to `trash/<sid>-<time>-<uuid>/`
    * -- files and sidecars together, so no record is separated from what
    * it describes, and to a name that never collides, so nothing is ever
-   * overwritten. Refused for a live or undecidable session. (§12.23)
+   * overwritten. Refused for a live or undecidable session. (section 12.23)
    */
   public async discard(sessionId: string): Promise<DiscardOutcome> {
     const notes = [DISCARD_BACKUP_NOTE, DISCARD_REACH_NOTE];
@@ -1495,7 +1533,7 @@ export class Sessions {
      * THE WHOLE DIRECTORY, TO A NAME THAT CANNOT ALREADY EXIST. Files and
      * their records move together so no record is separated from what it
      * describes, and the unique name means the one operation that moves
-     * anything can never be the one that overwrites something. (§12.23)
+     * anything can never be the one that overwrites something. (section 12.23)
      */
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const trash = path.join(this.globalStorage, 'trash', `${sessionId}-${stamp}-${randomUUID()}`);
@@ -1509,11 +1547,11 @@ export class Sessions {
    * Every `<n>.md` whose digest differs from its sidecar's
    * `acknowledged-raw`. Computed from the files alone, with no reference
    * to the outbox, so that a save completed but never sent is still
-   * found after a restart. (§12.17.4, C6)
+   * found after a restart. (section 12.17.4, C6)
    *
    * A `local-only` VERSION IS ALWAYS A DRAFT, whatever its digests say:
    * `reconcile` established that baseline here rather than from the
-   * store, so the store has never seen it. (§12.19.2, §12.13.2)
+   * store, so the store has never seen it. (section 12.19.2, section 12.13.2)
    */
   /*
    * The judge of what a file on disk is. It is made here rather than

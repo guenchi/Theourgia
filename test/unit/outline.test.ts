@@ -145,7 +145,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 },
       { match: ['read', 'b.1'], stdout: `${BLOCK_OF['b.1']}\n`, rc: 0 }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots.map((n) => n.id), ['a.1', 'b.1']);
     assert.deepStrictEqual(
       roots.map((n) => n.title),
@@ -203,7 +203,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         { match: ['conflicts'], stdout: `${item}\n`, rc: 0 },
         { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
       ]);
-      const roots = await model().roots();
+      const roots = (await model().roots()).nodes;
       assert.deepStrictEqual(roots[0].marks, [mark]);
       assert.strictEqual(roots[0].marked, true);
       assert.strictEqual(roots[0].fieldConflict, false, 'a structural mark was reported as a field conflict');
@@ -228,7 +228,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         { match: ['read', 'a.1'], stdout: `${CHILD_OF_A1}\n`, rc: 0 }
       ]);
       if (promotesToRoot) {
-        const roots = await model().roots();
+        const roots = (await model().roots()).nodes;
         assert.deepStrictEqual(roots.map((n) => n.id), ['a.1']);
       } else {
         await assert.rejects(
@@ -302,7 +302,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
           rc: 0
         }
       ]);
-      const roots = await model().roots();
+      const roots = (await model().roots()).nodes;
       assert.deepStrictEqual(roots.map((n) => n.id), ['n.1']);
       assert.deepStrictEqual((roots[0].marks as string[]).slice().sort(), ['nested-document', 'orphan']);
       assert.strictEqual(roots[0].orphan, true);
@@ -364,7 +364,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       { match: ['conflicts'], stdout: '(orphan "a.1")\n(nested-document "a.1")\n', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual((roots[0].marks as string[]).slice().sort(), ['nested-document', 'orphan']);
     assert.strictEqual(roots[0].orphan, true, 'a later mark overwrote the fact that it is an orphan');
     const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict) as string;
@@ -383,7 +383,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         rc: 0
       }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots[0].marks, ['orphan']);
     assert.strictEqual(roots[0].fieldConflict, true);
     const tooltip = nodeTooltip(roots[0].id, roots[0].marks, roots[0].fieldConflict) as string;
@@ -402,7 +402,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         rc: 0
       }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.strictEqual(roots[0].title, 'Design notes  conflict', 'the title was truncated');
     assert.deepStrictEqual(roots[0].marks, [], 'a sound block was drawn as being in a conflict');
     assert.strictEqual(roots[0].marked, false);
@@ -420,9 +420,59 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots[0].marks, [], 'a mark was invented from an item this client cannot read');
     assert.strictEqual(roots[0].marked, false);
+    /*
+     * ⭐ AND THE READING SAYS IT WAS NOT COMPLETE.
+     *
+     * This cell's own expectation is unchanged: an entry naming nobody
+     * still produces no mark. What is added is the other half, which a
+     * review round showed was missing -- `(orphan)` says something is
+     * wrong and does not say about what, and walking past it used to
+     * leave the caller a map that looked authoritative. The tree then
+     * drew every block as sound with `marksKnown` true, which is the
+     * one reading a user acts on, given at the moment the question went
+     * unanswered. Ruled by the main session: keep the mark out, and
+     * carry "I could not read all of it" downstream.
+     */
+    const read = await model().structuralMarks();
+    assert.strictEqual(
+      read.complete,
+      false,
+      'a mark this build recognises was lost and the reading still called itself complete'
+    );
+    /*
+     * ⭐ AND THE ROOT LISTING CARRIES IT, which is the half a
+     * sixteenth review round found missing. `roots` took `.marks` and
+     * dropped the flag beside it, and the tree provider then set
+     * `marksKnown` to a literal `true` for the root listing -- so this
+     * very answer drew every top-level block as sound while the same
+     * answer one level down reported the marks unknown. Two levels of
+     * one tree, opposite news, from one reading.
+     */
+    const listing = await model().roots();
+    assert.strictEqual(
+      listing.marksKnown,
+      false,
+      'the root listing said the marks were known, for a conflicts answer it could only partly read'
+    );
+  });
+
+  /*
+   * THE TWIN: a conflicts answer this build reads in full still says the
+   * marks ARE known, or the notice above would be permanent and mean
+   * nothing.
+   */
+  it('says the marks are known when it could read all of them', async () => {
+    core = new FakeCore([
+      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['conflicts'], stdout: '(orphan "a.1")\n', rc: 0 },
+      { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
+    ]);
+    const listing = await model().roots();
+    assert.strictEqual(listing.marksKnown, true);
+    assert.deepStrictEqual(listing.nodes[0].marks, ['orphan']);
   });
 
   it('keeps a field conflict distinct from a structural one', async () => {
@@ -436,7 +486,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         rc: 0
       }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots[0].marks, []);
     assert.strictEqual(roots[0].fieldConflict, true);
     assert.strictEqual(roots[0].marked, true);
@@ -482,13 +532,32 @@ describe('O2 a node is expanded when it is opened and not before', () => {
     assert.deepStrictEqual(children.map((n) => n.title), ['Mike', 'Alpha', 'Zulu']);
   });
 
+  /*
+   * ⭐ ASKED OF A REAL BLOCK, because `root` is not one.
+   *
+   * This scripted `read root --recursive` with a success, and the pinned
+   * core answers that request `(error unknown-id "root" (nearest ...))`
+   * -- measured. A stand-in saying something the core never says is a
+   * cell about a situation that cannot arise, and it was holding an
+   * exemption open in the product: `childrenOf` had `id === 'root'`
+   * written into it for these cells alone. Found in a thirteenth review
+   * round; the exemption went with it.
+   *
+   * What the cell is really about survives unchanged: a block whose
+   * `position` is the placement `root` is a child of nothing, and must
+   * not be listed under a block whose id happens to be read as `root`.
+   */
   it('reads a top-level block as a child of nothing, not of a block called root', async () => {
     core = new FakeCore([
-      { match: ['read', 'root', '--recursive'], stdout: `${SUBTREE}\n`, rc: 0 },
+      { match: ['read', 'a.1', '--recursive'], stdout: `${SUBTREE}\n`, rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 }
     ]);
-    const children = (await model().childrenOf('root')).nodes;
-    assert.deepStrictEqual(children, []);
+    const children = (await model().childrenOf('a.1')).nodes;
+    assert.deepStrictEqual(
+      children.map((n) => n.id).sort(),
+      ['a.2', 'a.5', 'a.9'],
+      'a top-level block was listed among the children of a.1'
+    );
   });
 });
 
@@ -554,7 +623,7 @@ describe('a row in the listing must be a block that is actually at the top level
       { match: ['conflicts'], stdout: '(orphan "a.2")\n', rc: 0 },
       { match: ['read', 'a.2'], stdout: `${CHILD}\n`, rc: 0 }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots.map((n) => n.id), ['a.2']);
     assert.deepStrictEqual(roots[0].marks, ['orphan']);
   });
@@ -592,7 +661,7 @@ describe('a row in the listing must be a block that is actually at the top level
         rc: 0
       }
     ]);
-    const roots = await model().roots();
+    const roots = (await model().roots()).nodes;
     assert.deepStrictEqual(roots.map((n) => n.id), ['a.2']);
     assert.deepStrictEqual(roots[0].marks, ['unplaced']);
   });

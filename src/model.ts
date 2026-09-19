@@ -43,10 +43,11 @@
  */
 
 import { Client } from './client';
-import { Block, isTopLevel, parentOf, readBlock, titleOf, hasFieldConflict } from './blocks';
+import { Block, isTopLevel, parentOf, readBlock, stringField, titleOf, hasFieldConflict } from './blocks';
 import { parseOutline } from './outline';
 import { TransportError } from './transport';
-import { Datum, headName, isList, isSym } from './wire';
+import { Datum, answerOf, isList, isSym } from './wire';
+import { Hit, hitsOf, knownVerbs, rankHits } from './search';
 
 /*
  * THE MARKS, AS A VALUE AND NOT ONLY AS A TYPE. A union is erased before
@@ -118,6 +119,18 @@ export interface Node {
    * mean hiding a subtree whenever the guess was wrong.
    */
   mayHaveChildren: boolean;
+  /*
+   * THE BLOCK'S OWN KEYWORDS, TAKEN FROM ITS RECORD.
+   *
+   * ⚠️ NOT FROM `outline --with-keywords`. That option exists and
+   * prints them, and reading them out of it would put this back in the
+   * business `outline.ts` was written to get out of: the outline is a
+   * rendering with no escaping in it, and a title containing two spaces
+   * and a bracket can forge any field but the id. The block is already
+   * being read here for its title, so its keywords cost nothing more and
+   * arrive through a channel a title cannot forge.
+   */
+  keywords: string;
 }
 
 function nodeFromBlock(block: Block, marks: StructuralMark[] | null = []): Node {
@@ -129,10 +142,19 @@ function nodeFromBlock(block: Block, marks: StructuralMark[] | null = []): Node 
     marks,
     fieldConflict,
     orphan: marks !== null && marks.includes('orphan'),
-    mayHaveChildren: true
+    mayHaveChildren: true,
+    keywords: stringField(block, 'keywords')
   };
 }
 
+/*
+ * ⚠️ `namesRefusal` IS GONE. It asked whether a form's head was `error`
+ * and its second element a given name -- which is exactly what
+ * `answerOf(datum, 'error', {at: 1, is: 'unknown-id'})` asks, in the one
+ * place that checks heads. A helper beside the decoder is a second
+ * reader of the same shape, and this file has already paid for one of
+ * those.
+ */
 export class StoreModel {
   private readonly client: Client;
 
@@ -152,10 +174,48 @@ export class StoreModel {
    * reason the listing is wrong -- a title carrying a newline -- makes
    * no promise about which rows survived it.
    */
-  public async roots(): Promise<Node[]> {
+  public async roots(): Promise<ChildListing> {
     const answer = await this.client.request('outline', ['--depth', '1']);
+    /*
+     * ⛔ THE EXIT CODE IS READ BEFORE THE TEXT IS.
+     *
+     * A refused outline has empty text, and empty text parses to an
+     * outline with no rows -- a store drawn as having nothing in it at
+     * the moment it could not be reached. Found in a second review
+     * round; it is the same shape as the search reader had, and this
+     * one is older than that reader.
+     */
+    if (!answer.ok) {
+      throw new TransportError(
+        'unreadable',
+        `the store would not give an outline: ${answer.text.trim() || answer.stderr.trim()}`,
+        answer.stderr
+      );
+    }
     const rows = parseOutline(answer.text);
-    const marks = await this.structuralMarks();
+    /*
+     * ⛔ AND WHETHER THE MARKS WERE ALL THERE TRAVELS WITH THE
+     * LISTING.
+     *
+     * This took `.marks` and dropped the completeness flag beside it,
+     * and `extension.ts` then set `marksKnown` to a literal `true` for
+     * the root listing -- so a conflicts answer this build could only
+     * partly read drew every top-level block as sound, while the same
+     * answer one level down reported that the marks were not known.
+     * Measured in a sixteenth review round with a conflicts answer of
+     * `(orphan)`: complete came back false and the block was listed
+     * unmarked, with nothing saying so.
+     *
+     * ⚠️ IT IS NOT A REFUSAL, and the choice is deliberate. A mark
+     * decides membership here, so the listing could be argued to be
+     * undrawable -- but a store that answers one unreadable mark would
+     * then have no tree at all, and `childrenOf` has answered this same
+     * question with `marksKnown` since the round that added it. One
+     * vocabulary for one fact: the tree already knows how to say "the
+     * marks were not answered" and says it at the top level now too.
+     */
+    const read = await this.structuralMarks();
+    const marks = read.marks;
     const out: Node[] = [];
     for (const row of rows) {
       const block = await this.blockOf(row.id);
@@ -204,7 +264,7 @@ export class StoreModel {
       }
       out.push(nodeFromBlock(block, found));
     }
-    return out;
+    return { nodes: out, marksKnown: read.complete };
   }
 
   /*
@@ -218,7 +278,27 @@ export class StoreModel {
    * not a block; those belong to whoever is repairing the store, not to
    * a tree.
    */
-  public async structuralMarks(): Promise<Map<string, StructuralMark[]>> {
+  /*
+   * ⚠️ `complete` IS THE THIRD STATE'S OWN EVIDENCE.
+   *
+   * A mark whose head this build knows and which names nobody --
+   * `(orphan)` -- is not a mark, and it is not nothing either: it says
+   * something is wrong and does not say about what. Walking past it
+   * left the caller with a map that looked authoritative, so the tree
+   * drew every block as sound with `marksKnown` TRUE. That is the one
+   * reading a user acts on, given at the moment the question went
+   * unanswered.
+   *
+   * ⛔ IT DOES NOT REFUSE. A `conflicts` answer carrying a report this
+   * build does not recognise must not stop the extension working -- the
+   * core is allowed to say new things. So the marks that WERE read are
+   * returned, and `complete` says whether any were lost. Ruled by the
+   * main session after a review round produced the evidence above.
+   */
+  public async structuralMarks(): Promise<{
+    marks: Map<string, StructuralMark[]>;
+    complete: boolean;
+  }> {
     const answer = await this.client.request('conflicts', []);
     /*
      * A QUESTION THAT WAS REFUSED IS NOT AN ANSWER OF "NONE". `conflicts`
@@ -235,9 +315,41 @@ export class StoreModel {
       );
     }
     const out = new Map<string, StructuralMark[]>();
+    let complete = true;
     for (const item of answer.answers) {
       const mark = readMark(item);
-      if (mark !== null) {
+      /*
+       * ⛔ AN ENTRY THIS BUILD CANNOT READ IS NOT A BLOCK WITH NO
+       * MARKS.
+       *
+       * Skipping it turned an incomplete reading into known absence:
+       * `(orphan 5)` in a successful answer produced an empty map, and
+       * the tree then draws every block as sound -- with `marksKnown`
+       * TRUE, so nothing downstream says the question went unanswered.
+       * Measured in a twelfth review round. The whole point of the
+       * nullable marks is that "I could not ask" is a third state, and
+       * this threw the evidence for it away.
+       */
+      /*
+       * A HEAD THIS BUILD KNOWS, NAMING NOBODY: the mark is lost and the
+       * reading is no longer complete.
+       */
+      if (mark === null && namesNothing(item)) {
+        complete = false;
+        continue;
+      }
+      if (mark === null && namesNoBlock(item)) {
+        throw new TransportError(
+          'unreadable',
+          'the store answered `conflicts` with a structural mark whose block cannot be read, so ' +
+            'which blocks it holds and cannot show is not known',
+          answer.text
+        );
+      }
+      if (mark === null) {
+        continue;
+      }
+      {
         const already = out.get(mark.id) ?? [];
         if (!already.includes(mark.mark)) {
           already.push(mark.mark);
@@ -245,7 +357,7 @@ export class StoreModel {
         out.set(mark.id, already);
       }
     }
-    return out;
+    return { marks: out, complete };
   }
 
   /*
@@ -302,28 +414,163 @@ export class StoreModel {
      */
     let marks: Map<string, StructuralMark[]> | null;
     try {
-      marks = await this.structuralMarks();
+      const read = await this.structuralMarks();
+      /*
+       * ⚠️ AN INCOMPLETE READING IS REPORTED AS AN UNKNOWN ONE. Half
+       * the marks and a `marksKnown` of true would be the map looking
+       * authoritative again, one layer down.
+       */
+      marks = read.complete ? read.marks : null;
     } catch (e) {
       if (!(e instanceof TransportError)) {
         throw e;
       }
       marks = null;
     }
+    /*
+     * ⛔ AN EMPTY SUCCESSFUL SUBTREE READ IS NOT A BLOCK WITH NO
+     * CHILDREN.
+     *
+     * `read <id> --recursive` includes the block itself -- the core's
+     * `subtree-ids` is `(cons id ...)` (project.ss:159) -- so a success
+     * carrying nothing is an answer this build cannot account for, and
+     * drawing it as a leaf is the reassuring reading. The repair that
+     * made the LOOP refuse an unreadable record left this case outside
+     * it, because an empty list does not enter a loop. Found in an
+     * eleventh review round.
+     */
+    if (answer.answers.length === 0) {
+      throw new TransportError(
+        'unreadable',
+        `the store answered the subtree under ${id} with nothing at all, and a subtree always ` +
+          'holds at least the block it is under',
+        answer.text
+      );
+    }
+    /*
+     * ⛔ AND IT HAS TO BE THE SUBTREE THAT WAS ASKED FOR.
+     *
+     * The core's `read --recursive` includes the block itself
+     * (`project.ss:159`), so an answer that never mentions it is not an
+     * answer about it. Measured in a twelfth review round: a successful
+     * response carrying only an unrelated root block gave
+     * `{nodes: [], marksKnown: true}` -- a leaf, confidently. Checking
+     * only that SOMETHING came back left this open, which is the
+     * emptiness guard reaching one case short again.
+     */
+    /*
+     * ⛔ NO EXEMPTION FOR THE PLACEMENT ROOT. There was one, and it
+     * existed for a stand-in: the only caller that ever asked this with
+     * `root` was a cell whose script answered a request the pinned core
+     * refuses (`(error unknown-id "root" (nearest ...))`, measured). The
+     * cell was corrected to ask about a real block and the exemption
+     * went with it. The product asks this with block ids only -- the top
+     * level comes from `outline --depth 1`.
+     */
+    let sawTheBlock = false;
     const nodes: Node[] = [];
     for (const item of answer.answers) {
       const block = readBlock(item);
-      if (block === null || block.id === id || parentOf(block) !== id) {
+      /*
+       * ⛔ A RECORD THIS BUILD CANNOT READ IS NOT A CHILD THAT IS NOT
+       * THERE.
+       *
+       * This skipped it, so a subtree containing one unreadable record
+       * came back one child short and a subtree of nothing but
+       * unreadable records came back empty -- which is what a leaf looks
+       * like. It is the same collapse `blockOf` was repaired for, in the
+       * other read path, and it survived that repair because the repair
+       * was made where the finding pointed rather than wherever the
+       * shape occurs. Found in a tenth review round.
+       */
+      if (block === null) {
+        throw new TransportError(
+          'unreadable',
+          `the store answered the subtree under ${id} with something that is not a block`,
+          answer.text
+        );
+      }
+      if (block.id === id) {
+        sawTheBlock = true;
+        continue;
+      }
+      if (parentOf(block) !== id) {
         continue;
       }
       nodes.push(nodeFromBlock(block, marks === null ? null : marks.get(block.id) ?? []));
     }
+    if (!sawTheBlock) {
+      throw new TransportError(
+        'unreadable',
+        `the store answered the subtree under ${id} without mentioning ${id}, so it is not an ` +
+          'answer about that block',
+        answer.text
+      );
+    }
     return { nodes, marksKnown: marks !== null };
   }
 
+  /*
+   * NULL MEANS THE STORE SAYS THERE IS NO SUCH BLOCK. It does not mean
+   * the store could not be asked.
+   *
+   * ⛔ THE EXIT CODE ALONE CANNOT DECIDE THIS, which is why the name
+   * is read. A block that is genuinely not there IS a non-zero exit --
+   * `(error unknown-id "a.9" (nearest ...))` -- and so is a daemon that
+   * could not be started. This returned null for both, and the caller
+   * turns null into "the store has no block ...": told that, a person
+   * deletes the reference. "It is not there" is the store's statement
+   * and "I could not look" is the road's, and only the first belongs
+   * here. Found in a review round, ruled by the main session.
+   */
   public async blockOf(id: string): Promise<Block | null> {
     const answer = await this.client.request('read', [id]);
-    if (!answer.ok || answer.answers.length === 0) {
-      return null;
+    if (!answer.ok) {
+      const said = answer.answers.length > 0 ? answer.answers[0] : null;
+      /*
+       * ⛔ AND THE REFUSAL HAS TO BE ABOUT THE BLOCK THAT WAS ASKED
+       * FOR. `blockOf('a.1')` given `(error unknown-id "b.1" ...)`
+       * answered null -- "a.1 is not there" -- on the strength of a
+       * statement about another block. The success side was repaired for
+       * this a round earlier; this side was not, because the repair was
+       * made where the finding pointed. Measured in a thirteenth review
+       * round.
+       */
+      if (
+        said !== null &&
+        answerOf(said, 'error', { at: 1, is: 'unknown-id' }) !== null &&
+        isList(said) &&
+        said.length >= 3 &&
+        said[2] === id
+      ) {
+        return null;
+      }
+      throw new TransportError(
+        'unreadable',
+        `the store would not read ${id}: ${answer.text.trim() || answer.stderr.trim()}`,
+        answer.stderr
+      );
+    }
+    /*
+     * ⛔ AND A SUCCESS THIS BUILD CANNOT READ IS NOT AN ABSENT BLOCK
+     * EITHER.
+     *
+     * Splitting the refusals was only half of it: exit zero with no
+     * output, `(ok)`, and `(ok "not a block")` all came back as null,
+     * and the caller draws null as "the store has no block ...". The
+     * store said yes and then said something unreadable -- which is the
+     * road's problem, not the store's statement that the block is gone.
+     * Found in a seventh review round.
+     */
+    const unreadable = (why: string): never => {
+      throw new TransportError(
+        'unreadable',
+        `the store answered the read of ${id} with ${why}`,
+        answer.text
+      );
+    };
+    if (answer.answers.length === 0) {
+      return unreadable('nothing at all');
     }
     const datum = answer.answers[0];
     /*
@@ -331,10 +578,30 @@ export class StoreModel {
      * answer rather than being it. Reading the answer itself as a block
      * would find no `id` entry and report the block as missing.
      */
-    if (Array.isArray(datum) && datum.length >= 2) {
-      return readBlock(datum[1]);
+    /*
+     * ⛔ AND THE FORM THAT HOLDS IT HAS TO HAVE SAID `ok`. Measured in
+     * an eleventh review round: `(garbage ((id . "a.1") ...))` was read
+     * as block a.1, because only the length was checked. The same shape
+     * as the search and catalogue readers, in a third place.
+     */
+    if (!Array.isArray(datum) || datum.length < 2 || answerOf(datum, 'ok') === null) {
+      return unreadable('a form that holds no block');
     }
-    return null;
+    const block = readBlock(datum[1]);
+    if (block === null) {
+      return unreadable('something that is not a block');
+    }
+    /*
+     * ⛔ AND IT HAS TO BE THE BLOCK THAT WAS ASKED FOR. Measured in a
+     * twelfth review round: `blockOf('a.1')` handed a record for `b.1`
+     * returned b.1, and the caller then opens another block's body into
+     * a buffer named for the one the user clicked. The head check made
+     * the record READABLE and said nothing about whose it is.
+     */
+    if (block.id !== id) {
+      return unreadable(`a record for ${block.id}`);
+    }
+    return block;
   }
 
   /*
@@ -343,6 +610,71 @@ export class StoreModel {
    * one reading a user would act on, and it would be wrong exactly when
    * something was wrong.
    */
+  /*
+   * WHAT THE STORE FOUND, BEST FIRST.
+   *
+   * ⚠️ THE WORDS GO AS ONE ARGUMENT. `search <query>` takes one, and
+   * all its words must match; two words passed as two arguments get
+   * `(usage (search <query>))` -- a complaint about the command line
+   * that a caller could easily draw as "nothing matched". The joining
+   * is here so that no caller can arrive at a different rule.
+   */
+  public async search(query: string): Promise<Hit[]> {
+    const answer = await this.client.request('search', [query]);
+    /*
+     * ⛔ THE EXIT CODE IS READ BEFORE THE BYTES ARE.
+     *
+     * Found by an outside review and reproduced: on the human route no
+     * hits IS no output, so a refusal whose stdout was empty parsed to
+     * the same empty list as a search that matched nothing -- and the
+     * user was told "nothing in the store matches", about a search that
+     * never happened. An answer beginning with `ok` that came with a
+     * non-zero exit is not a result, and neither is an empty one.
+     */
+    if (!answer.ok) {
+      throw new TransportError(
+        'unreadable',
+        `the store would not run the search: ${answer.text.trim() || answer.stderr.trim()}`,
+        answer.stderr
+      );
+    }
+    const hits = hitsOf(answer.answers);
+    if (hits === null) {
+      throw new TransportError(
+        'unreadable',
+        `the store did not answer the search: ${answer.text.trim()}`,
+        answer.text
+      );
+    }
+    return rankHits(hits);
+  }
+
+  /*
+   * WHICH VERBS THIS CORE HAS.
+   *
+   * NULL IS "I COULD NOT ASK", which is not the same as a core with no
+   * verbs, and the difference decides whether an entry is hidden because
+   * the core lacks it or hidden because the question failed. A caller
+   * that cannot tell them apart would take a refused `describe` for a
+   * core that can do nothing.
+   */
+  public async verbs(): Promise<Set<string> | null> {
+    try {
+      const answer = await this.client.request('describe', []);
+      /*
+       * ⛔ AND A REFUSED CATALOGUE IS NOT AN EMPTY ONE. Answering
+       * with an empty set would hide every verb the core has, which is
+       * the opposite of what a caller asking "can it do this?" needs.
+       */
+      if (!answer.ok) {
+        return null;
+      }
+      return knownVerbs(answer.answers[0]);
+    } catch (e) {
+      return null;
+    }
+  }
+
   public async conflictCount(): Promise<number> {
     const answer = await this.client.request('conflicts', []);
     if (!answer.ok) {
@@ -363,12 +695,73 @@ export class StoreModel {
  * later core adds -- is left alone rather than guessed at, because a
  * mark this client invented would be worse than one it did not draw.
  */
+/*
+ * AN ENTRY WHOSE HEAD IS A STRUCTURAL MARK AND WHOSE BLOCK CANNOT BE
+ * READ.
+ *
+ * ⚠️ THE LINE IS DRAWN AT THE HEAD, and it has to be. `conflicts`
+ * carries other kinds of report -- `(pending ...)`, and whatever the
+ * core adds next -- and a client that refused every item it did not
+ * recognise would stop working the day the core said something new.
+ * Those are skipped, as they always were; what is refused is an entry
+ * this build DOES recognise and cannot read, such as `(orphan 5)`, which
+ * used to be skipped and so turned an incomplete reading into known
+ * absence.
+ *
+ * ⚠️ `(orphan)` -- a known head naming nobody -- is still skipped,
+ * because a cell has pinned that since before this repair. It is a
+ * narrower line than the finding suggested; named in the delivery note
+ * for a ruling rather than changed here.
+ */
+const STRUCTURAL_HEADS = ['orphan', 'nested-document', 'conflict'];
+
+/*
+ * ⚠️ `(orphan)` -- A HEAD THIS BUILD KNOWS, NAMING NOBODY -- IS STILL
+ * SKIPPED, AND THAT IS A RULING RATHER THAN AN OVERSIGHT.
+ *
+ * A fifteenth review round argued it should refuse: the entry says
+ * something is wrong and does not say about what, and skipping it
+ * leaves `marksKnown` TRUE, so the store is drawn as sound on the
+ * strength of it. That argument is recorded in the delivery note and
+ * put back to the main session with the new evidence, because the
+ * behaviour is pinned by a cell that predates this batch and the main
+ * session has already ruled once that it stays.
+ *
+ * ⛔ WHAT IS REFUSED IS AN ENTRY WITH A SUBJECT THAT CANNOT BE READ --
+ * `(orphan 5)`. That one used to be skipped too, and skipping it turned
+ * an incomplete reading into known absence.
+ */
+/*
+ * A HEAD THIS BUILD RECOGNISES, CARRYING NO SUBJECT AT ALL.
+ *
+ * Told apart from `namesNoBlock` -- an unreadable subject -- because the
+ * two get different answers: an unreadable subject is a `conflicts`
+ * answer this build cannot account for and refuses; a missing one is a
+ * mark that is simply lost, and losing it is reported through
+ * `complete`.
+ */
+function namesNothing(item: Datum): boolean {
+  return (
+    isList(item) &&
+    item.length < 2 &&
+    STRUCTURAL_HEADS.some((head) => answerOf(item, head) !== null)
+  );
+}
+
+function namesNoBlock(item: Datum): boolean {
+  if (!isList(item) || item.length < 2) {
+    return false;
+  }
+  return STRUCTURAL_HEADS.some((head) => answerOf(item, head) !== null) &&
+    typeof item[1] !== 'string';
+}
+
 function readMark(item: Datum): { id: string; mark: StructuralMark } | null {
   if (!isList(item) || item.length < 2 || typeof item[1] !== 'string') {
     return null;
   }
   const id = item[1];
-  const head = headName(item);
+  const head = STRUCTURAL_HEADS.find((h) => answerOf(item, h) !== null) ?? null;
   if (head === 'orphan') {
     return { id, mark: 'orphan' };
   }

@@ -22,7 +22,7 @@
  * document is clean, `getText()` is the text of the last completed save,
  * and that single value is what goes out. The disk bytes are read only
  * to prove they are that text, encoded as UTF-8 with no byte-order mark.
- * (§12.19.4, §12.17.3)
+ * (section 12.19.4, section 12.17.3)
  *
  * C17 NAMES THE IMPLEMENTATION THESE MUST KILL: one that verifies and
  * then reads the text a second time. Between the two reads the user can
@@ -536,7 +536,7 @@ describe('a prefix with CRLF above a body without', () => {
 });
 
 /*
- * X1c ⑨: THE HEADING DID NOT CHANGE; ITS LINE ENDINGS DID.
+ * X1c (9): THE HEADING DID NOT CHANGE; ITS LINE ENDINGS DID.
  *
  * A save is split against the prefix recorded when the version was
  * published. That comparison was byte-exact on line endings except in

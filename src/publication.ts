@@ -17,7 +17,8 @@ import {withExclusive} from './fsops';
 
 /*
  * Putting a reading of a block into a file, and deciding what a file
- * found on disk is.  (§12.15 结构一, §12.11.1, §12.13.2, §12.17)
+ * found on disk is.  (section 12.15 structure one, and sections 12.11.1,
+ * 12.13.2 and 12.17)
  *
  * V20 PUBLICATION REPLACES current.md. A unique durable temporary is
  * installed with one rename after the final ownership, dirty-buffer
@@ -49,7 +50,7 @@ export function digestOfBytes(bytes: Buffer | string): string {
  * `FileOps` cannot answer this question. It is a
  * parameter for the reason the file operations are: this does not
  * need to know whose editor it is, and saying so is what lets a cell
- * drive it. (§12.13.1)
+ * drive it. (section 12.13.1)
  */
 export interface OpenDocuments {
   isOpen(file: string): boolean;
@@ -57,8 +58,8 @@ export interface OpenDocuments {
 }
 
 /*
- * The record beside current.md (or a retained legacy numbered file). The field names are
- * the design's. (§12.9, §12.13.2, §12.17.3)
+ * The record beside current.md (or a retained legacy numbered file). The
+ * field names are the design's. (sections 12.9, 12.13.2 and 12.17.3)
  */
 export interface ProjectionSource {
   id: string;
@@ -74,7 +75,7 @@ export interface Sidecar {
    * THE RECORD SAYS WHICH SHAPE IT IS. A queue written without a version
    * field was the one shape the outbox could not tell from a corrupt
    * one, and a record on disk outlives the build that wrote it.
-   * (outbox 的同一课)
+   * (the same lesson as the outbox)
    */
   projection?: ProjectionSource;
   prior?: Sidecar | null;
@@ -82,55 +83,55 @@ export interface Sidecar {
   storeId: string;
   blockId: string;
   /*
-   * Which of the three publication steps was last completed. (§12.7.3)
+   * Which of the three publication steps was last completed. (section 12.7.3)
    */
   phase: 'publishing' | 'published';
   /*
    * front + heading-src as they were written, the bytes a save is split
-   * against. (§12.1)
+   * against. (section 12.1)
    */
   prefix: string;
   /*
    * The digest of the whole text this publication intended to write --
    * an identity for the publication, never a licence to discard
-   * content. (§12.13.2)
+   * content. (section 12.13.2)
    */
   written: string;
   /*
    * The digest of the previous version's text, so that a file found
    * mid-publication can be told from a third version the editor wrote.
-   * (§12.9)
+   * (section 12.9)
    */
   previous: string | null;
   /*
    * The digest of the disk bytes that were verified and sent, once the
    * store has answered. Draft detection compares against THIS.
-   * (§12.17.3, §12.13.2)
+   * (section 12.17.3, section 12.13.2)
    */
   acknowledgedRaw: string | null;
   /*
-   * The digest of the normalised text actually sent. (§12.7.5)
+   * The digest of the normalised text actually sent. (section 12.7.5)
    */
   sent: string | null;
   /*
-   * The store position the last answer established. (§12.9)
+   * The store position the last answer established. (section 12.9)
    */
   cursor: string | null;
   /*
    * Set when `reconcile` established this baseline locally rather than
-   * from the store; such a version is treated as a draft. (§12.13.2)
+   * from the store; such a version is treated as a draft. (section 12.13.2)
    */
   localOnly: boolean;
   /*
    * Set when the file was found to be a third version; cleared only by
-   * `reconcile`. (§12.9, §12.11.7, C15)
+   * `reconcile`. (section 12.9, section 12.11.7, C15)
    */
   unresolved: boolean;
 
   /*
-   * ⚠️ A SEND IS OUT THAT CANNOT WRITE A RECORD. (§13.1, D6)
+   * ⚠️ A SEND IS OUT THAT CANNOT WRITE A RECORD. (section 13.1, D6)
    *
-   * A queue entry made before §13 carries a request and bytes and
+   * A queue entry made before section 13 carries a request and bytes and
    * nothing else: no file, no digests, no sequence number. Its answer
    * may only touch the queue and the notice -- writing a baseline from
    * it would mean inventing the provenance the entry never had. But the
@@ -148,11 +149,11 @@ export interface Sidecar {
    * Whether the block's own body, as the store gave it, contains CRLF.
    * The save path needs this to decide whether a CRLF file is the
    * editor's doing or the block's; the prefix cannot answer it.
-   * (§12.17.3, P2-7)
+   * (section 12.17.3, P2-7)
    */
   bodyHasCrlf: boolean;
   /*
-   * ⚠️ EVERYTHING BELOW IS §13's RECORD OF WHICH SEND THE STORE
+   * ⚠️ EVERYTHING BELOW IS section 13's RECORD OF WHICH SEND THE STORE
    * CONFIRMED, AND IT IS DELIBERATELY SEPARATE FROM WHAT THE FILE NOW
    * HOLDS.
    *
@@ -221,7 +222,7 @@ export type Confirmed =
       cursor: string | null;
     }
   /*
-   * ⚠️ WHAT A RECORD WRITTEN BEFORE §13 STILL TELLS US.
+   * ⚠️ WHAT A RECORD WRITTEN BEFORE section 13 STILL TELLS US.
    *
    * My first version read an older sidecar as having NO baseline, on the
    * grounds that deriving one would invent a request id and a prefix
@@ -254,7 +255,7 @@ export type Confirmed =
    * same shape before -- an absent thing drawn as the reassuring value
    * (`?? 0`, `catch { return 0 }`). Naming the fourth kind costs one
    * line and makes the type refuse to compare a `sentDigest` nobody
-   * wrote. (§13.6 (11))
+   * wrote. (section 13.6 (11))
    */
   | { by: 'publication'; rawDigest: string; prefixDigest: string; cursor: string | null };
 
@@ -272,7 +273,7 @@ export interface WrittenBy {
  * What a file on disk is, judged against its sidecar. Every answer
  * carries why, because the caller's next move differs for each and
  * because a boolean here was how three of the earlier rounds went
- * wrong. (§12.9, §12.17.4)
+ * wrong. (section 12.9, section 12.17.4)
  */
 export type Standing =
   | { kind: 'published'; draft: boolean }
@@ -284,7 +285,7 @@ export type Standing =
  * Whether the answer was recorded, and if not, why -- because the
  * caller may only remove the outbox entry once it WAS. Returning
  * nothing would leave "record then dequeue" as an ordering the code
- * merely happens to be written in. (§12.7.4, C7, C20)
+ * merely happens to be written in. (section 12.7.4, C7, C20)
  */
 export type Acknowledgement =
   | { recorded: true }
@@ -330,7 +331,7 @@ export type PublishOutcome =
  *
  * `<n>.md.meta` is a record that outlives the build that wrote it and may
  * be read by something that is not this extension, so its keys are the
- * ones §12 uses -- `acknowledged-raw`, `local-only` -- rather than
+ * ones section 12 uses -- `acknowledged-raw`, `local-only` -- rather than
  * whatever casing TypeScript is comfortable with. Inside the program
  * the fields are camelCase like everything else, and these two
  * functions are the whole of the difference.
@@ -338,7 +339,7 @@ export type PublishOutcome =
  * IT IS A MAPPING, NOT A CAST. Writing `JSON.stringify(sidecar)` would
  * put the language's spelling on disk and nothing would notice until
  * another reader tried; naming both sides here makes the file format a
- * thing that was decided. (§12.9, and the outbox's `format` lesson)
+ * thing that was decided. (section 12.9, and the outbox's `format` lesson)
  */
 export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
   return {
@@ -364,7 +365,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
      * and a field that is only sometimes present is a second shape on
      * disk. `confirmed` is null until a settlement writes one; the
      * counters start where `confirmationFrom` says an older record
-     * starts, so a file written now and a file written before §13 are
+     * starts, so a file written now and a file written before section 13 are
      * read the same way.
      */
     /*
@@ -443,7 +444,7 @@ export const UNNUMBERED: Pick<
  * Refuses a record it cannot read rather than repairing it, for the
  * reason the outbox refuses one: a record this build does not
  * understand may be the only trace of work, and a silent repair writes
- * over it. (§12.9)
+ * over it. (section 12.9)
  */
 export type SidecarRead =
   | { read: true; sidecar: Sidecar }
@@ -463,7 +464,7 @@ export function sidecarFromDisk(text: string): SidecarRead {
   /*
    * A LATER FORMAT IS NOT A CORRUPT ONE, and the two need different
    * answers: a build that read a later record as this one would act on
-   * fields it does not understand. (§12.9)
+   * fields it does not understand. (section 12.9)
    */
   if (record.format !== 1) {
     return { read: false, because: 'later-format', detail: `format ${String(record.format)}` };
@@ -500,6 +501,16 @@ export function sidecarFromDisk(text: string): SidecarRead {
       prior = parsed.sidecar;
     }
   }
+  const confirmed = confirmationFrom(record);
+  if (confirmed === null) {
+    return {
+      read: false,
+      because: 'unreadable',
+      detail:
+        'the sidecar holds an outstanding send this build cannot read, so whether anything is ' +
+        'in flight over this file is not known'
+    };
+  }
   return {
     read: true,
     sidecar: {
@@ -519,13 +530,13 @@ export function sidecarFromDisk(text: string): SidecarRead {
       unresolved: record.unresolved === true,
       bodyHasCrlf: record['body-has-crlf'] === true,
       legacySend: record['legacy-send'] === true,
-      ...confirmationFrom(record)
+      ...confirmed
     }
   };
 }
 
 /*
- * ⚠️ WHAT A RECORD WRITTEN BEFORE §13 MEANS, WRITTEN DOWN RATHER THAN
+ * ⚠️ WHAT A RECORD WRITTEN BEFORE section 13 MEANS, WRITTEN DOWN RATHER THAN
  * LEFT TO ARITHMETIC.
  *
  * An older sidecar has no `confirmed`, no `outstanding`, no `highWater`
@@ -546,9 +557,14 @@ export function sidecarFromDisk(text: string): SidecarRead {
  *   step; deriving a `confirmed` from them here would invent a request
  *   id and a prefix digest that nobody recorded.
  */
+/*
+ * NULL MEANS THE RECORD COULD NOT BE READ, and the caller turns that into
+ * the refusal this file already speaks -- `{read: false, because:
+ * 'unreadable'}` -- rather than into a sidecar with parts missing.
+ */
 function confirmationFrom(
   record: Record<string, unknown>
-): Pick<Sidecar, 'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'> {
+): Pick<Sidecar, 'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'> | null {
   const held = record.confirmed;
   /*
    * ⚠️ `null` HERE DOES NOT MEAN "THIS BUILD SAYS THERE IS NO
@@ -571,15 +587,47 @@ function confirmationFrom(
     typeof held === 'object' && held !== null && !Array.isArray(held)
       ? readConfirmed(held as Record<string, unknown>)
       : legacyBaseline(record);
+  /*
+   * ⛔ AND THE LIST ITSELF IS A RECORD THAT CAN BE THERE AND NOT
+   * READ.
+   *
+   * A thirteenth review round repaired the ENTRIES -- an item that will
+   * not parse refuses the whole sidecar, four lines below -- and left
+   * the container: anything that is not an array read as an empty list,
+   * which `cleanliness` takes for "no send is in flight over this
+   * file". Measured in a sixteenth round with `outstanding: {seq: 1,
+   * req: "R"}`: the sidecar parsed, the file was called clean, and the
+   * send it names was invisible. The repair and the hole were four
+   * lines apart, because the repair was made where the finding pointed.
+   *
+   * A missing key is still an empty list: an older record that never
+   * had one is not an unreadable record.
+   */
+  if (record.outstanding !== undefined && !Array.isArray(record.outstanding)) {
+    return null;
+  }
   const out = Array.isArray(record.outstanding) ? record.outstanding : [];
   const outstanding: Outstanding[] = [];
   for (const item of out) {
-    if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
-      const entry = item as Record<string, unknown>;
-      if (typeof entry.seq === 'number' && typeof entry.req === 'string') {
-        outstanding.push({ seq: entry.seq, req: entry.req });
-      }
+    /*
+     * ⛔ A RECORD THAT IS THERE AND CANNOT BE READ IS NOT A RECORD
+     * THAT IS NOT THERE.
+     *
+     * Dropping it made an unreadable sidecar parse with
+     * `outstanding: []`, and an empty outstanding list is what
+     * `cleanliness` reads as "no send is in flight over this file" --
+     * so a file with unsent work in it was reported clean. Measured in
+     * a thirteenth review round with `outstanding: [{seq: "bad", req:
+     * "R1"}]`.
+     */
+    const entry =
+      typeof item === 'object' && item !== null && !Array.isArray(item)
+        ? (item as Record<string, unknown>)
+        : null;
+    if (entry === null || typeof entry.seq !== 'number' || typeof entry.req !== 'string') {
+      return null;
     }
+    outstanding.push({ seq: entry.seq, req: entry.req });
   }
   const wrote = record['written-by'];
   const writtenBy =
@@ -645,7 +693,7 @@ function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
   }
   /*
    * ⚠️ AND A VERSION THE OLDER BUILD PUBLISHED AND NOBODY SAVED FROM
-   * STILL HAS A BASELINE: `written`. (§13.6, ruled after the trace
+   * STILL HAS A BASELINE: `written`. (section 13.6, ruled after the trace
    * below.)
    *
    * My first reading made these drafts, on the grounds that nothing had
@@ -675,7 +723,7 @@ function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
    * it is the record's word, not an inference about it.
    */
   /*
-   * ⚠️ AND IT ONLY APPLIES TO A RECORD FROM BEFORE §13. Every record
+   * ⚠️ AND IT ONLY APPLIES TO A RECORD FROM BEFORE section 13. Every record
    * this build writes carries `next-seq`; a record without it was
    * written by the older one. `confirmed: null` cannot be the signal --
    * this build writes exactly that for a version it knows has no
@@ -718,7 +766,7 @@ function readWrittenBy(wrote: Record<string, unknown>): WrittenBy | null {
 }
 
 /*
- * The only way out of `unresolved`. (§12.11.7, C3, C15)
+ * The only way out of `unresolved`. (section 12.11.7, C3, C15)
  *
  * WHEN THE FILE ALREADY STARTS WITH THE STORE'S PREFIX there is nothing
  * to ask: the baseline can be established from what is there, and the
@@ -736,7 +784,7 @@ export type Reconciliation =
        * bytes and puts the store's prefix in front of them;
        * `take-store-version` publishes a new version from the store and
        * leaves the old file alone -- it is never deleted, because this
-       * extension deletes nothing. (§12.11.7, §12.23)
+       * extension deletes nothing. (section 12.11.7, section 12.23)
        */
       choices: Array<'prepend-prefix' | 'take-store-version'>;
       storeText: string;
@@ -748,7 +796,7 @@ export type Reconciliation =
  * WHETHER AN ANSWER IS NEWS. For the SAME writer the sequence numbers
  * are compared numerically; a DIFFERENT writer is a later generation and
  * is accepted. A late replay carrying an older position must not move
- * the cursor backwards. (§12.7.4)
+ * the cursor backwards. (section 12.7.4)
  */
 export function newerEvent(held: string | null, arriving: string): boolean {
   if (held === null) {
@@ -908,7 +956,7 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
 }
 
 /*
- * WHETHER A CONFIRMATION BECOMES THE BASELINE. (§13.3)
+ * WHETHER A CONFIRMATION BECOMES THE BASELINE. (section 13.3)
  *
  * ⚠️ THE AXIS IS `highWater`, NOT `confirmed.seq`, and that is the whole
  * reason this is a named function rather than a comparison written at
@@ -937,12 +985,12 @@ export class Publisher {
   /*
    * `files` and `documents` are both handed in: this does not need to
    * know whose file system or whose editor it is, and that is what lets
-   * a cell count what it did. (§12.20, C2/C10)
+   * a cell count what it did. (section 12.20, C2/C10)
    */
   private readonly files: FileOps;
   private readonly documents: OpenDocuments;
   /*
-   * WHO THIS PUBLISHER IS, WHEN IT IS SOMEBODY. (§13, r3-3)
+   * WHO THIS PUBLISHER IS, WHEN IT IS SOMEBODY. (section 13, r3-3)
    *
    * Every path that writes a record beside a block passes one rule: the
    * block directory is owned by this session. The rule lives in
@@ -1145,7 +1193,7 @@ export class Publisher {
       /*
        * NEITHER THE TARGET NOR WHAT WAS THERE. Something else wrote
        * while the publication was in flight, and its bytes are the only
-       * copy -- so they are never overwritten. (§12.9)
+       * copy -- so they are never overwritten. (section 12.9)
        */
       return { kind: 'third-version' };
     }
@@ -1155,14 +1203,14 @@ export class Publisher {
     /*
      * A DRAFT IS BYTES THE STORE HAS NOT ACKNOWLEDGED, and a baseline
      * `reconcile` built locally is always one: the store has never seen
-     * it. (§12.13.2, §12.19.2)
+     * it. (section 12.13.2, section 12.19.2)
      */
     /*
      * A FRESHLY PUBLISHED VERSION IS NOT A DRAFT. It holds exactly the
      * bytes the store gave, which is what `written` records -- there is
      * no work pending in it. Judging only against `acknowledged-raw`
      * made every version a draft from the moment it was written, before
-     * the user had touched it. (§12.19.2's own rule names both digests.)
+     * the user had touched it. (section 12.19.2's own rule names both digests.)
      *
      * ⚠️ BUT `written` STOPS BEING THE BASELINE THE MOMENT THE STORE
      * ANSWERS. Accepting EITHER digest for ever hid a real unsent edit:
@@ -1184,7 +1232,7 @@ export class Publisher {
      * AND in the listing that scans a session, in two spellings -- and
      * they disagreed: the listing called every freshly published
      * version a draft because it compared against `acknowledged-raw`
-     * alone. §13 makes it a pure function of four persistent inputs and
+     * alone. section 13 makes it a pure function of four persistent inputs and
      * this is now the only caller-facing way in.
      */
     const verdict = cleanliness(bytes, sidecar, queue ?? { unsettled: [] });
@@ -1207,15 +1255,15 @@ export class Publisher {
    * removed only after this answers `recorded: true`; the caller that
    * dequeues is `saver.ts`'s answer critical section, and nowhere else
    * decides it. A rule spread over two call sites is a rule that gets
-   * half-changed. (§12.7.4, C7, C20)
+   * half-changed. (section 12.7.4, C7, C20)
    *
    * NEWER IS DEFINED, NOT ASSUMED. A late replay must not move the
    * cursor backwards: for the SAME writer the sequence numbers are
    * compared numerically; a DIFFERENT writer is a later generation and
-   * is accepted. Anything else is `older-event`. (§12.7.4)
+   * is accepted. Anything else is `older-event`. (section 12.7.4)
    */
   /*
-   * Offers the way out, without taking it. (§12.11.7, C3)
+   * Offers the way out, without taking it. (section 12.11.7, C3)
    */
   public reconcile(file: string, storePrefix: string, storeText: string): Reconciliation {
     return withExclusive(path.dirname(file), (): Reconciliation => {
@@ -1239,7 +1287,7 @@ export class Publisher {
          * THE BASELINE IS WHAT IS THERE. The body becomes work the store
          * has not got, which is a draft and is saveable -- and the
          * version is marked `local-only`, because this baseline came
-         * from the file rather than from an answer. (§12.11.7)
+         * from the file rather than from an answer. (section 12.11.7)
          */
         /*
          * ⚠️ AND THE BASELINE GOES WITH IT. `local-only` says this
@@ -1299,7 +1347,7 @@ export class Publisher {
    * Takes one of the two offered actions. Clearing `unresolved` happens
    * here and nowhere else: a build that cleared it on startup would
    * re-arm the overwrite the third-version judgement exists to prevent,
-   * and would pass every other cell. (§12.11.7, C15)
+   * and would pass every other cell. (section 12.11.7, C15)
    */
   public reconciliationGuard(file: string, offered: string): string | null {
     if (this.documents.isDirty?.(file)) return 'dirty-document';
@@ -1454,7 +1502,7 @@ export class Publisher {
     /*
      * `unresolved` IS NOT CLEARED HERE. Only `reconcile` clears it; an
      * answer arriving for some other version of this block says nothing
-     * about the third version sitting in the file. (§12.11.7, C15)
+     * about the third version sitting in the file. (section 12.11.7, C15)
      */
     /*
      * AND THE STORE HAS NOW SEEN IT. `local-only` said the baseline was

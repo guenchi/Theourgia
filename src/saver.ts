@@ -48,11 +48,12 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { Client } from './client';
 import { Outbox, OutboxEntry } from './outbox';
+import { behindNotice } from './status';
 import { SendRecord } from './record';
 import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
-import { Datum, clauseValue, formatCursor, headName, isSym } from './wire';
+import { Datum, answerOf, formatCursor, isSym } from './wire';
 
 /*
  * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
@@ -119,9 +120,9 @@ export type Settlement =
    */
   /*
    * ⚠️ AND IT HAS NO POSITION, WHICH IS THE WHOLE DIFFERENCE FROM
-   * `confirmed`. (§13.2)
+   * `confirmed`. (section 13.2)
    *
-   * An earlier build read the `(event …)` clause off this answer and
+   * An earlier build read the `(event ...)` clause off this answer and
    * recorded it as the position the store confirmed. The core's own
    * documentation says an operator's determination does not recover the
    * original execution's event or bindings -- so that clause, when it is
@@ -158,7 +159,7 @@ export interface SaveOutcome {
   keptForAPerson?: true;
   /*
    * ⚠️ THE ENTRY NEVER REACHED THE QUEUE, AND A NUMBER WAS ALREADY
-   * SPENT ON IT. (§13.1, I7)
+   * SPENT ON IT. (section 13.1, I7)
    *
    * The sequence is taken and written down BEFORE anything is queued,
    * so that a send can never carry a number nobody recorded. The cost
@@ -174,6 +175,12 @@ export interface SaveOutcome {
    * NOT be given back, because the entry IS in the queue.
    */
   notQueued?: true;
+  /*
+   * WHO LANDED AFTER THIS SAVE'S BASELINE, as a sentence, when the store
+   * said so. Absent when it did not: a notice on every save would be
+   * noise with nothing behind it.
+   */
+  behind?: string;
 }
 
 export interface SaverOptions {
@@ -181,7 +188,7 @@ export interface SaverOptions {
   now?: () => number;
   /*
    * WHAT THE RECORD BESIDE A FILE SAYS ABOUT SENDS THAT HAVE ALREADY
-   * BEEN CONFIRMED. (§13, R8)
+   * BEEN CONFIRMED. (section 13, R8)
    *
    * ⚠️ IT IS READ BEFORE EVERY TRANSMISSION, not once when the entry was
    * made. A queue can sit for a long time -- a store that was
@@ -199,7 +206,7 @@ export interface SaverOptions {
    */
   baselineOf?: (file: string) => { highWater: number } | null;
   /*
-   * WHETHER THIS REQUEST HAS BEEN RETIRED. (§13, r4-2)
+   * WHETHER THIS REQUEST HAS BEEN RETIRED. (section 13, r4-2)
    *
    * ⚠️ THE CHECK IS MADE IN FRONT OF THE TRANSMISSION, wherever the
    * entry came from. Cancelling writes a tombstone rather than removing
@@ -232,7 +239,7 @@ export interface SaverOptions {
  */
 function saysNobodyKnows(datum: Datum): boolean {
   return (
-    headName(datum) === 'error' &&
+    answerOf(datum, 'error') !== null &&
     Array.isArray(datum) &&
     datum.length >= 2 &&
     (isSym(datum[1], 'unknown') ||
@@ -242,16 +249,107 @@ function saysNobodyKnows(datum: Datum): boolean {
 }
 
 /*
- * THE TWO REFUSALS THAT MEAN "NOT NOW", AND NOTHING ABOUT THIS WRITE.
+ * THE REFUSALS THAT MEAN "NOT NOW", AND NOTHING ABOUT THIS WRITE.
  *
- * `draining` is a daemon that has been asked to stop and is refusing new
- * work while it finishes what it has (daemon.ss:241); `store-busy` is
- * the store's lock still held by somebody else past the waiting budget
- * (daemon.ss:266). ⛔ Neither is a determination about these bytes --
- * the store did not look at them -- so neither may settle the entry.
- * The same request goes again, under the SAME id, on the next drain.
+ * Two of them come from the store and four from the transport, and they
+ * are one family because the thing to do about them is one thing: send
+ * the same request again, under the SAME id, on the next drain.
+ *
+ * From the store: `draining` is a daemon that has been asked to stop and
+ * is refusing new work while it finishes what it has (daemon.ss:241);
+ * `store-busy` is the store's lock still held by somebody else past the
+ * waiting budget (daemon.ss:266).
+ *
+ * From the transport, and this is the part with a proof behind it: the
+ * thin client answers `not-sent` only when it can show that not one byte
+ * left. `client.ss` says so in its own words -- "A REQUEST THAT
+ * DEMONSTRABLY DID NOT LEAVE IS `not-sent`, AND THE PROOF IS A COUNT" --
+ * and `theourgia.ss` relays such an answer unchanged rather than
+ * wrapping it, because wrapping a known outcome in `transport-unknown`
+ * would replace a known thing with an unknown one. So `connect-failed`,
+ * `write-failed`, `serve-start-failed` and `detach-failed` all mean the
+ * store never saw these bytes.
+ *
+ * ⚠️ `write-failed` HAS EXACTLY ONE MEANING AT THIS LAYER, and it is
+ * worth saying why, because in the core it has two. A write that fails
+ * after bytes have gone out is caught by the guard at client.ss:342-347
+ * and becomes `(transport-error <errno>)`, which `theourgia.ss`'s
+ * `settle` turns into `transport-unknown`; only the zero-byte case
+ * (client.ss:378-383) arrives here under its own name. ⛔ There is no
+ * cell for the two-meaning case because this extension cannot produce
+ * that input -- the distinction is made inside the core, and a cell here
+ * would be measuring the core's classifier through a keyhole.
  */
-export const RETRYABLE_REFUSALS = ['draining', 'store-busy'] as const;
+export const RETRYABLE_REFUSALS = [
+  'draining',
+  'store-busy',
+  'connect-failed',
+  'write-failed',
+  'serve-start-failed',
+  'detach-failed',
+  /*
+   * ⚠️ `serve-path-occupied` IS TRANSIENT BY DEFINITION, and it was in
+   * no table at all until a review round asked what happens to it.
+   *
+   * What occupies the socket path is another daemon, starting or
+   * draining: it will either begin answering, in which case the next
+   * attempt connects, or exit, in which case the next attempt starts
+   * one. Five attempts and still occupied is a stuck path, and the cap
+   * then parks it for a person -- which is the right end for it.
+   *
+   * ⛔ IT DOES NOT STAY IN "UNRECOGNISED". That branch is the default
+   * for names this build has never heard of, not a resting place for one
+   * it has. Ruled by the main session.
+   */
+  'serve-path-occupied'
+] as const;
+
+/*
+ * THE REFUSALS A RETRY CANNOT HELP, BECAUSE THE ANSWER IS A SETTING.
+ *
+ * ⚠️ THESE DO NOT GO IN THE FAMILY ABOVE EVEN THOUGH NOTHING WAS SENT.
+ * `store-not-found` is the store directory named by `theourgia.store`;
+ * `socket-path-too-long` is the length of the run-root path the socket
+ * is computed under, against a constant the operating system fixes at
+ * 104 bytes. Neither changes because time passed: five attempts under
+ * the cap would be five identical failures and a slower arrival at the
+ * same place.
+ *
+ * So the entry is parked at once, with a sentence naming what to change
+ * -- and the way back is the change itself: a configuration change makes
+ * this extension try each parked entry once more. There is no recovery
+ * command to teach, because editing the setting IS the recovery.
+ */
+export const SETTINGS_REFUSALS: Record<string, string> = {
+  'store-not-found':
+    'the store directory in theourgia.store does not exist. Point it at a store, or run the ' +
+    'core\'s `init` in it; the save is kept and goes again when the setting changes',
+  'socket-path-too-long':
+    'the socket path computed under THEOURGIA_RUN is longer than the 104 bytes a unix socket ' +
+    'name may have. Set THEOURGIA_RUN to a shorter directory; the save is kept and goes again ' +
+    'when the setting changes'
+};
+
+/*
+ * WHAT AN ANSWER THIS CLIENT DOES NOT RECOGNISE MEANS WHEN THE THIN
+ * CLIENT IS THE ONE REFUSING.
+ *
+ * ⚠️ THE SAME RELAY THAT BRINGS `detach-failed` CAN BRING ANY NAME. When
+ * a daemon fails to start, the client reads the log it just wrote and
+ * answers with the LAST `(error ...)` in it, whatever that is
+ * (client.ss:525). So the set of names that can arrive this way is the
+ * set of names the core can write to a startup log -- which is not a
+ * list this extension can hold, and a list it held would be wrong the
+ * first time the core learned a new one.
+ *
+ * The exit code is what separates them: 75 is the client refusing on its
+ * own account. An unrecognised name at 75 is therefore a transport-side
+ * refusal this build has never heard of, and the honest reading of it is
+ * the one this extension already has for an outcome it cannot classify:
+ * keep the entry, keep the request id, ask again. ⛔ Not `refused` --
+ * that would be recording a determination nobody made.
+ */
+export const CLIENT_REFUSED_EXIT = 75;
 
 /*
  * ⚠️ FIVE IN A ROW, COUNTED IN MEMORY ONLY, AND THE RESET ON RESTART IS
@@ -265,7 +363,7 @@ export const RETRYABLE_REFUSALS = ['draining', 'store-busy'] as const;
 export const RETRY_CAP = 5;
 
 function whichRetryableRefusal(datum: Datum): string | null {
-  if (headName(datum) !== 'error' || !Array.isArray(datum) || datum.length < 2) {
+  if (answerOf(datum, 'error') === null || !Array.isArray(datum) || datum.length < 2) {
     return null;
   }
   for (const kind of RETRYABLE_REFUSALS) {
@@ -276,9 +374,34 @@ function whichRetryableRefusal(datum: Datum): string | null {
   return null;
 }
 
+function whichSettingsRefusal(datum: Datum): { kind: string; message: string } | null {
+  if (answerOf(datum, 'error') === null || !Array.isArray(datum) || datum.length < 2) {
+    return null;
+  }
+  for (const kind of Object.keys(SETTINGS_REFUSALS)) {
+    if (isSym(datum[1], kind)) {
+      return { kind, message: SETTINGS_REFUSALS[kind] };
+    }
+  }
+  return null;
+}
+
+/*
+ * ⚠️ IT ASKS THE CLASSIFIER RATHER THAN THE TABLE. The mark is the
+ * product's own way of saying "nobody has looked at this one", and a
+ * second reading of the table here would be a copy to keep in step.
+ */
+function isUnrecognisedRefusal(datum: Datum): boolean {
+  if (answerOf(datum, 'error') === null) {
+    return false;
+  }
+  const settlement = classifyRefusal(datum);
+  return settlement.verdict === 'refused' && settlement.unrecognised !== undefined;
+}
+
 function saysAnOperatorSettledIt(datum: Datum): boolean {
   return (
-    headName(datum) === 'error' &&
+    answerOf(datum, 'error') !== null &&
     Array.isArray(datum) &&
     datum.length >= 2 &&
     isSym(datum[1], 'resolved-executed')
@@ -374,7 +497,20 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
    */
   'no-store': 'refused',
   'unknown-id': 'refused',
-  internal: 'refused'
+  internal: 'refused',
+  /*
+   * ⚠️ THIS ONE SHOULD BE UNREACHABLE, AND IT IS A VERDICT ROW ANYWAY.
+   *
+   * The core refuses a draft-space verb whose writer is unbound
+   * (working.ss) so that two agents handed only an actor cannot silently
+   * share one draft space. This extension binds a writer on every
+   * request -- `THEOURGIA_WRITER`, defaulted to the actor -- so it
+   * should never see this. A provenance row would explain the answer
+   * away; a verdict row leaves the cell that binds the writer as the
+   * thing that fails when the binding breaks. If it does arrive, the
+   * write did not happen.
+   */
+  'writer-required': 'refused'
 };
 
 /*
@@ -393,6 +529,17 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
  * is derived from it and stops being a judgement of mine.
  */
 export const NOT_A_WRITES_ANSWER: Record<string, string> = {
+  /*
+   * ⚠️ TWO ANSWERS OF THE THIN CLIENT THIS EXTENSION CANNOT PROVOKE. It
+   * never passes `--socket` (the client computes the path from the store
+   * and the run root), and it never runs `serve` itself -- the client
+   * starts the daemon, and if that start fails what reaches here is the
+   * relayed error, not these.
+   */
+  'bad-socket-path': 'cli.ss -- refuses an empty `--socket`; this extension never passes one',
+  'detach-needs-a-log':
+    'cli.ss -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
+    'client does, and it always names the log',
   'working-unavailable': 'working.ss: uncertain W storage result; handled by nobodyKnows before settlement',
   'eval-value': 'eval-worker.ss: local evaluator value serialization',
   'eval-exception': 'eval-worker.ss: local evaluator exception',
@@ -413,9 +560,10 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'unknown-verb': 'rpc-dispatch-parsed, rpc.ss:685 -- dispatch, before any verb runs',
   'no-such-intent': 'resolve-from, store.ss:2033 -- resolving an intent by name, not writing',
   /*
-   * ⚠️ READ FROM THE W DELIVERY (archive/theourgia-code-delivery-w-2026-09-17-r1),
-   * not from the core the md5 above names -- that manifest is an older cut and
-   * this kind does not exist in it.
+   * ⚠️ READ FROM THE W DELIVERY
+   * (archive/theourgia-code-delivery-w-2026-09-17-r1), not from the core
+   * the md5 above names -- that manifest is an older cut and this kind
+   * does not exist in it.
    */
   'unknown-version':
     'working-restore!, working.ss:331 -- `restore` was asked for a version no plan of this ' +
@@ -513,22 +661,42 @@ export function classifyRefusal(datum: Datum): Settlement {
    * the suite went red on the cell that has covered it all along, which
    * is the whole argument for not throwing at answers that exist.
    */
-  if (headName(datum) === 'usage') {
+  if (answerOf(datum, 'usage') !== null) {
     return { verdict: 'refused' };
   }
-  if (headName(datum) !== 'error' || !Array.isArray(datum) || datum.length < 2) {
+  if (answerOf(datum, 'error') === null || !Array.isArray(datum) || datum.length < 2) {
     throw new Error(
       'an answer reached the settler that this client cannot classify: it is not a refusal and ' +
         'was not accepted either'
     );
   }
-  const name = isSym(datum[1]) ? (datum[1] as { name: string }).name : '';
+  /*
+   * ⛔ A REFUSAL WHOSE NAME CANNOT BE READ IS NOT A REFUSAL.
+   *
+   * This turned a non-symbol into the empty string, which no table
+   * holds, so the answer fell through to `unrecognised` -- and the send
+   * path settles an unrecognised refusal as `refused`, which removes the
+   * request from the queue. Measured in a thirteenth review round: exit
+   * 1 with `(error ("unknown"))` took a save out of the queue as
+   * definitively turned down.
+   *
+   * This is the same defect as the one repaired on the `ok` side, where
+   * an unparseable answer confirmed a save. One coin, two faces: the
+   * exit code was being trusted to say what KIND of answer this is.
+   */
+  if (!isSym(datum[1])) {
+    throw new Error(
+      'an answer reached the settler whose refusal name cannot be read, so whether the store ' +
+        'turned this request down is not known'
+    );
+  }
+  const name = (datum[1] as { name: string }).name;
   const known = REFUSALS[name];
   if (known === 'executed-by-operator') {
     /*
      * ⚠️ WHETHER IT NAMED A RECORD NO LONGER DECIDES ANYTHING. An
      * earlier build treated the answer as settleable only when it
-     * carried an `(event …)` clause, and recorded that clause as the
+     * carried an `(event ...)` clause, and recorded that clause as the
      * position -- which the core says is not recoverable from an
      * operator's determination. So the clause is carried as a note for
      * a person to read and nothing is derived from it.
@@ -537,6 +705,29 @@ export function classifyRefusal(datum: Datum): Settlement {
   }
   if (known === 'req-mismatch') {
     return { verdict: 'req-mismatch' };
+  }
+  /*
+   * ⚠️ THE TWO FAMILIES THE SEND PATH INTERCEPTS ARE RECOGNISED HERE
+   * ANYWAY, and the reason is that this function is what the census
+   * asks. `U-ref` feeds every refusal the pinned core can make through
+   * this classifier and fails on anything it marks unrecognised -- so a
+   * name handled perfectly well three branches earlier in `send` would
+   * still read as "nobody has looked at this one".
+   *
+   * ⛔ THAT IS NOT THE SAME AS THEM BEING SETTLED AS REFUSALS. Nothing
+   * in the running extension reaches this line with one of them: the
+   * retryable family is intercepted before, and so is the settings
+   * family. What keeps that true is not this comment but a cell --
+   * `plugin-r2 nothing in either family settles the entry` -- which
+   * drives a real Saver with each name in both tables and asserts the
+   * entry is still in the queue afterwards. Delete an interception and
+   * that cell reddens; it is the guard, this is the census's answer.
+   */
+  if (RETRYABLE_REFUSALS.includes(name as (typeof RETRYABLE_REFUSALS)[number])) {
+    return { verdict: 'refused' };
+  }
+  if (SETTINGS_REFUSALS[name] !== undefined) {
+    return { verdict: 'refused' };
   }
   return known === 'refused' ? { verdict: 'refused' } : { verdict: 'refused', unrecognised: name };
 }
@@ -551,7 +742,7 @@ function describeRefusal(datum: Datum): string {
    * at all -- and the thing it was failing to say is that the core is
    * the wrong version, which takes a while to work out by hand.
    */
-  if (headName(datum) === 'usage') {
+  if (answerOf(datum, 'usage') !== null) {
     return (
       'the core rejected this request with its usage line. Check the version at ' +
       'theourgia.corePath and the arguments sent: a core without request tracking answers ' +
@@ -563,7 +754,13 @@ function describeRefusal(datum: Datum): string {
     return 'the core refused the write';
   }
   const name = isSym(datum[1]) ? (datum[1] as { name: string }).name : 'refused';
-  const current = clauseValue(datum, 'current');
+  /*
+   * ⚠️ THE FORM IS ALREADY KNOWN TO BE AN `error` HERE -- every path
+   * into this function passes through the head test above. Reading its
+   * clause through the decoder says so in the code rather than in a
+   * comment.
+   */
+  const current = answerOf(datum, 'error')?.value('current');
   if (name === 'changed' && current !== undefined) {
     return 'the block changed in the store since it was opened';
   }
@@ -577,7 +774,7 @@ function describeRefusal(datum: Datum): string {
 const queues = new Map<string, Promise<void>>();
 
 /*
- * WHICH ENTRY GOES NEXT. (§13, r3-4)
+ * WHICH ENTRY GOES NEXT. (section 13, r3-4)
  *
  * ⚠️ STILL ONE AT A TIME. What changes is only which one: a `parked`
  * entry is stepped over, and so is any entry for a block that has a
@@ -721,11 +918,11 @@ export class Saver {
   }
 
   /*
-   * THE SEND THE RECORD DESCRIBES. (§13.1)
+   * THE SEND THE RECORD DESCRIBES. (section 13.1)
    *
    * ⚠️ NOT IMPLEMENTED YET, AND ADDED BESIDE `save` RATHER THAN
    * REPLACING IT. This is the skeleton step: the signature lands so
-   * that §13's cells compile and can be read as red before the
+   * that section 13's cells compile and can be read as red before the
    * behaviour exists. Changing `save` in place would take every cell
    * that calls it with three arguments down with it, and a suite that
    * does not compile is not a red reading -- it is no reading at all.
@@ -761,6 +958,23 @@ export class Saver {
        * cells about sending -- and the census in `awaiting.test.ts`
        * keeps the shipping path on `settlerFor`.
        */
+      /*
+       * ⛔ A BLOCKED SUBMIT THAT NEVER QUEUED HAS TO SAY SO.
+       *
+       * `notQueued` is what lets the save handler give the sequence
+       * number back, and without it the sidecar keeps
+       * `outstanding: [{seq, req}]` for a send no entry anywhere can
+       * answer for -- a draft the block can never stop being. It was
+       * written on the one refusal that was in front of the reviewer
+       * when the flag was added (an unwritable queue) and on neither of
+       * the two above it, both of which return before `enqueue` just as
+       * plainly. Measured in a sixteenth review round with
+       * `(check (writers ()))`: blocked, no `notQueued`, empty queue,
+       * and the number still outstanding on disk.
+       *
+       * The rule is positional and it is now stated: every return in
+       * this function BEFORE the `enqueue` below carries `notQueued`.
+       */
       const bound = this.settle.storeHash;
       if (bound !== undefined && bound !== record.storeHash) {
         return {
@@ -770,7 +984,8 @@ export class Saver {
           message:
             `this save belongs to ${record.store}, and this queue is for another store; ` +
             'it has not been queued here',
-          answer: null
+          answer: null,
+          notQueued: true as const
         };
       }
       const cursor = await this.ensureCursor();
@@ -780,7 +995,8 @@ export class Saver {
           req: record.req,
           id: record.blockId,
           message: this.bootstrapProblem ?? 'this store has no cursor to write against',
-          answer: null
+          answer: null,
+          notQueued: true as const
         };
       }
       /*
@@ -919,7 +1135,10 @@ export class Saver {
         first.reason === 'many-writers'
           ? `this store has ${first.writers.length} writers and the core does not yet say which is local; ` +
             'writing from here is not supported in this batch'
-          : 'this store reports no writer, so there is nothing to write against';
+          : first.reason === 'unreadable'
+            ? 'the store answered `check` with a writer listing this build could not read, so ' +
+              'how many writers it has is not known and nothing may be written against a guess'
+            : 'this store reports no writer, so there is nothing to write against';
       return null;
     }
     /*
@@ -1086,7 +1305,7 @@ export class Saver {
      * but two places holding the same fact is how this batch lost a
      * save, so at the moment of use there is one: the record if the
      * entry has one, and the old fields only for an entry written
-     * before §13, which has no record and takes the legacy path.
+     * before section 13, which has no record and takes the legacy path.
      */
     const what =
       entry.record === undefined
@@ -1103,7 +1322,22 @@ export class Saver {
         this.outbox.markPending(entry.req,'The immutable working selection is unreadable');
         return {status:'pending',req:entry.req,id:what.id,message:'The immutable working selection is unreadable; keep the request for recovery',answer:null};
       }
-      args=[what.id,'--writer',selected.writer,'--working-version',selected.version,'--req',entry.req,'--cursor',entry.cursor];
+      /*
+       * ⚠️ `--wire` IS ASKED FOR HERE AND NOWHERE ELSE YET.
+       *
+       * The human rendering drops every clause beside `items`
+       * (render.ss:53-59), and `(behind ...)` -- who else has landed
+       * records since this save's baseline -- is one of them. A program
+       * should be reading the machine form of everything; this batch
+       * changes the one verb whose answer this build is losing
+       * something from, and the rest is recorded as a whole change of
+       * its own rather than smuggled in here.
+       *
+       * The item the answer wraps arrives as the answer, so nothing
+       * below reads differently; the form round it arrives as
+       * `answer.envelope`.
+       */
+      args=[what.id,'--writer',selected.writer,'--working-version',selected.version,'--req',entry.req,'--cursor',entry.cursor,'--wire'];
     } else args=[what.id,what.field,what.payload,'--req',entry.req,'--cursor',entry.cursor];
     let answer;
     try {
@@ -1162,6 +1396,22 @@ export class Saver {
         };
       }
       this.settle(entry.req, { verdict: 'confirmed', cursor: moved });
+      /*
+       * ⚠️ WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS CARRIED OUT
+       * WITH THE SUCCESS, NOT INSTEAD OF IT. The clause is informational:
+       * the commit worked, and the sentence saves whoever reads it a
+       * `drafts` round trip. ⛔ It must not change the status, the
+       * settlement or the queue -- a save that succeeded is a save that
+       * succeeded.
+       */
+      /*
+       * ⚠️ THE CLAUSE IS OUTSIDE THE ITEM, so it is read from the
+       * envelope; `datum` is the item and has never carried it. It is
+       * read WITH the item as well, because the writer this commit
+       * itself advanced is named in its own `behind` and the item's
+       * cursor is what says which writer that is.
+       */
+      const behind = behindNotice(answer.envelope, datum);
       return {
         status: isReplay(answer) ? 'replayed' : 'saved',
         req: entry.req,
@@ -1169,7 +1419,8 @@ export class Saver {
         message: isReplay(answer)
           ? 'the store had already applied this request'
           : 'saved',
-        answer: datum
+        answer: datum,
+        ...(behind === null ? {} : { behind })
       };
     }
 
@@ -1239,6 +1490,59 @@ export class Saver {
      * one.
      */
     this.notNowCounts.delete(entry.req);
+
+    /*
+     * ⚠️ A REFUSAL ONLY A SETTING CAN ANSWER IS PARKED AT ONCE.
+     *
+     * Nothing about the store directory or the length of the run-root
+     * path changes because time passed, so the five attempts the family
+     * above is given would be five identical failures. The entry is kept
+     * -- the user's bytes are still only in their file -- and the queue
+     * steps over it and carries on with other blocks.
+     *
+     * The way back is the setting itself: a configuration change makes
+     * the extension try each parked entry once more, so there is no
+     * recovery command to learn.
+     */
+    const settings = whichSettingsRefusal(datum);
+    if (settings !== null) {
+      this.outbox.markParked(entry.req, settings.message);
+      return {
+        status: 'refused',
+        req: entry.req,
+        id: what.id,
+        message: settings.message,
+        answer: datum,
+        keptForAPerson: true as const
+      };
+    }
+
+    /*
+     * ⚠️ AN UNRECOGNISED NAME AT THE CLIENT'S OWN EXIT CODE IS UNKNOWN,
+     * NOT REFUSED.
+     *
+     * When a daemon fails to start, the thin client answers with the
+     * last `(error ...)` in the log it has just written -- whatever the
+     * core happened to put there. The names that can arrive that way are
+     * the names the core can write to a startup log, which is not a list
+     * this extension can hold and would be wrong the first time the core
+     * learned a new one. Exit 75 is the client refusing on its own
+     * account; at any other code an `(error ...)` is the STORE saying the
+     * write did not happen, which settles.
+     */
+    if (answer.rc === CLIENT_REFUSED_EXIT && isUnrecognisedRefusal(datum)) {
+      const why = `the client refused this request with ${describeRefusal(datum)}`;
+      this.outbox.markPending(entry.req, why);
+      return {
+        status: 'pending',
+        req: entry.req,
+        id: what.id,
+        message:
+          `${why}; this build does not recognise that refusal, so the outcome is kept unknown ` +
+          'and the save goes again under the same request id',
+        answer: datum
+      };
+    }
 
     if (saysNobodyKnows(datum)) {
       this.outbox.markPending(entry.req, 'the store cannot say whether the request ran');

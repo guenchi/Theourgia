@@ -50,4 +50,75 @@ describe('XC-10/11/12/13/15 legacy migration preserves every original',()=>{
     assert.deepStrictEqual(bytes(resumed.archive),before);
     assert.strictEqual(fs.readFileSync(resumed.file,'utf8'),'# A\ndraft');
   });
+
+  /*
+   * A JOURNAL THAT WILL NOT READ, FOR BOTH READERS OF IT.
+   *
+   * Two rounds repaired one shape in two places: `migrateLegacy` used to
+   * `continue` past an unreadable journal and report `no-legacy-files`,
+   * and `migrationIdentity` used to answer null, which its caller draws
+   * as "not a legacy block of this store". Neither repair had a cell --
+   * measured in a fifteenth review round, where reverting
+   * `migrationIdentity` to `continue` left every other cell in the tree
+   * green. The variants above all fail somewhere else: none of them
+   * makes reading the journal fail.
+   *
+   * The fixture is the crash above, which leaves a real prepared
+   * journal, plus a `readText` that refuses that one file the way a
+   * directory this process may not search refuses it.
+   */
+  async function prepared(): Promise<{directory:string;sources:MigrationSources;control:string}> {
+    const {directory,sources}=setup();
+    const faulty={...nodeFileOps,rename(from:string,to:string){nodeFileOps.rename(from,to);if(from===directory)throw new Error('process stopped after move');}};
+    await assert.rejects(()=>migrateLegacy(args(directory,sources,faulty)),/process stopped/);
+    const control=path.join(path.dirname(directory),'.migration');
+    assert.ok(fs.readdirSync(control).some((n)=>n.endsWith('.json')),'the fixture wrote no journal, so neither cell below is about anything');
+    return {directory,sources,control};
+  }
+
+  function blindTo(control:string): FileOps {
+    return {...nodeFileOps,
+      readText(file:string):string{
+        if(path.dirname(file)===control && file.endsWith('.json')){
+          const denied=new Error(`EACCES: permission denied, open '${file}'`) as NodeJS.ErrnoException;
+          denied.code='EACCES';
+          throw denied;
+        }
+        return nodeFileOps.readText(file);
+      }};
+  }
+
+  it('a journal that cannot be read is not a block that is not a migration',async()=>{
+    const {directory,control}=await prepared();
+    assert.throws(
+      ()=>migrationIdentity(blindTo(control),directory),
+      /could not be read/,
+      'an unreadable journal answered null, which the caller draws as "there is nothing to migrate here"'
+    );
+    assert.deepStrictEqual(
+      migrationIdentity(nodeFileOps,directory),
+      {storeId:'A',blockId:'a.1',prefix:'# A\n'},
+      'the twin: the same journal, readable, still resolves the block'
+    );
+  });
+
+  it('a journal that cannot be read is refused by name, not reported as nothing to migrate',async()=>{
+    const {directory,sources,control}=await prepared();
+    const result=await migrateLegacy(args(directory,sources,blindTo(control)));
+    assert.strictEqual(result.migrated,false);
+    assert.ok(!result.migrated && result.because==='unreadable-migration-record',
+      `an unreadable journal was reported as ${!result.migrated?result.because:'migrated'}`);
+    /*
+     * ⛔ "SOMETHING IN THAT DIRECTORY" IS NOT "THE FILE THAT FAILED".
+     *
+     * Measured in a sixteenth review round: returning
+     * `retained: [path.join(control, 'not-the-journal.json')]` passed
+     * this cell, because it asked only which directory the path was in.
+     * What the user is told to look at has to be the file that would
+     * not read.
+     */
+    const journal=path.join(control,fs.readdirSync(control).find((n)=>n.endsWith('.json')) as string);
+    assert.ok(!result.migrated && result.retained.includes(journal),
+      `the journal it could not read (${journal}) was not named among what it kept: ${!result.migrated?result.retained.join(', '):''}`);
+  });
 });

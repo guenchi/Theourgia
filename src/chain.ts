@@ -16,12 +16,12 @@
 
 /*
  * One queue per block file, so that the three critical sections cannot
- * interleave with each other.  (§12.11.1)
+ * interleave with each other.  (section 12.11.1)
  *
  * THE KEY IS THE RESOLVED PATH, NOT THE BLOCK ID. One id under two
  * stores is two files, and two spellings of one path are one file; a
  * queue keyed by either of the other two would serialise the wrong set.
- * (§12.11.1, and C18 exists because a chain keyed by the original
+ * (section 12.11.1, and C18 exists because a chain keyed by the original
  * string passes every other ordering cell.)
  *
  * AWAITING INSIDE A CRITICAL SECTION IS ALLOWED -- reading the store and
@@ -29,7 +29,7 @@
  * critical sections for one path are in flight together. The editor's
  * own writes are NOT on the chain and cannot be put on it, which is why
  * every critical section re-reads the file digest at its start and
- * checks it again before writing. (§12.11.1)
+ * checks it again before writing. (section 12.11.1)
  */
 import * as path from 'path';
 
@@ -44,7 +44,7 @@ export class PathChain {
   private readonly waiting = new Map<string, number>();
   /*
    * Runs `work` when every critical section already queued for this
-   * path has finished. (§12.11.1)
+   * path has finished. (section 12.11.1)
    */
   public run<T>(file: string, work: () => Promise<T>): Promise<T> {
     const key = path.resolve(file);
@@ -79,7 +79,7 @@ export class PathChain {
   /*
    * How many critical sections are queued or running for this path.
    * Present so that a cell can observe the queue rather than infer it
-   * from timing. (§12.12 "链" 三格)
+   * from timing. (section 12.12, the chain, three cells)
    */
   public depth(file: string): number {
     return this.waiting.get(path.resolve(file)) ?? 0;

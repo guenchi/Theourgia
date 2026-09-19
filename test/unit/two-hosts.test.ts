@@ -20,7 +20,8 @@
  *
  * TWO PROCESSES, NOT TWO OBJECTS. Every one of these ran as two objects
  * in one process for four rounds and passed; what they are about is
- * precisely what one process cannot arrange. (§12.9, plan.md 夹具约定)
+ * precisely what one process cannot arrange. (section 12.9, and the
+ * fixture conventions in plan.md)
  *
  * S7 IS ASSERTED UNREACHABLE RATHER THAN GUARDED. The sequence that
  * destroyed work -- one window's baseline describing bytes another

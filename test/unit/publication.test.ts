@@ -23,14 +23,15 @@
  * a NEW path, so there is nothing to overwrite. These cells hold the
  * build to that with the file-operation recorder -- a claim about which
  * lines of source call `writeFileSync` would be a claim about the lines
- * somebody grepped for. (§12.15 结构一, C2)
+ * somebody grepped for. (section 12.15 structure one, C2)
  *
  * AND THE RECORD IS WRITTEN FIRST, IN THREE STEPS. `publishing` with the
  * target digest and the previous one, then the file, then `published`.
  * Given any of those three corpses, what the file is can be worked out:
- * digest == written ⇒ the write finished, finish the record; == previous
- * ⇒ the write never happened; neither ⇒ the editor wrote a third version
- * and nothing may be overwritten. (§12.7.3 as it stands in §12.9, C3)
+ * digest == written => the write finished, finish the record; == previous
+ * => the write never happened; neither => the editor wrote a third version
+ * and nothing may be overwritten. (section 12.7.3 as it stands in
+ * section 12.9, C3)
  */
 
 import * as assert from 'assert';
@@ -68,11 +69,11 @@ function request(directory: string, text: string, prefix = '## Two\n', cursor: s
 }
 
 /*
- * D1 WHAT A RECORD WRITTEN BEFORE §13 MEANS TO THIS BUILD.
+ * D1 WHAT A RECORD WRITTEN BEFORE section 13 MEANS TO THIS BUILD.
  *
  * ⚠️ THE FIRST VERSION OF THIS RULE MADE EVERY OLD BLOCK A DRAFT.
  *
- * §13 keeps "which send the store confirmed" in a `confirmed` record
+ * section 13 keeps "which send the store confirmed" in a `confirmed` record
  * that older sidecars do not have. I read their absence as "no baseline
  * at all", reasoning that deriving one would invent a request id and a
  * prefix digest nobody wrote down. The inventing part was right; the
@@ -144,7 +145,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
    */
   /*
    * ⚠️ AN OLDER VERSION NOBODY SAVED FROM STILL HAS A BASELINE, AND IT
-   * IS THE PUBLICATION'S. (§13.6, ruled after the trace in
+   * IS THE PUBLICATION'S. (section 13.6, ruled after the trace in
    * `legacyBaseline`.)
    *
    * My first reading called these drafts, on the grounds that nothing
@@ -190,7 +191,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
   });
 
   /*
-   * ⚠️ AND THE DERIVATION IS ONLY FOR RECORDS FROM BEFORE §13. Every
+   * ⚠️ AND THE DERIVATION IS ONLY FOR RECORDS FROM BEFORE section 13. Every
    * record this build writes carries `next-seq`; `confirmed: null` in
    * one of those is this build SAYING there is no baseline -- for a
    * version `reconcile` built out of the user's own bytes, for instance
@@ -229,7 +230,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
 });
 
 /*
- * D5 WHERE A BASELINE MAY COME FROM. (§13.6 (11))
+ * D5 WHERE A BASELINE MAY COME FROM. (section 13.6 (11))
  *
  * ⚠️ A PUBLICATION IS NOT A SEND, AND THE TYPE SAYS SO.
  *
@@ -369,7 +370,7 @@ describe('D5 only bytes that came from the store make a baseline', () => {
 });
 
 /*
- * D4 THE SPLIT IS PART OF THE BASELINE. (§13.3)
+ * D4 THE SPLIT IS PART OF THE BASELINE. (section 13.3)
  *
  * `reconcile` can adopt a different heading without touching a byte of
  * the file: the bytes then still equal what the store has, while the
@@ -530,7 +531,7 @@ describe('D5 which send may replace a baseline', () => {
 });
 
 /*
- * D6 A SEND FROM BEFORE §13 IS STILL A SEND.
+ * D6 A SEND FROM BEFORE section 13 IS STILL A SEND.
  *
  * An entry written by the older build carries a request and bytes, and
  * no file, digests or sequence number. Its answer may only move the
@@ -928,7 +929,7 @@ describe('C15 the record on disk uses the design names and says which shape it i
  *
  * `reconcile` IS THE ONLY EXIT. A file judged `third-version` is never
  * overwritten and never saved from, which without an exit would mean
- * the user's bytes are stranded for ever. (§12.11.7)
+ * the user's bytes are stranded for ever. (section 12.11.7)
  */
 describe('C3 reconcile is the only way out of a third version', () => {
   const digestOf = (text: string): string =>
@@ -1003,7 +1004,7 @@ describe('C3 reconcile is the only way out of a third version', () => {
   /*
    * AND THE OTHER CHOICE DOES NOT DELETE ANYTHING. Taking the store's
    * version publishes a NEW version; the file the user had stays where
-   * it is, because this extension deletes nothing. (§12.23)
+   * it is, because this extension deletes nothing. (section 12.23)
    */
   it('replaces the current file atomically when the store version is chosen', () => {
     const dir = scratch();
@@ -1294,7 +1295,7 @@ describe('XC reconciliation replaces current without a truncating write', () => 
 });
 
 /*
- * X1c ⑧: THE PARTS OF RECONCILIATION AND OF THE RECORD THAT NO CELL WAS
+ * X1c (8): THE PARTS OF RECONCILIATION AND OF THE RECORD THAT NO CELL WAS
  * WATCHING.
  *
  * Each of these was a mutation that survived a whole green suite. They
@@ -1543,7 +1544,7 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
 });
 
 /*
- * X1c ⑨: THE DRAFT THAT GOT THERE BY UNDOING.
+ * X1c (9): THE DRAFT THAT GOT THERE BY UNDOING.
  *
  * A version is published, the user edits the body and saves, the store
  * takes it. Then they type the ORIGINAL text back in. The file now holds
@@ -1586,7 +1587,7 @@ describe('X1c ⑨ what a version is measured against after the store has answere
            * `publishInto` records a `by: 'publication'` baseline for
            * every version made from the store's bytes (D5), and a
            * settlement replaces it with a `by: 'store'` one naming the
-           * send that was confirmed (§13.3). A fixture that set the
+           * send that was confirmed (section 13.3). A fixture that set the
            * older fields alone modelled a state this build does not
            * produce -- current counters, no baseline -- which reads as
            * "never confirmed" and is a draft, and the cells here are

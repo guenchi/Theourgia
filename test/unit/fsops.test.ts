@@ -34,6 +34,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as ts from 'typescript';
 import { Answer } from '../../src/client';
 import { eventFromWrite } from '../../src/cursor';
 import { nodeFileOps } from '../../src/fsops';
@@ -133,6 +134,7 @@ describe('the answers a stand-in core gives are answers the product reads', () =
       kind: 'datum',
       text: '',
       answers: parseAnswers(wroteAnswer(2)),
+      envelope: null,
       stderr: ''
     };
     const event = eventFromWrite(answer);
@@ -159,6 +161,7 @@ describe('the answers a stand-in core gives are answers the product reads', () =
       kind: 'datum',
       text: '',
       answers: parseAnswers('(ok ((cursor . "w:2")))\n'),
+      envelope: null,
       stderr: ''
     };
     assert.strictEqual(
@@ -266,6 +269,46 @@ describe('presence is three answers, not two', () => {
  * the wrong thing -- while reading zero, which is the answer that gets
  * believed.
  */
+/*
+ * ⛔ AND THE SPELLING OF THE MODULE IS NOT THE MODULE.
+ *
+ * This matched the text `'fs'` and nothing else. A sixteenth review
+ * round added `import * as directFs from 'node:fs'` to documents.ts and
+ * read a body straight off the disk with it: both cells passed, and
+ * every count the recorder gives would then have described a subset of
+ * what the extension does while reading like all of it. Node resolves
+ * `fs`, `node:fs`, `fs/promises` and `node:fs/promises` to the same
+ * place, so the question is put to the parser and the specifier is
+ * normalised before it is judged.
+ */
+function readsTheDiskDirectly(text: string, name: string): boolean {
+  const parsed = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true);
+  let found = false;
+  const specifier = (raw: string): void => {
+    const module = raw.startsWith('node:') ? raw.slice('node:'.length) : raw;
+    if (module === 'fs' || module.startsWith('fs/')) {
+      found = true;
+    }
+  };
+  const walk = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      specifier(node.moduleSpecifier.text);
+    }
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+      node.arguments.length > 0 &&
+      ts.isStringLiteral(node.arguments[0])
+    ) {
+      specifier((node.arguments[0] as ts.StringLiteral).text);
+    }
+    node.forEachChild(walk);
+  };
+  walk(parsed);
+  return found;
+}
+
 describe('no part of the extension reaches the file system except through fsops', () => {
   it('finds no other source file importing fs', () => {
     const dir = path.join(__dirname, '..', '..', '..', 'src');
@@ -274,8 +317,7 @@ describe('no part of the extension reaches the file system except through fsops'
       if (!name.endsWith('.ts') || name === 'fsops.ts') {
         continue;
       }
-      const text = fs.readFileSync(path.join(dir, name), 'utf8');
-      if (/(^|\n)\s*import[^\n]*['"]fs['"]/.test(text) || /require\(\s*['"]fs['"]\s*\)/.test(text)) {
+      if (readsTheDiskDirectly(fs.readFileSync(path.join(dir, name), 'utf8'), name)) {
         offenders.push(name);
       }
     }
@@ -289,13 +331,31 @@ describe('no part of the extension reaches the file system except through fsops'
   /*
    * AND THE CHECK ABOVE CAN ACTUALLY SEE ONE. A scanner that matched
    * nothing would report an empty list for a tree full of offenders,
-   * which is the same reassuring zero again.
+   * which is the same reassuring zero again. Every spelling Node
+   * resolves to the filesystem is listed, because the one that was
+   * missing is the one that got through.
    */
-  it('recognises an import when there is one', () => {
-    const pattern = /(^|\n)\s*import[^\n]*['"]fs['"]/;
-    assert.ok(pattern.test("import * as fs from 'fs';\n"), 'the scanner does not match a plain import');
-    assert.ok(pattern.test("\nimport fs from 'fs';\n"), 'the scanner does not match a default import');
-    assert.ok(pattern.test("\n  import { readFileSync } from 'fs';\n"), 'the scanner does not match a named import');
-    assert.ok(!pattern.test("import * as path from 'path';\n"), 'the scanner matches something that is not fs');
+  it('recognises an import when there is one, in every spelling of it', () => {
+    for (const source of [
+      "import * as fs from 'fs';\n",
+      "\nimport fs from 'fs';\n",
+      "\n  import { readFileSync } from 'fs';\n",
+      "import * as directFs from 'node:fs';\n",
+      "import { readFile } from 'fs/promises';\n",
+      "import { readFile } from 'node:fs/promises';\n",
+      "const fs = require('fs');\n",
+      "const fs = require('node:fs');\n",
+      "const fs = await import('node:fs');\n"
+    ]) {
+      assert.ok(readsTheDiskDirectly(source, 'x.ts'), `the scanner does not see ${source.trim()}`);
+    }
+    for (const innocent of [
+      "import * as path from 'path';\n",
+      "import { Client } from './client';\n",
+      "import { nodeFileOps } from './fsops';\n",
+      "const label = 'fs';\n"
+    ]) {
+      assert.ok(!readsTheDiskDirectly(innocent, 'x.ts'), `the scanner sees ${innocent.trim()}`);
+    }
   });
 });

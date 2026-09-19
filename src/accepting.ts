@@ -15,7 +15,7 @@
  */
 
 /*
- * THE MOMENT A SAVE IS ACCEPTED. (§13.1)
+ * THE MOMENT A SAVE IS ACCEPTED. (section 13.1)
  *
  * `decide` says send; this is the instant that follows, and everything
  * the send is about is read HERE and never again: which store (from the

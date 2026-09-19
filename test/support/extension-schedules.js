@@ -4,9 +4,24 @@
 const fs = require('fs'), path = require('path'), os = require('os'), Module = require('module');
 const out = path.join(__dirname, '..', '..', 'src');
 const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-schedule-'));
-const settings = {store:'/stores/A',corePath:'/probe/core',scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000,transport:'cli'};
+// A CORE DIRECTORY THAT EXISTS, because the extension now reads it. The
+// core's answers are substituted below and nothing here runs Chez -- but
+// the settings check probes this path for `client.ss` or `client.so` and
+// refuses a directory that holds neither, so a made-up path made every
+// scenario in this file report unusable settings and open nothing. The
+// probe is the point: this stands in for the directory form, not for the
+// core.
+const corePath = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-schedule-core-'));
+fs.writeFileSync(path.join(corePath, require(path.join(out, 'config.js')).WITNESS_SOURCE), ';; stand-in\n', 'utf8');
+const settings = {store:'/stores/A',corePath,scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000,transport:'cli'};
 let provider, configChanged, savedHandler, core, pickGate = null, requestGate = null, failWrite=false;
-const commands = new Map(), messages = [], requests = [];
+// ⛔ `channels` ALONE CANNOT SAY WHICH MESSAGE WAS WHICH. A scenario that
+// shows several notices satisfies "an error was raised" with an unrelated one:
+// measured in a twelfth review round, the earlier setup saves in the save
+// scenarios raise their own errors, so the assertion about the wrong-store
+// message held whatever channel that message used. `shown` pairs each text with
+// its channel, which is what lets a cell ask about ONE of them.
+const commands = new Map(), messages = [], channels = [], shown = [], requests = [];
 const workingNotes=new Map();let workingVersion=0;
 const disposable = {dispose(){}};
 function gate(){let release,enter;const promise=new Promise(r=>release=r),entered=new Promise(r=>enter=r);return {promise,release,entered,enter};}
@@ -17,7 +32,15 @@ const vs = {
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
  languages:{setTextDocumentLanguage:async d=>d},
  window:{createStatusBarItem:()=>({show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
-  showErrorMessage:m=>messages.push(m),showWarningMessage:m=>messages.push(m),showInformationMessage:m=>messages.push(m),
+  // ⛔ THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
+  // error through showInformationMessage left every observation identical and
+  // no cell could tell a warning from an alarm. The other editor double was
+  // repaired for this in an earlier round; this one was missed because that
+  // repair was made where the finding pointed. `messages` keeps the text so
+  // the cells that read it are unchanged; `channels` is the new reading.
+  showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
+  showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});return messages.push(m);},
+  showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
   showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>d},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
@@ -49,7 +72,13 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
 
  const read=`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)))\n`;
- const recursive=`((id . \"a.2\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position \"a.1\" . 0) (edges))\n`;
+ // ⛔ THE SUBTREE INCLUDES THE BLOCK IT IS UNDER. Measured against the
+ // pinned core: `read <id> --recursive` answers with the block itself first
+ // and then its descendants. This stand-in answered with the child alone,
+ // which is a shape the core does not produce -- and the product now refuses
+ // it, correctly, because an answer that never mentions the block is not an
+ // answer about that block.
+ const recursive=`((id . \"a.1\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position root . 0) (edges))\n((id . \"a.2\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position \"a.1\" . 0) (edges))\n`;
  const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?'(check (writers (("w" (end 0)))) (verdict ok))\n':verb==='set'?'(error unknown (reason schedule))\n':'';
  return {argv:[verb,...args],rc:verb==='set'||verb==='conflicts'&&process.argv[3].includes('unknown')?1:0,stdout,stderr:''};}});
 function files(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir).flatMap(n=>{const p=path.join(dir,n);return fs.statSync(p).isDirectory()?files(p):[p];});}
@@ -95,7 +124,7 @@ async function main(){
    if(scenario==='save-chain')change('/stores/B');
    blocker.release();await blocking;await pending;
   }
-  return {a,b,beforeQueues,afterQueues:[queueA,queueB].map(p=>fs.readFileSync(p,'hex')),beforeMeta,afterMeta:fs.readFileSync(a+'.meta','hex'),acceptances,numbering,messages};
+  return {a,b,beforeQueues,afterQueues:[queueA,queueB].map(p=>fs.readFileSync(p,'hex')),beforeMeta,afterMeta:fs.readFileSync(a+'.meta','hex'),acceptances,numbering,messages,channels,shown};
  }
  if(scenario==='open-late-dirty'||scenario==='open-late-clean'){
   await commands.get('theourgia.openBlock')('a.1');
@@ -105,7 +134,7 @@ async function main(){
   const opening=commands.get('theourgia.openBlock')('a.1');await wait.entered;
   docs.push({uri:{fsPath:file},isDirty:scenario==='open-late-dirty',getText:()=> 'unsaved buffer'});
   wait.release();await opening;
-  return {file,before,after:[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),messages};
+  return {file,before,after:[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),messages,channels,shown};
  }
  if(scenario.startsWith('reconcile')){
   await commands.get('theourgia.openBlock')('a.1');
@@ -130,14 +159,14 @@ async function main(){
   if(scenario.includes('changed'))fs.writeFileSync(a,'later edit\n');
   if(blocker)blocker.release();else pickGate.release(choices[0]);
   const notice=await pending;
-  return {notice,a,b,beforeA,afterA:tree(path.dirname(a)),beforeB,afterB:tree(path.dirname(b)),messages,requests};
+  return {notice,a,b,beforeA,afterA:tree(path.dirname(a)),beforeB,afterB:tree(path.dirname(b)),messages,requests,channels};
  }
  if(scenario==='outline-old-click'){
   const nodes=await provider.getChildren();
   const item=provider.getTreeItem(nodes[0]);
   change('/stores/B');const before=requests.length;
   await commands.get(item.command.command)(...item.command.arguments);
-  return {afterClickReads:requests.slice(before).filter(r=>r.verb==='read'),messages};
+  return {afterClickReads:requests.slice(before).filter(r=>r.verb==='read'),messages,channels,shown};
  }
  if(scenario.startsWith('outline')){
   requestGate=Object.assign(gate(),{verb:scenario.includes('children')?'read':'outline'});

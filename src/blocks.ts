@@ -28,7 +28,7 @@
  */
 
 import { TransportError } from './transport';
-import { Datum, asInteger, assocTail, cdrOf, clauseRest, isDotted, isList, isSym } from './wire';
+import { Datum, asInteger, assocTail, cdrOf, clauseOfRecord, isDotted, isList, isSym } from './wire';
 
 /*
  * WHERE A BLOCK SITS HAS THREE ANSWERS, NOT TWO. `(position root . 0)`
@@ -82,15 +82,64 @@ export function readBlock(value: Datum): Block | null {
   if (!isList(value)) {
     return null;
   }
+  /*
+   * ⛔ A HEADLESS READER MUST REFUSE A FORM THAT HAS A HEAD.
+   *
+   * This checked only that the value was a list, so
+   * `(garbage (id . "a.1") (fields (src . "forged")) ...)` read as a
+   * block -- a record with a head on the front, taken apart by the one
+   * reader that exists because records have none. Measured in a
+   * fourteenth review round; the forged body reached a caller. The door
+   * held open for headless values has to be narrow enough to hold only
+   * them.
+   *
+   * A record's first element is a PAIR: `(id . "a.1")`. A form's is a
+   * name -- or anything else at all. The first version of this asked
+   * whether the first element was a SYMBOL, which is the same mistake
+   * one step in: `("garbage" (id . "a.1") ...)` and the same beginning
+   * with a number both still read as blocks. Measured in a fifteenth
+   * review round. What a record IS, is a list whose first element is a
+   * pair; everything else is refused.
+   */
+  if (value.length === 0 || !isDotted(value[0])) {
+    return null;
+  }
   const id = assocTail(value, 'id');
   if (typeof id !== 'string') {
     return null;
   }
   const deleted = assocTail(value, 'deleted');
-  const fieldList = clauseRest(value, 'fields');
+  /*
+   * ⚠️ A BLOCK RECORD HAS NO HEAD. Its first element is
+   * `(id . "a.1")` -- a pair, not a name -- so there is nothing for
+   * `answerOf` to verify here, and the record has already come out of a
+   * form whose head was checked. See `clauseOfRecord` in wire.ts.
+   */
+  /*
+   * ⛔ TWO `fields` CLAUSES IS NOT A RECORD WITH NO FIELDS.
+   *
+   * The decoder began refusing a duplicated clause in a fifteenth review
+   * round, and refused it by answering null -- the same answer as "this
+   * record has no fields at all". A sixteenth round measured what
+   * happened here:
+   * `((id . "a.1") (fields (src . "body")) (fields (title . "A")) ...)`
+   * read as block a.1 with NO fields, and `documentFor` served it with
+   * an empty prefix, an empty src and empty text. A record whose fields
+   * this build cannot resolve is unreadable, which is the refusal
+   * already written below for a field of an unknown shape.
+   */
+  const fieldList = clauseOfRecord(value, 'fields');
+  if (!fieldList.read && fieldList.because === 'duplicated') {
+    throw new TransportError(
+      'unreadable',
+      `the core answered with two field lists for block ${id}, and which one holds its text ` +
+        'is not something this client may choose',
+      describe(value)
+    );
+  }
   const fields = new Map<string, Datum>();
-  if (fieldList !== null) {
-    for (const entry of fieldList) {
+  if (fieldList.read) {
+    for (const entry of fieldList.items) {
       /*
        * A FIELD WHOSE VALUE IS A LIST LOSES ITS DOT ON THE WIRE.
        * `(title . (conflict (...)))` and `(title conflict (...))` are one

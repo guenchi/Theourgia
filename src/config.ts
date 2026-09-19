@@ -26,7 +26,7 @@
 import * as os from 'os';
 import * as path from 'path';
 
-export type TransportKind = 'cli' | 'socket';
+export type TransportKind = 'client' | 'cli';
 
 export interface CoreConfig {
   scheme: string;
@@ -34,6 +34,12 @@ export interface CoreConfig {
   libDirs: string[];
   store: string;
   actor: string;
+  /*
+   * WHICH DRAFT SPACE THIS WINDOW WRITES INTO. Empty means "the actor's
+   * name", which is what one window with one agent in it wants; two
+   * windows that need separate draft spaces set it to two names.
+   */
+  writer: string;
   timeoutMs: number;
   transport: TransportKind;
 }
@@ -59,20 +65,117 @@ export const MAX_TIMEOUT_MS = 2147483647;
 export const LIBRARY_EXTENSIONS =
   '.chezscheme.sls::.no-obj:.ss::.no-obj:.sls::.no-obj:.scm::.no-obj:.sch::.no-obj:.sc::.no-obj';
 
+/*
+ * THE FILE NAMES THIS EXTENSION EXPECTS IN A CORE DIRECTORY, in one
+ * place.
+ *
+ * ⚠️ THEY ARE GOING TO CHANGE. The core has ruled two renamings: every
+ * library `.ss` becomes `.sc`, and the entry points split so that
+ * `cli.ss` goes away. Spelling any of these into a fixture or a cell
+ * would make that a search across the tree; spelling them here makes it
+ * an edit here, and one cell below pins each name so that the rename is
+ * visible in exactly one reading rather than quietly followed.
+ */
+export const CLIENT_PROGRAM = 'theourgia.ss';
+export const FALLBACK_PROGRAM = 'cli.ss';
+export const WITNESS_SOURCE = 'client.ss';
+export const WITNESS_PRODUCT = 'client.so';
+
 export function cliPath(config: CoreConfig): string {
-  return path.join(config.corePath, 'cli.ss');
+  return path.join(config.corePath, FALLBACK_PROGRAM);
 }
 
 /*
- * THE CORE PATH IS ALWAYS FIRST. The core resolves `(theourgia ...)`
- * from its own directory, and a second directory that happened to hold
- * an older copy would otherwise decide which one runs.
+ * THE SECOND EXTENSION LIST: OBJECTS FIRST, FOR A DIRECTORY THAT HOLDS
+ * NOTHING ELSE. (design 7.6.49, 7.6.53)
  *
- * THE REST ARE THERE BECAUSE THE CORE DOES NOT STAND ALONE: it imports
- * (igropyr crypto), (igropyr platform) and (igropyr sexpr), so the
- * directory holding `igropyr/` has to be on the path or the core exits
- * before it reads a single argument.
+ * A delivered core is a product directory -- 101 compiled libraries and
+ * three scripts. Its libraries exist only as `.so`, so the list above,
+ * which never names `.so`, cannot load them at all: measured against
+ * the g-r5 product directory it stops at `Exception: library (theourgia
+ * client) not found` before reading an argument.
  */
+export const PRODUCT_EXTENSIONS = '.so::.ss::.sls::.sc::.scm';
+
+/*
+ * WHAT A CORE DIRECTORY IS, and it is asked rather than configured.
+ *
+ * ⚠️ BOTH LISTS ARE NEEDED AND EACH IS WRONG FOR THE OTHER DIRECTORY.
+ * Measured on this machine against the g-r5 core:
+ *
+ *   - the source list against a product directory: the library is not
+ *     found and nothing runs;
+ *   - the object list against a source tree holding a stale object: a
+ *     `trace.ss` replaced by a line that is not Scheme at all was never
+ *     read, the stale `trace.so` ran, and the answer came back looking
+ *     perfectly ordinary.
+ *
+ * So the list follows the directory, and where both forms are present
+ * the SOURCE wins -- that combination IS the stale-object case, and of
+ * the two ways to be wrong the loud one is the one to choose.
+ */
+export type CoreForm = { form: 'source' } | { form: 'product' } | { form: 'neither' };
+
+export interface CoreDirectory {
+  has(name: string): boolean;
+}
+
+/*
+ * ⚠️ `client` IS THE WITNESS BECAUSE IT IS THE LIBRARY THE THIN CLIENT
+ * ITSELF IMPORTS. Asking about a library the client does not need would
+ * be asking a question whose answer does not decide anything; this one
+ * is the library whose absence the run actually stops on.
+ */
+export function coreFormOf(directory: CoreDirectory): CoreForm {
+  if (directory.has(WITNESS_SOURCE)) {
+    return { form: 'source' };
+  }
+  if (directory.has(WITNESS_PRODUCT)) {
+    return { form: 'product' };
+  }
+  return { form: 'neither' };
+}
+
+/*
+ * ⚠️ A DIRECTORY THAT IS NEITHER GETS NO LIST AND NO GUESS. Picking one
+ * would hand the user a library-not-found exception from inside Chez
+ * about a path they would have to work backwards from; `problemsWith`
+ * names the setting instead.
+ */
+export function libraryExtensionsFor(form: CoreForm): string {
+  return form.form === 'product' ? PRODUCT_EXTENSIONS : LIBRARY_EXTENSIONS;
+}
+
+/*
+ * THE PROGRAM THE EXTENSION RUNS. `theourgia.ss` is the thin client: it
+ * knows the transport and nothing else, finds or starts the daemon, and
+ * prints what the daemon rendered. `cli.ss` loads the whole core into a
+ * fresh process for every request and stays for one version as the
+ * fallback the `transport` setting can still choose.
+ */
+export function clientPath(config: CoreConfig): string {
+  return path.join(config.corePath, CLIENT_PROGRAM);
+}
+
+export function programFor(config: CoreConfig): string {
+  return config.transport === 'cli' ? cliPath(config) : clientPath(config);
+}
+
+/*
+ * WHO THIS WINDOW IS WHEN IT WRITES. (design 7.6.50 v247/v254)
+ *
+ * ⚠️ THE CORE REFUSES AN UNBOUND WRITER AND THIS EXTENSION STILL HAS A
+ * DEFAULT, and the two are not in conflict: the core's refusal exists so
+ * that two agents given only an actor cannot silently share one draft
+ * space. A VS Code window is one agent. Its default is the actor's own
+ * name, so a user who has never heard of draft spaces has one; two
+ * windows that want separate spaces set `theourgia.writer` to two
+ * names.
+ */
+export function writerFor(config: CoreConfig): string {
+  return config.writer.length > 0 ? config.writer : config.actor;
+}
+
 export function libraryDirectories(config: CoreConfig): string[] {
   const out = [config.corePath];
   for (const dir of config.libDirs) {
@@ -83,11 +186,43 @@ export function libraryDirectories(config: CoreConfig): string[] {
   return out;
 }
 
-export function environmentFor(config: CoreConfig, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/*
+ * ⚠️ THE IDENTITIES TRAVEL HERE AND NOT IN THE ARGUMENT VECTOR. The
+ * thin client scans argv for the four options that say WHERE a request
+ * goes and passes everything else through untouched; `--writer` is
+ * deliberately not one of them, and a writer spliced into argv arrives
+ * at a verb whose option table does not take it and comes back as a
+ * usage line. That happened to the core's own shell and made it
+ * unusable (design 7.6.50 v262).
+ */
+export function environmentFor(
+  config: CoreConfig,
+  base: NodeJS.ProcessEnv,
+  directory: CoreDirectory
+): NodeJS.ProcessEnv {
   return {
     ...base,
     CHEZSCHEMELIBDIRS: libraryDirectories(config).join(':'),
-    CHEZSCHEMELIBEXTS: LIBRARY_EXTENSIONS
+    CHEZSCHEMELIBEXTS: libraryExtensionsFor(coreFormOf(directory)),
+    THEOURGIA_ACTOR: config.actor,
+    THEOURGIA_WRITER: writerFor(config),
+    /*
+     * ⛔ THE INTERPRETER THE USER CHOSE HAS TO REACH THE DAEMON TOO.
+     *
+     * This command line starts the thin client, and the client starts
+     * the daemon -- with `THEOURGIA_SCHEME`, or failing that with
+     * whatever `scheme` resolves to on PATH (cli.ss:420, and
+     * theourgia.ss:136 and :336). So a user who set this setting BECAUSE
+     * `scheme` is not on their PATH got a client from the path they gave
+     * and a daemon that could not be started at all.
+     *
+     * Found in a second review round, and the reason no cell had met it
+     * is worth keeping: the fixtures take this setting FROM that
+     * variable, so it was always already in the environment they passed
+     * on. A fixture that inherits the thing under test cannot see it
+     * missing.
+     */
+    THEOURGIA_SCHEME: config.scheme
   };
 }
 
@@ -117,10 +252,30 @@ export interface ConfigProblem {
  * first empty setting would send the user back to the settings page
  * once per setting.
  */
-export function problemsWith(config: CoreConfig): ConfigProblem[] {
+/*
+ * ⛔ THE DIRECTORY IS NOT OPTIONAL, AND IT USED TO BE.
+ *
+ * It defaulted to null and the "neither sources nor products" problem
+ * was skipped when it was null -- and the extension called this with one
+ * argument, so that problem could never reach anybody. Found in a third
+ * review round, and it is the shape a guard takes when nothing can make
+ * it fire. The argument is required now, so there is no call that can
+ * omit it.
+ */
+export function problemsWith(
+  config: CoreConfig,
+  directory: CoreDirectory
+): ConfigProblem[] {
   const out: ConfigProblem[] = [];
   if (config.corePath.length === 0) {
     out.push({ setting: 'theourgia.corePath', message: 'no core directory is set' });
+  } else if (coreFormOf(directory).form === 'neither') {
+    out.push({
+      setting: 'theourgia.corePath',
+      message:
+        'corePath holds neither sources nor products: there is no client.ss and no client.so ' +
+        'in it. Point it at a checkout of the core, or at a directory built by its build.ss.'
+    });
   }
   if (config.store.length === 0) {
     out.push({ setting: 'theourgia.store', message: 'no store directory is set' });

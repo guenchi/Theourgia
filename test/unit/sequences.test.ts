@@ -70,7 +70,7 @@ import { RecordingFs } from '../support/recording-fs';
 /*
  * WHICH SEND AN ANSWER IS ABOUT, for cells that are not about that.
  *
- * §13 records WHICH send the store confirmed, so `recordAnswer` is told
+ * section 13 records WHICH send the store confirmed, so `recordAnswer` is told
  * the send's number, the split it was made against, and whether it was
  * this client's write. These cells are about the ORDER and the refusals
  * around a record, so they all speak for one ordinary first send; the

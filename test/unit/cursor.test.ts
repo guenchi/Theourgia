@@ -36,6 +36,7 @@ function answerOf(text: string, rc = 0): Answer {
     kind: 'datum',
     text,
     answers: [wire().read(text)],
+    envelope: null,
     stderr: ''
   };
 }
@@ -63,8 +64,36 @@ describe('the cursor a write carries forward', () => {
     assert.strictEqual(isReplay(answerOf(REPLAYED_WRITE)), true);
   });
 
+  /*
+   * ⭐ THE REFUSAL HAS TO CARRY A CURSOR, or this cell is about
+   * nothing.
+   *
+   * It used `(error req-mismatch ("fsu7hd1k" . 6))`, which holds no
+   * `cursor` and no `event` clause at all -- so removing the exit-code
+   * guard from both readers left it green. Measured in a twelfth review
+   * round. A failure that carries exactly what a success carries is the
+   * only input that can tell the guard is there.
+   */
   it('takes nothing from an answer the core called a failure', () => {
-    assert.strictEqual(eventFromWrite(answerOf('(error req-mismatch ("fsu7hd1k" . 6))', 1)), null);
+    /*
+     * ⭐ `replay #t`, NOT `#f`. With `#f` the reader answers false
+     * whether or not the guard is there, so removing it from `isReplay`
+     * alone left this green -- measured in a thirteenth review round.
+     * The value asserted has to be the one the guard changes.
+     */
+    const refusedButShaped = '(ok (cursor ("fsu7hd1k" . 6)) (replay #t))';
+    assert.strictEqual(eventFromWrite(answerOf(refusedButShaped, 1)), null);
+    assert.strictEqual(isReplay(answerOf(refusedButShaped, 1)), false);
+    /*
+     * THE TWIN: the same bytes with exit zero ARE read. Without it the
+     * cell above would pass on a reader that takes nothing from
+     * anything.
+     */
+    assert.deepStrictEqual(eventFromWrite(answerOf(refusedButShaped, 0)), {
+      writer: 'fsu7hd1k',
+      seq: 6
+    });
+    assert.strictEqual(isReplay(answerOf(refusedButShaped, 0)), true);
   });
 
   it('spells a cursor the way the core parses one', () => {

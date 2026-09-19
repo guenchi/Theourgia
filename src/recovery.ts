@@ -22,7 +22,7 @@
  * refusal told the user about was reachable from code and from nowhere
  * else. This is the smallest surface that makes those answers reachable
  * -- one command, a list, an action, a confirmation -- and no more. No
- * tree view: every way out §12 names is a command.
+ * tree view: every way out section 12 names is a command.
  *
  * ⚠️ THE EDITOR IS BEHIND ONE NARROW INTERFACE AND NOT IMPORTED HERE.
  * Everything below is a decision about what to offer, what to say and

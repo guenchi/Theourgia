@@ -27,7 +27,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { MAX_TIMEOUT_MS, problemsWith } from '../../src/config';
+import { MAX_TIMEOUT_MS, WITNESS_SOURCE, problemsWith } from '../../src/config';
 import { Outbox, OutboxEntry, OutboxWriteError } from '../../src/outbox';
 
 function scratch(name: string): string {
@@ -149,7 +149,7 @@ describe('a queue that could not be read is not an empty queue', () => {
    * RETIRED: `will not write to a queue nobody has read`.
    *
    * It pinned a FLAG. An object whose `load` had never been called had
-   * `readable` false, and every mutator refused to write. §13 makes
+   * `readable` false, and every mutator refused to write. section 13 makes
    * every mutator re-read the file before it changes it -- so there is
    * no such object any more: the first change reads for itself.
    *
@@ -173,23 +173,32 @@ describe('a timeout the timer cannot honour is refused where it is read', () => 
     libDirs: [],
     store: '/store',
     actor: 'someone',
+    writer: '',
     transport: 'cli' as const
   };
 
+  /*
+   * A CORE DIRECTORY THAT IS IN ORDER, so that these cells are about the
+   * timeout and nothing else. The second argument stopped being optional
+   * when it turned out the extension was calling without it and the
+   * refusal about a corePath holding neither form could never fire.
+   */
+  const SOURCES = { has: (name: string): boolean => name === WITNESS_SOURCE };
+
   it('accepts the largest delay the timer takes', () => {
-    assert.deepStrictEqual(problemsWith({ ...base, timeoutMs: MAX_TIMEOUT_MS }), []);
+    assert.deepStrictEqual(problemsWith({ ...base, timeoutMs: MAX_TIMEOUT_MS }, SOURCES), []);
   });
 
   it('refuses one larger, which the timer would turn into a millisecond', () => {
-    const problems = problemsWith({ ...base, timeoutMs: MAX_TIMEOUT_MS + 1 });
+    const problems = problemsWith({ ...base, timeoutMs: MAX_TIMEOUT_MS + 1 }, SOURCES);
     assert.strictEqual(problems.length, 1);
     assert.strictEqual(problems[0].setting, 'theourgia.timeoutMs');
     assert.match(problems[0].message, /millisecond/);
   });
 
   it('still refuses a timeout of zero or less', () => {
-    assert.strictEqual(problemsWith({ ...base, timeoutMs: 0 }).length, 1);
-    assert.strictEqual(problemsWith({ ...base, timeoutMs: -1 }).length, 1);
+    assert.strictEqual(problemsWith({ ...base, timeoutMs: 0 }, SOURCES).length, 1);
+    assert.strictEqual(problemsWith({ ...base, timeoutMs: -1 }, SOURCES).length, 1);
   });
 });
 

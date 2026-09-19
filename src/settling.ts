@@ -131,7 +131,7 @@ export function settlerFor(parts: SettlingParts): Settler {
   }
 
   /*
-   * ⚠️ THERE IS NO SECOND SUPPLIER ANY MORE. (§13.1)
+   * ⚠️ THERE IS NO SECOND SUPPLIER ANY MORE. (section 13.1)
    *
    * What an answer is about used to be looked up twice: in a map kept
    * by block id while the window was up, and -- after a restart, when
@@ -178,7 +178,7 @@ export function settlerFor(parts: SettlingParts): Settler {
        * draft it can never stop being.
        *
        * An entry with no record has no number to release: it was
-       * written before §13 and never took one.
+       * written before section 13 and never took one.
        */
       if (record !== undefined) {
         saving.releaseSend(record.file, record.seq);
@@ -191,7 +191,7 @@ export function settlerFor(parts: SettlingParts): Settler {
      *
      * It is either a request this queue does not hold -- an answer that
      * belongs somewhere else, and `resolve` will not move the cursor
-     * for one -- or an entry written before §13, which carries a
+     * for one -- or an entry written before section 13, which carries a
      * request and bytes and nothing else. Neither may write a record
      * beside a file: the first because we do not know which file, the
      * second because the provenance a baseline needs was never
@@ -236,7 +236,7 @@ export function settlerFor(parts: SettlingParts): Settler {
     );
     /*
      * ⚠️ AND AN OPERATOR'S DETERMINATION LEAVES THE QUEUE WITHOUT A
-     * POSITION. (§13.3)
+     * POSITION. (section 13.3)
      *
      * Nothing was learned about where the store stands -- the
      * determination does not recover the execution's event -- so the

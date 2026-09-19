@@ -255,7 +255,7 @@ describe('R11 every mutator reads the file before it changes it', () => {
 
 /*
  * R10 THE QUEUE'S CURSOR IS A POSITION IN ONE STORE'S LOG, AND IT MOVES
- * THE WAY A LOG MOVES. (§13.3)
+ * THE WAY A LOG MOVES. (section 13.3)
  *
  * `resolve` takes whatever position the answer carried, with nothing
  * asked about where the queue already stood. Two things follow, and

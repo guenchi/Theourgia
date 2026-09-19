@@ -27,7 +27,8 @@
  */
 
 import { ChildProcess, spawn } from 'child_process';
-import { CoreConfig, cliPath, environmentFor } from './config';
+import { CoreConfig, environmentFor, programFor } from './config';
+import { coreDirectoryAt } from './fsops';
 
 /*
  * `no-answer` IS NOT `unreadable`. A verb that appends a record and
@@ -42,8 +43,7 @@ export type TransportFailure =
   | 'timeout'
   | 'killed'
   | 'no-answer'
-  | 'unreadable'
-  | 'unsupported';
+  | 'unreadable';
 
 export class TransportError extends Error {
   public readonly failure: TransportFailure;
@@ -81,7 +81,7 @@ export function buildArgv(config: CoreConfig, verb: string, args: string[]): str
   return [
     config.scheme,
     '--script',
-    cliPath(config),
+    programFor(config),
     verb,
     ...args,
     '--store',
@@ -128,7 +128,7 @@ export class CliTransport implements Transport {
 
   constructor(config: CoreConfig, env: NodeJS.ProcessEnv = process.env) {
     this.config = config;
-    this.env = environmentFor(config, env);
+    this.env = environmentFor(config, env, coreDirectoryAt(config.corePath));
   }
 
   public send(verb: string, args: string[]): Promise<RawResult> {
@@ -241,27 +241,18 @@ export class CliTransport implements Transport {
 }
 
 /*
- * The core now has a daemon; this extension's direct socket adapter is
- * still unimplemented. It exists so the interface has two implementors
- * from the start -- an interface with one implementor is a shape nobody
- * has tested against a second one -- and it refuses rather than falling
- * back to the command line, because a silent fallback would make the
- * setting mean nothing and the first person to read it would be misled.
+ * THERE IS NO SOCKET ADAPTER HERE ANY MORE, AND THAT IS THE DESIGN.
+ *
+ * One used to sit here, unimplemented, so that this interface had two
+ * implementors from the start. It became unreachable when the transport
+ * setting lost its `socket` value -- no setting selected it, no cell
+ * could drive it, and a class nothing can reach is a class whose passing
+ * cell measures nothing. It is gone rather than kept.
+ *
+ * The socket is the core's, and the thin client is its adapter: a second
+ * implementation of that envelope in TypeScript would be a third packer
+ * of the same bytes, kept in step by hand. Ruled by the main session.
  */
-export class SocketTransport implements Transport {
-  public readonly kind = 'socket';
-
-  public send(_verb: string, _args: string[]): Promise<RawResult> {
-    return Promise.reject(
-      new TransportError(
-        'unsupported',
-        'the extension socket transport is not implemented. ' +
-          'Set theourgia.transport to "cli".'
-      )
-    );
-  }
-}
-
 export function transportFor(config: CoreConfig, env: NodeJS.ProcessEnv = process.env): Transport {
-  return config.transport === 'socket' ? new SocketTransport() : new CliTransport(config, env);
+  return new CliTransport(config, env);
 }

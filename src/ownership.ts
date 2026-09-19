@@ -16,7 +16,7 @@ import {withExclusive,controlDirectory} from './fsops';
  */
 
 /*
- * WHO MAY WRITE THE RECORDS BESIDE A BLOCK'S VERSIONS. (§13, r4-3..r7-2)
+ * WHO MAY WRITE THE RECORDS BESIDE A BLOCK'S VERSIONS. (section 13, r4-3..r7-2)
  *
  * ⚠️ THE UNIT IS THE BLOCK DIRECTORY, NOT THE VERSION.
  *
@@ -206,6 +206,17 @@ export class Owners {
     if (!fresh.read && fresh.because==='unreadable') return control;
     if (fresh.read && fresh.names.some(n=>/^owner\.\d+$/.test(n))) return control;
     const legacy=this.files.readDirectory(directory);
+    /*
+     * ⛔ AND AN UNREADABLE LEGACY DIRECTORY SENDS THE LOOKUP NOWHERE.
+     *
+     * This fell through to the control directory, which is absent, so
+     * `ownerOf` answered `{known: true, record: null}` -- "I looked and
+     * there is no owner" -- for a directory it had not been able to
+     * open. The clause above draws exactly this line for the control
+     * directory and it was not drawn here. Measured in a thirteenth
+     * review round.
+     */
+    if (!legacy.read && legacy.because==='unreadable') return directory;
     return legacy.read && legacy.names.some(n=>/^owner\.\d+$/.test(n))?directory:control;
   }
 

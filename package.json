@@ -36,6 +36,11 @@
     },
     "commands": [
       {
+        "command": "theourgia.search",
+        "title": "theourgia: Search Blocks",
+        "icon": "$(search)"
+      },
+      {
         "command": "theourgia.refreshOutline",
         "title": "theourgia: Refresh Outline",
         "icon": "$(refresh)"
@@ -68,6 +73,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "theourgia.search",
+          "when": "view == theourgiaOutline",
+          "group": "navigation@0"
+        },
+        {
           "command": "theourgia.refreshOutline",
           "when": "view == theourgiaOutline",
           "group": "navigation"
@@ -86,7 +96,7 @@
         "theourgia.corePath": {
           "type": "string",
           "default": "",
-          "description": "Directory holding cli.ss and the theourgia libraries."
+          "description": "Directory holding the core. Either a checkout (the library sources beside cli.ss and theourgia.ss) or a directory built by the core's build.ss (the compiled libraries beside the same two scripts). Which one it is decides how the libraries are looked up, and the extension reads the directory to find out rather than asking you."
         },
         "theourgia.libDirs": {
           "type": "array",
@@ -106,6 +116,11 @@
           "default": "",
           "description": "Actor name recorded with every write. Defaults to the OS user name."
         },
+        "theourgia.writer": {
+          "type": "string",
+          "default": "",
+          "description": "Draft space this window writes into. Passed to the core as THEOURGIA_WRITER. Defaults to the actor name, which is what one window wants; give two windows two names when they should keep separate drafts of the same block."
+        },
         "theourgia.scheme": {
           "type": "string",
           "default": "scheme",
@@ -119,11 +134,11 @@
         "theourgia.transport": {
           "type": "string",
           "enum": [
-            "cli",
-            "socket"
+            "client",
+            "cli"
           ],
-          "default": "cli",
-          "description": "How requests reach the core. The socket transport is not implemented yet."
+          "default": "client",
+          "description": "How requests reach the core. \"client\" runs theourgia.ss, which finds or starts the store’s daemon and is the fast path. \"cli\" runs cli.ss, which loads the whole core for every request; it is kept for one version as a fallback."
         }
       }
     }

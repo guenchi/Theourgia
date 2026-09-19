@@ -15,7 +15,7 @@
  */
 
 /*
- * X1c ④: A COMMAND THE USER IS TOLD TO RUN HAS TO EXIST.
+ * X1c (4): A COMMAND THE USER IS TOLD TO RUN HAS TO EXIST.
  *
  * Two refusals told the user to run "theourgia: Reconcile Block". The
  * manifest did not declare it, activation did not register it, and
@@ -52,6 +52,60 @@ function manifestCommands(): Contributed[] {
   };
   return manifest.contributes?.commands ?? [];
 }
+
+function manifestSettings(): string[] {
+  const text = fs.readFileSync(path.join(root, 'package.json'), 'utf8');
+  const manifest = JSON.parse(text) as {
+    contributes?: { configuration?: { properties?: Record<string, unknown> } };
+  };
+  return Object.keys(manifest.contributes?.configuration?.properties ?? {});
+}
+
+/*
+ * ⚠️ A SETTING THE MANIFEST DOES NOT DECLARE IS A SETTING THAT READS ITS
+ * DEFAULT FOR EVER, AND NOTHING SAYS SO.
+ *
+ * `getConfiguration('theourgia').get('writer', '')` answers the default
+ * whether or not `theourgia.writer` exists in the manifest: there is no
+ * error, no warning, and the settings page simply does not offer it.
+ * The user sets nothing because there is nothing to set, and the
+ * extension behaves as though they had chosen the default on purpose.
+ *
+ * BOTH DIRECTIONS, for the reason the command census gives: the other
+ * one catches a knob the settings page offers that no code ever reads.
+ */
+describe('plugin-r2 the settings the extension reads and the settings it declares', () => {
+  const read = (): string[] => {
+    const source = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
+    const found = new Set<string>();
+    for (const m of source.matchAll(/settings\.get<[^>]*>\('([^']+)'/g)) {
+      found.add(`theourgia.${m[1]}`);
+    }
+    return [...found].sort();
+  };
+
+  it('declares every setting the source reads', () => {
+    const declared = new Set(manifestSettings());
+    const missing = read().filter((name) => !declared.has(name));
+    assert.deepStrictEqual(
+      missing,
+      [],
+      'these are read at runtime and are not on the settings page, so they can only ever hold ' +
+        'their default'
+    );
+  });
+
+  it('reads every setting it declares', () => {
+    const reads = new Set(read());
+    const unread = manifestSettings().filter((name) => !reads.has(name));
+    assert.deepStrictEqual(unread, [], 'these are offered to the user and nothing looks at them');
+  });
+
+  it('finds the settings at all, so that neither direction is vacuous', () => {
+    assert.ok(read().length >= 7, `the source reads ${read().length} settings, which is too few to be reading it`);
+    assert.ok(manifestSettings().length >= 7);
+  });
+});
 
 describe('X1c the commands the extension offers', () => {
   /*
@@ -106,7 +160,7 @@ describe('X1c the commands the extension offers', () => {
         cursor: null,
         conflicts: 0,
         pending: 2,
-        blocked: null
+        blocked: null, unreachable: null
       }).tooltip
     ];
     let quoted = 0;

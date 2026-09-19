@@ -15,14 +15,14 @@
  */
 
 /*
- * A NAME THAT IS BUILT INTO A PATH IS CHECKED IN ONE PLACE. (§13, r5-3)
+ * A NAME THAT IS BUILT INTO A PATH IS CHECKED IN ONE PLACE. (section 13, r5-3)
  *
  * ⚠️ THE CHECK WAS WRITTEN FOR ONE CALLER AND THEN A SECOND APPEARED.
  *
  * `Sessions.outboxPathFor` composes a store's name into a path under a
  * session directory, and a name of `../live/a` addressed a LIVE
  * window's queue -- found in review, with a reproduction. The
- * tombstones §13 adds compose a store name AND a request id into a path
+ * tombstones section 13 adds compose a store name AND a request id into a path
  * under the storage root, and the request id comes off another
  * session's queue file, which is not this program's to trust.
  *

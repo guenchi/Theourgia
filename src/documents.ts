@@ -121,12 +121,28 @@ export function markCommitted(file: string, committed: string, files: FileOps = 
   }
 }
 
+/*
+ * ⚠️ NOTHING IN THE SHIPPING EXTENSION CALLS THIS. It is the legacy
+ * helper; the current path asks the publisher. It is repaired anyway,
+ * because a reader that answers "no work here" for a file it could not
+ * open is the shape this delivery has been chasing, and leaving one
+ * behind because nobody calls it today is how the tenth instance of a
+ * defect gets written.
+ */
 export function hasUncommittedWork(file: string, files: FileOps = nodeFileOps): boolean {
   let text: string;
   try {
     text = files.readText(file);
   } catch (e) {
-    return false;
+    /*
+     * ⛔ ONLY AN ABSENT FILE HAS NO WORK IN IT. Every other failure
+     * leaves the question open, and answering `false` closes it in the
+     * direction that loses somebody's edits.
+     */
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw e;
   }
   let marker: string;
   try {

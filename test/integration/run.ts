@@ -37,6 +37,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
 const KNOWN_EXECUTABLE_NAMES = ['Code', 'Code - Insiders', 'Electron', 'code', 'code-insiders'];
@@ -173,10 +174,163 @@ function emptyTheStorage(root: string, profile: string): void {
   }
 }
 
+
+/*
+ * WHERE THIS RUN'S DAEMONS LIVE, AND THE READING THAT SAYS WHETHER ANY
+ * ESCAPED. (design 7.6.50 v257-v261; the core's own runner does this)
+ *
+ * The thin client starts a daemon per store, under the run root. Left to
+ * the product's default that root is `~/.theourgia/run` -- the user's
+ * own -- and a suite that runs there leaves directories and live
+ * processes behind in it. The core's line found the same hole in six of
+ * its fixtures, four times by counting directories rather than by any
+ * cell going red, and settled on three layers: the runner exports a run
+ * root of its own before anything starts, each fixture sets its own as
+ * well, and a gate reads the REAL root before and after and fails on
+ * GROWTH. Growth, not total: another session's daemon is not this run's
+ * to account for.
+ *
+ * ⚠️ AND THE RUN ROOT MUST BE SHORT. A unix socket name may be 104
+ * bytes; the path is the root plus a sixteen-character key plus
+ * `/socket`, and macOS temporary directories are long enough on their
+ * own to push a nested one past it. This one is made directly under the
+ * system temporary directory for that reason, not under the profile.
+ */
+function realRunRoot(): string {
+  return path.join(os.homedir(), '.theourgia', 'run');
+}
+
+/*
+ * ⛔ ONLY AN ABSENT DIRECTORY COUNTS AS NONE. This caught every error
+ * and answered zero, so a run root that could not be read was reported
+ * as empty at both ends and the growth gate compared nothing with
+ * nothing. Found in a ninth review round, the same shape as the process
+ * listing below and in two other files.
+ */
+function countRealRunRoot(): number {
+  try {
+    return fs.readdirSync(realRunRoot()).length;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 0;
+    }
+    throw new Error(
+      `could not read ${realRunRoot()}, so this run cannot say whether it left anything there: ` +
+        (e as Error).message
+    );
+  }
+}
+
+/*
+ * ⚠️ THE PROCESS LIST IS MATCHED BY PATH AND THE READER EXCLUDES
+ * ITSELF. `pkill -f scheme` has hit this line's own commands before --
+ * the pattern is in the command that carries it. These are found by the
+ * run root this run created, which no other process can be using, and
+ * the reader's own pid is dropped.
+ */
+/*
+ * ⛔ AND IT NO LONGER LOOKS FOR THE WORD "scheme", FOR TWO REASONS.
+ *
+ * The first is noise: on a developer's machine `ps | grep scheme`
+ * returns a dozen of the editor's own helper processes, whose argument
+ * lists carry `--standard-schemes=`.
+ *
+ * The second is the one that would have hurt. The core spells the
+ * interpreter as `THEOURGIA_SCHEME` or `scheme` (cli.ss:420), so on a
+ * machine where that variable names `chez` this filter would exclude the
+ * daemon it exists to find -- and the gate would print a clean
+ * `0 still running` while the process it was written to catch went on
+ * running. What is matched instead is what the core itself puts in the
+ * daemon's argument list: `--socket <run root>/<key>/socket`
+ * (theourgia.ss:335-339).
+ *
+ * ⛔ AND THE MARKER IS REQUIRED. It was optional, and the branch that
+ * dropped it -- every `scheme` on the machine, killed -- was reachable
+ * from one careless call. Nothing called it; the type allowed it.
+ */
+function schemeProcesses(marker: string): Array<{ pid: number; command: string }> {
+  /*
+   * ⛔ A LOOK THAT FAILED IS NOT A LOOK THAT FOUND NOTHING.
+   *
+   * This caught the failure and answered with an empty list, so a `ps`
+   * that could not be run made `stopOurDaemons` signal nobody, answer
+   * `{asked: 0, left: []}`, and made this runner print
+   * `0 still running` -- the one sentence it must never print falsely.
+   *
+   * ⛔ AND IT WAS MISSED WHEN THE SAME DEFECT WAS REPAIRED IN
+   * `test/support/real-core.ts`. That repair named three call sites and
+   * there were four; this is the fourth. A hazard is enumerated by
+   * searching for its shape, not by fixing the file that happened to be
+   * open.
+   */
+  const listing = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
+  const found: Array<{ pid: number; command: string }> = [];
+  for (const line of listing.split('\n')) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match === null) {
+      continue;
+    }
+    const pid = Number(match[1]);
+    const command = match[2];
+    if (pid === process.pid || !command.includes('--socket') || !command.includes(marker)) {
+      continue;
+    }
+    found.push({ pid, command });
+  }
+  return found;
+}
+
+/*
+ * ASK THE DAEMONS THIS RUN STARTED TO STOP, BY PID.
+ *
+ * ⚠️ AND THEN CHECK, BECAUSE "SENT A SIGNAL" IS NOT "IT WENT". The
+ * core's line wrote a teardown that removed the file a daemon was
+ * writing and never signalled the daemon at all; what caught it was
+ * counting processes afterwards, not reading the teardown.
+ */
+function stopOurDaemons(marker: string): { asked: number; left: Array<{ pid: number; command: string }> } {
+  const ours = schemeProcesses(marker);
+  for (const one of ours) {
+    try {
+      process.kill(one.pid, 'SIGTERM');
+    } catch (e) {
+      /* it had already gone; the count below is what decides */
+    }
+  }
+  const deadline = Date.now() + 5000;
+  let left = schemeProcesses(marker);
+  while (left.length > 0 && Date.now() < deadline) {
+    execFileSync('sleep', ['0.2']);
+    left = schemeProcesses(marker);
+  }
+  for (const one of left) {
+    try {
+      process.kill(one.pid, 'SIGKILL');
+    } catch (e) {
+      /* as above */
+    }
+  }
+  return { asked: ours.length, left: schemeProcesses(marker) };
+}
+
 async function main(): Promise<void> {
   const root = path.resolve(__dirname, '..', '..', '..');
   const profile = chooseProfile(root);
   emptyTheStorage(root, profile);
+  /*
+   * ⚠️ MADE DIRECTLY UNDER THE SYSTEM TEMPORARY DIRECTORY AND KEPT
+   * SHORT, because the socket name computed under it has 104 bytes to
+   * fit in. The name carries this run's pid so that two runs cannot
+   * share a root -- and so that the process listing below can tell this
+   * run's daemons from anybody else's.
+   */
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `tv-${process.pid}-`));
+  const runRoot = path.join(scratch, 'r');
+  const coreHome = path.join(scratch, 'h');
+  fs.mkdirSync(runRoot, { recursive: true });
+  fs.mkdirSync(coreHome, { recursive: true });
+  const realBefore = countRealRunRoot();
+  let failed = false;
   try {
     const reported = process.env.THEOURGIA_TEST_CODE ?? await downloadAndUnzipVSCode();
     const executable = resolveExecutable(reported);
@@ -234,11 +388,54 @@ async function main(): Promise<void> {
          * second opinion about where the extension writes, and the one
          * that was wrong would read an empty directory as a clean queue.
          */
-        THEOURGIA_TEST_STORAGE: extensionStorage(root, profile)
+        THEOURGIA_TEST_STORAGE: extensionStorage(root, profile),
+        /*
+         * ⚠️ THE CORE READS BOTH OF THESE, SO THE FIXTURE SETS BOTH.
+         * Setting only one is how the core's own fixtures ended up
+         * computing two different socket paths for one store -- the
+         * defect those very cells were about, reproduced by the cells.
+         */
+        THEOURGIA_RUN: runRoot,
+        THEOURGIA_HOME: coreHome
       }
     });
   } catch (e) {
+    failed = true;
     process.stderr.write(`the editor-hosted cells could not be run: ${String(e)}\n`);
+  }
+
+  /*
+   * THE TWO LINES THE CORE'S RUNNER PRINTS, AND THEY ARE PRINTED WHETHER
+   * OR NOT ANYTHING LEAKED. A gate that only speaks up when it is unhappy
+   * is a gate nobody has seen a reading from.
+   */
+  const stopped = stopOurDaemons(runRoot);
+  const realAfter = countRealRunRoot();
+  const leftHere = fs.existsSync(runRoot) ? fs.readdirSync(runRoot) : [];
+  process.stdout.write(
+    `run root: ${realBefore} -> ${realAfter} directories under ${realRunRoot()}; ` +
+      `this run's root ${runRoot} holds ${leftHere.length}\n`
+  );
+  process.stdout.write(
+    `daemons: asked ${stopped.asked} to stop, ${stopped.left.length} still running\n`
+  );
+
+  if (realAfter > realBefore) {
+    process.stderr.write(
+      `LEAKED-INTO-REAL-RUN-ROOT: ${realAfter - realBefore} directories appeared under ` +
+        `${realRunRoot()}, which belongs to whoever is using this machine\n`
+    );
+    failed = true;
+  }
+  if (stopped.left.length > 0) {
+    process.stderr.write(
+      `LEAKED-PROCESSES: ${stopped.left.length} still running after being asked and killed: ` +
+        `${stopped.left.map((one) => one.pid).join(', ')}\n`
+    );
+    failed = true;
+  }
+
+  if (failed) {
     process.exit(1);
   }
 }

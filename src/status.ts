@@ -30,6 +30,7 @@
  * is telling the user the better of the two every time it fails.
  */
 import { RECONCILE_BLOCK, RETRY_OUTBOX } from './commands';
+import { Datum, answerOf, asInteger, cdrOf, isDotted, isList, readEvent } from './wire';
 import { TakeoverLedger } from './sessions';
 import { StructuralMark } from './model';
 import { Unrecorded } from './saving';
@@ -49,6 +50,22 @@ export interface StatusFacts {
    */
   pending: number | null;
   blocked: string | null;
+  /*
+   * WHY THE STORE COULD NOT BE ASKED, IN THE CORE'S OWN WORDS.
+   *
+   * ⭐ `conflicts: null` ALREADY SAYS THAT SOMETHING WENT WRONG AND
+   * CANNOT SAY WHAT. Measured: with a directory sitting where the
+   * daemon's socket goes, the core answers
+   * `(error serve-path-occupied (path "<run root>/<key>/socket"))` and
+   * the thin client relays exactly that -- a sentence naming a directory
+   * the user can remove. The extension threw it away and drew a question
+   * mark, and a question mark is not something anybody can act on.
+   *
+   * NULL MEANS THE LAST ASKING WORKED. It is cleared by a success rather
+   * than left standing, or the status bar would go on reporting a fault
+   * that has been fixed -- which is the same defect the other way round.
+   */
+  unreachable: string | null;
 }
 
 export interface StatusLine {
@@ -90,7 +107,13 @@ export function statusLine(facts: StatusFacts): StatusLine {
             `${facts.pending} saves whose outcome is unknown; run "${RETRY_OUTBOX.title}"`
           )
         : 'nothing waiting to be saved',
-    ...(facts.blocked === null ? [] : [`writing is blocked: ${facts.blocked}`])
+    ...(facts.blocked === null ? [] : [`writing is blocked: ${facts.blocked}`]),
+    /*
+     * THE WORDS GO LAST AND THEY ARE THE CORE'S. Summarising them here
+     * would be a second opinion about a sentence that already names the
+     * one thing to do about it.
+     */
+    ...(facts.unreachable === null ? [] : [`the store could not be reached: ${facts.unreachable}`])
   ].join('\n');
   return {
     text: parts.join(' '),
@@ -100,7 +123,8 @@ export function statusLine(facts: StatusFacts): StatusLine {
       facts.conflicts > 0 ||
       facts.pending === null ||
       facts.pending > 0 ||
-      facts.blocked !== null
+      facts.blocked !== null ||
+      facts.unreachable !== null
   };
 }
 
@@ -117,6 +141,149 @@ export interface Notice {
  * must not be silent are a refusal, a save whose outcome nobody knows,
  * and a save whose bytes were changed on the way out.
  */
+/*
+ * WHO LANDED WHILE THIS SAVE WAS BEING PREPARED. (design 7.5.22)
+ *
+ * A commit that succeeded can carry `(behind ((<writer> . <seq>) ...))`:
+ * the log writers whose records reached the store after this save's
+ * draft took its baseline. It is absent when the baseline is not behind,
+ * and a commit carrying it SUCCEEDED. It exists to save the reader a
+ * `drafts` round trip, not to ask anything of them.
+ *
+ * ⚠️ IT NAMES OTHER INSTANCES OF THE STORE, NOT OTHER PEOPLE. Every
+ * agent writing into one store on one machine appends through the same
+ * log writer, so a colleague's commit is NOT what shows up here. What
+ * shows up is a copy of the store that was adopted elsewhere and had a
+ * segment of its log published back. The sentence below says "another
+ * instance" for that reason: "somebody else has been writing" would be a
+ * reading of this field that is wrong in the ordinary case.
+ *
+ * ⚠️ AND THE WRITER THIS COMMIT ITSELF ADVANCED IS DROPPED. Measured
+ * on the pinned core: a commit whose own cursor is `("w" . 7)` answers
+ * `(behind (("w" . 7)))` -- its own record, reported back as though it
+ * were somebody's. The core's rule excludes the DRAFT writer's name and
+ * the keys here are LOG writer ids, which are equal only when the two
+ * happen to coincide; a window with its own `theourgia.writer` parts
+ * them and the store starts naming itself. That is a defect in the core
+ * and is being repaired there. This drops it whichever way the core
+ * behaves, and the name to drop is read off this very answer's own
+ * cursor rather than remembered anywhere.
+ *
+ * ⚠️ SO THIS NEVER FAILS A SAVE. The core answers a successful commit
+ * with no clause at all rather than an error when it cannot build one;
+ * a reader that threw on an unexpected shape would turn that success
+ * into a failure at the one moment somebody is watching. Every shape it
+ * cannot read is answered `null`, which reads as "nothing to say".
+ */
+export function behindNotice(answer: Datum, ours: Datum = null): string | null {
+  /*
+   * ⛔ AND THE FORM HAS TO HAVE SAID `ok`. Measured in a twelfth
+   * review round: `(garbage (behind (("other" . 2))))` produced the
+   * whole sentence. This reader was written in the same batch that
+   * repaired four others for the same shape and was not one of them,
+   * because each repair was made where its finding pointed.
+   */
+  const form = answerOf(answer, 'ok');
+  if (form === null) {
+    return null;
+  }
+  /*
+   * ⚠️ BOTH REASONS REFUSE. An answer with no `behind` clause is one
+   * that says nothing about what landed, and an answer carrying two is
+   * one this build cannot read; neither produces a notice, and null is
+   * what this reader says for both.
+   */
+  const rest = form.clause('behind');
+  if (!rest.read || rest.items.length !== 1 || !isList(rest.items[0])) {
+    return null;
+  }
+  /*
+   * NULL WHEN THIS ANSWER NAMES NO CURSOR, and then nothing is dropped.
+   * Removing a name on a guess would hide the one line this notice
+   * exists to show.
+   */
+  const mine = writerOfCursor(ours);
+  const landed: Array<{ writer: string; seq: number }> = [];
+  for (const entry of rest.items[0]) {
+    if (!isDotted(entry)) {
+      return null;
+    }
+    /*
+     * ⚠️ ONE NAME BEFORE THE DOT, NOT THE FIRST OF SEVERAL. `(behind
+     * (("w" . 3)))` is a pair; a clause carrying two items before the
+     * dot is a shape this build does not know, and reading the first of
+     * them would be a guess dressed as an answer.
+     */
+    if (entry.items.length !== 1) {
+      return null;
+    }
+    const writer = entry.items[0];
+    const seq = asInteger(cdrOf(entry));
+    if (typeof writer !== 'string' || seq === null) {
+      return null;
+    }
+    if (writer !== mine) {
+      landed.push({ writer, seq });
+    }
+  }
+  if (landed.length === 0) {
+    return null;
+  }
+  /*
+   * ⚠️ ONE RECORD IS ITS OWN SENTENCE. `${n} records` is right for every
+   * n except the one a user is most likely to meet first.
+   */
+  const each = landed.map((one) =>
+    one.seq === 1 ? `${one.writer} has 1 record` : `${one.writer} has ${one.seq} records`
+  );
+  /*
+   * ⚠️ THE PREAMBLE CARRIES NO COUNT WORD OF ITS OWN. The per-writer
+   * phrase already says "1 record" or "n records", and a fixed word
+   * beside it would be a second place for the number's language to be
+   * wrong -- and would make the singular read "1 record ... records".
+   */
+  return (
+    `since this save's baseline, ${each.join(' and ')} in this store ` +
+    '(another instance of it, not another agent on this machine)'
+  );
+}
+
+/*
+ * THE LOG WRITER AN ANSWER'S OWN CURSOR NAMES.
+ *
+ * `(cursor ("w" . 7))` is a pair whose head is the writer. Every shape
+ * that is not that answers null, and a null drops nothing -- which is
+ * the safe direction: a name wrongly dropped is a line the reader never
+ * sees, and a name wrongly kept is a line that is merely redundant.
+ */
+/*
+ * ⛔ THE SAME READER THE REST OF THIS BUILD USES FOR A CURSOR.
+ *
+ * This had its own, narrower one: it required a dotted pair, while
+ * `readEvent` also accepts `("w" 7)` as a two-element list (wire.ts).
+ * So an answer whose cursor took that shape had its writer go unread
+ * here -- and an unread writer is one that is not dropped, which means
+ * the notice named the writer the commit had just advanced. Measured in
+ * a twelfth review round with `(ok (items (ok (cursor ("w" 7)) ...))
+ * (behind (("w" . 7))))`: the save reported `w has 7 records`, about
+ * itself.
+ *
+ * Two readers for one shape is two places for the shape to be wrong, and
+ * the one that was wrong was the one nobody else used.
+ */
+function writerOfCursor(answer: Datum): string | null {
+  const form = answerOf(answer, 'ok');
+  if (form === null) {
+    return null;
+  }
+  const rest = form.clause('cursor');
+  if (!rest.read || rest.items.length !== 1) {
+    return null;
+  }
+  const event = readEvent(rest.items[0]);
+  return event === null ? null : event.writer;
+}
+
 export function saveNotice(
   outcome: { status: string; id: string; message: string },
   normalised: boolean
@@ -421,7 +588,7 @@ export function supersededNotice(id: string): Notice {
  * run. A single "could not save" would leave all of them looking like
  * the same dead end -- and the silent version of it looks exactly like
  * a save that worked, which is the failure this whole batch exists to
- * remove. (§12.17.3, §12.13.4, §12.11.7)
+ * remove. (section 12.17.3, section 12.13.4, section 12.11.7)
  */
 export function refusalNotice(
   id: string,

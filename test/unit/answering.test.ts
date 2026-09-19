@@ -22,7 +22,7 @@
  * removed the entry first and then died has destroyed the only means of
  * retrying: the request is gone and the store may or may not hold it.
  * Both orders leave the same state when nothing goes wrong, which is
- * why these cells interrupt. (§12.7.4, C7)
+ * why these cells interrupt. (section 12.7.4, C7)
  *
  * C14 NAMES THE IMPLEMENTATION IT KILLS: one that persists the entry
  * only after the answer comes back. It passes C7 -- entries are removed
@@ -48,7 +48,7 @@ import { RecordingFs } from '../support/recording-fs';
 /*
  * WHICH SEND AN ANSWER IS ABOUT, for cells that are not about that.
  *
- * §13 records WHICH send the store confirmed, so `recordAnswer` is told
+ * section 13 records WHICH send the store confirmed, so `recordAnswer` is told
  * the send's number, the split it was made against, and whether it was
  * this client's write. These cells are about the ORDER and the refusals
  * around a record, so they all speak for one ordinary first send; the
@@ -172,7 +172,7 @@ describe('C7 the answer is recorded before the entry is removed', () => {
     );
     assert.deepStrictEqual(recorded, { dequeued: true });
     /*
-     * X1c ⑥: THE RECORD LANDS AT THE RENAME, NOT AT THE WRITE. This
+     * X1c (6): THE RECORD LANDS AT THE RENAME, NOT AT THE WRITE. This
      * looked for a `writeText` on the `.meta` path -- which found the
      * truncating rewrite this code used to do, and so endorsed it: the
      * cell would have gone red the day the write was made safe. What
@@ -291,7 +291,7 @@ describe('C20 the answer section gives up rather than describing bytes that move
 });
 
 /*
- * X1c ⑧: WHAT THE ANSWER PUTS IN THE RECORD, READ BACK OFF THE DISK.
+ * X1c (8): WHAT THE ANSWER PUTS IN THE RECORD, READ BACK OFF THE DISK.
  *
  * The cells above watch what `recordAnswer` RETURNS and when it removes
  * the entry. Nothing read the record afterwards, so every field it
@@ -405,7 +405,7 @@ describe('X1c ⑧ the fields the answer writes into the record', () => {
 });
 
 /*
- * X1c ⑨: A RECONCILED VERSION STOPS BEING LOCAL-ONLY WHEN THE STORE
+ * X1c (9): A RECONCILED VERSION STOPS BEING LOCAL-ONLY WHEN THE STORE
  * TAKES IT.
  *
  * `local-only` says the baseline came from the file rather than from an
@@ -475,7 +475,7 @@ describe('X1c ⑨ a reconciled version after the store answers', () => {
 });
 
 /*
- * X1c ⑨: AN ANSWER TO A REQUEST THIS WINDOW DID NOT SEND.
+ * X1c (9): AN ANSWER TO A REQUEST THIS WINDOW DID NOT SEND.
  *
  * A retry after a restart names a request the queue remembers and the
  * process does not. Nothing said which file it was about, so nothing was
@@ -590,7 +590,7 @@ describe('X1c ⑨ matching a retried answer back to the version it was sent from
 });
 
 /*
- * X1c ⑨: AND IT ANSWERS "CANNOT SAY" RATHER THAN THROWING.
+ * X1c (9): AND IT ANSWERS "CANNOT SAY" RATHER THAN THROWING.
  *
  * `recognise` runs inside the settler, where the store has already
  * answered and the entry has not yet been removed. A throw from it would

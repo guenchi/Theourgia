@@ -26,7 +26,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { CoreConfig, DEFAULT_TIMEOUT_MS } from '../../src/config';
+import {
+  CLIENT_PROGRAM,
+  CoreConfig,
+  DEFAULT_TIMEOUT_MS,
+  FALLBACK_PROGRAM,
+  WITNESS_SOURCE
+} from '../../src/config';
 
 let counter = 0;
 
@@ -46,7 +52,12 @@ export interface ScriptedCall {
 export interface LoggedCall {
   argv: string[];
   coreArgv: string[];
-  env: { CHEZSCHEMELIBDIRS: string | null; CHEZSCHEMELIBEXTS: string | null };
+  env: {
+    CHEZSCHEMELIBDIRS: string | null;
+    CHEZSCHEMELIBEXTS: string | null;
+    THEOURGIA_ACTOR: string | null;
+    THEOURGIA_WRITER: string | null;
+  };
   event: string;
   name: string | null;
   watched: string | null;
@@ -78,7 +89,17 @@ export class FakeCore {
      * and a cell pins that path; a file that is not there would make the
      * pin pass for the wrong reason.
      */
-    fs.writeFileSync(path.join(this.corePath, 'cli.ss'), ';; stand-in\n', 'utf8');
+    fs.writeFileSync(path.join(this.corePath, FALLBACK_PROGRAM), ';; stand-in\n', 'utf8');
+    /*
+     * ⚠️ AND THE STAND-IN CORE LOOKS LIKE A CORE. The client composes
+     * the path to `theourgia.ss` and pins it, and it READS this
+     * directory to decide which extension list the child gets: a
+     * directory with neither `client.ss` nor `client.so` is neither
+     * form, and every cell here would be running against a refusal
+     * about the setting rather than against the core.
+     */
+    fs.writeFileSync(path.join(this.corePath, CLIENT_PROGRAM), ';; stand-in\n', 'utf8');
+    fs.writeFileSync(path.join(this.corePath, WITNESS_SOURCE), ';; stand-in\n', 'utf8');
     fs.writeFileSync(this.scriptFile, JSON.stringify({ calls, workingProjection }, null, 2), 'utf8');
   }
 
@@ -89,8 +110,9 @@ export class FakeCore {
       libDirs: [],
       store: this.store,
       actor: 'cell',
+      writer: '',
       timeoutMs: DEFAULT_TIMEOUT_MS,
-      transport: 'cli',
+      transport: 'client',
       ...overrides
     };
   }
@@ -117,12 +139,31 @@ export class FakeCore {
     return { ...this.env(), FAKE_CORE_IGNORE_SIGNALS: '1' };
   }
 
+  /*
+   * ⛔ ONLY AN ABSENT LOG IS AN EMPTY ONE.
+   *
+   * This caught every read error and answered with no calls, and what
+   * consumes it includes `pidsSeen` and `childrenStillRunning` -- the
+   * instrument that says whether this stand-in's processes were
+   * stopped. Measured in a tenth review round with EACCES injected:
+   * `calls()` answered nothing, `childrenStillRunning` checked zero
+   * process ids and reported none left. A stand-in that has written no
+   * line yet really has no calls; every other failure is a reading this
+   * cannot take. Same shape as the run-root and process readers, found
+   * in the same sweep.
+   */
   public calls(): LoggedCall[] {
     let text: string;
     try {
       text = fs.readFileSync(this.logFile, 'utf8');
     } catch (e) {
-      return [];
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw new Error(
+        `could not read the stand-in's call log at ${this.logFile}, so nothing here can say what ` +
+          `it was asked: ${(e as Error).message}`
+      );
     }
     return text
       .split('\n')

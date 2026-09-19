@@ -15,7 +15,7 @@
  */
 
 /*
- * WHO, WHAT AND WHICH SEND -- READ ONCE, AT ONE MOMENT. (§13.1)
+ * WHO, WHAT AND WHICH SEND -- READ ONCE, AT ONE MOMENT. (section 13.1)
  *
  * Four rounds of review found four faces of one defect on the save
  * path, and the shape has a name: WHO (which store, which queue), WHAT
@@ -26,7 +26,7 @@
  * carried a cursor but not a verdict. Every repair pinned one pair and
  * left the third face for the next letter.
  *
- * §13 answers it by capturing all three at the instant the save is
+ * section 13 answers it by capturing all three at the instant the save is
  * accepted -- inside the chain's critical section, where `decide` says
  * send -- into one immutable record that everything downstream reads
  * and nothing downstream re-derives.
@@ -137,7 +137,7 @@ describe('the save path reads who, what and which send at one moment', () => {
    * writing it that way is how the exception ends up unwritten. There is
    * exactly one place that must read them -- the check that the file's
    * own store is still the one this window is configured for -- and
-   * §13.1 puts it inside the chain callback, in the same critical
+   * section 13.1 puts it inside the chain callback, in the same critical
    * section as `decide`, because that is the instant the save is
    * accepted. Outside the callback the answer can change between the
    * check and the record.
@@ -243,14 +243,14 @@ describe('the save path reads who, what and which send at one moment', () => {
   });
 
   /*
-   * ⚠️ THE MEMORY IS THE QUEUE, AND THERE IS NO OTHER ONE. (§13.1)
+   * ⚠️ THE MEMORY IS THE QUEUE, AND THERE IS NO OTHER ONE. (section 13.1)
    *
    * `pendingSaves` was a map from block id to what the save was about,
    * and `recovered()` was a second supplier of the same thing for
    * answers that arrived after a restart. Two suppliers of one fact
    * disagree the first time their conditions are spelled differently --
    * and these two were, which is how an answer settled against the
-   * wrong file. §13 deletes both: the queue entry IS the record, so the
+   * wrong file. section 13 deletes both: the queue entry IS the record, so the
    * in-flight path and the after-a-restart path read the same bytes.
    *
    * This is a symbol census rather than a grep: `pendingSaves` appears
@@ -368,7 +368,7 @@ describe('R2 the record is the queue entry', () => {
 
   /*
    * ⚠️ THE ENTRY CARRIES THE RECORD, not a copy of the two fields the
-   * sender happens to need. (§13.1)
+   * sender happens to need. (section 13.1)
    *
    * What a save was about used to live in a map in memory, keyed by
    * block id, filled in by the save and read by the answer. A restart
@@ -595,7 +595,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
 
   /*
    * ⚠️ THE ANSWER THAT ARRIVES AFTER A RESTART TAKES THE SAME ROAD AS
-   * THE ONE THAT ARRIVES WHILE THE WINDOW IS UP. (§13.1)
+   * THE ONE THAT ARRIVES WHILE THE WINDOW IS UP. (section 13.1)
    *
    * It did not. In flight, the settler read a map in memory; after a
    * restart that map was empty, so a second supplier reconstructed an
@@ -629,7 +629,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
 });
 
 /*
- * R8 A SEND A LATER CONFIRMATION HAS OVERTAKEN. (§13, r3-4)
+ * R8 A SEND A LATER CONFIRMATION HAS OVERTAKEN. (section 13, r3-4)
  *
  * A queue can sit for a long time: a store that was unreachable, a
  * window that was closed, a takeover carrying work in. In that time
@@ -826,7 +826,7 @@ describe('R9 a parked entry does not stop the other blocks', () => {
 
 /*
  * R9 A RETIRED REQUEST IS NOT SENT, FROM WHEREVER IT IS FOUND.
- * (§13, r4-2, r5-3)
+ * (section 13, r4-2, r5-3)
  *
  * ⚠️ CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. Removing an entry
  * removes it from ONE queue; the same request can sit in a dead
@@ -914,7 +914,7 @@ describe('R9 a request that has been retired', () => {
 
 /*
  * R4 THE NUMBER IS TAKEN BEFORE THE QUEUE IS WRITTEN, so the queue
- * write is the one that can fail with a number already spent. (§13.1,
+ * write is the one that can fail with a number already spent. (section 13.1,
  * I7)
  *
  * ⚠️ NOTHING WAS SENT, SO THE NUMBER HAS TO COME BACK. Leaving it in
@@ -959,5 +959,60 @@ describe('R4 a send whose queue write did not land', () => {
         'for ever and the block is a draft nothing can settle'
     );
     assert.strictEqual(sentCalls(core0).length, 0, 'something was sent for an entry that was never queued');
+  });
+
+  /*
+   * ⭐ AND SO DO THE TWO REFUSALS THAT COME BEFORE THE QUEUE WRITE.
+   *
+   * The flag was written on the refusal in front of the reviewer who
+   * asked for it -- an unwritable queue -- and on neither of the two
+   * above it, which return just as plainly before `enqueue`. A
+   * sixteenth review round measured the cursor one:
+   * `(check (writers ()))` gave blocked with no `notQueued`, an empty
+   * queue, and the sequence still in the sidecar's `outstanding`. The
+   * rule is positional, so both are asked here; a third refusal added
+   * in front of the enqueue would want a row of its own.
+   */
+  it('says it was not queued for a store this queue is not for', async () => {
+    const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    core = core0;
+    const outbox = new Outbox(path.join(core0.root, 'outbox.json'));
+    outbox.load();
+    outbox.setCursor('w:7');
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    const saver = new Saver(client, outbox, settling(outbox, 'hash-of-some-other-store'));
+    const outcome = await saver.submit(recordFor(parts()));
+    assert.strictEqual(outcome.status, 'blocked');
+    assert.strictEqual(
+      outcome.notQueued,
+      true,
+      'a save refused for belonging to another store kept the number it had taken'
+    );
+    assert.strictEqual(outbox.entries.length, 0, 'the entry reached the queue after all');
+  });
+
+  it('says it was not queued when the store has no cursor to write against', async () => {
+    const core0 = new FakeCore([
+      {
+        match: ['check'],
+        stdout: '(check (store "s") (writers ()) (snapshots ()) (registry outside-store) (verdict ok))\n',
+        rc: 0
+      }
+    ]);
+    core = core0;
+    const outbox = new Outbox(path.join(core0.root, 'outbox.json'));
+    outbox.load();
+    const client = new Client(new CliTransport(core0.config(), core0.env()));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const outcome = await saver.submit(recordFor(parts()));
+    assert.strictEqual(outcome.status, 'blocked', `the save was not blocked: ${outcome.message}`);
+    assert.strictEqual(
+      outcome.notQueued,
+      true,
+      'a save refused for want of a cursor kept the number it had taken, and the block is then a ' +
+        'draft nothing can settle'
+    );
+    assert.strictEqual(outbox.entries.length, 0, 'the entry reached the queue after all');
+    assert.strictEqual(sentCalls(core0).length, 0);
   });
 });

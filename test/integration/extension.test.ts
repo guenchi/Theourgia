@@ -26,15 +26,268 @@
 
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { StoreModel } from '../../src/model';
 import { stringField } from '../../src/blocks';
-import { RealStore } from '../support/real-core';
+import {
+  RealStore,
+  daemonsMatching,
+  socketPathOf,
+  stopDaemonsFor
+} from '../support/real-core';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
 
 async function settle(ms = 250): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/*
+ * ⚠️ THE FIXTURE'S STORES SHARE THE HOST'S RUN ROOT, deliberately.
+ *
+ * The extension under test was given `THEOURGIA_RUN` by the launcher. A
+ * fixture that made its own would put the SAME store's socket under two
+ * roots: two sockets for one key, two daemons opening one store, and
+ * from inside a cell that shows up as a refusal with no cause anybody
+ * can name. ⛔ It is read here rather than in `RealStore`, which must go
+ * on making its own when nobody says otherwise -- a fixture that quietly
+ * inherited an ambient variable would make the unit suite's run-root
+ * gate compare a directory with itself.
+ */
+function hostRunRoot(): string {
+  const given = process.env.THEOURGIA_RUN;
+  assert.ok(
+    given !== undefined && given.length > 0,
+    'the launcher did not pass THEOURGIA_RUN into the extension host, so these cells and the ' +
+      'extension would reach two different daemons for one store'
+  );
+  return given as string;
+}
+
+/*
+ * ⭐ WAITING FOR SOMETHING TO HAPPEN, RATHER THAN FOR A WHILE.
+ *
+ * ⚠️ WHAT THE FIXED WAITS COST, MEASURED. Every one of these cells used
+ * to sleep a flat 1500 ms after a save and then assert. That number was
+ * chosen when a request cost about 460 ms because the core was read from
+ * source; through a daemon the same request costs about 30 ms
+ * (design 7.6.53). One cell in this file went red on the switch for the
+ * opposite reason -- it slept while a background drain it did not know
+ * about finished, and asserted that a save was still stranded after the
+ * extension had quietly got it through. A duration is not an observation
+ * of anything: too short and the cell asserts before the work; too long
+ * and it asserts after work the cell did not ask for.
+ *
+ * ⚠️ AND THE STARTING POINT IS PINNED FIRST. "Wait until the log is not
+ * empty" is satisfied for ever by a log that was not empty to begin
+ * with. Every caller here reads the count BEFORE acting and waits for a
+ * number GREATER than that one.
+ */
+const PATIENCE_MS = 30000;
+
+async function until(
+  what: string | (() => string),
+  ready: () => Promise<boolean> | boolean
+): Promise<void> {
+  const deadline = Date.now() + PATIENCE_MS;
+  for (;;) {
+    if (await ready()) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      /*
+       * THE MESSAGE MAY BE A FUNCTION, so that a cell can put the LAST
+       * reading into it. A timeout that says only what was hoped for
+       * leaves the reader to guess what was actually there, which is the
+       * one thing the waiting loop was in a position to know.
+       */
+      throw new Error(
+        `waited ${PATIENCE_MS} ms and ${typeof what === 'function' ? what() : what} never happened`
+      );
+    }
+    await settle(50);
+  }
+}
+
+/*
+ * HOW MANY RECORDS THIS BLOCK'S LOG HOLDS. Read through the fixture's
+ * own client, which does not go through the extension: a count taken
+ * from the thing under test would be the thing under test agreeing with
+ * itself.
+ */
+/*
+ * THE FACTS THIS EXTENSION REPORTS, ONCE THEY SAY WHAT IS BEING WAITED
+ * FOR. A settings change reaches a handler, and the handler is not the
+ * caller of `update`; the readable sign that it ran is the facts
+ * changing.
+ */
+interface Facts {
+  store: string;
+  actor: string;
+  pending: number | null;
+  blocked: string | null;
+  unreachable: string | null;
+}
+
+/*
+ * THE EXTENSION HAS TAKEN THE SETTINGS IT WAS JUST GIVEN.
+ *
+ * ⚠️ A SETTING IS DELIVERED TO A HANDLER, and the caller of `update` is
+ * not that handler. Sleeping afterwards asserts a duration; what is
+ * waited for here is the extension reporting the store and the actor it
+ * was given, which one `readConfig` takes together -- so an actor that
+ * has arrived is a rebuild that has run, and everything else in the same
+ * batch arrived with it.
+ */
+/*
+ * THE BLOCK IS OPEN IN THE ACTIVE EDITOR.
+ *
+ * ⚠️ THE COMMAND IS AWAITED AND THAT IS NOT THE SAME THING. Its handler
+ * awaits `showTextDocument`, so today the document is there when the
+ * command resolves -- and a cell that sleeps 250 ms afterwards is
+ * asserting a duration about a step it could simply look at. The file a
+ * block is opened into carries the block's id in its path, which is what
+ * makes "the right block" a question with an answer.
+ */
+async function untilOpen(id: string): Promise<void> {
+  await until(
+    () =>
+      `${id} was opened; the editor holds ` +
+      `${vscode.window.activeTextEditor?.document.uri.fsPath ?? 'nothing'}`,
+    () => (vscode.window.activeTextEditor?.document.uri.fsPath ?? '').includes(id)
+  );
+}
+
+async function settingsTaken(store: string, actor: string): Promise<void> {
+  await untilStatus(
+    `the extension took store ${store} and actor ${actor}`,
+    (facts) => facts.store === store && facts.actor === actor
+  );
+}
+
+async function untilStatus(what: string, ready: (facts: Facts) => boolean): Promise<Facts> {
+  let seen: Facts | null = null;
+  await until(
+    () => `${what}; last seen ${JSON.stringify(seen)}`,
+    async () => {
+      seen = (await vscode.commands.executeCommand('theourgia.showStatus', {
+        ask: false
+      })) as Facts;
+      return ready(seen);
+    }
+  );
+  return seen as unknown as Facts;
+}
+
+async function logLength(store: RealStore, id: string): Promise<number> {
+  const answer = await store.client.request('log', [id]);
+  /*
+   * ⛔ A REFUSAL IS NOT A COUNT. Found in a second review round: this
+   * returned `answers.length` whatever the exit code, and a refusal is
+   * one datum -- `(error serve-path-occupied ...)` -- so two failed
+   * reads compare equal and an assertion that nothing was appended
+   * passes without the log having been read at all. That is exactly the
+   * situation the cell about a daemon that cannot start is in.
+   */
+  assert.strictEqual(
+    answer.ok,
+    true,
+    `the store would not answer log ${id}, so this is not a count of anything: ${answer.text.trim()}`
+  );
+  return answer.answers.length;
+}
+
+async function untilLogGrows(store: RealStore, id: string, from: number): Promise<void> {
+  await until(`the log of ${id} grew past ${from} records`, async () => {
+    return (await logLength(store, id)) > from;
+  });
+}
+
+/*
+ * ⚠️ AND THE CELLS THAT ASSERT NOTHING HAPPENED STILL NEED A DURATION.
+ *
+ * There is nothing to wait for when the right behaviour is silence: the
+ * extension decides not to send, shows a sentence, and returns, and
+ * nothing it leaves behind distinguishes "it decided not to" from "it
+ * has not decided yet". So this keeps a period -- ⭐ but it WATCHES that
+ * period instead of sleeping through it, and fails the moment the record
+ * it forbids appears, naming it. A cell that slept and then looked would
+ * report the same failure a second and a half later and would say only
+ * that the total was wrong.
+ *
+ * ⛔ THE NUMBER IS NOT A GUESS ABOUT HOW LONG A SAVE TAKES, which is what
+ * the flat waits it replaces were. It is how long this cell is willing
+ * to watch, and it may be generous: the only cost of a larger one is
+ * that a passing cell takes longer.
+ */
+const SILENCE_MS = 2000;
+
+async function stayedAt(store: RealStore, id: string, count: number): Promise<void> {
+  const deadline = Date.now() + SILENCE_MS;
+  while (Date.now() < deadline) {
+    const now = await logLength(store, id);
+    assert.strictEqual(
+      now,
+      count,
+      `a record was appended to the log of ${id} (${count} -> ${now}) when this cell requires ` +
+        'that nothing be sent'
+    );
+    await settle(50);
+  }
+}
+
+/*
+ * EVERY ENTRY THIS WINDOW HAS WRITTEN, READ OFF THE DISK.
+ *
+ * The path comes from the launcher rather than being rebuilt here: a
+ * cell that worked out for itself where the extension writes would be a
+ * second opinion about it, and the reading that is wrong is the
+ * reassuring one -- an empty directory looks exactly like a queue with
+ * nothing in it.
+ */
+function queueEntries(): Array<{ state: string; id: string; lastError: string | null }> {
+  const storage = process.env.THEOURGIA_TEST_STORAGE;
+  assert.ok(
+    storage !== undefined && storage.length > 0,
+    'THEOURGIA_TEST_STORAGE is not set, so this cell cannot read the queue it is about'
+  );
+  const sessions = path.join(storage as string, 'sessions');
+  if (!fs.existsSync(sessions)) {
+    return [];
+  }
+  const out: Array<{ state: string; id: string; lastError: string | null }> = [];
+  for (const session of fs.readdirSync(sessions)) {
+    const directory = path.join(sessions, session);
+    if (!fs.statSync(directory).isDirectory()) {
+      continue;
+    }
+    for (const store of fs.readdirSync(directory)) {
+      const file = path.join(directory, store, 'outbox.json');
+      if (!fs.existsSync(file)) {
+        continue;
+      }
+      let held: { entries?: Array<{ state: string; id: string; lastError: string | null }> };
+      try {
+        held = JSON.parse(fs.readFileSync(file, 'utf8')) as {
+          entries?: Array<{ state: string; id: string; lastError: string | null }>;
+        };
+      } catch (e) {
+        /*
+         * A HALF-WRITTEN QUEUE IS NOT AN EMPTY ONE, and this is read
+         * while the extension is writing it. Reporting nothing for this
+         * file would make a waiter below give up on a state that was
+         * there; the caller polls, so being unable to read it now is
+         * answered by reading it again.
+         */
+        continue;
+      }
+      for (const entry of held.entries ?? []) {
+        out.push(entry);
+      }
+    }
+  }
+  return out;
 }
 
 async function idOfTitle(store: RealStore, title: string): Promise<string> {
@@ -58,7 +311,7 @@ describe('the extension inside an editor', function () {
   let store: RealStore;
 
   before(async () => {
-    store = await RealStore.make('vscode-host');
+    store = await RealStore.make('vscode-host', { runRoot: hostRunRoot() });
     await store.importMarkdown('doc.md', DOC);
     const settings = vscode.workspace.getConfiguration('theourgia');
     await settings.update('corePath', store.config.corePath, vscode.ConfigurationTarget.Global);
@@ -69,7 +322,7 @@ describe('the extension inside an editor', function () {
     const extension = vscode.extensions.getExtension('theourgia.theourgia');
     assert.ok(extension !== undefined, 'the extension is not installed in this host');
     await extension?.activate();
-    await settle();
+    await settingsTaken(store.store, 'vscode-host');
   });
 
   after(async () => {
@@ -125,14 +378,28 @@ describe('the extension inside an editor', function () {
    * way it reports the assertion below instead, which says what
    * happened.
    */
-  it('runs the recovery command, and dismissing its list does nothing', async () => {
-    const running = vscode.commands.executeCommand('theourgia.otherSessions') as Promise<{
-      did: string;
-      because?: string;
-    }>;
-    await settle(1500);
-    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
-    const outcome = await running;
+  it('runs the recovery command, and finds no other window in a fresh host', async () => {
+    /*
+     * ⛔ THIS CELL DOES NOT EXERCISE A DISMISSAL, and it used to say it
+     * did.
+     *
+     * Measured in a review round: `chooseAndRecover` returns
+     * `{did: 'nothing', because: 'no-other-sessions'}` BEFORE it asks the
+     * chooser anything (src/recovery.ts), so in a host whose storage the
+     * runner has just emptied no picker is ever opened. The cell sat on a
+     * 1500 ms wait and then closed a quick pick that was not there, and a
+     * probe that made the cancellation branch throw still produced the
+     * expected outcome with zero calls to the picker. The name promised
+     * what nothing here could establish.
+     *
+     * What it does establish is worth keeping and is what it is now named
+     * for: the command runs, decides, and says what it decided -- in a
+     * host with nothing to recover, that nothing was found. Dismissal is
+     * covered where the chooser can be driven, in `recovery.test.ts`.
+     */
+    const outcome = (await vscode.commands.executeCommand(
+      'theourgia.otherSessions'
+    )) as { did: string; because?: string };
     assert.ok(outcome !== undefined, 'the command returned nothing, so it decided nothing');
     assert.deepStrictEqual(
       outcome,
@@ -152,7 +419,7 @@ describe('the extension inside an editor', function () {
   it('opens a block into a markdown buffer holding its heading and body', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined, 'nothing was opened');
     assert.strictEqual(editor?.document.languageId, 'markdown');
@@ -178,13 +445,33 @@ describe('the extension inside an editor', function () {
   it('XC reopens the current document with the same verified body and prefix', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const first = vscode.window.activeTextEditor?.document.uri.fsPath;
     assert.ok(first !== undefined, 'the first open put nothing in front of the user');
     const firstBytes = fs.readFileSync(first as string, 'utf8');
 
+    /*
+     * ⭐ SOMETHING ELSE IS PUT IN FRONT FIRST, so that the second open
+     * has work to do.
+     *
+     * Measured in a review round: both waits accepted the document the
+     * first open had left active, so an `openBlock` that returned at once
+     * when its block was already showing satisfied every assertion here
+     * -- the cell was about reopening and never reopened anything.
+     * Opening a different block moves the editor away; bringing this one
+     * back is then a real second open.
+     */
+    const other = await idOfTitle(store, 'Three  spaced');
+    await vscode.commands.executeCommand('theourgia.openBlock', other);
+    await untilOpen(other);
+    assert.notStrictEqual(
+      vscode.window.activeTextEditor?.document.uri.fsPath,
+      first,
+      'the editor did not move away, so the open below is not a reopen'
+    );
+
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const second = vscode.window.activeTextEditor?.document.uri.fsPath;
     assert.ok(second !== undefined, 'the second open put nothing in front of the user');
     assert.strictEqual(second, first, 'a second canonical document was created');
@@ -204,10 +491,10 @@ describe('the extension inside an editor', function () {
     const two = await idOfTitle(store, 'Two');
     const three = await idOfTitle(store, 'Three  spaced');
     await vscode.commands.executeCommand('theourgia.openBlock', two);
-    await settle();
+    await untilOpen(two);
     const firstUri = vscode.window.activeTextEditor?.document.uri.toString();
     await vscode.commands.executeCommand('theourgia.openBlock', three);
-    await settle();
+    await untilOpen(three);
     const secondUri = vscode.window.activeTextEditor?.document.uri.toString();
     assert.notStrictEqual(firstUri, secondUri);
     assert.strictEqual(vscode.window.activeTextEditor?.document.getText(), '## Three  spaced\nb3\n');
@@ -216,7 +503,7 @@ describe('the extension inside an editor', function () {
   it('sends the body alone when the buffer is saved', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined);
     const document = (editor as vscode.TextEditor).document;
@@ -229,7 +516,7 @@ describe('the extension inside an editor', function () {
       );
     });
     await document.save();
-    await settle(1500);
+    await untilLogGrows(store, id, logBefore.answers.length);
 
     const readBack = await store.client.request('read', [id, '--md']);
     assert.strictEqual(readBack.text, '## Two\nedited in the editor\n');
@@ -244,7 +531,7 @@ describe('the extension inside an editor', function () {
   it('sends nothing when the heading line is edited', async () => {
     const id = await idOfTitle(store, 'Three  spaced');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined);
     const document = (editor as vscode.TextEditor).document;
@@ -257,7 +544,7 @@ describe('the extension inside an editor', function () {
       );
     });
     await document.save();
-    await settle(1500);
+    await stayedAt(store, id, logBefore.answers.length);
 
     const logAfter = await store.client.request('log', [id]);
     assert.strictEqual(
@@ -282,12 +569,46 @@ describe('the extension inside an editor', function () {
       '## Renamed\nb3\n',
       'the refused save rolled the buffer back instead of leaving it alone'
     );
+
+    /*
+     * ⭐ AND THEN A SAVE THAT MUST LAND, WHICH IS WHAT MAKES THE
+     * SILENCE ABOVE MEAN SOMETHING.
+     *
+     * Watching for two seconds says nothing about the two-point-first.
+     * A later save that DOES land is an observation of order rather than
+     * of duration: once its record is in the log, anything the heading
+     * save was going to send has either already been sent -- in which
+     * case the total is two and this fails -- or is a request that will
+     * never be made. The watch above stays as the first line, because it
+     * reports the failure a second and a half earlier and names the
+     * count it saw.
+     */
+    await editor.edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Three  spaced\nb3 with a body change\n'
+      );
+    });
+    await document.save();
+    await untilLogGrows(store, id, logBefore.answers.length);
+    const afterBoth = await store.client.request('log', [id]);
+    assert.strictEqual(
+      afterBoth.answers.length,
+      logBefore.answers.length + 1,
+      'two records were appended across a refused heading save and one body save, so the heading ' +
+        'edit was sent after all -- the watch above simply stopped looking before it arrived'
+    );
+    assert.strictEqual(
+      (await store.client.request('read', [id, '--md'])).text,
+      '## Three  spaced\nb3 with a body change\n',
+      'the one record that landed is not the body change, so it is the heading edit'
+    );
   });
 
   it('O5 does not overwrite a buffer that has unsaved changes', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor as vscode.TextEditor;
     const document = editor.document;
     const opened = document.getText();
@@ -299,7 +620,7 @@ describe('the extension inside an editor', function () {
     const typed = document.getText();
 
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     assert.strictEqual(
       document.getText(),
       typed,
@@ -314,7 +635,7 @@ describe('the extension inside an editor', function () {
      */
     const logBefore = await store.client.request('log', [id]);
     await document.save();
-    await settle(1500);
+    await untilLogGrows(store, id, logBefore.answers.length);
     const readBack = await store.client.request('read', [id, '--md']);
     assert.strictEqual(readBack.text, typed);
     const logAfter = await store.client.request('log', [id]);
@@ -324,7 +645,7 @@ describe('the extension inside an editor', function () {
   it('S8 sends LF when the editor is writing CRLF and the block holds none', async () => {
     const id = await idOfTitle(store, 'Three  spaced');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor as vscode.TextEditor;
     const document = editor.document;
 
@@ -339,8 +660,9 @@ describe('the extension inside an editor', function () {
     });
     assert.ok(document.getText().includes('\r\n'), 'the buffer is not holding CRLF');
 
+    const before = await logLength(store, id);
     await document.save();
-    await settle(1500);
+    await untilLogGrows(store, id, before);
 
     const readBack = await store.client.request('read', [id, '--md']);
     assert.strictEqual(
@@ -353,7 +675,7 @@ describe('the extension inside an editor', function () {
   it('does not overwrite a file holding a save this client refused', async () => {
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor as vscode.TextEditor;
     const document = editor.document;
 
@@ -379,16 +701,58 @@ describe('the extension inside an editor', function () {
       );
     });
     await document.save();
-    await settle(1500);
+    /*
+     * THE SAVE ITSELF IS THE OBSERVATION. The editor writes the file and
+     * clears the flag; what this cell is about is what the extension does
+     * NOT do afterwards, and that is watched below.
+     */
+    await until('the editor finished writing the buffer', () => !document.isDirty);
     assert.ok(!document.isDirty, 'the buffer is dirty, so this cell is not testing what it says');
     const refused = document.getText();
 
+    /*
+     * ⭐ THE EDITOR IS MOVED AWAY FIRST, so the open below is a real
+     * one, and the FILE is checked as well as the buffer.
+     *
+     * Two things were wrong with this and both were found in review
+     * rounds. The waiter tested `!document.isDirty`, which line 709 had
+     * already established -- a guard comparing a value with itself. And
+     * it read only the buffer: a reopen that overwrote `current.md` on
+     * disk while VS Code still served the cached text would satisfy it,
+     * which is precisely the failure "reopening threw away a refused
+     * save" describes.
+     */
+    const file = document.uri.fsPath;
+    /*
+     * ⛔ A DIFFERENT BLOCK. This said `idOfTitle(store, 'Two')` -- the
+     * same block the cell is about -- so the editor never moved and the
+     * open below was not a reopen at all. The fix for that was written
+     * in a review round and made this same mistake; the next round
+     * caught it. The id is taken from the one above rather than looked
+     * up again, so the two cannot drift.
+     */
+    const other = await idOfTitle(store, 'Three  spaced');
+    assert.notStrictEqual(other, id, 'the block moved away to is the block under test');
+    await vscode.commands.executeCommand('theourgia.openBlock', other);
+    await untilOpen(other);
+    assert.notStrictEqual(
+      vscode.window.activeTextEditor?.document.uri.fsPath,
+      file,
+      'the editor did not move away, so the open below is not a reopen'
+    );
+
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle(800);
+    await untilOpen(id);
     assert.strictEqual(
-      document.getText(),
+      vscode.window.activeTextEditor?.document.getText(),
       refused,
       'reopening the block threw away a save the core had refused'
+    );
+    assert.strictEqual(
+      fs.readFileSync(file, 'utf8'),
+      refused,
+      'the file on disk was overwritten, and only the editor\'s cached copy still holds the ' +
+        'refused text'
     );
   });
 });
@@ -410,7 +774,7 @@ describe('a document block with front matter, edited twice', function () {
    * own copy -- mutating the real line left every unit cell green.
    */
   before(async () => {
-    store = await RealStore.make('vscode-front');
+    store = await RealStore.make('vscode-front', { runRoot: hostRunRoot() });
     await store.importMarkdown(
       'front.md',
       '---\r\ntitle: carried in the front matter\r\n---\r\n\r\nthe body\r\n'
@@ -428,7 +792,14 @@ describe('a document block with front matter, edited twice', function () {
     await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-front', vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
-    await settle(800);
+    /*
+     * ⚠️ WAITING FOR THE EXTENSION TO HAVE TAKEN THE STORE, not for a
+     * duration. A setting is delivered to a handler that rebuilds, and
+     * the caller of `update` is not that handler; a cell that opened a
+     * block before the rebuild ran would be reading the store it had
+     * just left. Found in a third review round.
+     */
+    await untilStatus('the extension took the store', (f) => f.store === store.store);
   });
 
   after(async () => {
@@ -444,7 +815,10 @@ describe('a document block with front matter, edited twice', function () {
     const fileBlock = outline.text.split('\n')[0].replace(/^- /, '').split('  ')[0];
 
     await vscode.commands.executeCommand('theourgia.openBlock', fileBlock);
-    await settle(800);
+    await until('the document block opened', () => {
+      const open = vscode.window.activeTextEditor?.document;
+      return open !== undefined && open.getText().length > 0;
+    });
     const editor = vscode.window.activeTextEditor as vscode.TextEditor;
     assert.ok(editor !== undefined, 'the document block did not open');
     const document = editor.document;
@@ -473,7 +847,6 @@ describe('a document block with front matter, edited twice', function () {
       );
     });
     await document.save();
-    await settle(1500);
     /*
      * THE FIRST SAVE HAS TO HAVE LANDED AND EMPTIED THE BODY, or the
      * second one is measured against a baseline that never moved and the
@@ -499,7 +872,6 @@ describe('a document block with front matter, edited twice', function () {
       );
     });
     await document.save();
-    await settle(1500);
 
     const refillDeadline=Date.now()+12000;
     let refilled=await new StoreModel(store.client).blockOf(fileBlock);
@@ -569,8 +941,8 @@ describe('a retry whose store changed while it was in flight', function () {
   let other: RealStore;
 
   before(async () => {
-    store = await RealStore.make('vscode-retry');
-    other = await RealStore.make('vscode-retry-other');
+    store = await RealStore.make('vscode-retry', { runRoot: hostRunRoot() });
+    other = await RealStore.make('vscode-retry-other', { runRoot: hostRunRoot() });
     await store.importMarkdown('doc.md', DOC);
     const settings = vscode.workspace.getConfiguration('theourgia');
     await settings.update('corePath', store.config.corePath, vscode.ConfigurationTarget.Global);
@@ -579,7 +951,7 @@ describe('a retry whose store changed while it was in flight', function () {
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-retry', vscode.ConfigurationTarget.Global);
     await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
-    await settle();
+    await settingsTaken(store.store, 'vscode-retry');
   });
 
   after(async () => {
@@ -591,46 +963,119 @@ describe('a retry whose store changed while it was in flight', function () {
     other?.dispose();
   });
 
-  async function strandOneSave(): Promise<void> {
+  async function strandOneSave(): Promise<{ entered: string; armed: string }> {
     const settings = vscode.workspace.getConfiguration('theourgia');
     const id = await idOfTitle(store, 'Two');
     await vscode.commands.executeCommand('theourgia.openBlock', id);
-    await settle();
+    await untilOpen(id);
     const editor = vscode.window.activeTextEditor;
     assert.ok(editor !== undefined, 'nothing was opened');
     // Pass every real W/read/cursor call through. Stall only commit, after the
     // extension has durably selected and queued the version it intends to send.
     const wrapper=`${store.root}/delay-commit.py`,entered=`${store.root}/commit-entered`;
+    const armed=`${store.root}/stall-next-commit`;
+    /*
+     * ⚠️ ONLY THE FIRST COMMIT IS HELD, and the marker file is what
+     * remembers that -- so nothing has to be UNSET afterwards to let the
+     * queue drain again.
+     *
+     * It used to stall every commit and the cell put the real
+     * interpreter back before asserting. Changing a setting is what makes
+     * this extension rebuild, and rebuilding schedules a drain; through
+     * the daemon that drain now finishes in about 30 ms, so by the time
+     * the assertion ran the extension had quietly got the stranded save
+     * through and `pending` was 0. It had passed for years only because
+     * a request read from source took about 460 ms and the drain was
+     * still in flight. ⛔ The cell was not measuring what it said: it was
+     * measuring that the core was slow.
+     */
+    /*
+     * ⭐ THE STALL IS ARMED, ONE COMMIT AT A TIME, and disarms itself.
+     *
+     * Two things need holding in this describe and they need holding at
+     * different moments: the save, so that it is left stranded, and then
+     * the RETRY, so that a settings change can overtake it. A wrapper
+     * that stalled every commit made the first impossible to end without
+     * changing a setting -- and changing a setting is what schedules the
+     * drain that got the stranded save through. A wrapper that stalled
+     * only the first made the second a race: nothing held the retry, so
+     * a correct extension could finish it before the settings change
+     * arrived and legitimately report. Found in a third review round.
+     *
+     * So the caller says when. A commit stalls if the arming file is
+     * there, removes it before sleeping so the next one runs, and writes
+     * the marker the caller waits on.
+     */
     fs.writeFileSync(wrapper,[
       '#!/usr/bin/env python3','import os, sys, time',
       `scheme = ${JSON.stringify(store.config.scheme)}`,
-      "if len(sys.argv) > 3 and sys.argv[3] == 'commit':",
-      `    with open(${JSON.stringify(entered)}, 'w') as marker: marker.write('commit')`,
+      `marker = ${JSON.stringify(entered)}`,
+      `arm = ${JSON.stringify(armed)}`,
+      "if len(sys.argv) > 3 and sys.argv[3] == 'commit' and os.path.exists(arm):",
+      '    os.remove(arm)',
+      "    with open(marker, 'w') as f: f.write('commit')",
       '    time.sleep(30)',
       'os.execvp(scheme, [scheme, *sys.argv[1:]])',''
     ].join('\n'),{mode:0o700});
     await settings.update('scheme', wrapper, vscode.ConfigurationTarget.Global);
     await settings.update('timeoutMs', 10000, vscode.ConfigurationTarget.Global);
-    await settle();
+    /*
+     * ⛔ A PREDICATE THAT IS ALWAYS TRUE IS NOT A WAIT. This read
+     * `() => true`, which returns on the first reading whatever it says
+     * -- a guard comparing a value with itself. Found in a fourth review
+     * round.
+     *
+     * The facts this extension reports do not name the interpreter, so
+     * the actor is changed in the same batch of settings and waited for:
+     * one `readConfig` takes both, so an actor that has arrived is a
+     * rebuild that has run, and the interpreter arrived with it.
+     */
+    await settings.update('actor', 'vscode-retry-stalling', vscode.ConfigurationTarget.Global);
+    await settingsTaken(store.store, 'vscode-retry-stalling');
+    fs.writeFileSync(armed, 'stall the next commit\n', 'utf8');
     await editor?.edit((b) => b.insert(new vscode.Position(1, 0), 'stranded\n'));
     await editor?.document.save();
-    const deadline=Date.now()+25000;
-    while(!fs.existsSync(entered) && Date.now()<deadline)await settle(100);
-    assert.ok(fs.existsSync(entered),'the real save never reached commit after its W write');
-    await settle(11000);
-    await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
-    await settings.update('timeoutMs', undefined, vscode.ConfigurationTarget.Global);
-    await settle();
+    await until('the save reached commit after its W write', () => fs.existsSync(entered));
+    /*
+     * ⭐ AND THEN FOR THE ENTRY TO BE IN THE STATE THIS CELL IS ABOUT,
+     * read off the disk.
+     *
+     * ⛔ NOT for `pending` to be 1: the entry is queued BEFORE the send,
+     * so that count is 1 from the moment the save handler writes it --
+     * long before the send has failed. Waiting for the count would have
+     * gone on to the retry while the held commit was still running. The
+     * state is the difference between "written down" and "sent, and the
+     * answer never came", and only the second is a stranded save.
+     */
+    await until('the held save was given up on and left waiting', () => {
+      return queueEntries().some((entry) => entry.state === 'pending');
+    });
     const facts = (await vscode.commands.executeCommand('theourgia.showStatus', {
       ask: false
     })) as { pending: number | null };
     assert.strictEqual(facts.pending, 1, 'no save was stranded, so there is nothing to retry');
+    return { entered, armed };
   }
 
   it('reports nothing rather than reporting it against the store that replaced it', async () => {
-    await strandOneSave();
+    const stall = await strandOneSave();
     const settings = vscode.workspace.getConfiguration('theourgia');
+    /*
+     * ⭐ THE RETRY IS HELD UNTIL THE SETTINGS CHANGE HAS BEEN MADE, and
+     * the holding is observed rather than assumed.
+     *
+     * This cell asks what a retry reports when the store changes UNDER
+     * it. Starting the retry and changing the setting straight afterwards
+     * does not establish that order: a retry that finished first would
+     * report, correctly, and this cell would call that a defect. So the
+     * next commit is armed to stall, the retry is started, and the cell
+     * waits until the stall has actually been entered before touching the
+     * setting. Found in a third review round.
+     */
+    fs.rmSync(stall.entered, { force: true });
+    fs.writeFileSync(stall.armed, 'stall the retry\n', 'utf8');
     const running = vscode.commands.executeCommand('theourgia.retryOutbox') as Promise<unknown>;
+    await until('the retry reached commit and is being held', () => fs.existsSync(stall.entered));
     await settings.update('store', other.store, vscode.ConfigurationTarget.Global);
     const reported = await running;
     /*
@@ -640,7 +1085,7 @@ describe('a retry whose store changed while it was in flight', function () {
      * reads as two defects and is one.
      */
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
-    await settle();
+    await untilStatus('the extension took the store back', (f) => f.store === store.store);
     assert.strictEqual(
       reported,
       null,
@@ -677,7 +1122,7 @@ describe('what the status reports when the settings are unusable', function () {
   let store: RealStore;
 
   before(async () => {
-    store = await RealStore.make('vscode-broken');
+    store = await RealStore.make('vscode-broken', { runRoot: hostRunRoot() });
     await store.importMarkdown('doc.md', DOC);
     const settings = vscode.workspace.getConfiguration('theourgia');
     await settings.update('corePath', store.config.corePath, vscode.ConfigurationTarget.Global);
@@ -686,7 +1131,7 @@ describe('what the status reports when the settings are unusable', function () {
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     await settings.update('actor', 'vscode-broken', vscode.ConfigurationTarget.Global);
     await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
-    await settle();
+    await settingsTaken(store.store, 'vscode-broken');
   });
 
   after(async () => {
@@ -700,12 +1145,19 @@ describe('what the status reports when the settings are unusable', function () {
   it('does not say nothing is waiting when it has not been able to look', async () => {
     const settings = vscode.workspace.getConfiguration('theourgia');
     await settings.update('store', '', vscode.ConfigurationTarget.Global);
-    await settle();
-    const facts = (await vscode.commands.executeCommand('theourgia.showStatus', {
-      ask: false
-    })) as { pending: number | null };
+    /*
+     * ⚠️ WAITING FOR THE EXTENSION TO HAVE NOTICED, not for 250 ms.
+     * Found in a second review round. A settings change is delivered to
+     * a handler that rebuilds; sleeping and then reading is an assertion
+     * about a duration. What is waited for is the store this extension
+     * says it is using, which is the first thing the rebuild replaces.
+     */
+    const facts = await untilStatus(
+      'the extension took the empty store setting',
+      (f) => f.store === ''
+    );
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
-    await settle();
+    await untilStatus('the extension took the store setting back', (f) => f.store === store.store);
     assert.strictEqual(
       facts.pending,
       null,
@@ -718,5 +1170,350 @@ describe('what the status reports when the settings are unusable', function () {
       ask: false
     })) as { pending: number | null };
     assert.strictEqual(facts.pending, 0, 'a readable and empty queue was not reported as empty');
+  });
+});
+
+/*
+ * plugin-r2 T1: the extension runs the thin client, and the thin client
+ * runs a daemon.
+ *
+ * WHAT CHANGED AND WHY IT NEEDS CELLS HERE. This extension used to run
+ * `cli.ss` -- a fresh interpreter, loading the whole core, for every
+ * request. It now runs `theourgia.ss`, which finds or starts a daemon
+ * and sends it the request. Measured on the pinned core: about 460 ms a
+ * request from source, about 40 to 50 from a product directory, about 30
+ * through the daemon (design section 7.6.53). None of that is visible
+ * from inside the extension; what IS visible, from outside, is whether a
+ * daemon exists, whether a second request started a second one, and what
+ * a user is told when one cannot be started at all.
+ *
+ * ⚠️ THE PROCESSES ARE FOUND BY THIS STORE'S PATH, which is in the
+ * daemon's own argument list. ⛔ not by the word "scheme" -- a
+ * dozen of the editor's own helpers carry it, and the core spells the
+ * interpreter from THEOURGIA_SCHEME, so a machine that sets that to
+ * `chez` would have this find nothing and say so cleanly.
+ */
+describe('plugin-r2 T1 the extension reaches the core through a daemon', function () {
+  this.timeout(180000);
+  let store: RealStore;
+
+  before(async () => {
+    store = await RealStore.make('vscode-daemon', { runRoot: hostRunRoot() });
+    await store.importMarkdown('doc.md', DOC);
+    const settings = vscode.workspace.getConfiguration('theourgia');
+    await settings.update('corePath', store.config.corePath, vscode.ConfigurationTarget.Global);
+    await settings.update('libDirs', store.config.libDirs, vscode.ConfigurationTarget.Global);
+    await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
+    await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
+    await settings.update('actor', 'vscode-daemon', vscode.ConfigurationTarget.Global);
+    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await settingsTaken(store.store, 'vscode-daemon');
+  });
+
+  after(async () => {
+    const settings = vscode.workspace.getConfiguration('theourgia');
+    for (const name of ['store', 'corePath', 'libDirs', 'scheme', 'actor']) {
+      await settings.update(name, undefined, vscode.ConfigurationTarget.Global);
+    }
+    store?.dispose();
+  });
+
+  it('starts a daemon for the block it opens, and opens a second without starting another', async () => {
+    /*
+     * ⭐ THE FIXTURE'S DAEMON IS STOPPED FIRST, and that is what makes
+     * this cell about the EXTENSION.
+     *
+     * ⛔ It used to open a block and observe that the count had not
+     * changed -- and the daemon it was counting was the fixture's own,
+     * started by the requests that fetched the ids. Measured in a review
+     * round: forcing the extension onto the `cli` transport, which starts
+     * no daemon at all, left every observation identical. The cell was
+     * watching a process the extension had nothing to do with.
+     *
+     * With nothing running, the first open must bring a daemon into
+     * existence -- only the thin client does that -- and the second must
+     * reuse it, which is the whole of what having a daemon buys. The pid
+     * settles the second half: a daemon replaced between the two opens
+     * has a different one, and a count alone would read that as "still
+     * just one".
+     */
+    const first = await idOfTitle(store, 'Two');
+    const second = await idOfTitle(store, 'Three  spaced');
+
+    stopDaemonsFor(store.store);
+    assert.deepStrictEqual(
+      daemonsMatching(store.store),
+      [],
+      "the fixture's daemon would not stop, so this cell cannot tell whose daemon it is watching"
+    );
+
+    await vscode.commands.executeCommand('theourgia.openBlock', first);
+    await untilOpen(first);
+    const afterFirst = daemonsMatching(store.store);
+    assert.strictEqual(
+      afterFirst.length,
+      1,
+      `opening a block left ${afterFirst.length} daemons for ${store.store}. With none running ` +
+        'beforehand, exactly one means the extension went through the thin client; none means ' +
+        'it did not.'
+    );
+
+    await vscode.commands.executeCommand('theourgia.openBlock', second);
+    await untilOpen(second);
+    assert.deepStrictEqual(
+      daemonsMatching(store.store),
+      afterFirst,
+      'the second open started another daemon, so the first request is not being reused'
+    );
+  });
+
+  it('puts that daemon socket under the run root the launcher gave this host', function () {
+    const socket = socketPathOf(store.store);
+    assert.notStrictEqual(socket, null, 'no running daemon names this store');
+    assert.strictEqual(
+      (socket as string).startsWith(hostRunRoot()),
+      true,
+      `the daemon's socket is at ${socket}, which is not under ${hostRunRoot()}. The extension ` +
+        'and these cells would then be talking to two different daemons about one store.'
+    );
+  });
+});
+
+/*
+ * plugin-r2 T1: and when a daemon cannot be started at all.
+ *
+ * ⭐ THE USER IS TOLD WHAT THE CORE SAID. The thin client's whole job
+ * on this path is to turn "I could not start a server" into words; an
+ * extension that collapsed those into "unknown" would leave somebody
+ * looking at a save that will not go with nothing to act on. Measured
+ * against the pinned core, with a directory sitting where the socket
+ * goes:
+ *
+ *   $ theourgia outline --store <s>
+ *   (error serve-path-occupied (path "<run root>/<key>/socket"))
+ *   rc=75
+ */
+describe('plugin-r2 T1 a daemon that cannot be started', function () {
+  this.timeout(180000);
+  let store: RealStore;
+  let socket: string | null = null;
+
+  before(async () => {
+    store = await RealStore.make('vscode-nodaemon', { runRoot: hostRunRoot() });
+    await store.importMarkdown('doc.md', DOC);
+    const settings = vscode.workspace.getConfiguration('theourgia');
+    await settings.update('corePath', store.config.corePath, vscode.ConfigurationTarget.Global);
+    await settings.update('libDirs', store.config.libDirs, vscode.ConfigurationTarget.Global);
+    await settings.update('scheme', store.config.scheme, vscode.ConfigurationTarget.Global);
+    await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
+    await settings.update('actor', 'vscode-nodaemon', vscode.ConfigurationTarget.Global);
+    await vscode.extensions.getExtension('theourgia.theourgia')?.activate();
+    await settingsTaken(store.store, 'vscode-nodaemon');
+  });
+
+  after(async () => {
+    const settings = vscode.workspace.getConfiguration('theourgia');
+    for (const name of ['store', 'corePath', 'libDirs', 'scheme', 'actor']) {
+      await settings.update(name, undefined, vscode.ConfigurationTarget.Global);
+    }
+    if (socket !== null) {
+      fs.rmSync(socket, { recursive: true, force: true });
+    }
+    store?.dispose();
+  });
+
+  it('relays the words the core used, rather than calling it unknown', async () => {
+    const id = await idOfTitle(store, 'Two');
+    /*
+     * ⚠️ WAITING FOR A DIFFERENT DOCUMENT, NOT FOR ONE TO EXIST. The
+     * describes above leave an editor open, so `activeTextEditor !==
+     * undefined` is already true when this starts -- a guard comparing a
+     * value with itself, which is how the first version of this cell
+     * went on to save a document belonging to another store's block and
+     * then waited half a minute for a report about it.
+     */
+    const was = vscode.window.activeTextEditor?.document.uri.toString() ?? '';
+    await vscode.commands.executeCommand('theourgia.openBlock', id);
+    await until(
+      `a block of ${store.store} opened (the editor held ${was})`,
+      () => (vscode.window.activeTextEditor?.document.uri.toString() ?? '') !== was
+    );
+    const editor = vscode.window.activeTextEditor as vscode.TextEditor;
+    const document = editor.document;
+
+    /*
+     * THE OBSTRUCTION IS PUT WHERE THE CORE ITSELF PUT THE SOCKET. The
+     * name under the run root is a digest of the store's resolved path,
+     * and composing it here would be a second implementation of that
+     * rule -- one whose mistake would be an obstruction in a directory
+     * nobody uses, and a cell that then passed for the wrong reason.
+     */
+    /*
+     * ⭐ THE BASELINE IS TAKEN WHILE THE STORE CAN STILL ANSWER. It was
+     * taken after the obstruction was in place, which made it a refusal
+     * rather than a count -- and the comparison at the end of this cell
+     * was then between two refusals, which are equal whatever the log
+     * holds. Found in a second review round.
+     */
+    const before = await logLength(store, id);
+    let readBack = '';
+
+    socket = socketPathOf(store.store);
+    assert.notStrictEqual(socket, null, 'no daemon is running, so there is no socket path to take');
+    stopDaemonsFor(store.store);
+    assert.deepStrictEqual(
+      daemonsMatching(store.store),
+      [],
+      'the daemon would not stop, so the client below will simply use it'
+    );
+    fs.rmSync(socket as string, { force: true });
+    fs.mkdirSync(socket as string, { recursive: true });
+
+    await editor.edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Two\nsaved while no daemon can start\n'
+      );
+    });
+    await document.save();
+    /*
+     * ⭐ AND THE STORE IS ASKED AGAIN, because that is the request whose
+     * failure the extension reports where a cell can read it.
+     *
+     * Measured, and it is what this cell got wrong twice: the save
+     * itself reaches nothing readable. A save first asks the store where
+     * the cursor is; that request meets the obstruction, so the save is
+     * never written down -- right in itself, and invisible. The status
+     * this extension hands back is the readable channel, and what fills
+     * it is the conflict count's own asking.
+     */
+    await vscode.commands.executeCommand('theourgia.refreshOutline');
+
+    /*
+     * ⚠️ WHAT IS WAITED FOR IS THE EXTENSION SAYING IT IS BLOCKED, NOT A
+     * QUEUE ENTRY.
+     *
+     * Measured, and it is the first thing this cell got wrong: nothing
+     * reaches the queue at all. A save first asks the store where the
+     * cursor is, and that request is the one that meets the obstruction
+     * -- so the save never gets as far as being written down, which is
+     * right (a request nobody could send is not a request to keep) and
+     * is invisible in a file this cell was reading. The extension
+     * reports it as the status it hands back, and `blocked` is where the
+     * words come out.
+     */
+    let blocked: string | null = null;
+    let seen = '';
+    await until(() => `the extension reported that it cannot reach the store; last seen ${seen}`, async () => {
+      const facts = (await vscode.commands.executeCommand('theourgia.showStatus', {
+        ask: false
+      })) as { blocked: string | null; unreachable: string | null };
+      blocked = facts.unreachable ?? facts.blocked;
+      seen = `${JSON.stringify(facts)} queue=${JSON.stringify(queueEntries())} socket=${
+        fs.existsSync(socket as string) ? fs.statSync(socket as string).isDirectory() ? 'dir' : 'file' : 'gone'
+      } daemons=${daemonsMatching(store.store).length}`;
+      return blocked !== null;
+    });
+    const said = String(blocked);
+    /*
+     * ⭐ WHAT MAKES THE SENTENCE ACTIONABLE IS THE PATH, and the cell
+     * asks for that rather than for one particular refusal name.
+     *
+     * It listed `serve-path-occupied|serve-start-failed` and a run
+     * answered `serve-busy` instead: with a directory sitting where the
+     * socket goes, which of the core's names comes back depends on how
+     * far the start got before it gave up -- the path may fail to bind
+     * (client.ss), or a server may start and find it cannot take the
+     * lock (daemon.ss:304). All of them carry the path. Naming one of
+     * them made this cell about which branch the core happened to take,
+     * which is not what it is for; the twin below is what keeps the
+     * assertion from being vacuous.
+     */
+    assert.ok(
+      said.includes(socket as string),
+      `the extension says "${said}", which does not name the socket path. A user reading that ` +
+        'has nothing to act on; the path names a directory they can remove.'
+    );
+    assert.match(
+      said,
+      /serve-busy|serve-path-occupied|serve-start-failed|connect-failed/,
+      `the extension says "${said}", which carries no refusal the core issues for this`
+    );
+    assert.doesNotMatch(
+      said,
+      /unknown/,
+      'the refusal was collapsed into the word this cell exists to prevent'
+    );
+    /*
+     * AND THE BYTES ARE STILL THERE. A save that could not go out must
+     * leave the user's text where they typed it.
+     */
+    assert.strictEqual(document.getText(), '## Two\nsaved while no daemon can start\n');
+
+    /*
+     * AND NOTHING LANDED -- ASKED AFTER THE OBSTRUCTION IS REMOVED.
+     *
+     * ⚠️ IT USED TO BE ASKED WHILE THE SOCKET WAS STILL BLOCKED, which
+     * meant both readings were refusals and the comparison was between
+     * two error data. The store has to be reachable for this question to
+     * have an answer at all.
+     */
+    fs.rmSync(socket as string, { recursive: true, force: true });
+    socket = null;
+    /*
+     * ⭐ AND THE WATCHING IS WHAT MAKES THIS MEAN ANYTHING.
+     *
+     * A single comparison here asks the question at one instant, and the
+     * save handler this cell is about is an asynchronous listener that
+     * may not have finished -- what was waited for above was the
+     * CONFLICT COUNT's request, which is a different one. Found in a
+     * seventh review round. `stayedAt` watches instead, and fails the
+     * moment a record appears, naming the counts.
+     */
+    await stayedAt(store, id, before);
+    /*
+     * ⭐ AND THEN A SAVE THAT MUST LAND, which is what makes the silence
+     * above an observation rather than a wait.
+     *
+     * Watching for two seconds says nothing about the two-point-first,
+     * and what this cell needs to rule out is a save handler that was
+     * merely slow. A later save that DOES land establishes order: once
+     * its record is in the log, anything the blocked save was going to
+     * append has either already appeared -- in which case the total is
+     * two and this fails -- or never will. Found in an eighth review
+     * round; every other negative cell in this file already had one.
+     */
+    await editor.edit((builder) => {
+      builder.replace(
+        new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)),
+        '## Two\nsaved once the daemon can start again\n'
+      );
+    });
+    const landed = '## Two\nsaved once the daemon can start again\n';
+    await document.save();
+    /*
+     * ⭐ WAITING FOR THE RECORD TO BE THIS ONE, not for the count to
+     * move.
+     *
+     * Measured in a ninth review round: `untilLogGrows` returns on any
+     * growth, and the assertion below asked only for `before + 1` -- so
+     * a blocked save that arrived LATE and a second save that never
+     * completed produced exactly that total, and the cell passed having
+     * observed the opposite of what it claims. What the block holds is
+     * what tells the two apart.
+     */
+    await until(
+      () => `the second save landed; the block holds ${JSON.stringify(readBack)}`,
+      async () => {
+        readBack = (await store.client.request('read', [id, '--md'])).text;
+        return readBack === landed;
+      }
+    );
+    assert.strictEqual(
+      await logLength(store, id),
+      before + 1,
+      'two records landed across a save that could not be sent and one that could, so the ' +
+        'blocked save was sent after all'
+    );
   });
 });

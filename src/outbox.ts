@@ -66,7 +66,7 @@ export const OUTBOX_VERSION = 1;
  * `parked` means this send is not going to be made as it stands -- a
  * later confirmation has overtaken it, or a person has to look at it --
  * so the queue steps over it and carries on with other blocks. One
- * stops the queue; the other is stepped over. (§13, r3-4)
+ * stops the queue; the other is stepped over. (section 13, r3-4)
  */
 export type EntryState = 'queued' | 'sent' | 'pending' | 'parked';
 
@@ -84,17 +84,17 @@ export interface OutboxEntry {
    * that won it. A dead session's queue may be taken over across several
    * generations, and "already imported" has to say by WHOM -- otherwise
    * a later generation cannot tell an entry it should skip from one it
-   * should carry. (§12.11.3)
+   * should carry. (section 12.11.3)
    */
   importedBy: string | null;
   /*
-   * WHAT THE SAVE WAS ABOUT, once the entry carries it. (§13.1)
+   * WHAT THE SAVE WAS ABOUT, once the entry carries it. (section 13.1)
    *
-   * ⚠️ OPTIONAL FOR NOW, AND NOT BECAUSE IT IS OPTIONAL. §13 makes the
-   * entry the record and deletes the map in memory that used to hold
+   * ⚠️ OPTIONAL FOR NOW, AND NOT BECAUSE IT IS OPTIONAL. Section 13
+   * makes the entry the record and deletes the map in memory that held
    * this; entries written before that change have no record, and the
    * versioned legacy path reads them. The skeleton step declares the
-   * field so §13's cells compile and read red; nothing writes it yet.
+   * field so section 13's cells compile and read red; nothing writes it yet.
    */
   record?: SendRecord;
 }
@@ -315,7 +315,8 @@ export class Outbox {
    * added that way is a request sent with nothing written down.
    */
   /*
-   * ⚠️ READ BEFORE CHANGING, AND THE REASON LIVES HERE ONLY. (§13, r5-5)
+   * ⚠️ READ BEFORE CHANGING, AND THE REASON LIVES HERE ONLY.
+   * (section 13, r5-5)
    *
    * A mutator used to edit whatever this object last read and write the
    * whole file back, so anything another writer had put there in
@@ -388,7 +389,7 @@ export class Outbox {
   }
 
   /*
-   * FORGET WHERE THE STORE STOOD. (§13.3)
+   * FORGET WHERE THE STORE STOOD. (section 13.3)
    *
    * ⚠️ THIS IS NOT `setCursor(null)` AND THE DIFFERENCE IS THE POINT. A
    * position is set when an answer establishes one; this says the
@@ -450,7 +451,7 @@ export class Outbox {
      */
     if (cursor !== null && next.entries.length !== before) {
       /*
-       * ⚠️ AND IT MOVES THE WAY A LOG MOVES. (§13.3, R10)
+       * ⚠️ AND IT MOVES THE WAY A LOG MOVES. (section 13.3, R10)
        *
        * It used to take whatever position the answer carried, with
        * nothing asked about where this queue already stood. Two things
@@ -522,7 +523,7 @@ export class Outbox {
    * Records that a takeover has carried this entry into another
    * session's queue. The entry stays here: it is the only trace of what
    * that window was doing, and nothing in this batch deletes such a
-   * trace. (§12.11.3, §12.23)
+   * trace. (section 12.11.3, section 12.23)
    */
   public markImported(req: string, token: string): void {
     return withQueueExclusive(this.file, (): void => {
@@ -544,7 +545,7 @@ export class Outbox {
 
   /*
    * THIS SEND IS NOT GOING OUT AS IT STANDS, AND THE QUEUE CARRIES ON.
-   * (§13, r3-4)
+   * (section 13, r3-4)
    */
   public markParked(req: string, why: string): void {
     return withQueueExclusive(this.file, (): void => {
@@ -557,6 +558,54 @@ export class Outbox {
       }
     }
     this.commit(next);
+
+    });
+  }
+
+  /*
+   * PUT EVERY PARKED ENTRY BACK IN THE QUEUE, AND SAY HOW MANY.
+   *
+   * ⚠️ NOT A TIMER AND NOT A RETRY BUTTON. An entry is parked because
+   * nothing it can wait for will change the answer -- the store
+   * directory does not exist, the socket path is longer than a unix
+   * socket name may be, a person has to look at a mismatch. What
+   * releases it is the event that could have changed the answer: a
+   * configuration change. If it did not, the same rule parks it again
+   * on the same attempt, which is why "once" needs no counter here.
+   *
+   * ⚠️ THE REASON STAYS ON THE ENTRY. It is what a person reads to find
+   * out what was wrong, and the state is what decides whether it goes
+   * out; overwriting the sentence would lose the only record of why it
+   * stopped.
+   */
+  /*
+   * ⛔ IT WROTE THE WHOLE QUEUE BACK WITHOUT THE LOCK.
+   *
+   * Every other mutator here takes `withQueueExclusive` before its
+   * refresh, and this one read, edited and committed outside it.
+   * Measured in a sixteenth review round with a controlled interleaving:
+   * this window read a queue holding one parked request, another window
+   * added a save, and the commit here wrote back the file it had read --
+   * the second window's save was gone, with no failure anywhere. A
+   * read-modify-write of a whole file is exactly the operation the lock
+   * exists for, and the reason this one was missed is that it is the
+   * only mutator whose body reads like a report: it counts.
+   */
+  public unparkAll(): number {
+    return withQueueExclusive(this.file, (): number => {
+    this.refresh();
+    const next = this.copy();
+    let released = 0;
+    for (const entry of next.entries) {
+      if (entry.state === 'parked') {
+        entry.state = 'queued';
+        released += 1;
+      }
+    }
+    if (released > 0) {
+      this.commit(next);
+    }
+    return released;
 
     });
   }
@@ -629,6 +678,23 @@ export class Outbox {
  * nobody had. Refusing leaves the file alone, which is the whole of what
  * `load` promises when it cannot read one.
  */
+/*
+ * THE ONE READER OF A QUEUE FILE.
+ *
+ * ⚠️ EXPORTED BECAUSE TWO OTHER READERS HAD GROWN BESIDE IT. The
+ * recovery listing counted entries with its own checks and the migration
+ * guard matched them with its own, and each of them accepted files this
+ * one refuses: a queue declaring an unsupported version, an entry with
+ * no cursor. Measured in a thirteenth review round -- `{"version": 99,
+ * "entries": []}` read as an empty queue here and as unreadable there,
+ * so two readers gave opposite verdicts about one file.
+ *
+ * A rule that lives in one place cannot disagree with itself.
+ */
+export function readQueueFile(parsed: unknown): OutboxFile {
+  return normalise(parsed);
+}
+
 function normalise(parsed: unknown): OutboxFile {
   const out = emptyFile();
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -699,7 +765,7 @@ function readEntry(item: unknown, at: number): OutboxEntry {
      * ⚠️ THE KEY IS THIS FILE'S CONVENTION, NOT THE SIDECAR'S. The
      * queue has always written its fields under the names the code uses
      * (`lastError`, `createdAt`), because it serialises the record
-     * directly; the sidecar, which is new, spells its keys the way §12
+     * directly; the sidecar, which is new, spells its keys the way section 12
      * does and has an explicit mapping for it. Reading `imported-by`
      * here while the writer emitted `importedBy` meant the mark was
      * written and never read back -- the two halves of one field
@@ -713,7 +779,7 @@ function readEntry(item: unknown, at: number): OutboxEntry {
 /*
  * THE RECORD AN ENTRY CARRIES, READ ALL OF IT OR NONE OF IT.
  *
- * ⚠️ ABSENT AND BROKEN ARE DIFFERENT. An entry written before §13 has
+ * ⚠️ ABSENT AND BROKEN ARE DIFFERENT. An entry written before section 13 has
  * no record at all, and that is an ordinary thing with a path of its
  * own: it is sent and dequeued as before, and its answer may not write
  * a baseline, because the provenance a baseline needs was never

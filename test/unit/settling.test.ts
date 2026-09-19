@@ -354,7 +354,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const theirs = await queuedBeforeWeStarted(r, B, 'a.2', 'body from B\n');
 
     /*
-     * WHAT THE OTHER STORE'S SAVE LEFT UNDER THE SHARED KEY: its file,
+     * WHAT THE OTHER STORE'S SAVE LEFT UNDER THE SHARED ⭐ its file,
      * its digests, its block -- the same block id, which is the whole
      * reason it collides.
      */
@@ -583,7 +583,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       report: (notice) => r.said.push(notice),
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
-    const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', timeoutMs: 1000, transport: 'cli' }, {}));
+    const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', writer: '', timeoutMs: 1000, transport: 'cli' }, {}));
 
     assert.throws(
       () => new Saver(client, r.queueOf(B), settlerForA),
@@ -740,7 +740,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
 });
 
 /*
- * WHAT EACH VERDICT LEAVES BEHIND. (R4, R5; §13.2, §13.3)
+ * WHAT EACH VERDICT LEAVES BEHIND. (R4, R5; section 13.2, section 13.3)
  *
  * The record beside a file keeps two things apart: WHICH SEND the store
  * confirmed, and what the file now holds. Every verdict has to say
@@ -878,7 +878,7 @@ describe('R5 each verdict leaves its own mark on the record', () => {
  *
  * A cursor belongs to one store's log, so two sends to different stores
  * carry positions that cannot be compared at all. The send number
- * belongs to the file, and two sends of one file always can be. §13
+ * belongs to the file, and two sends of one file always can be. section 13
  * moves the ordering guard onto the number for exactly that reason --
  * and these cells are about what that costs when the two disagree.
  */
@@ -975,7 +975,7 @@ describe('R4 which send becomes the baseline', () => {
    *
    * The baseline says which send it holds. If an answer arrives for the
    * same number under a DIFFERENT request, the two disagree about what
-   * that number means -- and no rule here can say which is right. §13
+   * that number means -- and no rule here can say which is right. section 13
    * says so out loud: mark the record for a person and keep the entry.
    * Settling it quietly would make one of the two sends disappear.
    */
@@ -1041,7 +1041,7 @@ describe('R4 which send becomes the baseline', () => {
 });
 
 /*
- * R14 AN ENTRY FROM BEFORE THE RECORD. (§13.1)
+ * R14 AN ENTRY FROM BEFORE THE RECORD. (section 13.1)
  *
  * A queue written by the older build carries a request and bytes and
  * nothing else: no file, no digests, no number. It is sent and dequeued
@@ -1133,7 +1133,7 @@ describe('R14 an entry written before the record', () => {
 });
 
 /*
- * R6 A WITHDRAWAL FOLLOWED BY A REFUSAL. (§13.3, 第三十八封②)
+ * R6 A WITHDRAWAL FOLLOWED BY A REFUSAL. (section 13.3, letter 38 (2))
  *
  * The sequence a review found, and the reason the ordering guard moved
  * onto the send number: publish X, save Y and get no answer, put X back

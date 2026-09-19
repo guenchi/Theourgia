@@ -62,6 +62,8 @@ function settling(outbox: Outbox): Settle {
     outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
   };
 }
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { documentFor, readBlock, splitDocument, titleOf } from '../../src/blocks';
 import { StoreModel } from '../../src/model';
@@ -71,13 +73,17 @@ import { Sessions } from '../../src/sessions';
 import { Outbox } from '../../src/outbox';
 import { parseOutline } from '../../src/outline';
 import { Client } from '../../src/client';
-import { CliTransport, TransportError } from '../../src/transport';
+import { TransportError } from '../../src/transport';
 import { Counting } from '../support/counting';
 import { SpawnSpy } from '../support/spawn-spy';
-import { Saver, Settle } from '../../src/saver';
+import { SaveOutcome, Saver, Settle } from '../../src/saver';
 import { LosesTheAnswer } from '../support/lossy';
-import { clause, clauseValue, initWire, readEvent } from '../../src/wire';
-import { CorePin, RealStore, checkCorePin, pinCore } from '../support/real-core';
+import { answerOf, initWire, readEvent } from '../../src/wire';
+import { Working } from '../../src/working';
+import { recordFor } from '../../src/record';
+import { digestOfBytes } from '../../src/publication';
+import { CorePin, RealStore, checkCorePin, daemonsUnder, pinCore } from '../support/real-core';
+import { entriesIn } from '../support/run-root';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
 
@@ -145,7 +151,7 @@ describe('O3 the tree the model builds is the tree the core printed', function (
         await walk(child.id);
       }
     };
-    for (const root of await model.roots()) {
+    for (const root of (await model.roots()).nodes) {
       seen.push(root.id);
       await walk(root.id);
     }
@@ -158,7 +164,7 @@ describe('O3 the tree the model builds is the tree the core printed', function (
 
   it('gives each block the parent and the title the core gave it', async () => {
     const model = new StoreModel(store.client);
-    const roots = await model.roots();
+    const roots = (await model.roots()).nodes;
     assert.strictEqual(roots.length, 1, 'one imported file is one top-level block');
     const outline = parseOutline((await store.client.request('outline', [])).text);
     assert.strictEqual(roots[0].id, outline[0].id);
@@ -225,7 +231,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      * see one call and the store would record one event, and the
      * duplicate would be invisible from both ends.
      */
-    const counting = new Counting(new CliTransport(store.config));
+    const counting = new Counting(store.transport());
     const spy = new SpawnSpy();
     const saver = new Saver(new Client(counting), outbox, settling(outbox));
 
@@ -254,7 +260,8 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      * holding a pair -- the write answers use the pair and the log uses
      * this. Taking element one gives the writer and loses the sequence.
      */
-    const event = readEvent((clause(last, 'event') as unknown[]).slice(1));
+    const clause = answerOf(last, 'entry')?.clause('event');
+    const event = readEvent(clause !== undefined && clause.read ? clause.items : []);
     assert.ok(event !== null, `could not read the event out of ${written.text}`);
     assert.strictEqual(
       outbox.cursor,
@@ -322,7 +329,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      * opposite of what this cell is about.
      */
     assert.strictEqual(
-      clauseValue(repeat.answers[0], 'replay'),
+      answerOf(repeat.answers[0], 'ok')?.value('replay'),
       true,
       `the repeat was not answered as a replay: ${repeat.text}`
     );
@@ -437,7 +444,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     outbox.load();
 
     const losing = new LosesTheAnswer(
-      new CliTransport(store.config),
+      store.transport(),
       (verb) => verb === 'set'
     );
     const blind = new Saver(new Client(losing), outbox, settling(outbox));
@@ -514,7 +521,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
      * that is the outside source.
      */
     const replayed = outcomes[0].answer;
-    const named = readEvent(clauseValue(replayed, 'event') as unknown);
+    const named = readEvent(answerOf(replayed, 'ok')?.value('event') as unknown);
     /*
      * THE MESSAGE MUST SURVIVE THE VALUE IT DESCRIBES. Every integer the
      * reader produces is a BigInt, and JSON.stringify throws on one --
@@ -528,7 +535,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       after,
       'the client did not carry the record the replay named into its cursor'
     );
-    const counting = new Counting(new CliTransport(store.config));
+    const counting = new Counting(store.transport());
     const next = new Saver(new Client(counting), reloaded, settling(reloaded));
     const second = await next.save(id, 'src', 'and then this\n');
     assert.strictEqual(second.status, 'saved', second.message);
@@ -553,17 +560,17 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     const outbox = new Outbox(path.join(store.root, 'outbox-same-saver.json'));
     outbox.load();
 
-    const losing = new LosesTheAnswer(new CliTransport(store.config), (verb) => verb === 'set');
+    const losing = new LosesTheAnswer(store.transport(), (verb) => verb === 'set');
     const blind = new Saver(new Client(losing), outbox, settling(outbox));
     const lost = await blind.save(id, 'src', 'unheard again\n');
     assert.strictEqual(lost.status, 'pending', lost.message);
 
-    const counting = new Counting(new CliTransport(store.config));
+    const counting = new Counting(store.transport());
     const saver = new Saver(new Client(counting), outbox, settling(outbox));
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'replayed', retried[0].message);
 
-    const named = readEvent(clauseValue(retried[0].answer, 'event') as unknown);
+    const named = readEvent(answerOf(retried[0].answer, 'ok')?.value('event') as unknown);
     assert.ok(named !== null, `the replay named no record: ${String(retried[0].answer)}`);
     const expected = `${named?.writer}:${named?.seq}`;
 
@@ -621,7 +628,7 @@ describe('the marks the model draws are the marks a real store reports', functio
     assert.strictEqual(removed.ok, true, removed.text);
 
     const model = new StoreModel(store.client);
-    const marks = await model.structuralMarks();
+    const marks = (await model.structuralMarks()).marks;
     assert.strictEqual(marks.size, 1, `the store reported ${marks.size} marked blocks`);
     const [id, found] = [...marks.entries()][0];
     assert.deepStrictEqual(found, ['orphan'], `the store marked ${id} as ${found.join(',')}`);
@@ -632,7 +639,7 @@ describe('the marks the model draws are the marks a real store reports', functio
      * of the mark and nothing else. This is the branch the stand-in
      * cells exercise with a scripted `(orphan "a.2")`.
      */
-    const roots = await model.roots();
+    const roots = (await model.roots()).nodes;
     assert.deepStrictEqual(roots.map((n) => n.id), [id]);
     assert.deepStrictEqual(roots[0].marks, ['orphan']);
     assert.strictEqual(roots[0].orphan, true);
@@ -656,9 +663,9 @@ describe('the marks the model draws are the marks a real store reports', functio
     try {
       await clean.importMarkdown('doc.md', DOC);
       const model = new StoreModel(clean.client);
-      assert.strictEqual((await model.structuralMarks()).size, 0);
+      assert.strictEqual((await model.structuralMarks()).marks.size, 0);
       assert.strictEqual(await model.conflictCount(), 0);
-      const roots = await model.roots();
+      const roots = (await model.roots()).nodes;
       /*
        * A LOOP OVER NOTHING ASSERTS NOTHING. Without this line a model
        * that returned no roots at all would satisfy every claim below.
@@ -708,10 +715,10 @@ describe('an expansion against the real core costs what the stand-in says it cos
      * `check` slipped past a count that only looked for the three it
      * expected.
      */
-    const counting = new Counting(new CliTransport(store.config));
+    const counting = new Counting(store.transport());
     const model = new StoreModel(new Client(counting));
 
-    const roots = await model.roots();
+    const roots = (await model.roots()).nodes;
     assert.strictEqual(roots.length, 1);
 
     /*
@@ -774,7 +781,7 @@ describe('an expansion against the real core costs what the stand-in says it cos
    * from elsewhere or from history that predates the rule.
    */
   it('refuses to make a nested document, which is why one cannot be built here', async () => {
-    const roots = await new StoreModel(store.client).roots();
+    const roots = (await new StoreModel(store.client).roots()).nodes;
     const file = roots[0].id;
     /*
      * THE PARENT IS A DIFFERENT BLOCK. Moving the document under ITSELF
@@ -1140,5 +1147,394 @@ describe('a session that writes to two stores keeps their cursors apart', functi
 
     assert.strictEqual((await one.client.request('read', [a, '--md'])).text.includes('second into a'), true);
     assert.strictEqual((await two.client.request('read', [b, '--md'])).text.includes('first into b'), true);
+  });
+});
+
+/*
+ * plugin-r2 T6: the fixture owns the paths, and the daemon it starts is
+ * stopped.
+ *
+ * ⚠️ WHY THESE EXIST AT ALL. Turning the real-core cells onto the
+ * shipping transport made them start daemons, and `RealStore` set
+ * neither `THEOURGIA_RUN` nor `THEOURGIA_HOME`: one run of this suite
+ * left thirteen daemons running and thirteen directories in the user's
+ * own `~/.theourgia/run`, which had to be cleaned up by hand. Nothing
+ * went red. The suite reported the same green it reports now.
+ *
+ * So the fixture's hygiene is not left to the fixture's word for it. The
+ * four cells below ask, in order: does the instrument report anything at
+ * all; did the daemon go where this fixture put it; did the teardown
+ * stop it; and did the user's real run root grow. The first is what
+ * makes the third mean something -- a nought from a counter that has
+ * never been heard to say anything else is a reading about nothing.
+ */
+describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
+  this.timeout(120000);
+  let pinned: CorePin | undefined;
+
+  before(() => {
+    pinned = pinCore();
+  });
+
+  after(() => {
+    checkCorePin(pinned);
+  });
+
+  /*
+   * WHERE THE USER'S OWN SOCKETS LIVE, spelled the way the core spells
+   * it (client.ss:60-62) rather than the way this file would like to.
+   * ⛔ Not read from `THEOURGIA_RUN`: this process may well have one
+   * set, and then this would be measuring the fixture's directory
+   * against itself and could never fail.
+   */
+  const realRunRoot = (): string =>
+    path.join(process.env.HOME ?? '/tmp', '.theourgia', 'run');
+
+  /*
+   * ⛔ A SECOND COPY OF A HELPER IS A SECOND PLACE FOR ITS DEFECT.
+   *
+   * This was its own `entriesIn`, catching every error and answering
+   * with an empty list -- so a run root that could not be READ was
+   * reported as holding nothing, and the cells below could not tell
+   * additions from a failed look. The copy in `run-root.test.ts` was
+   * repaired for exactly that in an earlier round and this one was not,
+   * because the repair was made where the finding pointed. There is now
+   * one function, imported. Found in a tenth review round.
+   */
+
+  it('starts a daemon that this fixture can see', async () => {
+    const store = await RealStore.make();
+    try {
+      const answer = await store.client.request('outline', []);
+      assert.strictEqual(answer.ok, true, answer.stderr);
+      const seen = daemonsUnder(store.runRoot);
+      assert.ok(
+        seen.length >= 1,
+        'no process on this machine names this store\'s socket directory, so the counter the ' +
+          'teardown below reads has never once been heard to report a daemon -- and a teardown ' +
+          'checked by a counter that always says nought is not checked. Either the transport did ' +
+          'not start one (the answer above came from somewhere) or the way daemonsUnder matches ' +
+          'a command line no longer matches the one the core writes.'
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('puts that daemon under the directory this fixture made, not under the user\'s', async () => {
+    const before = entriesIn(realRunRoot());
+    const store = await RealStore.make();
+    try {
+      const answer = await store.client.request('outline', []);
+      assert.strictEqual(answer.ok, true, answer.stderr);
+      /*
+       * THE SOCKET IS UNDER THE FIXTURE'S ROOT. This is the positive
+       * half; the count of the user's directory below is the negative
+       * half, and on its own it would pass just as well for a run in
+       * which no daemon was ever started.
+       */
+      assert.ok(
+        entriesIn(store.runRoot).length >= 1,
+        `nothing under ${store.runRoot} after a request was answered`
+      );
+      const after = entriesIn(realRunRoot());
+      assert.deepStrictEqual(
+        after.filter((e) => !before.includes(e)),
+        [],
+        `this cell added directories to ${realRunRoot()}, which belongs to whoever is logged in`
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  it('stops that daemon when the store is disposed', async () => {
+    const store = await RealStore.make();
+    /*
+     * ⚠️ `dispose` IS BOTH THE SUBJECT AND THE CLEANUP HERE, so it is
+     * called again in the `finally` -- it is idempotent, and a cell
+     * about leaked daemons that leaks daemons on its own red is a cell
+     * that punishes the next run for this one's failure. Measured: the
+     * first mutation run of this section failed at the assertion below
+     * and left four daemons and a directory behind, exactly because
+     * there was no `finally` here.
+     */
+    try {
+      const answer = await store.client.request('outline', []);
+      assert.strictEqual(answer.ok, true, answer.stderr);
+      const running = daemonsUnder(store.runRoot);
+      assert.ok(running.length >= 1, 'nothing to stop; see the first cell in this section');
+      store.dispose();
+      assert.deepStrictEqual(
+        daemonsUnder(store.runRoot),
+        [],
+        `dispose() left ${running.join(', ')} running. A signal that was sent is not a process ` +
+          'that went, and this is the only place that difference is measured.'
+      );
+      assert.strictEqual(
+        fs.existsSync(store.runRoot),
+        false,
+        `dispose() left the directory ${store.runRoot} behind`
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+
+  /*
+   * THE TWIN THAT NEGATES THE AXIS. The cell above measures the fixture
+   * as it is; this one measures what it was -- a store whose transport
+   * runs with this process's own environment and no run root of its own
+   * -- and requires the count to be different. Without it, all three
+   * cells above would go on passing if `THEOURGIA_RUN` were dropped from
+   * the constructor on a machine that happens to have it set already.
+   */
+  it('would put it somewhere else if the fixture did not name the directory', async () => {
+    const store = await RealStore.make();
+    try {
+      await store.client.request('outline', []);
+      const ours = daemonsUnder(store.runRoot);
+      const elsewhere = daemonsUnder(path.join(os.tmpdir(), 'tvr-a-directory-nobody-uses'));
+      assert.ok(ours.length >= 1, 'see the first cell in this section');
+      assert.deepStrictEqual(
+        elsewhere,
+        [],
+        'the counter reports the same processes for a directory that does not exist as for the ' +
+          'one this store is using, so it is not reading the run root at all'
+      );
+    } finally {
+      store.dispose();
+    }
+  });
+});
+
+/*
+ * plugin-r2 T2 against the real core: a commit that says another
+ * instance has landed records since this save's baseline.
+ *
+ * ⭐ WHAT IT TAKES TO PRODUCE THIS AT ALL, measured rather than
+ * assumed, and the first recipe did not work.
+ *
+ * `behind` names LOG WRITERS. Every agent writing into one store on one
+ * machine appends through the same one, so two windows, two writer
+ * settings or two actors cannot produce it -- a colleague's commit is
+ * not what this field is about. What does produce it is a second
+ * INSTANCE: a copy of the store, adopted (which gives the copy a log
+ * writer of its own), committed into, and a segment of that log
+ * published back.
+ *
+ * ⚠️ AND THE TWO CHANGES MUST BE TO DIFFERENT BLOCKS. With the draft
+ * and the published change on one block the commit is refused
+ * `stale-baseline` and there is no `behind` to read -- measured, and it
+ * is what the first version of this cell got:
+ *
+ *   (error stale-baseline (block "l813n72h.1") (based-on "f33a...")
+ *          (now "3c25...") (since (("lpw8jnoo" . 2) ...)))
+ *
+ * With them apart the commit succeeds and carries the clause:
+ *
+ *   (ok (items (ok (events (("45t9p6p6" . 4))) ... (cursor ("45t9p6p6" . 4))
+ *                  (replay #f)))
+ *       (behind (("45t9p6p6" . 4) ("mmob9sf6" . 2))))
+ *
+ * ⚠️ THE FIRST NAME IN THAT LIST IS THIS COMMIT'S OWN. `45t9p6p6` is
+ * the writer its own cursor names -- its own record, reported back as
+ * though it were somebody's. That is a defect in the core and is being
+ * repaired there; this build drops the name its own cursor gives, which
+ * is right whichever way the core behaves.
+ */
+describe('plugin-r2 T2 a commit through the real core says who landed behind it', function () {
+  this.timeout(180000);
+  let pinned: CorePin | undefined;
+
+  before(() => {
+    pinned = pinCore();
+  });
+
+  after(() => {
+    checkCorePin(pinned);
+  });
+
+  it('names the other instance and not the writer it advanced itself', async () => {
+    const store = await RealStore.make('behind-plugin');
+    try {
+      const idOf = async (title: string, text: string): Promise<string> => {
+        const inserted = await store.client.request('insert', ['--title', title, '--text', text]);
+        const events = answerOf(inserted.answers[0], 'ok')?.value('events') as unknown[];
+        const event = readEvent(events[0]);
+        assert.ok(event !== null, 'the insert answered with no event');
+        return `${event.writer}.${event.seq}`;
+      };
+      const mine = await idOf('A', 'olda');
+      const theirs = await idOf('B', 'oldb');
+      const prefix = '# A\n';
+
+      const window = new Working(store.client, 'window-behind');
+      const queue = new Outbox(path.join(store.root, 'behind-outbox.json'));
+      const saver = new Saver(store.client, queue, (req, answer) => {
+        if (answer.verdict === 'confirmed') {
+          queue.resolve(req, answer.cursor);
+        }
+        if (answer.verdict === 'refused') {
+          queue.resolve(req, null);
+        }
+      });
+      const commitOf = async (body: string, req: string): Promise<SaveOutcome> => {
+        const draft = await window.write(mine, body, prefix);
+        return saver.submit(
+          recordFor({
+            req,
+            store: store.store,
+            storeHash: 'probe',
+            blockId: mine,
+            file: path.join(store.root, 'behind.md'),
+            projectionId: draft.source.id,
+            rawDigest: digestOfBytes(prefix + draft.body),
+            sentDigest: digestOfBytes(draft.body),
+            prefixDigest: digestOfBytes(prefix),
+            seq: 1,
+            intent: {
+              verb: 'commit',
+              field: 'src',
+              body: draft.body,
+              expectation: JSON.stringify({
+                writer: window.writer,
+                version: draft.source.version
+              })
+            }
+          })
+        );
+      };
+
+      /*
+       * ⭐ ONE ORDINARY SAVE FIRST, AND IT IS NOT DECORATION.
+       *
+       * Measured, and it is what the first version of this cell ran into:
+       * a Saver with no cursor yet asks the store for one, and a store
+       * with more than one LOG WRITER is refused -- "this store has 2
+       * writers and the core does not yet say which is local". Publishing
+       * a segment is exactly what makes a store have two. So a queue that
+       * had never written could not write after the publish at all, and
+       * the notice this cell is about could never be reached.
+       *
+       * That is not a contrivance to get a green: it is the order a
+       * window is actually in. Somebody is editing a store, a copy of it
+       * is adopted and published back while they work, and their NEXT
+       * save carries the notice. A window that first met the store after
+       * the publish is a different situation, and is refused -- which is
+       * a separate matter, named in the delivery note.
+       */
+      const first = await commitOf('edited here\n', 'behind-plugin-R0');
+      assert.strictEqual(first.status, 'saved', first.message);
+      assert.strictEqual(
+        first.behind,
+        undefined,
+        'a store with one writer answered with a behind clause, so the notice says nothing about ' +
+          'another instance'
+      );
+
+      /*
+       * A SECOND INSTANCE OF THE SAME STORE. `adopt` gives the copy its
+       * own log writer because its recorded identity no longer matches
+       * where it sits; that new name is the one that has to come out of
+       * the notice.
+       */
+      const copy = path.join(store.root, 's2');
+      fs.cpSync(store.store, copy, { recursive: true });
+      const adopted = /\(to "([^"]+)"\)/.exec(store.cli(['adopt', '--store', copy]));
+      assert.ok(adopted !== null, 'the copy was not adopted, so it has no writer of its own');
+      const other = adopted[1];
+
+      const wrote = /\(version "([^"]+)"\)/.exec(
+        store.cli(['write', theirs, 'from the copy', '--store', copy, '--writer', 'w2'])
+      );
+      assert.ok(wrote !== null, 'the copy would not take a draft');
+      store.cli([
+        'commit',
+        theirs,
+        '--working-version',
+        `${theirs}=${wrote[1]}`,
+        '--store',
+        copy,
+        '--writer',
+        'w2'
+      ]);
+
+      /*
+       * THE SEGMENT IS FOUND, NOT NAMED. The core has no verb that
+       * reports where a writer's segments are, and the six-figure
+       * zero-padded name is in the design rather than in anything this
+       * repository may rely on -- so the directory is listed and the one
+       * file whose name is all digits is taken. A second segment here
+       * would mean the recipe above did more than one commit, and the
+       * assertion says so.
+       */
+      const segments = fs
+        .readdirSync(path.join(copy, 'writers', other))
+        .filter((name) => /^\d+\.sexp$/.test(name));
+      assert.deepStrictEqual(
+        segments.length,
+        1,
+        `the copy's writer ${other} holds ${segments.length} segments, not one`
+      );
+      const published = store.cli([
+        'publish',
+        other,
+        '1',
+        path.join(copy, 'writers', other, segments[0]),
+        '--store',
+        store.store
+      ]);
+      assert.match(published, /\(ok \(published 1\)\)/, published);
+
+      const outcome = await commitOf('edited again\n', 'behind-plugin-R1');
+
+      assert.strictEqual(outcome.status, 'saved', outcome.message);
+      assert.notStrictEqual(
+        outcome.behind,
+        undefined,
+        'the commit carried no notice, so either the clause did not arrive or it was not read'
+      );
+      const said = String(outcome.behind);
+      assert.ok(
+        said.includes(other),
+        `the notice does not name the other instance ${other}: ${said}`
+      );
+      /*
+       * ⭐ THE NAME THAT MUST NOT APPEAR IS THE STORE'S OWN LOG WRITER,
+       * not this window's draft writer.
+       *
+       * ⛔ This asserted `!said.includes(window.writer)` -- and
+       * `window.writer` is `window-behind`, a DRAFT space, while `behind`
+       * carries LOG writer ids. A name that could never have been in the
+       * list is a negative assertion that cannot fail; measured in a
+       * review round, a filter mutated to let the local writer through
+       * produced a notice naming it and the cell stayed green.
+       *
+       * The local log writer is the prefix of every id this store
+       * issues -- `insert` answered with the event whose writer and
+       * sequence make `mine` -- so it is read off the store rather than
+       * spelled here.
+       */
+      const localLog = mine.split('.')[0];
+      assert.ok(
+        !said.includes(localLog),
+        `the notice names the store's own log writer ${localLog}, whose record this very ` +
+          `commit had just appended: ${said}`
+      );
+      assert.notStrictEqual(
+        localLog,
+        other,
+        'the copy was given the same log writer as the original, so this cell cannot tell them ' +
+          'apart'
+      );
+      assert.match(
+        said,
+        /another instance of it, not another agent on this machine/,
+        `the sentence does not say what the field is about: ${said}`
+      );
+    } finally {
+      store.dispose();
+    }
   });
 });

@@ -67,6 +67,11 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
     'the extension is being built; there is no earlier generation for anything to have changed from',
   pick: 'it returns the user’s answer and decides nothing; its caller holds the generation',
   confirm: 'as pick',
+  open:
+    'as pick: it hands the id to the openBlock command and decides nothing. That command ' +
+    'captures the store before its own first wait, so a block chosen from a store the user has ' +
+    'since left is answered unknown-id by the store they are in -- which is visible, and is not ' +
+    'a write going to the wrong place',
   'vscode.commands.registerCommand(REFRESH_OUTLINE.id)':
     'its only wait is refreshConflicts, which makes the check itself, and nothing follows it',
   'vscode.commands.registerCommand(SHOW_STATUS.id)':
@@ -178,8 +183,8 @@ function leaves(statement: ts.Statement): boolean {
  * ⚠️ AND THE OTHER SHAPE OF THE SAME GUARD: CAPTURE THE THING, COMPARE
  * THE THING.
  *
- * `const mine = saver; await …; if (saver !== mine) return;` guards
- * exactly what the generation guard guards, and guards it better: §13
+ * `const mine = saver; await ...; if (saver !== mine) return;` guards
+ * exactly what the generation guard guards, and guards it better: section 13
  * settled that the generation says "something changed" while the
  * identity of the object says "the thing this decision depends on
  * changed", and a rebuild for an unrelated setting must not cancel work
@@ -422,7 +427,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
  * RETIRED: `nothing forgets a pending save that was not its own`.
  *
  * It held one cell -- `guards every delete from pendingSaves with an
- * identity check` -- and its subject no longer exists. §13 makes the
+ * identity check` -- and its subject no longer exists. section 13 makes the
  * queue entry the record, so there is no map in memory to delete from
  * and no second supplier of what a save was about; the census said so
  * itself when it went red, in its own words: "extension.ts no longer

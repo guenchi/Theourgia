@@ -12,6 +12,22 @@ export type MigrationOutcome =
   | {migrated:true;file:string;archive:string}
   | {migrated:false;because:string;retained:string[]};
 
+/*
+ * ⛔ A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT DOES NOT NAME
+ * THIS BLOCK.
+ *
+ * The catch walked past it and the function then answered null, which
+ * the caller draws as "this is not a legacy block of the configured
+ * store" -- so a prepared migration whose journal could not be opened
+ * was reported to the user as nothing to migrate. Measured in a
+ * fifteenth review round with EACCES; `migrateLegacy`, repaired a round
+ * earlier, answers `unreadable-migration-record` for the same reader.
+ * Two readers of one file, and this one gave the reassuring verdict.
+ *
+ * It throws. The caller has no branch for an unreadable journal and
+ * inventing one here would be guessing what a person should be told;
+ * the failure reaches `reportFailure`, which says what happened.
+ */
 export function migrationIdentity(files:FileOps,directory:string):{storeId:string;blockId:string;prefix:string}|null {
   const control=path.join(path.dirname(directory),'.migration');
   for(const name of files.list(control).filter(n=>n.endsWith('.json'))) {
@@ -21,7 +37,12 @@ export function migrationIdentity(files:FileOps,directory:string):{storeId:strin
          typeof plan.storeId==='string' && typeof plan.blockId==='string' && typeof plan.selected?.prefix==='string') {
         return {storeId:plan.storeId,blockId:plan.blockId,prefix:plan.selected.prefix};
       }
-    } catch {continue;}
+    } catch (e) {
+      throw new Error(
+        `the migration journal at ${path.join(control,name)} could not be read, so whether this ` +
+          `is a legacy block of a prepared migration is not known: ${(e as Error).message}`
+      );
+    }
   }
   return null;
 }
@@ -43,7 +64,21 @@ export async function migrateLegacy(parts: {
   for (const name of files.list(control).filter(n=>n.endsWith('.json'))) {
     const journal=path.join(control,name);
     let plan:any;
-    try {plan=JSON.parse(files.readText(journal));} catch {continue;}
+    /*
+     * ⛔ A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT SAYS
+     * NOTHING.
+     *
+     * `continue` walked past it, and with the legacy directory then
+     * empty this reported `no-legacy-files` -- "there was nothing to
+     * migrate" about a prepared move it had not been able to open.
+     * Measured in a fourteenth review round with EACCES on the journal.
+     * A record that will not parse is already refused below as
+     * `invalid-migration-record`; one that will not READ is the same
+     * kind of news.
+     */
+    try {plan=JSON.parse(files.readText(journal));} catch {
+      return {migrated:false,because:'unreadable-migration-record',retained:[journal]};
+    }
     if (plan?.directory!==directory || plan.phase!=='prepared') continue;
     if (plan.storeId!==parts.storeId || plan.blockId!==parts.blockId || typeof plan.archive!=='string' ||
         path.dirname(plan.archive)!==control || !Array.isArray(plan.originals) || !plan.selected ||

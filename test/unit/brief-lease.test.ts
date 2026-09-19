@@ -4,7 +4,17 @@ import * as os from 'os';
 import * as path from 'path';
 import {spawn,spawnSync} from 'child_process';
 import {Outbox} from '../../src/outbox';
-const operations=['enqueue','clearCursor','setCursor','resolve','aboutToSend','markImported','markParked','markPending'];
+/*
+ * ⛔ THE LIST IS THE CENSUS, AND IT HAD A HOLE IN IT.
+ *
+ * `unparkAll` was missing, and so was its lock: a sixteenth review round
+ * measured a controlled interleaving in which it read a queue, another
+ * window added a save, and its commit wrote back the file it had read.
+ * The save was gone and nothing failed. A list of names cannot shout
+ * about the name that is not on it, so the name went on the list and
+ * the operation went under the lock in the same change.
+ */
+const operations=['enqueue','clearCursor','setCursor','resolve','aboutToSend','markImported','markParked','markPending','unparkAll'];
 function child(file:string,operation:string){
   const process=spawn(global.process.execPath,[path.join(__dirname,'../support/shared-queue.js'),file,operation,'hold']);
   const received:any[]=[],waiting:Array<(v:any)=>void>=[];let text='',error='';
@@ -19,6 +29,11 @@ describe('XL-02/07 two actual processes cannot overlap queue read-modify-write',
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-lease-')),file=path.join(root,'outbox.json');
     const box=new Outbox(file);box.setCursor('w:1');
     box.enqueue({req:'R1',cursor:'w:1',id:'a.1',field:'src',payload:'old',state:'queued',createdAt:1,lastError:null,importedBy:null});
+    /*
+     * ONE OPERATION NEEDS SOMETHING TO DO. `unparkAll` that releases
+     * nothing commits nothing, and this row is about the write.
+     */
+    if(operation==='unparkAll')box.markParked('R1','parked');
     const a=child(file,operation);assert.strictEqual((await a.next()).kind,'read');
     const b=child(file,'enqueueB'),second=await b.next();
     a.process.stdin.end('x');const finishedA=await a.next();await a.exit;

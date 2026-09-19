@@ -42,7 +42,7 @@
 
 import { CoreConfig } from './config';
 import { RawResult, Transport, TransportError, transportFor } from './transport';
-import { AnswerParseError, Datum, parseAnswers } from './wire';
+import { AnswerParseError, Datum, answerOf, parseAnswers } from './wire';
 
 export type AnswerKind = 'text' | 'items' | 'datum';
 
@@ -53,6 +53,26 @@ export interface Answer {
   kind: AnswerKind;
   text: string;
   answers: Datum[];
+  /*
+   * THE OUTER FORM, WHEN THE REQUEST ASKED FOR THE MACHINE RENDERING.
+   *
+   * ⚠️ `--wire` WRAPS AN ANSWER AND THE HUMAN RENDERING DROPS WHAT IS
+   * ROUND IT. Measured on the pinned core: a commit answers
+   * `(ok (events ...) (cursor ...) (replay #f))` by default and
+   * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
+   * with the flag -- and `render-human` (render.ss:53-59) renders only
+   * the `items` clause, so every other clause beside it is lost on the
+   * way out.
+   *
+   * So `answers` goes on holding the item, exactly as before, and the
+   * form round it arrives here. Every caller that reads a cursor or an
+   * event is untouched; the one caller that wants a clause from outside
+   * asks for it by name.
+   *
+   * NULL FOR EVERY REQUEST THAT DID NOT ASK. It is not "there was no
+   * envelope": a verb asked for in the ordinary mode has none to have.
+   */
+  envelope: Datum | null;
   stderr: string;
 }
 
@@ -120,7 +140,15 @@ const KNOWN_VERBS = new Set([
   'log',
   'tag',
   'diff',
-  'conflicts'
+  'conflicts',
+  /*
+   * ⚠️ `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
+   * An unknown verb throws out of `answerKind`, the caller that asks
+   * which verbs the core has catches everything and answers "I could not
+   * find out", and the entry that depends on the answer never appears --
+   * with nothing anywhere reading red. Found by writing the caller.
+   */
+  'describe'
 ]);
 
 export function answerKind(verb: string, args: string[]): AnswerKind {
@@ -191,13 +219,66 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
       kind: 'datum',
       text: raw.stdout,
       answers: readData(raw, verb, args),
+      envelope: null,
       stderr: raw.stderr
     };
   }
   if (kind === 'text') {
-    return { argv: raw.argv, rc: raw.rc, ok, kind, text: raw.stdout, answers: [], stderr: raw.stderr };
+    return {
+      argv: raw.argv,
+      rc: raw.rc,
+      ok,
+      kind,
+      text: raw.stdout,
+      answers: [],
+      envelope: null,
+      stderr: raw.stderr
+    };
   }
-  const answers = readData(raw, verb, args);
+  const read = readData(raw, verb, args);
+  /*
+   * THE UNWRAPPING TURNS ON THE REQUEST, NOT ON THE SHAPE.
+   *
+   * ⚠️ A SHAPE TEST WOULD REACH INTO A VERB THAT IS NOT WRAPPED. `tag`
+   * with no argument, `refs`, `conflicts` -- any verb whose own answer
+   * is a list of items -- would have its items taken for an envelope's
+   * items and be unwrapped a second time. What was asked for is a fact
+   * about this request; what came back merely looks a certain way.
+   */
+  /*
+   * ⛔ AND THE FORM HAS TO HAVE SAID `ok`.
+   *
+   * The request decides whether an envelope was asked for; the head
+   * decides whether what came back is one. Without it,
+   * `(garbage (items (ok (cursor ("w" . 7)) (replay #f))))` was unwrapped
+   * and its inner form served as the answer -- a cursor taken out of a
+   * form nobody can parse. Measured in an eleventh review round. `hitsOf`
+   * and `knownVerbs` were repaired for the same shape in earlier rounds
+   * and this reader was not, because those repairs were made where the
+   * findings pointed.
+   */
+  /*
+   * ⛔ AND TWO `items` CLAUSES IS NOT AN ANSWER THAT CARRIES NONE.
+   *
+   * The decoder refuses a duplicated clause, and until a sixteenth
+   * review round it refused it the same way it says "no such clause" --
+   * so `(ok (items ...) (items ...))` fell through to the line below and
+   * the whole form was handed on as the answers. This client asked for
+   * an envelope; an answer with two of them is one it cannot open.
+   */
+  const wrapped = args.includes('--wire') && read.length === 1 ? answerOf(read[0], 'ok') : null;
+  const items = wrapped === null ? null : wrapped.clause('items');
+  if (items !== null && !items.read && items.because === 'duplicated') {
+    throw new TransportError(
+      'unreadable',
+      `the core answered the ${verb} with two item lists, and which one is the answer is not ` +
+        'something this client may choose',
+      raw.stdout
+    );
+  }
+  const opened = items !== null && items.read ? items.items : null;
+  const envelope = opened === null ? null : read[0];
+  const answers = opened === null ? read : opened;
   if (answers.length === 0 && appendsARecord(verb, args)) {
     throw new TransportError(
       'no-answer',
@@ -213,7 +294,16 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
       raw.stdout
     );
   }
-  return { argv: raw.argv, rc: raw.rc, ok, kind, text: raw.stdout, answers, stderr: raw.stderr };
+  return {
+    argv: raw.argv,
+    rc: raw.rc,
+    ok,
+    kind,
+    text: raw.stdout,
+    answers,
+    envelope,
+    stderr: raw.stderr
+  };
 }
 
 /*

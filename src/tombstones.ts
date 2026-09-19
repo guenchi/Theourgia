@@ -16,7 +16,7 @@
 
 /*
  * A REQUEST THAT HAS BEEN RETIRED, AND WHERE THAT IS RECORDED.
- * (§13, r4-2, r5-3)
+ * (section 13, r4-2, r5-3)
  *
  * ⚠️ CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. An entry removed from a
  * queue is removed from ONE queue: the same request may sit in a dead

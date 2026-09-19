@@ -46,14 +46,14 @@
  * does not mean "contains no escape sequence".
  */
 import * as assert from 'assert';
-import { Datum, headName, isList, isSym, parseAnswers } from '../../src/wire';
+import { Datum, answerOf, isList, isSym, parseAnswers } from '../../src/wire';
 
 function clause(value: Datum, name: string): Datum[] | null {
   if (!isList(value)) {
     return null;
   }
   for (const item of value) {
-    if (isList(item) && headName(item) === name) {
+    if (isList(item) && answerOf(item, name) !== null) {
       return item;
     }
   }
@@ -110,7 +110,11 @@ export function assertRuledRefusal(
   }
   assert.strictEqual(data.length, 1, `the refusal is not one datum: ${text}`);
   const answer = data[0];
-  assert.strictEqual(headName(answer), 'error', `the refusal is not an error answer: ${text}`);
+  assert.notStrictEqual(
+    answerOf(answer, 'error'),
+    null,
+    `the refusal is not an error answer: ${text}`
+  );
   assert.ok(isList(answer) && answer.length >= 2, `the error answer carries no family: ${text}`);
   /*
    * THE FAMILY IS PART OF IT. A refusal of the right shape under the

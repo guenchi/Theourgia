@@ -39,6 +39,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { CoreDirectory } from './config';
 import {createHash} from 'crypto';
 
 export interface FileOps {
@@ -47,7 +48,7 @@ export interface FileOps {
    * THE BYTES, UNDECODED. The save handler has to know whether what is
    * on disk carries a byte-order mark and whether it is strictly UTF-8;
    * `readText` has already decided both, lossily, and a string cannot
-   * be asked what it used to be. (§12.17.3)
+   * be asked what it used to be. (section 12.17.3)
    */
   readBytes(file: string): Buffer;
   writeText(file: string, text: string): void;
@@ -81,7 +82,7 @@ export interface FileOps {
    * A CREATE-ONCE PUBLICATION. `link` fails with EEXIST if the name is
    * taken, which is what makes a claim token a token: whoever's call
    * succeeds holds it, and no read-then-write window exists for two
-   * windows to race in. (§12.13.5)
+   * windows to race in. (section 12.13.5)
    */
   link(existing: string, fresh: string): void;
   list(directory: string): string[];
@@ -165,11 +166,28 @@ export const nodeFileOps: FileOps = {
     }
   },
   link: (existing, fresh) => fs.linkSync(existing, fresh),
+  /*
+   * ⛔ ONLY AN ABSENT DIRECTORY IS AN EMPTY ONE, and this is the
+   * product, not a fixture.
+   *
+   * It caught every error and answered with no names. Measured in a
+   * twelfth review round with EACCES injected for the sessions root:
+   * `chooseAndRecover` answered `no-other-sessions` and told the user
+   * "No other window has left anything here ... there is none" -- about
+   * a directory it had not been able to open. The unsent work of another
+   * window is exactly what that sentence is denying the existence of.
+   *
+   * `readDirectory` below already draws this line; `list` is the older
+   * spelling beside it and did not.
+   */
   list: (directory) => {
     try {
       return fs.readdirSync(directory);
     } catch (e) {
-      return [];
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      throw e;
     }
   },
   readDirectory: (directory) => {
@@ -186,11 +204,28 @@ export const nodeFileOps: FileOps = {
       return { read: false, because: code === 'ENOENT' ? 'absent' : 'unreadable' };
     }
   },
+  /*
+   * ⛔ A STAT THAT FAILED IS NOT A PATH THAT IS NOT A DIRECTORY.
+   *
+   * It answered false for every error, and the recovery listing skips
+   * anything that answers false. Measured in a thirteenth review round
+   * with EACCES on one enumerated session: the window vanished and
+   * `chooseAndRecover` said "No other window has left anything here" --
+   * the same sentence, from the same cause, one repair later. `list`
+   * above was fixed in the previous round and this sits four lines
+   * below it.
+   *
+   * Only ENOENT is an answer: the path is not there, so it is not a
+   * directory.
+   */
   isDirectory: (file) => {
     try {
       return fs.statSync(file).isDirectory();
     } catch (e) {
-      return false;
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        return false;
+      }
+      throw e;
     }
   }
 };
@@ -241,4 +276,33 @@ export function withExclusive<T>(resource:string,work:()=>T):T {
     if(result && typeof (result as {then?:unknown}).then==='function')throw new Error('A synchronous resource guard cannot enclose an asynchronous operation');
     return result;
   } finally {heldResources.delete(canonical);nativeLease.release(descriptor);}
+}
+
+/*
+ * WHAT A CORE DIRECTORY HOLDS, asked through the one module that is
+ * allowed to touch the file system.
+ *
+ * ⚠️ IT LIVES HERE AND NOT BESIDE THE RULE IT FEEDS. `config.ts` is a
+ * plain-value module on purpose -- a cell runs the transport with no
+ * extension host and no disk around it -- and a census in this tree
+ * holds every other source file to importing `fs` only through here. I
+ * put the probe in `config.ts` first and that census caught it.
+ */
+export function coreDirectoryAt(corePath: string): CoreDirectory {
+  return {
+    has: (name: string) => {
+      try {
+        return fs.existsSync(path.join(corePath, name));
+      } catch (e) {
+        /*
+         * A directory this process may not search answers the same as
+         * one that does not hold the file. The caller that cares about
+         * the difference is `problemsWith`, whose answer -- "neither
+         * sources nor products" -- is a sentence a user can act on
+         * either way.
+         */
+        return false;
+      }
+    }
+  };
 }

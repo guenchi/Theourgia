@@ -174,7 +174,7 @@ export function parseAnswers(stdout: string): Datum[] {
  * decided where the request was made.
  */
 
-export function headName(value: Datum): string | null {
+function headName(value: Datum): string | null {
   if (!isList(value) || value.length === 0) {
     return null;
   }
@@ -189,16 +189,202 @@ export function headName(value: Datum): string | null {
  * them by name, never by position: `ok` and `ok (replay #t)` put the
  * event in different places.
  */
-export function clause(value: Datum, name: string): Datum[] | null {
-  if (!isList(value)) {
+/*
+ * READING AN ANSWER: THE HEAD AND THE CLAUSE, TOGETHER OR NOT AT ALL.
+ *
+ * ⭐ WHY THIS EXISTS AND WHY `clause` STOPPED BEING EXPORTED.
+ *
+ * Thirteen review rounds found ONE defect in nine readers: a clause
+ * taken out of a form without asking what the form said. `(error
+ * (items))` read as "the store looked and found nothing";
+ * `(garbage (cursor ("w" . 7)))` confirmed a save and took it out of the
+ * queue; `(garbage (writers ...))` would have had this client choose a
+ * writer and start writing. Each was repaired where its finding pointed
+ * and the tenth instance was only a matter of time -- because the two
+ * steps were two calls, and the first could be forgotten.
+ *
+ * Here they are one call. There is no way to reach a clause of an answer
+ * without naming the head it must have, so the defect is not something a
+ * reader can be written with. The compiler is the census.
+ *
+ * ⚠️ `expect` IS FOR "IS THIS ABOUT WHAT I ASKED". Two further defects
+ * were of that kind -- a record for `b.1` returned for `a.1`, and a
+ * subtree answer that never mentions the block it is under. A reader
+ * that names the id it asked about gets an answer only if the form
+ * agrees.
+ */
+/*
+ * ⛔ A `Form` IS NOT A SHAPE ANYBODY CAN BUILD.
+ *
+ * It was a plain structural interface, so nothing stopped a caller
+ * writing `{clause: clauseOfRecord.bind(null, datum), ...}` and handing
+ * that to a reader -- the provenance this type is supposed to carry was
+ * a convention, not a guarantee, and the delivery note claimed the
+ * compiler enforced it. Measured in a fifteenth review round.
+ *
+ * The brand is a private symbol: a value carrying it can only have come
+ * from `answerOf` in this file, because nothing else can name it.
+ */
+/*
+ * ⚠️ A REAL SYMBOL, NOT A `declare`. The first version of this was a
+ * type-only declaration, so `[VERIFIED]: true` compiled and threw at
+ * run time -- the brand existed for the compiler and not for the
+ * program. The suite said so at once, in 189 cells.
+ *
+ * It is not exported, so no file outside this one can name it, which is
+ * what makes a `Form` something only `answerOf` can produce.
+ */
+const VERIFIED: unique symbol = Symbol('a form whose head has been checked');
+
+/*
+ * WHAT A CLAUSE LOOKUP FOUND, AND -- WHEN IT FOUND NOTHING USABLE --
+ * WHICH OF THE TWO REASONS IT WAS.
+ *
+ * ⛔ `null` FOR BOTH WAS AN INABILITY ANSWERED AS AN ABSENCE, one
+ * level below every reader that has been repaired for that shape.
+ *
+ * A fifteenth review round had this decoder start refusing a DUPLICATED
+ * clause, because a `writers` clause carrying two listings had supplied
+ * a cursor from the first. It refused by returning null -- the same
+ * answer as "this form has no such clause" -- and a sixteenth round
+ * measured what three of its callers then did with it: `readBlock` read
+ * a record carrying two `fields` clauses as a block with NO fields, and
+ * served empty prefix, src and text for it; `hitsOf` and `interpret`
+ * read a duplicated `items` clause as "this answer was not an envelope"
+ * and handed the whole form on as the answers.
+ *
+ * Every one of those is the collapse this delivery exists to remove,
+ * arriving through the repair for a different one. The two reasons are
+ * separate now and the type makes each caller say which it is handling;
+ * five of the eight callers refuse both and were already right.
+ */
+export type Clause =
+  | { read: true; items: Datum[] }
+  | { read: false; because: 'absent' | 'duplicated' };
+
+const ABSENT: Clause = { read: false, because: 'absent' };
+const DUPLICATED: Clause = { read: false, because: 'duplicated' };
+
+export interface Form {
+  /*
+   * WHICH HEAD WAS VERIFIED. Kept so that a reader can say what it is
+   * holding, and so that a `Form` obtained for one head is not silently
+   * read as another.
+   */
+  readonly head: string;
+  readonly [VERIFIED]: true;
+  /*
+   * THE REST OF A CLAUSE, or null when the form has no such clause. The
+   * form's head is already known: that is what having a `Form` means.
+   */
+  clause(name: string): Clause;
+  /*
+   * THE CLAUSE AS IT APPEARED, its own name at the front.
+   *
+   * ⚠️ FOR THE READERS THAT DIGEST IT. A working projection's identity
+   * is the digest of its whole clause -- dropping the name would change
+   * every id this build computes, silently, which is not a thing a
+   * refactor may do. `clause` is what almost every reader wants; this is
+   * for the ones that carry the clause somewhere rather than taking it
+   * apart.
+   */
+  whole(name: string): Clause;
+  /*
+   * THE SINGLE VALUE OF A ONE-VALUE CLAUSE, and undefined for a clause
+   * carrying any other number -- the same rule `clauseValue` has always
+   * had, for the same reason.
+   */
+  value(name: string): Datum | undefined;
+  /*
+   * THE WHOLE FORM, for the readers that need its positions rather than
+   * its clauses -- an `(error unknown-id "a.1" ...)` names its subject
+   * by position, not by clause.
+   */
+  datum: Datum;
+}
+
+export function answerOf(
+  datum: Datum,
+  head: string,
+  expect?: { at: number; is: string }
+): Form | null {
+  if (headName(datum) !== head) {
     return null;
   }
-  for (const item of value) {
-    if (isList(item) && headName(item) === name) {
-      return item;
+  if (expect !== undefined) {
+    /*
+     * ⚠️ A NAME IN AN ANSWER MAY BE A SYMBOL OR A STRING, and the core
+     * uses both: `(error unknown-id "a.1" ...)` names its family with a
+     * symbol and its subject with a string. Comparing with `===` alone
+     * made the symbol case never match -- so the guard that was meant
+     * to check "is this about what I asked" silently refused
+     * everything, which the suite caught as a refusal where absence was
+     * expected. Both spellings are the same name here.
+     */
+    if (!isList(datum) || datum.length <= expect.at) {
+      return null;
+    }
+    const at = datum[expect.at];
+    if (!(at === expect.is || isSym(at, expect.is))) {
+      return null;
     }
   }
-  return null;
+  return {
+    head,
+    [VERIFIED]: true,
+    clause: (name: string) => clauseRest(datum, name),
+    whole: (name: string) => clause(datum, name),
+    value: (name: string) => clauseValue(datum, name),
+    datum
+  } as Form;
+}
+
+/*
+ * A CLAUSE OF A STORE RECORD, WHICH HAS NO HEAD TO CHECK.
+ *
+ * ⛔ NOT FOR AN ANSWER. A block record reads
+ * `((id . "a.1") (deleted . #f) (fields ...) ...)` -- its first element
+ * is a pair, not a name, so there is nothing for `answerOf` to verify
+ * and nothing this could check on a caller's behalf. A writer entry in
+ * a `check` listing is the same. Both are values taken from a form whose
+ * head HAS been checked, which is what makes reading them safe.
+ *
+ * Which files may call this is pinned by a census; see
+ * test/unit/decoding.test.ts.
+ */
+export function clauseOfRecord(value: Datum, name: string): Clause {
+  return clauseRest(value, name);
+}
+
+export function recordValue(value: Datum, name: string): Datum | undefined {
+  return clauseValue(value, name);
+}
+
+/*
+ * ⛔ TWO CLAUSES OF ONE NAME ARE NOT ONE CLAUSE.
+ *
+ * This returned the first match, so
+ * `(check (writers (...)) (writers (...)))` answered the first listing
+ * and a malformed answer supplied a cursor -- the cardinality check
+ * added a round earlier looks INSIDE one clause and could not see a
+ * second clause beside it. Measured in a fifteenth review round. A form
+ * carrying a name twice is a form this build cannot account for, and
+ * the readers above all know how to be told so.
+ */
+function clause(value: Datum, name: string): Clause {
+  if (!isList(value)) {
+    return ABSENT;
+  }
+  let found: Datum[] | null = null;
+  for (const item of value) {
+    if (isList(item) && headName(item) === name) {
+      if (found !== null) {
+        return DUPLICATED;
+      }
+      found = item;
+    }
+  }
+  return found === null ? ABSENT : { read: true, items: found };
 }
 
 /*
@@ -218,6 +404,19 @@ export function clause(value: Datum, name: string): Datum[] | null {
  * The caller knows which convention the core used for the thing it is
  * asking about. rpc.ss is where that is written down.
  */
+/*
+ * THE TAIL OF A PAIR IN AN ASSOCIATION LIST -- a headless reader, and it
+ * had escaped being named as one.
+ *
+ * ⚠️ THIS IS THE THIRD DOOR. `clauseOfRecord` and `recordValue` were
+ * pinned by a census and this was not, so
+ * `assocTail(parseAnswers('(error (items 7))')[0], 'items')` answered
+ * `7` -- a clause of an unchecked answer, through a name nobody had
+ * thought to look for. Found in a fourteenth review round, which was
+ * asked to look for exactly this.
+ *
+ * It is censused with the other two; see test/unit/decoding.test.ts.
+ */
 export function assocTail(alist: Datum[], name: string): Datum | undefined {
   for (const entry of alist) {
     if (isDotted(entry) && entry.items.length >= 1 && isSym(entry.items[0], name)) {
@@ -235,9 +434,9 @@ export function assocTail(alist: Datum[], name: string): Datum | undefined {
  * (b . 2))` gives the two entries, and `(fields)` gives none -- which is
  * a block with no fields and not a block that could not be read.
  */
-export function clauseRest(value: Datum, name: string): Datum[] | null {
+function clauseRest(value: Datum, name: string): Clause {
   const found = clause(value, name);
-  return found === null ? null : found.slice(1);
+  return found.read ? { read: true, items: found.items.slice(1) } : found;
 }
 
 /*
@@ -246,12 +445,12 @@ export function clauseRest(value: Datum, name: string): Datum[] | null {
  * this reads are small and fixed, and a shape that is not the expected
  * one is a core that changed.
  */
-export function clauseValue(value: Datum, name: string): Datum | undefined {
+function clauseValue(value: Datum, name: string): Datum | undefined {
   const rest = clauseRest(value, name);
-  if (rest === null || rest.length !== 1) {
+  if (!rest.read || rest.items.length !== 1) {
     return undefined;
   }
-  return rest[0];
+  return rest.items[0];
 }
 
 /*

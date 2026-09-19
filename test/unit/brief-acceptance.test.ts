@@ -21,6 +21,32 @@ describe('XO save acceptance uses the chain-time identity and sidecar',function(
       assert.strictEqual(result.acceptances.length,scenario==='save-chain'?1:0,'acceptance entry');
       if(scenario==='save-chain')assert.strictEqual(result.acceptances[0].because,'another-store','acceptance verdict');
       assert.ok(result.messages.some((m:string)=>m.includes('/stores/A')&&m.includes('/stores/B')));
+      /*
+       * ⭐ AND IT WAS RAISED AS AN ALARM. The three message channels
+       * were indistinguishable in this harness, so a save refused for
+       * belonging to another store could have been shown as a quiet
+       * information notice and every assertion here would have held.
+       * Found in an eleventh review round, in the SECOND editor double --
+       * the first had been repaired for this a round earlier.
+       */
+      /*
+       * ⭐ THE CHANNEL OF THIS MESSAGE, not of any message.
+       *
+       * `channels.includes('error')` was satisfied by the setup saves,
+       * which raise errors of their own before the one this cell is
+       * about -- measured in a twelfth review round. `shown` pairs each
+       * text with the channel it went out on, so the question can be put
+       * about the sentence that names both stores.
+       */
+      const wrongStore = (result.shown as Array<{ text: string; level: string }>).filter(
+        (m) => m.text.includes('/stores/A') && m.text.includes('/stores/B')
+      );
+      assert.strictEqual(wrongStore.length, 1, 'the wrong-store message was not shown exactly once');
+      assert.notStrictEqual(
+        wrongStore[0].level,
+        'information',
+        'a save sent to the wrong store was announced as a quiet information notice'
+      );
     });
   }
   it('XO-03 legal twin adds one A record and leaves B unchanged',()=>{

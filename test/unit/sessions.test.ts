@@ -21,14 +21,14 @@
  * THE LIVENESS ANSWER DECIDES ONE THING ONLY -- whether a takeover is
  * OFFERED. It never decides whether anything may be written, which is
  * why erring towards "alive" costs nothing but a takeover that is not
- * offered, and why erring the other way would double-send. (§12.9)
+ * offered, and why erring the other way would double-send. (section 12.9)
  *
  * THE ORDER IS ESRCH FIRST, IDENTITY SECOND. A pid that is absent is
  * dead and needs no further question; a pid that is PRESENT may be a
  * reused one, so its start time is compared then. Reversing them makes
  * a dead session read as alive for ever -- which is what a reboot
  * leaves behind, so it is the common case and not the rare one.
- * (§12.21.4, C19)
+ * (section 12.21.4, C19)
  */
 
 import * as assert from 'assert';
@@ -206,7 +206,7 @@ describe('C8 and C19 whether another window is still running', () => {
    * answer, which the caller renders as "this platform cannot tell" and
    * which withholds the takeover. Folding it into either of the other
    * two is how a build either stops offering recovery for ever or
-   * double-sends. (§12.21.4)
+   * double-sends. (section 12.21.4)
    */
   /*
    * AND A RECORD WITH NO START TIME IS THE SAME ANSWER. Nothing was
@@ -472,7 +472,7 @@ describe('C10 nothing is deleted, and discarding is the user’s decision', () =
    * TWO DISCARDS OF ONE SESSION MAKE TWO DIRECTORIES. A destination that
    * could collide is a destination that can overwrite, and the one
    * operation that moves anything must not be the one that loses
-   * something. (§12.23)
+   * something. (section 12.23)
    */
   it('moves a dead session to a place that cannot already exist', async () => {
     const storage = scratch();
@@ -538,7 +538,7 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
    * THE QUEUE IS NOT CONSULTED. A save that completed and was never sent
    * -- the shape a host killed at the wrong moment leaves -- has no
    * outbox entry at all, and a scan that started from the queue would
-   * report nothing to recover. (§12.17.4, C6)
+   * report nothing to recover. (section 12.17.4, C6)
    */
   it('finds a file whose bytes the store never acknowledged', async () => {
     const storage = scratch();
@@ -573,7 +573,7 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
   /*
    * AND A BASELINE `reconcile` BUILT IS ALWAYS A DRAFT, whatever the
    * digests say: the store has not seen it, because it was established
-   * from the file rather than from an answer. (§12.19.2, C12)
+   * from the file rather than from an answer. (section 12.19.2, C12)
    */
   it('counts a local-only version as a draft even when its digests agree', async () => {
     const storage = scratch();
@@ -648,7 +648,7 @@ describe('C8 the claim token is complete when it is visible', () => {
    * A TEMPORARY FILE IS NOT A CLAIM. The token is published by writing
    * a temporary file and linking it into place, so a `.tmp` left by a
    * window that died mid-write must read as no claim at all -- otherwise
-   * one interrupted takeover strands the queue for ever. (§12.13.5)
+   * one interrupted takeover strands the queue for ever. (section 12.13.5)
    */
   it('does not read a leftover temporary file as a claim', async () => {
     const storage = scratch();
@@ -680,7 +680,7 @@ describe('C8 the claim token is complete when it is visible', () => {
    * AND A TAKEOVER THAT DIED HALFWAY IS NOT THE END OF THE QUEUE. The
    * next window takes the NEXT number and carries on; entries already
    * copied are skipped by request id, so nothing is applied twice and
-   * nothing is stranded. (§12.11.3, C8)
+   * nothing is stranded. (section 12.11.3, C8)
    */
   it('lets the next window carry on with the next sequence', async () => {
     const storage = scratch();
@@ -710,7 +710,7 @@ describe('C8 the claim token is complete when it is visible', () => {
 });
 
 /*
- * X1c ⑧: WHAT IS IN THE TOKEN, not only that one exists.
+ * X1c (8): WHAT IS IN THE TOKEN, not only that one exists.
  *
  * The cells above count tokens and compare sequence numbers, and every
  * one of them passes whatever the file contains. But the CONTENT is what
@@ -865,7 +865,7 @@ describe('C20 adopting a directory that is discarded underneath it', () => {
  * verified only by the reasoning that produced it is not guarded.
  */
 /*
- * X1c ⑤: A DIRECTORY WITH NO RECORD IN IT IS NOT A DEAD SESSION EITHER.
+ * X1c (5): A DIRECTORY WITH NO RECORD IN IT IS NOT A DEAD SESSION EITHER.
  *
  * `discard` already refused this: a directory with no `session.json` is
  * something to lose with nothing to judge it by. `claim` did not, and
