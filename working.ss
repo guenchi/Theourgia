@@ -80,6 +80,75 @@
                     (and (file-exists? (string-append (writer-directory store w) "/owner.sexp"))
                          (not (file-exists? (string-append (writer-directory store w) "/retired.sexp")))))
                   (store-writers store)))))
+  ;; ---- whose drafts are these? ----------------------------------------------
+  ;;
+  ;; ⭐ A REQUEST THAT NAMES NO WRITER IS REFUSED, and this is the one
+  ;; place that decides it. `writer-for` above falls back to the store's
+  ;; own log writer when nothing is supplied -- which is right for the
+  ;; internal caller that wants "this store's writer", and catastrophic
+  ;; for a request, because EVERY client that names no writer lands in the
+  ;; same draft space.
+  ;;
+  ;; ⛔ MEASURED, AND IT IS NOT MERELY SHARING -- IT IS SILENT OVERWRITE.
+  ;; Two clients with different actors, both without `--writer`, writing a
+  ;; draft on one block:
+  ;;
+  ;;   agent-one write  -> (ok (saved …) (writer "esu85u1f") (version "783fde55…"))
+  ;;   agent-two write  -> (ok (saved …) (writer "esu85u1f") (version "e98b10f5…"))
+  ;;   agent-one drafts -> (draft … (writer "esu85u1f") (version "e98b10f5…"))
+  ;;
+  ;; The second write replaced the first, and the first client's own
+  ;; `drafts` then reported the OTHER client's version as its own. ⛔
+  ;; Nothing anywhere said so: both writes answered `ok`, `drafts`
+  ;; answered `ok`, and a version is a hash nobody checks against the one
+  ;; they just wrote.
+  ;;
+  ;; ⚠️ SO IT CANNOT BE LEFT TO CALLERS TO REMEMBER. A client that forgets
+  ;; has no way to discover it from any answer it receives, which is why
+  ;; the absence is refused rather than defaulted.
+  ;;
+  ;; ⛔ AND THERE IS NO STANDALONE EXEMPTION. The local path refuses on the
+  ;; same terms as the forwarded one; a rule with a "but not when there is
+  ;; no daemon" clause is two rules.
+  (define (requested-writer store supplied)
+    (if supplied (writer-for store supplied) 'unbound))
+
+  (define (writer-required) '(error writer-required))
+
+  ;; ⛔ AND IT IS REFUSED BEFORE THE STORE IS TOUCHED. The entry points
+  ;; below bound `writer` and `state` in the same `let`, so opening and
+  ;; folding the store happened first and only then was the missing
+  ;; writer noticed. On a store that cannot be opened that turned a
+  ;; caller-fixable mistake into a storage failure -- measured, an
+  ;; unnamed writer answered `working-unavailable`, which is the value a
+  ;; durability fault reports and the one `working-fault-child.ss` keys
+  ;; its exit status on.
+  ;;
+  ;; ⚠️ `requested-writer` ALREADY SHORT-CIRCUITS on an absent writer, so
+  ;; this asks the same question one step earlier and nothing else
+  ;; changes: the answer for a named writer is untouched.
+  ;; ⛔ AND THIS IS THE ONLY PLACE THAT DECIDES IT. Each entry point used
+  ;; to carry its own `(eq? writer 'unbound)` branch as well. Once the
+  ;; guard moved out here those branches became unreachable -- one rule
+  ;; with two suppliers, where the second can never fire and so can never
+  ;; be found wrong. They are removed rather than left as reassurance.
+  (define (needing-writer supplied thunk)
+    (if supplied (thunk) (writer-required)))
+
+  ;; ⛔ AND THE SAME FOR THE ARGUMENT SHAPES THAT DO NOT NEED THE STORE.
+  ;; A block id is well formed or it is not, and the store has nothing to
+  ;; say about it -- but the check sat after `open-and-reduce`, so on a
+  ;; store that cannot be opened a malformed id was answered
+  ;; `working-unavailable`. Measured:
+  ;;
+  ;;   healthy store,    bad id -> (error bad-request)
+  ;;   unopenable store, bad id -> (error working-unavailable)
+  ;;
+  ;; which is the caller's mistake reported as a storage failure, and is
+  ;; the same shape as the writer ordering above.
+  (define (well-formed-first check thunk)
+    (or (check) (thunk)))
+
   (define (block-name? name)
     (and (safe-id? name)
          (= 1 (length (filter (lambda (c) (char=? c #\.)) (string->list name))))
@@ -217,9 +286,13 @@
                 (and (reduction? past) past))))))))
 
   (define (working-write! store state supplied id bytes rebase? . provenance)
+    (needing-writer supplied (lambda ()
+    (well-formed-first
+      (lambda () (and (not (block-name? id)) '(error bad-request invalid-block-id)))
+      (lambda ()
     (problem
       (lambda ()
-        (let* ((writer (writer-for store supplied)) (state (or state (open-and-reduce store)))
+        (let* ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store)))
                (hash (and (pair? provenance) (car provenance)))
                (cut-text (and (pair? provenance) (pair? (cdr provenance)) (cadr provenance)))
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
@@ -305,7 +378,7 @@
                  (lambda ()
                    (atomic-write! (path-for store writer id) (encode entry) 'working)))
                (list 'ok (list 'saved id) (list 'writer writer)
-                     (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5))))))))))
+                     (list 'version (list-ref entry 4)) (list 'based-on (list-ref entry 5))))))))))))))
 
   ;; ---- putting a revoked draft back ----------------------------------------
   ;;
@@ -325,9 +398,10 @@
   ;; from the current text, and its next commit would overwrite whatever
   ;; happened in between without being refused.
   (define (working-restore! store state supplied version)
+    (needing-writer supplied (lambda ()
     (problem
       (lambda ()
-        (let* ((writer (writer-for store supplied))
+        (let* ((writer (requested-writer store supplied))
                (state (and writer (or state (open-and-reduce store))))
                (found (and state
                            (find (lambda (r) (equal? version (cadr (car r))))
@@ -355,12 +429,15 @@
                       (lambda ()
                         (atomic-write! (path-for store writer id) (encode entry) 'working)))
                     (list 'ok (list 'restored id) (list 'writer writer)
-                          (list 'version version) (list 'based-on based-on)))))))))))) 
+                          (list 'version version) (list 'based-on based-on)))))))))))))) 
 
   (define (working-read store state supplied id . information)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
-        (if (not writer) (invalid-writer)
+      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+        (cond
+          ((not writer) (invalid-writer))
+          (else
             (let* ((e (and (safe-id? id) (entry-at store writer id)))
                    (active (and e (not (consumed? store state e))))
                    (body (if active (list-ref e 7) (or (field state id 'src) ""))))
@@ -378,7 +455,7 @@
                               (if active (list-ref e 6) (reduce-applied-cut state)) text
                               (string-append (or (field state id 'front) "") (or (field state id 'heading-src) ""))))
                             '(error working-unavailable non-text-projection))
-                        (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes b)))))))))))))
+                        (if text (list 'ok (list 'text text)) (list 'ok (list 'bytes b))))))))))))))))
 
   ;; ⛔ NO `state` PARAMETER, AND THAT IS NOT AN OVERSIGHT. Every other
   ;; verb in this family takes one because it folds the log to answer;
@@ -386,15 +463,16 @@
   ;; looks at a reduction at all. A parameter it ignored would say it
   ;; used the caller's value when it uses nothing.
   (define (working-discard! store supplied id)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)))
+      (let ((writer (requested-writer store supplied)))
         (cond ((not writer) (invalid-writer))
               ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
               ;; says so -- `safe-id?` admits names no block can have.
               ((not (block-name? id)) '(error bad-request invalid-block-id))
               (else (let ((p (path-for store writer id)))
                       (when (file-exists? p) (unlink! p) (directory-entry-durable! p 'working))
-                      (list 'ok (list 'discarded id)))))))))
+                      (list 'ok (list 'discarded id)))))))))))
 
   ;; "NOTHING TO COMMIT" IS READ, NOT STORED.
   ;;
@@ -432,16 +510,18 @@
   ;; the version and the base are what the answer reports back, so a
   ;; caller can tell which draft it actually got.
   (define (working-snapshot store state supplied)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
-        (if (not writer)
-            (invalid-writer)
+      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+        (cond
+          ((not writer) (invalid-writer))
+          (else
             (list 'ok writer
                   (with-draft-lock store writer
                     (lambda ()
                       (map (lambda (e)
                              (list (list-ref e 3) (list-ref e 4) (list-ref e 5) (list-ref e 7)))
-                           (active-entries store writer state))))))))))
+                           (active-entries store writer state)))))))))))))
 
   ;; THE BASELINE OF A WRITER'S WORKING VIEW: the join of the cuts its
   ;; live drafts were written against.
@@ -467,20 +547,25 @@
   ;; field of the same entries; a caller doing it would be a second
   ;; place that knows an envelope's sixth element is its cut.
   (define (working-baseline store state supplied)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
-        (if (not writer)
-            (invalid-writer)
+      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+        (cond
+          ((not writer) (invalid-writer))
+          (else
             (list 'ok writer
                   (with-draft-lock store writer
                     (lambda ()
                       (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
-                                 '() (active-entries store writer state))))))))))
+                                 '() (active-entries store writer state)))))))))))))
 
   (define (working-list store state supplied)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (writer-for store supplied)) (state (or state (open-and-reduce store))))
-        (if (not writer) (invalid-writer)
+      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+        (cond
+          ((not writer) (invalid-writer))
+          (else
             (list 'ok (cons 'items
               (append
               (map (lambda (e)
@@ -511,7 +596,7 @@
                              (list 'plan-event (cadr r)))))
                    (filter (lambda (r)
                              (not (file-exists? (path-for store writer (car (car r))))))
-                           (state-revoked state writer)))))))))))
+                           (state-revoked state writer))))))))))))))
 
   ;; THE (block . version) PAIRS THIS REQUEST IS ABOUT.
   ;;
@@ -697,13 +782,14 @@
                   entries))))
 
   (define (working-commit! store supplied ids actor supplied-req . rest)
+    (needing-writer supplied (lambda ()
     (problem (lambda ()
       ;; THE VERSIONS ARRIVE AS ONE LIST, and a rest argument wraps it
       ;; in another. Reading the wrapper as the list made every value a
       ;; list of strings, and the first refusal was a type error from
       ;; deep inside the parser rather than the answer this rule owes.
       (let* ((selected-version (if (pair? rest) (or (car rest) '()) '()))
-             (writer (writer-for store supplied)) (state (open-and-reduce store)))
+             (writer (requested-writer store supplied)) (state (open-and-reduce store)))
         (cond
           ((not writer) (invalid-writer))
           ((not (for-all safe-id? ids)) '(error bad-request invalid-block-id))
@@ -1012,5 +1098,5 @@
                                  (if behind
                                      (list 'ok (cons 'items answers) behind)
                                      (list 'ok (cons 'items answers))))))
-                           (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))
+                           (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))))
 )

@@ -36,9 +36,10 @@
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           request-frame transport-unreachable?
-          count-argument outline-text write-protocol)
+          count-argument outline-text write-protocol verb-catalogue)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
+          (only (theourgia client) request-frame verb-spelling-error)
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
@@ -110,7 +111,8 @@
       "Give every block 3 to 8 keywords, comma separated, with --keywords.\n"
       "Place a block under the parent its source or subject puts it under, with --under.\n"
       "Do not rewrite the source bytes: splitting a document must not edit its prose.\n"
-      "Change a block with write and then commit, through a draft, rather than replacing it.\n"))
+      "Change a block with write and then commit, through a draft, rather than replacing it.\n"
+      "Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.\n"))
 
   (define (usage form) (list 'usage form))
 
@@ -474,29 +476,165 @@
   ;; removed from it by a second rule somewhere, which is how a verb
   ;; comes back by accident -- so an unknown tag and a deliberately
   ;; absent one are the same answer, and there is nowhere to forget.
+  ;; ---- the catalogue -------------------------------------------------------
+  ;;
+  ;; ⭐ WHAT THE VERBS ARE, FOR SOMETHING THAT HAS TO ASK. The MCP shell
+  ;; builds its tool list from this, and a caller can read it with
+  ;; `describe`; both get it from here rather than each keeping a copy,
+  ;; because a tool description that has drifted from the verb it
+  ;; describes is worse than none -- it is read and believed.
+  ;;
+  ;; ⛔ IT IS DATA AND IT RUNS NOTHING. Asking what the verbs are may not
+  ;; open the store, take a lock or write a byte.
+  ;;
+  ;; ⚠️ AND IT IS A SECOND PLACE THAT KNOWS THE VERBS. The dispatcher is
+  ;; the first. A verb added there and not here would be callable and
+  ;; undocumented; one here and not there would be advertised and
+  ;; missing. Nothing in the language stops either, so `describe.ss` has
+  ;; a row that compares the two lists in both directions -- that row is
+  ;; the only thing holding this table honest.
+  ;;
+  ;; ⭐ THE FIFTH FIELD SAYS WHO CARRIES THE VERB OUT. `daemon` means a
+  ;; client sends it over the socket; `local` means the client runs the
+  ;; server in its own process instead, because there is nothing to send
+  ;; it to yet or because the work has to be this process's child.
+  ;;
+  ;; ⛔ IT EXISTS BECAUSE A LIST THAT ONLY THE CLIENT KNEW WAS WRONG FOR
+  ;; THE SHELL. `init` is what CREATES a store, so there is no daemon for
+  ;; it to reach; the MCP shell has no local route at all, so it offered
+  ;; `theourgia_init` as a tool, sent it to a daemon for a store that did
+  ;; not exist, and the daemon could not start. Measured: the shell can
+  ;; never create a store. The shell now lists only what it can actually
+  ;; carry out, and a host creates the store once before starting it.
+  ;;
+    ;; ⚠️ THE FOURTH FIELD IS CALLED `protocol`, AND THE NAME IS THE
+  ;; POINT. It says "this verb's description carries the writing protocol
+  ;; text", which is a fact about what agents are told. It was first
+  ;; called `writes`, meaning "changes the store" -- and under that name
+  ;; `set` belongs in it, because `set <id> src <text>` certainly does
+  ;; change the store. The name invited a verb in that the specification
+  ;; had not put there. "Does it change the store" is a real question and
+  ;; this table is not the place that answers it: nothing consumes such
+  ;; an answer.
+  (define (verb-catalogue)
+    (list
+      (list 'init '(init)
+            "Create a store in this directory." #f 'local)
+      (list 'insert insert-usage
+            "Add a block under a parent, with a title and optional text." #t 'daemon)
+      ;; ⚠️ NOT MARKED, ALTHOUGH `set <id> src <text>` DOES PUT PROSE IN.
+      ;; §7.6.45 names the two verbs the protocol is attached to, and
+      ;; this is not one of them. It is left as the specification has it
+      ;; rather than widened here, because the mark is what the MCP tool
+      ;; descriptions are built from and widening it silently would
+      ;; change what agents are told without anyone deciding to.
+      (list 'set '(set <id> <field> <value> ["--if-unchanged" <version>] ["--based-on" <version>])
+            "Replace one field of one block." #f 'daemon)
+      (list 'move '(move <id> <parent> ["--after" <id>])
+            "Move a block to another parent, optionally after a sibling." #f 'daemon)
+      (list 'del '(del <id>)
+            "Retire a block. Its history stays." #f 'daemon)
+      (list 'link '(link <from> <rel> <to>)
+            "Record a named relation between two blocks." #f 'daemon)
+      (list 'unlink '(unlink <from> <rel> <to>)
+            "Remove a named relation between two blocks." #f 'daemon)
+      (list 'write '(write <block> <bytes> ["--writer" <name>] ["--based-on" <version>]
+                           ["--rebase"])
+            "Save a draft of a block in a writer's own space, without committing it." #t 'daemon)
+      (list 'restore '(restore <version> ["--writer" <name>])
+            "Take an earlier version of a draft back into a writer's space." #f 'daemon)
+      (list 'commit commit-usage
+            "Install a writer's drafts into the store as one change." #f 'daemon)
+      (list 'drafts '(drafts ["--writer" <name>])
+            "List the drafts a writer is holding." #f 'daemon)
+      (list 'discard '(discard <block> ["--writer" <name>])
+            "Throw away a writer's draft of a block." #f 'daemon)
+      (list 'batch '(batch <intents>)
+            "Carry out several changes as one request." #f 'daemon)
+      (list 'split-suggest '(split-suggest <file> ["--output" <review-file>])
+            "Propose where a long file could be divided into blocks." #f 'daemon)
+      (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"])
+            "Read a directory of source into the store." #f 'daemon)
+      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"])
+            "Write the store's source back out to a directory." #f 'daemon)
+      (list 'def '(def <name> ["--under" <library>] <source>)
+            "Define or replace one named definition." #f 'daemon)
+      (list 'import-md '(import-md <dir> ["--allow-delete"])
+            "Read a directory of markdown into the store." #f 'daemon)
+      (list 'export-md '(export-md <dir> ["--with-ids"])
+            "Write the store out as markdown." #f 'daemon)
+      (list 'adopt '(adopt)
+            "Take in records that are on disk but not yet in the log." #f 'daemon)
+      (list 'check '(check)
+            "Read the whole store and report whether it is sound." #f 'daemon)
+      (list 'snapshot '(snapshot)
+            "Record the current state as a reduction that can be reopened quickly." #f 'daemon)
+      (list 'publish '(publish <writer> <segment> <file> [<sha256>])
+            "Publish a segment of a writer's log." #f 'daemon)
+      (list 'outline outline-usage
+            "List the blocks as a tree of titles." #f 'daemon)
+      (list 'read '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
+                         ["--working"] ["--working-info"])
+            "Read one block: its fields, or its text." #f 'daemon)
+      (list 'refs '(refs <id>)
+            "List the relations a block takes part in." #f 'daemon)
+      (list 'search '(search <query>)
+            "Find blocks whose title, keywords or text match every word given." #f 'daemon)
+      (list 'log '(log [<id>])
+            "Show the changes recorded, for the store or for one block." #f 'daemon)
+      (list 'tag '(tag [<name>])
+            "Name the current cut, or list the names already given." #f 'daemon)
+      (list 'diff '(diff <cut> <cut>)
+            "Report what changed between two cuts." #f 'daemon)
+      (list 'conflicts '(conflicts)
+            "List blocks whose writers disagree." #f 'daemon)
+      (list 'describe '(describe)
+            "List the verbs, what each is for, and the writing protocol." #f 'daemon)))
+
+  ;; The catalogue as an answer. ⛔ The protocol is carried ONCE, beside
+  ;; the verbs, rather than repeated into each entry that needs it: the
+  ;; entries say WHETHER it applies to them, and a reader that wants the
+  ;; text reads it from the one place it is written.
+  (define (describe-answer)
+    (list 'ok
+          (cons 'verbs
+                (map (lambda (entry)
+                       (list (car entry)
+                             (list 'usage (cadr entry))
+                             (list 'description (caddr entry))
+                             (list 'protocol (cadddr entry))
+                             (list 'route (list-ref entry 4))))
+                     (verb-catalogue)))
+          (list 'protocol write-protocol)))
+
   (define (verb-table)
     (list
+      (cons 'describe
+            (lambda (store actor args req options state writer cwd)
+              (if (not (null? args))
+                  (usage '(describe))
+                  (describe-answer))))
       (cons 'init
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(init))
                   (guarded (lambda ()
                              (let ((a (store-init! store)))
                                (if (eq? (car a) 'ok) a (cons 'error (cdr a)))))))))
-      (cons 'insert (lambda (store actor args req options state) (guarded (lambda () (parse-insert store actor args req options)))))
-      (cons 'set (lambda (store actor args req options state) (guarded (lambda () (parse-set store actor args req options state)))))
-      (cons 'move (lambda (store actor args req options state) (guarded (lambda () (parse-move store actor args req options)))))
+      (cons 'insert (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-insert store actor args req options)))))
+      (cons 'set (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-set store actor args req options state)))))
+      (cons 'move (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-move store actor args req options)))))
       (cons 'del
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(del <id>))
                   (guarded (lambda () (one-write store actor (list 'del (car args)) req))))))
-      (cons 'link (lambda (store actor args req options state) (guarded (lambda () (parse-edge store actor 'link args req)))))
-      (cons 'unlink (lambda (store actor args req options state) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
+      (cons 'link (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'link args req)))))
+      (cons 'unlink (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-edge store actor 'unlink args req)))))
       (cons 'write
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 2 (length args))
-                  (working-write! store state (argument-option options "--writer")
+                  (working-write! store state writer
                                   (car args) (cadr args) (argument-option options "--rebase")
                                   (argument-option options "--based-on") (argument-option options "--working-cut")
                                   (argument-option options "--working-parent-writer") (argument-option options "--working-parent"))
@@ -508,9 +646,9 @@
       ;; the log. Folding it into `write` would make the two-argument
       ;; check above answer for a call that has one.
       (cons 'restore
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
-                  (working-restore! store state (argument-option options "--writer") (car args))
+                  (working-restore! store state writer (car args))
                   (usage '(restore <version> ["--writer" <name>])))))
       ;; ⛔ COMMIT ADVERTISES ADDITIVELY, BECAUSE IT HAS NO SHAPE TO GET
       ;; WRONG. Every other verb answers a usage form when its arity or
@@ -523,37 +661,39 @@
       ;; testing `(car answer)` or its first three fields sees exactly
       ;; what it saw before.
       (cons 'commit
-            (lambda (store actor args req options state)
-              (let ((answer (working-commit! store (argument-option options "--writer")
+            (lambda (store actor args req options state writer cwd)
+              (let ((answer (working-commit! store writer
                                              args actor req
                                              (argument-option-list options "--working-version"))))
                 (if (and (pair? answer) (eq? (car answer) 'error))
                     (append answer (list (list 'usage commit-usage)))
                     answer))))
       (cons 'drafts
-            (lambda (store actor args req options state)
-              (if (null? args) (working-list store state (argument-option options "--writer"))
+            (lambda (store actor args req options state writer cwd)
+              (if (null? args) (working-list store state writer)
                   (usage '(drafts ["--writer" <name>])))))
       (cons 'discard
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
-                  (working-discard! store (argument-option options "--writer") (car args))
+                  (working-discard! store writer (car args))
                   (usage '(discard <block> ["--writer" <name>])))))
-      (cons 'batch (lambda (store actor args req options state) (guarded (lambda () (parse-batch store actor args req)))))
+      (cons 'batch (lambda (store actor args req options state writer cwd) (guarded (lambda () (parse-batch store actor args req)))))
       (cons 'split-suggest
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
-                  (guarded (lambda () (split-suggest (car args) (argument-option options "--output"))))
+                  (guarded (lambda () (split-suggest (car args)
+                                                     (argument-option options "--output"))))
                   (usage '(split-suggest <file> ["--output" <review-file>])))))
       (cons 'import-code
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
                   (guarded (lambda ()
                     (if (argument-option options "--datum") (import-datum store (car args) actor req)
-                        (import-code store (car args) actor req (argument-option options "--allow-delete")))))
+                        (import-code store (car args) actor req
+                                     (argument-option options "--allow-delete")))))
                   (usage '(import-code <dir> ["--allow-delete"] ["--datum"])))))
       (cons 'export-code
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
                   (guarded (lambda ()
                     (cond ((and (argument-option options "--datum") (argument-option options "--raw"))
@@ -562,12 +702,12 @@
                           (else (export-code store (car args) (argument-option options "--raw"))))))
                   (usage '(export-code <dir> ["--raw"] ["--datum"])))))
       (cons 'def
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
                   (guarded (lambda () (def-datum store (car args) (argument-option options "--under") (cadr args) actor req)))
                   (usage '(def <name> ["--under" <library>] <source>)))))
       (cons 'import-md
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(import-md <dir> ["--allow-delete"]))
                   (guarded (lambda ()
@@ -575,12 +715,12 @@
                                    (import-md store (car args) actor
                                               (argument-option options "--allow-delete"))))))))
       (cons 'export-md
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(export-md <dir> ["--with-ids"]))
                   (guarded (lambda () (export-md store (car args) (argument-option options "--with-ids")))))))
       (cons 'adopt
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(adopt))
                   (guarded (lambda ()
@@ -589,12 +729,12 @@
                                    (cons 'ok (cdr a))
                                    (cons 'error (cdr a)))))))))
       (cons 'check
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(check))
                   (guarded (lambda () (store-check store))))))
       (cons 'snapshot
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(snapshot))
                   (guarded (lambda ()
@@ -603,7 +743,7 @@
                                    (list 'ok (list 'snapshot (cadr a)) (list 'cut (caddr a)))
                                    (cons 'error (cdr a)))))))))
       (cons 'publish
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (let ((form '(publish <writer> <segment> <file> [<sha256>])))
                 (if (not (or (= 3 (length args)) (= 4 (length args))))
                     (usage form)
@@ -631,7 +771,7 @@
                                           (cons 'error
                                                 (if (eq? (car a) 'error) (cdr a) (list a)))))))))))))))
       (cons 'outline
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (let ((depth (argument-option options "--depth")) (rest args))
                 (cond
                   ((not (null? rest)) (usage outline-usage))
@@ -654,7 +794,7 @@
       ;; An order-sensitive option list is a component whose meaning
       ;; depends on where it appears.
       (cons 'read
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (let ((md? (argument-option options "--md"))
                     (deep? (argument-option options "--recursive")) (rest args))
                 (cond
@@ -662,7 +802,7 @@
                                  ["--working"] ["--working-info"])))
                   ((or (argument-option options "--working") (argument-option options "--working-info"))
                    (if (or md? deep?) '(error bad-request incompatible-working-options)
-                       (working-read store state (argument-option options "--writer") (car rest) (argument-option options "--working-info"))))
+                       (working-read store state writer (car rest) (argument-option options "--working-info"))))
                   (md?
                    (guarded
                      (lambda ()
@@ -730,7 +870,7 @@
                               (b (view-read state (car rest))))
                          (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
       (cons 'refs
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(refs <id>))
                   (guarded
@@ -744,14 +884,14 @@
                                         (cadr a)))
                             a)))))))
       (cons 'search
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(search <query>))
                   (guarded (lambda ()
                              (items (map (lambda (hit) (cons 'hit hit))
                                          (store-search store (car args)))))))))
       (cons 'log
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (or (null? args) (= 1 (length args))))
                   (usage '(log [<id>]))
                   (guarded
@@ -768,7 +908,7 @@
                                         (cadr a)))
                             a)))))))
       (cons 'tag
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (cond
                 ((null? args)
                  (guarded
@@ -789,7 +929,7 @@
                  (guarded (lambda () (one-write store actor (list 'tag (car args)) req))))
                 (else (usage '(tag [<name>]))))))
       (cons 'diff
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (= 2 (length args)))
                   (usage '(diff <cut> <cut>))
                   (guarded
@@ -797,7 +937,7 @@
                       (let ((a (store-diff store (car args) (cadr args))))
                         (if (eq? (car a) 'ok) (items (cadr a)) a)))))))
       (cons 'conflicts
-            (lambda (store actor args req options state)
+            (lambda (store actor args req options state writer cwd)
               (if (not (null? args))
                   (usage '(conflicts))
                   (guarded (lambda () (items (store-conflicts store)))))))))
@@ -828,6 +968,108 @@
   ;; this wrong in both directions at once -- leaving `tag` out refused
   ;; an identity the write path was already using, and putting it in
   ;; would go back to accepting one silently on the listing form.
+  ;; ⛔ A RELATIVE PATH IS RELATIVE TO THE CALLER, NOT TO THE SERVER. On
+  ;; the daemon route the process that reads the path is somewhere else
+  ;; entirely -- it was started from whatever directory happened to be
+  ;; current then -- so `import-code src` meant one directory to the
+  ;; person typing it and another to the process acting on it. The
+  ;; envelope carries the caller's directory; where there is none (the
+  ;; command line, which is already in it) the path is used as it came.
+  ;; ⛔ WHICH ARGUMENTS ARE PATHS IS READ FROM THE USAGE FORM, not from a
+  ;; list kept beside it. Six verbs take a path and only three had been
+  ;; given the caller's directory, because the three were the ones in front
+  ;; of me when the rule was written -- a list of names does not shout when
+  ;; a name is missing from it. The usage forms already say which arguments
+  ;; are paths, in the placeholders a reader of `--help` relies on, so they
+  ;; are what decides.
+  ;;
+  ;; A placeholder names a path when it is `<dir>`, `<file>`, or ends in
+  ;; `-file`. ⚠️ `<writer>`, `<segment>` and `<sha256>` are not paths and
+  ;; must not be rewritten -- `publish` takes all four kinds in one line.
+  ;; ⚠️ THE ANGLE BRACKETS ARE PART OF THE SYMBOL. `<dir>` reads as a
+  ;; symbol whose name is `"<dir>"`, brackets and all -- a rule written
+  ;; against `"dir"` matched nothing at all, and the three verbs that had
+  ;; been resolving paths by hand stopped resolving them. Measured: a
+  ;; relative `import-code src` answered `not-a-directory` where it had
+  ;; worked the moment before.
+  (define (path-placeholder? x)
+    (and (symbol? x)
+         (let* ((raw (symbol->string x))
+                (k (string-length raw))
+                (n (if (and (>= k 2)
+                            (char=? (string-ref raw 0) #\<)
+                            (char=? (string-ref raw (- k 1)) #\>))
+                       (substring raw 1 (- k 1))
+                       raw))
+                (m (string-length n)))
+           (or (string=? n "dir")
+               (string=? n "file")
+               (and (> m 5) (string=? (substring n (- m 5) m) "-file"))))))
+
+  ;; The positional slots of a usage form, in order, as placeholders: the
+  ;; symbols before any optional `[...]` group.
+  (define (usage-positionals form)
+    (if (not (pair? form))
+        '()
+        (let loop ((xs (cdr form)) (out '()))
+          (cond ((not (pair? xs)) (reverse out))
+                ((pair? (car xs)) (reverse out))
+                (else (loop (cdr xs) (cons (car xs) out)))))))
+
+  ;; The options whose VALUE is a path, as spellings: `["--output" <review-file>]`.
+  (define (usage-path-options form)
+    (if (not (pair? form))
+        '()
+        (let loop ((xs (cdr form)) (out '()))
+          (cond ((not (pair? xs)) (reverse out))
+                ((and (pair? (car xs)) (= 2 (length (car xs)))
+                      (string? (car (car xs))) (path-placeholder? (cadr (car xs))))
+                 (loop (cdr xs) (cons (car (car xs)) out)))
+                (else (loop (cdr xs) out))))))
+
+  ;; The usage form a verb is published with, or #f.
+  (define (usage-form-of verb)
+    (let look ((es (verb-catalogue)))
+      (cond ((null? es) #f)
+            ((eq? verb (car (car es))) (cadr (car es)))
+            (else (look (cdr es))))))
+
+  ;; Every argument the usage form calls a path, rewritten against the
+  ;; caller's directory. Positionals by their slot, option values by their
+  ;; spelling; everything else is left exactly as it arrived.
+  (define (under-cwd-nodes cwd verb nodes)
+    (if (not (string? cwd))
+        nodes
+        (let* ((form (usage-form-of verb))
+               (slots (usage-positionals form))
+               (opts (usage-path-options form)))
+          (if (not form)
+              nodes
+              (let loop ((ns nodes) (pos 0) (out '()))
+                (cond
+                  ((null? ns) (reverse out))
+                  ((eq? 'pos (car (car ns)))
+                   (let ((path? (and (< pos (length slots))
+                                     (path-placeholder? (list-ref slots pos)))))
+                     (loop (cdr ns) (+ pos 1)
+                           (cons (if path?
+                                     (list 'pos (under-cwd cwd (cadr (car ns))))
+                                     (car ns))
+                                 out))))
+                  ((and (eq? 'option (car (car ns)))
+                        (member (cadr (car ns)) opts))
+                   (loop (cdr ns) pos
+                         (cons (list 'option (cadr (car ns))
+                                     (under-cwd cwd (caddr (car ns))))
+                               out)))
+                  (else (loop (cdr ns) pos (cons (car ns) out)))))))))
+
+  (define (under-cwd cwd path)
+    (if (and (string? cwd) (string? path) (> (string-length path) 0)
+             (not (char=? (string-ref path 0) #\/)))
+        (string-append cwd "/" path)
+        path))
+
   (define (tracked-request? verb args)
     (case verb
       ((insert set move del link unlink batch commit import-code def) #t)
@@ -845,7 +1087,13 @@
          (if (and (pair? nodes) (eq? (car nodes) 'error)) nodes
              (rpc-dispatch-parsed store (car request) nodes
                (if (pair? rest) (car rest) "rpc")
-               (and (pair? rest) (pair? (cdr rest)) (cadr rest))))))))
+               (and (pair? rest) (pair? (cdr rest)) (cadr rest))
+               (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
+                    (caddr rest))
+               (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
+                    (pair? (cdddr rest)) (cadddr rest))
+               (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
+                    (pair? (cdddr rest)) (pair? (cddddr rest)) (car (cddddr rest)))))))))
 
   ;; Parsed nodes are the CLI's internal handoff. All verb arguments and
   ;; their fingerprint are derived from the same tokenization.
@@ -900,34 +1148,117 @@
          (memv (cadr outcome) '(-2 -38 -61 -111))
          #t))
 
-  (define (request-frame store actor verb args)
-    (unless (and (string? store) (string? actor) (symbol? verb) (for-all string? args))
-      (assertion-violation 'request-frame "store and actor are strings, verb a symbol, args strings"
-                           (list store actor verb args)))
-    (string->utf8 (render-wire (append (list 'request store actor verb) args))))
+  ;; ⛔ `request-frame` IS NOT DEFINED HERE ANY MORE. It moved to
+  ;; `(theourgia client)` and is re-exported from this library so that no
+  ;; caller had to change. The reason it moved is the same one that moved
+  ;; `socket-path` there: the CLIENT has to pack the envelope and the
+  ;; client may not import this library -- loading the dispatcher is the
+  ;; cost the split exists to avoid -- so a packer living here would have
+  ;; had to be written a second time on the other side, and two spellings
+  ;; of one envelope is the defect this arrangement exists to prevent.
 
+  ;; ⭐ THE WRITER IS AN IDENTITY THE CALLER CARRIES, NOT A WORD IN ITS
+  ;; ARGUMENTS. The daemon used to splice `--writer <name>` into the
+  ;; argument list before parsing it, which meant a request whose own
+  ;; text contained `--writer` -- as a block's bytes, or as anything
+  ;; after `--` -- suppressed the default and was then refused for
+  ;; having no writer. The envelope's writer now arrives here, beside
+  ;; the actor, and the arguments are passed through untouched.
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
     (let* ((state (and (pair? rest) (car rest)))
+           (default-writer (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
+           ;; ⛔ WHAT THE CALLER PIPED IN, AND WHERE THE CALLER WAS. Both
+           ;; are facts about the process that made the request, and on
+           ;; the daemon route that process is somewhere else entirely.
+           ;; `argument-stdin` is the one rule that says which verbs read
+           ;; standard input and where it goes in their arguments; it is
+           ;; applied here when a caller supplies a reader, and the
+           ;; command line -- which parses its own arguments and has
+           ;; already applied it -- supplies none.
+           (stdin-reader (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
+                              (caddr rest)))
+           (cwd (and (pair? rest) (pair? (cdr rest)) (pair? (cddr rest))
+                     (pair? (cdddr rest)) (cadddr rest)))
+           ;; ⛔ A VERB THAT READS STANDARD INPUT AND WAS GIVEN NONE IS
+           ;; TOLD SO. It used to run with the placeholder still in its
+           ;; arguments, so `write <id> -` stored the literal "-" and
+           ;; answered `(ok (saved ...))` -- the caller's bytes discarded
+           ;; with no error anywhere. Asked of the same table that decides
+           ;; where the input goes.
+           (wants-stdin (argument-wants-stdin? verb nodes))
+           (nodes (if (and wants-stdin (procedure? stdin-reader))
+                      (argument-stdin verb nodes stdin-reader)
+                      nodes))
+           (nodes (under-cwd-nodes cwd verb nodes))
            (entry (assq verb verbs))
            (id (argument-option nodes "--req"))
            (cursor (argument-option nodes "--cursor"))
            (after (and cursor (parse-after cursor)))
            (options (argument-remove nodes '("--req" "--cursor")))
-           (args (argument-positionals options)))
+           (args (argument-positionals options))
+           ;; ONE RULE, ONE PLACE: an explicit option wins, the envelope's
+           ;; writer is the default, and every handler is told the answer
+           ;; rather than working it out again.
+           (writer (or (argument-option options "--writer") default-writer)))
       (cond
-        ;; THE VERB IS SPELLED, NOT SENT BACK. It came from a caller, so it
-        ;; can be any symbol at all -- and a verb a caller got wrong is
-        ;; exactly the kind that is not wire-safe. `show me` came back as
-        ;; `show\x20;me` and the reader that had asked the question could
-        ;; not parse the answer to it. A string carries the same fact and
-        ;; survives the wire whatever it holds.
+        ;; ⛔ A VERB THAT CANNOT BE PRINTED IS REFUSED BEFORE IT IS
+        ;; PRINTED, and this is the well-formedness layer, so it comes
+        ;; first. A caller's verb can be any symbol; one they got wrong is
+        ;; exactly the kind the wire writer will not emit -- `show me`
+        ;; went out as `show\x20;me` and the reader that had asked the
+        ;; question could not parse the answer to it.
+        ;;
+        ;; ⭐ AND IT IS JUDGED HERE, IN THE PART BOTH ROUTES SHARE. The
+        ;; reader's guard (`readable-shape?`) would refuse such a frame as
+        ;; `not-a-datum` at a daemon, and a call made in this process
+        ;; would never meet that guard at all -- so the same verb would
+        ;; have got two different answers depending on whether a daemon
+        ;; happened to be running. `daemon.ss` promises the two routes are
+        ;; byte for byte the same answer; this is what keeps that true.
+        ;;
+        ;; ⚠️ THE TWO LAYERS ANSWER DIFFERENT QUESTIONS AND BOTH STAY.
+        ;; This one says "no daemon would accept this, so it is not sent";
+        ;; the reader's guard says "these bytes are not something I will
+        ;; hand to `read`", and it still answers a third-party client that
+        ;; writes `(request |show me| ...)` to the socket itself.
+        ((verb-spelling-error (datum-spelling verb)) => (lambda (e) e))
+        ;; THE VERB IS SPELLED, NOT SENT BACK: the spelling is a STRING
+        ;; here, which survives the wire whatever it holds -- and after
+        ;; the clause above, what it holds is within the alphabet, so the
+        ;; string and the symbol now agree character for character.
         ((not entry)
          (list 'error 'unknown-verb (list 'spelling (datum-spelling verb))
                (cons 'verbs (rpc-verbs))))
         ((or (argument-option options "--store") (argument-option options "--actor")
              (argument-option options "--wire") (argument-option options "--socket"))
          '(error bad-request transport-option-in-rpc))
-        ((and (not (eq? verb 'init)) (no-store? store)) => (lambda (a) a))
+        ;; ⛔ ONLY THE SHAPE THAT USED TO BE SILENT. A verb whose input is
+        ;; simply absent answers its own usage line and always has; the one
+        ;; that needed saying is an unfilled `-`, which was stored as the
+        ;; text with `(ok (saved ...))` on top of it.
+        ;;
+        ;; ⭐ AND STDIN A VERB DOES NOT READ IS IGNORED, NOT REFUSED. This
+        ;; is a choice, and the reason is that the only caller who can get
+        ;; here is one that put input in the envelope for a verb whose
+        ;; argument form does not take any -- and a wrapper that forwards
+        ;; whatever it was given, unconditionally, is an ordinary and
+        ;; legitimate way to write a client. Refusing it would fail every
+        ;; verb for such a caller, which is the same shape as a runner
+        ;; inheriting a terminal and reading input nobody meant to send.
+        ;; A process ignores standard input it does not read; so does this.
+        ;; ⛔ AN UNFILLED `-` IS THE REFUSAL, and it is the branch below:
+        ;; there the caller ASKED for input and none came.
+        ((and (not (procedure? stdin-reader))
+              (argument-stdin-placeholder? verb nodes))
+         '(error bad-request stdin-required))
+        ;; ⛔ TWO VERBS DO NOT NEED A STORE AND MUST NOT BE REFUSED FOR
+        ;; NOT HAVING ONE. `init` is what creates it. `describe` answers
+        ;; out of a table: asking what the verbs are may not open a
+        ;; store, take a lock or write a byte, and a caller asking that
+        ;; question is quite often one that has not got a store yet --
+        ;; the MCP shell builds its tool list this way, before anyone has
+        ;; said which store they mean.
+        ((and (not (memq verb '(init describe))) (no-store? store)) => (lambda (a) a))
         ((and id (not after)) '(error bad-request req-without-cursor))
         ((and id (not (tracked-request? verb args)))
          (list 'error 'bad-request 'req-not-tracked verb))
@@ -936,7 +1267,7 @@
         ((eq? after 'malformed) '(error bad-request malformed-cursor))
         (else ((cdr entry) store actor args
                (and id (make-write-request actor verb (argument-strings options) id after))
-               options state)))))
+               options state writer cwd)))))
 
   ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader
   ;; implements the whole of Scheme's numeric syntax, and `#e1e99999999`

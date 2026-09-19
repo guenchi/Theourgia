@@ -157,5 +157,101 @@
       (reaches 'view)
       '(datum-code languages text-code))
 
+;; ---- C-1 the two thin things ----------------------------------------------
+;;
+;; ⭐ A CLIENT MAY NOT LOAD THE SERVER IT IS TRYING TO TALK TO. That is
+;; the whole reason the command line and the MCP shell were split off:
+;; every call used to pay to load the dispatcher, the store, the actor
+;; system and libuv, and then use none of them. These rows are what say
+;; it is still true.
+;;
+;; ⛔ NAMED, NOT COUNTED. "The closure is small" would stay true of a
+;; closure that had swapped one of these libraries for another.
+
+(define server-side '(rpc sched net daemon store reduce log working))
+
+(define (server-parts-of start)
+  (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+             (filter (lambda (n) (memq n server-side)) (closure start))))
+
+(want "C-1 the client library reaches none of the server"
+      (server-parts-of 'client)
+      '())
+
+(want "C-1 and its closure is exactly what it should be"
+      (closure 'client)
+      '(client digest ffi render trace))
+
+;; ⭐ THE CONTROL ROW. Without it every row above is also passed by a
+;; walker that found no edges at all -- which is the state this file
+;; would be in if the graph were built from the wrong directory.
+(want "C-1 CONTROL: the server side does reach all of it"
+      (let ((missing (filter (lambda (n) (not (memq n (closure 'rpc)))) server-side)))
+        ;; `rpc` is itself in the list and reaches the rest; `sched`,
+        ;; `net` and `daemon` are above it and are not expected here.
+        (filter (lambda (n) (memq n '(store reduce log working))) missing))
+      '())
+
+;; ⚠️ THE SHELL IS A PROGRAM, not a library, so its own import list is
+;; the seed. A row keyed on a library name would have silently measured
+;; nothing at all.
+(define shell-imports
+  (map cadr (filter (lambda (r) (pair? (cdr r)))
+                    (imports-of-file 'theourgia (string-append root "/mcp/server.ss")))))
+
+(define (closure-of-all starts)
+  (let loop ((todo starts) (seen '()))
+    (cond
+      ((null? todo)
+       (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b))) seen))
+      ((memq (car todo) seen) (loop (cdr todo) seen))
+      (else
+       (let ((edges (cond ((assq (car todo) graph) => cdr) (else '()))))
+         (loop (append edges (cdr todo)) (cons (car todo) seen)))))))
+
+(want "C-1 the MCP shell imports something at all"
+      (if (null? shell-imports) 'NOTHING-WAS-READ 'read-its-imports)
+      'read-its-imports)
+
+(want "C-1 the MCP shell reaches none of the server"
+      (filter (lambda (n) (memq n server-side)) (closure-of-all shell-imports))
+      '())
+
+(want "C-1 and the shell's closure is exactly what it should be"
+      (closure-of-all shell-imports)
+      '(arguments client digest ffi json render trace))
+
+
+;; ---- C-2 the client PROGRAM's own closure --------------------------------
+;;
+;; ⚠️ A PROGRAM'S IMPORTS ARE ITS OWN, and the rows above are about the
+;; `client` LIBRARY. `theourgia.ss` is what a person actually runs, and
+;; what it reaches is a separate fact.
+;;
+;; ⭐ `arguments` IS ALLOWED HERE, AND THE REASON IS THE POINT. The
+;; envelope carries what the caller piped in, and only the verb's own
+;; table knows WHETHER a verb reads standard input -- `write <id> -` does
+;; and `write <id> text` does not. The program asks that table rather than
+;; keeping a second copy of it, and still forwards the arguments exactly
+;; as they were written. `(theourgia arguments)` imports nothing but
+;; `(rnrs base)` and `(rnrs lists)`: it reaches neither the dispatcher,
+;; nor the scheduler, nor the networking library, which is what this file
+;; exists to keep true.
+(define program-imports
+  (map cadr (filter (lambda (r) (pair? (cdr r)))
+                    (imports-of-file 'theourgia (string-append root "/theourgia.ss")))))
+
+(want "C-2 the client program imports something at all"
+      (if (null? program-imports) 'NOTHING-WAS-READ 'read-its-imports)
+      'read-its-imports)
+
+(want "C-2 the client program reaches none of the server"
+      (filter (lambda (n) (memq n server-side)) (closure-of-all program-imports))
+      '())
+
+(want "C-2 and the client program's closure is exactly what it should be"
+      (closure-of-all program-imports)
+      '(arguments client digest ffi render trace))
+
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

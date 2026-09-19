@@ -19,10 +19,18 @@
 ;; directory is run by the runner, and a script that needs arguments is
 ;; told apart from a fixture that failed by the usage line it prints:
 ;; without one this died in `car` at rc=255 and was counted red.
-(when (< (length args) 2)
-  (printf "usage: working-fault-child <store> <block-id>\n")
+(when (< (length args) 3)
+  (printf "usage: working-fault-child <store> <block-id> <writer>\n")
   (exit 0))
-(define answer (rpc-dispatch (car args) (list 'write (cadr args) "not-durable") "test"))
+;; ⭐ THE WRITER COMES FROM THE PARENT, NOT FROM A DEFAULT HERE. A draft
+;; verb with no writer named is refused outright, and the refusal the
+;; exit status below looks for is `working-unavailable` -- so a child
+;; that guessed wrong would exit non-zero for a reason that has nothing
+;; to do with the fault it was sent to trigger.
+(define answer
+  (rpc-dispatch (car args)
+                (list 'write (cadr args) "not-durable" "--writer" (caddr args))
+                "test"))
 (write answer)
 (newline)
 ;; THE EXIT STATUS NAMES THE REFUSAL, NOT MERELY ITS KIND. `(eq? (car

@@ -36,6 +36,11 @@
         ;; note in daemon.ss. Forwarding runs one exchange and exits;
         ;; nothing here has a peer to be linked to.
         (only (theourgia render) answer-printing!)
+        (only (theourgia client) socket-path answer-field readable-shape? exit-code?
+              verb-spelling-error)
+        (only (theourgia ffi)
+              env-or setsid! redirect-stdio! trace-event!
+              fs-error? fs-error-errno)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce))
 
@@ -84,8 +89,21 @@
 ;; ---- argv ----------------------------------------------------------------
 
 (define (environment-actor)
-  (or (let ((e (getenv "THEOURGIA_ACTOR"))) (and e (> (string-length e) 0) e))
-      (let ((u (getenv "USER"))) (and u (> (string-length u) 0) u)) "cli"))
+  (or (env-or "THEOURGIA_ACTOR") (env-or "USER") "cli"))
+
+;; ⛔ THE BOUND WRITER IS AN IDENTITY THIS PROCESS CARRIES, NOT A WORD IN
+;; THE COMMAND LINE. The thin client used to splice `--writer <name>` into
+;; the arguments before handing them here, which broke every verb whose
+;; grammar has no `--writer`: `theourgia init --store X` answered its
+;; usage line and exited 1 for as long as an identity was bound. It is
+;; read here and passed to the dispatcher as the default, which is the
+;; same route the daemon's envelope takes, and the arguments are left
+;; exactly as the caller wrote them.
+;;
+;; ⚠️ UNSET STAYS UNSET, and does not fall back to the actor -- a draft
+;; verb with no writer is refused, and a fallback would mean that refusal
+;; could never happen.
+(define (environment-writer) (env-or "THEOURGIA_WRITER"))
 
 (define (read-all-text port)
   (let-values (((out get) (open-string-output-port)))
@@ -109,10 +127,13 @@
 ;; is printed by the same two procedures that print a local one. ⛔ There
 ;; is no rule here about what a verb means.
 ;;
-;; ⛔ AND IT IS SCHEME, not a helper process. What used to happen here was
-;; an exec into `local.py --forward`: a second implementation of the wire
-;; format, in another language, kept in step by hand -- and the envelope
-;; it spoke was already not the one the daemon speaks.
+;; ⛔ AND IT IS SCHEME, not a helper process. ⚠️ HISTORY, NOT CURRENT
+;; BEHAVIOUR -- and spelled out because a reader took it for a
+;; description of what runs today: **until batch E this exec'd into a
+;; Python program, `local.py --forward`. That file no longer exists and
+;; nothing here starts another process.** It was a second implementation
+;; of the wire format, in another language, kept in step by hand, and the
+;; envelope it spoke was already not the one the daemon speaks.
 ;;
 ;; ⚠️ THIS NEVER RETURNS. `start-scheduler` does not: it ends in a loop
 ;; that waits for ever, so there is no "after the scheduler" to fall back
@@ -123,6 +144,50 @@
     (cond ((>= i (bytevector-length bv)) #f)
           ((= (bytevector-u8-ref bv i) 10) #t)
           (else (loop (+ i 1))))))
+
+;; ---- what comes back --------------------------------------------------
+;;
+;;   (answer (stdout "<bytes>") (stderr "<bytes>") (exit <n>) (origin <who>))
+;;
+;; ⛔ THE BYTES ARE WRITTEN, NOT RE-RENDERED. The daemon rendered them,
+;; in the mode this caller asked for; printing them through a printer
+;; again would be a second rendering of something already rendered, and
+;; the two would drift.
+;;
+;; ⛔ AND THE EXIT CODE IS TAKEN, NOT COMPUTED. Whether an answer counts
+;; as a success is knowledge about what a verb means -- `check` turns on
+;; its verdict, `batch` on every one of its items -- and the server is
+;; where that knowledge is. Working it out again here would be a second
+;; copy of `rpc-ok?`, and the copy would be the one that got it wrong.
+;;
+;; ⚠️ THE SHAPE IS CHECKED BEFORE IT IS BELIEVED. Something that is not
+;; this shape is not an answer that came out badly, it is a peer that is
+;; not the daemon or is not the same version of it, and that is
+;; `transport-unknown`: the request may well have been carried out.
+;; ⛔ WHAT CAME BACK WAS WRITTEN BY A PEER. `assq` demands a proper list
+;; of pairs and raises on anything else, and the guard around the read
+;; does not cover this: `(answer . broken)` reads perfectly well and then
+;; raised "improperly formed alist" out of here, past the refusal three
+;; lines down that exists to answer exactly this.
+;;
+;; ⛔ THE READER IS `answer-field`, IN THE LIBRARY. This file, the client
+;; program and the MCP shell each had their own copy of the lookup, and
+;; the same defect was fixed in two of them -- one rule with three
+;; suppliers is how the third stayed wrong.
+(define (answer-envelope? x)
+  (and (answer-field x 'stdout string?)
+       (answer-field x 'stderr string?)
+       (answer-field x 'exit exit-code?)
+       #t))
+
+(define (envelope-field x name) (answer-field x name (lambda (v) #t)))
+
+(define (finish-envelope envelope)
+  (put-string (current-output-port) (envelope-field envelope 'stdout))
+  (let ((err (envelope-field envelope 'stderr)))
+    (unless (string=? err "")
+      (put-string (current-error-port) err)))
+  (exit (envelope-field envelope 'exit)))
 
 (define (finish answer wire?)
   (print-answer answer wire?)
@@ -144,25 +209,47 @@
 ;; falls to the `transport-unknown` branch, which is the safe side.
 
 (define (forward-then-exit! socket store actor verb resolved wire?)
+  ;; ⚠️ THE WRITER AND THE MODE COME FROM THE SAME PARSE the verb's own
+  ;; arguments came from. `--writer` stays in `resolved` as well, because
+  ;; a per-call writer still overrides the envelope's on the other side;
+  ;; what the envelope carries is the identity this PROCESS is bound to,
+  ;; which today is only what the command line said.
   ((later '(theourgia sched) 'start-scheduler)
     (lambda ()
       (let ((outcome
               ((later '(theourgia net) 'exchange) socket
                         ;; ⛔ THE ENVELOPE IS PACKED IN ONE PLACE, and this
                         ;; is not it. The MCP shell sends the same one.
-                        (request-frame store actor verb (argument-strings resolved))
+                        ;; ⚠️ AND WHERE THIS PROCESS IS. A forwarded request
+                        ;; is carried out by a daemon started from some other
+                        ;; directory, so a relative path in it would be read
+                        ;; there rather than here. Standard input is not sent:
+                        ;; this program parses its own arguments and has
+                        ;; already put what was piped in where the verb wants
+                        ;; it.
+                        (request-frame store verb (argument-strings resolved)
+                                       (list (cons 'actor actor)
+                                             (cons 'writer (argument-option resolved "--writer"))
+                                             (cons 'cwd (current-directory))
+                                             (cons 'mode (if wire? 'wire 'human))))
                         datum-line?
                         30000)))
         (cond
           ((and (pair? outcome) (eq? 'answer (car outcome)))
-           (let ((answer (guard (e (#t 'unreadable))
-                           (read (open-string-input-port (utf8->string (cadr outcome)))))))
-             (if (eq? answer 'unreadable)
-                 (finish '(error transport-unknown (reason unreadable-answer)) wire?)
-                 (finish answer wire?))))
+           (let ((envelope (guard (e (#t 'unreadable))
+                             (let ((text (utf8->string (cadr outcome))))
+                               ;; ⛔ ASKED BEFORE THE READER IS HANDED IT:
+                               ;; a datum label makes a cycle that every
+                               ;; later walk follows forever.
+                               (if (readable-shape? text)
+                                   (read (open-string-input-port text))
+                                   'unreadable)))))
+             (if (answer-envelope? envelope)
+                 (finish-envelope envelope)
+                 (finish '(error transport-unknown (reason unreadable-answer)) wire?))))
           ;; ⛔ THE SAME QUESTION THE MCP SHELL ASKS, ASKED IN ONE PLACE.
           ((transport-unreachable? outcome)
-           (finish (rpc-dispatch-parsed store verb resolved actor) wire?))
+           (finish (rpc-dispatch-parsed store verb resolved actor #f (environment-writer)) wire?))
           (else
            (finish (list 'error 'transport-unknown (list 'reason 'lost-answer)) wire?)))))))
 
@@ -276,8 +363,13 @@
          ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
          ["--output-bytes" <n>] <source>))
 
+;; ⚠️ `--detach` IS FOR A LAUNCHER, NOT FOR A PERSON. It leaves the
+;; caller's session and replaces stdio; it does NOT fork. Typed at a
+;; prompt it stops there, silently, because the output it would have
+;; shown has already been redirected to the log.
 (define serve-usage
-  '(serve [<store>] ["--socket" <path>]))
+  '(serve [<store>] ["--socket" <path>]
+          ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]))
 
 (define (eval-and-exit! argv)
   (let ((nodes (parse-arguments 'eval (cdr argv))))
@@ -354,12 +446,112 @@
                           (and (pair? positional) (car positional))
                           (getenv "THEOURGIA_STORE")
                           "."))
+               ;; ⛔ THE SHARED RULE, NOT A SECOND ONE. This used to
+               ;; default to `<store>/socket`, which bypassed the
+               ;; daemon's own function entirely -- so the rule the
+               ;; README documented was never the rule that ran.
                (socket (or (argument-option nodes "--socket")
-                           (string-append store "/socket"))))
+                           (socket-path store))))
+          ;; ⛔ AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
+          ;; not a path, and every layer below treats it as one: the
+          ;; daemon derives its lock file from it, and for a path with no
+          ;; directory in it that lock is created IN THE CURRENT
+          ;; DIRECTORY -- an empty path produced a file called `..lock`
+          ;; in whatever directory the process happened to be in, which
+          ;; is how this was found, in the source tree. The bind then
+          ;; fails and the daemon leaves.
+          (when (and socket (string=? socket ""))
+            (say '(error bad-socket-path (reason empty)))
+            (exit 2))
+          (when (argument-option nodes "--detach")
+            (detach! (argument-option nodes "--log")))
           ;; Does not return: the daemon runs until it is told to go, or
           ;; until it finds a reason to leave and reports it.
           ((later '(theourgia daemon) 'serve) store socket)
           (exit 0)))))
+
+;; ---- leaving the caller behind ------------------------------------------
+;;
+;; ⭐ THE ORDER IS THE POINT, and it is: new session, then stdio, then
+;; the daemon's own work -- the lock and the socket, which `serve` does
+;; next. Taking the lock first would mean a process that then failed to
+;; detach had to give it back, and the window in which it held it is one
+;; where a second client saw "somebody is already starting" and waited
+;; for a daemon that was about to exit.
+;;
+;; ⛔ AND ONLY UNDER `--detach`. A `serve` run from a terminal keeps its
+;; session and its output, because that is how it is read; making this
+;; unconditional would take the output away from the one caller who
+;; wants it, and would fail for that caller besides (see below).
+;;
+;; ⚠️ `setsid` FAILS WHEN THE CALLER IS ALREADY A PROCESS GROUP LEADER,
+;; which is the normal state of a process started from an interactive
+;; shell: it answers EPERM. That is NOT swallowed. A process that could
+;; not leave its session would die with the terminal that started it,
+;; and a daemon that dies when a shell closes is worse than one that
+;; never started -- the client waiting for it would have connected once,
+;; been answered, and then found it gone.
+;;
+;; ⚠️ THE WINDOW IS REAL AND IS NOT CLOSED HERE. Between the spawn and
+;; the `setsid!` below, the child is still in the client's process group,
+;; so a ctrl-C aimed at the client takes it too. The consequence is
+;; bounded: the client's readiness test is a successful connection, so it
+;; simply never becomes ready and reports that the daemon would not
+;; start; the lock is a descriptor and closes with the process, so
+;; nothing is left holding it. Closing the window needs the spawn itself
+;; to set the session, which is `POSIX_SPAWN_SETSID` -- and that does not
+;; exist on FreeBSD 15 (measured 2026-09-18), which is one of the two
+;; platforms this ships to. So the window stays, described, rather than
+;; being closed on one platform and not the other.
+(define (detach-errno e)
+  ;; ⚠️ TWO SHAPES, BECAUSE THE TWO STEPS FAIL DIFFERENTLY. `setsid!`
+  ;; raises an assertion violation carrying the errno as an irritant;
+  ;; opening the log raises the file layer's own durable-error, which
+  ;; holds it in a field. Reading only the first reported `unknown` for
+  ;; every unwritable log directory -- a real case, measured -- while the
+  ;; row asserting "it names the errno" still passed, because it was the
+  ;; OTHER step that it exercised.
+  ;;
+  ;; ⛔ Not guessed: a detach that failed for a reason nobody recorded is
+  ;; a daemon that will not start and will not say why.
+  (cond
+    ((fs-error? e) (fs-error-errno e))
+    ((and (condition? e) (irritants-condition? e) (pair? (condition-irritants e)))
+     (car (condition-irritants e)))
+    (else 'unknown)))
+
+(define (detach! log-path)
+  ;; ⛔ NO LOG, NO DAEMON. A detached daemon with nowhere to write is one
+  ;; whose every startup refusal is lost, and the client that started it
+  ;; could then only report that it did not come up. Refusing here, while
+  ;; the caller's stderr is still attached, is the last moment at which
+  ;; anything can be said at all.
+  (unless log-path
+    (say '(error detach-needs-a-log (usage (serve "--detach" "--log" <path>))))
+    (exit 71))
+  ;; ⚠️ TWO STEPS, NAMED SEPARATELY. Both fail into the same exit and the
+  ;; same tag, and written as one guard the answer could not say which
+  ;; had happened -- "could not leave the session" and "could not open
+  ;; the log" need different things done about them, and the caller is
+  ;; usually a program.
+  ;;
+  ;; ⚠️ AND ONLY THE FIRST HAS AN ERRNO. `setsid` is a syscall and
+  ;; reports one; the log is created through the port layer, which has no
+  ;; errno to give, so that field is honestly #f there rather than a
+  ;; number invented to fill it. The `step` is what tells them apart.
+  (detach-step 'setsid log-path (lambda () (setsid!)))
+  (detach-step 'log log-path (lambda () (redirect-stdio! log-path))))
+
+(define (detach-step step log-path thunk)
+  (guard (e (#t
+             (let ((code (detach-errno e)))
+               (trace-event! 'detach-failed code #f)
+               (say (list 'error 'detach-failed
+                          (list 'step step)
+                          (list 'path log-path)
+                          (list 'errno code))))
+             (exit 71)))
+    (thunk)))
 
 (define (main argv)
   ;; ⛔ ONCE, BEFORE ANYTHING IS PRINTED. Every answer this program gives
@@ -380,6 +572,31 @@
   ;; gets. Those two facts are the whole of E1-6.
   (when (string=? (car argv) "serve") (serve-and-exit! argv))
   (when (string=? (car argv) "eval") (eval-and-exit! argv))
+  ;; ⛔ THE SPELLING IS JUDGED FIRST, BEFORE THE ARGUMENTS ARE PARSED, and
+  ;; the order follows from a fact already settled rather than from taste:
+  ;; the thin client knows no verb's option table -- that is what makes it
+  ;; thin -- so it can never answer `missing-option-value` for a
+  ;; verb-specific option, while this program can. The ONE order the two
+  ;; programs can share is the check that needs no table, and that is this
+  ;; one: a spelling is judged by the writer alone.
+  ;;
+  ;; ⚠️ MEASURED WITH IT AFTER THE PARSE: `show me --store` answered
+  ;; `(error bad-request missing-option-value "--store")` here and
+  ;; `(error bad-request unknown-verb (spelling "show me"))` from the thin
+  ;; client -- two programs, one argv, two answers.
+  ;;
+  ;; ⚠️ AND `--wire` IS FOUND BY LOOKING, because the parser has not run
+  ;; yet. That is what the thin client's own scanner does with this
+  ;; option, so the two agree here too.
+  ;; ⚠️ MEASURED: it makes no difference to THIS answer today -- an error
+  ;; renders the same in both modes, and only an `ok` answer differs. The
+  ;; mode is passed anyway because it is the mode the caller asked for,
+  ;; and a refusal that ignored it would be right only for as long as
+  ;; error rendering happens to match.
+  (let ((spelling-error (verb-spelling-error (car argv))))
+    (when spelling-error
+      (print-answer spelling-error (and (member "--wire" argv) #t))
+      (exit 1)))
   (let* ((verb (string->symbol (car argv)))
          (nodes (parse-arguments verb (cdr argv)))
          (answer
@@ -387,13 +604,13 @@
                (let* ((store (or (argument-option nodes "--store")
                                 (getenv "THEOURGIA_STORE") "."))
                      (actor (or (argument-option nodes "--actor") (environment-actor)))
-                     (socket-path (or (argument-option nodes "--socket") (string-append store "/socket")))
+                     (socket-path* (or (argument-option nodes "--socket") (socket-path store)))
                      (resolved (argument-stdin verb (argument-remove nodes '("--store" "--actor" "--wire" "--socket"))
                                  (lambda () (read-all-text (current-input-port))))))
-                 (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (file-exists? socket-path))
-                   (forward-then-exit! socket-path store actor verb resolved
+                 (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (file-exists? socket-path*))
+                   (forward-then-exit! socket-path* store actor verb resolved
                                        (argument-option nodes "--wire")))
-                 (rpc-dispatch-parsed store verb resolved actor)))))
+                 (rpc-dispatch-parsed store verb resolved actor #f (environment-writer))))))
     (print-answer answer (and (list? nodes) (not (and (pair? nodes) (eq? (car nodes) 'error))) (argument-option nodes "--wire")))
     (exit (if (rpc-ok? answer) 0 1))))
 

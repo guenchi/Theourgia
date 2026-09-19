@@ -22,7 +22,7 @@
 ;; is edited, and the reader follows whichever they happened to meet.
 
 (import (chezscheme)
-        (only (theourgia rpc) write-protocol))
+        (only (theourgia rpc) write-protocol verb-catalogue))
 
 (define bad 0)
 (define rows 0)
@@ -127,6 +127,7 @@
     (call-with-output-file (string-append here "/in.jsonl")
       (lambda (p) (put-string p (string-append init "\n" ready "\n" listing "\n"))))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "THEOURGIA_RUN=" here "/run "
                            "scheme --script " shell " --store " here "/store < " here "/in.jsonl > "
                            here "/out.jsonl 2>" here "/err.txt"))
     ;; ⛔ BY THE REQUEST ID, NOT BY THE WORD `tools`. The initialize
@@ -163,28 +164,55 @@
           (list 'said (if tools-line (substring tools-line 0 (min 120 (string-length tools-line))) #f)))
       'listed)
 
+;; ⛔ THE VERB'S SENTENCE COMES FROM THE SERVER, NOT FROM A LITERAL HERE.
+;; This used to pin the string "Execute the core insert command" -- the
+;; generic sentence the shell built for every verb, which said nothing
+;; about the verb and was what §7.6.45 asked to be replaced. A row
+;; holding that literal pins the thing the batch set out to remove.
+;;
+;; ⚠️ SO THE EXPECTATION IS TAKEN FROM THE CATALOGUE, which is the one
+;; supplier: the shell asks `describe` for it. What this row asserts is
+;; that the shell did NOT write a sentence of its own -- a shell that
+;; invented one would not match what the catalogue holds. That the
+;; catalogue's sentences are present and non-empty is asserted separately,
+;; in `describe.ss`, so this row is not the only thing standing behind
+;; them.
+(define (catalogue-description verb)
+  (let look ((es (verb-catalogue)))
+    (cond ((null? es) #f)
+          ((eq? (car (car es)) verb) (caddr (car es)))
+          (else (look (cdr es))))))
+
 (for-each
   (lambda (pair)
-    (let ((d (description-of (car pair))))
+    (let ((d (description-of (car pair)))
+          (sentence (catalogue-description (cdr pair))))
       (want (string-append "MC-P1 " (car pair) " carries the protocol, then its own sentence")
             (list (if (and d (>= (string-length d) (string-length write-protocol))
                            (string=? (substring d 0 (string-length write-protocol)) write-protocol))
                       'protocol-first
                       (list 'said (and d (substring d 0 (min 60 (string-length d))))))
-                  (if (and d (contains? d (cdr pair))) 'then-the-verb 'NO-VERB-SENTENCE))
+                  (cond
+                    ((not sentence) 'NO-SUCH-VERB-IN-THE-CATALOGUE)
+                    ((and d (contains? d sentence)) 'then-the-verb)
+                    (else (list 'NO-VERB-SENTENCE 'wanted sentence))))
             '(protocol-first then-the-verb))))
-  (list (cons "theourgia_insert" "Execute the core insert command")
-        (cons "theourgia_write" "Execute the core write command")))
+  (list (cons "theourgia_insert" 'insert)
+        (cons "theourgia_write" 'write)))
 
 ;; ⛔ AND A TOOL THAT DOES NOT WRITE DOES NOT CARRY IT. Without this row
 ;; the two above are satisfied by a shell that prefixes every description
 ;; -- which would put the rules for writing a block in front of `read`,
 ;; `search` and everything else an agent is choosing between.
-(want "MC-P1 TWIN: a reading tool keeps the plain sentence"
-      (let ((d (description-of "theourgia_read")))
+(want "MC-P1 TWIN: a reading tool keeps its own sentence and not the protocol"
+      (let ((d (description-of "theourgia_read"))
+            (sentence (catalogue-description 'read)))
         (list (if (and d (not (contains? d "A block is the unit"))) 'no-protocol (list 'said d))
-              (if (and d (contains? d "Execute the core read command")) 'plain-sentence 'MISSING)))
-      '(no-protocol plain-sentence))
+              (cond
+                ((not sentence) 'NO-SUCH-VERB-IN-THE-CATALOGUE)
+                ((and d (contains? d sentence)) 'its-own-sentence)
+                (else (list 'MISSING 'wanted sentence)))))
+      '(no-protocol its-own-sentence))
 
 ;; ---- and the shell's own README says where it comes from ----------------------
 (want "MC-P1 the MCP README points at the core's string rather than restating it"
@@ -193,6 +221,75 @@
               (if (contains? t "A block is the unit of writing") 'RESTATES-IT 'does-not-restate)))
       '(names-the-constant does-not-restate))
 
+;; ---- MC-P3 the descriptions came from the server, this time -------------
+;;
+;; ⛔ EVERY ROW ABOVE COMPARES THE LISTING WITH THIS PROCESS'S OWN COPY of
+;; `verb-catalogue` and `write-protocol` -- the same values the shell
+;; would hold if it carried a hardcoded table, or a cached one from some
+;; earlier run. They agree in this tree, and they would go on agreeing
+;; after the shell stopped asking anyone.
+;;
+;; ⚠️ SO THE PEER'S ANSWER IS MADE DIFFERENT FROM ANYTHING THIS TREE
+;; CONTAINS. A marker that appears in no source file cannot be served
+;; from a copy: if the shell shows it, it asked, and it used what came
+;; back.
+(let* ((psock (string-append here "/p3.sock"))
+       (ppeer (string-append here "/p3.ss"))
+       (marker "MARKER-ONLY-THE-PEER-KNOWS")
+       (pout (string-append here "/p3.out")))
+  (call-with-output-file ppeer
+    (lambda (port)
+      (for-each (lambda (l) (display l port) (newline port))
+        (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+              (string-append
+                "(define reply (string->utf8 "
+                "\"(answer (stdout \\\"(ok (verbs (outline (usage (outline)) "
+                "(description \\\\\\\"" marker "\\\\\\\") (protocol #t) "
+                "(route daemon))) "
+                "(protocol \\\\\\\"" marker "-PROTOCOL\\\\\\\"))\\n\\\") "
+                "(stderr \\\"\\\") (exit 0) (origin core))\n\"))")
+              "(start-scheduler"
+              "  (lambda ()"
+              (string-append "    (listen! \"" psock "\" 16)")
+              "    (let serve ()"
+              "      (receive (after 20000 (exit 0))"
+              "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+              "               (`(data ,r ,bv) (conn-write! r reply 'last) (serve))"
+              "               (`(written ,r ,t ,st) (conn-close! r) (serve))"
+              "               (`(eof ,r) (serve))"
+              "               (`#(DOWN ,w ,y) (serve))))))"))))
+  (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                         "scheme --script " ppeer " > /dev/null 2>&1 &"))
+  (let up ((k 0))
+    (cond ((file-exists? psock) 'up)
+          ((> k 300) 'never)
+          (else (system "sleep 0.05") (up (+ k 1)))))
+  (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                         "THEOURGIA_RUN=" here "/run "
+                         "scheme --script " shell " --store " here "/store --socket " psock
+                         " < " here "/in.jsonl > " pout " 2>/dev/null"))
+  (let ((text (file-text pout)))
+    (want "MC-P3 the tool list is what the server answered, not a copy of this tree's"
+          (if (contains? text marker) 'came-from-the-server (list 'said-instead
+                                                                  (substring text 0 (min 120 (string-length text)))))
+          'came-from-the-server)
+    ;; ⛔ AND THE PROTOCOL TEXT TOO, which is the part an agent reads
+    ;; before it writes anything.
+    (want "MC-P3 and so is the protocol text the descriptions carry"
+          (if (contains? text (string-append marker "-PROTOCOL")) 'from-the-server 'A-LOCAL-COPY)
+          'from-the-server))
+  (system (string-append "pkill -f " ppeer " 2>/dev/null")))
+
 (system (string-append "rm -rf " here))
+;; ⛔ THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
+;; run root is and must take down what it started. Before the shell was
+;; rewritten it dispatched in its own process and started nothing, which
+;; is why neither line was here. Measured without them: sockets and logs
+;; under the user's real `$HOME/.theourgia/run`, and daemons still alive
+;; minutes later.
+
+(system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+(system "sleep 1")
+
 (printf "rows: ~a\n~a failures\nf1-protocol complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

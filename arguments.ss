@@ -44,7 +44,8 @@
 ;; which layer looked at it is the shape this library exists to remove.
 (library (theourgia arguments)
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
-          argument-strings argument-stdin)
+          argument-strings argument-stdin argument-wants-stdin?
+          argument-stdin-placeholder?)
   (import (rnrs base) (rnrs lists))
 
   ;; WARNING -- THESE TWO TABLES ARE A SECOND PLACE THAT KNOWS THE COMMAND LINE.
@@ -61,6 +62,16 @@
   ;; looking empty, which is how `read <id> --md` used to lose its id.
   (define (value-options verb)
     (append '("--store" "--actor" "--req" "--cursor" "--socket")
+      (case verb
+        ;; ⛔ WHERE A DETACHED DAEMON'S OUTPUT GOES IS THE CLIENT'S
+        ;; DECISION, so it is a value the client passes and not something
+        ;; the daemon works out for itself. The client has to read that
+        ;; file afterwards to report why a start failed; two sides
+        ;; computing the path separately is the shape that already cost a
+        ;; day here, when a socket path was derived twice and the two
+        ;; derivations disagreed about a store that did not exist yet.
+        ((serve) '("--log"))
+        (else '()))
       (case verb
         ;; ⚠️ `--keywords` IS A VALUE OPTION AND ITS VALUE IS TEXT. The
         ;; field holds what the caller typed, commas and all; the
@@ -107,6 +118,12 @@
 
   (define (flag-options verb)
     (cons "--wire" (case verb
+      ;; ⚠️ `--detach` CHANGES WHAT THE PROCESS DOES BEFORE IT SERVES, not
+      ;; how it answers: it leaves the caller's session, drops the
+      ;; caller's stdio and then behaves exactly like the foreground
+      ;; form. A `serve` started by hand must keep its terminal, so this
+      ;; is a flag the CLIENT passes and a person does not.
+      ((serve) '("--detach"))
       ((outline) '("--with-keywords"))
       ((read) '("--md" "--recursive" "--working" "--working-info"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
@@ -204,15 +221,70 @@
   ;; its usage line: two ways of saying what the batch is cannot both be
   ;; honoured, and picking one quietly would mean the text a caller
   ;; actually passed was discarded without a word.
+  ;; ⭐ ASKED OF THE RULE ITSELF, so there is no second list of which
+  ;; verbs read standard input. The reader handed in records that it was
+  ;; called and answers an empty string; whatever `argument-stdin` builds
+  ;; with that is thrown away, and what is kept is whether it asked. A
+  ;; verb added to the table below is answered for here without anyone
+  ;; remembering to.
+  (define (argument-wants-stdin? verb nodes)
+    (let ((asked #f))
+      (argument-stdin verb nodes (lambda () (set! asked #t) ""))
+      asked))
+
+  ;; ⛔ AN UNFILLED `-`, WHICH IS THE CASE THAT USED TO BE SILENT. A verb
+  ;; that reads standard input and was sent none has two shapes. `batch`
+  ;; with nothing on either side answers its own usage line, which names
+  ;; what is missing and always has. `write <id> -` did not: the
+  ;; placeholder stayed in the arguments and was stored AS the text, and
+  ;; the answer said the write had succeeded.
+  ;;
+  ;; ⚠️ ASKED OF `argument-stdin` ITSELF rather than from a second list of
+  ;; verbs: the input is offered as a sentinel, and the question is whether
+  ;; a `-` that was there has been replaced by it.
+  (define (argument-stdin-placeholder? verb nodes)
+    (let* ((sentinel "\x0;stdin-placeholder")
+           (filled (argument-stdin verb nodes (lambda () sentinel))))
+      (let loop ((a nodes) (b filled))
+        (cond
+          ((or (null? a) (null? b)) #f)
+          ((and (eq? 'pos (car (car a))) (string=? (cadr (car a)) "-")
+                (eq? 'pos (car (car b))) (string=? (cadr (car b)) sentinel))
+           #t)
+          ((and (eq? 'option (car (car a))) (= 3 (length (car a)))
+                (string=? (caddr (car a)) "-")
+                (eq? 'option (car (car b))) (= 3 (length (car b)))
+                (string=? (caddr (car b)) sentinel))
+           #t)
+          (else (loop (cdr a) (cdr b)))))))
+
   (define (argument-stdin verb nodes read-text)
     (case verb
+      ;; ⛔ APPENDED WHETHER OR NOT SOMETHING IS ALREADY THERE, and that is
+      ;; the rule: intents given BOTH as an argument and on standard input
+      ;; are two answers to one question, so the verb sees two positionals
+      ;; and answers its usage line. Made conditional, the argument won and
+      ;; what was piped in was dropped without a word -- `cli3` pins this,
+      ;; and it was right to.
       ((batch) (append nodes (list (list 'pos (read-text)))))
       ((def) (if (= (length (argument-positionals nodes)) 1)
                  (append nodes (list (list 'pos (read-text)))) nodes))
+      ;; ⛔ THE BYTES ARE THE SECOND POSITIONAL, AND ONLY THAT ONE.
+      ;; Written as "every positional spelled `-`", a block whose id is
+      ;; literally `-` had its NAME replaced by the caller's standard
+      ;; input -- so the write went to a block named by whatever had been
+      ;; piped in, which is neither what was asked nor an error.
       ((write)
-       (map (lambda (n)
-              (if (and (eq? (car n) 'pos) (string=? (cadr n) "-"))
-                  (list 'pos (read-text)) n)) nodes))
+       (let loop ((ns nodes) (pos 0) (out '()))
+         (cond
+           ((null? ns) (reverse out))
+           ((eq? (car (car ns)) 'pos)
+            (loop (cdr ns) (+ pos 1)
+                  (cons (if (and (= pos 1) (string=? (cadr (car ns)) "-"))
+                            (list 'pos (read-text))
+                            (car ns))
+                        out)))
+           (else (loop (cdr ns) pos (cons (car ns) out))))))
       ((insert)
        (map (lambda (n)
               (if (and (eq? (car n) 'option) (string=? (cadr n) "--text")

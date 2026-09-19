@@ -464,10 +464,17 @@
 
 ;; ⛔ AND THE SWEEP HAS TO HAVE FOUND SOMETHING TO SWEEP. An empty
 ;; `handler-reads` satisfies the row above and says nothing at all.
+;; ⚠️ THE TWO NAMED WITNESSES USED TO BE `(write "--writer")` AND
+;; `(restore "--writer")`, and they are gone on purpose: the writer is no
+;; longer an option a handler reads. It arrives as a dispatch position and
+;; the ONE place that reads `--writer` is the dispatcher, which is not a
+;; handler and is not swept. A control row names examples so that an empty
+;; sweep cannot pass, so it needs examples that exist -- and when the code
+;; moves, the examples move with it rather than the row being deleted.
 (want "GATE-B3 the sweep found handlers reading options"
       (list (> (length (append handler-reads cli-reads)) 20)
-            (and (member '(write "--writer") handler-reads) #t)
-            (and (member '(restore "--writer") handler-reads) #t))
+            (and (member '(read "--working-info") handler-reads) #t)
+            (and (member '(import-code "--allow-delete") handler-reads) #t))
       '(#t #t #t))
 
 ;; ---- the gate's own instrument ------------------------------------------------

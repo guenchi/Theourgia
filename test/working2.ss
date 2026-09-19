@@ -48,7 +48,30 @@
 (define store (string-append root "/store"))
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
-(define (call . args) (rpc-dispatch store args "test"))
+
+;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; verb that was not told which writer it speaks for used to fall back to
+;; this store's own local log writer, so two agents that never passed
+;; `--writer` shared one draft space without either being told. The core
+;; now refuses that call instead; naming the same writer the old fallback
+;; would have chosen keeps every row below asking what it asked before.
+;;
+;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; naming it to make a point, and must keep the one it names.
+(define draft-verbs '(write restore drafts discard commit))
+
+(define (wants-writer? verb args)
+  (or (memq verb draft-verbs)
+      (and (eq? verb 'read)
+           (or (member "--working" args) (member "--working-info" args)))))
+
+(define (call . args)
+  (rpc-dispatch store
+                (if (and (wants-writer? (car args) (cdr args))
+                         (not (member "--writer" (cdr args))))
+                    (append args (list "--writer" writer))
+                    args)
+                "test"))
 (define made (call 'insert "--title" "A" "--text" "old"))
 (define ev (car (cadr (assq 'events (cdr made)))))
 (define id (block-id (car ev) (cdr ev)))
@@ -56,9 +79,15 @@
 (define file (string-append dir "/" id))
 (define (read-bytes p) (call-with-port (open-file-input-port p) get-bytevector-all))
 (define binary (bytevector 255 0 10 128))
+;; ⭐ THE LIBRARY IS CALLED DIRECTLY HERE, SO THE WRITER IS PASSED
+;; DIRECTLY. `working-write!` takes it third, where this used to pass #f
+;; and be given the store's local writer; it now refuses an unnamed
+;; writer, and these two rows are about BYTES, not about identity.
 (want "WS-15 arbitrary bytes are durable in one envelope"
-      (rpc-ok? (working-write! store #f #f id binary #f)) #t)
-(want "WS-15 binary bytes survive reopening" (working-read store #f #f id) (list 'ok (list 'bytes binary)))
+      (rpc-ok? (working-write! store #f writer id binary #f)) #t)
+(want "WS-15 binary bytes survive reopening"
+      (working-read store #f writer id)
+      (list 'ok (list 'bytes binary)))
 (want "WS-15 a non-text draft is not silently converted on commit"
       (car (call 'commit id)) 'error)
 (call 'write id "saved")
@@ -122,6 +151,7 @@
                                 (shell-quote spec) " "
                                 "scheme --script " (shell-quote child-script) " "
                                 (shell-quote store) " " (shell-quote block)
+                                " " (shell-quote writer)
                                 " > " (shell-quote trace-path) " 2>&1"))))
     (cons status (utf8->string (read-bytes trace-path)))))
 (define (run-child! spec) (run-child-on! id spec))
@@ -312,5 +342,141 @@
   (lambda (p) (put-bytevector p (string->utf8 "(broken"))))
 (want "WS-26 corrupt storage is not absence" (cadr (call 'read id "--working")) 'working-unavailable)
 (want "WS-26 corrupt storage is visible in the draft list" (cadr (call 'drafts)) 'working-unavailable)
+;; ---- WS-27: the refusal belongs to the library, at every door ---------
+;;
+;; ⭐ ONE RULE, ONE PLACE. `rpc.ss` keeps no copy of this check: a caller
+;; that reaches `(theourgia working)` directly -- the evaluator does --
+;; must be refused by the same rule and told the same thing, or the
+;; library is a second entry point with no guard on it (§7.6.50 v249).
+;;
+;; ⛔ ONE ROW WOULD NOT HAVE CAUGHT THIS. Eight entry points take a
+;; writer and two of them, `working-snapshot` and `working-baseline`,
+;; tested only `(not writer)`. `unbound` is a symbol and a symbol is
+;; true, so both walked past the guard and used it AS a writer id: the
+;; answer was `working-unavailable` carrying an unformatted
+;; "~s is not a string". That is not a near miss --
+;; `working-fault-child.ss` decides whether an injected durability fault
+;; fired by looking for exactly `working-unavailable`, so an unnamed
+;; writer and a failed flush were the same answer. Both are reachable
+;; from `cli.ss` (`eval --working` with no `--writer`).
+;;
+;; So there is a row per door, and they are not redundant: each one is
+;; the only row that would go red if its own door lost the branch.
+
+;; ⚠️ ON A STORE OF ITS OWN. These rows sit at the end of the file, and
+;; by here WS-26 has deliberately corrupted the store it shares -- which
+;; the eight refusals above survive (the writer is judged before the
+;; drafts are touched, §7.6.50 v249), but the positive twin cannot: it
+;; asks whether a NAMED writer still gets through, and against a corrupt
+;; store nothing does. A fresh store makes the block independent of where
+;; in the file it sits.
+(define ws27-store (string-append root "/ws27"))
+(define ws27-init (rpc-dispatch ws27-store '(init) "test"))
+(define ws27-writer (cadr (assq 'writer (cdr ws27-init))))
+(define ws27-id
+  (let* ((a (rpc-dispatch ws27-store '(insert "--title" "A" "--text" "old") "test"))
+         (ev (car (cadr (assq 'events (cdr a))))))
+    (block-id (car ev) (cdr ev))))
+
+(define (refusal thunk)
+  (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+                                  (condition-message e) e))))
+    (let ((a (thunk))) (if (pair? a) (list (car a) (cadr a)) a))))
+
+(define w-version
+  (let ((a (working-snapshot ws27-store #f ws27-writer)))
+    (if (and (pair? a) (eq? 'ok (car a)) (pair? (caddr a)) (pair? (car (caddr a))))
+        (cadr (car (caddr a)))
+        "no-such-version")))
+
+(want "WS-27 working-write! refuses an unnamed writer"
+      (refusal (lambda () (working-write! ws27-store #f #f ws27-id (string->utf8 "x") #f)))
+      '(error writer-required))
+(want "WS-27 working-read refuses an unnamed writer"
+      (refusal (lambda () (working-read ws27-store #f #f ws27-id)))
+      '(error writer-required))
+(want "WS-27 working-restore! refuses an unnamed writer"
+      (refusal (lambda () (working-restore! ws27-store #f #f w-version)))
+      '(error writer-required))
+(want "WS-27 working-discard! refuses an unnamed writer"
+      (refusal (lambda () (working-discard! ws27-store #f ws27-id)))
+      '(error writer-required))
+(want "WS-27 working-list refuses an unnamed writer"
+      (refusal (lambda () (working-list ws27-store #f #f)))
+      '(error writer-required))
+(want "WS-27 working-commit! refuses an unnamed writer"
+      (refusal (lambda () (working-commit! ws27-store #f (list ws27-id) "test" #f)))
+      '(error writer-required))
+;; ⭐ THE TWO THAT WERE WRONG. Named apart from the six above because
+;; they are the reason the other six are written out one by one.
+(want "WS-27 working-snapshot refuses an unnamed writer"
+      (refusal (lambda () (working-snapshot ws27-store #f #f)))
+      '(error writer-required))
+(want "WS-27 working-baseline refuses an unnamed writer"
+      (refusal (lambda () (working-baseline ws27-store #f #f)))
+      '(error writer-required))
+
+;; ⛔ AND THE REFUSAL IS NOT MERELY "SOME ERROR". `working-unavailable`
+;; is what these two used to answer, and it is the value a durability
+;; fault reports; a row that accepted any refusal would have passed
+;; against the defect it exists for.
+(want "WS-27 TWIN: an unnamed writer is not reported as a storage failure"
+      (let ((a (working-snapshot ws27-store #f #f)))
+        (if (and (pair? a) (eq? (cadr a) 'working-unavailable)) 'CONFUSED-WITH-A-FAULT 'distinct))
+      'distinct)
+
+;; TWIN: the same doors, given a writer, still work. Without this the
+;; eight rows above would pass against a library that refused everything.
+(want "WS-27 TWIN: and a named writer still gets through"
+      (list (rpc-ok? (working-list ws27-store #f ws27-writer))
+            (rpc-ok? (working-snapshot ws27-store #f ws27-writer))
+            (rpc-ok? (working-baseline ws27-store #f ws27-writer)))
+      '(#t #t #t))
+
+;; ---- WS-28: the writer is judged before the store is touched -------------
+;;
+;; ⛔ THE ORDER CHANGES THE ANSWER, not just the cost. The entry points
+;; bound `writer` and `state` in one `let`, so the store was opened and
+;; folded first and the missing writer noticed afterwards. On a store that
+;; cannot be opened, an unnamed writer was therefore told
+;; `working-unavailable` -- the value a durability fault reports, and the
+;; one `working-fault-child.ss` keys its exit status on. A caller-fixable
+;; mistake was reported as a storage failure.
+;;
+;; ⚠️ THE TWIN IS WHAT KEEPS THE FIX HONEST: a NAMED writer on the same
+;; unopenable store must still be told the storage failed. Without it,
+;; answering `writer-required` for everything would pass.
+(define ws28-store (string-append root "/ws28"))
+(rpc-dispatch ws28-store '(init) "test")
+(system (string-append "chmod 000 " ws28-store "/writers"))
+
+(want "WS-28 an unnamed writer is refused even when the store will not open"
+      (let ((a (working-list ws28-store #f #f)))
+        (if (pair? a) (list (car a) (cadr a)) a))
+      '(error writer-required))
+
+(want "WS-28 TWIN: a named writer on the same store still reports the storage failure"
+      (let ((a (working-list ws28-store #f "w1")))
+        (if (pair? a) (list (car a) (cadr a)) a))
+      '(error working-unavailable))
+
+;; ⛔ AND THE SAME FOR ARGUMENT SHAPES. A block id is well formed or it
+;; is not, and the store has nothing to say about it -- but the check sat
+;; after `open-and-reduce`, so on a store that cannot be opened a
+;; malformed id was answered `working-unavailable` too. The caller's
+;; mistake, reported as a storage failure.
+(want "WS-28 a malformed block id is refused even when the store will not open"
+      (let ((a (working-write! ws28-store #f "w1" "not a valid id!!" (string->utf8 "x") #f)))
+        (if (pair? a) (list (car a) (cadr a)) a))
+      '(error bad-request))
+
+;; ⚠️ `read` IS NOT IN THIS ROW AND THAT IS DELIBERATE. Its answer for an
+;; unknown id is `unknown-id`, which is a fact about the store's contents
+;; and cannot be known without opening it -- so `working-unavailable`
+;; there is the true answer, not a misreport. Named so the difference is
+;; a decision rather than an oversight.
+
+(system (string-append "chmod 755 " ws28-store "/writers"))
+
 (printf "~a failures\nworking2 complete\n" failures)
 (exit (if (= failures 0) 0 1))

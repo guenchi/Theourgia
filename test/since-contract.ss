@@ -79,13 +79,47 @@
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
 (define n-store 0)
+;; ⭐ EACH STORE'S OWN WRITER IS REMEMBERED AT `init`, BECAUSE A DRAFT
+;; VERB IS NO LONGER TOLD ONE BY DEFAULT. It used to fall back to the
+;; store's local log writer; the core now refuses an unnamed writer. The
+;; rows here are about what `since` hands back with a refusal, so they
+;; need the refusal they were written for and not one about identity.
+;;
+;; ⛔ AND A STORE WHOSE WRITER WAS NEVER RECORDED IS AN ERROR, NOT A
+;; FALLBACK TO #f: that would quietly turn a row into a test of
+;; `writer-required`, which is also a refusal, and it would still pass
+;; `refuse!`.
+(define store-writers '())
+
 (define (fresh-store!)
   (set! n-store (+ n-store 1))
   (let ((d (string-append root "/s" (number->string n-store))))
     (mkdir-p! d)
-    (rpc-dispatch d '(init) "test")
+    (let ((a (rpc-dispatch d '(init) "test")))
+      (set! store-writers
+            (cons (cons d (cadr (assq 'writer (cdr a)))) store-writers)))
     d))
-(define (call store args actor) (rpc-dispatch store args actor))
+
+(define (writer-of store)
+  (let ((hit (assoc store store-writers)))
+    (if hit
+        (cdr hit)
+        (error 'since-contract "no writer was recorded for this store" store))))
+
+(define draft-verbs '(write restore drafts discard commit))
+
+(define (wants-writer? verb args)
+  (or (memq verb draft-verbs)
+      (and (eq? verb 'read)
+           (or (member "--working" args) (member "--working-info" args)))))
+
+(define (call store args actor)
+  (rpc-dispatch store
+                (if (and (wants-writer? (car args) (cdr args))
+                         (not (member "--writer" (cdr args))))
+                    (append args (list "--writer" (writer-of store)))
+                    args)
+                actor))
 (define (insert! store title)
   (let* ((a (call store (list 'insert "--title" title "--text" "old") "test"))
          (ev (car (cadr (assq 'events (cdr a))))))

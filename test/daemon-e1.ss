@@ -81,6 +81,44 @@
 ;; thirty-one character tag compares the wrong thing and the row reports
 ;; the answer as "other" while the answer was right. Measured, on the
 ;; store-mismatch row.
+;; ⭐ THE FIRST ANSWER OUT OF A RUN OF THEM. Rows that read a connection
+;; until it closes get every answer that arrived, concatenated; several
+;; of them ask what the FIRST one was. Reading the first envelope and
+;; taking its `stdout` keeps that question exact -- a substring search
+;; over the whole accumulation would be answered by any of the answers,
+;; which is a different and weaker question.
+;;
+;; ⚠️ TEXT THAT IS NOT AN ENVELOPE COMES BACK UNCHANGED, so a row looking
+;; at something else still sees it, and a malformed reply appears as
+;; itself rather than as "".
+(define (first-answer-text acc)
+  (if (not (string? acc))
+      acc
+      (let* ((port (open-string-input-port acc))
+             (datum (guard (e (#t #f)) (read port))))
+        (if (and (pair? datum) (eq? 'answer (car datum)))
+            (let ((hit (assq 'stdout (cdr datum))))
+              (if (and (pair? hit) (pair? (cdr hit)) (string? (cadr hit)))
+                  (cadr hit)
+                  acc))
+            acc))))
+
+;; ⛔ WHICH SIDE SPOKE, out of the same envelope. A refusal the daemon
+;; makes and an answer the core computed arrive in one shape, and the
+;; only thing that tells them apart is this field -- so a row about a
+;; refusal has to read it, or it is a row about the text alone.
+(define (first-answer-origin acc)
+  (if (not (string? acc))
+      acc
+      (let* ((port (open-string-input-port acc))
+             (datum (guard (e (#t #f)) (read port))))
+        (if (and (pair? datum) (eq? 'answer (car datum)))
+            (let ((hit (assq 'origin (cdr datum))))
+              (if (and (pair? hit) (pair? (cdr hit)))
+                  (cadr hit)
+                  'no-origin-field))
+            'not-an-answer))))
+
 (define (starts-with? text prefix)
   (let ((n (string-length prefix)))
     (and (>= (string-length text) n)
@@ -205,14 +243,68 @@
 ;; time it took. ⚠️ The time includes connecting, because that is what a
 ;; client waits: a row that timed only the dispatch would be measuring
 ;; something no client can observe.
+;; ⛔ THE ENVELOPE IS SPELLED IN ONE PLACE IN THIS FILE. The rows below
+;; send deliberately malformed VERBS and argument lists, which
+;; `request-frame` cannot build and should not -- it refuses them, which
+;; is correct of it and useless here. So the frame is written out, and
+;; written out once: two helpers each with their own copy is two places
+;; to miss when the shape changes, which is what happened when the
+;; version field was added.
+;;
+;;   (request <version> <store> <actor> <writer> <mode> <cwd> <stdin> ...)
+;;
+;; ⚠️ `#f wire #f #f` IS "no writer, answer me in wire form, no cwd, no
+;; stdin" -- each a value, none omitted.
+;; ⛔ THE ROWS BELOW ARE ABOUT THE CORE'S ANSWER, and the core's answer
+;; is the text inside the answer envelope's `stdout`. Unwrapping it here
+;; keeps every one of them asking exactly what it asked before the
+;; envelope existed -- the alternative was rewriting two dozen expected
+;; strings, which would have turned a transport change into a rewrite of
+;; what each row believes.
+;;
+;; ⚠️ WHAT CANNOT BE UNWRAPPED COMES BACK AS IT ARRIVED. A malformed or
+;; unexpected reply then shows up as itself in the failure message,
+;; rather than as an empty string that reads like "the daemon said
+;; nothing".
+;;
+;; ⚠️ AND THIS IS NOT USED BY `ask-until-eof`, which counts answers and
+;; looks for the terminator: those rows are about the raw bytes on the
+;; connection, and unwrapping would erase the thing they measure.
+(define (answer-text bv)
+  (let* ((text (if (string? bv) bv (utf8->string bv)))
+         (datum (guard (e (#t #f)) (read (open-string-input-port text)))))
+    (if (and (pair? datum) (eq? 'answer (car datum)))
+        (let ((hit (assq 'stdout (cdr datum))))
+          (if (and (pair? hit) (pair? (cdr hit)) (string? (cadr hit)))
+              (cadr hit)
+              text))
+        text)))
+
+(define (envelope-around store text)
+  (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f " text ")\n"))
+
+;; The same envelope with a writer in it. The writer's field is the one
+;; after the actor, and these rows need it filled where every other row
+;; here leaves it #f: which process serves a request depends on it.
+(define (envelope-around-as store who text)
+  (string-append "(request 1 \"" store "\" \"tester\" \"" who "\" wire #f #f " text ")\n"))
+
+(define (ask-tagged-as d who text ms)
+  (let ((r (exchange (tagged-socket d)
+                     (string->utf8 (envelope-around-as (tagged-store d) who text))
+                     line-complete? ms)))
+    (if (and (pair? r) (eq? 'answer (car r)) (> (bytevector-length (cadr r)) 0))
+        (answer-text (cadr r))
+        'no-answer)))
+
 (define (ask-tagged d text ms)
   (let* ((t0 (real-time))
          (r (exchange (tagged-socket d)
-                      (string->utf8 (string-append "(request \"" (tagged-store d) "\" \"tester\" " text ")\n"))
+                      (string->utf8 (envelope-around (tagged-store d) text))
                       line-complete? ms)))
     (list (- (real-time) t0)
           (if (and (pair? r) (eq? 'answer (car r)) (> (bytevector-length (cadr r)) 0))
-              (utf8->string (cadr r))
+              (answer-text (cadr r))
               'no-answer))))
 
 ;; Starts a daemon of its own, asks it one question, and answers with
@@ -229,11 +321,10 @@
 (define (run-daemon-with fault request-text)
   (let* ((d (start-tagged-daemon! (if fault (safe-name fault) "quiet") fault))
          (r (exchange (tagged-socket d)
-                      (string->utf8 (string-append "(request \"" (tagged-store d) "\" \"tester\" "
-                                                   request-text ")\n"))
+                      (string->utf8 (envelope-around (tagged-store d) request-text))
                       line-complete? 3000))
          (got (if (and (pair? r) (eq? 'answer (car r)) (> (bytevector-length (cadr r)) 0))
-                  (utf8->string (cadr r))
+                  (answer-text (cadr r))
                   'no-answer)))
     (sleep-ms 600)
     (let ((still-there (file-exists? (tagged-socket d))))
@@ -274,7 +365,7 @@
          (r (exchange sock (string->utf8 text) line-complete? ms)))
     (list (- (real-time) t0)
           (if (and (pair? r) (eq? 'answer (car r)))
-              (utf8->string (cadr r))
+              (answer-text (cadr r))
               (list 'transport r)))))
 
 ;; Two frames on ONE connection, the second sent only after the first has
@@ -405,10 +496,10 @@
 
       ;; ---- D-02 one frame, one answer ---------------------------------
       (want "D-02 a request is answered, and the answer is the CLI's"
-            (let ((r (exchange socket (string->utf8 (string-append "(request \"" store "\" \"tester\" outline)\n"))
+            (let ((r (exchange socket (string->utf8 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))
                                line-complete? 4000)))
               (if (and (pair? r) (eq? 'answer (car r)))
-                  (utf8->string (cadr r))
+                  (answer-text (cadr r))
                   (list 'transport r)))
             "(ok (text \"\"))\n")
 
@@ -428,8 +519,8 @@
               (`(connected ,p ,ref)
                (conn-read-start! ref)
                (conn-write! ref (string->utf8
-                                  (string-append "(request \"" store "\" \"tester\" outline)\n"
-                                                 "(request \"" store "\" \"tester\" outline)\n"))
+                                  (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"
+                                                 "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))
                             'both)
                (let gather ((seen 0) (acc (make-bytevector 0)))
                  (receive
@@ -485,7 +576,7 @@
             (let wait ()
               (receive (after 12000 'no-answer)
                        (`(big (answered ,text))
-                        (if (starts-with? text "(error bad-request")
+                        (if (starts-with? (first-answer-text text) "(error bad-request")
                             'refused
                             (list 'other text)))
                        (`(big ,other) other)
@@ -585,10 +676,10 @@
       ;; run against A: a write to the wrong library that nothing reports.
       (want "D-08 a request naming another store is refused, not run"
             (let ((r (exchange socket
-                               (string->utf8 "(request \"/tmp/some-other-store\" \"tester\" outline)\n")
+                               (string->utf8 "(request 1 \"/tmp/some-other-store\" \"tester\" #f wire #f #f outline)\n")
                                line-complete? 4000)))
               (if (and (pair? r) (eq? 'answer (car r)))
-                  (let ((text (utf8->string (cadr r))))
+                  (let ((text (answer-text (cadr r))))
                     (if (starts-with? text "(error transport-store-mismatch")
                         'refused
                         (list 'other text)))
@@ -600,10 +691,10 @@
       ;; above.
       (want "D-08 TWIN: and a request naming this store is still served"
             (let ((r (exchange socket
-                               (string->utf8 (string-append "(request \"" store "\" \"tester\" outline)\n"))
+                               (string->utf8 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))
                                line-complete? 4000)))
               (if (and (pair? r) (eq? 'answer (car r)))
-                  (utf8->string (cadr r))
+                  (answer-text (cadr r))
                   (list 'transport r)))
             "(ok (text \"\"))\n")
 
@@ -683,7 +774,7 @@
                  ;; for "the rest of the daemon kept running".
                  (spawn
                    (lambda ()
-                     (let ((r (timed-ask socket "(request \"/tmp/some-other-store\" \"tester\" outline)\n" 4000)))
+                     (let ((r (timed-ask socket "(request 1 \"/tmp/some-other-store\" \"tester\" #f wire #f #f outline)\n" 4000)))
                        (send main (list 'other (car r) (cadr r))))))
                  ;; ⛔ A WRITE, NOT A READ. Since reads are answered from
                  ;; the published value in the connection's own process,
@@ -691,7 +782,7 @@
                  ;; once however long somebody else held it -- which is
                  ;; the daemon working, and no evidence about locking.
                  (let ((a (timed-ask socket
-                                     (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                     (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \""
                                                     tag "\")\n")
                                      timeout)))
                    (let wait ()
@@ -716,7 +807,7 @@
                           'waited-for-the-lock
                           (list 'answered-at (car (cadr r))))
                       (let ((text (cadr (cadr r))))
-                        (if (and (string? text) (starts-with? text "(ok"))
+                        (if (and (string? text) (starts-with? (first-answer-text text) "(ok"))
                             'and-then-served
                             (list 'said text)))
                       (served-while-held (caddr r)))
@@ -733,7 +824,7 @@
                             'gave-up-on-the-budget
                             (list 'gave-up-at ms)))
                       (let ((text (cadr (cadr r))))
-                        (if (and (string? text) (starts-with? text "(error store-busy"))
+                        (if (and (string? text) (starts-with? (first-answer-text text) "(error store-busy"))
                             'said-store-busy
                             (list 'said text)))
                       (served-while-held (caddr r)))
@@ -811,7 +902,7 @@
               (`(connected ,p ,ref)
                (conn-read-start! ref)
                (conn-write! ref (string->utf8
-                                  (string-append "(request \"" store "\" \"tester\" insert \"--title\" \"MIDFRAME-CANARY\")"))
+                                  (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \"MIDFRAME-CANARY\")"))
                             'nonewline)
                (receive
                  (after 4000 (send main (list 'partial 'never-written)))
@@ -828,11 +919,11 @@
                   (begin
                     (sleep-ms 6500)
                     (let ((r (exchange socket
-                                       (string->utf8 (string-append "(request \"" store "\" \"tester\" outline)\n"))
+                                       (string->utf8 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))
                                        line-complete? 6000)))
                       (if (and (pair? r) (eq? 'answer (car r)))
-                          (if (contains? (utf8->string (cadr r)) "MIDFRAME-CANARY")
-                              (list 'IT-RAN (utf8->string (cadr r)))
+                          (if (contains? (answer-text (cadr r)) "MIDFRAME-CANARY")
+                              (list 'IT-RAN (answer-text (cadr r)))
                               'not-run)
                           (list 'transport r))))))
             'not-run)
@@ -843,13 +934,13 @@
       ;; never a legal request in the first place.
       (want "D-13 TWIN: the same request, newline and all, is run and shows up"
             (let ((r (exchange socket
-                               (string->utf8 (string-append "(request \"" store "\" \"tester\" insert \"--title\" \"WHOLE-FRAME-CANARY\")\n"))
+                               (string->utf8 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \"WHOLE-FRAME-CANARY\")\n"))
                                line-complete? 6000)))
               (if (and (pair? r) (eq? 'answer (car r)))
-                  (let ((said (utf8->string (cadr r))))
-                    (if (starts-with? said "(ok")
+                  (let ((said (answer-text (cadr r))))
+                    (if (starts-with? (first-answer-text said) "(ok")
                         (let ((o (exchange socket
-                                           (string->utf8 (string-append "(request \"" store "\" \"tester\" outline)\n"))
+                                           (string->utf8 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))
                                            line-complete? 6000)))
                           (if (and (pair? o) (eq? 'answer (car o)))
                               (if (contains? (utf8->string (cadr o)) "WHOLE-FRAME-CANARY")
@@ -891,7 +982,8 @@
                              (contains? (cadr first) "writer-actor-down"))
                         'that-writers-request-failed
                         (list 'first-said (cadr first)))
-                    (if (and (string? (cadr second)) (starts-with? (cadr second) "(ok"))
+                    (if (and (string? (cadr second))
+                             (starts-with? (first-answer-text (cadr second)) "(ok"))
                         'served-again
                         (list 'second-said (cadr second)))
                     (if (< (car second) 100)
@@ -910,7 +1002,8 @@
              (trace (tagged-log d)))
         (stop-tagged-daemon! d)
         (want "D-14 TWIN: unarmed, the same writer's first request is served and nothing dies"
-              (list (if (and (string? (cadr first)) (starts-with? (cadr first) "(ok"))
+              (list (if (and (string? (cadr first))
+                             (starts-with? (first-answer-text (cadr first)) "(ok"))
                         'served
                         (list 'said (cadr first)))
                     (if (contains? trace "daemon-down") 'traced-a-death 'quiet))
@@ -945,10 +1038,12 @@
              (alive (file-exists? (tagged-socket d))))
         (stop-tagged-daemon! d)
         (want "D-15 a writer that dies after letting go leaves nothing locked and nobody else short"
-              (list (if (and (string? (cadr first)) (starts-with? (cadr first) "(ok"))
+              (list (if (and (string? (cadr first))
+                             (starts-with? (first-answer-text (cadr first)) "(ok"))
                         'answered-before-dying
                         (list 'first-said (cadr first)))
-                    (if (and (string? (cadr other)) (starts-with? (cadr other) "(ok"))
+                    (if (and (string? (cadr other))
+                             (starts-with? (first-answer-text (cadr other)) "(ok"))
                         'another-writer-served
                         (list 'other-said (cadr other)))
                     (if (and (string? (cadr read-back)) (starts-with? (cadr read-back) "(ok")
@@ -1042,10 +1137,11 @@
       ;; question at all.
       (want "D-17 a read on the same connection sees the write it follows"
             (let ((answers (two-step socket
-                                     (string-append "(request \"" store "\" \"tester\" insert \"--title\" \"RYW-CANARY\")\n")
-                                     (string-append "(request \"" store "\" \"tester\" outline)\n"))))
+                                     (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \"RYW-CANARY\")\n")
+                                     (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n"))))
               (if (and (pair? answers) (eq? 'both (car answers)))
-                  (list (if (starts-with? (cadr answers) "(ok") 'written (list 'write-said (cadr answers)))
+                  (list (if (starts-with? (first-answer-text (cadr answers)) "(ok")
+                            'written (list 'write-said (cadr answers)))
                         (if (contains? (caddr answers) "RYW-CANARY") 'and-read-back 'NOT-IN-THE-READ))
                   (list 'transport answers)))
             '(written and-read-back))
@@ -1179,6 +1275,44 @@
       ;; daemon that ran it would be changing the store after it had been
       ;; told to stop -- and the client, whose connection is closing,
       ;; would never learn that it had.
+      ;; ---- D-22b what a MALFORMED frame is told during a drain --------
+      ;;
+      ;; ⛔ DRAINING IS A PREMISE AND IS JUDGED LAST. Answered before the
+      ;; frame was parsed, a malformed frame that was already buffered
+      ;; when a drain began was told `draining` -- which says "your
+      ;; request was fine and we are not taking it now", when it was never
+      ;; a request at all. §7.6.50 v249 fixes the order: well-formed, then
+      ;; whose store, then premises.
+      ;;
+      ;; ⚠️ THE SECOND FRAME IS SENT IN THE SAME WRITE AS THE FIRST, which
+      ;; is the only way to reach the branch this row is about. Written as
+      ;; a fresh connection opened during the drain, it answered
+      ;; `connection-closed` every time: a new connection during a drain
+      ;; is closed before it is read, which is a different path and is
+      ;; what D-22 measures.
+      (let* ((d (start-tagged-daemon! "drainbad" "writer-hold@conn"))
+             (pair (string-append
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\")\n"
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f read 42)\n")))
+        (spawn (lambda () (send main (list 'drainbad (ask-until-eof (tagged-socket d) pair 15000)))))
+        (sleep-ms 300)
+        (signal-tagged! d "TERM")
+        (let* ((answers (let wait ()
+                          (receive (after 20000 'no-answer)
+                                   (`(drainbad ,a) a)
+                                   (`,other (wait)))))
+               (text (if (and (pair? answers) (string? (car answers))) (car answers) "")))
+          (tagged-exit d 12000)
+          (stop-tagged-daemon! d)
+          ;; The first frame is served; the second was buffered when the
+          ;; drain began and is the one this row is about.
+          (want "D-22b a malformed frame buffered at a drain is told it was malformed"
+                (cond
+                  ((contains? text "bad-request") 'told-it-was-malformed)
+                  ((contains? text "(error draining") 'CALLED-IT-DRAINING)
+                  (else (list 'said text)))
+                'told-it-was-malformed)))
+
       (let* ((d (start-tagged-daemon! "idleconn" "writer-hold-long@conn")))
         (spawn (lambda () (ask-tagged d "drafts \"--writer\" \"w1\"" 20000)))
         (sleep-ms 200)
@@ -1219,8 +1353,8 @@
       ;; is the whole of what "one request, one answerer" claims.
       (let* ((d (start-tagged-daemon! "queued" "writer-hold@conn"))
              (both (string-append
-                     "(request \"" (tagged-store d) "\" \"tester\" drafts \"--writer\" \"w1\")\n"
-                     "(request \"" (tagged-store d) "\" \"tester\" drafts \"--writer\" \"w2\")\n")))
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\")\n"
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w2\")\n")))
         (spawn (lambda () (send main (list 'queued (ask-until-eof (tagged-socket d) both 15000)))))
         (sleep-ms 300)
         (signal-tagged! d "TERM")
@@ -1232,7 +1366,7 @@
           (stop-tagged-daemon! d)
           (want "D-23 a frame buffered when the drain begins is answered draining, once"
                 (list (if (and (pair? answers) (string? (car answers))
-                               (starts-with? (car answers) "(ok"))
+                               (starts-with? (first-answer-text (car answers)) "(ok"))
                           'first-served
                           (list 'first-said answers))
                       (if (and (pair? answers) (string? (car answers))
@@ -1244,6 +1378,216 @@
                           (list 'answers (and (pair? answers) (cadr answers))))
                       code)
                 '(first-served second-refused exactly-two-answers (exited 0)))))
+
+      ;; ---- D-33 the limit measures a frame, not the buffer ------------
+      ;;
+      ;; ⛔ `daemon.ss` SAYS "IT IS THE FRAME THAT IS MEASURED, NOT THE
+      ;; BUFFER" and nothing asked it. Several frames arrive in one read
+      ;; whenever a client writes them together, and a ceiling applied to
+      ;; what has accumulated would refuse requests that are each
+      ;; perfectly ordinary -- the failure appearing only under load,
+      ;; which is where it is hardest to read.
+      ;;
+      ;; ⚠️ TWO FRAMES OF 700 KB: each is well under the megabyte limit
+      ;; and together they are well over it. Both must be answered.
+      (let* ((d (start-tagged-daemon! "buffered" #f))
+             (big (lambda ()
+                    (let* ((head (string-append "(request 1 \"" (tagged-store d) "\" \""))
+                           (tail "\" #f wire #f #f outline)")
+                           (pad (- 700000 (string-length head) (string-length tail))))
+                      (string-append head (make-string pad #\a) tail))))
+             (both (string-append (big) "\n" (big) "\n"))
+             (answers (ask-until-eof (tagged-socket d) both 20000)))
+        (stop-tagged-daemon! d)
+        (want "D-33 two ordinary frames arriving together are both served"
+              (list (if (and (pair? answers) (= 2 (cadr answers)))
+                        'two-answers
+                        (list 'answers (and (pair? answers) (cadr answers))))
+                    (if (and (pair? answers) (string? (car answers))
+                             (not (contains? (car answers) "frame-limit")))
+                        'neither-refused
+                        'REFUSED-FOR-SIZE))
+              '(two-answers neither-refused)))
+
+      ;; ---- D-35 a drain does not finish underneath a local read -------
+      ;;
+      ;; ⛔ MAIN CANNOT SEE THIS REQUEST AT ALL. `outline` is answered by
+      ;; the connection's own process, which never asks `may-execute?`
+      ;; and never appears in `state-running` -- so "nothing is running"
+      ;; is TRUE while this read is half done. What stops the daemon
+      ;; leaving underneath it is the other half of the condition: the
+      ;; connection is still registered.
+      ;;
+      ;; ⚠️ THE SEAM IS WHY THIS IS MEASURABLE. A local read answers in
+      ;; tens of milliseconds, so without a park the drain and the read
+      ;; cannot be ordered by any clock -- the row would have been green
+      ;; whichever way round they really happened. `conn-hold` parks
+      ;; inside the read for longer than the sequence being measured.
+      ;;
+      ;; ⭐ AND THE READING IS AN ORDER, NOT A DURATION: the answer must
+      ;; arrive, and the exit must come after it. A row that only asked
+      ;; "did it exit 0" passes on a daemon that left before answering.
+      (let* ((d (start-tagged-daemon! "conndrain" "conn-hold@conn"))
+             (answer #f))
+        (spawn (lambda ()
+                 (send main (list 'r (ask-until-eof
+                                       (tagged-socket d)
+                                       (string-append "(request 1 \"" (tagged-store d)
+                                                      "\" \"tester\" #f wire #f #f outline)\n")
+                                       20000)))))
+        (sleep-ms 400)
+        (signal-tagged! d "TERM")
+        (let gather ()
+          (receive
+            (after 25000
+              (want "D-35 a drain does not finish while a connection-local read is in flight"
+                    'no-answer 'never))
+            (`(r ,what)
+             (let ((code (tagged-exit d 12000)))
+               (stop-tagged-daemon! d)
+               ;; ⛔ THE READING IS THAT THE ANSWER ARRIVED AT ALL. A
+               ;; daemon that declared the drain over while this read was
+               ;; parked would have left, taking the connection with it,
+               ;; and this client would have got EOF and no answer -- so
+               ;; "it was answered" IS "it did not leave underneath it".
+               ;; ⚠️ ⛔ AND NOT A COMPARISON OF TWO CLOCKS: the exit can
+               ;; only be waited for after the answer has been received,
+               ;; so "the exit came later" would be true however the two
+               ;; really fell out. A guard whose reference value is read
+               ;; after the thing it guards is not a guard.
+               (want "D-35 a drain does not finish while a connection-local read is in flight"
+                     (list (if (and (string? (car what))
+                                    (starts-with? (first-answer-text (car what)) "(ok"))
+                               'the-read-was-answered
+                               (list 'said (car what)))
+                           code)
+                     '(the-read-was-answered (exited 0)))))
+            (`#(DOWN ,w ,y) (gather)))))
+
+      ;; ⛔ TWIN: AND THAT READING CAN GO RED. The row above is worth
+      ;; nothing unless an unanswered read is something this fixture can
+      ;; actually see, and the watchdog is what makes it visible: a park
+      ;; LONGER than the whole drain budget leaves the clock as the only
+      ;; way out, main exits 75, and the read that was parked gets
+      ;; nothing. ⭐ Same seam, same sequence, one number different.
+      (let* ((d (start-tagged-daemon! "conndrainlong" "conn-hold-long@conn")))
+        (spawn (lambda ()
+                 (send main (list 'r (ask-until-eof
+                                       (tagged-socket d)
+                                       (string-append "(request 1 \"" (tagged-store d)
+                                                      "\" \"tester\" #f wire #f #f outline)\n")
+                                       20000)))))
+        (sleep-ms 400)
+        (signal-tagged! d "TERM")
+        (let ((code (tagged-exit d 15000)))
+          (let gather ()
+            (receive
+              (after 25000
+                (want "D-35 TWIN: a park that outlasts the budget ends on the clock, unanswered"
+                      'no-report 'never))
+              (`(r ,what)
+               (stop-tagged-daemon! d)
+               (want "D-35 TWIN: a park that outlasts the budget ends on the clock, unanswered"
+                     (list (if (and (string? (car what))
+                                    (starts-with? (first-answer-text (car what)) "(ok"))
+                               'STILL-ANSWERED
+                               'the-read-got-nothing)
+                           code)
+                     '(the-read-got-nothing (exited 75))))
+              (`#(DOWN ,w ,y) (gather))))))
+
+      ;; ---- D-34 the writer that routes is the one the request names ---
+      ;;
+      ;; ⛔ ONE WRITER'S WORK IN ONE PROCESS, HOWEVER THE WRITER WAS
+      ;; NAMED. A writer has a process of its own so that its drafts are
+      ;; serialised somewhere; two ways of naming the same writer that
+      ;; end in two different processes serialise nothing, and the two
+      ;; are indistinguishable from the client's side -- the answers are
+      ;; the same until the day two of them interleave.
+      ;;
+      ;; ⚠️ THE INSTRUMENT IS A FAULT THAT ONLY THE WRITER PROCESS HAS.
+      ;; `writer-raise` is consulted inside `writer-loop` and nowhere
+      ;; else, so an armed build answers one way if the request reached
+      ;; that process and another way if it was served by the store --
+      ;; ⭐ which is the question, and it is not a question about timing.
+      ;;
+      ;; ⚠️ AND `drafts` IS A WRITER-LOCAL VERB WITH NO `--writer` IN ITS
+      ;; ARGUMENTS: the name is in the envelope only. That is the shape
+      ;; that stopped routing when the writer left the argument list.
+      (let* ((d (start-tagged-daemon! "wenv" "writer-raise@conn"))
+             (said (ask-tagged-as d "w1" "drafts" 8000))
+             (trace (tagged-log d)))
+        (stop-tagged-daemon! d)
+        (want "D-34 a draft verb whose writer is named only by the envelope reaches that writer's process"
+              (list (if (and (string? said)
+                             (contains? said "writer-actor-down"))
+                        'the-writers-process-took-it
+                        (list 'said said))
+                    (if (contains? trace "injected writer raise")
+                        'named-the-reason
+                        'NO-SUCH-REASON))
+              '(the-writers-process-took-it named-the-reason)))
+
+      ;; ⛔ TWIN: THE ENVELOPE'S WRITER MUST NOT WIDEN THE GATE. Only
+      ;; draft verbs belong to a writer's process; everything else is the
+      ;; store's. A default applied outside that gate routes every verb
+      ;; from a client that happens to name a writer into that writer's
+      ;; mailbox, where it queues behind commits for no reason -- and the
+      ;; row above is satisfied by it, because it too ends in the
+      ;; writer's process.
+      ;;
+      ;; ⚠️ SAME ARMED BUILD, SAME ENVELOPE, A VERB THE STORE SERVES.
+      ;; If `describe` reaches the writer it raises, and this reads it.
+      (let* ((d (start-tagged-daemon! "wenvstore" "writer-raise@conn"))
+             (said (ask-tagged-as d "w1" "describe" 8000))
+             (trace (tagged-log d)))
+        (stop-tagged-daemon! d)
+        (want "D-34 TWIN: a verb the store serves is not diverted by the envelope's writer"
+              (list (if (and (string? said) (starts-with? (first-answer-text said) "(ok"))
+                        'served
+                        (list 'said said))
+                    (if (contains? trace "injected writer raise")
+                        'RAISED-IN-A-WRITER
+                        'no-writer-was-used))
+              '(served no-writer-was-used)))
+
+      ;; ---- D-32 well-formed is judged before draining -----------------
+      ;;
+      ;; ⛔ FOUR LAYERS, AND THE DAEMON IS NOT EXEMPT FROM THEM (§7.6.50).
+      ;; `draining` says "this daemon is going, ask another one" -- an
+      ;; answer that invites the caller to try again. A request whose
+      ;; arguments do not parse will be refused by every daemon there
+      ;; will ever be, so saying `draining` to it sends the caller round a
+      ;; loop that cannot end differently.
+      ;;
+      ;; ⚠️ THE SECOND FRAME IS THE ONE UNDER TEST, and it is malformed in
+      ;; a way the PARSER owns -- a repeated `--writer`, which `drafts`
+      ;; does not take twice. D-23 above is this row's twin: the same
+      ;; harness, a second frame that parses, and `draining` is then the
+      ;; right answer to it.
+      (let* ((d (start-tagged-daemon! "wellformed" "writer-hold@conn"))
+             (both (string-append
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\")\n"
+                     "(request 1 \"" (tagged-store d) "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\" \"--writer\" \"w2\")\n")))
+        (spawn (lambda () (send main (list 'wellformed (ask-until-eof (tagged-socket d) both 15000)))))
+        (sleep-ms 300)
+        (signal-tagged! d "TERM")
+        (let* ((answers (let wait ()
+                          (receive (after 20000 'no-answer)
+                                   (`(wellformed ,what) what)
+                                   (`#(DOWN ,w ,r) (wait)))))
+               (code (tagged-exit d 12000)))
+          (stop-tagged-daemon! d)
+          (want "D-32 a request that does not parse is told so, not told to try again"
+                (list (if (and (pair? answers) (string? (car answers))
+                               (contains? (car answers) "duplicate-option"))
+                          'said-what-was-wrong
+                          (list 'said answers))
+                      (if (and (pair? answers) (string? (car answers))
+                               (contains? (car answers) "(error draining"))
+                          'CALLED-IT-DRAINING
+                          'not-draining))
+                '(said-what-was-wrong not-draining))))
 
       ;; ---- D-24 a request queued behind one in a writer ---------------
       ;;
@@ -1261,15 +1605,15 @@
         (spawn (lambda ()
                  (send main (list 'a (ask-until-eof
                                        (tagged-socket d)
-                                       (string-append "(request \"" (tagged-store d)
-                                                      "\" \"tester\" drafts \"--writer\" \"w1\")\n")
+                                       (string-append "(request 1 \"" (tagged-store d)
+                                                      "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\")\n")
                                        15000)))))
         (sleep-ms 150)
         (spawn (lambda ()
                  (send main (list 'b (ask-until-eof
                                        (tagged-socket d)
-                                       (string-append "(request \"" (tagged-store d)
-                                                      "\" \"tester\" drafts \"--writer\" \"w1\")\n")
+                                       (string-append "(request 1 \"" (tagged-store d)
+                                                      "\" \"tester\" #f wire #f #f drafts \"--writer\" \"w1\")\n")
                                        15000)))))
         (sleep-ms 200)
         (signal-tagged! d "TERM")
@@ -1278,16 +1622,37 @@
               (let ((code (tagged-exit d 12000)))
                 (stop-tagged-daemon! d)
                 (want "D-24 a request queued in a writer is refused by the writer, exactly once"
-                      (list (if (and (string? (car a)) (starts-with? (car a) "(ok"))
+                      (list (if (and (string? (car a))
+                                     (starts-with? (first-answer-text (car a)) "(ok"))
                                 'the-one-that-started-finished
                                 (list 'a-said a))
-                            (if (and (string? (car b)) (starts-with? (car b) "(error draining"))
+                            (if (and (string? (car b))
+                                     (starts-with? (first-answer-text (car b)) "(error draining"))
                                 'the-queued-one-was-refused
                                 (list 'b-said b))
                             (if (= 1 (cadr b)) 'exactly-one-answer (list 'answers (cadr b)))
+                            ;; ⛔ AND IT IS THE TRANSPORT SPEAKING, NOT THE
+                            ;; CORE. Nothing dispatched this request: the
+                            ;; writer refused it before it began. An
+                            ;; envelope that calls it the core's makes a
+                            ;; caller read "the store answered, and this is
+                            ;; its answer" -- which is how a refusal became
+                            ;; a tool result reported as carried out.
+                            (list 'origin (first-answer-origin (car b)))
+                            ;; ⛔ AND THE OTHER HALF, IN THE SAME ROW. A is
+                            ;; the request that DID run, and its answer is
+                            ;; the core's. Without this, "the transport
+                            ;; spoke" is satisfied by a build that says so
+                            ;; about every answer it writes -- which would
+                            ;; turn every ordinary result into something a
+                            ;; caller is told was not carried out. The two
+                            ;; requests differ in exactly one thing: whether
+                            ;; anything dispatched them.
+                            (list 'a-origin (first-answer-origin (car a)))
                             code)
                       '(the-one-that-started-finished the-queued-one-was-refused
-                        exactly-one-answer (exited 0))))
+                        exactly-one-answer (origin transport) (a-origin core)
+                        (exited 0))))
               (receive (after 25000 (want "D-24 a request queued in a writer is refused by the writer, exactly once"
                                           (list 'no-answer a b) 'never))
                        (`(a ,what) (gather what b))
@@ -1311,11 +1676,11 @@
           (lambda ()
             (send main (list 'slow-write
                              (timed-ask socket
-                                        (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                        (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \""
                                                        tag "\")\n")
                                         12000)))))
         (let* ((r (timed-ask socket
-                             (string-append "(request \"" store "\" \"tester\" outline)\n")
+                             (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n")
                              8000))
                (w (let wait ()
                     (receive (after 20000 'no-answer)
@@ -1345,12 +1710,12 @@
           (lambda ()
             (send main (list 'refused
                              (ask-until-eof socket
-                                            (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                            (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \""
                                                            tag "\")\n")
                                             12000)))))
         (sleep-ms 200)
         (let* ((r (timed-ask socket
-                             (string-append "(request \"" store "\" \"tester\" outline)\n")
+                             (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f outline)\n")
                              8000))
                (w (let wait ()
                     (receive (after 25000 'no-answer)
@@ -1359,7 +1724,7 @@
           (want "D-26 a hold past the budget refuses the write once and leaves the read alone"
                 (list (car held)
                       (if (and (pair? w) (string? (car w))
-                               (starts-with? (car w) "(error store-busy"))
+                               (starts-with? (first-answer-text (car w)) "(error store-busy"))
                           'the-write-was-refused
                           (list 'write-said w))
                       (if (and (pair? w) (= 1 (cadr w)))
@@ -1390,7 +1755,8 @@
       ;; shape is the opposite: a string means EOF arrived, which is what
       ;; the extra empty frame used to cause.
       (let* ((answers (ask-until-eof socket
-                                     (utf8->string (request-frame store "tester" 'outline '()))
+                                     (utf8->string (request-frame store 'outline '()
+                                                                   (list (cons 'actor "tester"))))
                                      2500))
              (text (cond ((not (pair? answers)) "")
                          ((and (pair? (car answers)) (eq? 'timed-out (caar answers)))
@@ -1402,7 +1768,8 @@
               (list (if (and (pair? answers) (= 1 (cadr answers)))
                         'exactly-one-answer
                         (list 'answers (and (pair? answers) (cadr answers))))
-                    (if (starts-with? text "(ok") 'and-it-is-the-answer (list 'said text))
+                    (if (starts-with? (first-answer-text text) "(ok")
+                        'and-it-is-the-answer (list 'said text))
                     (if closed? 'PEER-CLOSED 'connection-kept))
               '(exactly-one-answer and-it-is-the-answer connection-kept)))
 
@@ -1421,7 +1788,7 @@
               (`(connected ,p ,ref)
                (conn-read-start! ref)
                (let* ((whole (string->utf8
-                               (string-append "(request \"" store "\" \"tester\" read \"\x6C49;\x5B57;\")\n")))
+                               (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f read \"\x6C49;\x5B57;\")\n")))
                       (cut 30)
                       (head (let ((o (make-bytevector cut)))
                               (bytevector-copy! whole 0 o 0 cut) o))
@@ -1456,9 +1823,9 @@
       (want "D-29 a datum that reads but is not a request is refused by shape"
             (let ((r (exchange socket (string->utf8 "(hello)\n") line-complete? 4000)))
               (if (and (pair? r) (eq? 'answer (car r)))
-                  (if (starts-with? (utf8->string (cadr r)) "(error bad-request")
+                  (if (starts-with? (answer-text (cadr r)) "(error bad-request")
                       'refused-by-shape
-                      (list 'said (utf8->string (cadr r))))
+                      (list 'said (answer-text (cadr r))))
                   (list 'transport r)))
             'refused-by-shape)
 
@@ -1472,11 +1839,11 @@
             (b-title (string-append "D30-B-" pid-text)))
         (spawn (lambda ()
                  (send main (list 'w1 (timed-ask socket
-                                                 (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \""
                                                                 a-title "\")\n") 12000)))))
         (spawn (lambda ()
                  (send main (list 'w2 (timed-ask socket
-                                                 (string-append "(request \"" store "\" \"tester\" insert \"--title\" \""
+                                                 (string-append "(request 1 \"" store "\" \"tester\" #f wire #f #f insert \"--title\" \""
                                                                 b-title "\")\n") 12000)))))
         (let gather ((one #f) (two #f))
           (if (and one two)
@@ -1536,9 +1903,34 @@
       ;;
       ;; ⚠️ BY PID PREFIX, so it removes this run's files and ⛔ nothing
       ;; belonging to a run going on beside it.
+      ;; ⛔ THE PROCESSES GO FIRST, AND THEY WERE NOT GOING AT ALL. This
+      ;; tidy-up removed the FILES and left the daemons that were using
+      ;; them running -- found as an orphaned `scheme --script
+      ;; /tmp/dmn-run-NNNN.ss`, parent 1, five minutes into a suite run
+      ;; that had nothing to do with it, competing for the machine with
+      ;; whatever was actually being measured.
+      ;;
+      ;; ⚠️ BEFORE the `rm`, so nothing is still writing the files being
+      ;; removed; and by the same pid prefix, so a run going on beside
+      ;; this one is not touched.
+      (system (string-append "pkill -f 'dmn-run.*" pid-text "' 2>/dev/null"))
+      (system (string-append "pkill -f 'serve /tmp/dmn-store-" pid-text "' 2>/dev/null"))
+      (system "sleep 1")
       (system (string-append "rm -rf /tmp/dmn-*" pid-text "* /tmp/dmn-store-" pid-text
                              " /tmp/dmn-run*-" pid-text ".ss /tmp/dmn-log*-" pid-text ".txt"
                              " /tmp/dmn-occupied-" pid-text " /tmp/.dmn-*" pid-text "*.lock"
                              " 2>/dev/null"))
+      ;; ⛔ AND IT IS ASSERTED, not assumed. "I issued a kill" is not the
+      ;; same claim as "nothing is left running", and it is the second
+      ;; one the next run depends on.
+      (let ((left (string-append "/tmp/dmn-left-" pid-text ".txt")))
+        (system (string-append "pgrep -f 'dmn-run.*" pid-text "' | wc -l | tr -d ' ' > " left))
+        (let ((n (guard (e (#t "?"))
+                   (let ((t (call-with-input-file left get-string-all)))
+                     (if (and (string? t) (> (string-length t) 0))
+                         (substring t 0 (- (string-length t) 1))
+                         "?")))))
+          (system (string-append "rm -f " left))
+          (want "D-teardown no daemon this run started is still alive" n "0")))
       (printf "rows: ~a\n~a failures\ndaemon-e1 complete\n" rows bad)
       (exit (if (zero? bad) 0 1)))))

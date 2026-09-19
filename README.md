@@ -57,6 +57,25 @@ the same dispatcher; no verb, answer or error shape exists in one and not
 the other. Set `THEOURGIA_LOCAL=1` to skip the socket and answer in
 process even when a daemon is running.
 
+## Global options
+
+⚠️ **These are accepted by EVERY verb**, and they are here rather than in
+each verb's line because repeating them thirty-three times would say they
+were somehow special to each one.
+
+| option | what it does |
+|---|---|
+| `--store <dir>` | which store. Falls back to `THEOURGIA_STORE`, then `.` |
+| `--actor <name>` | who the request is from. Falls back to `USER`, then `cli` |
+| `--socket <path>` | reach a daemon at this path instead of the default |
+| `--wire` | print the answer as one S-expression per line rather than for a person to read |
+| `--req <id>` | the request's identity, so a retry is recognised as the same request rather than a second one |
+| `--cursor <w:n>` | the position this request is composed against |
+
+`THEOURGIA_LOCAL=1` answers in this process even when a daemon's socket
+is there. ⚠️ It is a debugging path: it skips the daemon rather than
+doing something the daemon cannot.
+
 ## Writing for agents
 
 A block is the unit of writing: one block should answer one question on its own.
@@ -66,6 +85,7 @@ Give every block 3 to 8 keywords, comma separated, with --keywords.
 Place a block under the parent its source or subject puts it under, with --under.
 Do not rewrite the source bytes: splitting a document must not edit its prose.
 Change a block with write and then commit, through a draft, rather than replacing it.
+Hold a writer id from one agent at a time: a later session may bind the same id and carry on with its drafts, but two agents writing one draft at once overwrite each other silently.
 
 ## Reading a store
 
@@ -185,6 +205,40 @@ the whole numeric syntax, and `#e` with a large exponent asks it to build an int
 of any size from eleven characters of argument. A cut this store cannot reach is
 refused as `cut-unavailable` rather than truncated to the part it can reach.
 
+### `describe`
+
+    (describe)
+
+What the verbs are, what each is for, and the protocol for writing. Answers
+
+    (ok (verbs (<verb> (usage <form>) (description <text>) (protocol <bool>)) ...)
+        (protocol "<the writing protocol>"))
+
+for something that has to ask rather than be told: the MCP shell builds its
+tool list from this, so a tool description and the verb it describes cannot
+drift apart.
+
+It reads a table and runs nothing. ⛔ It does not open the store, take a lock
+or write a byte.
+
+⚠️ **The table needs no store; asking a daemon for it does.** Answered in
+process — which is what `theourgia describe` does when it runs the server
+locally — it works with no store at all. Asked over a socket, the request goes
+to *that store's* daemon, and a daemon for a store that does not exist cannot
+start: the answer is then `(error store-not-found (store <path>))`, relayed
+from the daemon. The two are not in conflict; they are different questions,
+and this paragraph exists because the first sentence on its own read as a
+promise the second breaks.
+
+Each entry also carries `route`, which says who carries that verb out:
+`daemon` for a verb a client sends over the socket, `local` for one the client
+runs in its own process. `init` is `local`, because it is what creates the
+store there would otherwise be nothing to send to.
+
+The `protocol` flag on an entry says that verb's description carries the
+writing protocol text. It is set on `insert` and `write`. ⚠️ It does not mean
+"this verb changes the store" — `set` does that and is not marked.
+
 ### `conflicts`
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
@@ -289,6 +343,29 @@ A **draft** is a block's proposed next version, held under a writer's own
 name and visible to nobody else until it is committed. A writer with
 drafts has a **working view**: the committed store, with its own drafts
 laid over the blocks they cover.
+
+⛔ **A writer id is held by one live agent at a time.** Two agents may
+use one id across TIME -- a later session binds the same id and its
+`drafts` shows what the earlier one left -- but not at the same moment.
+
+⚠️ **If two do hold it at once, the later write replaces the earlier one
+and the core does not say so.** Measured: two clients writing a draft on
+one block under one writer id; the second write answered `ok`, and the
+first client's own `drafts` then reported the SECOND client's version as
+its own. Nothing in any answer distinguishes that from a normal write.
+
+**So a second process that wants to change the same draft takes a copy
+of it** rather than sharing the id:
+
+    theourgia drafts --writer w1              # read the version
+    theourgia restore <version> --writer w2   # same bytes, under w2
+
+From there each writes its own, and the two meet at `commit` through
+`--based-on`.
+
+⛔ **There is no machinery behind this rule** -- no record of who holds an
+id, no lock, and nothing refuses a second process. It is a convention,
+stated here because the failure it prevents is silent.
 
 ### `write <block> <bytes> [--writer <name>] [--based-on <version>] [--rebase]`
 
@@ -901,22 +978,47 @@ spellings silently do nothing.
 
 ## Serving a store
 
-### `serve [<store>] [--socket <path>]`
+### `serve [<store>] [--socket <path>] [--detach --log <path>]`
 
-    (serve (<store>) ("--socket" <path>))
+    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>))
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 
-**Where the socket is.** `<run-root>/<key>/socket`, where the run root is
-`THEOURGIA_RUN` or `$HOME/.theourgia/run`, and the key is the first 16
-hex digits of the sha256 of the store's RESOLVED path. ⚠️ **Not beside
-the store**: `sun_path` holds 104 bytes on macOS and FreeBSD, and a store
-may sit anywhere and be arbitrarily deep. Clients derive the same path
-from the same rule, and the store directory keeps no pointer file, so
-copying a store does not carry a daemon with it. Because the key is the
-resolved path, two names for one store -- through a symlink, say -- reach
-one socket and one lock.
+**Where the socket is.** With no `--socket`, it goes at
+`<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or
+`$HOME/.theourgia/run` and the key is the first 16 hex digits of the
+sha256 of the store's resolved path. One function computes it, in
+`(theourgia client)`, and both the daemon and every client import that
+one -- written twice they would be two rules, and the day they differed a
+client would start a second daemon for a store that already had one.
+
+The key is the store's RESOLVED path, so every spelling of one store
+reaches one socket, and it is the same key before the store exists as
+after: the longest existing prefix is resolved and the components below
+it are appended. ⚠️ That last part is not a detail. `init` creates the
+store, so a caller computing the socket path first and a caller computing
+it afterwards are the ordinary case; when those two disagreed, the second
+found no socket where it looked and ran the store locally instead --
+giving a correct answer, from the right store, with no sign that it had
+bypassed a daemon sitting right there.
+
+⚠️ The reason it is the run root rather than beside the store:
+`sun_path` holds 104 bytes on macOS and FreeBSD, and a store may sit
+anywhere and be arbitrarily deep, so a store-adjacent socket under a long
+path simply fails to bind and the daemon reports `listener-down`.
+
+**Detaching.** `--detach` is for a launcher, not for a person: the
+process leaves the caller's session and replaces its standard streams,
+and it does NOT fork. Typed at a prompt it stops there and prints
+nothing, because the output it would have shown has already gone to the
+log. It requires `--log <path>`, and refuses without one -- a detached
+daemon with nowhere to write is one whose every startup refusal is lost,
+and the client that started it could then only report that it did not
+come up. The log is opened for APPEND, so several starts against one
+store share it and a failed start's reason is still there afterwards.
+In order: leave the session, replace the streams, then take the lock and
+open the socket. A `serve` without `--detach` does none of it.
 
 **Starting when one is already there.** The lock attempt never waits: a
 second daemon answers `(error serve-busy (path <socket>))` and exits 75.

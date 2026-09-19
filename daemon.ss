@@ -37,10 +37,11 @@
 ;;; its death (§7.6.32 A). Closing one is killing that adapter.
 
 (library (theourgia daemon)
-  (export serve socket-path-for run-root)
+  (export serve)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports)
           (only (chezscheme) real-time getenv write newline read void let-values
+                file-exists? char-whitespace? lookahead-char get-char
                 register-signal-handler
                 irritants-condition? condition-irritants filter raise condition
                 make-message-condition make-irritants-condition
@@ -58,35 +59,34 @@
                 start-scheduler spawn receive send self monitor sleep-ms)
           (only (theourgia net) listen! stop-listen! conn-read-start! conn-read-stop!
                 conn-write! conn-close! conn-ref-pid)
-          (only (theourgia rpc) rpc-dispatch)
-          (only (theourgia render) render-wire answer-printing!)
+          (only (theourgia rpc) rpc-dispatch rpc-ok?)
+          (only (theourgia client) socket-path envelope-version)
+          (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) open-and-reduce store-publish-hook!)
           (only (theourgia log) store-state-snapshot)
           (only (theourgia arguments) parse-arguments argument-option)
+          ;; ⭐ THE SAME LEXICAL RULE GUARDS BOTH DIRECTIONS. A request and
+          ;; a reply are read by the same reader, and what that reader must
+          ;; not be handed is one fact, not two: it lives beside the packer
+          ;; in `(theourgia client)` and is asked here rather than copied.
+          (only (theourgia client) readable-shape?)
           (only (theourgia trace) trace-event!)
           (only (theourgia ffi) theourgia-fault)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure!
+          (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
                 mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode))
 
   ;; ---- where a daemon lives ---------------------------------------------
   ;;
-  ;; ⚠️ THE RUN ROOT IS NOT `THEOURGIA_HOME`. A store may sit anywhere and
-  ;; be arbitrarily deep, while `sun_path` is 104 bytes on macOS and
-  ;; FreeBSD -- so the socket never lives beside the store. Clients derive
-  ;; the same path from the same rule, and the store directory keeps no
-  ;; pointer file, so copying a store does not carry a daemon with it.
-  (define (run-root)
-    (or (getenv "THEOURGIA_RUN")
-        (string-append (or (getenv "HOME") "/tmp") "/.theourgia/run")))
-
-  ;; The key is the store's resolved path, so two names for one store --
-  ;; through a symlink, say -- reach one socket and one lock.
-  (define (store-key store)
-    (substring (bytevector->hex (sha256 (string->utf8 (resolve store)))) 0 16))
-
+  ;; ⛔ THE RULE IS IN `(theourgia client)` AND THIS FILE IMPORTS IT. It
+  ;; used to be written here, and a client that had to find the same
+  ;; socket wrote it again -- two rules, and the day they differ a client
+  ;; starts a second daemon for a store that already has one. The reason
+  ;; the socket does not live beside the store is stated there, with the
+  ;; measurement behind the key.
+  ;;
   ;; ⚠️ IT ANSWERS TWO VALUES AND RAISES FOR A PATH THAT IS NOT THERE.
   ;; Both matter and both bit: used as a single value it raises "returned
   ;; 2 values to single value return context" -- and a raise inside a
@@ -96,15 +96,6 @@
   (define (device-inode p)
     (guard (e (#t #f))
       (let-values (((dev ino) (path-device-inode p))) (cons dev ino))))
-
-  (define (resolve p)
-    (let ((dev (device-inode p)))
-      (if dev
-          (string-append p "|" (number->string (car dev)) ":" (number->string (cdr dev)))
-          p)))
-
-  (define (socket-path-for store)
-    (string-append (run-root) "/" (store-key store) "/socket"))
 
   (define (lock-path-for socket)
     (let* ((n (string-length socket))
@@ -183,7 +174,7 @@
     ;; OS thread -- so they are set on the way in rather than around each
     ;; write.
     (answer-printing!)
-    (let ((socket (if (pair? opts) (car opts) (socket-path-for store))))
+    (let ((socket (if (pair? opts) (car opts) (socket-path store))))
       (start-scheduler (lambda () (main store socket)))))
 
   ;; ---- the lock service ---------------------------------------------
@@ -435,8 +426,21 @@
              (watch-loop st))
       ;; The listener says what it bound, so the exit path can tell this
       ;; socket from one somebody else has since put in its place.
+      ;; ⛔ `serving` IS REPORTED HERE, WHERE THE SOCKET IS ACTUALLY
+      ;; BOUND -- not where the listener was spawned. It used to be
+      ;; announced as soon as the listener process existed, which is
+      ;; before `listen!` has been called, so a daemon that could not
+      ;; bind printed
+      ;;
+      ;;   (serving (store "/tmp/x") (socket ""))
+      ;;   (exiting (reason listener-down))
+      ;;
+      ;; in that order. The first line is what a caller waits for and
+      ;; believes; the second is what happened. Measured with
+      ;; `--socket ""`.
       (`(bound ,ident)
        (state-bound-set! st ident)
+       (report `(serving (store ,(state-store st)) (socket ,(state-socket st))))
        (watch-loop st))
       ;; ⛔ THE DOOR OPENS HERE AND NOWHERE ELSE. Until the store has a
       ;; value to serve, a connection could only be told to wait or be
@@ -448,8 +452,7 @@
                                                         (state-main st))))))
          (monitor listener)
          (state-listener-set! st listener)
-         (state-roles-set! st (cons (cons listener 'listener) (state-roles st)))
-         (report `(serving (store ,(state-store st)) (socket ,(state-socket st)))))
+         (state-roles-set! st (cons (cons listener 'listener) (state-roles st))))
        (watch-loop st))
       (`(watch ,pid ,role)
        (monitor pid)
@@ -606,6 +609,19 @@
   ;; a connection with nothing in flight still holds bytes it has been
   ;; told not to read, and a request still running still has an answer
   ;; owed to somebody.
+  ;;
+  ;; ⭐ AND THE SECOND CONDITION IS WHAT COVERS A CONNECTION-LOCAL READ.
+  ;; Those are answered by the connection's own process without asking
+  ;; main, so they are not in `state-running` -- main cannot see them at
+  ;; all. It does not need to: the connection serving one is registered
+  ;; as a conn, and this cannot fire while it is. D-35 holds a read open
+  ;; across a drain and reads the order of the two.
+  ;;
+  ;; ⚠️ AND THOSE READS ARE NOT PUT THROUGH THE ADMISSION CHECK EITHER,
+  ;; deliberately. A frame already buffered when a drain begins is served
+  ;; rather than refused: it changes nothing, and the answer it gets is
+  ;; the right one. Refusing a correct answer so that two paths agree
+  ;; would be putting the rule ahead of the result.
   (define (finish-if-drained st)
     (when (and (state-draining st)
                (null? (state-running st))
@@ -662,9 +678,33 @@
   ;; ⛔ ONLY A SOCKET IS EVER UNLINKED. A regular file or a directory on
   ;; that path is somebody else's, and removing it to make room would be
   ;; this daemon destroying data it does not own.
+  ;;
+  ;; ⚠️ THE TEST IS NOW "IS IT A SOCKET", NOT "IS IT A FILE OR A
+  ;; DIRECTORY". Those are not complements: a FIFO is neither, and
+  ;; measured -- `file-is-regular?` #f, `file-is-directory?` #f -- so the
+  ;; old spelling let a fifo, a device node or a dangling symlink fall
+  ;; through to the unlink below. The question this guard exists to ask
+  ;; is whether the thing on that path is the kind of object this daemon
+  ;; made, and only `stat`'s type bits answer it.
   (define (occupied-by-a-non-socket? p)
-    (guard (e (#t #f)) (or (file-is-regular? p) (file-is-directory? p))))
+    (guard (e (#t #f))
+      (and (device-inode p) (not (file-is-socket? p)))))
 
+  ;; ⛔ SAFE BECAUSE OF WHERE IT IS CALLED, and that is the whole of the
+  ;; argument. `serve` reaches this only after `lock-try-acquire!` on the
+  ;; sibling `.lock` has SUCCEEDED -- an exclusive, non-blocking flock --
+  ;; and only after the branch above has established that whatever is
+  ;; there is a socket. Holding that lock means no live daemon is serving
+  ;; this path, so a socket file left on it is one nobody is listening
+  ;; on: stale by definition.
+  ;;
+  ;; ⚠️ IT DOES NOT TRY TO CONNECT, AND DOES NOT NEED TO. A connect test
+  ;; would be a second opinion about something the lock already settled,
+  ;; and a worse one: a daemon that is alive but not yet accepting would
+  ;; refuse the connection and be deleted out from under itself.
+  ;;
+  ;; ⛔ MOVING THIS CALL BEFORE THE LOCK BREAKS IT. Two daemons starting
+  ;; together would each delete the other's socket.
   (define (clear-stale-socket! p)
     (when (device-inode p) (guard (e (#t #f)) (unlink! p))))
 
@@ -730,7 +770,24 @@
   ;; ordinary state of the world; `store-busy` is what a client would be
   ;; told, so it is what the daemon prints before it goes, rather than
   ;; leaving main to report the death of a process and nothing about why.
+  ;; ⛔ "THERE IS NO STORE HERE" IS ITS OWN ANSWER, AND IT IS THE COMMON
+  ;; ONE. A daemon asked to serve a path that holds no store failed while
+  ;; opening it and reported
+  ;;
+  ;;   (error store-load-failed (reason raised))
+  ;;
+  ;; -- `raised` because the condition carried no message, so the field
+  ;; meant to say why said only that something had. The local path has
+  ;; always answered `(error no-store <path>)` for this, from `no-store?`
+  ;; in `rpc.ss`; the two routes disagreed about the most ordinary
+  ;; failure there is, and the daemon's version told nobody anything.
+  (define (store-here? store)
+    (file-exists? (string-append store "/meta.sexp")))
+
   (define (store-loop store main-pid)
+    (unless (store-here? store)
+      (report (list 'error 'store-not-found (list 'store store)))
+      (raise (list 'error 'store-not-found (list 'store store))))
     (let ((failure (guard (e (#t e)) (publish! store (open-and-reduce store)) #f)))
       (when failure
         (report (if (and (pair? failure) (eq? 'error (car failure)))
@@ -745,7 +802,7 @@
         (`(reload)
          (guard (e (#t (if #f #f))) (publish! store (open-and-reduce store)))
          (loop))
-        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor)
+        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          ;; ⛔ AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
          ;; the daemon: without it nothing can be answered, so main is
          ;; supposed to say so and leave with 75 rather than sit there
@@ -762,10 +819,10 @@
          ;; fold made before the lock was taken is how two writers
          ;; come to disagree about what was there.
          (if (may-execute? main-pid ticket)
-             (let ((answer (answer-for store parsed actor #f)))
+             (let ((answer (answer-for store parsed actor #f writer piped cwd)))
                (executed! main-pid ticket)
-               (send from (list 'answer seq answer)))
-             (send from (list 'answer seq draining-answer)))
+               (send from (list 'answer seq answer 'core)))
+             (send from (list 'answer seq draining-answer 'transport)))
          (loop))
         (`(drain) (loop)))))
 
@@ -774,10 +831,20 @@
   ;; inside the store, where no return value could carry it; folding it
   ;; into `internal` would tell the client we broke when the truth is
   ;; that somebody else is holding the lock.
-  (define (answer-for store parsed actor state)
+  ;; ⛔ WHAT THE CALLER PIPED IN AND WHERE THE CALLER WAS travel with the
+  ;; request. `parse-frame` has always carried both out of the envelope
+  ;; and nothing read them: `batch`, whose intents ARE its standard
+  ;; input, answered its usage line on this route, and `write <id> -`
+  ;; stored the literal "-" and reported `(ok (saved ...))` -- the
+  ;; caller's bytes discarded without a word. The rule that says which
+  ;; verbs read standard input is `argument-stdin`, in the parser, and it
+  ;; is applied by the dispatcher rather than restated here.
+  (define (answer-for store parsed actor state writer piped cwd)
     (guard (e ((and (pair? e) (eq? 'error (car e))) e)
               (#t (list 'error 'internal (list 'reason (condition-text e)))))
-      (rpc-dispatch store parsed actor state)))
+      (rpc-dispatch store parsed actor state writer
+                    (and (string? piped) (lambda () piped))
+                    cwd)))
 
   ;; ---- a writer's process -----------------------------------------------
   ;;
@@ -829,6 +896,8 @@
   (define writer-fault-pending #t)
   (define writer-hold-name #f)
 
+  (define conn-hold-pending #t)
+
   (define (park-in-draft-lock store name hold-ms)
     (let ((path (draft-lock-path store name)))
       (mkdir-p! (directory-of path))
@@ -845,7 +914,7 @@
   (define (writer-loop store name)
     (let loop ()
       (receive
-        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor)
+        (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise))
            (set! writer-fault-pending #f)
            ((current-lock-acquire) (string-append store "/lock") 'exclusive)
@@ -879,10 +948,10 @@
                  (set! writer-hold-name name)
                  (park-in-draft-lock store name
                                      (if (eq? (theourgia-fault) 'writer-hold-long) 12000 1500)))
-               (let ((answer (answer-for store parsed actor (published-state))))
+               (let ((answer (answer-for store parsed actor (published-state) writer piped cwd)))
                  (executed! main-pid ticket)
-                 (send from (list 'answer seq answer))))
-             (send from (list 'answer seq draining-answer)))
+                 (send from (list 'answer seq answer 'core))))
+             (send from (list 'answer seq draining-answer 'transport)))
          (when (and writer-fault-pending (eq? (theourgia-fault) 'writer-raise-late))
            (set! writer-fault-pending #f)
            (raise (condition (make-message-condition "injected writer raise late")
@@ -968,14 +1037,26 @@
                 (not (argument-option nodes "--working"))
                 (not (argument-option nodes "--working-info"))))))
 
-  (define (writer-for-request request)
+  ;; ⛔ THE ENVELOPE'S WRITER NAMES A WRITER TOO, and it is asked here,
+  ;; inside the same gate. While the writer was spliced into the
+  ;; arguments this found it there; once it travelled beside the actor
+  ;; instead, a draft verb carrying only an envelope writer found no name
+  ;; and went to the store process, so one writer's work ran in two
+  ;; different processes depending on how the writer had been named and
+  ;; nothing serialised the two against each other.
+  ;; ⚠️ THE DEFAULT IS READ HERE AND NOT AT THE CALLER: the verb gate
+  ;; below is what keeps a reader out of the writer's mailbox, and a
+  ;; default applied outside this procedure would be a default that
+  ;; skipped it -- every verb from a client that names a writer would
+  ;; queue behind that writer's commits for no reason.
+  (define (writer-for-request request default-writer)
     (and (pair? request)
          (symbol? (car request))
          (for-all string? (cdr request))
          (let ((nodes (parse-arguments (car request) (cdr request))))
            (and (list? nodes)
                 (not (and (pair? nodes) (eq? 'error (car nodes))))
-                (let ((name (argument-option nodes "--writer")))
+                (let ((name (or (argument-option nodes "--writer") default-writer)))
                   (and (string? name)
                        (or (memq (car request) writer-local-verbs)
                            (and (eq? (car request) 'read)
@@ -1009,8 +1090,8 @@
   ;; ⚠️ ASKED ONCE PER WRITER, NOT ONCE PER REQUEST, and watched by this
   ;; connection as well as by main: the cache is this connection's, and
   ;; main forgetting a process cannot empty a table main cannot see.
-  (define (target-for ctx request)
-    (let ((name (writer-for-request request)))
+  (define (target-for ctx request default-writer)
+    (let ((name (writer-for-request request default-writer)))
       (if (not name)
           (ctx-store-pid ctx)
           (let ((known (assoc name (ctx-writers ctx))))
@@ -1065,8 +1146,32 @@
         ;; so `draining` is the true answer -- and it is answered rather
         ;; than dropped, because a client that is told nothing cannot
         ;; tell "refused" from "lost".
+        ;; ⛔ THE SIZE IS JUDGED BEFORE ANYTHING ELSE LOOKS AT THE FRAME.
+        ;; The "a whole frame is here" branch used to come first, so the
+        ;; limit only ever fired on a frame that had NOT been terminated
+        ;; -- measured: a request one megabyte over the limit with a
+        ;; newline on the end was dispatched and answered `(ok (items))`,
+        ;; while the same bytes without the newline were refused. The
+        ;; limit held against clients that do not finish their frames,
+        ;; which is nobody.
+        ;;
+        ;; ⚠️ IT IS THE FRAME THAT IS MEASURED, NOT THE BUFFER. Several
+        ;; small frames may arrive in one read, and their total says
+        ;; nothing about any of them.
+        ((and cut (> cut frame-limit))
+         (answer-and-close ref '(error bad-request (reason frame-limit))))
+        ;; ⛔ AND DRAINING IS A PREMISE, SO IT IS JUDGED AFTER THE FRAME
+        ;; IS UNDERSTOOD. Answered here, a malformed frame arriving during
+        ;; a drain was told `draining` -- which says "your request was
+        ;; fine and we are not taking it now", when in fact it was never a
+        ;; request at all. §7.6.50 v249 fixes the order: well-formed, then
+        ;; whose store, then premises. The frame is parsed and then
+        ;; refused, by `dispatch-frame`, which is told this connection is
+        ;; draining.
         ((and cut (ctx-draining? ctx))
-         (answer-and-close ref draining-answer))
+         (let ((line (subbytes buffered 0 cut))
+               (rest (subbytes buffered (+ cut 1) (bytevector-length buffered))))
+           (dispatch-frame ctx seq line rest #t)))
         ;; ⛔ DRAINING WITH NOTHING WHOLE LEFT: this connection is done.
         ;; Waiting in the receive below would be waiting for bytes that
         ;; cannot arrive -- reads are stopped -- so the connection would
@@ -1076,7 +1181,7 @@
         ;; already holding a whole frame: serve it before reading more
         (cut (let ((line (subbytes buffered 0 cut))
                    (rest (subbytes buffered (+ cut 1) (bytevector-length buffered))))
-               (dispatch-frame ctx seq line rest)))
+               (dispatch-frame ctx seq line rest #f)))
         ((> (bytevector-length buffered) frame-limit)
          (answer-and-close ref '(error bad-request (reason frame-limit))))
         (else
@@ -1123,20 +1228,53 @@
       (bytevector-copy! bv from out 0 (- to from))
       out))
 
-  (define (dispatch-frame ctx seq line rest)
+  ;; The shapes `rpc-dispatch` refuses before it looks at a verb are
+  ;; refused here in the same words, so that judging them does not depend
+  ;; on the daemon being willing to serve.
+  (define (request-shape-error request)
+    (guard (e (#t #f))
+      (and (pair? request)
+           (symbol? (car request))
+           (for-all string? (cdr request))
+           (let ((nodes (parse-arguments (car request) (cdr request))))
+             (and (pair? nodes) (eq? 'error (car nodes)) nodes)))))
+
+  (define (dispatch-frame ctx seq line rest draining?)
     (let ((ref (ctx-ref ctx))
           (parsed (parse-frame line)))
       (cond
-        ((eq? parsed 'bad) (answer-and-close ref '(error bad-request (reason not-a-datum))))
+        ((symbol? parsed)
+         (answer-and-close ref (list 'error 'bad-request (list 'reason parsed))))
+        ;; ⛔ WELL-FORMED FIRST, AND THAT INCLUDES THE VERB'S ARGUMENTS
+        ;; (§7.6.50's four layers: well-formed, then whose store, then
+        ;; premises, then execution). Judged after the store, a request
+        ;; whose arguments do not parse was answered `store-mismatch` when
+        ;; sent to the wrong daemon -- which tells the caller to go and
+        ;; find another daemon for a request no daemon would accept.
+        ((request-shape-error (frame-field 'request parsed))
+         => (lambda (err) (answer-and-close ref err)))
         ;; ⛔ A REQUEST FOR ANOTHER STORE IS REFUSED, NOT EXECUTED. This
         ;; daemon serves one store; running somebody else's verb against
         ;; it would write to the wrong library, silently.
-        ((not (same-store? (car parsed) (ctx-store ctx)))
+        ((not (same-store? (frame-field 'store parsed) (ctx-store ctx)))
          (answer-and-close ref (list 'error 'transport-store-mismatch
                                      (list 'serving (ctx-store ctx))
-                                     (list 'asked (car parsed)))))
+                                     (list 'asked (frame-field 'store parsed)))))
+        ;; ⛔ WELL-FORMED BEFORE DRAINING, on this side too (§7.6.50's
+        ;; four layers). A request whose arguments do not parse used to be
+        ;; answered `draining` while the daemon was going -- telling the
+        ;; caller to try again somewhere else about a request that no
+        ;; daemon would ever accept. What parses is not this file's
+        ;; opinion: it asks the parser that owns the option tables, which
+        ;; is also the one that will answer it for real a moment later.
+        ;; ⚠️ HERE, AFTER THE FRAME AND THE STORE HAVE BEEN JUDGED: this
+        ;; request is well-formed and for this store, and is being refused
+        ;; because the daemon is going.
+        (draining? (answer-and-close ref draining-answer))
         (else
-         (let ((actor (cadr parsed)) (request (caddr parsed)))
+         (let ((actor (frame-field 'actor parsed))
+               (mode (frame-field 'mode parsed))
+               (request (frame-field 'request parsed)))
            (send (ctx-main ctx)
                  (list 'handling self seq (if (pair? request) (car request) request)))
            ;; ⛔ ONE LINE SAYING THIS DAEMON SERVED THIS REQUEST. Without
@@ -1167,20 +1305,49 @@
            (if (conn-local-read? request)
                (begin
                  (probe-for-outside-change! (ctx-store ctx) (ctx-store-pid ctx))
+                 ;; ⛔ A WAY TO BE INSIDE A CONNECTION-LOCAL READ WHILE
+                 ;; SOMETHING ELSE HAPPENS. These reads are answered by
+                 ;; this process without asking main, so the claim that a
+                 ;; drain cannot finish underneath one rests on the
+                 ;; connection still being registered -- and there was no
+                 ;; way to hold a read open long enough for a drain to try.
+                 ;; ⚠️ ONE PARK PER PROCESS, like the writer's: a
+                 ;; connection serving a second read while the row takes
+                 ;; its reading would park again and the daemon would look
+                 ;; hung rather than busy.
+                 ;; ⚠️ TWO LENGTHS, BECAUSE TWO ROWS NEED OPPOSITE THINGS,
+                 ;; as with the writer's park: the short one has to end
+                 ;; well inside the drain budget, the long one has to
+                 ;; outlast it so that the only way out is the clock.
+                 (when (and conn-hold-pending
+                            (memq (theourgia-fault) '(conn-hold conn-hold-long)))
+                   (set! conn-hold-pending #f)
+                   (sleep-ms (if (eq? (theourgia-fault) 'conn-hold-long) 9000 2500)))
                  (write-answer ctx seq
-                               (answer-for (ctx-store ctx) request actor (published-state))
-                               rest))
-           (let ((target (target-for ctx request))
+                               (answer-for (ctx-store ctx) request actor (published-state)
+                                           (frame-field 'writer parsed)
+                                           (frame-field 'stdin parsed)
+                                           (frame-field 'cwd parsed))
+                               rest mode 'core))
+           (let ((target (target-for ctx request (frame-field 'writer parsed)))
                  (ticket (fresh-ticket)))
-             (send target (list 'request self seq ticket (ctx-main ctx) request actor))
+             (send target (list 'request self seq ticket (ctx-main ctx) request actor
+                                (frame-field 'writer parsed)
+                                (frame-field 'stdin parsed)
+                                (frame-field 'cwd parsed)))
              (let await ()
                (receive
                  ;; ⛔ AN IN-FLIGHT REQUEST IS FINISHED, NOT ABANDONED. It
                  ;; may already have changed the store; the drain is
                  ;; remembered and acted on once this one has its answer.
                  (`(drain) (ctx-drain! ctx) (await))
-                 (`(answer ,@seq ,result)
-                  (write-answer ctx seq result rest))
+                 ;; ⛔ THE EXECUTOR SAYS WHICH SIDE SPOKE, because it is
+                 ;; the only process that knows. A refusal it made before
+                 ;; the request began is the transport declining; an
+                 ;; answer it computed is the core's. Deciding here
+                 ;; instead meant looking at the answer and guessing.
+                 (`(answer ,@seq ,result ,origin)
+                  (write-answer ctx seq result rest mode origin))
                  (`#(DOWN ,who ,reason)
                   ;; ⛔ THREE DIFFERENT DEATHS, THREE DIFFERENT ANSWERS.
                   ;; Losing the store is fatal to the daemon; losing the
@@ -1212,24 +1379,214 @@
   ;; the store in the envelope that request would be EXECUTED against A,
   ;; which is a write to the wrong library that nothing would ever
   ;; report. It is refused instead, and ⛔ not dispatched.
+  ;; ---- the envelope, unpacked ---------------------------------------------
+  ;;
+  ;; ⛔ THE SHAPE IS PACKED IN `(theourgia client)` AND READ HERE, which
+  ;; is two libraries because it is two processes. The ORDER is written
+  ;; down in one of them; this side names the fields as it takes them
+  ;; apart so that a change there shows up as a changed name here rather
+  ;; than as a silently shifted meaning.
+  ;;
+  ;;   (request <version> <store> <actor> <writer> <mode> <cwd> <stdin>
+  ;;            <verb> <args> ...)
+  ;;
+  ;; ⚠️ THE VERSION IS CHECKED, NOT SKIPPED. A client built against a
+  ;; later envelope must be told its request was not understood, rather
+  ;; than have its fields read as though they were these fields -- which
+  ;; is what a parser that only looked at positions would do, and would
+  ;; do quietly.
+  ;;
+  ;; ⚠️ `writer`, `cwd` AND `stdin` ARE EACH A STRING OR #f. #f is
+  ;; "there is none", which is a thing the client says rather than a
+  ;; field it leaves out: a frame whose length varies is one this reader
+  ;; would have to guess about.
+  (define (frame-field name parsed) (cdr (assq name parsed)))
+
+  ;; ⚠️ WHITESPACE AFTER THE FRAME IS NOT DATA. A trailing newline or a
+  ;; space is how a frame ordinarily ends; only a further TOKEN is a
+  ;; second thing on the line.
+  (define (nothing-but-space-left? port)
+    (let look ()
+      (let ((c (lookahead-char port)))
+        (cond
+          ((eof-object? c) #t)
+          ((char-whitespace? c) (get-char port) (look))
+          (else #f)))))
+
+  ;; ⛔ BYTES THAT ARE NOT UTF-8 ARE REFUSED, NOT REPAIRED. `utf8->string`
+  ;; substitutes U+FFFD for a malformed sequence, so a frame whose actor
+  ;; field held invalid bytes was decoded into a DIFFERENT actor and the
+  ;; request then ran under it -- measured: an actor containing \xff\xfe
+  ;; was accepted and the verb executed. What arrived is not what the
+  ;; caller sent, and the caller is never told.
+  ;;
+  ;; ⚠️ THE DECODER IS THE LIBRARY'S OWN, set to raise rather than
+  ;; substitute. Writing a UTF-8 validator here would be a second decoder
+  ;; to keep in step with the first.
+  (define (frame-text bv)
+    (bytevector->string bv (make-transcoder (utf-8-codec)
+                                            (eol-style none)
+                                            (error-handling-mode raise))))
+
+  ;; ⛔ THE TWO WAYS A FRAME IS UNREADABLE ARE NOT THE SAME FACT, and the
+  ;; refusal says which. `not-a-datum` is for bytes that will not decode
+  ;; or will not read as a datum at all; `malformed-envelope` is for a
+  ;; perfectly good datum whose fields are not an envelope, or a frame
+  ;; with something after it. Both used to answer `not-a-datum`, which for
+  ;; the second is simply untrue -- it IS a datum -- and sends the reader
+  ;; looking at their encoding when the problem is their fields.
   (define (parse-frame bv)
-    (guard (e (#t 'bad))
-      (let ((datum (read (open-string-input-port (utf8->string bv)))))
-        (if (and (pair? datum) (eq? 'request (car datum)) (pair? (cdr datum))
-                 (string? (cadr datum)) (pair? (cddr datum))
-                 (string? (caddr datum)) (pair? (cdddr datum)))
-            (list (cadr datum) (caddr datum) (cdddr datum))
-            'bad))))
+    (guard (e (#t 'not-a-datum))
+      (let ((text (frame-text bv)))
+       (if (not (readable-shape? text))
+           'not-a-datum
+      (let* ((port (open-string-input-port text))
+             (datum (read port))
+             ;; ⛔ NOTHING MAY FOLLOW THE FRAME. A second datum on the
+             ;; line is not a second request -- requests are separated by
+             ;; the newline this reader was handed one of -- so it is
+             ;; either a client that packed two things or someone
+             ;; appending to a frame. Either way, executing the first and
+             ;; discarding the rest is the worst of the options.
+             ;;
+             ;; ⛔ AND THE QUESTION IS PUT TO THE PORT, NOT TO THE READ.
+             ;; Asked as "did the next read return an end-of-file object",
+             ;; a frame containing the literal token `#!eof` answered yes
+             ;; -- because a datum CAN BE an eof object. Measured: a frame
+             ;; ending `... outline) #!eof (x)` executed `outline` and
+             ;; discarded the rest, which is exactly what this check
+             ;; exists to prevent, defeated by a literal.
+             (clean (nothing-but-space-left? port)))
+        (if (not (and clean (well-formed-envelope? datum)))
+            'malformed-envelope
+            (list (cons 'version (list-ref datum 1))
+                  (cons 'store (list-ref datum 2))
+                  (cons 'actor (list-ref datum 3))
+                  (cons 'writer (list-ref datum 4))
+                  (cons 'mode (list-ref datum 5))
+                  (cons 'cwd (list-ref datum 6))
+                  (cons 'stdin (list-ref datum 7))
+                  (cons 'request (list-tail datum 8)))))))))
+
+  ;; ⛔ THE ENVELOPE'S WRITER IS NOT SPLICED INTO THE ARGUMENTS. It used
+  ;; to be: two tokens pushed to the front of the request unless a string
+  ;; search over unparsed argv found `--writer` already there. That search
+  ;; could not tell an option from a caller's own text, so a request whose
+  ;; arguments contained the literal `--writer` -- after a `--`, or as the
+  ;; bytes being written -- suppressed its own default and was refused
+  ;; `writer-required`. The accepted cost of a string search turned out to
+  ;; be a legitimate write that could not be made at all.
+  ;;
+  ;; The writer now travels beside the actor, as the identity it is, and
+  ;; `rpc-dispatch` applies it in one place to the verbs that take one.
+  ;; The arguments reach the parser exactly as the caller wrote them.
+
+  (define (string-or-false? x) (or (not x) (string? x)))
+
+  (define (well-formed-envelope? datum)
+    (and (list? datum)
+         (>= (length datum) 9)
+         (eq? 'request (car datum))
+         (equal? (list-ref datum 1) (envelope-version))
+         (string? (list-ref datum 2))
+         (string? (list-ref datum 3))
+         (string-or-false? (list-ref datum 4))
+         (memq (list-ref datum 5) '(wire human))
+         (string-or-false? (list-ref datum 6))
+         (string-or-false? (list-ref datum 7))
+         (symbol? (list-ref datum 8))
+         ;; ⚠️ AND THE ARGUMENTS, which this did not check. The packer
+         ;; refuses to build a frame whose arguments are not all strings;
+         ;; the reader accepted one. `EV-3` asserts the packer will not
+         ;; make what the reader will not read, and the reverse had no
+         ;; guarantee at all.
+         ;;
+         ;; ⛔ IT WAS NOT REACHING ANYTHING DANGEROUS -- measured, the
+         ;; dispatcher refuses a non-string argument itself
+         ;; (`rpc.ss`, `arguments-not-strings`) and the daemon goes on
+         ;; serving. This is the reader being symmetric with the packer,
+         ;; not a repair of a crash, and the row that covers it asserts
+         ;; the answer that actually comes back rather than a predicted
+         ;; one.
+         (all-strings? (list-tail datum 9))
+         #t))
+
+  (define (all-strings? xs)
+    (or (null? xs)
+        (and (string? (car xs)) (all-strings? (cdr xs)))))
+
+  ;; ---- the answer envelope ------------------------------------------------
+  ;;
+  ;;   (answer (stdout "<bytes>") (stderr "<bytes>") (exit <n>) (origin <who>))
+  ;;
+  ;; ⭐ THE SERVER RENDERS AND THE SERVER DECIDES THE EXIT CODE. Both are
+  ;; knowledge about what a verb's answer MEANS -- `check` is a failure
+  ;; when its verdict is not ok, `batch` when any one of its items is not
+  ;; -- and that knowledge lives in `rpc-ok?`, in the core. A client that
+  ;; worked it out would need the core, which is the cost the whole split
+  ;; exists to avoid, and a client that carried a copy of the rule would
+  ;; be a second place for it to be wrong.
+  ;;
+  ;; So the client unpacks this one shape, writes two byte strings to two
+  ;; streams and exits with a number. That is the same work for every
+  ;; verb, and is not knowledge about any of them.
+  ;;
+  ;; ⚠️ `stderr` IS EMPTY TODAY, EVERY TIME. The core answers with one
+  ;; datum and has nothing to say on a second stream; the field is here
+  ;; because the client also runs the server locally for `init`, `serve`
+  ;; and `eval`, where a real stderr exists and has to arrive somewhere.
+  ;; ⛔ That is a description of today, not a promise -- a row asserts it
+  ;; is empty, so the day something starts writing there it is a red row
+  ;; and not a silently dropped message.
+  ;; ⛔ WHO IS REFUSING IS NOT SOMETHING THE TEXT CAN BE ASKED. A core
+  ;; `(error unknown-id ...)` is a successful call whose answer is no; a
+  ;; `(error draining ...)` or `(error transport-unknown ...)` is this
+  ;; daemon declining to carry the request, or admitting it does not know
+  ;; whether it did. They arrive in the same envelope, and a shell that
+  ;; had to tell them apart could only inspect the words inside -- or
+  ;; treat every non-zero exit as a failure, which would make every core
+  ;; refusal look like a broken call.
+  ;;
+  ;; ⚠️ IT CANNOT BE DERIVED FROM THE TAG EITHER: `bad-request` is
+  ;; answered both by this file, about a frame, and by the core, about a
+  ;; verb's arguments. What separates them is WHERE the answer was made,
+  ;; so that is what is recorded -- `transport` by the paths that refuse
+  ;; without dispatching, `core` by the two that carry a dispatched
+  ;; result.
+  ;;
+  ;; ⚠️ It is a new field at the END of the envelope, and every reader
+  ;; here takes fields by name, so a client of the previous shape reads
+  ;; this one unchanged.
+  (define (answer-envelope result mode origin)
+    (list 'answer
+          (list 'stdout ((if (eq? mode 'human) render-human render-wire) result))
+          (list 'stderr "")
+          (list 'exit (if (rpc-ok? result) 0 1))
+          (list 'origin origin)))
 
   ;; ⚠️ THE CONNECTION'S OWN PROCESS WRITES THE ANSWER, so a client that
   ;; does not read cannot hold up the store process or any other client.
-  (define (write-answer ctx seq result rest)
+  ;; ⛔ AND THE ORIGIN IS AN ARGUMENT, NOT A CONSTANT. It used to be
+  ;; `'core` for everything written here, so a request the writer refused
+  ;; while draining -- nothing dispatched, nothing ran -- arrived at the
+  ;; client labelled as the core's own answer. `mcp/server.ss` reads this
+  ;; field to decide whether a tool call was carried out, and a refusal
+  ;; wearing `core` is reported to a caller as a result: the request was
+  ;; not done, and the caller was told it was. Measured: D-24's queued
+  ;; request answered `(error draining)` with `(origin core)`.
+  (define (write-answer ctx seq result rest mode origin)
     (let ((ref (ctx-ref ctx))
           ;; ⚠️ `render-wire` ENDS THE LINE ITSELF. This used to add one
           ;; because the old `datum->string` was a bare `write`; keeping
           ;; it after the printers were collapsed put a blank line after
           ;; every answer the daemon gave.
-          (bytes (string->utf8 (datum->string result))))
+          ;;
+          ;; ⚠️ AND THE ENVELOPE IS ALWAYS WIRE-PRINTED, whatever the mode
+          ;; is. The mode says how the ANSWER INSIDE it is rendered, for a
+          ;; person to read; the envelope around it is read by a program
+          ;; either way, so rendering that in human form would give the
+          ;; client something it could not parse.
+          (bytes (string->utf8 (datum->string (answer-envelope result mode origin)))))
       (conn-read-stop! ref)
       (conn-write! ref bytes seq)
       (let await ()
@@ -1265,8 +1622,18 @@
              ((eq? who (ctx-store-pid ctx)) (void))
              (else (forget-writer! ctx who) (await))))))))
 
+  ;; ⚠️ A REFUSAL IS AN ANSWER AND WEARS THE SAME ENVELOPE. The client
+  ;; unpacks one shape and only one; a refusal that arrived bare would be
+  ;; the single case it could not read, and it is the case that happens
+  ;; when something is already wrong.
+  ;;
+  ;; ⛔ WIRE, because these are the answers given BEFORE the envelope has
+  ;; been read -- a malformed frame has no mode to honour. A client that
+  ;; asked for human form and gets a wire-rendered refusal can still read
+  ;; it; the alternative is guessing a mode out of a frame that did not
+  ;; parse.
   (define (answer-and-close ref result)
-    (conn-write! ref (string->utf8 (datum->string result)) 'last)
+    (conn-write! ref (string->utf8 (datum->string (answer-envelope result 'wire 'transport))) 'last)
     (receive
       (after 2000 (conn-close! ref))
       (`(written ,r ,tok ,status) (conn-close! ref))

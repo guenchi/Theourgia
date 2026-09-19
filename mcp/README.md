@@ -38,10 +38,29 @@ rules for writing a block have to be in it.
 `read` or `search` it would be noise in the place an agent is choosing
 from.
 
+## Before you start it
+
+⚠️ **Create the store first.** This shell has no local route: everything it
+lists, it sends to that store's daemon, and a daemon for a store that does not
+exist cannot start. Run
+
+    theourgia init --store <path>
+
+once, by hand or from the host, before starting the shell. `init` is
+deliberately **not** offered as a tool — see below.
+
 ## Tools
 
-One per verb in `rpc-verbs`, asked again on every call — a verb added to
-the core is a tool this shell can see without a restart.
+One per verb the core's `describe` reports as routed to the daemon, asked
+again on every call — a verb added to the core is a tool this shell can see
+without a restart.
+
+⛔ **A verb this shell cannot carry out is not offered.** `describe` marks each
+verb `daemon` or `local`; the ones marked `local` are the ones a client runs
+in its own process, and this shell has no such route. `init` is the case that
+matters: offered as a tool it could never succeed, because it is what creates
+the store there would otherwise be no daemon for — and an agent reading the
+tool list would have been told a capability existed.
 
 * name: `theourgia_<verb>`. A verb of `[A-Za-z0-9_.-]` keeps its
   spelling; anything else, and anything already starting `x_`, is carried
@@ -53,17 +72,26 @@ the core is a tool this shell can see without a restart.
 * `eval` is not a tool. Calling it is indistinguishable from calling a
   verb that does not exist.
 
-## Two routes, one answer
+## One route, and what happens when it is not there
 
-With a daemon on the socket the request goes over it in the envelope
-`request-frame` packs — the same one the command line sends, from the
-same procedure. Without one it is dispatched in this process. No child
-process on either path, and the two answers are identical.
+Every request goes over the socket in the envelope `request-frame` packs —
+the same one the command line sends, from the same procedure.
 
-A socket path with nobody behind it means the request reached nobody, so
-it is run locally. A connection that was made and then lost is different:
-the request may have been carried out, so it is **not** re-run and the
-client is told the answer could not be obtained.
+⚠️ **This shell no longer dispatches in its own process.** It used to, when it
+could not reach a daemon, which meant every shell loaded the whole core to
+serve its first call — the cost the client/server split exists to avoid. With
+nothing listening it now *starts* a daemon, exactly as the command line does.
+
+Three outcomes, and they are deliberately different sentences:
+
+* **the request reached nobody and a daemon started** — it is sent, once.
+* **the request reached nobody and a daemon would not start** — a JSON-RPC
+  error carrying *the server's own reason*, and saying explicitly that the
+  request was not carried out. Nothing was sent, so nothing ran.
+* **the connection was made and then lost** — the request may have been
+  carried out, so it is **not** re-sent and the caller is told the answer
+  could not be obtained. This is the only case that says "may be unknown",
+  and it says so because it is the only case where it is true.
 
 ## Framing
 

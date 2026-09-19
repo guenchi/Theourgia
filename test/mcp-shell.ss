@@ -20,7 +20,11 @@
 ;; shell's procedures would be testing the library and would say nothing
 ;; about framing, about stdio, or about what a client actually receives.
 
-(import (chezscheme) (theourgia json))
+(import (chezscheme) (theourgia json)
+        ;; ⚠️ THE PRODUCT'S OWN SPAWN, used by MC-11's control to make a
+        ;; child that nothing waits for -- the only way this fixture can
+        ;; produce one, measured.
+        (only (theourgia ffi) spawn-detached! reap-children!))
 
 (define bad 0)
 (define rows 0)
@@ -47,6 +51,16 @@
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (define shell "../mcp/server.ss")
 
+;; The canonical path of a directory, asked of the shell rather than of
+;; the library whose answer this file is checking.
+(define (resolved-by-the-shell dir)
+  (let ((out (string-append "/tmp/mcpshell-resolve-" (number->string (get-process-id)) ".txt")))
+    (system (string-append "cd " dir " && pwd -P > " out))
+    (let ((t (call-with-input-file out get-string-all)))
+      (if (and (string? t) (> (string-length t) 0))
+          (substring t 0 (- (string-length t) 1))
+          dir))))
+
 (define (file-text path)
   (if (not (file-exists? path))
       ""
@@ -67,8 +81,17 @@
 (define (start-shell . options)
   (let* ((store (if (pair? options) (car options) (string-append here "/store")))
          (socket (and (pair? options) (pair? (cdr options)) (cadr options)))
+         ;; ⛔ THE RUN ROOT IS THE FIXTURE'S, NOT THE USER'S. The shell
+         ;; now starts a daemon when it cannot reach one, and a daemon
+         ;; puts its socket and its log under the run root -- which
+         ;; defaults to `$HOME/.theourgia/run`. Measured before this
+         ;; line existed: five runs of this file left THIRTY-THREE
+         ;; directories in the real one, and fifteen daemons alive.
+         ;; A fixture may not write there, and must not leave anything
+         ;; running when it is done.
          (command (string-append
                     "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                    "THEOURGIA_RUN=" here "/run "
                     "scheme --script " shell " --store " store
                     (if socket (string-append " --socket " socket) "")
                     " 2>>" here "/shell.err")))
@@ -381,11 +404,19 @@
 
 ;; ---- MC-06 which route served it ---------------------------------------------
 ;;
-;; ⛔ FOUR WAYS FOR A SOCKET NOT TO BE THERE, AND EACH RUNS LOCALLY. The
-;; brief names the errnos; here they are produced rather than named --
-;; nothing at the path, a regular file, a directory, and a socket whose
-;; daemon has gone. ⚠️ Each answer must be the real one, so a shell that
-;; refused instead of falling back fails on the content, not on a tag.
+;; ⛔ THREE WAYS FOR A SOCKET NOT TO BE THERE, AND THE SHELL STARTS A
+;; DAEMON RATHER THAN SERVING THEM ITSELF. ⚠️ THIS ROW USED TO SAY THE
+;; OPPOSITE -- "served locally, three ways" -- and it was right about the
+;; shell that then existed: with no daemon it dispatched in its own
+;; process, which meant every shell loaded the whole core to answer its
+;; first call. That is the cost the split exists to avoid, so the shell
+;; now starts a daemon the way the command line does (§7.6.50).
+;;
+;; ⚠️ Each answer must still be the real one, so a shell that refused
+;; instead of starting one fails on the content rather than on a tag. The
+;; path held by a REGULAR FILE is the one that cannot be served at all --
+;; a daemon cannot bind there -- so it is the one that must come back
+;; unavailable, and its file must survive.
 (let* ((nothing (string-append here "/no-socket-here"))
        (regular (string-append here "/a-regular-file"))
        (folder  (string-append here "/a-directory")))
@@ -395,11 +426,96 @@
                  (let ((out (talk (list hello ready (call-tool "theourgia_outline" '()))
                                   (string-append here "/store") path)))
                    (text-of (cadr out))))
-               (list nothing regular folder))))
-    (want "MC-06 a socket path with nobody behind it is served locally, three ways"
-          (map (lambda (t) (if (starts-with-text? t "(ok (text") 'served-locally (list 'said t)))
+               (list nothing))))
+    (want "MC-06 an empty socket path gets a daemon, and the answer is the real one"
+          (map (lambda (t) (if (starts-with-text? t "(ok (text") 'answered (list 'said t)))
                answers)
-          '(served-locally served-locally served-locally))
+          '(answered))
+    ;; ⛔ AND A PATH A DAEMON CANNOT TAKE IS REPORTED, NOT WORKED AROUND.
+    ;; Neither a regular file nor a directory can be bound; the old shell
+    ;; answered anyway by running the verb itself, which is exactly the
+    ;; fallback that is gone. What must NOT happen is a silent success.
+    ;;
+    ;; ⚠️ BOTH KINDS, because they fail at different places -- the file
+    ;; is refused by the daemon's own check on what is already at the
+    ;; path, the directory by `bind` itself -- and a build that handled
+    ;; one and not the other would pass a row that named only one.
+;; ---- MC-07 what the shell says when no server could be started -----------
+    ;;
+    ;; ⛔ "EXECUTION MAY BE UNKNOWN" IS FALSE HERE, and it is what the
+    ;; shell used to say. A server that would not start means the frame
+    ;; never went out, so nothing ran -- and the only useful fact anyone
+    ;; had, the server's own reason, was thrown away. The command-line
+    ;; client relays that reason verbatim; the shell said something untrue
+    ;; instead.
+    ;;
+    ;; ⚠️ IT IS `tools/list` THAT SHOWS THIS, not a tool call: the shell
+    ;; asks the server for its catalogue before it can turn a tool name
+    ;; into a verb, so a server that will not start is met at that step.
+    (want "MC-07 a server that would not start is reported in its own words"
+          (let* ((out (talk (list hello ready
+                                  "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}")
+                            (string-append here "/store") regular))
+                 (message (or (field (cadr out) "error" "message") "")))
+            (list (if (contains? message "serve-path-occupied") 'the-servers-reason
+                      (list 'said message))
+                  (if (contains? message "not carried out") 'and-says-it-did-not-run
+                      (list 'said message))))
+          '(the-servers-reason and-says-it-did-not-run))
+
+    ;; ⛔ AND THE TWIN: the sentence about an unknown outcome still exists,
+    ;; for the case where it is true. Without this row the one above is
+    ;; passed by a shell that simply stopped saying "unknown" -- and a
+    ;; request that WAS sent and then lost must keep saying so.
+    ;;
+    ;; ⚠️ THE PEER HERE READS THE FRAME AND CLOSES, which is "sent, then
+    ;; lost" with nothing else in it. Written first with the fault
+    ;; injector that parks a request, this row failed for a reason of the
+    ;; injector's own and told me nothing about the shell.
+    (let ((lostsock (string-append here "/lost.sock"))
+          (lostpeer (string-append here "/lost.ss")))
+      (call-with-output-file lostpeer
+        (lambda (port)
+          (for-each (lambda (l) (display l port) (newline port))
+            (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+                  "(start-scheduler"
+                  "  (lambda ()"
+                  (string-append "    (listen! \"" lostsock "\" 16)")
+                  "    (let serve ()"
+                  "      (receive (after 20000 (exit 0))"
+                  "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+                  ;; ⛔ THE BYTES ARE READ AND THEN THE CONNECTION CLOSES.
+                  ;; Reading first is what makes this "the request
+                  ;; arrived", not "the dial failed".
+                  "               (`(data ,r ,bv) (conn-close! r) (serve))"
+                  "               (`(eof ,r) (serve))"
+                  "               (`#(DOWN ,w ,y) (serve))))))"))))
+      (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                             "scheme --script " lostpeer " > /dev/null 2>&1 &"))
+      (let up ((k 0))
+        (cond ((file-exists? lostsock) 'up)
+              ((> k 300) 'never)
+              (else (system "sleep 0.05") (up (+ k 1)))))
+      (let* ((out (talk (list hello ready
+                              "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}")
+                        (string-append here "/store") lostsock))
+             (message (field (cadr out) "error" "message")))
+        (system (string-append "pkill -f " lostpeer " 2>/dev/null"))
+        (want "MC-07 TWIN: an answer lost after the request went out is still unknown"
+              (if (and (string? message) (contains? message "may be unknown"))
+                  'still-unknown
+                  (list 'said message))
+              'still-unknown)))
+
+    (want "MC-06 a socket path that a daemon cannot take is not served"
+          (map (lambda (path)
+                 (let ((out (talk (list hello ready (call-tool "theourgia_outline" '()))
+                                  (string-append here "/store") path)))
+                   (if (starts-with-text? (text-of (cadr out)) "(ok (text")
+                       (list 'SERVED-ANYWAY (text-of (cadr out)))
+                       'not-served)))
+               (list regular folder))
+          '(not-served not-served))
     ;; ⛔ AND THE REGULAR FILE IS STILL THERE. Falling back must not mean
     ;; tidying up something that is not ours.
     (want "MC-06 TWIN: the regular file on the socket path was left alone"
@@ -578,20 +694,65 @@
     (call-with-output-file peer
       (lambda (port)
         (for-each (lambda (l) (display l port) (newline port))
+          ;; ⛔ THE PEER ANSWERS `describe` BEFORE IT CAPTURES ANYTHING.
+          ;; The shell asks for the catalogue before it can turn a tool
+          ;; name into a verb, so the FIRST frame it sends is always
+          ;; `describe` -- and a peer that recorded the first frame and
+          ;; hung up recorded that, then never saw the tool request at
+          ;; all. Measured: this row compared the CLI's `read` envelope
+          ;; against the shell's `describe` envelope and reported that
+          ;; the two routes disagreed, which was true and about nothing.
+          ;;
+          ;; ⚠️ The catalogue it answers with is the smallest one that
+          ;; contains the tool this row calls. It is a STAND-IN for the
+          ;; server, and the rows about what the real catalogue holds are
+          ;; in `describe.ss`; what is being measured here is only the
+          ;; bytes of the request that follows.
           (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+                (string-append
+                  ;; ⚠️ THE STUB CARRIES EVERY FIELD THE SHELL READS, and
+                  ;; `route` was added to that list after this was written.
+                  ;; Without it the shell correctly dropped the verb --
+                  ;; a tool it cannot carry out is not offered -- so no
+                  ;; tool call followed and the capture came back empty.
+                  ;; A stand-in stops standing in the moment the thing it
+                  ;; models grows a field.
+                  "(define catalogue-reply (string->utf8 "
+                  "\"(answer (stdout \\\"(ok (verbs (read (usage (read <id>)) "
+                  "(description \\\\\\\"Read a block.\\\\\\\") (protocol #f) "
+                  "(route daemon))) "
+                  "(protocol \\\\\\\"P\\\\\\\"))\\n\\\") (stderr \\\"\\\") "
+                  "(exit 0))\n\"))")
+                ;; ⛔ WHICH FRAME TO ANSWER IS DECIDED BY WHAT IT IS, not
+                ;; by whether it is the first. Written as "answer the
+                ;; first, record the second" this swallowed the COMMAND
+                ;; LINE's request: the CLI never asks for a catalogue, so
+                ;; its first frame is the one that was supposed to be
+                ;; recorded, and the capture came back empty while the
+                ;; shell's side looked fine.
+                "(define (asks-to-describe? bv)"
+                "  (let* ((t (utf8->string bv)) (n (string-length t)))"
+                "    (let loop ((i 0))"
+                "      (cond ((> (+ i 8) n) #f)"
+                "            ((string=? (substring t i (+ i 8)) \"describe\") #t)"
+                "            (else (loop (+ i 1)))))))"
                 "(start-scheduler"
                 "  (lambda ()"
                 (string-append "    (listen! \"" csock "\" 16)")
-                "    (let serve ()"
+                "    (let serve ((answered #f))"
                 "      (receive (after 20000 (exit 0))"
-                "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+                "               (`(accepted ,ref) (conn-read-start! ref) (serve answered))"
                 (string-append
                   "               (`(data ,r ,bv)"
-                  " (call-with-output-file \"" into
+                  "                (if (asks-to-describe? bv)"
+                  "                    (begin (conn-write! r catalogue-reply 'last)"
+                  "                           (serve #t))"
+                  "                    (begin (call-with-output-file \"" into
                   "\" (lambda (p) (put-string p (utf8->string bv))) 'truncate)"
-                  " (conn-close! r) (serve))")
-                "               (`(eof ,r) (serve))"
-                "               (`#(DOWN ,w ,y) (serve))))))")))
+                  "                           (conn-close! r) (serve answered))))")
+                "               (`(written ,r ,t ,st) (conn-close! r) (serve answered))"
+                "               (`(eof ,r) (serve answered))"
+                "               (`#(DOWN ,w ,y) (serve answered))))))")))
       'truncate)
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                            "scheme --script " peer " > /dev/null 2>&1 &"))
@@ -602,13 +763,20 @@
 
   (start-capture! seen-cli)
   (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                         "scheme --script ../cli.ss read x.1 --store " cstore
+                         "scheme --script ../cli.ss read x.1 --wire --store " cstore
                          " --socket " csock " > /dev/null 2>&1"))
   (system (string-append "pkill -f " peer " 2>/dev/null"))
   (start-capture! seen-mcp)
   (talk (list hello ready (call-tool "theourgia_read" '("x.1"))) cstore csock)
   (system (string-append "pkill -f " peer " 2>/dev/null"))
 
+;; ⚠️ THE COMMAND LINE IS DRIVEN WITH `--wire` HERE, and that is not a
+  ;; convenience. The envelope now carries the MODE the caller wants its
+  ;; answer rendered in, and the shell always wants `wire` because it
+  ;; parses what comes back. A CLI run without `--wire` therefore sends a
+  ;; genuinely different envelope -- measured, the two differed in that
+  ;; one field and in nothing else -- and comparing them would be asking
+  ;; two callers who want different things to say the same thing.
   (want "MC-envelope-shared the shell and the command line put the same bytes on the wire"
         (let ((a (file-text seen-cli)) (b (file-text seen-mcp)))
           (list (if (> (string-length a) 0) 'the-cli-sent-something (list 'cli a))
@@ -618,11 +786,363 @@
   ;; ⛔ AND IT IS THE ENVELOPE THE DAEMON PARSES, spelled out here once so
   ;; that "both sent the same thing" cannot be satisfied by both sending
   ;; the same wrong thing.
+  ;; ⚠️ THE FIELDS ARE SPELLED OUT, INCLUDING THE ONES THAT ARE #f.
+  ;; `writer`, `cwd` and `stdin` are absent here as a VALUE and not by
+  ;; being left out: an envelope whose length varied with what the caller
+  ;; happened to have would be one the reader had to guess about. Neither
+  ;; route binds a writer in this row, so both say #f, and a build that
+  ;; started omitting the field would fail here rather than at the far
+  ;; end of a parse.
+  ;; ⚠️ THE STORE TRAVELS BY ITS RESOLVED NAME, so the expectation is the
+  ;; resolved one -- and it is resolved by the SHELL, not by the library
+  ;; under test. Asking `client.ss` what it would produce would compare
+  ;; this file's copy of the rule with the rule itself and agree with any
+  ;; answer. (`/tmp` is a symlink on this platform, which is what makes
+  ;; the two spellings differ at all.)
+  ;; ⚠️ THE DIRECTORY IS IN THE ENVELOPE NOW, and it is this fixture's own,
+  ;; resolved by the shell rather than by the library under test.
   (want "MC-envelope-shared and the bytes are the request envelope, terminator and all"
         (file-text seen-mcp)
-        (string-append "(request \"" cstore "\" \"" (or (getenv "THEOURGIA_ACTOR")
-                                                        (getenv "USER") "cli")
-                       "\" read \"x.1\")\n")))
+        (string-append "(request 1 \"" (resolved-by-the-shell cstore) "\" \""
+                       (or (getenv "THEOURGIA_ACTOR") (getenv "USER") "cli")
+                       "\" #f wire \"" (resolved-by-the-shell ".") "\" #f read \"x.1\")\n")))
+
+;; ---- MC-08 two ways a well-formed request was mishandled --------------------
+;;
+;; ⛔ "PRESENT AND false" IS NOT "ABSENT". The parser answered #f for both
+;; a missing `params` key and one whose value is `false`, so
+;; `params: false` -- which the protocol does not allow -- was read as no
+;; params and the call SUCCEEDED.
+(let ((out (talk (list hello ready
+                       "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":false}"))))
+  (want "MC-08 params given as false is refused, not read as absent"
+        (code-of (cadr out))
+        -32602))
+
+;; ⛔ AND THE TWIN: no params at all is still fine, which is how every
+;; ordinary listing arrives.
+(let ((out (talk (list hello ready
+                       "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\"}"))))
+  (want "MC-08 TWIN: a listing with no params is still served"
+        (if (field (cadr out) "result" "tools") 'served (list 'said (cadr out)))
+        'served))
+
+
+;; ---- MC-11 collecting the children a start leaves behind -----------------
+;;
+;; ⛔ WHAT THIS ROW CAN ESTABLISH, AND WHAT IT CANNOT. `spawn-detached!`
+;; answers a pid and nothing waits for it, so a started process that exits
+;; stays in the table until someone collects it -- measured by the review
+;; on the primitive itself, with `/usr/bin/true` and `waitpid`. The shell
+;; now collects before every call.
+;;
+;; ⛔ THE SHELL'S OWN ACCUMULATION COULD NOT BE PRODUCED FROM OUTSIDE, and
+;; a row claiming it would be green for a reason that is not the claim.
+;; Measured twice while writing this, sampling every two seconds across a
+;; whole call: the shell had NO children at all. A start happens only when
+;; the connect fails with an errno that means "nobody is listening"; a
+;; socket path holding a regular file answers ENOTSOCK, which is `not-sent`
+;; and starts nothing, and a path the client cannot use is refused before
+;; spawning. When a start does happen the daemon binds and stays alive,
+;; so it is a child and not a corpse. The case that leaves corpses is the
+;; lock race -- two starts, the loser exiting at once -- which this fixture
+;; cannot hold still.
+;;
+;; ⚠️ SO THE ROW BELOW IS ABOUT THE COUNTING, NOT ABOUT THE SHELL. It
+;; proves the instrument can see an uncollected child; the claim that the
+;; shell does not accumulate them rests on the review's measurement of the
+;; primitive and on reading `ask`, and is written up as such in the
+;; delivery notes rather than dressed as a measurement here.
+(begin
+  ;; ⚠️ THE INSTRUMENT IS `reap-children!` ITSELF, not a `ps` line. Asked
+  ;; as `ps -o stat=,ppid=`, the listing covers only the processes of the
+  ;; asking terminal, so in a suite with no terminal it answered zero while
+  ;; a child was demonstrably there -- measured, this row read BLIND in the
+  ;; same run in which collecting took one away. A reading that depends on
+  ;; where the suite was started from is not a reading.
+  (want "MC-11 a child that nothing waited for is collected, and counted"
+        (begin
+          (spawn-detached! (list "/usr/bin/true"))
+          (system "sleep 1")
+          (let* ((took (reap-children!))
+                 (again (reap-children!)))
+            (list (if (> took 0) 'collected-it (list 'took took))
+                  (if (= again 0) 'and-nothing-was-left (list 'still-there again)))))
+        '(collected-it and-nothing-was-left))
+
+  ;; ⛔ AND IT ANSWERS ZERO WHEN THERE IS NOTHING, which is what makes the
+  ;; count above evidence rather than a number that is always positive.
+  (want "MC-11 CONTROL: with no child of its own it collects nothing"
+        (reap-children!)
+        0))
+
+
+;; ---- MC-09 a tool call that could not be sent says whose id it answers ----
+;;
+;; ⛔ MEASURED DEFECT. `catalogue` carries `start-failed` and `not-sent`
+;; out of itself deliberately -- the comment where it does says the
+;; reason would otherwise be lost one layer before the place that reports
+;; it -- and `tools/call` checked only for `unavailable`. The other two
+;; fell through to `assoc` on an error datum, which raised, and the guard
+;; around the request answered `-32603 "Core transport unavailable"` with
+;; `"id": null`. So the client could not match the failure to the request
+;; that caused it, and the reason the catalogue had preserved was thrown
+;; away exactly where it was meant to be used.
+;;
+;; ⚠️ MC-06 CANNOT SAY THIS: it asks only that no outline result came
+;; back, which is true of a null-id internal error as well.
+(let* ((badsock (string-append here "/not-a-socket-file"))
+       (out (begin
+              (system (string-append "printf keep > " badsock))
+              (talk (list hello ready
+                          "{\"jsonrpc\":\"2.0\",\"id\":41,\"method\":\"tools/call\",\"params\":{\"name\":\"theourgia_outline\",\"arguments\":{\"argv\":[]}}}")
+                    (string-append here "/store") badsock)))
+       (reply (cadr out))
+       (message (field reply "error" "message")))
+  (want "MC-09 a tool call that could not be sent is answered under its own id"
+        (if (contains? reply "\"id\":41") 'echoed (list 'said reply))
+        'echoed)
+  ;; ⛔ AND IT SAYS THE TOOL DID NOT RUN. "Something went wrong" leaves
+  ;; the caller to decide whether to try again, which is the one thing it
+  ;; must not have to guess about.
+  (want "MC-09 and it says the request was not carried out"
+        (if (and (string? message) (contains? message "not carried out"))
+            'said-it-did-not-run
+            (list 'said message))
+        'said-it-did-not-run)
+  ;; ⛔ THE TWIN: tools/list, the same failure, the same shape. The two
+  ;; branched differently for a whole release -- one of them handled all
+  ;; three outcomes and the other did not -- so the rows have to compare
+  ;; them rather than check each alone.
+  (let* ((lout (talk (list hello ready
+                           "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}")
+                     (string-append here "/store") badsock))
+         (lmessage (field (cadr lout) "error" "message")))
+    (want "MC-09 TWIN: tools/list fails the same way for the same reason"
+          (list (if (contains? (cadr lout) "\"id\":42") 'echoed (list 'said (cadr lout)))
+                (if (and (string? lmessage) (contains? lmessage "not carried out"))
+                    'said-it-did-not-run
+                    (list 'said lmessage)))
+          '(echoed said-it-did-not-run))))
+
+;; ---- MC-10 who refused: the core, or the daemon carrying the request -----
+;;
+;; ⛔ §7.6.4 SAYS A CORE `(error ...)` IS A SUCCESSFUL TOOL CALL whose text
+;; is a refusal -- the agent asked, and the answer is no. A daemon that is
+;; draining, or that lost the process serving the request, refuses in the
+;; SAME envelope with the SAME shape, and those are not answers to the
+;; question at all. Read as tool results they came back `isError: false`
+;; with the refusal as their text, so a caller was told its request had
+;; been carried out and answered when it had not been carried out at all.
+;;
+;; ⚠️ THE ENVELOPE NOW CARRIES `origin`, and these two rows are the two
+;; sides of it. A stand-in peer answers, because a real daemon cannot be
+;; made to produce both on demand.
+(let* ((osock (string-append here "/origin.sock"))
+       (opeer (string-append here "/origin.ss"))
+       (ostore (string-append here "/store")))
+  (define (peer-answering body)
+    (call-with-output-file opeer
+      (lambda (port)
+        (for-each (lambda (l) (display l port) (newline port))
+          (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+                "(define catalogue-reply (string->utf8 "
+                "\"(answer (stdout \\\"(ok (verbs (outline (usage (outline)) "
+                "(description \\\\\\\"Outline.\\\\\\\") (protocol #f) "
+                "(route daemon))) "
+                "(protocol \\\\\\\"P\\\\\\\"))\\n\\\") (stderr \\\"\\\") "
+                "(exit 0) (origin core))\n\"))"
+                (string-append "(define tool-reply (string->utf8 \"" body "\n\"))")
+                "(define (asks-to-describe? bv)"
+                "  (let* ((t (utf8->string bv)) (n (string-length t)))"
+                "    (let loop ((i 0))"
+                "      (cond ((> (+ i 8) n) #f)"
+                "            ((string=? (substring t i (+ i 8)) \"describe\") #t)"
+                "            (else (loop (+ i 1)))))))"
+                "(start-scheduler"
+                "  (lambda ()"
+                (string-append "    (listen! \"" osock "\" 16)")
+                "    (let serve ()"
+                "      (receive (after 20000 (exit 0))"
+                "               (`(accepted ,ref) (conn-read-start! ref) (serve))"
+                "               (`(data ,r ,bv)"
+                "                 (conn-write! r (if (asks-to-describe? bv) catalogue-reply tool-reply) 'last)"
+                "                 (serve))"
+                "               (`(written ,r ,t ,st) (conn-close! r) (serve))"
+                "               (`(eof ,r) (serve))"
+                "               (`#(DOWN ,w ,y) (serve))))))")))
+      'truncate)
+    (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "scheme --script " opeer " > /dev/null 2>&1 &"))
+    (let up ((k 0))
+      (cond ((file-exists? osock) 'up)
+            ((> k 300) 'never)
+            (else (system "sleep 0.05") (up (+ k 1))))))
+
+  (define (call-through) 
+    (cadr (talk (list hello ready (call-tool "theourgia_outline" '())) ostore osock)))
+
+  (peer-answering "(answer (stdout \\\"(error draining)\\\") (stderr \\\"\\\") (exit 1) (origin transport))")
+  (let ((reply (call-through)))
+    (system (string-append "pkill -f " opeer " 2>/dev/null"))
+    (system (string-append "rm -f " osock))
+    (want "MC-10 a daemon that declined to carry the request is a JSON-RPC error"
+          (if (field reply "error" "message") 'an-error (list 'said reply))
+          'an-error))
+
+  ;; ⛔ THE TWIN, AND IT IS THE RULE THAT MUST NOT BREAK. A core refusal
+  ;; is a SUCCESSFUL call: the tool ran and its answer is no. A build that
+  ;; turned every non-zero exit into an error would pass the row above and
+  ;; fail this one -- which is exactly what §7.6.4 forbids.
+  (peer-answering "(answer (stdout \\\"(error unknown-id \\\\\\\"x.1\\\\\\\")\\\") (stderr \\\"\\\") (exit 1) (origin core))")
+  (let ((reply (call-through)))
+    (system (string-append "pkill -f " opeer " 2>/dev/null"))
+    (system (string-append "rm -f " osock))
+    (want "MC-10 TWIN: a core refusal is still a successful tool call"
+          (list (if (field reply "error" "message") 'AN-ERROR 'a-result)
+                (if (contains? reply "unknown-id") 'carries-the-refusal (list 'said reply)))
+          '(a-result carries-the-refusal)))
+
+  ;; ⛔ AND THE FIELD IS WHAT DECIDES, NOT THE WORDS. The two rows above
+  ;; use a transport refusal that SAYS `draining` and a core refusal that
+  ;; says `unknown-id`, so a shell that read the text and recognised names
+  ;; would pass both. These two send the SAME words under the two
+  ;; provenances: a build that classifies by reading them gets one wrong.
+  (peer-answering "(answer (stdout \\\"(error draining)\\\") (stderr \\\"\\\") (exit 1) (origin core))")
+  (let ((reply (call-through)))
+    (system (string-append "pkill -f " opeer " 2>/dev/null"))
+    (system (string-append "rm -f " osock))
+    (want "MC-10 the same words marked as the core's are a successful call"
+          (if (field reply "error" "message") 'AN-ERROR 'a-result)
+          'a-result))
+
+  (peer-answering "(answer (stdout \\\"(error draining)\\\") (stderr \\\"\\\") (exit 1) (origin transport))")
+  (let ((reply (call-through)))
+    (system (string-append "pkill -f " opeer " 2>/dev/null"))
+    (system (string-append "rm -f " osock))
+    (want "MC-10 and the same words marked as the transport's are an error"
+          (if (field reply "error" "message") 'an-error (list 'said reply))
+          'an-error)))
+
+;; ⛔ AN INTEGER-VALUED ID IS AN ID, HOWEVER IT WAS SPELLED. Requiring an
+;; exact integer rejected `2.0` -- ordinary JSON for the number two -- and
+;; answered with `id: null`, so a client matching replies by id could not
+;; match its own.
+(let ((out (talk (list hello ready "{\"jsonrpc\":\"2.0\",\"id\":2.0,\"method\":\"ping\"}"))))
+  (want "MC-08 an id written 2.0 is answered, not refused"
+        (if (contains? (cadr out) "\"error\"") (list 'refused (cadr out)) 'answered)
+        'answered))
+
+;; ⚠️ AND THE ID COMES BACK AS IT WAS WRITTEN.
+;;
+;; ⛔ "NOT NULL" WAS NOT ENOUGH, and this row used to ask only that. A
+;; reply carrying `3`, or `"2.0"`, or an id of a different type passed it
+;; -- every answer except the one failure it was named for. What a client
+;; matches on is the id's exact text, so that is what is compared.
+;;
+;; ⛔ AND ONE OF THESE CANNOT BE PRINTED BACK FROM THE PARSED NUMBER.
+;; `9007199254740993` is not representable as a double: parsing rounds it
+;; to ...992, so a reply built by printing the parsed value answers a
+;; DIFFERENT id (measured: `9.007199254740992e15`) and the client that
+;; sent it cannot match its own reply. `2e0` is the same failure in a
+;; smaller form -- it came back as `2.0`, which is the same number
+;; spelled differently, and a client comparing text would miss it.
+(define (echoes-id? spelling)
+  (let ((out (talk (list hello ready
+                         (string-append "{\"jsonrpc\":\"2.0\",\"id\":" spelling
+                                        ",\"method\":\"ping\"}")))))
+    (if (and (pair? out) (pair? (cdr out))
+             (contains? (cadr out) (string-append "\"id\":" spelling ",")))
+        'echoed
+        (list spelling 'came-back-as (and (pair? out) (pair? (cdr out)) (cadr out))))))
+
+(want "MC-08 and the id it sent is the id it gets back, as written"
+      (map echoes-id? '("2.0" "2e0" "9007199254740993.0"))
+      '(echoed echoed echoed))
+
+;; ⛔ THE TWIN: an ordinary integer and a string id are unchanged by all
+;; of this. Without them, "echo the token you were sent" is satisfied by a
+;; build that has stopped parsing ids at all.
+(want "MC-08 TWIN: an ordinary integer id and a string id still echo"
+      (list (echoes-id? "7")
+            (let ((out (talk (list hello ready
+                                   "{\"jsonrpc\":\"2.0\",\"id\":\"abc\",\"method\":\"ping\"}"))))
+              (if (contains? (cadr out) "\"id\":\"abc\"") 'echoed (list 'said (cadr out)))))
+      '(echoed echoed))
+
+
+;; ---- MC-12 a key is what it means, and a reply is always JSON ------------
+;;
+;; ⛔ `"id"` IS JSON FOR `id`. The scan that finds the id's own token
+;; compared the key's SPELLING against `"id"`, so a host that escaped a
+;; character in the key -- which JSON allows anywhere -- was not
+;; recognised, and the reply fell back to printing the parsed value: the
+;; one path the token echo exists to avoid.
+;;
+;; ⭐ AND THE FALLBACK COULD WRITE SOMETHING THAT WAS NOT JSON. Chez
+;; prints a flonum with fewer significant bits than a full mantissa as
+;; `5e-324|1`, and that bar is not JSON, so the whole line stopped being
+;; parseable -- measured on the previous build:
+;;
+;;   {"jsonrpc":"2.0","id":5e-324|1,"result":{}}
+;;
+;; ⚠️ SO THE ROW ASKS THE STRONGEST QUESTION AVAILABLE: not "does the text
+;; look right" but "does this line parse at all". A client that cannot
+;; read the frame has lost the session, not one answer.
+(define (ping-keyed key id)
+  (let ((out (talk (list hello ready
+                         (string-append "{\"jsonrpc\":\"2.0\",\"" key "\":" id
+                                        ",\"method\":\"ping\"}")))))
+    (and (pair? out) (pair? (cdr out)) (cadr out))))
+
+(want "MC-12 an id whose key is spelled with an escape is still that request's id"
+      (let ((line (ping-keyed "i\\u0064" "5e-324")))
+        (list (if (eq? 'unparseable (parse line)) 'NOT-JSON 'parses)
+              (if (and (string? line) (contains? line "\"id\":5e-324,")) 'echoed
+                  (list 'said line))))
+      '(parses echoed))
+
+;; ⛔ AND THE SAME VALUE WITH THE ORDINARY KEY, which reaches the printer
+;; by a different road: here the echo succeeds, so this row is about the
+;; value surviving at all. Both spellings must answer the same line.
+(want "MC-12 and the ordinary spelling of the key answers the same line"
+      (let ((a (ping-keyed "id" "5e-324"))
+            (b (ping-keyed "i\\u0064" "5e-324")))
+        (list (if (eq? 'unparseable (parse a)) 'NOT-JSON 'parses)
+              (if (and (string? a) (string? b) (string=? a b)) 'same-answer
+                  (list 'differ a b))))
+      '(parses same-answer))
+
+;; ⛔ TWIN: A KEY THAT MEANS SOMETHING ELSE IS STILL SOMETHING ELSE.
+;; Decoding the key must not turn the comparison into one that matches
+;; anything: `"ie"` is `ie`, not `id`, and a request with no id is a
+;; notification, which is answered with nothing at all.
+(want "MC-12 TWIN: a key that decodes to a different name is not the id"
+      (let ((out (talk (list hello ready
+                             "{\"jsonrpc\":\"2.0\",\"i\\u0065\":5,\"method\":\"ping\"}"))))
+        (if (and (pair? out) (pair? (cdr out)))
+            (list 'answered-anyway (cadr out))
+            'treated-as-a-notification))
+      'treated-as-a-notification)
+
+;; ---- teardown ---------------------------------------------------------------
+;;
+;; ⛔ EVERY DAEMON THIS FILE CAUSED TO EXIST IS TAKEN DOWN. The shell
+;; starts one when it cannot reach one, so a run of this file leaves
+;; daemons behind that no row mentions -- measured, fifteen of them after
+;; five runs, each holding a socket and a log.
+;;
+;; ⚠️ THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
+;; process's pid. A pattern like `serve` or `cli.ss` would also match the
+;; daemons of a suite running beside this one, and of another session
+;; entirely.
+(system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+(system "sleep 1")
+(let ((left (string-append here "/left.txt")))
+  (system (string-append "pgrep -f 'serve " here "' | wc -l | tr -d ' ' > " left))
+  (let ((n (let ((t (file-text left)))
+             (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
+    (want "MC-teardown no daemon this run started is still alive" n "0")))
 
 (printf "rows: ~a\n~a failures\nmcp-shell complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

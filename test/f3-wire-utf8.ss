@@ -244,6 +244,7 @@
                                                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
                                                call "\n"))))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "THEOURGIA_RUN=" here "/run "
                            "scheme --script ../mcp/server.ss --store " store " < " in " > " out " 2>&1"))
     (file-text out)))
 
@@ -277,5 +278,14 @@
         (string-length wire-answer) escaped-length)
 
 (system (string-append "rm -rf " here "; rm -f " socket))
+;; ⛔ THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
+;; run root is and must take down what it started. Before the shell was
+;; rewritten it dispatched in its own process and started nothing, which
+;; is why neither line was here. Measured without them: sockets and logs
+;; under the user's real `$HOME/.theourgia/run`, and daemons still alive
+;; minutes later.
+(system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
+(system "sleep 1")
+
 (printf "rows: ~a\n~a failures\nf3-wire-utf8 complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

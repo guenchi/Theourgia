@@ -29,7 +29,7 @@
         (only (chezscheme) with-input-from-file call-with-input-file
               get-string-all directory-list file-exists?)
         (only (theourgia arguments) parse-arguments)
-        (only (theourgia rpc) rpc-verbs))
+        (only (theourgia rpc) rpc-verbs write-protocol))
 
 (define bad 0)
 (define rows 0)
@@ -68,6 +68,15 @@
 (define (starts-with? text prefix)
   (let ((n (string-length prefix)))
     (and (>= (string-length text) n) (string=? (substring text 0 n) prefix))))
+
+(define (index-of text needle from)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i from))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) i)
+            (else (loop (+ i 1)))))))
+
+(define (contains? text needle) (and (index-of text needle 0) #t))
 
 (define (add-unique x xs) (if (member x xs) xs (cons x xs)))
 
@@ -183,6 +192,75 @@
 
 (want "DOC-2 every verb-specific option the parser accepts is in the README"
       unadvertised '())
+
+
+;; ---- DOC-4: the options every verb takes ---------------------------------------
+;;
+;; ⭐ DOC-2 CANNOT SEE THESE. It asks, per verb, whether the options a
+;; verb advertises are accepted and whether the ones it accepts are
+;; advertised -- and it excuses the common ones, because listing
+;; `--store` under thirty-three verbs would say it was special to each.
+;; So an option accepted by EVERY verb is advertised by none of them, and
+;; falls through both directions. Measured: `--wire` was in no section of
+;; the README at all while DOC-2 was green.
+;;
+;; ⛔ BOTH WAYS, against the parser's own common list.
+(define transport-options
+  (let* ((text (file-text "../arguments.ss"))
+         (at (index-of text "(append '(\"--store\"" 0)))
+    (and at
+         (let ((end (index-of text ")" at)))
+           (and end (dashed-tokens (substring text at end)))))))
+
+;; `--wire` is the flag half of the same idea, spelled in a different
+;; place; it is named here because the table it lives in is `(cons
+;; "--wire" (case verb ...))` and a scan for a quoted list would miss it.
+(define every-verb-options
+  (and transport-options (cons "--wire" transport-options)))
+
+(define global-section
+  (let ((at (index-of readme "## Global options" 0)))
+    (and at
+         (let ((end (index-of readme "\n## " (+ at 5))))
+           (and end (substring readme at end))))))
+
+(want "DOC-4 the README has a section for the options every verb takes"
+      (if global-section 'present 'MISSING)
+      'present)
+
+(want "DOC-4 every option the parser takes for all verbs is in that section"
+      (if (and global-section every-verb-options)
+          (filter (lambda (o) (not (contains? global-section o))) every-verb-options)
+          'COULD-NOT-READ-ONE-OF-THEM)
+      '())
+
+;; ⛔ AND THE OTHER WAY, so the section cannot list an option that is not
+;; global -- which would tell a reader every verb takes something only
+;; one of them does.
+(want "DOC-4 every option that section lists really is taken by every verb"
+      (if (and global-section every-verb-options)
+          (filter (lambda (o) (not (member o every-verb-options)))
+                  (dashed-tokens global-section))
+          'COULD-NOT-READ-ONE-OF-THEM)
+      '())
+
+
+;; ---- DOC-5: the holding rule reaches both readers ------------------------------
+;;
+;; ⚠️ IT IS A CONVENTION WITH NO MACHINE BEHIND IT -- nothing records who
+;; holds a writer id and nothing refuses a second process -- so the only
+;; thing that can carry it is the text. It has to be in BOTH places: the
+;; README for a person, and `write-protocol` for an agent, which is what
+;; the MCP tool descriptions are built from.
+;;
+;; ⛔ CHEAP ON PURPOSE. This file already holds both texts; the row is one
+;; phrase looked for in each.
+(define holding-phrase "one agent at a time")
+
+(want "DOC-5 the writer-holding rule is in the README and in the protocol constant"
+      (list (if (contains? readme holding-phrase) 'in-the-readme 'MISSING-FROM-README)
+            (if (contains? write-protocol holding-phrase) 'in-the-constant 'MISSING-FROM-CONSTANT))
+      '(in-the-readme in-the-constant))
 
 ;; ---- the environment variables it lists ---------------------------------------
 ;;

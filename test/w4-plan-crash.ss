@@ -80,7 +80,30 @@
 (define store (string-append root "/store"))
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
-(define (call . args) (rpc-dispatch store args "test"))
+
+;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; verb that was not told which writer it speaks for used to fall back to
+;; this store's own local log writer, so two agents that never passed
+;; `--writer` shared one draft space without either being told. The core
+;; now refuses that call instead; naming the same writer the old fallback
+;; would have chosen keeps every row below asking what it asked before.
+;;
+;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; naming it to make a point, and must keep the one it names.
+(define draft-verbs '(write restore drafts discard commit))
+
+(define (wants-writer? verb args)
+  (or (memq verb draft-verbs)
+      (and (eq? verb 'read)
+           (or (member "--working" args) (member "--working-info" args)))))
+
+(define (call . args)
+  (rpc-dispatch store
+                (if (and (wants-writer? (car args) (cdr args))
+                         (not (member "--writer" (cdr args))))
+                    (append args (list "--writer" writer))
+                    args)
+                "test"))
 (define (state) (open-and-reduce store))
 (define (src id)
   (let* ((b (state-read (state) id)) (p (and b (assq 'src (cdr (assq 'fields b))))))
@@ -112,7 +135,8 @@
         "THEOURGIA_HOME='" home "' THEOURGIA_INJECT=on "
         "THEOURGIA_BARRIER=before-append:'" fifo "' THEOURGIA_TRACE=1 "
         "scheme --script '" cli "' commit '" A "' --req R1 --cursor '" cursor "' "
-        "--working-version '" v1 "' --store '" store "' > /dev/null 2> '" trace "' &\n"
+        "--working-version '" v1 "' --writer '" writer "' "
+        "--store '" store "' > /dev/null 2> '" trace "' &\n"
         "child=$!\n"
         "i=0\n"
         "while [ $i -lt 400000 ] && ! grep -q barrier '" trace "' 2>/dev/null; do i=$((i+1)); done\n"
@@ -164,7 +188,8 @@
   (system (string-append
             "env THEOURGIA_HOME='" home "' scheme --script '" cli "' "
             "commit '" A "' --req R1 --cursor '" cursor "' "
-            "--working-version '" v1 "' --store '" store "' > '" out-path "' 2>&1"))
+            "--working-version '" v1 "' --writer '" writer "' "
+            "--store '" store "' > '" out-path "' 2>&1"))
   (call-with-input-file out-path
     (lambda (p)
       (let loop ((last #f))
@@ -208,8 +233,11 @@
            (block (block-id (car ev) (cdr ev)))
            (w (car ev)))
       ;; A draft, so the versions are the store's own.
-      (rpc-dispatch d (list 'write block text-frozen) "test")
-      (let* ((info (assq 'projection (cdr (rpc-dispatch d (list 'read block "--working-info") "test"))))
+      (rpc-dispatch d (list 'write block text-frozen "--writer" w) "test")
+      (let* ((info (assq 'projection
+                         (cdr (rpc-dispatch d (list 'read block "--working-info"
+                                                    "--writer" w)
+                                            "test"))))
              (based-on (list-ref info 5))
              (cut (list-ref info 6))
              (named (draft-version (string->utf8 text-named) based-on cut))

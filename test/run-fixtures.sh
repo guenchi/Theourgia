@@ -16,6 +16,50 @@
 out=$1
 mkdir -p "$out"
 
+# ---- what this run must not leave behind ------------------------------------
+#
+# ⭐ A FIXTURE THAT WRITES INTO THE USER'S OWN DIRECTORIES, OR LEAVES A
+# DAEMON RUNNING, BREAKS NOTHING AND REDDENS NOTHING. Three fixtures in
+# this tree did both at once and every row in every one of them stayed
+# green: the daemons they leaked held sockets and logs under
+# `$HOME/.theourgia/run`, which is the product's REAL run root, because
+# the fixtures had not set `THEOURGIA_RUN` and the product computes that
+# path when nothing says otherwise. Fifteen daemons and thirty-three
+# directories accumulated before anybody counted.
+#
+# ⛔ SO IT IS COUNTED HERE RATHER THAN BY A PERSON. The same hole turned
+# up in three separate fixtures; after the third, "we will notice" stopped
+# being a plan.
+#
+# ⚠️ THE CRITERION IS GROWTH, NOT A TOTAL. Another session's daemons may
+# be running and the user's run root may legitimately hold something;
+# what this run is answerable for is the difference it made.
+real_run_root="$HOME/.theourgia/run"
+count_run_root() { ls -d "$real_run_root"/*/ 2>/dev/null | wc -l | tr -d " "; }
+count_schemes() { pgrep -f "scheme --script" 2>/dev/null | wc -l | tr -d " "; }
+run_root_before=$(count_run_root)
+schemes_before=$(count_schemes)
+
+# ⭐ AND A FLOOR UNDER ALL OF IT: every fixture this runner starts gets a
+# run root of its own, here, before any of them runs. Six fixtures had to
+# be corrected one at a time because the product computes
+# `$HOME/.theourgia/run` when nothing says otherwise, and each was found
+# only by counting what had appeared in it. A seventh should not have to
+# be found that way.
+#
+# ⚠️ THIS DOES NOT REPLACE THE FIXTURES' OWN. They set `THEOURGIA_RUN` to
+# their own directory because they must not disturb EACH OTHER -- two
+# fixtures sharing one run root share sockets and locks. This is the
+# floor for a fixture that sets nothing, not a substitute for the ones
+# that do.
+#
+# ⚠️ AND IT DOES NOT REPLACE THE GATE EITHER. The gate still judges by
+# growth in the REAL run root: what it catches now is something that
+# overrode or escaped this, which is exactly the case nobody would think
+# to look for.
+export THEOURGIA_RUN="$out/run-root"
+mkdir -p "$THEOURGIA_RUN"
+
 # A FIXTURE MAY NOT SHARE A BASENAME WITH A LIBRARY, and this refuses
 # before the run rather than after the delivery.
 #
@@ -229,7 +273,19 @@ for f in *.ss *.py; do
     paths|structure|reduce-hash-check) helpers="$helpers $n"; continue;;
   esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
-  perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$out/$n.out" 2>&1
+  # ⛔ STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the
+  # runner, it is whatever the person running the suite happened to have:
+  # under a terminal -- a run inside `screen` -- a fixture that reaches a
+  # verb reading standard input waits for an end of file that never comes,
+  # and the alarm below kills it 900 seconds later having printed half its
+  # rows. Measured: `client-program` hung at 21 of 41 rows and the leak
+  # gate reported the three processes the hung chain held; the same
+  # fixture with `</dev/null` answered 38 of 38 in 25 seconds.
+  #
+  # ⚠️ A FIXTURE THAT NEEDS INPUT MUST HAND IT OVER ITSELF -- a pipe, a
+  # here-string, a file -- rather than inheriting whatever is there. What
+  # a run measures may not depend on where it was started from.
+  perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$out/$n.out" 2>&1 < /dev/null
   rc=$?
   case "$f" in *.py) pyran=$((pyran+1));; esac
   sent=$(grep -c "^$n complete" "$out/$n.out")
@@ -344,10 +400,16 @@ for f in *.ss; do
   grep -q "^rows: " "$out/$n.out" || continue
   grep -q "^$n " rows-baseline.txt 2>/dev/null || missing="$missing $n"
 done
-if [ -n "$missing" ]; then
-  echo "NO ROW BASELINE (the fixture counts rows and rows-baseline.txt does not list it):$missing"
-  exit 1
-fi
+# THE FINDINGS ARE COLLECTED AND PRINTED TOGETHER, and the refusal comes
+# at the end. This used to exit here, which put the three baseline checks
+# in SERIES: a run with two unnamed fixtures stopped before any md5 was
+# compared, so sixteen fixtures whose contents had changed -- every one of
+# them stale against the table -- were never looked at, and the run said
+# nothing about them. A missing NAME hid every stale HASH behind it.
+#
+# So nothing between here and the refusal exits; each check adds to a list
+# and the list is printed whole, because the person reading it wants to
+# fix the table once and not once per run.
 
 # AND A BASELINE LINE IS ABOUT A PARTICULAR VERSION OF A PARTICULAR FILE.
 # The md5 is the column that says so, and nothing in a normal run had
@@ -377,14 +439,34 @@ while read -r name rows lines digest || [ -n "$name" ]; do
   l=$(wc -l < "$out/$name.out" | tr -d " ")
   [ "$r" = "$rows" ] && [ "$l" = "$lines" ] || drift="$drift $name($rows/$lines->$r/$l)"
 done < rows-baseline.txt
+# ⚠️ THE md5 SECTION ANNOUNCES THAT IT RAN. Silence here used to be
+# indistinguishable from "this check did not get to run", which is
+# exactly what had been happening.
+if [ -n "$missing" ]; then
+  echo "NO ROW BASELINE (the fixture counts rows and rows-baseline.txt does not list it):$missing"
+fi
 if [ -n "$stale" ]; then
   echo "ROW BASELINE IS ABOUT ANOTHER VERSION of these fixtures (md5 differs):$stale"
-  exit 1
-fi
-if [ -n "$drift" ]; then
-  echo "row baseline, counts that differ in this environment:$drift"
+elif [ -n "$missing" ]; then
+  echo "row baseline: every LISTED fixture matches its recorded hash (the unlisted ones named above are not checked against anything)"
 else
   echo "row baseline: every listed fixture matches its recorded hash and counts"
+fi
+# A count that differs is printed for a person to read and does not refuse;
+# a hash that differs, or a name that is not there at all, does.
+if [ -n "$drift" ]; then
+  echo "row baseline, counts that differ in this environment:$drift"
+fi
+# ⛔ THIS SETS A FLAG AND DOES NOT EXIT. Every check after the fixtures
+# have run reports on the SAME run, and a check that leaves early hides
+# every check behind it. That is not hypothetical here: this file already
+# had the missing-name check exiting before any md5 was compared, so a run
+# with two unnamed fixtures said nothing about sixteen whose contents had
+# changed -- and when a leak gate was added at the end, this very refusal
+# hid it on its first real run. Collect, print everything, refuse once.
+baseline_bad=0
+if [ -n "$stale" ] || [ -n "$missing" ]; then
+  baseline_bad=1
 fi
 # AND THE GATE ABOVE ONLY SEES FIXTURES THAT PRINT A COUNT. The ones that
 # do not are invisible to it -- the same shape of silence it exists to
@@ -409,9 +491,10 @@ for f in *.ss; do
   # kind must not have.
   grep -q "^ *(define-syntax caught$" "$f" || ungirded="$ungirded ${f%.ss}"
 done
+guard_bad=0
 if [ -n "$ungirded" ]; then
   echo "UNGUARDED FIXTURES (rows can end the file instead of failing):$ungirded"
-  exit 1
+  guard_bad=1
 fi
 # AND THE CHECK ABOVE ONLY LOOKS AT FIXTURES THAT DECLARED THE MACRO.
 # A fixture whose `want` is a PROCEDURE has both arguments evaluated
@@ -433,8 +516,48 @@ echo "unguarded by construction ($(echo $byproc | wc -w | tr -d " ") fixtures de
 # delivery could be built, pinned and frozen with red fixtures inside it
 # and nothing in the chain would object. The only thing standing between
 # that and a bad delivery was a person reading the number.
+# ---- and the two counts again ------------------------------------------------
+#
+# ⚠️ A SETTLE BEFORE THE SECOND READING. A daemon told to go does not go
+# instantly, and a run that counted the moment its last fixture returned
+# would report its own tidy-up as a leak.
+sleep 3
+run_root_after=$(count_run_root)
+schemes_after=$(count_schemes)
+leaked=0
+if [ "$run_root_after" -gt "$run_root_before" ]; then
+  echo "LEAKED-INTO-REAL-RUN-ROOT: $real_run_root grew from $run_root_before to $run_root_after"
+  echo "  a fixture let the product compute a path and did not set THEOURGIA_RUN"
+  leaked=1
+else
+  echo "real run root: $run_root_before before, $run_root_after after -- nothing added"
+fi
+if [ "$schemes_after" -gt "$schemes_before" ]; then
+  echo "LEAKED-PROCESSES: 'scheme --script' went from $schemes_before to $schemes_after"
+  echo "  a fixture started something and did not take it down"
+  leaked=1
+else
+  echo "processes: $schemes_before before, $schemes_after after -- nothing left running"
+fi
+
+# ---- one refusal, after everything has been said ----------------------------
+#
+# The order is by what a reader should fix first, and each code is distinct
+# so a caller can tell them apart without parsing the text.
 if [ "$bad" != 0 ]; then
   echo "REFUSING: $bad fixture(s) not green"
   exit 2
+fi
+if [ "$leaked" != 0 ]; then
+  echo "REFUSING: this run left something behind"
+  exit 3
+fi
+if [ "$guard_bad" != 0 ]; then
+  echo "REFUSING: unguarded fixture(s)"
+  exit 4
+fi
+if [ "$baseline_bad" != 0 ]; then
+  echo "REFUSING: the row baseline does not describe this tree"
+  exit 1
 fi
 

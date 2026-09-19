@@ -63,7 +63,30 @@
 (define store (string-append root "/store"))
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
-(define (call . args) (rpc-dispatch store args "test"))
+
+;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; verb that was not told which writer it speaks for used to fall back to
+;; this store's own local log writer, so two agents that never passed
+;; `--writer` shared one draft space without either being told. The core
+;; now refuses that call instead; naming the same writer the old fallback
+;; would have chosen keeps every row below asking what it asked before.
+;;
+;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; naming it to make a point, and must keep the one it names.
+(define draft-verbs '(write restore drafts discard commit))
+
+(define (wants-writer? verb args)
+  (or (memq verb draft-verbs)
+      (and (eq? verb 'read)
+           (or (member "--working" args) (member "--working-info" args)))))
+
+(define (call . args)
+  (rpc-dispatch store
+                (if (and (wants-writer? (car args) (cdr args))
+                         (not (member "--writer" (cdr args))))
+                    (append args (list "--writer" writer))
+                    args)
+                "test"))
 (define (insert title)
   (let ((a (call 'insert "--title" title "--text" "old")))
     (let ((ev (car (cadr (assq 'events (cdr a)))))) (block-id (car ev) (cdr ev)))))

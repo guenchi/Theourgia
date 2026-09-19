@@ -65,7 +65,30 @@
 (define store (string-append root "/store"))
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
-(define (call . args) (rpc-dispatch store args "test"))
+
+;; ⭐ THE WRITER IS NAMED HERE BECAUSE IT IS NO LONGER GUESSED. A draft
+;; verb that was not told which writer it speaks for used to fall back to
+;; this store's own local log writer, so two agents that never passed
+;; `--writer` shared one draft space without either being told. The core
+;; now refuses that call instead; naming the same writer the old fallback
+;; would have chosen keeps every row below asking what it asked before.
+;;
+;; ⛔ AND ONLY WHERE IT WAS MISSING: a call that already names a writer is
+;; naming it to make a point, and must keep the one it names.
+(define draft-verbs '(write restore drafts discard commit))
+
+(define (wants-writer? verb args)
+  (or (memq verb draft-verbs)
+      (and (eq? verb 'read)
+           (or (member "--working" args) (member "--working-info" args)))))
+
+(define (call . args)
+  (rpc-dispatch store
+                (if (and (wants-writer? (car args) (cdr args))
+                         (not (member "--writer" (cdr args))))
+                    (append args (list "--writer" writer))
+                    args)
+                "test"))
 (define (insert title)
   (let ((a (call 'insert "--title" title "--text" "old")))
     (let ((ev (car (cadr (assq 'events (cdr a)))))) (block-id (car ev) (cdr ev)))))
@@ -160,7 +183,34 @@
 ;; fingerprint.
 (want "fingerprint: a different actor under the same req id is a mismatch"
       (kind (rpc-dispatch store (list 'commit A "--req" "R1" "--cursor" c0
-                                      "--working-version" v1) "someone-else"))
+                                      "--working-version" v1 "--writer" writer)
+                          "someone-else"))
       'req-mismatch)
+
+;; ---- and which of the two answers comes first --------------------------
+;;
+;; ⭐ FOUR LAYERS, IN THIS ORDER (§7.6.50 v249): well-formed (the verb
+;; exists, the arity fits, the required identity fields are there) ->
+;; request identity (replay, mismatch) -> premises (the base) ->
+;; execution. So a resend that DROPPED a required field is answered
+;; `writer-required`, not `req-mismatch`.
+;;
+;; ⛔ NOT AN ARBITRARY TIE-BREAK. A fingerprint is computed over a
+;; well-formed request, and a request missing a required field has no
+;; comparable one; a retry is by definition byte-identical, so something
+;; with a field removed is not a retry of anything. Answering
+;; `req-mismatch` there would name the difference the caller can see
+;; least: it would say "this does not match what you sent before" when
+;; what is wrong is the request in hand.
+;;
+;; THE ROW ABOVE IS THIS ONE'S TWIN and the pair is the whole claim:
+;; same req id, one field removed -> the well-formedness answer; same req
+;; id, one field CHANGED -> the identity answer. A build that ran the two
+;; checks in the other order passes exactly one of them.
+(want "layers: the same req id with the writer left out is not a mismatch"
+      (kind (rpc-dispatch store (list 'commit A "--req" "R1" "--cursor" c0
+                                      "--working-version" v1)
+                          "test"))
+      'writer-required)
 
 (printf "rows: ~a\n~a failures\nplan-completion complete\n" rows bad)

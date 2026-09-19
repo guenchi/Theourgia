@@ -259,16 +259,18 @@
           barrier!
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
-          path-device-inode path-version
+          path-device-inode path-version real-path
           fs-error? fs-error-op fs-error-target fs-error-errno
           theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event!
-          directory-entries file-is-directory? file-is-regular? rename-over!
+          directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
           unlink! file-create-exclusive! mkdir-p!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv!
-          process-id wall-clock-ms machine-home)
+          unix-socket-connect fd-read socket-timeout! sun-path-max
+          redirect-stdio! spawn-detached! reap-children! path-case-sensitive?
+          process-id wall-clock-ms machine-home env-or)
   (import (chezscheme)
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
@@ -464,12 +466,30 @@
   ;; ignore a rollback, which is exactly what the registry exists to
   ;; catch, so a non-default value announces itself on startup rather
   ;; than being silently in force.
+  ;; AN ENVIRONMENT VARIABLE THAT IS SET TO NOTHING IS NOT SET.
+  ;;
+  ;; ⛔ `(or (getenv "X") default)` GETS THIS WRONG, and the wrong answer
+  ;; is not a small one: `""` is a string and therefore true, so `X=` in
+  ;; an environment means the empty path rather than the default. Measured
+  ;; in `(theourgia client)`: an empty `THEOURGIA_RUN` put the daemon's
+  ;; socket directory at the filesystem ROOT, and it panicked at boot
+  ;; trying to make it.
+  ;;
+  ;; ⚠️ THREE PLACES TESTED THE LENGTH SEPARATELY BEFORE THIS EXISTED --
+  ;; here, `environment-actor` and the run root -- which is three
+  ;; suppliers of one rule, and the fourth reader is the one that forgets.
+  (define (env-or name . fallback)
+    (let ((v (getenv name)))
+      (cond
+        ((and (string? v) (> (string-length v) 0)) v)
+        ((pair? fallback) (car fallback))
+        (else #f))))
+
   (define (machine-home)
-    (let ((v (getenv "THEOURGIA_HOME")))
-      (if (and (string? v) (> (string-length v) 0))
+    (let ((v (env-or "THEOURGIA_HOME")))
+      (if v
           v
-          (let ((h (getenv "HOME")))
-            (string-append (if (string? h) h "/tmp") "/.theourgia")))))
+          (string-append (or (env-or "HOME") "/tmp") "/.theourgia"))))
 
   (define machine-home-announced
     (let ((v (getenv "THEOURGIA_HOME")))
@@ -503,12 +523,27 @@
   (define c-close (foreign-procedure "close" (int) int))
   (define c-fsync (foreign-procedure "fsync" (int) int))
   (define c-fcntl (foreign-procedure "fcntl" (int int int) int))
+  ;; ⛔ `fcntl` IS VARIADIC AND THIS BINDING IS NOT. The third argument's
+  ;; calling convention for a variadic C function is not the one a fixed
+  ;; three-int binding uses, and on macOS ARM64 the two differ -- so
+  ;; `F_DUPFD`'s "lowest descriptor at or above N" was not reliably given
+  ;; the N written here. `dup` takes one argument and is not variadic, so
+  ;; the same result is reached by asking for descriptors until one is
+  ;; above the standard three.
+  (define c-dup (foreign-procedure "dup" (int) int))
   (define c-flock (foreign-procedure "flock" (int int) int))
   (define c-ftruncate (foreign-procedure "ftruncate" (int integer-64) int))
   (define c-lseek (foreign-procedure "lseek" (int integer-64 int) integer-64))
   (define c-write (foreign-procedure "write" (int u8* size_t) ssize_t))
   (define c-link  (foreign-procedure "link"  (string string) int))
   (define c-stat  (foreign-procedure "stat"  (string u8*) int))
+  (define c-realpath (foreign-procedure "realpath" (string u8*) uptr))
+  (define c-socket (foreign-procedure "socket" (int int int) int))
+  (define c-connect (foreign-procedure "connect" (int u8* int) int))
+  (define c-read (foreign-procedure "read" (int u8* size_t) ssize_t))
+  (define c-setsockopt
+    (foreign-procedure "setsockopt" (int int int u8* int) int))
+  (define c-dup2 (foreign-procedure "dup2" (int int) int))
 
   ;; ---- the process calls the daemon and the eval guardian need ------------
   ;;
@@ -723,7 +758,372 @@
                (else #f))))
       (and n (> n 0) n)))
 
-  (define (machine-kind)
+;; ---- detaching: where a daemon's own output goes ------------------------
+  ;;
+  ;; ⛔ A DAEMON MAY NOT KEEP ITS PARENT'S STDOUT. It outlives the client
+  ;; that started it, and a descriptor it holds is one the client's own
+  ;; caller is waiting on: a shell that started a client and read its
+  ;; output would not see end-of-file until the DAEMON exited too, which
+  ;; can be hours.
+  ;;
+  ;; ⛔ AND IT MAY NOT GO TO /dev/null EITHER, which is what this did
+  ;; first. Everything a daemon has to say about why it would not start
+  ;; -- the socket path is occupied, the lock is held, the store will not
+  ;; open -- is said AFTER this point, so discarding it left a client
+  ;; that could only report "it did not come up" and no way for anyone to
+  ;; learn why. Measured before it was changed: a foreground `serve` onto
+  ;; an occupied path says `(error serve-path-occupied (path ...))`; the
+  ;; same run detached said nothing at all, anywhere.
+  ;;
+  ;; ⭐ APPEND, NOT TRUNCATE. Several starts against one store share this
+  ;; file, and a start that truncated it would erase the record of the
+  ;; failure that made the caller try again.
+  ;;
+  ;; ⚠️ STDIN IS NOT THE LOG. It goes to /dev/null: a daemon that read
+  ;; from its own log would be reading whatever it had just written.
+  ;; ⚠️ THE ORDER MATTERS AND IS DELIBERATE. `/dev/null` is put on 0
+  ;; BEFORE the log is put on 1 and 2, so that if the log's descriptor
+  ;; happens to be 1 or 2 -- which it can be when those were closed on
+  ;; entry -- the copy onto 0 has already been made and nothing is lost.
+  ;;
+  ;; ⛔ AND THE TWO DESCRIPTORS ARE CLOSED ON EVERY WAY OUT, including the
+  ;; failing ones. A raised `dup2` used to leave both open.
+;; ⭐ BOTH DESCRIPTORS ARE MOVED ABOVE 0,1,2 BEFORE ANY COPYING. Opened
+  ;; while some of those three are closed, either can land ON one of the
+  ;; targets, and then a later `dup2` onto that number changes what the
+  ;; other variable refers to. Reasoning about which arrangements are safe
+  ;; is how the first attempt was justified, and a reviewer reported the
+  ;; overwrite twice against that reasoning; moving them out of the way
+  ;; first removes the question instead of answering it.
+  ;;
+  ;; ⚠️ `F_DUPFD` gives the lowest free descriptor AT OR ABOVE the number
+  ;; asked for, which is exactly "somewhere that is not 0, 1 or 2".
+  (define F_DUPFD 0)
+
+  ;; ⛔ THE DESCRIPTOR HANDED IN IS THIS PROCEDURE'S TO ACCOUNT FOR. On
+  ;; the success path it is closed after being duplicated higher up; when
+  ;; `F_DUPFD` failed it used to be left open while the failure was
+  ;; raised, and the caller -- which never saw a value -- had nothing to
+  ;; close.
+  (define (above-stdio fd who)
+    (if (> fd 2)
+        fd
+        ;; Each `dup` answers the lowest free descriptor; the ones at or
+        ;; below 2 are held so the next call cannot be given them again,
+        ;; and all of them are released once one lands above.
+        (let loop ((held '()) (from fd))
+          (let ((n (c-dup from)))
+            (cond
+              ((= n -1)
+               (let ((code (errno)))
+                 (for-each c-close held)
+                 (c-close fd)
+                 (raise (fs-err 'dup who code))))
+              ((> n 2)
+               (for-each c-close held)
+               (c-close fd)
+               n)
+              (else (loop (cons n held) n)))))))
+
+  ;; ⛔ OPENING IS PART OF WHAT CAN FAIL. Both descriptors were acquired
+  ;; in the `let` that binds them -- outside the guard below -- so a
+  ;; failure to open the SECOND left the first open with nothing holding
+  ;; it: measured, the log opened as fd 42 and stayed open when
+  ;; `/dev/null` could not be opened. They are acquired inside the guard,
+  ;; and whatever has been acquired when something fails is released.
+  (define (redirect-stdio! log-path)
+    (let ((null-fd #f)
+          (log-fd #f))
+      (guard (e (#t
+                 (when null-fd (fd-close null-fd))
+                 (when log-fd (fd-close log-fd))
+                 (raise e)))
+        (set! null-fd (above-stdio (fd-open "/dev/null" '(read)) "/dev/null"))
+        (set! log-fd (above-stdio (fd-open log-path '(write append create)) log-path))
+        (when (= -1 (c-dup2 null-fd 0))
+          (raise (fs-err 'dup2 "/dev/null" (errno))))
+        (for-each (lambda (target)
+                    (when (= -1 (c-dup2 log-fd target))
+                      (raise (fs-err 'dup2 log-path (errno)))))
+                  '(1 2)))
+      ;; ⚠️ UNCONDITIONAL NOW: both were moved above 2, so neither is one
+      ;; of the descriptors just installed.
+      ;; ⛔ AND EACH RELEASE STANDS ALONE. Written as two calls in a row, a
+      ;; failure closing the first one skipped the second and leaked it --
+      ;; the descriptor that could not be released taking with it one that
+      ;; could.
+      (close-quietly null-fd)
+      (close-quietly log-fd)))
+
+  ;; ---- starting a daemon without becoming one -----------------------------
+  ;;
+  ;; ⛔ NOT `execvp`. `exec-argv!` REPLACES this process, which is right
+  ;; for a launcher and wrong for a client: the client has a call to make
+  ;; once the daemon is up, and a process that exec'd into the daemon is
+  ;; not there to make it.
+  ;;
+  ;; ⭐ MEASURED, 2026-09-18, on both platforms this ships to:
+  ;;
+  ;;                                    macOS 25.3.0   FreeBSD 15.0-RELEASE
+  ;;   sizeof posix_spawnattr_t              8                  8
+  ;;   sizeof posix_spawn_file_actions_t     8                  8
+  ;;   POSIX_SPAWN_SETSID                 1024            NOT DEFINED
+  ;;
+  ;; ⚠️ SO THE SESSION IS NOT SET HERE. Both attribute types are
+  ;; pointer-sized handles and both are passed as NULL, because the one
+  ;; attribute this would have wanted does not exist on FreeBSD 15 -- the
+  ;; child leaves the session itself, first thing, under `--detach`. The
+  ;; window that leaves is described where the child does it.
+  ;;
+  ;; ⚠️ THE ENVIRONMENT IS PASSED EXPLICITLY, because `posix_spawn` has
+  ;; no "inherit" and a NULL envp is an EMPTY environment, not the
+  ;; caller's -- a daemon started that way would lose THEOURGIA_HOME and
+  ;; open a different store than the client asked about, silently.
+  ;;
+  ;; ⚠️ `environ` IS ONLY THERE ONCE libc IS LOADED. `foreign-entry?`
+  ;; answers #f for every one of these symbols in a process that has not
+  ;; touched the library yet, which reads exactly like "this platform
+  ;; does not have it". The library is loaded by the time any of this
+  ;; runs; the check below is about the platform, and says so.
+  (define (spawn-detached! argv)
+    (unless (and (pair? argv) (for-all string? argv))
+      (assertion-violation 'spawn-detached! "argv must be a non-empty list of strings" argv))
+    (unless (foreign-entry? "posix_spawnp")
+      (assertion-violation 'spawn-detached! "no posix_spawnp in libc" (machine-kind)))
+    (unless (foreign-entry? "environ")
+      (assertion-violation 'spawn-detached! "no environ in libc" (machine-kind)))
+    (let* ((c-spawn (foreign-procedure "posix_spawnp"
+                                       (u8* string void* void* void* void*) int))
+           (width (foreign-sizeof 'void*))
+           (cells (foreign-alloc (* width (+ 1 (length argv)))))
+           (strings (map c-string argv))
+           (pid-out (make-bytevector 4 0))
+           (envp (foreign-ref 'void* (foreign-entry "environ") 0)))
+      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+        (foreign-set! 'void* cells (* i width) (car ps)))
+      (foreign-set! 'void* cells (* (length argv) width) 0)
+      (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
+        (for-each foreign-free strings)
+        (foreign-free cells)
+        (if (zero? rc)
+            (bytevector-u32-native-ref pid-out 0)
+            (raise (fs-err 'spawn (car argv) rc))))))
+
+  ;; ⛔ A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
+  ;; THAT STARTED IT. `spawn-detached!` answers a pid and nothing ever
+  ;; waits for it, so when that process exits -- and the loser of the
+  ;; daemon's lock race exits at once, every time -- the kernel keeps its
+  ;; entry until somebody collects it. For a one-shot client that costs
+  ;; nothing: it exits and init inherits the entry. A shell that serves a
+  ;; whole session does not exit, and the entries accumulate.
+  ;;
+  ;; ⚠️ IT COLLECTS ANY EXITED CHILD rather than a remembered pid. A
+  ;; caller keeping a list of "its own" pids would have one more thing to
+  ;; keep correct, and every child of these callers is started here.
+  ;;
+  ;; ⚠️ ANSWERS HOW MANY IT COLLECTED, so a row can assert that it did
+  ;; something rather than that it did not raise.
+  ;;
+  ;; ⭐ WNOHANG MEASURED: 0x1 on macOS (sys/wait.h, MacOSX.sdk) and on
+  ;; FreeBSD 15; it is 1 wherever this ships.
+  (define WNOHANG 1)
+
+  (define (reap-children!)
+    (if (not (foreign-entry? "waitpid"))
+        0
+        (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+              (status (make-bytevector 4 0)))
+          (let loop ((n 0))
+            (let ((r (c-waitpid -1 status WNOHANG)))
+              (if (> r 0) (loop (+ n 1)) n))))))
+
+  ;; ---- does this filesystem distinguish Foo from foo -----------------------
+  ;;
+  ;; ⛔ A STORE'S KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
+  ;; case-insensitive filesystem it did: the part of the path that does
+  ;; not exist yet keeps whatever case the caller typed, and `realpath`
+  ;; returns the filesystem's own spelling once it does exist. `Foo` and
+  ;; `foo` are one store there, and they were getting two keys -- and one
+  ;; of those keys changed the moment the store was created.
+  ;;
+  ;; ⭐ MEASURED, 2026-09-18, on both platforms this ships to:
+  ;;
+  ;;                            macOS 25.3.0        FreeBSD 15.0-RELEASE
+  ;;   _PC_CASE_SENSITIVE            11              not defined at all
+  ;;                                                 (33 _PC_ names; 10 and
+  ;;                                                  12 are taken, 11 is
+  ;;                                                  unassigned; grep of
+  ;;                                                  /usr/include: 0 files)
+  ;;
+  ;; ⛔ SO THE NUMBER IS NOT PASSED WHERE IT MEANS NOTHING. Asking with a
+  ;; name a platform never defined is how a platform assumption becomes a
+  ;; general one; it is asked only where it was measured, and everywhere
+  ;; else the answer is `unknown`.
+  (define PC_CASE_SENSITIVE 11)
+
+  ;; #t, #f, or 'unknown -- and a caller that cannot find out must not
+  ;; guess, because guessing "insensitive" would fold keys on a
+  ;; filesystem where two spellings really are two stores.
+  (define (path-case-sensitive? path)
+    (if (or (not (string=? (machine-kind) "darwin"))
+            (not (foreign-entry? "pathconf")))
+        'unknown
+        (let* ((c-pathconf (foreign-procedure "pathconf" (string int) long))
+               (r (c-pathconf path PC_CASE_SENSITIVE)))
+          (cond ((> r 0) #t)
+                ((= r 0) #f)
+                (else 'unknown)))))
+
+  (define (c-string text)
+    (let* ((b (string->utf8 text))
+           (n (bytevector-length b))
+           (p (foreign-alloc (+ n 1))))
+      (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref b i)))
+      (foreign-set! 'unsigned-8 p n 0)
+      p))
+
+  ;; ---- a unix socket, for a client that must not import a server ----------
+  ;;
+  ;; ⛔ THE CLIENT MAY NOT REACH THE ACTOR SYSTEM'S NETWORKING. A caller
+  ;; that had to load it would pay for the server it is trying to talk
+  ;; to, which is the whole point of the split -- so the five calls a
+  ;; blocking client needs are here, in the layer that already owns the
+  ;; libc surface, and `(theourgia client)` imports nothing else.
+  ;;
+  ;; ⭐ EVERY CONSTANT BELOW WAS COMPILED AND PRINTED ON THE PLATFORM IT
+  ;; DESCRIBES, 2026-09-18, not read from a table:
+  ;;
+  ;;                        macOS 25.3.0 arm64   FreeBSD 15.0-RELEASE amd64
+  ;;   AF_UNIX                      1                       1
+  ;;   SOCK_STREAM                  1                       1
+  ;;   sizeof sockaddr_un         106                     106
+  ;;   sun_len          offset 0, 1 byte        offset 0, 1 byte
+  ;;   sun_family       offset 1, 1 byte        offset 1, 1 byte
+  ;;   sun_path         offset 2, 104 bytes     offset 2, 104 bytes
+  ;;   SOL_SOCKET               65535                   65535
+  ;;   SO_RCVTIMEO/SNDTIMEO   4102/4101               4102/4101
+  ;;   sizeof timeval              16                      16
+  ;;   tv_sec           offset 0, 8 bytes       offset 0, 8 bytes
+  ;;   tv_usec          offset 8, 4 bytes       offset 8, 8 bytes
+  ;;
+  ;; ⚠️ THE ONE DIFFERENCE IS tv_usec's WIDTH, AND IT NEEDS NO BRANCH.
+  ;; The field sits at offset 8 of a 16-byte struct on both, so one
+  ;; little-endian 64-bit store puts the value in the low four bytes and
+  ;; zeros above it: on FreeBSD those four bytes are the rest of the
+  ;; field, on macOS they are padding. This holds for any microsecond
+  ;; count below 2^32, which is every timeout this client can express.
+  ;;
+  ;; ⛔ LINUX IS NOT MEASURED, and it is NOT the same shape: it has no
+  ;; sun_len, its sun_family is two bytes at offset 0, and SOL_SOCKET
+  ;; and the two timeout options have different values. Rather than ship
+  ;; a guess that would connect to the wrong address quietly, the layout
+  ;; below refuses to build an address on a platform it has not been
+  ;; measured on. The first Linux machine to run `client-socket.ss` gets
+  ;; a named refusal, not a silent misconnect.
+  (define AF_UNIX 1)
+  (define SOCK_STREAM 1)
+  (define SOL_SOCKET 65535)
+  (define SO_RCVTIMEO 4102)
+  (define SO_SNDTIMEO 4101)
+  (define SOCKADDR_UN_SIZE 106)
+  (define SUN_PATH_OFFSET 2)
+  (define SUN_PATH_MAX 104)
+
+  (define (sun-path-max) SUN_PATH_MAX)
+
+  (define (bsd-socket-layout?)
+    (let ((k (machine-kind)))
+      (or (string=? k "darwin") (string=? k "freebsd"))))
+
+  ;; ⚠️ THE LENGTH LIMIT IS PART OF THE ABI, NOT A STYLE RULE. `sun_path`
+  ;; holds 104 bytes INCLUDING the terminator, and a path that does not
+  ;; fit is not truncated by the kernel into something harmless -- it
+  ;; binds or connects to a different name. Scratch directories are long
+  ;; enough for this to happen in practice, so it is refused here, by
+  ;; name, with both numbers in the message.
+  (define (sockaddr-un path)
+    (unless (bsd-socket-layout?)
+      (assertion-violation 'sockaddr-un
+        "the sockaddr_un layout has only been measured on darwin and freebsd"
+        (machine-kind)))
+    (let* ((bytes (string->utf8 path))
+           (n (bytevector-length bytes)))
+      (when (>= n SUN_PATH_MAX)
+        (assertion-violation 'sockaddr-un
+          "socket path does not fit in sun_path" (list path n SUN_PATH_MAX)))
+      (let ((sa (make-bytevector SOCKADDR_UN_SIZE 0)))
+        (bytevector-u8-set! sa 0 SOCKADDR_UN_SIZE)
+        (bytevector-u8-set! sa 1 AF_UNIX)
+        (bytevector-copy! bytes 0 sa SUN_PATH_OFFSET n)
+        sa)))
+
+  (define (timeval-bytes ms)
+    (let ((tv (make-bytevector 16 0)))
+      (bytevector-u64-native-set! tv 0 (div ms 1000))
+      (bytevector-u64-native-set! tv 8 (* 1000 (mod ms 1000)))
+      tv))
+
+  ;; A DEADLINE ON BOTH DIRECTIONS, so a client cannot be parked forever
+  ;; by a daemon that accepted the connection and then stopped. This is
+  ;; the transport's own bound; the caller's overall deadline is its own
+  ;; business and is enforced above.
+  (define (socket-timeout! fd ms)
+    (let ((tv (timeval-bytes ms)))
+      (for-each
+        (lambda (opt)
+          (when (= -1 (c-setsockopt fd SOL_SOCKET opt tv 16))
+            (raise (fs-err 'setsockopt "socket" (errno)))))
+        (list SO_RCVTIMEO SO_SNDTIMEO))))
+
+  ;; Answers a connected descriptor, or raises a durable-error carrying
+  ;; the errno. ⛔ IT DOES NOT CLASSIFY THE ERRNO: which failures mean
+  ;; "no daemon, start one" and which mean "stop" is the client's rule
+  ;; and lives with the client, in one list.
+  ;; ⛔ THE ADDRESS IS BUILT BEFORE THE DESCRIPTOR EXISTS. `let` does not
+  ;; order its bindings, so with the socket opened first a `sockaddr-un`
+  ;; that refused -- a path too long for `sun_path` -- left that
+  ;; descriptor open with nothing holding it: measured, a 104-character
+  ;; path leaked fd 3 per attempt. `let*` puts the step that can refuse
+  ;; ahead of the step that allocates, so there is nothing to leak.
+  (define (unix-socket-connect path timeout-ms)
+    (let* ((sa (sockaddr-un path))
+           (fd (c-socket AF_UNIX SOCK_STREAM 0)))
+      (when (= fd -1)
+        (raise (fs-err 'socket path (errno))))
+      ;; ⛔ A DESCRIPTOR THAT HAS BEEN ALLOCATED IS CLOSED ON EVERY WAY OUT.
+      ;; `socket-timeout!` raises when `setsockopt` fails, and the socket
+      ;; opened two lines above was left open -- a client that retried
+      ;; would leak one per attempt.
+      (guard (e (#t (c-close fd) (raise e)))
+        (socket-timeout! fd timeout-ms))
+      (let retry ()
+        (let ((r (c-connect fd sa SOCKADDR_UN_SIZE)))
+          (cond
+            ((= r 0) fd)
+            ((= (errno) EINTR) (retry))
+            (else
+             (let ((code (errno)))
+               (c-close fd)
+               (raise (fs-err 'connect path code)))))))))
+
+  ;; Reads up to `want` bytes. Answers a bytevector, which is EMPTY at
+  ;; end of file -- the caller decides whether an early EOF is an
+  ;; answer or a loss, because only it knows what a whole answer is.
+  (define (fd-read fd want)
+    (let ((buf (make-bytevector want)))
+      (let retry ()
+        (let ((n (c-read fd buf want)))
+          (cond
+            ((and (< n 0) (= (errno) EINTR)) (retry))
+            ((< n 0) (raise (fs-err 'read "socket" (errno))))
+            ((= n 0) (bytevector))
+            ((= n want) buf)
+            (else
+             (let ((out (make-bytevector n)))
+               (bytevector-copy! buf 0 out 0 n)
+               out)))))))
+
+    (define (machine-kind)
     (let ((m (symbol->string (machine-type))))
       (cond
         ((substring-index "osx" m) "darwin")
@@ -853,7 +1253,11 @@
     ;; made to die, and a fault that cannot be named is a failure mode no
     ;; row can arm. It is validated here so a misspelling is refused at
     ;; startup like every other one.
-    '(deliver-barrier commit registry publish snapshot repair report working index conn))
+    ;; `client` is here for the same reason as `conn`: the thin client's
+    ;; close-after-the-answer has to be made to fail before anything can
+    ;; ask what it does then, and a failure mode no row can arm is one
+    ;; that nothing checks.
+    '(deliver-barrier commit registry publish snapshot repair report working index conn client))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -956,7 +1360,7 @@
        '(short-write eintr-once write-eio-after-partial write-eio-first
          fsync-fail no-log-fsync stat-fail open-fail report-fail
          conn-raise store-raise writer-raise writer-raise-late
-         writer-hold writer-hold-long))
+         writer-hold writer-hold-long conn-hold conn-hold-long close-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -1194,6 +1598,16 @@
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) #t)))
 
+     ;; ⚠️ NOT ONE-SHOT. What this exists to ask is whether a close
+     ;; failure changes anything, and a caller that closed twice on its
+     ;; way out would get one failure and one success from a one-shot
+     ;; fault -- which is the shape that hid the defect in the first
+     ;; place.
+     (define (close-fault?)
+       (and fault-name
+            (eq? fault-name 'close-fail)
+            (in-fault-stage?)))
+
      (define (stat-fault? path)
        (and fault-name
             (eq? fault-name 'stat-fail)
@@ -1280,6 +1694,7 @@
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
      (define (stat-fault? path) #f)
+     (define (close-fault?) #f)
      (define (report-fault?) #f)
      (define (open-fault path) #f)
      (define (fsync-fault fd subject kind) #f)
@@ -1371,6 +1786,11 @@
     (let ((subject (subject-of fd '())))
       (forget-fd! fd)
       (let ((rc (c-close fd)))
+        ;; ⚠️ THE DESCRIPTOR IS REALLY CLOSED, and the failure is injected
+        ;; after: a fault that skipped the close would leak one per call,
+        ;; and the leak rather than the refusal is what a row would end up
+        ;; measuring.
+        (when (close-fault?) (fail! 'close subject))
         (when (< rc 0) (fail! 'close subject))
         (void))))
 
@@ -1606,6 +2026,105 @@
   (define stat-buffer-size 512)
   (define st-dev-offset 0)
   (define st-ino-offset 8)
+
+  ;; THE ONE NAME A PATH HAS. Several spellings reach one file --
+  ;; a trailing slash, a `.`, a symlink, a relative path -- and anything
+  ;; deriving an identity from the spelling gives that one file several
+  ;; identities.
+  ;;
+  ;; ⭐ MEASURED, on the key the daemon used to compute: `/tmp/x`,
+  ;; `/tmp/x/`, a symlink to it and `/tmp/./x` produced FOUR different
+  ;; keys, although `stat` reported the same device and inode for all
+  ;; four -- because the spelling was concatenated in front of them.
+  ;;
+  ;; ⚠️ IT ANSWERS #f FOR A PATH THAT IS NOT THERE, rather than raising:
+  ;; a caller asking "what is this really called" about something that
+  ;; does not exist has an answer to give, and it is not an error.
+  ;; `PATH_MAX` is 1024 on macOS and 4096 on Linux; the buffer is the
+  ;; larger.
+  (define (real-path path)
+    (guard (e (#t #f))
+      (let* ((buf (make-bytevector 4096 0))
+             (rc (c-realpath path buf)))
+        (and (not (eqv? rc 0))
+             (let loop ((i 0))
+               (cond ((>= i 4096) #f)
+                     ((zero? (bytevector-u8-ref buf i))
+                      (utf8->string (let ((out (make-bytevector i)))
+                                      (bytevector-copy! buf 0 out 0 i)
+                                      out)))
+                     (else (loop (+ i 1)))))))))
+
+  ;; IS THIS PATH A SOCKET? Read from `stat`'s type bits, because the
+  ;; question the daemon asks before unlinking is exactly "is this a
+  ;; socket" -- and Chez answers "regular file?" and "directory?" but not
+  ;; this one.
+  ;;
+  ;; ⛔ THE OFFSET IS PER PLATFORM AND IS NOT DERIVABLE AT RUN TIME, the
+  ;; same difficulty `rss-freebsd` states above. Each one is the field
+  ;; order that platform's `sys/stat.h` declares, and the order is the
+  ;; provenance -- an offset with no field list behind it is a number
+  ;; nobody can check:
+  ;;
+  ;;   macOS (struct stat, __DARWIN_64_BIT_INO_T):
+  ;;     dev_t st_dev (int32, 4) | mode_t st_mode (uint16, 2) | ...
+  ;;     ⇒ st_mode at 4, 16 bits.
+  ;;
+  ;;   Linux x86-64 (glibc struct stat):
+  ;;     __dev_t st_dev (8) | __ino_t st_ino (8) | __nlink_t st_nlink (8)
+  ;;     | __mode_t st_mode (4) | ...
+  ;;     ⇒ st_mode at 24, 32 bits.
+  ;;
+  ;;   FreeBSD 12 and later (struct stat, ino64):
+  ;;     dev_t st_dev (8) | ino_t st_ino (8) | nlink_t st_nlink (8)
+  ;;     | mode_t st_mode (uint16, 2) | ...
+  ;;     ⇒ st_mode at 24, 16 bits.
+  ;;
+  ;; ⚠️ `st_ino` AT 8 ON ALL THREE is what `path-device-inode` already
+  ;; relies on, so two of these three field lists were load bearing
+  ;; before this predicate existed.
+  ;;
+  ;; ⭐ MEASURED ON TWO OF THE THREE, 2026-09-18, by statting a socket, a
+  ;; fifo, a regular file and a directory and reading every candidate
+  ;; offset:
+  ;;
+  ;;   macOS 25.3.0 arm64   offset 4, 16 bits:  C1ED 11A4 81A4 41ED  ✓
+  ;;                        offset 24:          reads 0
+  ;;   FreeBSD 15.0-RELEASE offset 24, 16 bits: C1ED 11A4 81A4 41ED  ✓
+  ;;                        offset 4:           reads 0
+  ;;
+  ;; ⛔ LINUX IS NOT MEASURED. There is no Linux host to hand; its entry
+  ;; is read from the glibc field list above and nothing else. `DS-1` in
+  ;; `daemon-socket.ss` is what will say so, on the first machine that
+  ;; runs it there.
+  ;;
+  ;; ⚠️ AND ON FreeBSD A 32-BIT READ AT 24 ALSO MATCHED, because the two
+  ;; bytes after the 16-bit field happen to be zero for these four kinds.
+  ;; So that platform's WIDTH is not pinned by this measurement -- only
+  ;; its offset is. A width wrong in the other direction would show on a
+  ;; mode whose neighbouring bytes are not zero.
+  ;;
+  ;; ⚠️ SO IT IS CHECKED BY A CELL RATHER THAN TRUSTED. `daemon-socket.ss`
+  ;; makes a socket, a fifo, a regular file and a directory on one path in
+  ;; turn and asks this predicate about each; an offset wrong on some
+  ;; platform fails there, rather than showing up as a daemon unlinking
+  ;; something it does not own.
+  (define S_IFMT   #xF000)
+  (define S_IFSOCK #xC000)
+
+  (define (st-mode path)
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let ((rc (c-stat path buf)))
+        (and (>= rc 0)
+             (cond
+               (macos? (bytevector-u16-native-ref buf 4))
+               ((string=? (machine-kind) "linux") (bytevector-u32-native-ref buf 24))
+               (else (bytevector-u16-native-ref buf 24)))))))
+
+  (define (file-is-socket? path)
+    (guard (e (#t #f))
+      (let ((mode (st-mode path)))
+        (and mode (= S_IFSOCK (bitwise-and mode S_IFMT))))))
 
   (define (path-device-inode path)
     (unless (string? path)

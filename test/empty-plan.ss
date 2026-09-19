@@ -13,7 +13,10 @@
 (define store (string-append root "/store"))
 (define init (rpc-dispatch store '(init) "test"))
 (define writer (cadr (assq 'writer (cdr init))))
-(define args (list 'commit "--req" "empty-1" "--cursor" (string-append writer ":0")))
+;; The writer is named because a draft verb that is not told one is now
+;; refused; this is the same writer the refused default would have used.
+(define args (list 'commit "--req" "empty-1" "--cursor" (string-append writer ":0")
+                   "--writer" writer))
 (define (call) (rpc-dispatch store args "test"))
 (define (answer-items a)
   (let ((p (and (pair? a) (assq 'items (filter pair? (cdr a)))))) (if p (cdr p) '())))
@@ -57,16 +60,18 @@
               (with-store-write store (lambda (state view) '()) "test" generic)) #t)
 (define insert (rpc-dispatch store '(insert "--title" "one" "--text" "old") "test"))
 (define id (let ((e (car (cadr (assq 'events (cdr insert)))))) (block-id (car e) (cdr e))))
-(rpc-dispatch store (list 'write id "new") "test")
+(rpc-dispatch store (list 'write id "new" "--writer" writer) "test")
 (define cursor (string-append writer ":" (number->string (cdr (assoc writer (reduce-applied-cut (open-and-reduce store)))))))
 ;; THE VERSION IS NAMED, because the request carries `--req` (§7.5.9:
 ;; a retry rebuilds its identity from the versions, not from a draft
 ;; that its own first attempt retired).
 (define one-version
-  (let ((r (rpc-dispatch store (list 'read id "--working-info") "test")))
+  (let ((r (rpc-dispatch store (list 'read id "--working-info" "--writer" writer)
+                         "test")))
     (list-ref (assq 'projection (cdr r)) 4)))
 (rpc-dispatch store (list 'commit id "--req" "one-intent" "--cursor" cursor
-                          "--working-version" one-version) "test")
+                          "--working-version" one-version "--writer" writer)
+              "test")
 ;; ⚠️ THIS ROW SAID `single`, AND THE DESIGN TOOK THAT BACK.
 ;;
 ;; A commit of one block used to be written as a single record with no

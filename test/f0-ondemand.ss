@@ -65,6 +65,15 @@
 ;; ⛔ THE SAME WALKER `daemon-link-gate.ss` USES, and transitive for the
 ;; same reason: a library two imports away is loaded just as surely as
 ;; one written at the top of the file.
+;; ⛔ AN IMPORT THIS WALK CANNOT RESOLVE IS REPORTED, NOT DROPPED. The
+;; filter here used to be `(filter file-exists? ...)`, which silently
+;; discarded any import whose source file it could not find -- so a
+;; library that was renamed or moved would simply leave the closure, and
+;; the row below asserting the closure excludes four names would go green
+;; because it excludes everything. A walker that quietly stops matching
+;; produces exactly the clean result the row is looking for.
+(define unresolved-imports '())
+
 (define (closure-of path)
   (let walk ((todo (list path)) (seen '()))
     (cond
@@ -73,7 +82,12 @@
       (else
        (let* ((here (car todo))
               (libs (imports-of-file 'theourgia here))
-              (next (filter file-exists? (map (lambda (l) (source-of (cadr l))) libs))))
+              (paths (map (lambda (l) (source-of (cadr l))) libs))
+              (next (filter file-exists? paths)))
+         (for-each (lambda (p)
+                     (unless (file-exists? p)
+                       (set! unresolved-imports (cons (cons here p) unresolved-imports))))
+                   paths)
          (walk (append next (cdr todo)) (cons here seen)))))))
 
 (define (basename path)
@@ -94,6 +108,10 @@
 ;; the one above is satisfied by a walker that finds nothing at all --
 ;; which is also what a changed import spelling would produce.
 (define daemon-closure (map basename (closure-of (string-append root "/daemon.ss"))))
+
+(want "F0-1 every import in both closures resolved to a file"
+      unresolved-imports
+      '())
 
 (want "F0-1 CONTROL: the same walk finds those libraries in the daemon's own closure"
       (list (and (member "sched.ss" daemon-closure) #t)
