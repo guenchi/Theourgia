@@ -399,7 +399,7 @@
 (with-store-write d5
   (lambda (st v) '((insert root #f ((kind . section) (title . "durable"))))) "t")
 (define W5 (car (store-writers d5)))
-(define child (string-append scratch "/l8.ss"))
+(define child (string-append scratch "/l8.sc"))
 ;; THE SNAPSHOT IS ASKED FOR IN THE SAME SESSION AS THE FAILED APPEND.
 ;; Asking in a LATER session measures something else: opening a session
 ;; runs the takeover barrier, which fsyncs the segment and so makes the

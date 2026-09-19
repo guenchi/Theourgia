@@ -218,7 +218,7 @@
        #t)
       (else (system "sleep 0.05") (loop (+ n 1))))))
 
-(define child-path (string-append base "/child.ss"))
+(define child-path (string-append base "/child.sc"))
 (define (write-child!)
   (put! child-path
         (string->utf8
@@ -496,7 +496,7 @@
   (let ((n (instance-install! d2))) (owner-install! d2 W n)))
 
 (define (racer-child store out)
-  (let ((path (string-append base "/racer-" out ".ss")))
+  (let ((path (string-append base "/racer-" out ".sc")))
     (put! path
           (string->utf8
             (string-append
@@ -580,7 +580,7 @@
 (define id-trace (string-append id-base "/trace"))
 (define id-pid (string-append id-base "/pid"))
 (define id-store (string-append id-base "/s"))
-(define id-child (string-append id-base "/child.ss"))
+(define id-child (string-append id-base "/child.sc"))
 (system (string-append "rm -rf " id-base "; mkdir -p " id-store " " id-base "/home"))
 (put! id-child
       (string->utf8
@@ -651,7 +651,7 @@
 (define n-trace (string-append n-base "/trace"))
 (define n-pid (string-append n-base "/pid"))
 (define n-store (string-append n-base "/s"))
-(define n-child (string-append n-base "/child.ss"))
+(define n-child (string-append n-base "/child.sc"))
 (system (string-append "rm -rf " n-base "; mkdir -p " n-store " " n-base "/home"))
 (put! n-child
       (string->utf8

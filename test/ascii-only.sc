@@ -295,7 +295,7 @@
 ;; earlier version planted one character per rule, and a review showed that
 ;; narrowing the emoji class to that single character still passed.
 (let ((d (fresh! "blocks")))
-  (put! (string-append d "/e.ss")
+  (put! (string-append d "/e.sc")
         (string-append
           ";; 1 \x23F0;\n"        ;; 2300-23FF
           ";; 2 \x25FE;\n"        ;; 25A0-27BF
@@ -314,7 +314,7 @@
           ";; 15 \x3297;\n"        ;; congratulations, unqualified
           ";; 16 \x3299;\n"        ;; secret, unqualified
           ";; 17 clean\n"))
-  (put! (string-append d "/c.ss")
+  (put! (string-append d "/c.sc")
         (string-append
           ";; 1 \x3007;\n"        ;; ideographic number zero
           ";; 2 \x30A2;\n"        ;; kana
@@ -345,9 +345,9 @@
     (want "ASCII TWIN: one character from every block of both classes is named"
           (list (car r) (named (cadr r)) (named (caddr r)) (length (cadddr r)))
           (list 2
-                (named (map (lambda (n) (cons (string-append d "/e.ss") n))
+                (named (map (lambda (n) (cons (string-append d "/e.sc") n))
                             (quote (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))))
-                (named (map (lambda (n) (cons (string-append d "/c.ss") n))
+                (named (map (lambda (n) (cons (string-append d "/c.sc") n))
                             (quote (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))))
                 0))))
 
@@ -382,7 +382,7 @@
                       (loop (+ i 1) (cons ";; filler\n" out))))))
     (put! (string-append d "/vendor/test/client-start.sc") (string-append filler ";; \x4E2D;\n"))
     (put! (string-append d "/contest/client-start.sc") (string-append filler ";; \x4E2D;\n"))
-    (put! (string-append d "/unrelated.ss") (string-append filler ";; \x4E2D;\n")))
+    (put! (string-append d "/unrelated.sc") (string-append filler ";; \x4E2D;\n")))
   (want "ASCII-2 TWIN: at the excepted LINE, a path merely ending in the excepted one is still refused"
         (length (caddr (scan d))) 3))
 
@@ -398,23 +398,23 @@
         (length (caddr (scan d))) 1))
 
 (let ((d (fresh! "unreadable")))
-  (put! (string-append d "/locked.ss") ";; ordinary\n")
-  (system (string-append "chmod 000 " d "/locked.ss"))
+  (put! (string-append d "/locked.sc") ";; ordinary\n")
+  (system (string-append "chmod 000 " d "/locked.sc"))
   (let ((r (scan d)))
-    (system (string-append "chmod 644 " d "/locked.ss"))
+    (system (string-append "chmod 644 " d "/locked.sc"))
     (want "ASCII-3 TWIN: a file that cannot be read is reported, not skipped"
           (list (car r) (length (cadddr r)))
           (list 0 1))))
 
 (let ((d (fresh! "notutf8")))
-  (system (string-append "printf 'A\\377B\\n' > " d "/bytes.ss"))
+  (system (string-append "printf 'A\\377B\\n' > " d "/bytes.sc"))
   (let ((r (scan d)))
     (want "ASCII-3 TWIN: bytes that are not UTF-8 are unreadable, not replaced"
           (list (car r) (length (cadddr r)))
           (list 0 1))))
 
 (let ((d (fresh! "crlf")))
-  (system (string-append "printf ';; one\\r\\n;; \\344\\270\\255\\r\\n' > " d "/w.ss"))
+  (system (string-append "printf ';; one\\r\\n;; \\344\\270\\255\\r\\n' > " d "/w.sc"))
   (want "ASCII-2 TWIN: a file whose lines end in CRLF is read line by line"
         (map cdr (caddr (scan d)))
         (quote (2))))

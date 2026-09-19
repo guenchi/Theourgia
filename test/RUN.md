@@ -178,7 +178,7 @@ than staying in this paragraph indefinitely.
 
 `consts.c`, `rows-baseline.txt`, `vendored-sources.txt`, the nine Python
 fixtures, `q8-cli.py` (driven on its own, not one of the nine),
-`paths.py`, **`import-walk.scm`** -- which `facade-gate.sc` and
+`paths.py`, **`import-walk.sc`** -- which `facade-gate.sc` and
 `closures.sc` both `load`, and which neither can run without --
 **`evidence-cli1-hang/`**, which this file cites above, and
 **`vectors/`**, ten language files `code-text.sc` imports. The last of

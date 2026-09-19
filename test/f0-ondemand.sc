@@ -55,7 +55,7 @@
                       ((char=? (string-ref argv0 i) #\/) i)
                       (else (loop (- i 1)))))))
     (if cut (substring argv0 0 cut) ".")))
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 (define root (string-append script-dir "/.."))
 (define (source-of name) (string-append root "/" (symbol->string name) ".sc"))

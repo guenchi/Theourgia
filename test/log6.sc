@@ -456,7 +456,7 @@
 ;;
 ;; A CHILD PROCESS, because THEOURGIA_INJECT is an expansion-time gate
 ;; and a fault armed in this file would apply to every open in it.
-(define child6 (string-append d "/child.ss"))
+(define child6 (string-append d "/child.sc"))
 (define child6-out (string-append d "/child.out"))
 (define (write-child6!)
   (put! child6
@@ -554,7 +554,7 @@
 ;; which is precisely the mistake a path qualifier exists to prevent and
 ;; the one an armed run is least able to notice. Asking for the operation
 ;; and the target makes the aim part of the reading.
-(define aimed (string-append d "/aimed.ss"))
+(define aimed (string-append d "/aimed.sc"))
 (define aimed-out (string-append d "/aimed.out"))
 (build-with-second-segment!)
 (put! aimed
@@ -587,7 +587,7 @@
 ;; of the result. The witness opens the same file TWICE in one armed
 ;; process: the first open must fail with the errno asked for, and the
 ;; second must succeed.
-(define oneshot (string-append d "/oneshot.ss"))
+(define oneshot (string-append d "/oneshot.sc"))
 (define oneshot-out (string-append d "/oneshot.out"))
 (build-with-second-segment!)
 (put! oneshot

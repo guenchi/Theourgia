@@ -64,7 +64,7 @@
               (unless (file-directory? d) (mkdir d))))
           packages)
 
-;; NOTE: A LIBRARY, NOT EVERY `.ss`. `cli.sc` and `build.ss` are programs --
+;; NOTE: A LIBRARY, NOT EVERY SOURCE. `cli.sc` and `build.ss` are programs --
 ;; they have no library form and `compile-library` refuses them. The test
 ;; is the file's own first form.
 (define (declares-a-library? path)
@@ -83,7 +83,7 @@
 (define (source-suffix? f)
   (let ((n (string-length f)))
     (and (> n 3)
-         (or (string=? (substring f (- n 3) n) ".ss")
+         (or (string=? (substring f (- n 3) n) ".sc")
              (string=? (substring f (- n 3) n) ".sc")))))
 
 ;; Each entry is (package . filename), in the order they will be tried.

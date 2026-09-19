@@ -159,7 +159,7 @@
 ;;
 ;; NEVER: AND IT IS RUN OUT OF PROCESS, because the trace goes to stderr and
 ;; a fixture cannot read its own.
-(define driver (string-append here "/drive.ss"))
+(define driver (string-append here "/drive.sc"))
 (call-with-output-file driver
   (lambda (port)
     (for-each (lambda (l) (display l port) (newline port))
@@ -290,7 +290,7 @@
 ;;
 ;; NOTE: BOTH RUNS USE `THEOURGIA_INJECT=on`, armed or not, so the twin is
 ;; the same build and not a different one.
-(define close-driver (string-append here "/close.ss"))
+(define close-driver (string-append here "/close.sc"))
 (call-with-output-file close-driver
   (lambda (port)
     (for-each (lambda (l) (display l port) (newline port))
@@ -470,7 +470,7 @@
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
-;; walk itself is `import-walk.scm`, shared, so this is the same
+;; walk itself is `import-walk.sc`, shared, so this is the same
 ;; measurement taken in an extra place -- NEVER: not a second implementation
 ;; of it.
 (define script-dir
@@ -483,7 +483,7 @@
 (define tree-root
   (let ((up (string-append script-dir "/..")))
     (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 (define import-graph
   (let loop ((names (source-files tree-root)) (out '()))

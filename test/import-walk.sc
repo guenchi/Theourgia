@@ -34,7 +34,7 @@
 ;; path against the CURRENT DIRECTORY, not against the including file --
 ;; measured both ways: from `test/` it found this file, and from the
 ;; repository root the same script died with `Exception in include:
-;; failed for import-walk.scm: no such file or directory`. The runner
+;; failed for import-walk.sc: no such file or directory`. The runner
 ;; starts fixtures from `test/`; a person reading a red row does not.
 ;; So each caller computes its own directory from `(car (command-line))`
 ;; and hands `load` an absolute path.
@@ -79,7 +79,7 @@
 ;; subdirectories with its own reader; when it carried its own copy of
 ;; this list -- `.ss` only -- a nested `helper.sls` importing igropyr
 ;; went unseen by the very check added to see it.
-(define source-suffixes '(".ss" ".sls" ".sc" ".scm"))
+(define source-suffixes '(".sc" ".sls" ".sc" ".scm"))
 
 (define (source-files dir)
   (let ((exts source-suffixes))

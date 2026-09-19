@@ -45,7 +45,7 @@
 (define pid-text (number->string (get-process-id)))
 (define store (string-append "/tmp/dmn-store-" pid-text))
 (define socket (string-append "/tmp/dmn-" pid-text ".sock"))
-(define runner (string-append "/tmp/dmn-run-" pid-text ".ss"))
+(define runner (string-append "/tmp/dmn-run-" pid-text ".sc"))
 (define log (string-append "/tmp/dmn-log-" pid-text ".txt"))
 
 (define (line-complete? bv)
@@ -163,7 +163,7 @@
   (let* ((tag (string-append pid-text "-" suffix))
          (st (string-append "/tmp/dmn-c" tag))
          (sk (string-append "/tmp/dmn-c" tag ".sock"))
-         (rn (string-append "/tmp/dmn-c" tag ".ss"))
+         (rn (string-append "/tmp/dmn-c" tag ".sc"))
          (lg (string-append "/tmp/dmn-c" tag ".log"))
          ;; NOTE: THE DAEMON WRITES ITS OWN PID AND THE SHELL WRITES ITS
          ;; EXIT CODE. A row about signals needs to send one to THIS
@@ -337,7 +337,7 @@
 ;; would be competing with the rows for the same green threads, and a
 ;; holder inside the daemon would not be somebody else at all.
 (define (hold-lock! path secs tag)
-  (let ((rn (string-append "/tmp/dmn-hold-" tag ".ss"))
+  (let ((rn (string-append "/tmp/dmn-hold-" tag ".sc"))
         (lg (string-append "/tmp/dmn-hold-" tag ".log")))
     (system (string-append "rm -f " rn " " lg))
     (call-with-output-file rn
@@ -413,7 +413,7 @@
 ;; Commits to a store the way a CLI does -- another OS process, taking
 ;; the store's lock itself, with no daemon involved.
 (define (commit-from-outside! store title tag)
-  (let ((rn (string-append "/tmp/dmn-out-" tag ".ss"))
+  (let ((rn (string-append "/tmp/dmn-out-" tag ".sc"))
         (lg (string-append "/tmp/dmn-out-" tag ".log")))
     (system (string-append "rm -f " rn " " lg))
     (call-with-output-file rn
@@ -588,7 +588,7 @@
       ;; NEVER: THE LOCK IS THE ONLY ARBITER, and it is the kernel's: no pid
       ;; file, no age check. A second daemon says so and leaves with 75,
       ;; so a client that finds no answer falls back to running locally.
-      (let* ((runner2 (string-append "/tmp/dmn-run2-" pid-text ".ss"))
+      (let* ((runner2 (string-append "/tmp/dmn-run2-" pid-text ".sc"))
              (log2 (string-append "/tmp/dmn-log2-" pid-text ".txt")))
         (call-with-output-file runner2
           (lambda (port)
@@ -612,7 +612,7 @@
       ;; room would be this daemon destroying data it does not own, so it
       ;; refuses -- and the row checks the file is still there afterwards.
       (let* ((occupied (string-append "/tmp/dmn-occupied-" pid-text))
-             (runner3 (string-append "/tmp/dmn-run3-" pid-text ".ss"))
+             (runner3 (string-append "/tmp/dmn-run3-" pid-text ".sc"))
              (log3 (string-append "/tmp/dmn-log3-" pid-text ".txt")))
         (system (string-append "printf 'not a socket' > " occupied))
         (call-with-output-file runner3
@@ -845,7 +845,7 @@
       ;; lock the daemon has already answered `store-busy` and the CLI
       ;; has not answered at all.
       (let* ((tstore (string-append "/tmp/dmn-cli-" pid-text))
-             (rn (string-append "/tmp/dmn-cli-" pid-text ".ss"))
+             (rn (string-append "/tmp/dmn-cli-" pid-text ".sc"))
              (lg (string-append "/tmp/dmn-cli-" pid-text ".log"))
              (env (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                                  " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' ")))
@@ -1906,7 +1906,7 @@
       ;; NEVER: THE PROCESSES GO FIRST, AND THEY WERE NOT GOING AT ALL. This
       ;; tidy-up removed the FILES and left the daemons that were using
       ;; them running -- found as an orphaned `scheme --script
-      ;; /tmp/dmn-run-NNNN.ss`, parent 1, five minutes into a suite run
+      ;; /tmp/dmn-run-NNNN.sc`, parent 1, five minutes into a suite run
       ;; that had nothing to do with it, competing for the machine with
       ;; whatever was actually being measured.
       ;;
@@ -1917,7 +1917,7 @@
       (system (string-append "pkill -f 'serve /tmp/dmn-store-" pid-text "' 2>/dev/null"))
       (system "sleep 1")
       (system (string-append "rm -rf /tmp/dmn-*" pid-text "* /tmp/dmn-store-" pid-text
-                             " /tmp/dmn-run*-" pid-text ".ss /tmp/dmn-log*-" pid-text ".txt"
+                             " /tmp/dmn-run*-" pid-text ".sc /tmp/dmn-log*-" pid-text ".txt"
                              " /tmp/dmn-occupied-" pid-text " /tmp/.dmn-*" pid-text "*.lock"
                              " 2>/dev/null"))
       ;; NEVER: AND IT IS ASSERTED, not assumed. "I issued a kill" is not the

@@ -264,13 +264,21 @@ for f in *.sc *.py; do
   # others and prints no sentinel of its own. It is named here rather
   # than detected, because "imports nothing and prints nothing" is also
   # what a broken fixture looks like.
-  # NOTE: THREE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
-  # the python fixtures; `structure` is the preflight above; and
+  # NOTE: FOUR HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
+  # the python fixtures; `structure` is the preflight above;
   # `reduce-hash-check` is a filter `reduce1.sc` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
-  # broken fixture looks like, so the list says which it is.
+  # broken fixture looks like, so the list says which it is; and
+  # `import-walk` is the shared walker seven fixtures `load`.
+  #
+  # NEVER: `import-walk` JOINED THIS LIST BECAUSE OF ITS EXTENSION. It was
+  # `.scm` and so was never in `*.ss`, which is what the note above the
+  # loop meant by "it does not run again". Renaming it to `.sc` put it in
+  # the loop for the first time, where it would have run bare, printed no
+  # sentinel, and been counted as a broken fixture -- an extension change
+  # altering WHICH FILES ARE TESTS.
   case "$n" in
-    paths|structure|reduce-hash-check) helpers="$helpers $n"; continue;;
+    paths|structure|reduce-hash-check|import-walk) helpers="$helpers $n"; continue;;
   esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
   # NEVER: STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the

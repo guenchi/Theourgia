@@ -121,9 +121,9 @@
   (want "CT-11 newly added child invalidates the captured file membership" (rpc-ok? (run c)) #f))
 (let* ((c (fresh)) (output (string-append (cadr c) "/out")))
   (with-store-write (car c)
-    (lambda (s v) (list '(insert root #f ((kind . file) (mode . datum) (path . "library.ss"))))) "test")
+    (lambda (s v) (list '(insert root #f ((kind . file) (mode . datum) (path . "library.sc"))))) "test")
   (want "CT-12 text export selects only text files" (rpc-ok? (rpc-dispatch (car c) (list 'export-code output) "test")) #t)
-  (want "CT-12 text export excludes datum file" (file-exists? (string-append output "/library.ss")) #f)
+  (want "CT-12 text export excludes datum file" (file-exists? (string-append output "/library.sc")) #f)
   (want "CT-12 explicit in-place mode change is refused"
         (map cadr (with-store-write (car c) (lambda (s v) (list (list 'set (list-ref c 2) 'mode 'datum))) "test"))
         '(mode-mismatch)))

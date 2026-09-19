@@ -719,7 +719,7 @@
 (define d4 (test-dir "cli1race"))
 (putenv "THEOURGIA_HOME" (string-append scratch "/home4"))
 (run d4 "init")
-(define many-path (string-append scratch "/many.ss"))
+(define many-path (string-append scratch "/many.sc"))
 (write-file! many-path
   (string-append
     "#!r6rs\n(import (chezscheme) (theourgia store))\n"
@@ -1039,7 +1039,7 @@
 (putenv "THEOURGIA_HOME" (string-append scratch "/home9"))
 (run d9 "init")
 (run d9 "insert --under root --title Seed")
-(define fail-path (string-append scratch "/failer.ss"))
+(define fail-path (string-append scratch "/failer.sc"))
 (write-file! fail-path
   (string-append
     "#!r6rs\n(import (chezscheme) (theourgia store))\n"

@@ -542,7 +542,7 @@
 ;; arming it here would arm it for every append in this file.
 (define df (test-dir "store1fault"))
 (fresh! df)
-(define child-path (string-append df "/child.ss"))
+(define child-path (string-append df "/child.sc"))
 (define child-out (string-append df "/child.out"))
 (put! child-path
       (string->utf8
@@ -597,7 +597,7 @@
 ;; THEOURGIA_INJECT is an expansion-time gate.
 (define (faulted-run fault body)
   (let* ((d (test-dir (string-append "store1w" (number->string (string-length fault)))))
-         (cp (string-append d "/child.ss"))
+         (cp (string-append d "/child.sc"))
          (co (string-append d "/child.out")))
     (fresh! d)
     (put! cp (string->utf8
@@ -661,7 +661,7 @@
 ;; no flush had been asked about -- the one combination the word cannot
 ;; survive. The count is read from the product's own trace.
 (let* ((d (test-dir "store1cover"))
-       (cp (string-append d "/child.ss"))
+       (cp (string-append d "/child.sc"))
        (co (string-append d "/child.out")))
   (fresh! d)
   (put! cp (string->utf8

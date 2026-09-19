@@ -450,7 +450,7 @@
 (printf "== the two outcomes only a fault can reach ==\n")
 ;; Both need a child process: THEOURGIA_INJECT is an expansion-time gate,
 ;; and a fault armed here would apply to every append in the file.
-(define child-path (string-append d "/child.ss"))
+(define child-path (string-append d "/child.sc"))
 (define child-out (string-append d "/child.out"))
 (define (write-child!)
   (put! child-path

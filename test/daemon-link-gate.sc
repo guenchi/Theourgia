@@ -70,7 +70,7 @@
                       ((char=? (string-ref argv0 i) #\/) i)
                       (else (loop (- i 1)))))))
     (if cut (substring argv0 0 cut) ".")))
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 (define root
   (let ((up (string-append script-dir "/..")))

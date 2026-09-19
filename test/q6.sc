@@ -150,7 +150,7 @@
 (define M "mirrorz9")
 (define d (string-append scratch "/store"))
 (define home (string-append scratch "/home"))
-(define child (string-append scratch "/child.ss"))
+(define child (string-append scratch "/child.sc"))
 (define child-out (string-append scratch "/child.out"))
 (define cand (string-append scratch "/cand.bin"))
 

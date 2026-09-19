@@ -169,7 +169,7 @@
 (define scratch (test-dir "log19"))
 (define W "wwwlocl0")
 (define M "mirrorz9")
-(define child (string-append scratch "/child.ss"))
+(define child (string-append scratch "/child.sc"))
 (define child-out (string-append scratch "/child.out"))
 
 (define (rec seq payload)
@@ -335,8 +335,8 @@
 ;; The publisher here really is a separate process that has exited by the
 ;; time the row reads anything, and the adopter really is opening for the
 ;; first time: both are fresh children of this fixture.
-(define publisher (string-append scratch "/publisher.ss"))
-(define adopter (string-append scratch "/adopter.ss"))
+(define publisher (string-append scratch "/publisher.sc"))
+(define adopter (string-append scratch "/adopter.sc"))
 (define adopter-out (string-append scratch "/adopter.out"))
 
 (define (write-publisher! segment bytes)

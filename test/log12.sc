@@ -274,7 +274,7 @@
 ;; THEOURGIA_INJECT is an expansion-time gate, and the persistent faults
 ;; would apply to every append here. The child reports the outcome symbol
 ;; and the resulting file length; the parent checks both.
-(define child-path (string-append d "/append-child.ss"))
+(define child-path (string-append d "/append-child.sc"))
 (define child-out (string-append d "/append-child.out"))
 (define (write-child!)
   (put! child-path

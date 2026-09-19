@@ -473,7 +473,7 @@
 ;; its stdout -- mixing the two is how a caller that parses the answer
 ;; starts parsing a diagnostic.
 (let* ((esock (string-append here "/stderr.sock"))
-       (epeer (string-append here "/stderr.ss")))
+       (epeer (string-append here "/stderr.sc")))
   (call-with-output-file epeer
     (lambda (port)
       (for-each (lambda (l) (display l port) (newline port))
@@ -516,7 +516,7 @@
 ;; `read` now lives once in the library, and these two rows are the two
 ;; programs this fixture can drive.
 (let* ((csock (string-append here "/cyclic.sock"))
-       (cpeer (string-append here "/cyclic.ss")))
+       (cpeer (string-append here "/cyclic.sc")))
   (call-with-output-file cpeer
     (lambda (port)
       (for-each (lambda (l) (display l port) (newline port))
@@ -568,7 +568,7 @@
 ;; non-zero, which is what it says about every other envelope it cannot
 ;; act on, NEVER: rather than inventing a status.
 (let* ((esock (string-append here "/exit.sock"))
-       (epeer (string-append here "/exitpeer.ss"))
+       (epeer (string-append here "/exitpeer.sc"))
        (peer-saying
          (lambda (field)
            (call-with-output-file epeer
@@ -795,7 +795,7 @@
 ;; which is the point -- no real verb can produce this number by
 ;; accident, so seeing it proves it came through the envelope.
 (let ((codesock (string-append here "/code.sock"))
-      (codepeer (string-append here "/code.ss")))
+      (codepeer (string-append here "/code.sc")))
   (call-with-output-file codepeer
     (lambda (port)
       (for-each (lambda (l) (display l port) (newline port))
@@ -833,7 +833,7 @@
 ;; exists for exactly this, and out to a caller with no handler. What a
 ;; peer sends is not this program's to assume.
 (let* ((rsock (string-append here "/rot.sock"))
-       (rpeer (string-append here "/rot.ss")))
+       (rpeer (string-append here "/rot.sc")))
   (call-with-output-file rpeer
     (lambda (port)
       (for-each (lambda (l) (display l port) (newline port))
@@ -891,7 +891,7 @@
 ;; this can read it, because "did it resend" is a fact about what arrived
 ;; at the other end, not about what the client printed.
 (let ((holdsock (string-append here "/hold.sock"))
-      (holdpeer (string-append here "/hold.ss"))
+      (holdpeer (string-append here "/hold.sc"))
       (holdcount (string-append here "/hold.count")))
   (call-with-output-file holdpeer
     (lambda (port)
@@ -944,7 +944,7 @@
 ;; Anyone changing the client runs these suites; a stray import of the
 ;; core, the scheduler or the networking library would be caught only by
 ;; a file they had no reason to run, and only if the whole suite ran. The
-;; walk itself is `import-walk.scm`, shared, so this is the same
+;; walk itself is `import-walk.sc`, shared, so this is the same
 ;; measurement taken in an extra place -- NEVER: not a second implementation
 ;; of it.
 (define script-dir
@@ -957,7 +957,7 @@
 (define tree-root
   (let ((up (string-append script-dir "/..")))
     (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 (define import-graph
   (let loop ((names (source-files tree-root)) (out '()))

@@ -101,9 +101,9 @@
 
 ;; ---- the two stores and a daemon -------------------------------------------
 
-(define setup (string-append here "/setup.ss"))
-(define serve-b (string-append here "/serve-b.ss"))
-(define serve-a (string-append here "/serve-a.ss"))
+(define setup (string-append here "/setup.sc"))
+(define serve-b (string-append here "/serve-b.sc"))
+(define serve-a (string-append here "/serve-a.sc"))
 
 (system (string-append "rm -rf " here "; mkdir -p " store-a " " store-b))
 
@@ -399,7 +399,7 @@
 ;; transport-unknown" is satisfied by an implementation that also ran the
 ;; command locally and then threw the answer away; the trace is what says
 ;; it did not.
-(define silent-peer (string-append here "/silent.ss"))
+(define silent-peer (string-append here "/silent.sc"))
 (write-script! silent-peer
   (list "(import (chezscheme) (theourgia sched) (theourgia net))"
         "(start-scheduler"

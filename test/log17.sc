@@ -465,7 +465,7 @@
 ;; In a child, because THEOURGIA_INJECT is an expansion-time gate and
 ;; fsync-fail is persistent within its stage: arming it here would fail
 ;; every barrier in the file.
-(define child-path (string-append d "/l22-child.ss"))
+(define child-path (string-append d "/l22-child.sc"))
 (define child-out (string-append d "/l22-child.out"))
 (define (write-child!)
   (put! child-path
@@ -620,7 +620,7 @@
 ;; THE CHILD COMPUTES THE MANIFEST ITSELF rather than being handed its
 ;; text: embedding a string full of quotes into a generated script was a
 ;; escaping problem with no upside.
-(define reload-child (string-append d "/reload-child.ss"))
+(define reload-child (string-append d "/reload-child.sc"))
 (define reload-out (string-append d "/reload-child.out"))
 (define (write-reload-child!)
   ;; THE RANGES ARE DERIVED FROM THE SEGMENTS AS THEY STAND when the

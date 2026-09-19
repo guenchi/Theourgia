@@ -363,7 +363,7 @@
 ;; tests nothing in either configuration, which is worse than not having
 ;; it. The child arms it for itself and reports two numbers.
 (build!)
-(define child-path (string-append d "/barrier-child.ss"))
+(define child-path (string-append d "/barrier-child.sc"))
 (define child-out (string-append d "/barrier-child.out"))
 (define (write-child!)
   (put! child-path
@@ -409,7 +409,7 @@
 ;; -- and a power cut then takes them away. The reader has promised a
 ;; history that never reached the disk. Every reader was making that
 ;; promise without a barrier; only `log-begin` had one.
-(define reader-path (string-append d "/reader-child.ss"))
+(define reader-path (string-append d "/reader-child.sc"))
 (define reader-out (string-append d "/reader-child.out"))
 (define (write-reader!)
   (put! reader-path
@@ -467,7 +467,7 @@
 ;; prove nothing about the lock. The child is killed while it waits --
 ;; its trace showing lock-wait and never flock is the reading.
 (build!)
-(define waiter-path (string-append d "/waiter.ss"))
+(define waiter-path (string-append d "/waiter.sc"))
 (define waiter-out (string-append d "/waiter.trace"))
 (put! waiter-path
       (string->utf8

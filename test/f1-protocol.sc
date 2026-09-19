@@ -234,7 +234,7 @@
 ;; from a copy: if the shell shows it, it asked, and it used what came
 ;; back.
 (let* ((psock (string-append here "/p3.sock"))
-       (ppeer (string-append here "/p3.ss"))
+       (ppeer (string-append here "/p3.sc"))
        (marker "MARKER-ONLY-THE-PEER-KNOWS")
        (pout (string-append here "/p3.out")))
   (call-with-output-file ppeer

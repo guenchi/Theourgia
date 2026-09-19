@@ -21,7 +21,7 @@
 ;; somebody's head is a rule until the first hurry; this reads the tree.
 ;;
 ;; NEVER: IT DOES NOT GREP, IT READS EACH FILE AS DATA -- and the walk that
-;; does so lives in `import-walk.scm`, beside this file, because
+;; does so lives in `import-walk.sc`, beside this file, because
 ;; `closures.sc` needs the same one. Why it cannot be a grep, and why it
 ;; is `load`ed rather than `include`d, are written there.
 ;;
@@ -84,7 +84,7 @@
 (define facade-names
   (call-with-input-file (string-append script-dir "/facades.sexp") read))
 
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 (define (uses-igropyr? name)
   (pair? (imports-of-file 'igropyr (string-append root "/" name))))
@@ -109,7 +109,7 @@
 ;; Measured: it had to be killed. A walker that takes the directory as
 ;; an argument cannot make that mistake.
 ;; NOTE: THE SAME EXTENSIONS THE SHARED WALKER KNOWS. This listed `.ss`
-;; alone while `import-walk.scm` recognises `.ss`, `.sls`, `.sc` and
+;; alone while `import-walk.sc` recognises `.ss`, `.sls`, `.sc` and
 ;; `.scm` -- so a nested `helper.sls` importing igropyr passed the deep
 ;; scan untouched, which is the hole this scan was added to close. One
 ;; list, read from the walker's own definition.

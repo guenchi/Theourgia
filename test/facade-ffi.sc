@@ -135,7 +135,7 @@
 ;; and this fixture may or may not be one depending on how it was
 ;; started. A fresh child is never one.
 (define setsid-out (string-append "/tmp/ffi-setsid-" (number->string (get-process-id))))
-(define setsid-src (string-append setsid-out ".ss"))
+(define setsid-src (string-append setsid-out ".sc"))
 (call-with-output-file setsid-src
   (lambda (port)
     (display "(import (chezscheme) (theourgia ffi))" port) (newline port)

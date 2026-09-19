@@ -473,7 +473,7 @@
     ;; injector that parks a request, this row failed for a reason of the
     ;; injector's own and told me nothing about the shell.
     (let ((lostsock (string-append here "/lost.sock"))
-          (lostpeer (string-append here "/lost.ss")))
+          (lostpeer (string-append here "/lost.sc")))
       (call-with-output-file lostpeer
         (lambda (port)
           (for-each (lambda (l) (display l port) (newline port))
@@ -535,7 +535,7 @@
 ;; store open.
 (let* ((dstore (string-append here "/dstore"))
        (dsock (string-append here "/d.sock"))
-       (runner (string-append here "/serve.ss"))
+       (runner (string-append here "/serve.sc"))
        (dlog (string-append here "/daemon.log"))
        (shell-err (string-append here "/shell.err")))
   (system (string-append "rm -rf " dstore " " dsock "; mkdir -p " dstore))
@@ -594,7 +594,7 @@
 (define (start-parking-daemon! tag)
   (let* ((dstore (string-append here "/" tag "-store"))
          (dsock (string-append here "/" tag ".sock"))
-         (runner (string-append here "/" tag ".ss"))
+         (runner (string-append here "/" tag ".sc"))
          (dlog (string-append here "/" tag ".log")))
     (system (string-append "rm -rf " dstore " " dsock "; mkdir -p " dstore))
     (call-with-output-file runner
@@ -686,7 +686,7 @@
 ;; `request-frame` an extra field, and both captures must change.
 (let* ((csock (string-append here "/capture.sock"))
        (cstore (string-append here "/store"))
-       (peer (string-append here "/capture.ss"))
+       (peer (string-append here "/capture.sc"))
        (seen-cli (string-append here "/seen-cli.txt"))
        (seen-mcp (string-append here "/seen-mcp.txt")))
   (define (start-capture! into)
@@ -939,7 +939,7 @@
 ;; sides of it. A stand-in peer answers, because a real daemon cannot be
 ;; made to produce both on demand.
 (let* ((osock (string-append here "/origin.sock"))
-       (opeer (string-append here "/origin.ss"))
+       (opeer (string-append here "/origin.sc"))
        (ostore (string-append here "/store")))
   (define (peer-answering body)
     (call-with-output-file opeer

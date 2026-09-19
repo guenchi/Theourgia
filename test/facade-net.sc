@@ -923,7 +923,7 @@
       ;; NEVER: A row that quietly skipped itself when the variable was unset
       ;; would be the kind of green that means nothing; the child always
       ;; runs, and its absence of output is a failure with a reading.
-      (let* ((src (string-append "/tmp/n19-" (number->string (get-process-id)) ".ss"))
+      (let* ((src (string-append "/tmp/n19-" (number->string (get-process-id)) ".sc"))
              (out (string-append "/tmp/n19-" (number->string (get-process-id)) ".out"))
              (dirs (getenv "CHEZSCHEMELIBDIRS"))
              (exts (getenv "CHEZSCHEMELIBEXTS")))

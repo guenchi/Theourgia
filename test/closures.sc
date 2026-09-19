@@ -28,7 +28,7 @@
 ;; sees a clean file. The property is a property of the CLOSURE, and the
 ;; closure is what this reads.
 ;;
-;; NEVER: NOT A GREP OVER THE FILE. The walk is `import-walk.scm`, shared
+;; NEVER: NOT A GREP OVER THE FILE. The walk is `import-walk.sc`, shared
 ;; with `facade-gate.sc`; why it reads the forms as data rather than the
 ;; text is written there.
 ;;
@@ -78,7 +78,7 @@
   (let ((up (string-append script-dir "/..")))
     (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
 
-(load (string-append script-dir "/import-walk.scm"))
+(load (string-append script-dir "/import-walk.sc"))
 
 ;; THE GRAPH IS BUILT FROM WHAT EACH FILE DECLARES ITSELF TO BE, not
 ;; from its filename. They agree in this tree, and a graph keyed on
