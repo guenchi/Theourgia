@@ -1,0 +1,164 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Manual | theourgia</title><meta name="description" content="The model a store holds and every verb it answers to, generated from the store itself."><link rel="icon" href="favicon.svg" type="image/svg+xml"><style>:root{--bg:#fbfaf7;--bg2:#f3f1ea;--panel:#f7f5ef;--line:#e4e0d5;--fg:#1c1b18;
+  --dim:#6a655c;--acc:#5b3fc4;--acc2:#3f3a8f;--gold:#9a6b12;--teal:#0f6f68;
+  --kw:#6d28d9;--str:#0f6f3f;--com:#8a857a;--num:#8a4b12}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  -webkit-font-smoothing:antialiased}
+code,pre,.mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+a{color:var(--acc2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px}
+.narrow{max-width:760px}
+nav{position:sticky;top:0;z-index:10;background:rgba(251,250,247,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;height:56px;gap:22px}
+nav .logo{font-weight:700;color:var(--fg);font-size:17px;letter-spacing:-.2px}
+nav .logo span{color:var(--acc);font-size:20px;vertical-align:-1px}
+nav .links{margin-left:auto;display:flex;gap:18px;font-size:14px}
+nav .links a{color:var(--dim)}
+nav .links a:hover{color:var(--fg);text-decoration:none}
+nav .links a.on{color:var(--fg);font-weight:600}
+header{padding:80px 0 56px;position:relative;overflow:hidden;
+  background:radial-gradient(60% 50% at 50% 0%,#efeaff 0%,transparent 100%)}
+header .wrap{position:relative;z-index:1}
+.glyph{font-size:44px;color:var(--acc);line-height:1}
+h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
+.tag{font-size:21px;color:var(--dim);max-width:660px;margin-bottom:12px}
+.tag b{color:var(--fg);font-weight:600}
+.sub{color:var(--dim);font-size:15px;margin-bottom:30px}
+.cta{display:flex;gap:14px;margin-bottom:38px;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 22px;border-radius:8px;font-size:15px;font-weight:600}
+.btn.primary{background:var(--acc);color:#fff}
+.btn.primary:hover{filter:brightness(1.12);text-decoration:none}
+.btn.ghost{border:1px solid var(--line);color:var(--fg)}
+.btn.ghost:hover{border-color:var(--dim);text-decoration:none}
+section{padding:64px 0;border-top:1px solid var(--line)}
+.kicker{color:var(--acc);font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+h2{font-size:32px;margin:8px 0 14px;letter-spacing:-.5px}
+h3{font-size:21px;margin-bottom:10px}
+p{margin-bottom:14px}
+.lead{color:var(--dim);font-size:17px;max-width:700px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:36px;margin-top:36px}
+.grid2>*{min-width:0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px 24px}
+.card h3{font-size:18px;margin-bottom:8px}
+.card p{color:var(--dim);font-size:15px;margin-bottom:0}
+.card p+p{margin-top:10px}
+.nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-top:32px}
+.num{background:var(--bg);padding:20px}
+.num b{display:block;font-size:30px;letter-spacing:-.5px;color:var(--acc);margin-bottom:6px}
+.num span{color:var(--dim);font-size:13.5px;line-height:1.5;display:block}
+pre{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:18px 20px;
+  overflow-x:auto;font-size:13px;line-height:1.6}
+pre.wide{font-size:12.5px}
+code{color:var(--acc);font-size:.86em;background:var(--bg2);padding:1px 5px;border-radius:4px}
+pre code{background:none;padding:0;color:inherit;font-size:inherit}
+.k{color:var(--kw)}.s{color:var(--str)}.c{color:var(--com);font-style:italic}.n{color:var(--num)}
+table{border-collapse:collapse;width:100%;margin-top:24px;font-size:14.5px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:var(--bg2);font-weight:600}
+td.mono,th.mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.verb{border-top:1px solid var(--line);padding:16px 0}
+.verb:first-child{border-top:none}
+.verb .sig{font-family:ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--fg);
+  background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:7px 10px;
+  display:block;overflow-x:auto;white-space:pre}
+.verb .d{color:var(--dim);font-size:15px;margin-top:8px}
+.verb .r{float:right;font-size:11px;letter-spacing:1px;text-transform:uppercase;
+  color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 6px;margin-left:8px}
+.note{border-left:3px solid var(--gold);background:#fdfaf2;padding:14px 18px;
+  border-radius:0 8px 8px 0;margin-top:24px;font-size:15px;color:var(--dim)}
+.note b{color:var(--fg)}
+.steps{counter-reset:s;margin-top:28px}
+.step{position:relative;padding-left:46px;margin-bottom:26px}
+.step:before{counter-increment:s;content:counter(s);position:absolute;left:0;top:-2px;
+  width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;
+  font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.step h3{font-size:18px;margin-bottom:6px}
+.step p{color:var(--dim);font-size:15px;margin-bottom:0}
+footer{border-top:1px solid var(--line);padding:40px 0;color:var(--dim);font-size:14px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+footer .sp{margin-left:auto}
+.diagram{margin-top:36px}
+.diagram svg{width:100%;height:auto;display:block}
+@media (max-width:760px){
+  h1{font-size:38px}
+  header{padding:56px 0 40px}
+  .tag{font-size:18px}
+  .grid2{grid-template-columns:1fr;gap:24px}
+  nav .wrap{gap:12px}
+  nav .links{gap:11px;font-size:12.5px}
+  section{padding:48px 0}
+  h2{font-size:26px}
+}
+.subsec{margin-top:38px}
+.subsec h3{font-size:20px;margin-bottom:10px}
+.subsec h4{font-size:16px;margin:24px 0 8px}
+.subsec p{color:var(--dim)}
+.subsec .lead{color:var(--dim)}
+ol.design{margin:18px 0 0 22px;color:var(--dim)}
+ol.design li{margin:10px 0}
+ol.design li b{color:var(--fg);font-weight:600}
+ul.design{margin:18px 0 0 22px;color:var(--dim);list-style:none;padding:0}
+ul.design li{margin:14px 0;padding-left:18px;border-left:3px solid var(--acc)}
+ul.design li b{color:var(--fg);font-weight:600}
+.md-body{max-width:820px;margin:0 auto;padding:56px 24px}
+.md-body h1{font-size:40px;letter-spacing:-1px;margin-bottom:8px}
+.md-body h2{font-size:28px;margin:44px 0 12px;padding-top:22px;border-top:1px solid var(--line)}
+.md-body h3{font-size:20px;margin:30px 0 8px}
+.md-body h4{font-size:16px;margin:22px 0 6px;color:var(--fg)}
+.md-body p{color:var(--dim);margin:0 0 14px}
+.md-body blockquote{margin:18px 0;padding:12px 18px;border-left:3px solid var(--gold);background:#fdfaf2;border-radius:0 8px 8px 0}
+.md-body blockquote p{margin:0}
+.md-body pre{margin:14px 0}
+.md-body code{color:var(--acc)}</style></head><body><nav><div class="wrap"><div class="logo"><a href="index.html" style="color:inherit"><span>&#952;</span> theourgia</a></div><div class="links"><a href="why.html">Why</a><a href="manual.html" class="on">Manual</a><a href="agents.html">Agents</a><a href="changelog.html">Changelog</a><a href="https://github.com/guenchi/theourgia">GitHub</a></div></div></nav><div class="md-body"><h1>theourgia manual</h1><p>The model a store holds, and every verb it answers to. This file is generated from the store it describes: the prose is its blocks and the reference is what <code>describe</code> answers, so neither can drift from the thing it documents.</p><h2>The model</h2><h3>A store</h3><p>A store is a directory, and everything in it is a plain file. meta.sexp names the store. Each writer owns a directory under writers/, holding one numbered segment file per run of writing: one record per line, a CRC and an S-expression, readable by a person and diffable by git. Large payloads go to blobs/. published.sexp records what has been handed to other machines.</p><pre><code>store/
+  meta.sexp            the store's identity
+  instance.sexp        which machine and directory this copy is
+  writers/
+    f0sjkuzn/
+      owner.sexp       who this writer is
+      000001.sexp      one record per line: a CRC and an S-expression
+      working/         this writer's drafts -- not part of the log
+  blobs/               payloads too large to sit in a record
+  published.sexp       what has been handed to other machines
+  snap/                a cached reduction; delete it and it is rebuilt</code></pre><h3>A block</h3><p>A block is the smallest unit of content. It has a stable id, written &lt;writer&gt;.&lt;base36 ordinal&gt; -- f0sjkuzn.au is one. It has fields: kind, title, src, keywords, and whatever else its kind calls for. It has a position: a parent and an ordinal among that parent's children. And it has edges: named, directed relations to other blocks.</p><pre><code>$ theourgia read f0sjkuzn.au
+
+(ok ((id . &quot;f0sjkuzn.au&quot;)
+     (deleted . #f)
+     (fields (keywords . &quot;retry, supervisor, worker&quot;)
+             (kind . section)
+             (src . &quot;...&quot;)
+             (title . &quot;Why the retry is three deep&quot;))
+     (position &quot;f0sjkuzn.a&quot; . 3)
+     (edges ((ref . &quot;f0sjkuzn.b2&quot;)))))</code></pre><h3>The log is the only truth</h3><p>State is a deterministic reduction over a fixed set of events. Given the same log you get the same state, on any machine, in any order of reading. Everything else -- the snapshot in snap/, the search index, an outline, a markdown export -- is derived. Deleting a derived artifact costs a rebuild and nothing else, which is why none of them has to be kept correct by hand.</p><h4>Deletion keeps the history</h4><p>del retires a block: the reduction stops treating it as live, and the record of its life stays in the log. A block that was written by mistake can be taken out of the view without taking it out of the history, and what was written before the mistake is still readable at an earlier cut.</p><h3>One graph over code and prose</h3><p>The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text.</p><h4>A name is a block</h4><p>In a Scheme library block this is literal rather than a metaphor. A definition is a block, and evaluating an expression against that library is evaluating the definitions those blocks hold -- so a name resolves to its definition block, log &lt;id&gt; gives that definition's history, and an explicit edge ties it to the design that motivated it. The same three questions about one name -- what it is, how it got that way, why it exists -- are three reads rather than three searches.</p><h4>Other languages, more modestly</h4><p>Source in other languages goes in as text blocks cut at top-level regions, with names extracted as well as the language table allows. They are blocks like any other: addressable, linkable, with their own history. What they do not get is the resolution above -- a name in Python source is not a binding the store can follow to a block.</p><h3>Backlinks cost one query</h3><p>refs &lt;id&gt; answers what points at this block, from the two places a reference can live: an edge somebody wrote with link, and a mention in the text of another block. Each line says which of the two it came from, and they are never merged -- an edge can be removed with unlink, a sentence can only be edited. One small query in place of walking a repository and a documentation tree looking for the places that mention a thing.</p><pre><code>$ theourgia link koou2buo.2 implements koou2buo.1
+$ theourgia insert --under root --title &quot;Mentions by id&quot; \
+    --text &quot;See [[koou2buo.1]] for the reasoning.&quot;
+
+$ theourgia refs koou2buo.1
+(ok (items (ref (from &quot;koou2buo.2&quot;) (rel implements) (via link))
+           (ref (from &quot;koou2buo.4&quot;) (rel ref) (via md))))</code></pre><blockquote><p><b>What refs resolves, exactly</b> Measured, because this is easy to over-claim. A mention resolves by id: a block whose text contains [[koou2buo.1]] shows up as (ref (from ...) (rel ref) (via md)). A mention by title does not -- a block written with [[The design]] did not appear in refs for the block titled The design. An explicit edge shows up as (ref (from ...) (rel implements) (via link)) under whatever relation name it was given. So renaming a block leaves explicit edges and id mentions intact, because both are by id; what does not survive a rename is a reference that was only ever a name.</p></blockquote><h3>One query surface</h3><p>Every verb answers with one line: an S-expression that begins with ok or error. --wire asks for the machine-facing spelling of it. There is no second, prettier output mode that an agent has to parse differently, and no rendering markup in the way -- the reply is the same data the store holds, and the agent can judge the size of what it is about to read before it reads it.</p><h3>Put the store in git</h3><p>A store is plain files: meta.sexp, one numbered segment per writer with one record per line, the blobs, and published.sexp. Committing them commits the knowledge base itself. There is no export step, nothing to project, and nothing that has to be kept in step with the content, because the content is what was committed. A segment file's diff is the records that were appended: the revision of these pages that corrected four figures shows up in git as 15 added lines and no deleted ones, the log being append-only.</p><h4>What to exclude, and what to keep</h4><pre><code># Track store/lock. It is zero bytes and only its existence is used,
+# but a clone without it answers store-busy to every verb, reads
+# included -- and init will not create it in a store that exists.
+
+# A writer's drafts are that writer's own space, not part of the log.
+store/writers/*/working/
+store/writers/*/draft.lock
+
+# The snapshot is a cached reduction of the log; it rebuilds itself.
+store/snap/</code></pre><h4>What a clone can do, and when</h4><pre><code>$ git clone &lt;repository&gt; site &amp;&amp; cd site
+$ theourgia outline --store store
+- 8pniyrtk.j  Home
+- 8pniyrtk.k  Why not markdown
+  ...
+
+$ theourgia insert --store store --under root --title &quot;...&quot;
+(error refused (instance inode))
+
+$ theourgia adopt --store store
+(ok (from &quot;8pniyrtk&quot;) (to &quot;x9a3vtll&quot;) (prefix 1 68042 113) (reason identity))
+
+$ theourgia insert --store store --under root --title &quot;...&quot;
+(ok (events ((&quot;x9a3vtll&quot; . 1))) (state ((&quot;x9a3vtll.1&quot; . &quot;bf28cd40...&quot;))) ...)</code></pre><blockquote><p><b>What adopt does to a clone</b> instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.</p></blockquote><h2>32 verbs</h2><p>Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, or daemon over the socket.</p><h3>Reading a store</h3><pre><code>read &lt;id&gt; [--md] [--recursive] [--writer &lt;name&gt;] [--working] [--working-info]</code></pre><p>Read one block: its fields, or its text. (daemon)</p><pre><code>outline [--depth &lt;n&gt;] [--with-keywords]</code></pre><p>List the blocks as a tree of titles. (daemon)</p><pre><code>refs &lt;id&gt;</code></pre><p>List the relations a block takes part in. (daemon)</p><pre><code>search &lt;query&gt;</code></pre><p>Find blocks whose title, keywords or text match every word given. (daemon)</p><pre><code>log [&lt;id&gt;]</code></pre><p>Show the changes recorded, for the store or for one block. (daemon)</p><pre><code>tag [&lt;name&gt;]</code></pre><p>Name the current cut, or list the names already given. (daemon)</p><pre><code>diff &lt;cut&gt; &lt;cut&gt;</code></pre><p>Report what changed between two cuts. (daemon)</p><pre><code>conflicts</code></pre><p>List blocks whose writers disagree. (daemon)</p><pre><code>describe</code></pre><p>List the verbs, what each is for, and the writing protocol. (daemon)</p><h3>Making and changing blocks</h3><pre><code>init</code></pre><p>Create a store in this directory. (local)</p><pre><code>insert --under &lt;id&gt; [--after &lt;id&gt;] --title &lt;text&gt; [--text &lt;text&gt;] [--keywords &lt;text&gt;]</code></pre><p>Add a block under a parent, with a title and optional text. (daemon)</p><pre><code>set &lt;id&gt; &lt;field&gt; &lt;value&gt; [--if-unchanged &lt;version&gt;] [--based-on &lt;version&gt;]</code></pre><p>Replace one field of one block. (daemon)</p><pre><code>move &lt;id&gt; &lt;parent&gt; [--after &lt;id&gt;]</code></pre><p>Move a block to another parent, optionally after a sibling. (daemon)</p><pre><code>del &lt;id&gt;</code></pre><p>Retire a block. Its history stays. (daemon)</p><pre><code>link &lt;from&gt; &lt;rel&gt; &lt;to&gt;</code></pre><p>Record a named relation between two blocks. (daemon)</p><pre><code>unlink &lt;from&gt; &lt;rel&gt; &lt;to&gt;</code></pre><p>Remove a named relation between two blocks. (daemon)</p><pre><code>def &lt;name&gt; [--under &lt;library&gt;] &lt;source&gt;</code></pre><p>Define or replace one named definition. (daemon)</p><h3>Drafts, and committing them</h3><pre><code>write &lt;block&gt; &lt;bytes&gt; [--writer &lt;name&gt;] [--based-on &lt;version&gt;] [--rebase]</code></pre><p>Save a draft of a block in a writer's own space, without committing it. (daemon)</p><pre><code>restore &lt;version&gt; [--writer &lt;name&gt;]</code></pre><p>Take an earlier version of a draft back into a writer's space. (daemon)</p><pre><code>drafts [--writer &lt;name&gt;]</code></pre><p>List the drafts a writer is holding. (daemon)</p><pre><code>discard &lt;block&gt; [--writer &lt;name&gt;]</code></pre><p>Throw away a writer's draft of a block. (daemon)</p><pre><code>commit [&lt;block&gt; ...] [--writer &lt;name&gt;] [--working-version &lt;block&gt;=&lt;version&gt;]</code></pre><p>Install a writer's drafts into the store as one change. (daemon)</p><h3>Importing, exporting, splitting</h3><pre><code>import-md &lt;dir&gt; [--allow-delete]</code></pre><p>Read a directory of markdown into the store. (daemon)</p><pre><code>export-md &lt;dir&gt; [--with-ids]</code></pre><p>Write the store out as markdown. (daemon)</p><pre><code>import-code &lt;dir&gt; [--allow-delete] [--datum]</code></pre><p>Read a directory of source into the store. (daemon)</p><pre><code>export-code &lt;dir&gt; [--raw] [--datum]</code></pre><p>Write the store's source back out to a directory. (daemon)</p><pre><code>split-suggest &lt;file&gt; [--output &lt;review-file&gt;]</code></pre><p>Propose where a long file could be divided into blocks. (daemon)</p><h3>Checking, syncing, serving</h3><pre><code>check</code></pre><p>Read the whole store and report whether it is sound. (daemon)</p><pre><code>snapshot</code></pre><p>Record the current state as a reduction that can be reopened quickly. (daemon)</p><pre><code>adopt</code></pre><p>Take in records that are on disk but not yet in the log. (daemon)</p><pre><code>publish &lt;writer&gt; &lt;segment&gt; &lt;file&gt; [&lt;sha256&gt;]</code></pre><p>Publish a segment of a writer's log. (daemon)</p><pre><code>batch &lt;intents&gt;</code></pre><p>Carry out several changes as one request. (daemon)</p></div><footer><div class="wrap"><a href="https://github.com/guenchi/theourgia">GitHub</a><a href="manual.html">Manual</a><span>Apache-2.0</span><span class="sp">Every page here is rendered from the blocks of a theourgia store.</span></div></footer></body></html>

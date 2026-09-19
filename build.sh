@@ -66,9 +66,9 @@ render() {
 
 render page-index      index.html
 render page-why        why.html
-render page-model      model.html
+render page-manual     manual.html
+render manual-md       manual.md
 render page-agents     agents.html
-render page-reference  reference.html
 render page-changelog  changelog.html
 render favicon         favicon.svg
 # .gitignore is rendered too, from the same block the home page's
