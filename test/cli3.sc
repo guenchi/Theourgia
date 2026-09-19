@@ -918,7 +918,7 @@
 ;; batch whose text it does not like the look of.
 (want "TWIN: empty text is a batch of nothing, not a malformed intent"
       (cadr (run-piped dB "" "batch"))
-      '(batch ()))
+      '(batch () (done 0)))
 ;; TWIN: and a well-formed intent still runs, so the guard did not become
 ;; a filter on shapes the product is supposed to accept.
 (want "TWIN: a well-formed intent is still executed"

@@ -154,7 +154,7 @@
                                         (caddr captured)))) #t)))
           (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
               (list 'ok (cons 'items results))
-              (if (= (length results) 1) (car results) (list 'batch results)))))))
+              (if (= (length results) 1) (car results) (batch-answer results)))))))
   (define (export-code store dir raw?)
     (answer
       (lambda ()

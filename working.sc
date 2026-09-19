@@ -1098,5 +1098,5 @@
                                  (if behind
                                      (list 'ok (cons 'items answers) behind)
                                      (list 'ok (cons 'items answers))))))
-                           (if (= (length answers) 1) (car answers) (list 'batch answers))))))))))))))))
+                           (if (= (length answers) 1) (car answers) (batch-answer answers))))))))))))))))
 )

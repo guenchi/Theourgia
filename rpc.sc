@@ -446,7 +446,10 @@
   ;; the back-references `(from n)` would then point into a history the
   ;; author did not have.
   (define (run-batch store actor items req)
-    (list 'batch (with-store-write store (lambda (state view) items) actor req)))
+    ;; the caller knows whether this request had any sub-operations at all;
+    ;; the answer cannot be told from its shape
+    (batch-answer (with-store-write store (lambda (state view) items) actor req)
+                  (null? items)))
 
   (define (parse-batch store actor args req)
     (if (not (= 1 (length args)))

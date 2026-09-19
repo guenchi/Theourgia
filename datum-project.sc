@@ -142,7 +142,7 @@
                                             (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children)))) (caddr captured)))) #t)))
       (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
           (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
-          (if (= (length results) 1) (car results) (list 'batch results)))))
+          (if (= (length results) 1) (car results) (batch-answer results)))))
   (define (import-datum store dir actor req)
     (answer (lambda () (execute store actor (frozen-operation store req (lambda () (capture-import store dir)))))))
   (define (export-datum store dir)

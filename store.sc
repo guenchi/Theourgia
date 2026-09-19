@@ -19,6 +19,7 @@
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
           store-init! nearest-ids store-snapshot!
+          batch-answer
           store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict)
@@ -34,7 +35,7 @@
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
-                session-snapshot! log-open load-writers load-prefix load-commit!
+                session-snapshot! log-open load-writers load-prefix load-commit! local-writer-of
                 discovery-end-seq discovery-integrity discovery-torn
                 enumerate-segment-files discovery-quarantine discover-prefix
                 manifest-segments read-manifest
@@ -1969,6 +1970,45 @@
                 (durable? (guard (failure (#t #f)) (session-commit! s) #t)))
             (if (not durable?)
                 (list '(error unknown (plan-barrier-failed)))
+                ;; NEVER: THE PLAN RECORD IS NOT A SUB-OPERATION. A request
+                ;; with no intents still has an identity and still writes
+                ;; one, but answering with an `ok` DESCRIBING THAT RECORD
+                ;; put a sub-operation in the list that no caller asked
+                ;; for: a tracked empty batch answered `(done 1)` for zero
+                ;; work. Measured before this line changed.
+                ;;
+                ;; NEVER: AND A REPLAY OF AN EMPTY REQUEST DOES NOT ANSWER
+                ;; WHAT THE FIRST ONE DID -- an earlier version of this
+                ;; comment claimed it does, and nothing had measured it.
+                ;; Measured:
+                ;;
+                ;;   first   (batch () (done 0))
+                ;;   replay  (batch ((ok (replay #t) (event …))))
+                ;;
+                ;; An empty plan is complete the moment it is written, so
+                ;; the second call is a replay and takes the receipt path,
+                ;; which carries no count. The two answers differ and both
+                ;; are right; what the empty list fixes is only the first
+                ;; one, where a synthetic item used to be counted as work.
+                ;; NEVER: A REQUEST OF NO SUB-OPERATIONS STILL WRITES ONE
+                ;; EMPTY PLAN, AND THE FIRST ANSWER NAMES IT. Returning an
+                ;; empty list here removed that receipt, and four existing
+                ;; rows said so at once -- `empty-plan`'s QE-01 and three in
+                ;; `q7`, which pin that a client places its cursor from this
+                ;; answer's `events` and `cursor`.
+                ;;
+                ;; What was wrong was the COUNT, not the receipt: this item
+                ;; describes the plan record rather than work anyone asked
+                ;; for, so `batch-answer` answers `(done 0)` for it instead
+                ;; of counting it. Measured:
+                ;;
+                ;;   first   (batch ((ok (events (E)) (state ()) (cursor E)
+                ;;                        (replay #f))) (done 0))
+                ;;   replay  (batch ((ok (replay #t) (event E))))
+                ;;
+                ;; Both are right: an empty plan is complete when written, so
+                ;; asking again is a replay and takes the receipt path, which
+                ;; carries no count at all.
                 (if (null? intents)
                     (list (list 'ok (list 'events (list plan-event))
                                 (list 'state '()) (list 'cursor plan-event)
@@ -2663,6 +2703,122 @@
   ;; first, leaving its descriptor and its shared lock held for the life
   ;; of the process -- so a later writer waiting for exclusive access
   ;; would wait on a session nobody was using.
+  ;; NEVER: ONE PLACE BUILDS THE PARTIAL ANSWER, and every route that can
+  ;; produce one comes through it -- the `batch` verb, a plan completed from
+  ;; a previous request, a commit, and the two imports. Four sites assembling
+  ;; the same shape would make the count and the list two suppliers of one
+  ;; fact, free to disagree; here the count is a FUNCTION of the list beside
+  ;; it and cannot be.
+  ;;
+  ;; NEVER: `done` IS THE NUMBER OF SUB-OPERATIONS THAT ANSWERED `ok`.
+  ;;
+  ;; TODAY EVERY ROUTE STOPS AT THE FIRST FAILURE. All four hand their
+  ;; intents to `with-store-write`, which runs them through `run-intents!`,
+  ;; and that returns as soon as one answers `error` -- so every list here
+  ;; is a run of `ok` followed by at most one `error`, and the count of
+  ;; `ok`s is also the length of the leading run. An earlier version of this
+  ;; comment said a commit or an import kept going; measured, they do not.
+  ;;
+  ;; The definition is the COUNT rather than the leading run so that it
+  ;; stays correct if some route later does continue past a failure.
+  ;;
+  ;; NEVER: `done` BELONGS TO THIS ANSWER AND IS NOT A POSITION IN THE
+  ;; REQUEST. An earlier version of this comment said that while every route
+  ;; stops at the first failure, resuming from n+1 is well defined. It is not,
+  ;; on the route that completes a plan an earlier request left behind: that
+  ;; answer counts the sub-operations THIS completion applied, and the ones
+  ;; the first attempt had already written are not in it. Adding one to this
+  ;; number and indexing the original request's intents with it would skip
+  ;; whatever the first attempt did. What to do next is read from the answer's
+  ;; own entries, never computed from n.
+  ;; NEVER: THREE OF THE FOUR ROUTES HAVE NO CELL THAT CAN GO RED. `commit`,
+  ;; `import-code` and `import-datum` call this function, and their partial
+  ;; answers carry `done` -- but nothing measures it, because reaching their
+  ;; partial branch is harder than it looks. All three validate every item
+  ;; BEFORE the per-item loop, so the cheap failures never get there:
+  ;;
+  ;;   two blocks, one undrafted   -> (error no-draft (blocks "...2"))
+  ;;   a version for only one      -> (error bad-request req-needs-versions ...)
+  ;;   both versions, one wrong    -> (error working-version-changed (blocks ...))
+  ;;
+  ;; Each refuses the whole request. The partial branch is reached only by a
+  ;; failure that happens DURING the loop, which needs a frozen plan whose
+  ;; versions no longer match -- one apparatus, shared by all three, recorded
+  ;; as F31. THE ABSENCE IS DELIBERATE AND THIS IS WHERE IT IS WRITTEN DOWN;
+  ;; the `batch` verb's own rows are in `cli1.sc`.
+  ;; NEVER: A REPLAY RECEIPT IS NOT A LIST OF SUB-OPERATIONS AND CARRIES NO
+  ;; COUNT. A request whose whole work was already applied is answered with
+  ;; ONE request-level receipt, `(ok (replay #t) (event …))`, and counting
+  ;; that receipt said `(done 1)` for a request that had written three --
+  ;; measured, before this clause existed. `(replay #t)` ALREADY SAYS every
+  ;; sub-operation of that request is written, so there is nothing for a
+  ;; count to add; a request seen but only partly applied does not answer
+  ;; `replay #t` at all, it is finished by the completion path, and THAT
+  ;; answer is a list of sub-operations and does carry `done`.
+  ;;
+  ;; The test stays here rather than at the call site so that this remains
+  ;; the only place that builds the shape.
+  ;; NEVER: THE TEST IS THE EXACT SHAPE, NOT "HAS A REPLAY CLAUSE". This
+  ;; function now reads its argument two ways -- a list of sub-operations, or
+  ;; the single receipt that `request-answer` builds at the one call site in
+  ;; `commit-then` -- and the only safe way to tell them apart is to insist
+  ;; on the whole shape that site produces: one item, `ok`, then exactly
+  ;; `(replay #t)` and `(event …)` and nothing else. A sub-operation that
+  ;; happened to mention `replay` must not be able to suppress the count.
+  ;;
+  ;; NEVER: AND THE EVENT CLAUSE IS READ THROUGH, NOT JUST ITS TAG. `(event …)`
+  ;; with anything after it, or carrying something other than a
+  ;; (writer . seq) pair, is not what that site builds -- and every shape this
+  ;; predicate accepts is a shape whose count disappears.
+  (define (replay-receipt? items)
+    (and (pair? items)
+         (null? (cdr items))
+         (let ((item (car items)))
+           (and (pair? item)
+                (eq? (car item) 'ok)
+                (pair? (cdr item))
+                (pair? (cddr item))
+                (null? (cdddr item))
+                (let ((a (cadr item))
+                      (b (caddr item)))
+                  (and (pair? a)
+                       (eq? (car a) 'replay)
+                       (pair? (cdr a))
+                       (null? (cddr a))
+                       (eq? (cadr a) #t)
+                       (pair? b)
+                       (eq? (car b) 'event)
+                       (pair? (cdr b))
+                       (null? (cddr b))
+                       (pair? (cadr b))
+                       (string? (car (cadr b)))
+                       (integer? (cdr (cadr b)))))))))
+
+  ;; NEVER: WHETHER A LIST IS THE PLAN RECEIPT CANNOT BE READ OFF ITS SHAPE.
+  ;; A `tag` intent touches no block, so `block-ids-of` answers `()` for it and
+  ;; one-intent! builds EXACTLY the shape the empty-plan receipt has:
+  ;;
+  ;;   (ok (events ((w . 1))) (state ()) (cursor (w . 1)) (replay #f))
+  ;;
+  ;; Measured: a one-item batch of a single tag answered `(done 0)` while that
+  ;; tag had succeeded. Tightening the shape test cannot fix this, because the
+  ;; shapes are the same -- the fact needed is WHERE THE LIST CAME FROM, and
+  ;; only the caller knows it. `run-batch` holds the intents, so it says.
+  (define (batch-answer items . rest)
+    (let ((no-intents? (and (pair? rest) (car rest))))
+      (cond
+        ((replay-receipt? items) (list 'batch items))
+        (else
+         (list 'batch items
+               (list 'done
+                     (if no-intents?
+                         0
+                         (let loop ((is items) (n 0))
+                           (cond
+                             ((null? is) n)
+                             ((and (pair? (car is)) (eq? (car (car is)) 'ok))
+                              (loop (cdr is) (+ n 1)))
+                             (else (loop (cdr is) n)))))))))))
   (define (store-check store)
     (let ((ls (log-open store)))
       (dynamic-wind
@@ -2703,8 +2859,34 @@
            (notes (reduce-noted (open-and-reduce store)))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
-      (list 'check
-            (list 'store (or (store-id-of store) 'unknown))
+      (append
+        (list 'check
+              (list 'store (or (store-id-of store) 'unknown)))
+            ;; NEVER: A STORE CAN HAVE WRITERS AND NONE OF THEM THIS MACHINE'S.
+            ;; `local` is not about the machine: a writer is local when
+            ;; `writers/<id>/owner.sexp` exists INSIDE THE STORE, and that
+            ;; file travels with the store. So a copy received from
+            ;; somewhere else has writers, has history, and has nobody here
+            ;; to write as -- which is the case a client with a cursor to
+            ;; place needs told apart from "there is one, and it is this".
+            ;;
+            ;; NEVER: WHICH ALSO MEANS A PLAIN COPY STILL REPORTS ITS WRITER
+            ;; AS LOCAL. Copying a directory tree carries `owner.sexp` along
+            ;; with everything else, so the copy names the same writer as the
+            ;; original -- two stores, both saying that writer is this
+            ;; machine's. What makes a writer somebody else's is arriving
+            ;; through the publish path, which writes `published.sexp` and no
+            ;; owner file. This field answers "is there a writer here I may
+            ;; write as", not "did this store come from somewhere else".
+            ;;
+            ;; NEVER: AND WHEN THERE IS NONE THE CLAUSE IS ABSENT ALTOGETHER.
+            ;; Not "", not 0, not `none`: a reader that finds the clause can
+            ;; use it, and one that does not has to ask rather than guess. A
+            ;; spelled-out empty value is the shape that gets used by
+            ;; accident.
+        (let ((local (local-writer-of store ls)))
+          (if local (list (list 'local-writer local)) '()))
+        (list
             (list 'writers per-writer)
             (list 'snapshots snapshots)
             ;; REPORTED SEPARATELY FROM WRITER DAMAGE, because it is not
@@ -2715,7 +2897,7 @@
             (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
             (list 'notes notes)
             (list 'verdict (if (or damaged? (pair? notes) (registry-inside-store?))
-                               'damaged 'ok)))))
+                               'damaged 'ok))))))
 
   ;; A SNAPSHOT THAT CANNOT BE USED IS NOT DAMAGE TO THE STORE -- the log
   ;; still loads and the state is still right, it just has to be rebuilt

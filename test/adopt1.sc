@@ -265,6 +265,25 @@
             (cadr (assq 'reason (cdr adopt2))))
       (list 'adopted 'from 'to 'damage))
 (define new2 (cadr (assq 'to (cdr adopt2))))
+
+;; NEVER: WITH TWO WRITERS, "IS IT IN THE LIST" STOPS BEING A TEST. After an
+;; adopt the store has the retired writer and the new one, and BOTH are in
+;; `writers`. A `local-writer` that simply took the first name would satisfy
+;; membership and still be wrong, so this row names WHICH of the two it has
+;; to be -- the one that is not retired, which is the one a client should
+;; place its cursor on.
+(want "F45 with two writers the local one is the adopted writer, not the retired one"
+      (let* ((c (store-check d2))
+             (local (assq 'local-writer (cdr c)))
+             (ws (map car (cadr (assq 'writers (cdr c))))))
+        (list (length ws)
+              (and (member old2 ws) 'the-retired-one-is-listed)
+              (and (member new2 ws) 'the-adopted-one-is-listed)
+              (length (filter (lambda (c) (and (pair? c) (eq? (car c) 'local-writer)))
+                              (cdr c)))
+              (and local (= (length local) 2) 'a-tag-and-one-value)
+              (and local (cadr local))))
+      (list 2 'the-retired-one-is-listed 'the-adopted-one-is-listed 1 'a-tag-and-one-value new2))
 ;; THE RETIREMENT OFFSET IS WHERE THE PREFIX ENDS, not where the file
 ;; ends. Declaring the file length points the marker at the very bytes
 ;; that caused the adopt, and the next load reports the marker and the
@@ -727,6 +746,15 @@
 ;; only the new interval replaced the recorded stretch with `()`: the one
 ;; place those coordinates still existed, overwritten by the retry of the
 ;; adopt that computed them.
+;; used by rows in two places, so it is defined before the first of them
+(define (refusal-of-write d)
+  (guard (e (#t (list 'RAISED)))
+    (let ((a (with-store-write d
+               (lambda (state view)
+                 (list (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title "T")))))
+               "probe" #f)))
+      (and (pair? a) (pair? (car a)) (cddr (car a))))))
+
 (define d19 (fresh-store! '("One" "Two")))
 (define old19 (writer-of d19))
 (define end19 (discovery-end-seq (discover-prefix d19 old19 'held-exclusive)))
@@ -735,6 +763,15 @@
 (want "CONTROL: the first adopt recorded the stretch"
       (car (uncertain-load d19 old19))
       (list (list old19 end19 9)))
+;; NEVER: THE ALL-RETIRED STATE IS EXACTLY WHAT `local-writer-of` WAS FIXED
+;; FOR, AND IT HAD NO ROW. That function used to answer the first RETIRED
+;; writer when the search ran out, and this fixture builds the one state where
+;; that branch is reached -- a retirement whose successor is gone. Without the
+;; capture below, putting the old fallback back passes every F45 row, because
+;; all of them look at stores that have a writer this machine may write as.
+(define f45-all-retired-check #f)
+(define f45-all-retired-refusal #f)
+
 (want "a retry after a crash between the steps keeps it"
       (begin
         ;; the state a crash after step 1 leaves: a marker, no generation,
@@ -749,6 +786,10 @@
                                (number->string end19) " 9))))\n")))
         (delete-file (string-append d19 "/writers/" old19 "/uncertain.sexp"))
         (write-registry-no-gen! d19)
+        ;; read it HERE: after this the adopt below makes a new writer and the
+        ;; state stops being all-retired
+        (set! f45-all-retired-check (store-check d19))
+        (set! f45-all-retired-refusal (refusal-of-write d19))
         (list (car (adopt-needed? d19))
               (car (store-adopt! d19))
               (car (uncertain-load d19 old19))))
@@ -926,11 +967,164 @@
                                    (number->string end18) ") (uncertain ()))\n")))
         (car (uncertain-load d18 old18)))
       '())
+;; NEVER: AND THE ALL-RETIRED STATE REFUSES DIFFERENTLY, WHICH IS THE POINT.
+;; `check` says there is nobody here to write as, and the write path says WHY:
+;; `retired`, which tells the client to adopt. A received store cannot adopt
+;; anything, and says `no-local-writer`. Collapsing the two into one answer is
+;; what `log13` caught.
+(want "F45 and in the all-retired state the refusal says retired, not no-local-writer"
+      f45-all-retired-refusal
+      '(retired))
+
+(want "F45 when every local writer is retired there is no writer to name"
+      (list (if (assq 'local-writer (cdr f45-all-retired-check)) 'A-WRITER-WAS-NAMED 'absent)
+            ;; and the store still has that writer listed, so the absence is
+            ;; about locality and not about the writer having vanished
+            (length (cadr (assq 'writers (cdr f45-all-retired-check)))))
+      '(absent 1))
+
 (want "the identity stretch survives the same deletion"
       (begin
         (delete-file (string-append copy8 "/writers/" new8 "/uncertain.sexp"))
         (uncertain-load copy8 new8))
       (list (list (list new8 end8 #f)) (list 'uncertain-cache 'absent)))
+
+;; ---- F45: which writer is this machine's ---------------------------------
+;;
+;; KEY: `local` IS NOT ABOUT THE MACHINE. A writer is local when
+;; `writers/<id>/owner.sexp` exists INSIDE THE STORE, and that file travels
+;; with the store -- measured: pointing THEOURGIA_HOME at a different machine
+;; home changes nothing, and `check` from either home answers byte for byte
+;; the same. So the case worth reporting is a store RECEIVED from somewhere
+;; else: it has writers, it has history, and there is nobody here to write as.
+;; A client placing a cursor has to tell that apart from "there is one, and it
+;; is this one".
+
+(define f45-store (fresh-store! '("one")))
+(define f45-check (store-check f45-store))
+
+;; NEVER: THE EXPECTATION IS DERIVED FROM THE ANSWER'S OWN WRITERS CLAUSE.
+;; Writer names are generated, so a row naming one would be a coin toss that
+;; passes today. What is being asserted is that the two AGREE.
+(want "F45 check names the local writer, and it is the writer it lists"
+      ;; NEVER: EXACTLY ONE CLAUSE, AND EXACTLY TWO ELEMENTS IN IT. `assq`
+      ;; answers the first match, so a second `local-writer` clause -- or one
+      ;; carrying extra elements -- is invisible to a row that only looks at
+      ;; what `assq` returns. An answer that contradicts itself would read as
+      ;; agreement.
+      (let* ((all (filter (lambda (c) (and (pair? c) (eq? (car c) 'local-writer)))
+                          (cdr f45-check)))
+             (local (and (pair? all) (car all)))
+             (writers (map car (cadr (assq 'writers (cdr f45-check))))))
+        (list (length all)
+              (and local (= (length local) 2) 'a-tag-and-one-value)
+              (and local (member (cadr local) writers) 'agrees-with-the-writers-clause)
+              (and local (string? (cadr local)) 'a-string)))
+      '(1 a-tag-and-one-value agrees-with-the-writers-clause a-string))
+
+;; ---- a store whose writers do not all come from here ----------------------
+;;
+;; NEVER: THE APPARATUS IS THE PUBLISH PATH ITSELF, NOT A HAND-BUILT
+;; DIRECTORY. `log-publish!` writes the segment AND the manifest that makes a
+;; writer `mirrored`; the first version of the row below faked a received
+;; store by deleting `owner.sexp` from a copy, which leaves a writer with
+;; NEITHER file -- `incomplete-publication`, whose discovery is empty. That
+;; stand-in was missing the property being investigated: its writer reported
+;; `(end 0)` and had no records to lose. This is the same call `behind.sc`
+;; uses for the same reason, from the same two libraries; it is not a second
+;; copy of that instrument.
+
+(define f45-mixed (fresh-store! '("local one")))
+(define f45-local-writer (writer-of f45-mixed))
+(define f45-foreign
+  (encode-record 1 1789000000010 "someone-else" '()
+                 (storable-encode (list 'insert 'root #f
+                                        (list (cons 'kind 'section)
+                                              (cons 'title "FromElsewhere"))))))
+
+(want "F45 the foreign writer's record publishes into this store"
+      (car (log-publish! f45-mixed "mirrorzz" 1 f45-foreign (segment-sha f45-foreign)))
+      'published)
+
+(define f45-mixed-check (store-check f45-mixed))
+
+(want "F45 with a local writer and a mirrored one, the local one is named"
+      (let ((local (assq 'local-writer (cdr f45-mixed-check)))
+            (ws (map car (cadr (assq 'writers (cdr f45-mixed-check))))))
+        (list (and local (cadr local))
+              (and (member "mirrorzz" ws) 'the-mirrored-one-is-listed)
+              (length ws)))
+      (list f45-local-writer 'the-mirrored-one-is-listed 2))
+
+;; NEVER: AND NOW THE ONLY WRITER LEFT IS SOMEBODY ELSE'S. Removing this
+;; machine's writer directory is what a store that arrived from elsewhere
+;; looks like: history, records, and nobody here to write as.
+(system (string-append "rm -rf " f45-mixed "/writers/" f45-local-writer))
+(define f45-elsewhere-check (store-check f45-mixed))
+
+(want "F45 a store whose only writer is a mirrored one has no local writer, and that writer is intact"
+      (let* ((local (assq 'local-writer (cdr f45-elsewhere-check)))
+             (ws (cadr (assq 'writers (cdr f45-elsewhere-check))))
+             (mirrored (assoc "mirrorzz" ws)))
+        (list (if local 'PRESENT 'absent)
+              (length ws)
+              (and mirrored (cadr (assq 'end (cdr mirrored))))
+              (if (assoc "mirrorzz" (reduce-applied-cut (open-and-reduce f45-mixed)))
+                  'its-records-are-in-the-reduction
+                  'ITS-RECORDS-ARE-GONE)))
+      (list 'absent 1 1 'its-records-are-in-the-reduction))
+
+;; NEVER: A WRITER WITH NEITHER FILE IS A THIRD THING, AND IT IS WORTH ITS OWN
+;; ROW. Deleting `owner.sexp` from a copy does not make a received store -- it
+;; makes an INCOMPLETE PUBLICATION, a writer with no owner file and no
+;; manifest, whose discovery is empty. The row above builds a real mirrored
+;; writer through the publish path; this one keeps the crude construction
+;; deliberately, because the answer has to be the same for both: no local
+;; writer, and the clause absent rather than empty. What differs is the
+;; writer's state, and the row says which one it is looking at.
+(define f45-received (string-append scratch "/f45-received"))
+(system (string-append "rm -rf " f45-received "; cp -R " f45-store " " f45-received))
+(system (string-append "find " f45-received " -name owner.sexp -delete"))
+(define f45-received-check (store-check f45-received))
+
+;; NEVER: TWO QUESTIONS, TWO ANSWERS, AND THEY ARE NOT THE SAME QUESTION.
+;; `check` asks IS THERE A WRITER HERE I MAY WRITE AS -- every local writer
+;; retired means no, and the clause is absent. `log-begin` asks WHY IS THIS
+;; REFUSED, and there the two situations differ in what the client should do:
+;;
+;;   every local writer retired   retired            -> adopt
+;;   received, no local writer    no-local-writer    -> there is nothing to adopt
+;;
+;; Measured across three trees. Before this batch the second said
+;; `predecessor-not-applied`, which tells a caller to apply more records and
+;; can never help -- there is no writer whose predecessor could be missing;
+;; `no-view-reason` already ended with `no-local-writer` in a branch nothing
+;; could reach, because the predecessor test came first.
+;;
+;; NEVER: AND MAKING THE SELECTOR ANSWER #f FOR BOTH BROKE THE FIRST ONE.
+;; `log13` pins that a retired writer whose sequence still matches refuses
+;; with `retired`; handed #f the write path raised `~s is not a string`. The
+;; write path now uses a selection that still names a retired writer, and
+;; `check` keeps the one that does not.
+(want "F45 a store whose writers are all somebody else's refuses by naming that"
+      ;; NOTE: BOTH OF THESE ARE THE RECEIVED KIND. `f45-mixed` has had its
+      ;; local writer's directory removed and `f45-received` never had an
+      ;; owner file -- neither is the all-retired case, which is a different
+      ;; answer and is measured where that state actually exists, below.
+      (list (refusal-of-write f45-mixed) (refusal-of-write f45-received))
+      (list '(no-local-writer) '(no-local-writer)))
+
+(want "F45 a writer with neither an owner file nor a manifest is also not this machine's"
+      (let* ((ws (cadr (assq 'writers (cdr f45-received-check))))
+             (w (car ws)))
+        (list (if (assq 'local-writer (cdr f45-received-check)) 'PRESENT 'absent)
+              (if (assq 'writers (cdr f45-received-check)) 'writers-still-there 'NO-WRITERS)
+              (length ws)
+              ;; NOTE: AND ITS DISCOVERY IS EMPTY, which is what tells this
+              ;; case apart from the mirrored one above -- that writer kept
+              ;; its records, this one cannot be read at all.
+              (cadr (assq 'end (cdr w)))))
+      '(absent writers-still-there 1 0))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

@@ -188,5 +188,141 @@
               facade-names)
       '())
 
+;; ---- one supplier for the count in a partial answer ------------------------
+;;
+;; KEY: FOUR ROUTES CAN ANSWER `(batch <items> (done n))` -- the `batch` verb,
+;; a plan completed from an earlier request, a commit over several blocks, and
+;; the two imports. If each assembled the shape itself, `n` and the list would
+;; be two suppliers of one fact and free to disagree. They all call
+;; `batch-answer`, where the count is a FUNCTION of the list beside it.
+;;
+;; NEVER: THIS CENSUS ASKS ABOUT `done`, NOT ABOUT `batch`. The tag `batch`
+;; means two different things in this tree -- the answer, and a request
+;; identity `(batch <req> k)` written into a plan -- so a census on it counts
+;; things that have nothing to do with each other. `done` has one meaning.
+;;
+;; NEVER: AND THE READING HAS TO BE ONE, NOT ZERO. A pattern that matches
+;; nothing would satisfy "no second supplier" while proving only that the
+;; census cannot see. The second row names where the one hit lives, so
+;; renaming the constructor turns THIS row red as well.
+
+(define (last-slash p)
+  (let loop ((i (- (string-length p) 1)))
+    (cond ((< i 0) -1)
+          ((char=? (string-ref p i) #\/) i)
+          (else (loop (- i 1))))))
+
+(define (contains-text? text needle)
+  (let ((n (string-length text)) (k (string-length needle)))
+    (let loop ((i 0))
+      (cond ((> (+ i k) n) #f)
+            ((string=? (substring text i (+ i k)) needle) #t)
+            (else (loop (+ i 1)))))))
+
+(define (read-forms path)
+  (call-with-port (open-input-file path)
+    (lambda (port)
+      (let loop ((out (quote ())))
+        (let ((d (read port)))
+          (if (eof-object? d) (reverse out) (loop (cons d out))))))))
+
+;; NEVER: THE CENSUS READS DATA, NOT TEXT. The text version needed a new
+;; pattern every time somebody found another way to write the same thing --
+;; `(list 'done n)`, `(cons 'done n)`, a backquoted `(done ,n)`, `(quote done)`,
+;; a newline where a space was expected, and it counted the constructor when it
+;; appeared inside a COMMENT. Each patch was a guard whose model of the
+;; language was smaller than the language. `read` is the language: it discards
+;; comments and whitespace and turns every quotation form into the same
+;; structure, so there is one shape to recognise instead of a list of spellings.
+;;
+;; NOTE: WHICH IS ALSO WHY THIS IS NOT A COUNT OF THE SYMBOL `done`. `ffi.sc`
+;; has `(set-box! fault-state 'done)`, and a census of the symbol would report
+;; it. Neither shape below matches: its head is `set-box!`, and it is not a
+;; list beginning with `done`.
+(define (builds-done-clause? form quoted?)
+  (and (pair? form)
+       (or
+         ;; (list 'done …) or (cons 'done …) -- after `read`, `'done` is
+         ;; `(quote done)` however it was spelled
+         ;; NOTE: AND WHAT THIS DOES NOT RECOGNISE IS WRITTEN DOWN. `list`,
+         ;; `cons` and `list*` are the constructors this tree uses; a
+         ;; `(cons `done …)` or a `` `(,'done ,1) `` would build the clause and
+         ;; not be counted. THE CENSUS PINS THE SPELLINGS IT KNOWS, and is not
+         ;; a proof that construction is unique -- the rows in `cli1.sc` are
+         ;; what say the answers are right.
+         (and (memq (car form) (quote (list cons list*)))
+              (pair? (cdr form))
+              (let ((x (cadr form)))
+                (and (pair? x) (eq? (car x) (quote quote))
+                     (pair? (cdr x)) (eq? (cadr x) (quote done)))))
+         ;; (done …) as data -- but ONLY inside a quotation. A list whose head
+         ;; is `done` is also what an ordinary local binding looks like after
+         ;; `read`: measured, `(let ((done (box #f))) …)` appears in `ffi.sc`
+         ;; twice, in `wire.sc` and in `log.sc`, and counting those took the
+         ;; census from 1 to 5. Inside a quasiquote the same shape IS the
+         ;; clause, so the flag is the whole difference.
+         (and quoted? (eq? (car form) (quote done))))))
+
+;; The name of the definition a hit sits inside, taken from the datum. The
+;; text version searched the FILE for `(define (batch-answer`, which a comment
+;; could satisfy.
+(define (hits-in form enclosing quoted?)
+  (cond
+    ((not (pair? form)) (quote ()))
+    (else
+     (let* ((name (if (and (eq? (car form) (quote define))
+                          (pair? (cdr form))
+                          (pair? (cadr form))
+                          (symbol? (car (cadr form))))
+                     (car (cadr form))
+                     enclosing))
+            ;; NEVER: AND `unquote` LEAVES THE QUOTATION. Inside a
+            ;; quasiquote an unquoted expression is ordinary code again, so
+            ;; `,(let ((done (box #f))) …)` would otherwise be counted -- the
+            ;; same local-binding false positive the quotation flag exists to
+            ;; prevent, reintroduced one level in.
+            (inside? (cond
+                       ((memq (car form) (quote (unquote unquote-splicing))) #f)
+                       ((memq (car form) (quote (quasiquote quote))) #t)
+                       (else quoted?)))
+            (here (if (builds-done-clause? form quoted?) (list name) (quote ()))))
+       (let loop ((xs form) (acc here))
+         (cond
+           ((pair? xs) (loop (cdr xs) (append acc (hits-in (car xs) name inside?))))
+           ((null? xs) acc)
+           (else (append acc (hits-in xs name inside?)))))))))
+
+(define (census-done)
+  (let loop ((fs (sources-under root)) (hits (quote ())))
+    (if (null? fs)
+        hits
+        (let ((found (apply append
+                            (map (lambda (f) (hits-in f #f #f))
+                                 (read-forms (car fs))))))
+          (loop (cdr fs)
+                (if (null? found)
+                    hits
+                    (cons (cons (car fs) found) hits)))))))
+
+(define done-hits (census-done))
+
+(want "F32 exactly one place in the shipped sources builds the done clause"
+      (list (length done-hits)
+            (apply + (map (lambda (h) (length (cdr h))) done-hits))
+            (map (lambda (h) (let ((p (car h)))
+                               (substring p (+ 1 (last-slash p)) (string-length p))))
+                 done-hits))
+      (list 1 1 '("store.sc")))
+
+;; NEVER: AND THE DEFINITION IS NAMED FROM THE DATUM. The text version asked
+;; whether the FILE contained `(define (batch-answer`, which a comment
+;; mentioning it would have satisfied -- this one reports the name of the
+;; definition the hit is lexically inside, read as data.
+(want "F32 TWIN: and the definition it is inside is batch-answer"
+      (if (null? done-hits)
+          'THE-CENSUS-SAW-NOTHING
+          (cdr (car done-hits)))
+      '(batch-answer))
+
 (printf "rows: ~a\n~a failures\nfacade-gate complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

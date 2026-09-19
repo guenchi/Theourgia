@@ -666,6 +666,296 @@
         (list (code-of r) (> (string-length (out-of r)) 0)))
       (list 0 #t))
 
+(printf "== L11: --if-unchanged, the optimistic-conflict criterion ==\n")
+;; NEVER: THIS OPTION HAD NEVER BEEN PASSED BY ANY FIXTURE. Searching for it
+;; returned three files and every one of them was a MENTION, not a use:
+;; `cli1.sc`'s own usage-string row has it inside an EXPECTED usage form,
+;; `q8.sc` lists it in an OPTION CENSUS TABLE, and `reduce1.sc` names it in
+;; comments explaining why a token has to stay stable. A dirty grep reads
+;; like coverage; three files and zero executions is what it was.
+;;
+;; The criterion is §13 L11, and its anti-pattern column names the two ways
+;; it is got wrong: APPENDING BEFORE REFUSING, and A HASH THAT DOES NOT
+;; SURVIVE A SNAPSHOT. Both have a row here.
+
+(define dl11 (test-dir "cli1l11"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/homeL11"))
+(run dl11 "init")
+(run dl11 "insert --under root --title L11")
+(define b11 (string-append (writer-of dl11) ".1"))
+(define (hash-of r id)
+  (let ((st (assq 'state (cdr (datum-of r)))))
+    (and st (cond ((assoc id (cadr st)) => cdr) (else #f)))))
+(define (records-in d)
+  (length (reduce-trace (open-and-reduce d))))
+
+;; Q reads the block's hash and pauses here.
+(define h11 (hash-of (run dl11 (string-append "set \"" b11 "\" note q-saw-this")) b11))
+
+;; P changes the same block while Q is paused, and WHAT P'S WRITE RETURNED IS
+;; KEPT: the refusal below has to hand back that exact hash, not merely some
+;; hash that differs from Q's. Without this the row passes for an
+;; implementation that returns any fresh-looking value.
+(define p11 (run dl11 (string-append "set \"" b11 "\" note p-wrote-this")))
+(define h11-after-p (hash-of p11 b11))
+
+(define before-refusal (records-in dl11))
+(define stale (run dl11 (string-append "set \"" b11 "\" note q-writes --if-unchanged " h11)))
+
+(want "L11 a write carrying a stale hash is refused, and the answer carries the CURRENT one"
+      (list (> (code-of stale) 0)
+            (car (datum-of stale))
+            (cadr (datum-of stale))
+            (let ((cur (assq 'current (cddr (datum-of stale)))))
+              (and cur (string? (cadr cur))
+                   (not (equal? (cadr cur) h11))
+                   (if (equal? (cadr cur) h11-after-p)
+                       'is-exactly-what-p-wrote
+                       (list 'SOME-OTHER-HASH (cadr cur))))))
+      (list #t 'error 'changed 'is-exactly-what-p-wrote))
+
+;; NEVER: AND NOTHING WAS WRITTEN. The anti-pattern is appending first and
+;; refusing afterwards, which leaves a record for a write the caller was
+;; told did not happen.
+(want "L11 the refused write left the record count where it was"
+      (records-in dl11)
+      before-refusal)
+
+;; NEVER: A WRITE THAT ANSWERS `ok` AND CHANGED NOTHING WOULD PASS THE ROWS
+;; BELOW. Each reads the field back, so a conditional write that reports
+;; success without applying anything is visible here and nowhere else.
+(define (note-of id)
+  (let* ((r (run dl11 (string-append "read \"" id "\"")))
+         (body (and (= 0 (code-of r)) (pair? (datum-of r)) (cadr (datum-of r))))
+         (fs (and (pair? body) (assq 'fields body))))
+    (cond ((not fs) (list 'COULD-NOT-READ (code-of r)))
+          ((assq 'note (cdr fs)) => cdr)
+          (else 'ABSENT))))
+
+(want "L11 the hash the refusal handed back is the one that works, and the value lands"
+      (let* ((cur (cadr (assq 'current (cddr (datum-of stale)))))
+             (retry (run dl11 (string-append "set \"" b11 "\" note q-retries --if-unchanged " cur))))
+        (list (code-of retry) (car (datum-of retry)) (note-of b11)))
+      (list 0 'ok "q-retries"))
+
+;; NEVER: AN UNRELATED BLOCK MOVING MUST NOT REFUSE THIS ONE. A guard keyed
+;; on anything wider than the block -- a store-wide cut, the log's length --
+;; passes every row above and fails this one.
+(define n11-insert (run dl11 "insert --under root --title Neighbour"))
+;; NEVER: THE NEIGHBOUR'S ID COMES FROM ITS OWN ANSWER. Written as
+;; `<writer>.2` this named no block at all: an id is the writer and the
+;; SEQUENCE NUMBER OF THE EVENT, and by this point several `set` records have
+;; taken the numbers in between. The `set` below then failed, the neighbour
+;; never moved, and the row was measuring nothing -- green for a store that
+;; refuses every unrelated write as much as for one that allows them.
+(define n11
+  (let* ((ev (car (cadr (assq 'events (cdr (datum-of n11-insert)))))))
+    (string-append (car ev) "." (number->string (cdr ev)))))
+(define h11b (hash-of (run dl11 (string-append "set \"" b11 "\" note before-neighbour")) b11))
+(define n11-moved (run dl11 (string-append "set \"" n11 "\" note neighbour-moves")))
+
+;; NEVER: AND THE ROW ASSERTS THAT THE NEIGHBOUR REALLY MOVED. Without this
+;; the row cannot tell "an unrelated change does not refuse" from "no
+;; unrelated change happened".
+(want "L11 the neighbour really did change, so the row below is about something"
+      ;; NEVER: AND "CHANGED" MEANS THE VALUE IS THERE, NOT THAT THE WRITE SAID
+      ;; `ok`. The first version of this control asserted only the answer, which
+      ;; a write that acknowledges and applies nothing also gives -- leaving the
+      ;; row below testing an unchanged store, which is the very thing this
+      ;; control exists to rule out. The three successful rows above already
+      ;; read their value back; this one had been written without doing so.
+      (list (code-of n11-moved) (car (datum-of n11-moved)) (note-of n11))
+      (list 0 'ok "neighbour-moves"))
+
+(want "L11 a change to another block does not refuse this one, and the value lands"
+      (let ((r (run dl11 (string-append "set \"" b11 "\" note still-fine --if-unchanged " h11b))))
+        (list (code-of r) (car (datum-of r)) (note-of b11)))
+      (list 0 'ok "still-fine"))
+
+;; NEVER: AND THE HASH HAS TO SURVIVE A SNAPSHOT. The second anti-pattern:
+;; a hash recomputed from the log alone is not the same value once the
+;; block's last change is behind the snapshot cut, so this row writes,
+;; snapshots, moves the log on, and then uses the pre-snapshot hash.
+(define h11c (hash-of (run dl11 (string-append "set \"" b11 "\" note before-snapshot")) b11))
+(run dl11 "snapshot")
+
+;; NEVER: AND THE READER HAS TO BE THE SNAPSHOT. Both sides of the row below
+;; go through `set`, whose write path rebuilds from the whole log, so a
+;; snapshot that never happened -- or one nothing was seeded from -- leaves
+;; the row green while proving nothing about snapshot restoration. A reopen
+;; that applies zero records is the evidence that the state now comes from
+;; the snapshot rows.
+(want "L11 CONTROL: the state is now seeded from the snapshot, not replayed"
+      (length (reduce-trace (open-and-reduce dl11)))
+      0)
+
+(run dl11 "insert --under root --title AfterSnapshot")
+
+(want "L11 a hash taken before a snapshot still works after it, and the value lands"
+      (let ((r (run dl11 (string-append "set \"" b11 "\" note after-snapshot --if-unchanged " h11c))))
+        (list (code-of r) (car (datum-of r)) (note-of b11)))
+      (list 0 'ok "after-snapshot"))
+
+;; NEVER: AND THE SAME BOUNDARY HAS TO REFUSE. The row above shows a
+;; pre-snapshot hash still ACCEPTED; on its own that is also what an
+;; implementation which had stopped checking altogether would do. This one
+;; uses a hash that is stale ACROSS the snapshot -- the block has moved
+;; since -- and requires the refusal, so the pair brackets the boundary from
+;; both sides.
+(want "L11 and a hash that went stale across the snapshot is refused there too"
+      (let ((r (run dl11 (string-append "set \"" b11 "\" note must-not-land --if-unchanged " h11c))))
+        (list (> (code-of r) 0) (car (datum-of r)) (cadr (datum-of r)) (note-of b11)))
+      (list #t 'error 'changed "after-snapshot"))
+
+;; NEVER: AND THE TWO SIDES OF THE BOUNDARY HAVE TO AGREE ON THE VALUE, not
+;; merely accept and refuse in the right places. The rows above take their
+;; hash from a WRITE answer, and the write path rebuilds from the whole log --
+;; so a snapshot that restored the state wrongly would still hand back a hash
+;; the next write agrees with, and every row above stays green.
+;;
+;; NOTE: THERE IS NO READ-PATH HASH TO COMPARE IT WITH. `read` does not carry
+;; one; `block-hash` reaches a caller only through a write answer's `state`
+;; clause or through the `current` of an `--if-unchanged` refusal. Recorded as
+;; a gap. What the refusal DOES give is a hash computed from the reduction --
+;; and the CONTROL above has already shown that reduction is seeded from the
+;; snapshot and replays nothing. So a refusal taken after the snapshot carries
+;; the reader's value, and requiring the writer to accept it is the comparison
+;; this row exists for.
+(define stale-after-snap
+  (run dl11 (string-append "set \"" b11 "\" note nope --if-unchanged " h11c)))
+(define current-from-snapshot-state
+  (cadr (assq 'current (cddr (datum-of stale-after-snap)))))
+
+(want "L11 the hash the snapshot-seeded state computes is the one the writer accepts"
+      (let ((r (run dl11 (string-append "set \"" b11 "\" note agreed --if-unchanged "
+                                        current-from-snapshot-state))))
+        (list (code-of r) (car (datum-of r)) (note-of b11)))
+      (list 0 'ok "agreed"))
+
+;; NEVER: AND BOTH OF THOSE HASHES CAME FROM THE WRITER. The refusal computes
+;; its `current` inside a write session, which rebuilds from the whole log --
+;; so a snapshot that restored the state wrongly would still produce a value
+;; the next write agrees with, and the row above cannot see it. This one asks
+;; the READER: `block-hash` over the reduction `open-and-reduce` returns, which
+;; the CONTROL above showed replays nothing and is seeded from the snapshot.
+;; The two sides are computed by different code over differently-built states,
+;; which is the comparison the criterion is about.
+(define reader-hash-after-snapshot
+  (block-hash (open-and-reduce dl11) b11))
+
+(want "L11 the hash the READER computes over snapshot-seeded state is the one the writer accepts"
+      (let ((r (run dl11 (string-append "set \"" b11 "\" note reader-agreed --if-unchanged "
+                                        reader-hash-after-snapshot))))
+        (list (code-of r) (car (datum-of r)) (note-of b11)))
+      (list 0 'ok "reader-agreed"))
+
+(want "L11 TWIN: and after the block moves, the reader's older hash is refused"
+      (let* ((stale reader-hash-after-snapshot)
+             (r (run dl11 (string-append "set \"" b11 "\" note must-not-land --if-unchanged " stale))))
+        (list (> (code-of r) 0) (car (datum-of r)) (cadr (datum-of r)) (note-of b11)))
+      (list #t 'error 'changed "reader-agreed"))
+
+(printf "== L14: a field this version does not know survives every recovery ==\n")
+;; NEVER: THE STORE KEEPS FIELDS IT HAS NO OPINION ABOUT. `put` checks that a
+;; field's name and value are well formed and nothing else -- there is no list
+;; of known field names anywhere -- so a record written by a LATER version of
+;; this program, carrying a field this one has never heard of, has to come
+;; back unchanged. The half of §13 L14 that had no cell is this one; the
+;; unknown-VERB half has had one all along (`log11.sc:565`).
+;;
+;; NEVER: AND EVERY ROW BELOW IS A SEPARATE PROCESS. `run` starts the CLI
+;; afresh, so "survives a restart" is not something this fixture has to
+;; arrange -- every read below already happens in a program that was not
+;; running when the field was written.
+
+(define d14 (test-dir "cli1l14"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home14"))
+(run d14 "init")
+(run d14 "insert --under root --title L14")
+(define b14 (string-append (writer-of d14) ".1"))
+(run d14 (string-append "set \"" b14 "\" a-field-from-the-future keep-me"))
+
+(define (field-of id name)
+  (let* ((r (run d14 (string-append "read \"" id "\"")))
+         (body (and (= 0 (code-of r)) (pair? (datum-of r)) (cadr (datum-of r))))
+         (fs (and (pair? body) (assq 'fields body))))
+    (cond ((not fs) (list 'COULD-NOT-READ (code-of r) (datum-of r)))
+          ((assq name (cdr fs)) => cdr)
+          (else 'ABSENT))))
+
+(want "L14 an unknown field is there after a restart"
+      (field-of b14 'a-field-from-the-future)
+      "keep-me")
+
+(run d14 "snapshot")
+
+;; NEVER: AND THE SNAPSHOT HAS TO BE THE THING THE READ CAME FROM. Without
+;; this the two rows below are green even if `snapshot` silently wrote
+;; nothing: the store would simply replay its whole log, which is what the
+;; FIRST row already tests. The number of records a reopen applies tells
+;; them apart -- measured: three writes then a snapshot gives a trace of 0,
+;; and one further write gives exactly 1.
+(define trace-after-snapshot (length (reduce-trace (open-and-reduce d14))))
+
+(want "L14 CONTROL: the snapshot really seeded the state, so the rows below are about it"
+      trace-after-snapshot
+      0)
+
+(want "L14 and after a snapshot"
+      (field-of b14 'a-field-from-the-future)
+      "keep-me")
+
+;; NEVER: AND WITH LOG BEYOND THE SNAPSHOT, which is the third recovery path:
+;; the state is rebuilt from the snapshot rows and then the records after the
+;; cut are applied on top. A reducer that dropped unknown fields only on one
+;; of those two paths would pass one of these rows and fail the other.
+(run d14 "insert --under root --title AfterCut")
+(run d14 (string-append "set \"" b14 "\" another-unknown also-keep-me"))
+
+(want "L14 CONTROL: and now exactly the records written after the cut are replayed"
+      (length (reduce-trace (open-and-reduce d14)))
+      2)
+
+(want "L14 and after a snapshot with records applied on top of it"
+      (list (field-of b14 'a-field-from-the-future)
+            (field-of b14 'another-unknown))
+      (list "keep-me" "also-keep-me"))
+
+(want "L14 the fields this version does know are still right beside them"
+      ;; NEVER: AND THIS RUNS BEFORE THE SECOND SNAPSHOT. Placed after it, a
+      ;; known field lost on the INCREMENTAL path would be restored by the
+      ;; snapshot that follows, and this control would report it intact --
+      ;; masking exactly the loss it is here to notice.
+      (field-of b14 'title)
+      "L14")
+
+;; NEVER: A FIELD THAT ARRIVED BY `put` AND NOT BY `set`. Every row above
+;; writes its unknown field with `set`, so an implementation that kept
+;; unknown fields on the `set` path and dropped them when reducing a `put`
+;; record would pass all of them. This one is carried in by the insert
+;; itself.
+(define put-insert
+  (run d14 "batch"
+       (string-append "'((insert root #f ((kind . section) (title . \"PutSeeded\")"
+                      " (arrived-by-put . \"put-me\"))))'")))
+(define pb14
+  (let ((ev (car (cadr (assq 'events (cdr (car (cadr (datum-of put-insert)))))))))
+    (string-append (car ev) "." (number->string (cdr ev)))))
+
+(want "L14 a field that arrived with the record, not by a later set, is kept too"
+      (list (code-of put-insert) (field-of pb14 'arrived-by-put) (field-of pb14 'title))
+      (list 0 "put-me" "PutSeeded"))
+
+(run d14 "snapshot")
+
+(want "L14 and it survives a snapshot as well"
+      (list (length (reduce-trace (open-and-reduce d14)))
+            (field-of pb14 'arrived-by-put))
+      (list 0 "put-me"))
+
+;; NEVER: AND THE KNOWN FIELDS ARE NOT DISTURBED BY CARRYING THEM. A reducer
+;; that kept unknown fields by storing them somewhere else would pass every
+;; row above and lose the title.
 (printf "== P7: a batch is one lock and one answer per item ==\n")
 (define d7 (test-dir "cli1batch"))
 (putenv "THEOURGIA_HOME" (string-append scratch "/home7"))
@@ -693,6 +983,207 @@
       (list (> (code-of mixed-batch) 0)
             (map car (cadr (datum-of mixed-batch))))
       (list #t '(ok error)))
+;; ---- two things this section deliberately does NOT cover -------------------
+;;
+;; NEVER: THE REFUSAL CARRIES NO `state` BODY. The design table for L11 asks
+;; for "the current hash AND state"; the implementation answers
+;; `(error changed (current <hash>))` and no state. That is a PRODUCT gap, not
+;; a missing row -- a cell here would only restate what the answer does. It is
+;; recorded rather than written as a row that passes.
+;;
+;; NEVER: AND THE ADMISSION-TRIGGERED RECONSTRUCTION PATH IS NOT EXERCISED.
+;; L14 claims preservation through every recovery; these rows cover restart,
+;; snapshot, and snapshot-plus-increment. `rebuild-request-state!` -- the
+;; reconstruction admission triggers -- is a fourth, and it needs apparatus
+;; this batch does not build.
+;;
+;; NOTE: AN EARLIER VERSION OF THIS NOTE CALLED THAT "rejecting an unusable
+;; snapshot", WHICH IS A DIFFERENT PATH. Two absences described as one is
+;; worse than either, because whoever comes to close them finds one name and
+;; two things behind it. Both are recorded; this note is about the first.
+
+(printf "== F32: a replay carries a receipt, not a count ==\n")
+;; NEVER: A REPLAYED REQUEST ANSWERS ONE RECEIPT, AND COUNTING IT LIED. The
+;; first version put `done` on every batch answer, so a request that had
+;; written THREE sub-operations answered `(done 1)` when it was replayed --
+;; the single `(ok (replay #t) …)` counted as one item. `(replay #t)` already
+;; states that the whole request is applied, so there is nothing left for a
+;; count to say, and the clause is absent instead of wrong.
+
+(define d32 (test-dir "cli1f32replay"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/home32"))
+(run d32 "init")
+(define w32 (writer-of d32))
+(define (cursor-of d)
+  (let ((c (assoc (writer-of d) (reduce-applied-cut (open-and-reduce d)))))
+    (string-append (writer-of d) ":" (number->string (if c (cdr c) 0)))))
+
+(define three-intents
+  (string-append "'((insert root #f ((kind . section) (title . \"t1\")))"
+                 " (insert root #f ((kind . section) (title . \"t2\")))"
+                 " (insert root #f ((kind . section) (title . \"t3\"))))'"))
+(define cur32 (cursor-of d32))
+(define first32 (run d32 (string-append "batch --req RB1 --cursor " cur32) three-intents))
+;; the record count is taken BETWEEN the two calls, so the twin below compares
+;; two different moments rather than a value with itself
+(define records-after-first (length (reduce-trace (open-and-reduce d32))))
+(define replay32 (run d32 (string-append "batch --req RB1 --cursor " cur32) three-intents))
+(define records-after-replay (length (reduce-trace (open-and-reduce d32))))
+
+(want "F32 a tracked batch of three counts three the first time"
+      (list (code-of first32)
+            (length (cadr (datum-of first32)))
+            (assq 'done (cddr (datum-of first32))))
+      (list 0 3 '(done 3)))
+
+(want "F32 replayed, it answers one receipt and NO count"
+      (let ((d (datum-of replay32)))
+        (list (code-of replay32)
+              (length (cadr d))
+              (if (assq 'done (cddr d)) 'A-COUNT-IS-THERE 'no-count)
+              (let ((r (assq 'replay (cdr (car (cadr d)))))) (and r (cadr r)))))
+      (list 0 1 'no-count #t))
+
+;; NEVER: AND THE REPLAY WROTE NOTHING MORE AND LOST NOTHING. Without this the
+;; rows above are also passed by a replay that quietly re-applied the work.
+(want "F32 TWIN: the replay wrote nothing more, so the receipt is telling the truth"
+      (list (> records-after-first 3) (- records-after-replay records-after-first))
+      (list #t 0))
+
+(define empty-cur32 (cursor-of d32))
+(define empty32 (run d32 (string-append "batch --req RB2 --cursor " empty-cur32) "''"))
+
+;; NEVER: AND THE EXCEPTION IS NARROW. `batch-answer` now reads its argument
+;; two ways, so what it accepts as a receipt decides which answers silently
+;; lose their count. These call it directly, because the CLI can only produce
+;; the shapes the product already builds and cannot ask about the ones it must
+;; refuse to treat as receipts.
+(want "F32 a one-item list that is not the receipt shape still carries a count"
+      (list
+        ;; no event clause at all
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t))))))
+        ;; an event clause with something after it
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
+                                                    (list 'event (cons "w" 1))
+                                                    (list 'extra 1))))))
+        ;; an event whose payload is not a (writer . seq) pair
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
+                                                    (list 'event 'not-a-pair)))))))
+      (list '(done 1) '(done 1) '(done 1)))
+
+;; NEVER: AND EACH PART OF THE EVENT CLAUSE HAS ITS OWN NEAR MISS. The three
+;; checks inside it -- nothing after the payload, a string writer, an integer
+;; sequence -- were added together and nothing separated them: removing any one
+;; of them left every row green. One counterexample per check is what makes
+;; each of them load-bearing.
+(want "F32 the event clause's parts are each required"
+      (list
+        ;; a tail after the payload
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
+                                                    (list 'event (cons "w" 1) 'extra))))))
+        ;; a writer that is not a string
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
+                                                    (list 'event (cons 'w 1)))))))
+        ;; a sequence that is not an integer
+        (assq 'done (cddr (batch-answer (list (list 'ok (list 'replay #t)
+                                                    (list 'event (cons "w" "1"))))))))
+      (list '(done 1) '(done 1) '(done 1)))
+
+(want "F32 and the receipt shape itself carries none"
+      (cddr (batch-answer (list (list 'ok (list 'replay #t) (list 'event (cons "w" 1))))))
+      '())
+
+;; NEVER: AND A REAL SUB-OPERATION CAN WEAR THE SAME SHAPE. A `tag` touches no
+;; block, so its answer carries an empty `state` and is character for character
+;; what the empty-plan receipt looks like. Counting by SHAPE reported `(done 0)`
+;; for a batch whose one tag had succeeded -- measured, before `batch-answer`
+;; was told by its caller instead of guessing. No stricter shape test could
+;; have separated them: the shapes are the same, and what differs is where the
+;; list came from.
+(define tag-batch (run d32 "batch" "'((tag \"v1\"))'"))
+
+(want "F32 a one-item batch whose answer looks like the plan receipt still counts one"
+      ;; NEVER: AND THE LABEL HAS TO BE WHAT IS CHECKED. This said
+      ;; `has-an-empty-state-clause` while only asking whether a `state` clause
+      ;; was PRESENT -- measured against `(batch ((ok (state NOT-EMPTY))) (done 1))`
+      ;; it passed, and the emptiness is the whole reason the two shapes collide.
+      ;; A label that overstates is worse than a weak row, because coverage is
+      ;; read off the label.
+      (let* ((d (datum-of tag-batch))
+             (item (and (pair? (cadr d)) (car (cadr d))))
+             (st (and item (assq 'state (cdr item)))))
+        (list (code-of tag-batch)
+              (length (cadr d))
+              (cond ((not st) 'NO-STATE)
+                    ((null? (cadr st)) 'has-an-empty-state-clause)
+                    (else (list 'STATE-NOT-EMPTY (cadr st))))
+              (assq 'done (cddr d))))
+      (list 0 1 'has-an-empty-state-clause '(done 1)))
+
+(want "F32 an empty tracked batch names its plan and counts nothing"
+      ;; NEVER: THE RECEIPT STAYS; ONLY THE COUNT WAS WRONG. Removing it
+      ;; reddened four rows elsewhere at once -- `empty-plan`'s QE-01 and three
+      ;; in `q7` -- because a client places its cursor from this answer's
+      ;; `events` and `cursor`. What the plan record is not is WORK, so it is
+      ;; reported and counted as zero.
+      ;; NEVER: "NAMES THE PLAN" MEANS THE VALUES, NOT THE CLAUSE NAMES. These
+      ;; two cells asked only whether `events` and `cursor` were present --
+      ;; measured against `(batch ((ok (events) (cursor))) (done 0))` they both
+      ;; passed, on an answer that names nothing at all. A client places its
+      ;; cursor from these, so what matters is that `events` holds exactly one
+      ;; (writer . seq) and that `cursor` IS that event.
+      (let* ((d (datum-of empty32))
+             (item (and (pair? (cadr d)) (car (cadr d))))
+             (ev (and item (assq 'events (cdr item))))
+             (cu (and item (assq 'cursor (cdr item))))
+             (one (and ev (pair? (cdr ev)) (pair? (cadr ev))
+                       (null? (cdr (cadr ev)))
+                       (car (cadr ev)))))
+        (list (code-of empty32)
+              (length (cadr d))
+              (and item (car item))
+              (cond ((not ev) 'NO-EVENTS)
+                    ((not one) (list 'NOT-ONE-EVENT (and ev (cdr ev))))
+                    ((and (pair? one) (string? (car one)) (integer? (cdr one)))
+                     'names-one-plan-event)
+                    (else (list 'MALFORMED-EVENT one)))
+              (cond ((not cu) 'NO-CURSOR)
+                    ((and one (equal? (cadr cu) one)) 'and-the-cursor-is-that-event)
+                    (else (list 'CURSOR-DOES-NOT-MATCH (cdr cu))))
+              (assq 'done (cddr d))))
+      (list 0 1 'ok 'names-one-plan-event 'and-the-cursor-is-that-event '(done 0)))
+
+;; NEVER: AND THE REPLAY OF AN EMPTY REQUEST IS NOT THE SAME ANSWER. An empty
+;; plan is complete the moment it is written, so asking again is a replay and
+;; takes the receipt path. A comment in `store.sc` claimed the two answers
+;; were identical and nothing had measured it; they differ, and this row is
+;; where that is now written down.
+(define empty-replay32 (run d32 (string-append "batch --req RB2 --cursor " empty-cur32) "''"))
+
+(want "F32 replaying an empty tracked batch gives the receipt, not the empty count"
+      (let ((d (datum-of empty-replay32)))
+        (list (code-of empty-replay32)
+              (length (cadr d))
+              (if (assq 'done (cddr d)) 'A-COUNT-IS-THERE 'no-count)
+              (let ((r (assq 'replay (cdr (car (cadr d)))))) (and r (cadr r)))))
+      (list 0 1 'no-count #t))
+
+(want "F32 a batch that ran all its items says so"
+      (let ((d (datum-of good-batch)))
+        (list (length (cadr d)) (assq 'done (cddr d))))
+      (list 3 '(done 3)))
+
+;; NEVER: `done` IS WHAT WAS WRITTEN, NOT WHAT WAS TRIED. Three items went in,
+;; the second failed, so two answers came back -- one `ok` and one `error` --
+;; and exactly ONE sub-operation reached the log. A caller resuming from the
+;; number of ANSWERS would replay the item that already succeeded.
+(want "F32 a batch that stopped early counts what was written, not what was attempted"
+      (let ((d (datum-of mixed-batch)))
+        (list (map car (cadr d))
+              (length (cadr d))
+              (assq 'done (cddr d))))
+      (list '(ok error) 2 '(done 1)))
+
 (want "what came before the failure is on disk, what came after is not"
       (let* ((state (open-and-reduce d7))
              (b (state-read state head))

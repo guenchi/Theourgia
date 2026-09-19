@@ -68,6 +68,7 @@
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
           log-open log-open-in-session load-prefix load-writers load-integrity load-fingerprint
+          local-writer-of
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
           session-frontiers session-view session-view-refusal session-applied! session-load
@@ -1713,11 +1714,38 @@
   (define (local-writer-of store ls)
     (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
                           (load-session-prefixes ls))))
+      ;; NEVER: EVERY LOCAL WRITER RETIRED IS "NO LOCAL WRITER", NOT "THE
+      ;; FIRST RETIRED ONE". The earlier fallback answered the head of the
+      ;; list when the search ran out, and a client placing its cursor on
+      ;; that name would be aiming at a writer it cannot write as -- an
+      ;; unknown drawn as the reassuring answer.
+      ;;
+      ;; NEVER: AND THIS IS REACHABLE. An adopt that writes the retirement
+      ;; and gets no further leaves a retirement with no successor; the
+      ;; comment at the head of `retire-and-adopt!` says so in as many
+      ;; words. The answer is now the same `#f` an empty store gives, so
+      ;; `check` omits the clause and the client has to ask rather than
+      ;; guess.
       (let loop ((es locals))
         (cond
-          ((null? es) (if (null? locals) #f (car (car locals))))
+          ((null? es) #f)
           ((not (retired-of store (car (car es)))) (car (car es)))
           (else (loop (cdr es)))))))
+
+  ;; NEVER: THE WRITE PATH NEEDS THE RETIRED ONE, AND THE QUESTIONS ARE NOT THE
+  ;; SAME. `local-writer-of` answers "is there a writer here I may write as",
+  ;; which is what `check` reports and which is #f when every local writer is
+  ;; retired. `log-begin` is asking something else -- WHICH WRITER IS THIS
+  ;; SESSION ABOUT -- because it has to say WHY it refuses, and "retired" is
+  ;; the answer that tells a client to adopt. Giving it the #f collapsed that
+  ;; into a store with no writer at all: measured, `log13`'s row for a retired
+  ;; writer whose sequence still matches raised `~s is not a string` instead of
+  ;; refusing with `retired`.
+  (define (session-writer-of store ls)
+    (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
+                          (load-session-prefixes ls))))
+      (or (local-writer-of store ls)
+          (and (pair? locals) (car (car locals))))))
 
   ;; THE LOCK IS RELEASED BY THE SAME UNWIND THAT RELEASES THE GUARD.
   ;; A guard clause only sees exceptions: a callback that escapes by
@@ -1747,7 +1775,7 @@
               ;; that counts them read differently for no reason the
               ;; store cares about.
               (let ((ls (open-load store 'held-exclusive)))
-                (let* ((local (local-writer-of store ls))
+                (let* ((local (session-writer-of store ls))
                        (entry (and local (assoc local (load-session-prefixes ls))))
                        (end (and entry (discovery-end-seq (cdr entry))))
                        (s (make-session store lock ls on-deliver local
@@ -4784,6 +4812,22 @@
       ((session-poisoned s) 'writer-stopped)
       ((session-retired? s) 'retired)
       ((session-unconfirmed s) 'not-ready)
+      ;; NEVER: NO WRITER AT ALL IS ITS OWN ANSWER, AND IT HAS TO COME FIRST.
+      ;; `predecessor-applied?` asks whether this writer's predecessor is in
+      ;; the state; with no writer there is no predecessor either, so the
+      ;; cascade fell through to `predecessor-not-applied` -- a reason that
+      ;; tells the caller to apply more records, which will never help.
+      ;; Measured on two stores that have no writer this machine may use:
+      ;;
+      ;;   received (published in, local writer gone)  predecessor-not-applied
+      ;;   every local writer retired, no successor    predecessor-not-applied
+      ;;
+      ;; and before `local-writer-of` stopped naming a retired writer the
+      ;; second said `retired`, which at least named its condition. Both are
+      ;; the same situation -- there is nobody here to write as -- so both
+      ;; now say so, and `no-local-writer` stops being a branch nothing
+      ;; could reach.
+      ((not (session-writer s)) 'no-local-writer)
       ((not (predecessor-applied? s)) 'predecessor-not-applied)
       (else 'no-local-writer)))
 
