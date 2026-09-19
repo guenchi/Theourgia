@@ -65,7 +65,7 @@ describe('the cursor a write carries forward', () => {
   });
 
   /*
-   * ⭐ THE REFUSAL HAS TO CARRY A CURSOR, or this cell is about
+   * KEY: THE REFUSAL HAS TO CARRY A CURSOR, or this cell is about
    * nothing.
    *
    * It used `(error req-mismatch ("fsu7hd1k" . 6))`, which holds no
@@ -76,7 +76,7 @@ describe('the cursor a write carries forward', () => {
    */
   it('takes nothing from an answer the core called a failure', () => {
     /*
-     * ⭐ `replay #t`, NOT `#f`. With `#f` the reader answers false
+     * KEY: `replay #t`, NOT `#f`. With `#f` the reader answers false
      * whether or not the guard is there, so removing it from `isReplay`
      * alone left this green -- measured in a thirteenth review round.
      * The value asserted has to be the one the guard changes.

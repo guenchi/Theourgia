@@ -17,7 +17,7 @@
 /*
  * AN INABILITY MUST NOT BE ANSWERED AS AN ABSENCE.
  *
- * ⭐ WHY THIS IS A CENSUS AND NOT A LIST OF REPAIRS. Thirteen review
+ * KEY: WHY THIS IS A CENSUS AND NOT A LIST OF REPAIRS. Thirteen review
  * rounds found this one shape in twelve places, and each repair went in
  * where its finding pointed: `entriesIn`, `FakeCore.calls`,
  * `countRealRunRoot`, the process readers, `fsops.list`, then
@@ -36,7 +36,7 @@
  * a bare `return null` turns it into "there is nothing", which is the
  * reassuring answer given at the one moment nothing is known.
  *
- * ⚠️ THE SCOPE IS `src/` AND ONLY `src/`. Tests and fixtures catch and
+ * NOTE: THE SCOPE IS `src/` AND ONLY `src/`. Tests and fixtures catch and
  * answer for good reasons -- a teardown that must not fail the cell it
  * is cleaning up after, a probe that is asking whether something is
  * there. A census that reached into them would have this line's author
@@ -121,7 +121,7 @@ const FALSY = new Set(['null', 'undefined', 'false', 'true', '0', "''", '""', '[
  * writing down that the look failed all leave the caller able to act;
  * the census is about the ones that do none of the three.
  *
- * ⛔ THE WORDS ARE LOOKED FOR IN THE CODE, NOT IN THE SOURCE TEXT.
+ * NEVER: THE WORDS ARE LOOKED FOR IN THE CODE, NOT IN THE SOURCE TEXT.
  *
  * The first version of this tested the catch's whole source against a
  * regular expression, and a comment satisfied it: measured in a
@@ -141,7 +141,7 @@ const SPEAKS = ['reportFailure', 'reject', 'failed', 'unreadableQueue', 'ledger'
  * statement is a node; a call is a node; a comment is neither.
  */
 /*
- * ⛔ ONE SPEAKING PATH IS NOT EVERY PATH, AND A PROPERTY IS NOT A
+ * NEVER: ONE SPEAKING PATH IS NOT EVERY PATH, AND A PROPERTY IS NOT A
  * CALL.
  *
  * Two ways past the first version, both measured in a fifteenth review
@@ -174,7 +174,7 @@ const SPEAKS = ['reportFailure', 'reject', 'failed', 'unreadableQueue', 'ledger'
  * Anything else answers "there is nothing here" for a question it could
  * not put, and belongs in the table with a reason.
  *
- * ⚠️ THE THREE QUESTIONS ARE ASKED BY `test/support/catches.ts`,
+ * NOTE: THE THREE QUESTIONS ARE ASKED BY `test/support/catches.ts`,
  * which the `ps` census calls as well. They used to be two rules for one
  * question, and a mutation got past each of them in a shape the other
  * would have caught.
@@ -189,7 +189,7 @@ function leavesTheCallerAble(clause: ts.CatchClause, source: ts.SourceFile): boo
     return true;
   }
   /*
-   * ⛔ AND SHAPE (b) HAS TO REFUSE EVERY FAILURE IT DOES NOT ANSWER
+   * NEVER: AND SHAPE (b) HAS TO REFUSE EVERY FAILURE IT DOES NOT ANSWER
    * FOR.
    *
    * This asked only that a throw existed somewhere. A sixteenth review
@@ -225,7 +225,7 @@ export function silentCatches(root: string): SilentCatch[] {
         const walk = (inner: ts.Node): void => {
           if (ts.isReturnStatement(inner)) {
             /*
-             * ⛔ AND THE PARENTHESES ARE NOT PART OF THE VALUE.
+             * NEVER: AND THE PARENTHESES ARE NOT PART OF THE VALUE.
              *
              * `return (false);` has the expression text `(false)`, which
              * is not in the table below, so the whole catch left the
@@ -241,7 +241,7 @@ export function silentCatches(root: string): SilentCatch[] {
             answers.push(value === undefined ? 'undefined' : value.getText(parsed));
           }
           /*
-           * ⚠️ A FUNCTION DECLARED INSIDE THE CATCH IS NOT THIS CATCH'S
+           * NOTE: A FUNCTION DECLARED INSIDE THE CATCH IS NOT THIS CATCH'S
            * ANSWER. Its `return` belongs to it.
            */
           if (!ts.isFunctionLike(inner)) {
@@ -251,7 +251,7 @@ export function silentCatches(root: string): SilentCatch[] {
         node.block.forEachChild(walk);
         const falsy = answers.filter((a) => FALSY.has(a.trim()));
         /*
-         * ⚠️ A CATCH THAT SPEAKS **AND** ANSWERS FALSY STILL ANSWERS
+         * NOTE: A CATCH THAT SPEAKS **AND** ANSWERS FALSY STILL ANSWERS
          * FALSY. What its caller sees is the value; a throw on one
          * branch does not change what the other branch hands back.
          */
@@ -300,7 +300,7 @@ describe('plugin-r2 an inability is not answered as an absence', function () {
   });
 
   /*
-   * ⭐ AND AN EXEMPTION FOR A CATCH THAT IS NO LONGER THERE IS A LIE
+   * KEY: AND AN EXEMPTION FOR A CATCH THAT IS NO LONGER THERE IS A LIE
    * THAT READS LIKE DILIGENCE. The line numbers move when the files do,
    * so a stale entry has to fail rather than sit.
    */

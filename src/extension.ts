@@ -176,7 +176,7 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     try {
       if (node === undefined) {
         /*
-         * ⛔ `marksKnown` WAS A LITERAL `true` HERE.
+         * NEVER: `marksKnown` WAS A LITERAL `true` HERE.
          *
          * The root listing asks for the same marks the subtree listing
          * does, and reported them known whatever came back. Measured in
@@ -368,7 +368,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     unreachable = null;
     config = readConfig();
     /*
-     * ⚠️ THE DIRECTORY IS PROBED HERE, and this call is the reason the
+     * NOTE: THE DIRECTORY IS PROBED HERE, and this call is the reason the
      * argument stopped being optional: it was made with one argument, so
      * the refusal about a corePath holding neither sources nor products
      * was unreachable from the running extension. Found in a third
@@ -427,7 +427,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * which is right, because then the file really has moved on.
      */
     /*
-     * ⚠️ THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here.
+     * NOTE: THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here.
      *
      * The settler below read the module's `outbox` and `config.store`
      * -- the LIVE ones -- so an answer arriving after the settings
@@ -444,7 +444,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * and to the store whose directory its blocks are under.
      */
     /*
-     * ⚠️ THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here and
+     * NOTE: THIS SAVER'S OWN QUEUE AND ITS OWN STORE, captured here and
      * handed to the settler.
      *
      * The settler read the module's `outbox` and `config.store` -- the
@@ -480,7 +480,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          * WHAT THE RECORD BESIDE A FILE HAS ALREADY CONFIRMED, READ
          * FRESH BEFORE EVERY TRANSMISSION. (R8)
          *
-         * ⚠️ A FUNCTION RATHER THAN A VALUE, because the point is that
+         * NOTE: A FUNCTION RATHER THAN A VALUE, because the point is that
          * it is read again: another window may have saved this same
          * file and had it confirmed while this entry sat in the queue.
          * Handing over a number read now would be handing over the
@@ -502,7 +502,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     provider.use(model);
     paint();
     /*
-     * ⚠️ AND THE QUEUE IS DRAINED, because nothing else was going to.
+     * NOTE: AND THE QUEUE IS DRAINED, because nothing else was going to.
      *
      * A window that starts with entries already on disk -- a save that
      * was interrupted, work carried in by a takeover, a store that was
@@ -599,7 +599,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     } catch (e) {
       found = null;
       /*
-       * ⭐ THE REASON IS KEPT, NOT ONLY THE FAILURE. This catch used to
+       * KEY: THE REASON IS KEPT, NOT ONLY THE FAILURE. This catch used to
        * discard `e` and leave a question mark on the status bar, and the
        * thing discarded was the core's own sentence -- `serve-path-
        * occupied (path "...")` names a directory the user can remove.
@@ -733,14 +733,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * IT TAKES AN OPTIONAL PATH so that it can be reached from somewhere
    * other than the active editor, and answers with the notice it showed
    * rather than only showing it: a message that is displayed and not
-   * returned is a message no cell can read. ⚠️ THAT HOLDS FOR THE
+   * returned is a message no cell can read. NOTE: THAT HOLDS FOR THE
    * OUTCOMES OF THE RECONCILIATION AND NOT FOR EVERY EXIT: the paths
    * that give up before one -- no store configured, the store could not
    * be read, the settings changed underneath, no such block -- show a
    * plain warning and answer `null`. They are about the command not
    * running rather than about what it did.
    *
-   * ⚠️ THE THIRD TEXT IS REPORTED AND NOT SHOWN. `reconcile` produces
+   * NOTE: THE THIRD TEXT IS REPORTED AND NOT SHOWN. `reconcile` produces
    * the version published before this one, and this function does not
    * display it: the pick offers the two actions, each with an excerpt of
    * the text it would produce, and nothing puts the previous version in
@@ -858,7 +858,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return null;
     }
     /*
-     * ⚠️ THE ACTION IS CARRIED OUT AGAINST THE TEXT THAT WAS OFFERED, OR
+     * NOTE: THE ACTION IS CARRIED OUT AGAINST THE TEXT THAT WAS OFFERED, OR
      * NOT AT ALL.
      *
      * `prepend-prefix` re-reads the file. The pick waits on a human, and
@@ -990,13 +990,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * to put them in, and the flow refuses before taking a token rather
    * than holding one over work it did not move.
    *
-   * ⚠️ IT RUNS THE IMPORT INSIDE THE SAVER'S LOCK, through `adopt`.
+   * NOTE: IT RUNS THE IMPORT INSIDE THE SAVER'S LOCK, through `adopt`.
    * Handing out a bare queue put the import outside whatever serialises
    * that file, and a save answering in the middle of it wrote its own
    * copy back over the imported entries.
    */
   /*
-   * ⚠️ AND THE DECISION CARRIES THE GENERATION IT WAS MADE IN.
+   * NOTE: AND THE DECISION CARRIES THE GENERATION IT WAS MADE IN.
    *
    * This function runs when the command starts; the pickers after it are
    * awaits, and `rebuild` replaces `saver` and bumps `generation` the
@@ -1047,7 +1047,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     /*
-     * ⚠️ THE SAVER IS TAKEN BEFORE THE WAIT AND USED AFTER IT. A
+     * NOTE: THE SAVER IS TAKEN BEFORE THE WAIT AND USED AFTER IT. A
      * settings change replaces the Saver, the queue and the client; the
      * save this handler accepted belongs to the one that accepted it,
      * and the record it made names that queue's store. Reading `saver`
@@ -1097,7 +1097,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           sidecar: currentSidecar as NonNullable<typeof currentSidecar>,
           decision,
           /*
-           * ⚠️ THE ONE READING OF THE LIVE SETTINGS AFTER THE FIRST
+           * NOTE: THE ONE READING OF THE LIVE SETTINGS AFTER THE FIRST
            * WAIT, and it is here rather than after the callback because
            * here it cannot change between the check and the record.
            * `awaiting.test.ts` counts these: one more, one fewer, or
@@ -1141,7 +1141,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       return;
     }
     /*
-     * ⚠️ A NUMBER THAT WAS SPENT ON A SEND THAT NEVER LEFT IS GIVEN
+     * NOTE: A NUMBER THAT WAS SPENT ON A SEND THAT NEVER LEFT IS GIVEN
      * BACK. (section 13.1, I7)
      *
      * The sequence is taken and written down before anything is queued,
@@ -1151,7 +1151,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * out with no entry anywhere that could answer for it: a draft the
      * block can never stop being.
      *
-     * ⚠️ NO CELL REACHES THIS LINE. The Saver's half is measured --
+     * NOTE: NO CELL REACHES THIS LINE. The Saver's half is measured --
      * `says it was not queued, so the number can be given back` in
      * `sending.test.ts` -- and this half lives in the save handler,
      * which only the editor-hosted suite drives and which would need
@@ -1169,7 +1169,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     show(saveNotice(outcome, accepted.decision.normalised));
     /*
-     * ⚠️ AND WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS SAID
+     * NOTE: AND WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS SAID
      * AFTER IT, AS ITS OWN SENTENCE.
      *
      * The store tells us, on a commit that SUCCEEDED, which other
@@ -1195,7 +1195,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand(OPEN_BLOCK.id, openBlock),
     vscode.commands.registerCommand(RECONCILE_BLOCK.id, reconcileBlock),
     /*
-     * ⚠️ THE HANDLER IS ONE LINE ON PURPOSE. Everything this command
+     * NOTE: THE HANDLER IS ONE LINE ON PURPOSE. Everything this command
      * decides -- which windows to list, what may be done to one, what
      * the user is told it costs -- is in src/recovery.ts, where a cell
      * can drive it. A handler that made any of those decisions here
@@ -1210,14 +1210,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * decided, for the same reason `showStatus` returns its facts: a
      * decision that is only shown is a decision nothing can read.
      *
-     * ⚠️ THE MODEL IS READ AT THE MOMENT THE COMMAND RUNS. It is
+     * NOTE: THE MODEL IS READ AT THE MOMENT THE COMMAND RUNS. It is
      * replaced whenever the settings change, and a search is several
      * awaits long; capturing it here means the hits and the block that
      * is opened come from one store.
      */
     vscode.commands.registerCommand(SEARCH_BLOCKS.id, () => {
       /*
-       * ⛔ THE HIT BELONGS TO THE STORE IT WAS FOUND IN.
+       * NEVER: THE HIT BELONGS TO THE STORE IT WAS FOUND IN.
        *
        * A search is several awaits long -- a box the user types into, a
        * list they choose from -- and a settings change replaces the model
@@ -1315,7 +1315,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('theourgia')) {
         /*
-         * ⚠️ A SETTINGS CHANGE IS THE ONE EVENT THAT CAN ANSWER A PARKED
+         * NOTE: A SETTINGS CHANGE IS THE ONE EVENT THAT CAN ANSWER A PARKED
          * ENTRY, so it is the one that releases them.
          *
          * Some entries are parked because nothing they can wait for will

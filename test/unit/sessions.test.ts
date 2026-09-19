@@ -57,7 +57,7 @@ import { RecordingFs } from '../support/recording-fs';
 /*
  * A DESTINATION THAT BEHAVES LIKE ONE: what it is given, it has.
  *
- * ⚠️ THESE FIXTURES USED `{ has: () => false, adopt: () => undefined }`
+ * NOTE: THESE FIXTURES USED `{ has: () => false, adopt: () => undefined }`
  * -- a destination that accepts everything and keeps nothing. Under the
  * old code that counted as `imported`, so the fixtures were resting on
  * the very defect this batch then fixed: the import now asks whether the
@@ -84,7 +84,7 @@ function scratch(): string {
 /*
  * WHICH WINDOW A CLAIM TOKEN NAMES, read the way `claim` reads it.
  *
- * ⚠️ THE TOKEN HAS TWO LINES: the session id, and the nonce of the
+ * NOTE: THE TOKEN HAS TWO LINES: the session id, and the nonce of the
  * incarnation that published it. The cells used to `trim()` the whole
  * file, which was the id when there was only one line and is now both.
  * A cell reading a file differently from the code that writes it is a
@@ -113,7 +113,7 @@ function makeSession(storage: string, sessionId: string, over: Partial<SessionId
 /*
  * THE REAL START TIME OF A REAL PROCESS.
  *
- * ⚠️ These fixtures used `startedAt: null` to mean "this one is alive",
+ * NOTE: These fixtures used `startedAt: null` to mean "this one is alive",
  * which worked only because the comparison answered `true` when nothing
  * was recorded -- the very defect a reviewer found. The cells were
  * therefore agreeing with it rather than catching it. A live session
@@ -214,7 +214,7 @@ describe('C8 and C19 whether another window is still running', () => {
    * there claims a check that did not happen.
    */
   /*
-   * ⚠️ AND IT SAYS WHICH OF THE TWO WAYS. A record carrying no start
+   * NOTE: AND IT SAYS WHICH OF THE TWO WAYS. A record carrying no start
    * time and a machine that could not read one were the same value; the
    * sentence for that value told the user to try again in a moment,
    * which is advice that cannot work for the first -- no later attempt
@@ -248,7 +248,7 @@ describe('C8 and C19 whether another window is still running', () => {
 
 describe('C8 taking over a dead session’s queue', () => {
   /*
-   * ⚠️ `begin` FIRST, AS ACTIVATION DOES. These fixtures used to claim
+   * NOTE: `begin` FIRST, AS ACTIVATION DOES. These fixtures used to claim
    * without it, which is a state production never reaches and which the
    * code now refuses by name: a window that never said who it is
    * published a token nobody -- including itself -- could identify, so
@@ -265,7 +265,7 @@ describe('C8 taking over a dead session’s queue', () => {
   });
 
   /*
-   * ⚠️ THE SECOND CLAIM IS A SECOND WINDOW'S. The fixture used to take
+   * NOTE: THE SECOND CLAIM IS A SECOND WINDOW'S. The fixture used to take
    * both claims from one `Sessions`, which is not what the name says and
    * is not the case the refusal exists for: `already-claimed` stops a
    * SECOND window sending what a first is still draining. One window
@@ -286,7 +286,7 @@ describe('C8 taking over a dead session’s queue', () => {
   });
 
   /*
-   * ⚠️ AND THE WINDOW THAT HOLDS A CLAIM RE-ENTERS IT.
+   * NOTE: AND THE WINDOW THAT HOLDS A CLAIM RE-ENTERS IT.
    *
    * The token names a dead SESSION, and that session may have a queue
    * per store -- so one takeover cannot finish the job. Rescuing the
@@ -349,7 +349,7 @@ describe('C8 taking over a dead session’s queue', () => {
   /*
    * WITH ENTRIES THAT ACTUALLY EXIST.
    *
-   * ⚠️ The first version created NO entries and asserted
+   * NOTE: The first version created NO entries and asserted
    * `imported >= 0`, which is true of every number this can return -- a
    * cell about deduplication with nothing to deduplicate.
    *
@@ -492,7 +492,7 @@ describe('C10 nothing is deleted, and discarding is the user’s decision', () =
   /*
    * WITH AN ADOPTER THAT EXISTS.
    *
-   * ⚠️ The first version created none and asserted the answer was an
+   * NOTE: The first version created none and asserted the answer was an
    * array -- true of `[]`, which is what an implementation that never
    * looked would also return. The warning only means something when
    * there is something to warn about.
@@ -621,7 +621,7 @@ describe('C13 a takeover only ever happens because someone asked for one', () =>
     const others = await sessions.others();
     assert.ok(Array.isArray(others), 'starting up did not even list the other sessions');
     /*
-     * ⚠️ NOTHING OF ANYBODY ELSE'S MOVED. This asserted that nothing was
+     * NOTE: NOTHING OF ANYBODY ELSE'S MOVED. This asserted that nothing was
      * renamed at all, which stopped being the question when `begin`
      * started publishing its own record through a temporary file: that
      * rename is this window writing down who it is, and it is the one
@@ -859,7 +859,7 @@ describe('C20 adopting a directory that is discarded underneath it', () => {
 /*
  * P1-4: a record that will not read is not a death certificate.
  *
- * ⚠️ THE FIX HAD NO CELL UNTIL A MUTATION SURVIVED. Collapsing
+ * NOTE: THE FIX HAD NO CELL UNTIL A MUTATION SURVIVED. Collapsing
  * "unreadable" back into "no such session" left every existing cell
  * green, because every existing cell wrote a well-formed record. A fix
  * verified only by the reasoning that produced it is not guarded.
@@ -1036,7 +1036,7 @@ describe('U-claim taking over a window that left no record', () => {
   });
 
   /*
-   * ⚠️ AND FORCING IS NOT A WAY PAST THE OTHER REFUSALS. A window that
+   * NOTE: AND FORCING IS NOT A WAY PAST THE OTHER REFUSALS. A window that
    * is provably ALIVE is still refused; so is one whose start time this
    * machine could not obtain, which is the case that fixes itself.
    */
@@ -1271,7 +1271,7 @@ describe('review 24 re-entering a claim is about the window, not its name', () =
   });
 
   /*
-   * ⚠️ AND A REPLACEMENT WITH THE SAME ID INHERITS NOTHING -- it is
+   * NOTE: AND A REPLACEMENT WITH THE SAME ID INHERITS NOTHING -- it is
    * REFUSED, and that is the honest answer rather than a convenient one.
    *
    * The expectation here was written as "it takes over by the ordinary
@@ -1377,7 +1377,7 @@ describe('review 24 what a takeover reports as still waiting', () => {
   });
 
   /*
-   * ⚠️ AND A QUEUE NOBODY CAN READ IS NOT AN EMPTY ONE. Counting it as
+   * NOTE: AND A QUEUE NOBODY CAN READ IS NOT AN EMPTY ONE. Counting it as
    * zero reported somebody's unsent work as nothing left behind.
    */
   it('says a queue could not be read rather than counting it as empty', async () => {
@@ -1474,7 +1474,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
   }
 
   /*
-   * ⚠️ A FILE HOLDING THE FOUR BYTES `null` PARSES. Asking it for a
+   * NOTE: A FILE HOLDING THE FOUR BYTES `null` PARSES. Asking it for a
    * field then threw -- outside the catch, out of `importFrom`, out of
    * the command -- so the user saw no answer at all where they should
    * have seen a takeover reporting an unreadable queue.
@@ -1524,7 +1524,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
   }
 
   /*
-   * ⚠️ AND AN ELEMENT THAT IS NOT A REQUEST MAKES ITS FILE UNREADABLE --
+   * NOTE: AND AN ELEMENT THAT IS NOT A REQUEST MAKES ITS FILE UNREADABLE --
    * because the loader says so, and the survey now asks the loader.
    *
    * An earlier version of this counted such an element on its own and
@@ -1559,7 +1559,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
   }
 
   /*
-   * ⚠️ AND ONLY A STRING IS A MARK. `Outbox` reads anything else as no
+   * NOTE: AND ONLY A STRING IS A MARK. `Outbox` reads anything else as no
    * mark at all and WILL import that entry, so treating a `false` as
    * "already carried away" would leave a waiting request out of the
    * count of what is waiting.
@@ -1587,7 +1587,7 @@ describe('review 25 a queue nobody can trust is not an empty queue', () => {
  */
 describe('review 25 what a session id may be', () => {
   /*
-   * ⚠️ THE ATTACK THE REVIEW FOUND, IN ONE CELL. A claim token is the id
+   * NOTE: THE ATTACK THE REVIEW FOUND, IN ONE CELL. A claim token is the id
    * on one line and the nonce on the next. A window whose id IS
    * `"M\nb"` publishes a token that the window called `M` with nonce `b`
    * reads as its own -- and re-enters a claim it does not hold. Both
@@ -1628,14 +1628,14 @@ describe('review 25 what a session id may be', () => {
 });
 
 /*
- * ⭐ THE CONSERVATION LAW: EVERYTHING A TAKEOVER SAW IS IN EXACTLY ONE
+ * KEY: THE CONSERVATION LAW: EVERYTHING A TAKEOVER SAW IS IN EXACTLY ONE
  * BUCKET.
  *
  * Three times in one function a count answered with a smaller, more
  * comfortable number than the truth -- an unreadable queue as zero, a
  * queue the loader rejects as empty, the selected queue failing in
  * silence. Each was fixed where it was found, and the next would have
- * been fixed the same way, one shape at a time, for ever. ⛔ A cell per
+ * been fixed the same way, one shape at a time, for ever. NEVER: A cell per
  * shape cannot catch a shape nobody has thought of.
  *
  * So the report is a ledger and this is its law. Anything that goes
@@ -1728,7 +1728,7 @@ describe('the takeover ledger accounts for everything it saw', () => {
       `the ledger does not add up: ${JSON.stringify(led)}`
     );
     /*
-     * ⚠️ AND THE SUM IS OF THE LEDGER'S OWN KEYS, not of a list written
+     * NOTE: AND THE SUM IS OF THE LEDGER'S OWN KEYS, not of a list written
      * here. `ledgerTotal` is a hand-written sum and the compiler will
      * not notice a missing term -- an earlier comment claimed it would,
      * and a review showed otherwise. This is what notices.
@@ -1804,7 +1804,7 @@ describe('the takeover ledger accounts for everything it saw', () => {
  */
 describe('review 26 what the takeover must still see, and who may take one', () => {
   /*
-   * ⚠️ A DIRECTORY THIS PROCESS CANNOT LIST STILL HAS THE QUEUE IN IT.
+   * NOTE: A DIRECTORY THIS PROCESS CANNOT LIST STILL HAS THE QUEUE IN IT.
    * `list` answers `[]` for a directory it cannot read, so the selected
    * queue -- the one the takeover was asked about, which plainly exists
    * -- was never visited and never counted: an all-zero ledger over a
@@ -1837,7 +1837,7 @@ describe('review 26 what the takeover must still see, and who may take one', () 
       'utf8'
     );
     /*
-     * ⚠️ THE ENUMERATION COMES BACK EMPTY AND THE EXISTENCE CHECK SAYS
+     * NOTE: THE ENUMERATION COMES BACK EMPTY AND THE EXISTENCE CHECK SAYS
      * NO, which is what an ancestry this process cannot search looks
      * like from here: `list` answers `[]` and `exists` answers false for
      * paths inside it. Only the directory itself can be seen, which is
@@ -1878,7 +1878,7 @@ describe('review 26 what the takeover must still see, and who may take one', () 
   });
 
   /*
-   * ⚠️ AND A WINDOW WHOSE IDENTITY WAS NEVER PUBLISHED HAS NOT BEGUN.
+   * NOTE: AND A WINDOW WHOSE IDENTITY WAS NEVER PUBLISHED HAS NOT BEGUN.
    * The two fields used to be set before the write, so a failure to
    * publish left the object believing it had an identity: `claim`
    * proceeded and published a token naming a window whose `session.json`
@@ -1888,7 +1888,7 @@ describe('review 26 what the takeover must still see, and who may take one', () 
     const storage = scratch();
     makeSession(storage, 'S-old');
     /*
-     * ⚠️ THE OPERATION `begin` ACTUALLY USES. It wrote the record with
+     * NOTE: THE OPERATION `begin` ACTUALLY USES. It wrote the record with
      * `writeText` when this cell was written and publishes it through a
      * temporary file now; a stand-in that refuses the operation the code
      * no longer calls refuses nothing, and the cell passes while
@@ -1941,7 +1941,7 @@ describe('review 27 a request that arrived is not a request that did not', () =>
   }
 
   /*
-   * ⚠️ THE SOURCE MARK FAILS AFTER THE ENTRY HAS ARRIVED. Both failures
+   * NOTE: THE SOURCE MARK FAILS AFTER THE ENTRY HAS ARRIVED. Both failures
    * were one bucket, and its sentence said the requests "could not be
    * moved and are still in that window's queue" -- the opposite of the
    * truth, about work that was already here. A user acting on it goes
@@ -2010,7 +2010,7 @@ describe('review 27 a request that arrived is not a request that did not', () =>
   });
 
   /*
-   * ⚠️ AND A STORE NAME MAY NOT LEAVE THE SESSION'S DIRECTORY. `..` in
+   * NOTE: AND A STORE NAME MAY NOT LEAVE THE SESSION'S DIRECTORY. `..` in
    * one addressed a LIVE window's queue, and the takeover imported from
    * it and marked it as carried away under a claim on a different
    * session.
@@ -2018,7 +2018,7 @@ describe('review 27 a request that arrived is not a request that did not', () =>
   it('refuses a store name that points outside the session', () => {
     const sessions = new Sessions(new RecordingFs(), scratch());
     /*
-     * ⚠️ A BACKSLASH TOO. `path.basename` on POSIX does not treat it as
+     * NOTE: A BACKSLASH TOO. `path.basename` on POSIX does not treat it as
      * a separator, so `a\\b` is one component here and a path on
      * Windows -- and these directory names travel between windows. The
      * check asks both platforms' rules.
@@ -2132,7 +2132,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    * it may discard the only copy.
    */
   /*
-   * ⚠️ WHAT THIS ESTABLISHES, AND WHAT IT CANNOT. It is about the
+   * NOTE: WHAT THIS ESTABLISHES, AND WHAT IT CANNOT. It is about the
    * classification AFTER something threw: the source mark is made to
    * fail, and the question is whether a destination that kept nothing is
    * then reported as having it. When NOTHING throws, a destination that
@@ -2145,7 +2145,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     makeSession(storage, 'S-dead');
     oneRequest(storage, 'S-dead', 'store-a');
     /*
-     * ⚠️ A DESTINATION THAT ACCEPTS AND KEEPS NOTHING -- deliberately,
+     * NOTE: A DESTINATION THAT ACCEPTS AND KEEPS NOTHING -- deliberately,
      * because that is the case. It used to be reported as `imported`,
      * and the source was then marked as having handed the request over:
      * the report wrong AND the other window's copy saying the work was
@@ -2223,7 +2223,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   it('refuses a store name carrying a control character', () => {
     const sessions = new Sessions(new RecordingFs(), scratch());
     /*
-     * ⚠️ NUL FIRST, because it is the one this guard was written for --
+     * NOTE: NUL FIRST, because it is the one this guard was written for --
      * a check that rejected only tab and newline would pass this cell
      * while admitting the character that reached the read. Found in
      * review.
@@ -2239,19 +2239,19 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    * The temporary file was named after the process alone -- the same
    * name on every call -- and a failed rename left it there for ever.
    *
-   * ⚠️ "TRIES TO", NOT "DOES". The removal is best effort and can itself
+   * NOTE: "TRIES TO", NOT "DOES". The removal is best effort and can itself
    * fail, and the cells further down are about what is said when it
    * does. This comment said the stronger thing flatly, which is the
    * shape of claim this file exists to catch. Found in review.
    */
   /*
-   * ⚠️ AND A WRITE THAT THROWS AFTER TOUCHING THE FILE LEAVES NOTHING
+   * NOTE: AND A WRITE THAT THROWS AFTER TOUCHING THE FILE LEAVES NOTHING
    * EITHER. The write was outside the cleanup, so one that had already
    * created bytes left the temporary beside the record -- the same leak
    * the rename's cleanup was added for, a step earlier. The cell only
    * injected a rename failure and passed.
    *
-   * ⚠️ IT IS NOT A PARTIAL WRITE, and used to say it was. The stand-in
+   * NOTE: IT IS NOT A PARTIAL WRITE, and used to say it was. The stand-in
    * below completes `writeDurably` and then throws: what it establishes
    * is a failure AFTER a file exists, which is the state the cleanup has
    * to handle. Nothing here produces a half-written file, and naming one
@@ -2300,7 +2300,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   });
 
   /*
-   * ⚠️ AND WHAT THE FAILURE SAYS ABOUT WHAT IT LEFT BEHIND.
+   * NOTE: AND WHAT THE FAILURE SAYS ABOUT WHAT IT LEFT BEHIND.
    *
    * The publication's `catch` removes the temporary file, and when that
    * removal ALSO fails it adds a sentence naming the path. There was no
@@ -2314,7 +2314,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
    * throws: the commonest reason it throws is that the write failed
    * before creating anything.
    *
-   * ⚠️ AND THE STAND-IN SAYS WHETHER IT CREATED THE FILE, because that
+   * NOTE: AND THE STAND-IN SAYS WHETHER IT CREATED THE FILE, because that
    * is what decides which branch the cleanup takes. The first version of
    * these cells used one stand-in that threw BEFORE creating anything
    * for all four -- so the cell meant to exercise a SUCCESSFUL removal
@@ -2347,7 +2347,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     }
 
     /*
-     * ⚠️ THE ERROR OBJECT ITSELF, so a cell can compare identities. A
+     * NOTE: THE ERROR OBJECT ITSELF, so a cell can compare identities. A
      * copy of it that kept `code` and the text would satisfy every
      * assertion about its contents, and a copy is exactly what the
      * defect under repair produced.
@@ -2435,7 +2435,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   });
 
   /*
-   * ⚠️ THE TWIN, AND IT HAS TO REACH THE SUCCESSFUL REMOVAL. Without it,
+   * NOTE: THE TWIN, AND IT HAS TO REACH THE SUCCESSFUL REMOVAL. Without it,
    * a build whose failure ALWAYS reports a leftover file passes the cell
    * above and sends every reader of every publication failure looking
    * for a file that is not there. The first version of this cell used a
@@ -2460,7 +2460,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   });
 
   /*
-   * ⚠️ AND THE STATE THAT MADE THE SENTENCE WRONG: the removal failed
+   * NOTE: AND THE STATE THAT MADE THE SENTENCE WRONG: the removal failed
    * because there was nothing to remove. This is the ORDINARY case -- a
    * write that fails before creating the file leaves no file, and
    * `unlink` answers ENOENT of its own accord here rather than being
@@ -2483,11 +2483,11 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   });
 
   /*
-   * ⚠️ AND WHEN THE QUESTION ITSELF CANNOT BE PUT, IT SAYS THAT. Neither
+   * NOTE: AND WHEN THE QUESTION ITSELF CANNOT BE PUT, IT SAYS THAT. Neither
    * of the two comfortable answers is chosen on the file system's
    * behalf -- the same rule the takeover ledger is built on.
    *
-   * ⚠️ THIS IS A STATE PRODUCTION CAN REACH. It could not be, while the
+   * NOTE: THIS IS A STATE PRODUCTION CAN REACH. It could not be, while the
    * question went through `exists`: `existsSync` answers false for a
    * path it may not search, so the "could not be established" branch was
    * something only a stand-in could produce, and a cell for it was
@@ -2568,7 +2568,7 @@ describe('review 29 an entry that was already there is not one that arrived', ()
   }
 
   /*
-   * ⚠️ THE FIRST QUESTION THROWS AND A LATER ONE ANSWERS "YES". Nothing
+   * NOTE: THE FIRST QUESTION THROWS AND A LATER ONE ANSWERS "YES". Nothing
    * was adopted in this attempt -- the entry was already there. Calling
    * that an arrival told the user their work had just been rescued by a
    * takeover that moved nothing.

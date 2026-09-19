@@ -5,7 +5,7 @@ import * as path from 'path';
 import {spawn,spawnSync} from 'child_process';
 import {Outbox} from '../../src/outbox';
 /*
- * ⛔ THE LIST IS THE CENSUS, AND IT HAD A HOLE IN IT.
+ * NEVER: THE LIST IS THE CENSUS, AND IT HAD A HOLE IN IT.
  *
  * `unparkAll` was missing, and so was its lock: a sixteenth review round
  * measured a controlled interleaving in which it read a queue, another

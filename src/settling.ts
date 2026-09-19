@@ -17,7 +17,7 @@
 /*
  * WHAT AN ANSWER FROM THE STORE MEANS FOR THE FILE IT WAS ABOUT.
  *
- * ⚠️ WHY THIS IS A MODULE AND NOT A CLOSURE IN `extension.ts`.
+ * NOTE: WHY THIS IS A MODULE AND NOT A CLOSURE IN `extension.ts`.
  *
  * It used to be one, and everything it decides was therefore decided
  * where no cell could drive it: which queue the answer settles, which
@@ -47,7 +47,7 @@ import { Sessions } from './sessions';
 import { Notice } from './status';
 
 /*
- * ⚠️ THE QUEUE AND THE STORE ARE PARAMETERS, and they are the whole
+ * NOTE: THE QUEUE AND THE STORE ARE PARAMETERS, and they are the whole
  * point of the interface. A settler serves one queue for its life --
  * that is what the Saver's lock is keyed on -- and the blocks whose
  * versions it reads are filed under one store. Passing them in makes
@@ -70,7 +70,7 @@ export interface SettlingParts {
 }
 
 /*
- * ⚠️ A SETTLER CARRIES THE QUEUE IT WAS BUILT FOR.
+ * NOTE: A SETTLER CARRIES THE QUEUE IT WAS BUILT FOR.
  *
  * The pairing checked below is settler-to-store. `Saver` takes its own
  * outbox and a settlement callback as two separate arguments, so a
@@ -96,7 +96,7 @@ export function settlerFor(parts: SettlingParts): Settler {
   const { queue, storeHash, sessionId, sessions, saving } = parts;
 
   /*
-   * ⚠️ THE QUEUE AND THE STORE HAVE TO BE THE SAME WINDOW'S.
+   * NOTE: THE QUEUE AND THE STORE HAVE TO BE THE SAME WINDOW'S.
    *
    * Moving this out of `extension.ts` bought a place a cell can drive --
    * and created an interface that will accept any queue with any store
@@ -111,7 +111,7 @@ export function settlerFor(parts: SettlingParts): Settler {
    * correctly today; this is what makes that a property of the code
    * rather than of who happened to write the call.
    *
-   * ⚠️ WHAT THIS CANNOT CHECK, said plainly: that the queue is not a
+   * NOTE: WHAT THIS CANNOT CHECK, said plainly: that the queue is not a
    * STALE copy, and that the settler is only ever called inside
    * `Saver.serialise`, which reloads the file after taking the lock.
    * Both are properties of when it is called, not of what it was built
@@ -131,7 +131,7 @@ export function settlerFor(parts: SettlingParts): Settler {
   }
 
   /*
-   * ⚠️ THERE IS NO SECOND SUPPLIER ANY MORE. (section 13.1)
+   * NOTE: THERE IS NO SECOND SUPPLIER ANY MORE. (section 13.1)
    *
    * What an answer is about used to be looked up twice: in a map kept
    * by block id while the window was up, and -- after a restart, when
@@ -148,7 +148,7 @@ export function settlerFor(parts: SettlingParts): Settler {
    */
   const settle: Settler = (req: string, settlement: Settlement): void => {
     /*
-     * ⚠️ A REFUSAL IS NOT AN ACKNOWLEDGEMENT, AND USED TO BE RECORDED AS
+     * NOTE: A REFUSAL IS NOT AN ACKNOWLEDGEMENT, AND USED TO BE RECORDED AS
      * ONE.
      *
      * The store said no. Nothing about the file changed, so nothing is
@@ -171,7 +171,7 @@ export function settlerFor(parts: SettlingParts): Settler {
     const cursor = settlement.verdict === 'confirmed' ? settlement.cursor : null;
     if (settlement.verdict === 'refused') {
       /*
-       * ⚠️ THE NUMBER COMES OUT AND NOTHING ELSE IS WRITTEN. The store
+       * NOTE: THE NUMBER COMES OUT AND NOTHING ELSE IS WRITTEN. The store
        * declined this write, so the bytes are still only in the user's
        * file and no baseline may be recorded -- and the send is over,
        * so leaving its number counted as out would keep the block a
@@ -187,7 +187,7 @@ export function settlerFor(parts: SettlingParts): Settler {
       return;
     }
     /*
-     * ⚠️ AN ENTRY WITH NO RECORD IS NOT AN ENTRY NOBODY KNOWS ABOUT.
+     * NOTE: AN ENTRY WITH NO RECORD IS NOT AN ENTRY NOBODY KNOWS ABOUT.
      *
      * It is either a request this queue does not hold -- an answer that
      * belongs somewhere else, and `resolve` will not move the cursor
@@ -198,7 +198,7 @@ export function settlerFor(parts: SettlingParts): Settler {
      * recorded. The answer moves the queue and the notice, and the
      * block stays a draft until the user saves it again.
      *
-     * ⚠️ A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
+     * NOTE: A `req-mismatch` IS NOT RELEASED HERE EITHER. The store is
      * saying this id names another request; the entry is what a person
      * will look at, and there is no file to mark.
      */
@@ -235,7 +235,7 @@ export function settlerFor(parts: SettlingParts): Settler {
       () => queue.resolve(req, cursor)
     );
     /*
-     * ⚠️ AND AN OPERATOR'S DETERMINATION LEAVES THE QUEUE WITHOUT A
+     * NOTE: AND AN OPERATOR'S DETERMINATION LEAVES THE QUEUE WITHOUT A
      * POSITION. (section 13.3)
      *
      * Nothing was learned about where the store stands -- the
@@ -259,7 +259,7 @@ export function settlerFor(parts: SettlingParts): Settler {
   };
   settle.queue = queue;
   /*
-   * ⚠️ AND WHICH STORE, for the same reason the queue is carried: the
+   * NOTE: AND WHICH STORE, for the same reason the queue is carried: the
    * Saver has to be able to refuse a record that belongs somewhere
    * else, and the only binding it holds is this one. A settler built by
    * `settlerFor` has already checked itself against the queue path for

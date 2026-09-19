@@ -71,7 +71,7 @@ function request(directory: string, text: string, prefix = '## Two\n', cursor: s
 /*
  * D1 WHAT A RECORD WRITTEN BEFORE section 13 MEANS TO THIS BUILD.
  *
- * ⚠️ THE FIRST VERSION OF THIS RULE MADE EVERY OLD BLOCK A DRAFT.
+ * NOTE: THE FIRST VERSION OF THIS RULE MADE EVERY OLD BLOCK A DRAFT.
  *
  * section 13 keeps "which send the store confirmed" in a `confirmed` record
  * that older sidecars do not have. I read their absence as "no baseline
@@ -144,7 +144,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
    * rows above.
    */
   /*
-   * ⚠️ AN OLDER VERSION NOBODY SAVED FROM STILL HAS A BASELINE, AND IT
+   * NOTE: AN OLDER VERSION NOBODY SAVED FROM STILL HAS A BASELINE, AND IT
    * IS THE PUBLICATION'S. (section 13.6, ruled after the trace in
    * `legacyBaseline`.)
    *
@@ -191,7 +191,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
   });
 
   /*
-   * ⚠️ AND THE DERIVATION IS ONLY FOR RECORDS FROM BEFORE section 13. Every
+   * NOTE: AND THE DERIVATION IS ONLY FOR RECORDS FROM BEFORE section 13. Every
    * record this build writes carries `next-seq`; `confirmed: null` in
    * one of those is this build SAYING there is no baseline -- for a
    * version `reconcile` built out of the user's own bytes, for instance
@@ -206,7 +206,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
   });
 
   /*
-   * ⚠️ AND THE DERIVED BASELINE IS NEVER WRITTEN BACK. If it were, the
+   * NOTE: AND THE DERIVED BASELINE IS NEVER WRITTEN BACK. If it were, the
    * next read would find a `confirmed` without a request id, refuse it,
    * and answer none -- turning the block into a draft by the very route
    * this baseline exists to close. The fields it is derived FROM are
@@ -232,7 +232,7 @@ describe('D1 a record from before the send-record still says what it knew', () =
 /*
  * D5 WHERE A BASELINE MAY COME FROM. (section 13.6 (11))
  *
- * ⚠️ A PUBLICATION IS NOT A SEND, AND THE TYPE SAYS SO.
+ * NOTE: A PUBLICATION IS NOT A SEND, AND THE TYPE SAYS SO.
  *
  * A version published from the store holds bytes the store gave us:
  * that is a baseline. It is not a confirmation -- no request was made,
@@ -302,7 +302,7 @@ describe('D5 only bytes that came from the store make a baseline', () => {
   });
 
   /*
-   * ⚠️ ALL OF IT OR NONE OF IT, like every other record this build
+   * NOTE: ALL OF IT OR NONE OF IT, like every other record this build
    * reads. Half a baseline would be a comparison against a digest
    * nobody wrote.
    */
@@ -410,7 +410,7 @@ describe('D4 a prefix that moved makes a draft of bytes that did not', () => {
   }
 
   /*
-   * ⚠️ THE ROUTE CHANGED UNDER THIS CELL, AND THE FINDING IS WORTH MORE
+   * NOTE: THE ROUTE CHANGED UNDER THIS CELL, AND THE FINDING IS WORTH MORE
    * THAN THE CELL WAS.
    *
    * It used to reach `prefix-moved` through `reconcile`: adopt a
@@ -484,7 +484,7 @@ describe('D4 a prefix that moved makes a draft of bytes that did not', () => {
 
   /*
    * THE TWIN, ALONG THE ONE AXIS: the same reconciliation adopting the
-   * heading the record already has. ⚠️ IT IS STILL A DRAFT, and for the
+   * heading the record already has. NOTE: IT IS STILL A DRAFT, and for the
    * same reason -- `reconcile` builds the baseline from the FILE, so
    * the store has not seen it whatever the digests say. What the twin
    * rules out is a build that told them apart by the prefix rather than
@@ -510,7 +510,7 @@ describe('D5 which send may replace a baseline', () => {
   });
 
   /*
-   * ⚠️ AND THE HIGH-WATER MARK IS WHAT DOES IT. Saying "a derived
+   * NOTE: AND THE HIGH-WATER MARK IS WHAT DOES IT. Saying "a derived
    * baseline is replaced by any send" would be true of every state that
    * can be reached today and would stop being true the moment one is
    * reachable where the mark is above the arriving send -- at which
@@ -540,7 +540,7 @@ describe('D5 which send may replace a baseline', () => {
  * none of the block's versions can be called settled -- so the
  * migration marks them, and the mark is what makes them drafts.
  *
- * ⚠️ THE MARK IS ON THE RECORD, NOT WORKED OUT FROM THE QUEUE. The
+ * NOTE: THE MARK IS ON THE RECORD, NOT WORKED OUT FROM THE QUEUE. The
  * queue belongs to one session; "is this file settled" is asked by
  * whoever holds the file.
  */
@@ -596,7 +596,7 @@ describe('D6 the mark an old-format send leaves on a block', () => {
   });
 
   /*
-   * ⚠️ IT SAYS WHICH RECORDS IT MARKED, so that taking the mark off
+   * NOTE: IT SAYS WHICH RECORDS IT MARKED, so that taking the mark off
    * again is reading a list rather than deriving one. A second
    * derivation of the same fact is the shape this batch deleted
    * `recovered()` for: two derivations spell their conditions
@@ -1229,7 +1229,7 @@ describe('every publication path asks the same questions', () => {
 /*
  * P1-3: the draft's only copy is never written over.
  *
- * ⚠️ THIS FIX ALSO HAD NO CELL UNTIL A MUTATION SURVIVED. Putting the
+ * NOTE: THIS FIX ALSO HAD NO CELL UNTIL A MUTATION SURVIVED. Putting the
  * truncating rewrite back left every existing cell green -- they checked
  * that the user's bytes were still THERE, which they are right up until
  * the process stops halfway through replacing them.
@@ -1581,7 +1581,7 @@ describe('X1c ⑨ what a version is measured against after the store has answere
           bodyHasCrlf: false,
           ...over,
           /*
-           * ⚠️ THE BASELINE THE PRODUCT WOULD HAVE WRITTEN, worked out
+           * NOTE: THE BASELINE THE PRODUCT WOULD HAVE WRITTEN, worked out
            * from what this fixture is being asked for.
            *
            * `publishInto` records a `by: 'publication'` baseline for
@@ -1874,7 +1874,7 @@ describe('review 21 what the reconciliation action is measured against', () => {
   });
 
   /*
-   * ⚠️ AND THE CHECK AND THE USE ARE ONE READ. The guard read the file,
+   * NOTE: AND THE CHECK AND THE USE ARE ONE READ. The guard read the file,
    * then the action read it again; a write landing between them passed
    * the guard and was published -- the defect the guard exists for, one
    * step further along. This cannot be staged from outside the call, so

@@ -153,7 +153,7 @@ describe('a queue that could not be read is not an empty queue', () => {
    * every mutator re-read the file before it changes it -- so there is
    * no such object any more: the first change reads for itself.
    *
-   * ⚠️ THE RULE BECAME A STRUCTURE, which is why the flag could go. The
+   * NOTE: THE RULE BECAME A STRUCTURE, which is why the flag could go. The
    * property it protected is asserted directly by its successor:
    * `reads the file before its first change, even if nobody loaded it`
    * (mutators.test.ts) -- an object that never loaded, over a file that
@@ -508,7 +508,7 @@ describe('a queue in a shape this build cannot read is refused, not repaired', (
  * that made the attempt.
  */
 /*
- * ⚠️ A CURSOR IS WHAT AN ANSWER TO ONE OF THIS QUEUE'S REQUESTS SAYS.
+ * NOTE: A CURSOR IS WHAT AN ANSWER TO ONE OF THIS QUEUE'S REQUESTS SAYS.
  *
  * `resolve` filtered by request id and then wrote the cursor whatever
  * the filter had done -- so a caller holding the wrong queue could

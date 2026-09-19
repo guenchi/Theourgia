@@ -58,7 +58,7 @@ export interface WriterEnd {
 
 export function writersFromCheck(answer: Datum): WriterEnd[] | null {
   /*
-   * ⛔ AND THE FORM HAS TO BE A `check`. `(garbage (writers (("local"
+   * NEVER: AND THE FORM HAS TO BE A `check`. `(garbage (writers (("local"
    * (end 7)))))` answered a cursor, and `(error ...)` carrying the same
    * clause did too -- so a refusal shaped like an answer would have this
    * client choose a writer and start writing. Measured in a twelfth
@@ -70,7 +70,7 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
     return null;
   }
   /*
-   * ⛔ EXACTLY ONE VALUE. `(check (writers ((...)) ((...))))` carries
+   * NEVER: EXACTLY ONE VALUE. `(check (writers ((...)) ((...))))` carries
    * two, and taking the first silently made a malformed listing supply
    * a cursor -- measured in a fourteenth review round, which got
    * `local:7` out of a clause naming two separate listings. A clause
@@ -79,7 +79,7 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
    * an unreadable listing is the right answer.
    */
   /*
-   * ⚠️ BOTH REASONS REFUSE HERE. A `check` with no `writers` clause
+   * NOTE: BOTH REASONS REFUSE HERE. A `check` with no `writers` clause
    * and a `check` carrying two are equally unusable for the one thing
    * this reader does, which is to name the single log writer.
    */
@@ -88,7 +88,7 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
     return null;
   }
   /*
-   * ⛔ AN ENTRY THAT CANNOT BE READ IS NOT AN ENTRY THAT IS NOT THERE,
+   * NEVER: AN ENTRY THAT CANNOT BE READ IS NOT AN ENTRY THAT IS NOT THERE,
    * and here the count is the whole decision.
    *
    * Skipping the unreadable ones made `(check (writers (("local" (end 7))
@@ -105,7 +105,7 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
       return null;
     }
     /*
-     * ⚠️ A WRITER ENTRY HAS NO HEAD EITHER -- it reads
+     * NOTE: A WRITER ENTRY HAS NO HEAD EITHER -- it reads
      * `("local" (end 7))`, whose first element is the writer's name. It
      * comes out of a form whose head has been checked, which is what
      * makes reading it safe. See `clauseOfRecord` in wire.ts.
@@ -149,7 +149,7 @@ export function eventFromWrite(answer: Answer): Event | null {
     return null;
   }
   /*
-   * ⛔ THE ENVELOPE IS UNWRAPPED ONCE, BY THE CLIENT, AND NOT AGAIN
+   * NEVER: THE ENVELOPE IS UNWRAPPED ONCE, BY THE CLIENT, AND NOT AGAIN
    * HERE.
    *
    * This reached into an `items` clause by SHAPE, after `interpret` had
@@ -162,7 +162,7 @@ export function eventFromWrite(answer: Answer): Event | null {
    * known.
    */
   /*
-   * ⛔ AND THE FORM HAS TO HAVE SAID `ok`.
+   * NEVER: AND THE FORM HAS TO HAVE SAID `ok`.
    *
    * This is the worst place in this extension for the unchecked-form
    * shape, and it was the last found. Measured in a twelfth review
@@ -194,7 +194,7 @@ export function isReplay(answer: Answer): boolean {
     return false;
   }
   /*
-   * ⛔ AS ABOVE -- no second unwrapping. The same crafted answer made
+   * NEVER: AS ABOVE -- no second unwrapping. The same crafted answer made
    * this report a replay where the answer says it is not one, which
    * would have a save reported as "the store had already applied this
    * request" when the store had just applied it for the first time.
@@ -212,7 +212,7 @@ export function isWellFormedCursor(cursor: string): boolean {
 /*
  * WHOSE LOG A POSITION IS IN, AND WHERE IN IT. (section 13.3)
  *
- * ⚠️ TWO WRITERS' NUMBERS ARE NOT COMPARABLE. A cursor is `writer:n`,
+ * NOTE: TWO WRITERS' NUMBERS ARE NOT COMPARABLE. A cursor is `writer:n`,
  * and `n` counts within that writer's log. Reading a different
  * writer's position as "later" because its number is bigger is reading
  * two rulers as one.

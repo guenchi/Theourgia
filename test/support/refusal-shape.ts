@@ -23,7 +23,7 @@
  * -- with the offending name given as a string, and the whole
  * `malformed-intent` family becomes position-plus-string.
  *
- * ⚠️ IT IS HERE, AND NOT INSIDE THE CELL, BECAUSE THE CELL THAT USES IT
+ * NOTE: IT IS HERE, AND NOT INSIDE THE CELL, BECAUSE THE CELL THAT USES IT
  * IS RED. A red cell's expectation is checked by nothing: a stray space
  * or a wrong bracket in the pattern keeps it red for ever, and the day
  * the core lands the change the cell goes on failing while looking like
@@ -32,7 +32,7 @@
  * witness is the only evidence that this expectation is satisfiable at
  * all, and that the red means what it says.
  *
- * ⚠️ AND IT READS THE ANSWER RATHER THAN MATCHING ITS TEXT. The first
+ * NOTE: AND IT READS THE ANSWER RATHER THAN MATCHING ITS TEXT. The first
  * version compared substrings, which a review showed to be wrong in both
  * directions at once. Too weak: independent matches for
  * `symbol-not-wire-safe`, `(field rel)` and `(spelling "1")` were
@@ -67,7 +67,7 @@ function clause(value: Datum, name: string): Datum[] | null {
  * would be asking a question that cannot fail.
  */
 /*
- * ⚠️ THE SPELLING OF THE POSITION IS A CONSTANT BECAUSE IT IS IN
+ * NOTE: THE SPELLING OF THE POSITION IS A CONSTANT BECAUSE IT IS IN
  * DISPUTE.
  *
  * The first draft of the ruling wrote the position as `(field rel)`; the

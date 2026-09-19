@@ -25,7 +25,7 @@
  * is: take `generation` before the wait, compare it after, and drop the
  * result if it moved.
  *
- * ⚠️ THE RULE HAD SIX CALL SITES AND ONE EXCEPTION NOBODY HAD WRITTEN
+ * NOTE: THE RULE HAD SIX CALL SITES AND ONE EXCEPTION NOBODY HAD WRITTEN
  * DOWN. `adoptingInto` read the Saver when the command started and the
  * pickers after it are waits, so changing the store while the list was
  * open put a takeover's entries into the queue the window had just left
@@ -33,7 +33,7 @@
  * A rule kept in six heads is a rule with no way to notice the seventh
  * place. This census is that way.
  *
- * ⚠️ IT IS READ FROM THE SYNTAX TREE, NOT FROM THE TEXT. A regular
+ * NOTE: IT IS READ FROM THE SYNTAX TREE, NOT FROM THE TEXT. A regular
  * expression for `generation` finds the word in comments and in the
  * assignment that raises it, cannot tell an inner function's waits from
  * its parent's, and cannot say whether the comparison comes before or
@@ -125,7 +125,7 @@ function isFunction(n: ts.Node): boolean {
 }
 
 /*
- * ⚠️ A FUNCTION'S OWN WAITS, not those of the functions inside it. An
+ * NOTE: A FUNCTION'S OWN WAITS, not those of the functions inside it. An
  * inner callback's `await` says nothing about whether THIS body resumed
  * across one, and counting it would let a handler that waits without
  * checking hide behind a helper that does.
@@ -146,7 +146,7 @@ function within<T extends ts.Node>(fn: ts.Node, pick: (n: ts.Node) => n is T): T
 }
 
 /*
- * ⚠️ `for await (... of ...)` IS A WAIT AND THE SURVEY COULD NOT SEE ONE.
+ * NOTE: `for await (... of ...)` IS A WAIT AND THE SURVEY COULD NOT SEE ONE.
  * It is not an `AwaitExpression`; it is a `ForOfStatement` carrying an
  * await modifier. A reviewer added an unguarded one to `extension.ts`
  * and all three cells below stayed green -- the census was blind to a
@@ -159,7 +159,7 @@ function waitsIn(fn: ts.Node): ts.Node[] {
 }
 
 /*
- * ⚠️ A COMPARISON IS NOT A GUARD UNTIL IT STOPS SOMETHING.
+ * NOTE: A COMPARISON IS NOT A GUARD UNTIL IT STOPS SOMETHING.
  *
  * The rule used to accept any `===`/`!==` mentioning `generation`
  * anywhere after the wait. A reviewer replaced `refreshConflicts`'
@@ -180,7 +180,7 @@ function leaves(statement: ts.Statement): boolean {
 }
 
 /*
- * ⚠️ AND THE OTHER SHAPE OF THE SAME GUARD: CAPTURE THE THING, COMPARE
+ * NOTE: AND THE OTHER SHAPE OF THE SAME GUARD: CAPTURE THE THING, COMPARE
  * THE THING.
  *
  * `const mine = saver; await ...; if (saver !== mine) return;` guards
@@ -192,7 +192,7 @@ function leaves(statement: ts.Statement): boolean {
  * the generation shape, so the drain `rebuild` schedules -- which uses
  * the better one -- had to be written into the exemption table.
  *
- * ⚠️ AN EXEMPTION TABLE THAT GROWS WITH CORRECT CODE IS A TRAP. The next
+ * NOTE: AN EXEMPTION TABLE THAT GROWS WITH CORRECT CODE IS A TRAP. The next
  * reader takes the table as the list of places that got away with
  * something, and the right way to write this becomes indistinguishable
  * from the wrong way. So the shape is recognised here instead, and the
@@ -201,7 +201,7 @@ function leaves(statement: ts.Statement): boolean {
  */
 function capturedBeforeTheWait(src: ts.SourceFile, before: number): Set<string> {
   /*
-   * ⚠️ THE CAPTURE IS USUALLY IN THE ENCLOSING FUNCTION, not in the one
+   * NOTE: THE CAPTURE IS USUALLY IN THE ENCLOSING FUNCTION, not in the one
    * that waits: `const mine = saver;` sits in `rebuild` and the compare
    * happens inside the callback it schedules. My first version looked
    * only inside the waiting function, found nothing, and asked for an
@@ -225,7 +225,7 @@ function capturedBeforeTheWait(src: ts.SourceFile, before: number): Set<string> 
 }
 
 /*
- * ⚠️ A GENERATION COMPARISON COUNTS ONLY IF THE GENERATION WAS READ
+ * NOTE: A GENERATION COMPARISON COUNTS ONLY IF THE GENERATION WAS READ
  * BEFORE THE WAIT. Read afterwards it compares the live counter with
  * itself, which is true however much moved. `generationTaken` carries
  * that reading in; the identity form does not need it, because
@@ -313,7 +313,7 @@ function survey(text: string = extensionText()): Waiting[] {
 }
 
 /*
- * ⚠️ AND A GUARD ONLY COVERS THE WAITS BEFORE IT.
+ * NOTE: AND A GUARD ONLY COVERS THE WAITS BEFORE IT.
  *
  * A function may take the generation, wait, check, and then wait AGAIN
  * -- and the second wait resumes with nobody asking. `reconcileBlock`
@@ -341,7 +341,7 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
 };
 
 /*
- * ⚠️ AND THE DOOR THAT IS LEFT OPEN ON PURPOSE HAS TO BE WATCHED.
+ * NOTE: AND THE DOOR THAT IS LEFT OPEN ON PURPOSE HAS TO BE WATCHED.
  *
  * `Saver` refuses a settler that carries a queue other than its own, and
  * accepts a bare callback carrying none -- deliberately, because the
@@ -350,7 +350,7 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
  * sentence: "every settler the extension builds comes from
  * `settlerFor`, so the path that ships is always checked".
  *
- * ⚠️ THAT SENTENCE WAS NARRATION. Nothing made it true, and one bare
+ * NOTE: THAT SENTENCE WAS NARRATION. Nothing made it true, and one bare
  * arrow function at the wiring would have unmade it silently -- the same
  * shape as `openBlock`'s exemption, which stated a false premise for two
  * rounds. A review asked for the guard rather than the claim. This is
@@ -401,7 +401,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
 });
 
 /*
- * ⚠️ WHAT A HANDLER FORGETS AFTER A WAIT.
+ * NOTE: WHAT A HANDLER FORGETS AFTER A WAIT.
  *
  * `pendingSaves` is keyed by block id and outlives every rebuild, so an
  * entry under a key may have been written by a different save -- to
@@ -414,7 +414,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
  * the user's saved text a draft nothing would send again. Reproduced in
  * review, in the place I had just repaired.
  *
- * ⚠️ AND IT IS CHECKED FROM THE SOURCE BECAUSE THE HANDLER IS NOT
+ * NOTE: AND IT IS CHECKED FROM THE SOURCE BECAUSE THE HANDLER IS NOT
  * REACHABLE, said rather than left as a gap: `onSaved` is built inside
  * `activate` and needs the editor host, so no unit cell drives it, and
  * the mutation that removes this guard survives every suite. What can
@@ -433,7 +433,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
  * itself when it went red, in its own words: "extension.ts no longer
  * deletes from pendingSaves at all".
  *
- * ⚠️ THE RULE IT GUARDED DID NOT RETIRE WITH IT. What it was for was
+ * NOTE: THE RULE IT GUARDED DID NOT RETIRE WITH IT. What it was for was
  * "an answer must not spend a record that belongs to another save", and
  * that is now asked one layer down and more strictly:
  *
@@ -451,7 +451,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
  */
 
 /*
- * ⚠️ AND THE ONE EXEMPTION WHOSE ARGUMENT IS ABOUT WHERE THE WRITING
+ * NOTE: AND THE ONE EXEMPTION WHOSE ARGUMENT IS ABOUT WHERE THE WRITING
  * GOES, CHECKED WHERE IT CAN BE.
  *
  * `openBlock` waits several times after its only generation check, and
@@ -460,7 +460,7 @@ describe('every saver the extension builds gets a settler that knows its queue',
  * publication directory is built from the captured one, so the writing
  * lands under the store the block was read from.
  *
- * ⚠️ THE BEHAVIOURAL CELL FOR THIS DOES NOT EXIST, AND HERE IS WHY,
+ * NOTE: THE BEHAVIOURAL CELL FOR THIS DOES NOT EXIST, AND HERE IS WHY,
  * measured rather than assumed. I wrote one: open a block in store A,
  * change the store while it is being opened, and assert the version
  * appears under A and not under B. It passed -- and it passed just as
@@ -566,7 +566,7 @@ describe('every wait in the extension host knows what may have changed under it'
   });
 
   /*
-   * ⚠️ THE DRAIN IS CALLED CHECKED BECAUSE OF WHAT IT DOES, NOT BECAUSE
+   * NOTE: THE DRAIN IS CALLED CHECKED BECAUSE OF WHAT IT DOES, NOT BECAUSE
    * OF WHAT IS WRITTEN ABOUT IT.
    *
    * The drain `rebuild` schedules carries the identity form of the
@@ -622,7 +622,7 @@ describe('every wait in the extension host knows what may have changed under it'
    * nobody asked for, kept where the next reader will believe it.
    */
   /*
-   * ⚠️ THE RULE ASKS WHETHER THE COMPARISON STOPS ANYTHING. It used to
+   * NOTE: THE RULE ASKS WHETHER THE COMPARISON STOPS ANYTHING. It used to
    * ask only whether a comparison existed: a reviewer replaced
    * `refreshConflicts`' `return` with `void asked` and this file stayed
    * green while the late answer went on being painted. A guard is an

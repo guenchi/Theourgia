@@ -99,7 +99,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
   });
 
   /*
-   * ⭐ AND A CELL THAT WOULD NOTICE IF THE TWO STOPPED AGREEING. Two
+   * KEY: AND A CELL THAT WOULD NOTICE IF THE TWO STOPPED AGREEING. Two
    * readers for two shapes is two places for the shape to be wrong; one
    * reader for both is only worth having if both really do arrive at the
    * same answer, which is a thing to assert rather than to intend.
@@ -118,7 +118,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
    * front of a user whose search never happened.
    */
   /*
-   * ⭐ AN `items` CLAUSE IS NOT AN ANSWER UNLESS SOMETHING SAID `ok`.
+   * KEY: AN `items` CLAUSE IS NOT AN ANSWER UNLESS SOMETHING SAID `ok`.
    *
    * Found by an outside review, reproduced here: the unwrapping asked
    * only whether a clause named `items` was present and took whatever
@@ -147,7 +147,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
    * THE ORDER IS THE SCORE, AND TIES ARE BROKEN BY SOMETHING THAT DOES
    * NOT MOVE.
    *
-   * ⭐ A LIST WHOSE ORDER DEPENDS ON THE ORDER IT ARRIVED IN is a list
+   * KEY: A LIST WHOSE ORDER DEPENDS ON THE ORDER IT ARRIVED IN is a list
    * that draws itself differently on two runs of the same search, and a
    * cell pinned to one of those orders passes until the day it does not.
    * Ids are unique within a store, so sorting equal scores by id gives
@@ -166,7 +166,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
   });
 
   /*
-   * ⭐ THE EXPECTED ORDER IS WRITTEN DOWN BEFORE THE CALL, not taken
+   * KEY: THE EXPECTED ORDER IS WRITTEN DOWN BEFORE THE CALL, not taken
    * from the array the call was given.
    *
    * `assert.deepStrictEqual(rankHits(given), given)` compares the answer
@@ -187,7 +187,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
   });
 
   /*
-   * ⭐ AND THE LIST IT WAS HANDED IS NOT THE LIST IT SORTS, which needs
+   * KEY: AND THE LIST IT WAS HANDED IS NOT THE LIST IT SORTS, which needs
    * an input that is OUT of order to say anything.
    *
    * The assertion was made against an already-sorted input, where an
@@ -220,7 +220,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
 /*
  * WHICH VERBS THE CORE HAS.
  *
- * ⚠️ THE DEFINITION SEARCH IS NOT STUBBED OUT IN THIS EXTENSION. The
+ * NOTE: THE DEFINITION SEARCH IS NOT STUBBED OUT IN THIS EXTENSION. The
  * verb it needs, `whereis`, is not in the core yet. A command that was
  * contributed anyway and answered "not implemented" would be a promise
  * with nobody's name on it -- and a stub is a thing nobody goes back to
@@ -254,7 +254,7 @@ describe('plugin-r2 T5 reading the verb catalogue', function () {
   });
 
   /*
-   * ⭐ AND SAYS NOTHING RATHER THAN SAYING "NO" when it could not ask.
+   * KEY: AND SAYS NOTHING RATHER THAN SAYING "NO" when it could not ask.
    * A refused `describe` that came back as an empty set would hide every
    * verb the core has, including the ones this extension has always
    * used; the caller has to be able to tell "the core does not have it"
@@ -267,7 +267,7 @@ describe('plugin-r2 T5 reading the verb catalogue', function () {
   });
 
   /*
-   * ⭐ A `verbs` CLAUSE IS NOT A CATALOGUE UNLESS THE FORM SAID `ok`.
+   * KEY: A `verbs` CLAUSE IS NOT A CATALOGUE UNLESS THE FORM SAID `ok`.
    *
    * The same defect as the one `hitsOf` was repaired for, in the reader
    * beside it -- and the repair to THIS reader went in without a cell,
@@ -292,7 +292,7 @@ describe('plugin-r2 T5 reading the verb catalogue', function () {
 /*
  * plugin-r2 T5: what a search DOES.
  *
- * ⭐ THE EDITOR IS THREE FUNCTIONS HERE, so every decision the flow
+ * KEY: THE EDITOR IS THREE FUNCTIONS HERE, so every decision the flow
  * makes is one a cell can drive and read back. A flow that only spoke to
  * the editor would be a flow whose decisions nothing can look at, and
  * the decisions are the whole of it.
@@ -328,7 +328,7 @@ function editorThat(
       return picks(hits);
     },
     /*
-     * ⭐ THE CHANNEL IS RECORDED AS WELL AS THE WORDS.
+     * KEY: THE CHANNEL IS RECORDED AS WELL AS THE WORDS.
      *
      * Measured in a tenth review round: with only the text kept, moving
      * the failure and no-store notices from `error` to `information` and
@@ -353,7 +353,7 @@ const HITS = (...ids: string[]): Hit[] => ids.map((id, n) => ({ id, score: 9 - n
 /*
  * A SEARCHER THAT REMEMBERS WHAT IT WAS ASKED FOR.
  *
- * ⭐ THE DOUBLES USED TO IGNORE THEIR ARGUMENT, so nothing in this
+ * KEY: THE DOUBLES USED TO IGNORE THEIR ARGUMENT, so nothing in this
  * section observed the query reaching the store. Measured in a review
  * round: replacing `model.search(query)` with `model.search("WRONG
  * QUERY")` left every one of these cells passing. A search flow that
@@ -374,7 +374,7 @@ function searcherFor(hits: Hit[]): Searcher & { queries: string[] } {
 /*
  * plugin-r2: the settings check is never asked without the directory.
  *
- * ⭐ A CELL CANNOT SEE A DEFAULT ARGUMENT COME BACK. Found in a fourth
+ * KEY: A CELL CANNOT SEE A DEFAULT ARGUMENT COME BACK. Found in a fourth
  * review round, measured by the reviewer: restoring
  * `directory: CoreDirectory | null = null` and the null-skipping
  * condition left every cell in this file passing, because they all pass
@@ -475,7 +475,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⚠️ DISMISSING THE LIST OPENS NOTHING. A quick pick that was closed
+   * NOTE: DISMISSING THE LIST OPENS NOTHING. A quick pick that was closed
    * comes back as undefined, which is the same value a list with nothing
    * in it produces -- so the two are kept apart by never showing an
    * empty list, and by this cell.
@@ -488,7 +488,7 @@ describe('plugin-r2 T5 what a search does', function () {
     assert.deepStrictEqual(outcome, { did: 'nothing', because: 'cancelled' });
     assert.deepStrictEqual(editor.opened, []);
     /*
-     * ⭐ A LIST WAS OFFERED, and it held both hits.
+     * KEY: A LIST WAS OFFERED, and it held both hits.
      *
      * The cell is named for dismissing a list and never checked that one
      * appeared: measured in a twelfth review round, a product that
@@ -508,7 +508,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ NOTHING MATCHED IS SAID OUT LOUD. It used to be possible to
+   * KEY: NOTHING MATCHED IS SAID OUT LOUD. It used to be possible to
    * write this as "show a list of the hits", and a list of no hits closes
    * itself the instant it opens -- which is exactly what a search the
    * user cancelled looks like. The two outcomes must not share a
@@ -528,7 +528,7 @@ describe('plugin-r2 T5 what a search does', function () {
     assert.strictEqual(editor.said.length, 1);
     assert.match(editor.said[0], /nothinghere/);
     /*
-     * ⭐ AND THE SENTENCE SAYS NOTHING MATCHED. Measured in a tenth
+     * KEY: AND THE SENTENCE SAYS NOTHING MATCHED. Measured in a tenth
      * review round: with only the query checked, changing "nothing in
      * the store matches" to "the store found matches for" passed --
      * the cell was reading the one part of the sentence that cannot be
@@ -545,7 +545,7 @@ describe('plugin-r2 T5 what a search does', function () {
       'an ordinary answer -- nothing matched -- was raised as an alarm'
     );
     /*
-     * ⭐ AND NOTHING WAS OPENED. Measured in a ninth review round:
+     * KEY: AND NOTHING WAS OPENED. Measured in a ninth review round:
      * putting an `open()` into the branch that found nothing left this
      * cell passing, because it read the outcome and the message and
      * never the one thing that would be in front of the user.
@@ -554,7 +554,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⚠️ A BOX LEFT BLANK IS NOT A SEARCH FOR NOTHING. Sending an empty
+   * NOTE: A BOX LEFT BLANK IS NOT A SEARCH FOR NOTHING. Sending an empty
    * query to the core answers `(usage (search <query>))` -- a complaint
    * about a command line, shown to somebody who never typed one.
    */
@@ -578,7 +578,7 @@ describe('plugin-r2 T5 what a search does', function () {
     });
     assert.strictEqual(asked, 0, 'the store was asked to search for nothing');
     /*
-     * ⭐ AND NOTHING WAS OPENED EITHER. Measured in a tenth review
+     * KEY: AND NOTHING WAS OPENED EITHER. Measured in a tenth review
      * round: an `open()` added to the cancelled branch, or to the blank
      * branch, passed every cell in this file. "It did not search" and
      * "it did not put a block in front of anybody" are two claims, and
@@ -587,7 +587,7 @@ describe('plugin-r2 T5 what a search does', function () {
     assert.deepStrictEqual(dismissed.opened, []);
     assert.deepStrictEqual(blank.opened, []);
     /*
-     * ⭐ AND NO LIST EITHER. The repair that forbade an open here was
+     * KEY: AND NO LIST EITHER. The repair that forbade an open here was
      * made for the open alone; a quick pick inserted into the same
      * branch passed. Measured in an eleventh review round -- the third
      * time this section has been told that "it did not do X" and "it did
@@ -596,7 +596,7 @@ describe('plugin-r2 T5 what a search does', function () {
     assert.deepStrictEqual(dismissed.offered, []);
     assert.deepStrictEqual(blank.offered, []);
     /*
-     * ⭐ AND NEITHER SAID ANYTHING. A box that was dismissed and a box
+     * KEY: AND NEITHER SAID ANYTHING. A box that was dismissed and a box
      * left blank are both ordinary; a failure notice inserted into
      * either branch passed every cell until a twelfth review round.
      */
@@ -625,7 +625,7 @@ describe('plugin-r2 T5 what a search does', function () {
     assert.strictEqual(editor.opened.length, 0);
     assert.match(editor.said[0], /did not happen/);
     /*
-     * ⭐ AND THE REASON SURVIVES INTO THE SENTENCE. Measured in a tenth
+     * KEY: AND THE REASON SURVIVES INTO THE SENTENCE. Measured in a tenth
      * review round: dropping the reason from what is shown, while
      * keeping it in the returned outcome, passed -- so the cell was
      * reading the half of the sentence that is a constant. What a user
@@ -637,7 +637,7 @@ describe('plugin-r2 T5 what a search does', function () {
       `the sentence discards the reason: ${editor.said[0]}`
     );
     /*
-     * ⭐ AND NAMES THE SEARCH IT IS ABOUT. Measured in an eleventh
+     * KEY: AND NAMES THE SEARCH IT IS ABOUT. Measured in an eleventh
      * review round: the query in the SHOWN sentence could be replaced
      * while the one sent to the store stayed right, and every cell
      * passed -- the two were checked separately and never together.
@@ -648,7 +648,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ AND THE SAME QUESTION PUT TO THE MODEL, WHICH IS WHERE IT WAS
+   * KEY: AND THE SAME QUESTION PUT TO THE MODEL, WHICH IS WHERE IT WAS
    * WRONG.
    *
    * The cell above drives `runSearch` with a stand-in that throws, so it
@@ -683,7 +683,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ THE SAME QUESTION, PUT TO THE OTHER TWO READERS THAT HAD IT
+   * KEY: THE SAME QUESTION, PUT TO THE OTHER TWO READERS THAT HAD IT
    * WRONG.
    *
    * Found by a second review round: `roots` parsed `answer.text` and
@@ -694,7 +694,7 @@ describe('plugin-r2 T5 what a search does', function () {
    * same shape, and its null is what tells a caller "I could not find
    * out" apart from "the core has no verbs".
    *
-   * ⚠️ `roots` IS OLDER THAN THIS BATCH. It is repaired here because it
+   * NOTE: `roots` IS OLDER THAN THIS BATCH. It is repaired here because it
    * is the same defect as the one this batch's own reader had, the
    * instrument to catch it was already in hand, and its reading on the
    * unrepaired tree is in the delivery note.
@@ -738,7 +738,7 @@ describe('plugin-r2 T5 what a search does', function () {
         'entry that depends on one'
     );
     /*
-     * ⭐ AND IT ASKED FOR THE CATALOGUE. The repair that made the
+     * KEY: AND IT ASKED FOR THE CATALOGUE. The repair that made the
      * successful cell watch the verb left this one as it was, because it
      * was made where the finding pointed. Found in a tenth review round.
      */
@@ -746,7 +746,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ A SUCCESSFUL READ THAT SAYS NOTHING IS NOT A BLOCK THAT IS NOT
+   * KEY: A SUCCESSFUL READ THAT SAYS NOTHING IS NOT A BLOCK THAT IS NOT
    * THERE EITHER.
    *
    * Found in a seventh review round: the refusal side was split
@@ -762,7 +762,7 @@ describe('plugin-r2 T5 what a search does', function () {
       send: async (): Promise<RawResult> => ({ argv: [], rc: 0, stdout, stderr: '' })
     });
     /*
-     * ⭐ EACH ANSWER HAS ITS OWN DESCRIPTION, and the cell requires the
+     * KEY: EACH ANSWER HAS ITS OWN DESCRIPTION, and the cell requires the
      * one that belongs to it.
      *
      * One alternation covering all three was the first version, and a
@@ -786,7 +786,7 @@ describe('plugin-r2 T5 what a search does', function () {
             `a read answering ${JSON.stringify(said)} came back as ${e.constructor.name}`
           );
           /*
-           * ⭐ AND THE REFUSAL NAMES THE BLOCK. Measured in an eighth
+           * KEY: AND THE REFUSAL NAMES THE BLOCK. Measured in an eighth
            * review round: reducing the message to the single word
            * "unreadable" left this passing. Somebody reading it has a
            * whole store to look through, and the id was in the request
@@ -807,7 +807,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ THE OTHER READ PATH HAD THE SAME COLLAPSE, and the repair to
+   * KEY: THE OTHER READ PATH HAD THE SAME COLLAPSE, and the repair to
    * `blockOf` did not reach it.
    *
    * `childrenOf` skipped a record it could not read, so a subtree with
@@ -844,7 +844,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ AND THE WORDS REACH THE COMMAND LINE.
+   * KEY: AND THE WORDS REACH THE COMMAND LINE.
    *
    * Found in the same round: nothing between `StoreModel.search` and the
    * transport was watched, so mutating `request('search', [query])` to
@@ -866,7 +866,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ A SUCCESSFUL SEARCH THROUGH THE MODEL, and it is the control the
+   * KEY: A SUCCESSFUL SEARCH THROUGH THE MODEL, and it is the control the
    * section was missing.
    *
    * Every cell about a search either went through `StoreModel` and
@@ -892,7 +892,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ A MALFORMED ANSWER THAT SUCCEEDED IS STILL A REFUSAL, asked
+   * KEY: A MALFORMED ANSWER THAT SUCCEEDED IS STILL A REFUSAL, asked
    * through the model.
    *
    * `hitsOf` is measured directly for every unreadable shape, and the
@@ -918,7 +918,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ AND A CATALOGUE THAT WAS READ. The only cell that went through
+   * KEY: AND A CATALOGUE THAT WAS READ. The only cell that went through
    * `StoreModel.verbs` expected null for a refusal, and the positive
    * cells call `knownVerbs` directly -- so `verbs` returning null
    * unconditionally passed everything. Measured in the same round. A
@@ -941,7 +941,7 @@ describe('plugin-r2 T5 what a search does', function () {
     };
     const verbs = await new StoreModel(new Client(answering)).verbs();
     /*
-     * ⭐ THE VERB IS WATCHED. Measured in a ninth review round:
+     * KEY: THE VERB IS WATCHED. Measured in a ninth review round:
      * `request('describe', [])` changed to `request('search', [])` left
      * both catalogue cells passing, because neither double looked at
      * what it was asked.
@@ -952,7 +952,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ AN OCCUPIED SOCKET PATH IS WAITED OUT, NOT PARKED AT ONCE AND NOT
+   * KEY: AN OCCUPIED SOCKET PATH IS WAITED OUT, NOT PARKED AT ONCE AND NOT
    * LEFT UNRECOGNISED.
    *
    * What occupies it is another daemon, starting or draining, so the
@@ -974,7 +974,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ "THE BLOCK IS NOT THERE" IS THE STORE'S STATEMENT; "I COULD NOT
+   * KEY: "THE BLOCK IS NOT THERE" IS THE STORE'S STATEMENT; "I COULD NOT
    * LOOK" IS THE ROAD'S.
    *
    * Found in a third review round and ruled in a fifth: `blockOf`
@@ -1023,7 +1023,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ AND THE INTERPRETER THE USER CHOSE REACHES THE DAEMON.
+   * KEY: AND THE INTERPRETER THE USER CHOSE REACHES THE DAEMON.
    *
    * Found by a second review round. `theourgia.scheme` is used to start
    * the thin client, and the client starts the daemon with
@@ -1053,7 +1053,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ THE DIRECTORY IS OPTIONAL IN THE SIGNATURE AND REQUIRED IN
+   * KEY: THE DIRECTORY IS OPTIONAL IN THE SIGNATURE AND REQUIRED IN
    * PRACTICE.
    *
    * Found in a third review round. `problemsWith` defaults its second
@@ -1086,7 +1086,7 @@ describe('plugin-r2 T5 what a search does', function () {
   });
 
   /*
-   * ⭐ A REFUSAL WITH NOTHING ON STDOUT IS NOT AN EMPTY RESULT.
+   * KEY: A REFUSAL WITH NOTHING ON STDOUT IS NOT AN EMPTY RESULT.
    *
    * Found by an outside review and reproduced: on the human route no
    * hits IS no output, so a refused request whose stdout is empty parses
@@ -1128,7 +1128,7 @@ describe('plugin-r2 T5 what a search does', function () {
     });
     assert.strictEqual(editor.said.length, 1);
     /*
-     * ⭐ AND THE SENTENCE SAYS WHAT IS WRONG. Measured in an eleventh
+     * KEY: AND THE SENTENCE SAYS WHAT IS WRONG. Measured in an eleventh
      * review round: replacing it with "The store is ready to search."
      * passed -- the cell counted the notices and read none of them.
      */
@@ -1143,7 +1143,7 @@ describe('plugin-r2 T5 what a search does', function () {
       'a store that cannot be searched was reported as a quiet information notice'
     );
     /*
-     * ⭐ AND NOTHING WAS PUT IN FRONT OF ANYBODY -- no box, no list, no
+     * KEY: AND NOTHING WAS PUT IN FRONT OF ANYBODY -- no box, no list, no
      * block. The cell is named for the first and asserted none of them:
      * measured in two review rounds, a prompt added to this branch
      * passed, and so did a quick pick, and so did an open. Asking
@@ -1180,13 +1180,13 @@ describe('plugin-r2 T5 what a search does', function () {
  *
  * Two facts follow, and both are why this is not simply a flag.
  *
- * ⚠️ THE ANSWER THIS CLIENT ALREADY READS MOVES DOWN A LEVEL. The
+ * NOTE: THE ANSWER THIS CLIENT ALREADY READS MOVES DOWN A LEVEL. The
  * cursor, the events and the replay flag every caller looks at are now
  * inside `items`. So `answers` goes on holding exactly what it held
  * before -- the item -- and the outer form arrives as `envelope`, beside
  * it. Nothing that reads an answer today has to change.
  *
- * ⚠️ AND THE STORE NAMES US IN OUR OWN `behind`. `(behind (("w" . 7)))`
+ * NOTE: AND THE STORE NAMES US IN OUR OWN `behind`. `(behind (("w" . 7)))`
  * on a commit whose own cursor is `("w" . 7)` is this very commit's
  * record, reported as somebody else's. That is a defect in the core and
  * it is being fixed there; until then -- and harmlessly afterwards -- the
@@ -1211,7 +1211,7 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
     );
     assert.strictEqual(answer.answers.length, 1);
     /*
-     * ⭐ THE EXPECTED VALUE IS WRITTEN DOWN, not read back through the
+     * KEY: THE EXPECTED VALUE IS WRITTEN DOWN, not read back through the
      * reader under test. Measured in a fourteenth review round: with
      * `Form.value` answering undefined for everything, the two sides of
      * this comparison became `undefined === undefined` and the cell
@@ -1237,7 +1237,7 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
   });
 
   /*
-   * ⭐ AND AN ANSWER THAT WAS NOT WRAPPED IS LEFT ALONE. Every other
+   * KEY: AND AN ANSWER THAT WAS NOT WRAPPED IS LEFT ALONE. Every other
    * verb is still asked for in the mode it was always asked for in, and
    * an unwrapping that fired on the shape rather than on the request
    * would reach into the one verb whose own answer happens to be
@@ -1252,7 +1252,7 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
   });
 
   /*
-   * ⭐ THE CONTROL HAS TO LOOK LIKE AN ENVELOPE, or it is not a control
+   * KEY: THE CONTROL HAS TO LOOK LIKE AN ENVELOPE, or it is not a control
    * at all.
    *
    * Found in a fourth review round, measured: with the case above as the
@@ -1301,7 +1301,7 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
   });
 
   /*
-   * ⚠️ AND WHEN THE ONLY NAME IN IT IS OURS THERE IS NOTHING TO SAY.
+   * NOTE: AND WHEN THE ONLY NAME IN IT IS OURS THERE IS NOTHING TO SAY.
    * This is what every ordinary save on a one-writer store looks like
    * today, and a notice on every one of those would be noise that also
    * happens to be untrue.
@@ -1323,7 +1323,7 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
  * plugin-r2 T1: what the status bar says when the store cannot be
  * reached.
  *
- * ⭐ A QUESTION MARK IS NOT SOMETHING ANYBODY CAN ACT ON. The tooltip
+ * KEY: A QUESTION MARK IS NOT SOMETHING ANYBODY CAN ACT ON. The tooltip
  * said "conflicts: unknown, the store could not be asked" and stopped
  * there, and what had been thrown away was the core's own sentence.
  * Measured against the pinned core, with a directory sitting where the
@@ -1368,7 +1368,7 @@ describe('plugin-r2 T1 the status bar carries the words the core used', function
   });
 
   /*
-   * ⚠️ AND IT IS ITS OWN FACT, not a second reading of the conflict
+   * NOTE: AND IT IS ITS OWN FACT, not a second reading of the conflict
    * count. `conflicts: null` means "I could not ask" and says nothing
    * about why; the two are reported together here, and a build that
    * derived one from the other would have nothing left to put in the
@@ -1385,7 +1385,7 @@ describe('plugin-r2 T1 the status bar carries the words the core used', function
  * plugin-r2: the enclosing form, in every reader that takes a clause out
  * of one.
  *
- * ⭐ THIS IS ONE DEFECT FOUND FIVE TIMES, and each time it was repaired
+ * KEY: THIS IS ONE DEFECT FOUND FIVE TIMES, and each time it was repaired
  * where the finding pointed. `hitsOf` in round one, `knownVerbs` in
  * round ten, and in round eleven three more: the envelope reader in
  * `client.ts`, `blockOf`, and `Working.read`. The cells are together so
@@ -1413,7 +1413,7 @@ describe('plugin-r2 a clause is only an answer when the form said ok', function 
   });
 
   /*
-   * ⭐ AND THE CURSOR IS NOT UNWRAPPED A SECOND TIME.
+   * KEY: AND THE CURSOR IS NOT UNWRAPPED A SECOND TIME.
    *
    * `interpret` removes the envelope the REQUEST asked for. The cursor
    * readers used to reach into an `items` clause again, by shape, so a
@@ -1467,7 +1467,7 @@ describe('plugin-r2 a clause is only an answer when the form said ok', function 
   });
 
   /*
-   * ⭐ AND AN EMPTY SUBTREE IS NOT A LEAF. `read --recursive` includes
+   * KEY: AND AN EMPTY SUBTREE IS NOT A LEAF. `read --recursive` includes
    * the block itself -- the core's `subtree-ids` is `(cons id ...)` --
    * so a success carrying nothing is an answer this build cannot account
    * for. The repair that made the loop refuse an unreadable record left
@@ -1495,7 +1495,7 @@ describe('plugin-r2 a clause is only an answer when the form said ok', function 
  * plugin-r2: how many writers a store has, when one of them cannot be
  * read.
  *
- * ⭐ THE COUNT IS THE WHOLE DECISION HERE. One writer lets this client
+ * KEY: THE COUNT IS THE WHOLE DECISION HERE. One writer lets this client
  * pick a cursor and write; more than one is refused, because the core
  * does not say which is local. Skipping an entry nobody could parse made
  * a two-writer listing count as one -- so the refusal that exists
@@ -1526,7 +1526,7 @@ describe('plugin-r2 an unreadable writer listing is not a shorter one', function
   });
 
   /*
-   * ⭐ AND THE SENTENCE A PERSON SEES COMES FROM THE SAVER, which the
+   * KEY: AND THE SENTENCE A PERSON SEES COMES FROM THE SAVER, which the
    * cells above never reach. Measured in a twelfth review round:
    * replacing the new sentence with the no-writer one left every
    * assertion here holding, because they read a reason code and not the
@@ -1568,7 +1568,7 @@ describe('plugin-r2 an unreadable writer listing is not a shorter one', function
 /*
  * plugin-r2: the shapes this delivery repaired, searched for once more.
  *
- * ⭐ EVERY CELL HERE EXISTS BECAUSE A REPAIR REACHED ONE PLACE AND THE
+ * KEY: EVERY CELL HERE EXISTS BECAUSE A REPAIR REACHED ONE PLACE AND THE
  * DEFECT WAS IN SEVERAL. They are together so that the next instance is
  * an obvious omission. Two shapes:
  *
@@ -1586,7 +1586,7 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
   });
 
   /*
-   * ⭐ THE WORST ONE, AND THE LAST FOUND. A cursor read out of a form
+   * KEY: THE WORST ONE, AND THE LAST FOUND. A cursor read out of a form
    * nobody can parse is a save reported as landed and its record removed
    * from the queue. The exit code was being trusted for a question it
    * cannot answer.
@@ -1614,7 +1614,7 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
   });
 
   /*
-   * ⭐ AND THE NOTICE READS A CURSOR THE WAY THE REST OF THIS BUILD
+   * KEY: AND THE NOTICE READS A CURSOR THE WAY THE REST OF THIS BUILD
    * DOES. `readEvent` accepts `("w" 7)` as well as `("w" . 7)`; the
    * notice had its own narrower reader, so on that shape the writer went
    * unread -- and an unread writer is one that is not dropped. The save
@@ -1664,13 +1664,13 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
   });
 
   /*
-   * ⭐ THE MARKS ARE THE THIRD STATE'S EVIDENCE. `marksKnown` exists so
+   * KEY: THE MARKS ARE THE THIRD STATE'S EVIDENCE. `marksKnown` exists so
    * that "I could not ask" is not drawn as "nothing is wrong"; skipping
    * an entry this build recognises and cannot read threw that evidence
    * away while leaving `marksKnown` true.
    */
   /*
-   * ⭐ EVERY HEAD THE REPAIR NAMED, not the one the finding used.
+   * KEY: EVERY HEAD THE REPAIR NAMED, not the one the finding used.
    *
    * Measured in a thirteenth review round: narrowing STRUCTURAL_HEADS to
    * `['orphan']` alone left every cell passing, because only `orphan`
@@ -1688,7 +1688,7 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
   }
 
   /*
-   * ⭐ AND AN INCOMPLETE READING REACHES THE CALLER AS AN UNKNOWN ONE.
+   * KEY: AND AN INCOMPLETE READING REACHES THE CALLER AS AN UNKNOWN ONE.
    *
    * `structuralMarks` reporting `complete: false` is only worth
    * anything if somebody acts on it. Measured: making `childrenOf` use
@@ -1727,7 +1727,7 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
     const read = await new StoreModel(new Client(answering(others))).structuralMarks();
     assert.strictEqual(read.marks.size, 0);
     /*
-     * ⭐ AND THE READING IS STILL COMPLETE, which is the half this
+     * KEY: AND THE READING IS STILL COMPLETE, which is the half this
      * control was missing.
      *
      * A report this build does not recognise is a future core saying
@@ -1751,7 +1751,7 @@ describe('plugin-r2 an answer is about what was asked, or it is refused', functi
  * plugin-r2: the refusal side, and the readers that had grown beside an
  * authority.
  *
- * ⭐ THESE ARE THE OTHER FACE OF DEFECTS ALREADY REPAIRED ON THE `ok`
+ * KEY: THESE ARE THE OTHER FACE OF DEFECTS ALREADY REPAIRED ON THE `ok`
  * SIDE. An unparseable answer used to confirm a save; an unparseable
  * REFUSAL used to turn one down definitively and take it out of the
  * queue. One coin.
@@ -1813,7 +1813,7 @@ describe('plugin-r2 a refusal this build cannot read is not a refusal', function
   });
 
   /*
-   * ⭐ AND THE SIDECAR'S OUTSTANDING RECORDS ARE READ OR REFUSED, never
+   * KEY: AND THE SIDECAR'S OUTSTANDING RECORDS ARE READ OR REFUSED, never
    * dropped. An empty outstanding list is what `cleanliness` reads as
    * "nothing is in flight over this file", so a record it could not read
    * used to make a file with unsent work in it report clean.
@@ -1841,7 +1841,7 @@ describe('plugin-r2 a refusal this build cannot read is not a refusal', function
   });
 
   /*
-   * ⭐ AND SO IS THE LIST ITSELF. The repair above reads the ENTRIES;
+   * KEY: AND SO IS THE LIST ITSELF. The repair above reads the ENTRIES;
    * a sixteenth review round measured the container four lines from it.
    * `outstanding: {seq: 1, req: "R"}` is not an array, read as an empty
    * list, and an empty list is exactly what `cleanliness` calls clean --

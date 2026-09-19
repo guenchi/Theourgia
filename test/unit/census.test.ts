@@ -17,7 +17,7 @@
 /*
  * How many cells each suite actually registers, written down.
  *
- * ⚠️ THIS GUARD HAD THE DISEASE IT WAS BUILT TO CATCH. Its first version
+ * NOTE: THIS GUARD HAD THE DISEASE IT WAS BUILT TO CATCH. Its first version
  * counted `it(` lines with a regular expression. A reviewer commented
  * out a whole suite -- the three cells that kill a real process inside a
  * publication -- with a block comment: the cells mocha would run fell
@@ -94,7 +94,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['awaiting.test.ts', 6],
   ['blocks.test.ts', 20],
   /*
-   * ⚠️ INCLUDING ITSELF. This file was exempt from the inventory check
+   * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
    * and had no floor, so deleting its own cells was the one shortening
    * nothing here would have said a word about.
    */
@@ -135,6 +135,7 @@ const AT_LEAST: Array<[string, number]> = [
    * rounds found in twelve places.
    */
   ['absence.test.ts', 4],
+  ['ascii-comments.test.ts', 3],
   /*
    * ADDED in plugin-r2: the gate that watches the user's own
    * `~/.theourgia/run` across the whole suite, and the two cells that
@@ -295,7 +296,7 @@ describe('no suite quietly gets shorter', function () {
    * and the run would report no failures. The count is therefore taken
    * inside the host, by the harness, before it runs anything.
    *
-   * ⚠️ WHAT IS CHECKED HERE IS THE COUNTING, NOT THAT THE HARNESS CALLS
+   * NOTE: WHAT IS CHECKED HERE IS THE COUNTING, NOT THAT THE HARNESS CALLS
    * IT. Removing the `shortfalls` call from test/integration/index.ts
    * leaves every cell below green; only a run inside an editor would
    * notice. These cells exist because the counting cannot otherwise be
@@ -342,7 +343,7 @@ describe('no suite quietly gets shorter', function () {
    * within a day -- and then nothing would be counted at all.
    */
   /*
-   * ⚠️ A LISTED SUITE THAT REGISTERS NOTHING AT ALL. The negative cell
+   * NOTE: A LISTED SUITE THAT REGISTERS NOTHING AT ALL. The negative cell
    * above exercises 1 against 14; nothing exercised 0 against 14, and a
    * guard written `found > 0 && found < expected` therefore passed every
    * cell here while silently accepting a file whose every cell was
@@ -400,7 +401,7 @@ describe('no suite quietly gets shorter', function () {
    * table, which is the part that goes stale.
    */
   /*
-   * ⚠️ IN ONE DIRECTION ONLY: every source file has a number. It does
+   * NOTE: IN ONE DIRECTION ONLY: every source file has a number. It does
    * not reject a number for a file that no longer exists, and it
    * compares source names rather than the compiled files the harness
    * actually loads.

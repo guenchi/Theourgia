@@ -29,7 +29,7 @@ import { shortfalls } from './census';
 
 export async function run(): Promise<void> {
   /*
-   * ⚠️ `forbidOnly` AND `forbidPending`, BECAUSE THE COUNT CANNOT SEE
+   * NOTE: `forbidOnly` AND `forbidPending`, BECAUSE THE COUNT CANNOT SEE
    * THEM. A `describe.only` leaves every cell REGISTERED and runs three
    * of seventeen; a `describe.skip` leaves them registered and runs none
    * of that suite. The census below counts registrations, so both walk

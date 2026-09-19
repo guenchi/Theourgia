@@ -62,7 +62,7 @@ function manifestSettings(): string[] {
 }
 
 /*
- * ⚠️ A SETTING THE MANIFEST DOES NOT DECLARE IS A SETTING THAT READS ITS
+ * NOTE: A SETTING THE MANIFEST DOES NOT DECLARE IS A SETTING THAT READS ITS
  * DEFAULT FOR EVER, AND NOTHING SAYS SO.
  *
  * `getConfiguration('theourgia').get('writer', '')` answers the default
@@ -116,7 +116,7 @@ describe('X1c the commands the extension offers', () => {
    * a list stops shouting.
    */
   /*
-   * ⚠️ IT COMPARES THE MANIFEST WITH THE SOURCE TABLE. It does not look
+   * NOTE: IT COMPARES THE MANIFEST WITH THE SOURCE TABLE. It does not look
    * at registrations: removing the reconcile registration from
    * activation leaves this green, and the editor-hosted cell is what
    * catches that.
@@ -187,7 +187,7 @@ describe('X1c the commands the extension offers', () => {
    * one file allowed to hold them.
    */
   /*
-   * ⚠️ IT FLAGS ANY SPELLED-OUT TITLE, NOT ONLY A DECLARED ONE. The
+   * NOTE: IT FLAGS ANY SPELLED-OUT TITLE, NOT ONLY A DECLARED ONE. The
    * first version only complained about strings that were already in
    * COMMANDS, so a literal naming a command that does NOT exist -- which
    * is the defect this whole file is about -- walked straight past it.

@@ -69,7 +69,7 @@ export const LIBRARY_EXTENSIONS =
  * THE FILE NAMES THIS EXTENSION EXPECTS IN A CORE DIRECTORY, in one
  * place.
  *
- * ⚠️ THEY ARE GOING TO CHANGE. The core has ruled two renamings: every
+ * NOTE: THEY ARE GOING TO CHANGE. The core has ruled two renamings: every
  * library `.ss` becomes `.sc`, and the entry points split so that
  * `cli.ss` goes away. Spelling any of these into a fixture or a cell
  * would make that a search across the tree; spelling them here makes it
@@ -100,7 +100,7 @@ export const PRODUCT_EXTENSIONS = '.so::.ss::.sls::.sc::.scm';
 /*
  * WHAT A CORE DIRECTORY IS, and it is asked rather than configured.
  *
- * ⚠️ BOTH LISTS ARE NEEDED AND EACH IS WRONG FOR THE OTHER DIRECTORY.
+ * NOTE: BOTH LISTS ARE NEEDED AND EACH IS WRONG FOR THE OTHER DIRECTORY.
  * Measured on this machine against the g-r5 core:
  *
  *   - the source list against a product directory: the library is not
@@ -121,7 +121,7 @@ export interface CoreDirectory {
 }
 
 /*
- * ⚠️ `client` IS THE WITNESS BECAUSE IT IS THE LIBRARY THE THIN CLIENT
+ * NOTE: `client` IS THE WITNESS BECAUSE IT IS THE LIBRARY THE THIN CLIENT
  * ITSELF IMPORTS. Asking about a library the client does not need would
  * be asking a question whose answer does not decide anything; this one
  * is the library whose absence the run actually stops on.
@@ -137,7 +137,7 @@ export function coreFormOf(directory: CoreDirectory): CoreForm {
 }
 
 /*
- * ⚠️ A DIRECTORY THAT IS NEITHER GETS NO LIST AND NO GUESS. Picking one
+ * NOTE: A DIRECTORY THAT IS NEITHER GETS NO LIST AND NO GUESS. Picking one
  * would hand the user a library-not-found exception from inside Chez
  * about a path they would have to work backwards from; `problemsWith`
  * names the setting instead.
@@ -164,7 +164,7 @@ export function programFor(config: CoreConfig): string {
 /*
  * WHO THIS WINDOW IS WHEN IT WRITES. (design 7.6.50 v247/v254)
  *
- * ⚠️ THE CORE REFUSES AN UNBOUND WRITER AND THIS EXTENSION STILL HAS A
+ * NOTE: THE CORE REFUSES AN UNBOUND WRITER AND THIS EXTENSION STILL HAS A
  * DEFAULT, and the two are not in conflict: the core's refusal exists so
  * that two agents given only an actor cannot silently share one draft
  * space. A VS Code window is one agent. Its default is the actor's own
@@ -187,7 +187,7 @@ export function libraryDirectories(config: CoreConfig): string[] {
 }
 
 /*
- * ⚠️ THE IDENTITIES TRAVEL HERE AND NOT IN THE ARGUMENT VECTOR. The
+ * NOTE: THE IDENTITIES TRAVEL HERE AND NOT IN THE ARGUMENT VECTOR. The
  * thin client scans argv for the four options that say WHERE a request
  * goes and passes everything else through untouched; `--writer` is
  * deliberately not one of them, and a writer spliced into argv arrives
@@ -207,7 +207,7 @@ export function environmentFor(
     THEOURGIA_ACTOR: config.actor,
     THEOURGIA_WRITER: writerFor(config),
     /*
-     * ⛔ THE INTERPRETER THE USER CHOSE HAS TO REACH THE DAEMON TOO.
+     * NEVER: THE INTERPRETER THE USER CHOSE HAS TO REACH THE DAEMON TOO.
      *
      * This command line starts the thin client, and the client starts
      * the daemon -- with `THEOURGIA_SCHEME`, or failing that with
@@ -253,7 +253,7 @@ export interface ConfigProblem {
  * once per setting.
  */
 /*
- * ⛔ THE DIRECTORY IS NOT OPTIONAL, AND IT USED TO BE.
+ * NEVER: THE DIRECTORY IS NOT OPTIONAL, AND IT USED TO BE.
  *
  * It defaulted to null and the "neither sources nor products" problem
  * was skipped when it was null -- and the extension called this with one

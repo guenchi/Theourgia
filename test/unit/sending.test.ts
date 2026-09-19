@@ -133,7 +133,7 @@ function liveConfigReads(fn: ts.Node): ts.PropertyAccessExpression[] {
 
 describe('the save path reads who, what and which send at one moment', () => {
   /*
-   * ⚠️ "NEVER READ THE SETTINGS AFTER A WAIT" IS NOT THE RULE, and
+   * NOTE: "NEVER READ THE SETTINGS AFTER A WAIT" IS NOT THE RULE, and
    * writing it that way is how the exception ends up unwritten. There is
    * exactly one place that must read them -- the check that the file's
    * own store is still the one this window is configured for -- and
@@ -192,7 +192,7 @@ describe('the save path reads who, what and which send at one moment', () => {
   });
 
   /*
-   * ⚠️ AND THE SETTLER READS NOTHING LIVE AT ALL. It is handed the
+   * NOTE: AND THE SETTLER READS NOTHING LIVE AT ALL. It is handed the
    * record; the record carries the store the FILE says it belongs to.
    * A settler that consults the settings is a settler whose answer
    * depends on what the user did while the store was thinking.
@@ -210,7 +210,7 @@ describe('the save path reads who, what and which send at one moment', () => {
   });
 
   /*
-   * ⚠️ AND NEITHER DOES THE DRAIN. It runs on a schedule of its own --
+   * NOTE: AND NEITHER DOES THE DRAIN. It runs on a schedule of its own --
    * `rebuild` starts one, and a retry command starts another -- so
    * whatever it read before its first wait belongs to a window that may
    * have moved on by the time an answer comes back. Everything it needs
@@ -243,7 +243,7 @@ describe('the save path reads who, what and which send at one moment', () => {
   });
 
   /*
-   * ⚠️ THE MEMORY IS THE QUEUE, AND THERE IS NO OTHER ONE. (section 13.1)
+   * NOTE: THE MEMORY IS THE QUEUE, AND THERE IS NO OTHER ONE. (section 13.1)
    *
    * `pendingSaves` was a map from block id to what the save was about,
    * and `recovered()` was a second supplier of the same thing for
@@ -287,7 +287,7 @@ const CHECK =
  * the recording.
  */
 /*
- * ⚠️ THE STAND-IN SETTLER CARRIES THE STORE THE REAL ONE CARRIES.
+ * NOTE: THE STAND-IN SETTLER CARRIES THE STORE THE REAL ONE CARRIES.
  *
  * `settlerFor` attaches the queue and the store hash it was built for,
  * and the Saver reads them to refuse a record that belongs elsewhere. A
@@ -367,7 +367,7 @@ describe('R2 the record is the queue entry', () => {
   afterEach(() => core?.dispose());
 
   /*
-   * ⚠️ THE ENTRY CARRIES THE RECORD, not a copy of the two fields the
+   * NOTE: THE ENTRY CARRIES THE RECORD, not a copy of the two fields the
    * sender happens to need. (section 13.1)
    *
    * What a save was about used to live in a map in memory, keyed by
@@ -384,7 +384,7 @@ describe('R2 the record is the queue entry', () => {
      * A send that settles removes its own entry -- which is what should
      * happen, and would leave this cell with nothing to look at.
      *
-     * ⚠️ AND THE BYTES ARE READ, NOT THE READER'S ANSWER. What the queue
+     * NOTE: AND THE BYTES ARE READ, NOT THE READER'S ANSWER. What the queue
      * hands back after parsing is the next cell's question; this one is
      * whether the fields reached the file at all. A writer that dropped
      * a field and a reader that filled it back in would agree with each
@@ -409,7 +409,7 @@ describe('R2 the record is the queue entry', () => {
   });
 
   /*
-   * ⚠️ IMMUTABILITY HAS TO BE PROVED TO THE VALUE, not to the name.
+   * NOTE: IMMUTABILITY HAS TO BE PROVED TO THE VALUE, not to the name.
    *
    * A shallow freeze, a shadow copy under a different name, or a field
    * that is only frozen on the way in all pass a cell that asserts
@@ -470,7 +470,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
   afterEach(() => core?.dispose());
 
   /*
-   * ⚠️ THE ID USED TO BE MADE INSIDE THE SENDER, which is after the
+   * NOTE: THE ID USED TO BE MADE INSIDE THE SENDER, which is after the
    * wait. The record names the send; a name given later belongs to a
    * different moment than the thing it names, and there was no way to
    * write down "this file, these bytes, this request" as one fact.
@@ -493,7 +493,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
   });
 
   /*
-   * ⚠️ TWO SENDS OF ONE BLOCK ARE TWO THINGS, and what used to keep
+   * NOTE: TWO SENDS OF ONE BLOCK ARE TWO THINGS, and what used to keep
    * them apart was a map keyed by block id -- so the second overwrote
    * the first, and the first's answer settled against whatever the
    * second was about. The record makes them two values; these cells
@@ -571,7 +571,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
   });
 
   /*
-   * ⚠️ AND A RECORD FOR ANOTHER STORE IS NOT THIS QUEUE'S BUSINESS.
+   * NOTE: AND A RECORD FOR ANOTHER STORE IS NOT THIS QUEUE'S BUSINESS.
    * (R7.2, I5)
    *
    * A queue carries one cursor and a cursor belongs to one store. A
@@ -594,7 +594,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
   });
 
   /*
-   * ⚠️ THE ANSWER THAT ARRIVES AFTER A RESTART TAKES THE SAME ROAD AS
+   * NOTE: THE ANSWER THAT ARRIVES AFTER A RESTART TAKES THE SAME ROAD AS
    * THE ONE THAT ARRIVES WHILE THE WINDOW IS UP. (section 13.1)
    *
    * It did not. In flight, the settler read a map in memory; after a
@@ -665,7 +665,7 @@ describe('R8 a send the record has already moved past', () => {
   });
 
   /*
-   * ⚠️ THE CONTROL, ALONG THE ONE AXIS: the same story with the
+   * NOTE: THE CONTROL, ALONG THE ONE AXIS: the same story with the
    * high-water mark AT the send's own number rather than above it. A
    * build that parked everything -- or that compared with `>=` -- fails
    * here and passes the cell above.
@@ -680,7 +680,7 @@ describe('R8 a send the record has already moved past', () => {
   });
 
   /*
-   * ⚠️ AND IT IS READ AGAIN BEFORE EVERY TRANSMISSION, not once when the
+   * NOTE: AND IT IS READ AGAIN BEFORE EVERY TRANSMISSION, not once when the
    * entry was made. This is the cell that separates "the baseline was
    * consulted" from "the result governs the sending": the queue holds
    * an entry that was fine when it was accepted, the persistent
@@ -718,7 +718,7 @@ describe('R8 a send the record has already moved past', () => {
   });
 
   /*
-   * ⚠️ A `sent` ENTRY IS NOT AN EXECUTED ONE. It says this client put
+   * NOTE: A `sent` ENTRY IS NOT AN EXECUTED ONE. It says this client put
    * the request on the wire, not that the store applied it -- which is
    * the whole reason the queue keeps it. A build that skipped the check
    * for an entry it had already sent would retry an overtaken send for
@@ -807,7 +807,7 @@ describe('R9 a parked entry does not stop the other blocks', () => {
   });
 
   /*
-   * ⚠️ AND WITHIN ONE BLOCK THE ORDER HOLDS. A second save of the same
+   * NOTE: AND WITHIN ONE BLOCK THE ORDER HOLDS. A second save of the same
    * block means "and then this"; sending it past a parked one would
    * apply an edit to a version the store never received.
    */
@@ -828,13 +828,13 @@ describe('R9 a parked entry does not stop the other blocks', () => {
  * R9 A RETIRED REQUEST IS NOT SENT, FROM WHEREVER IT IS FOUND.
  * (section 13, r4-2, r5-3)
  *
- * ⚠️ CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. Removing an entry
+ * NOTE: CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. Removing an entry
  * removes it from ONE queue; the same request can sit in a dead
  * session's file that no takeover has reached, and the next takeover
  * carries the cancelled work back in. So the check is made HERE, in
  * front of the transmission, wherever the entry came from.
  *
- * ⚠️ AND IT PARKS RATHER THAN DISCARDS. Whoever wrote the tombstone
+ * NOTE: AND IT PARKS RATHER THAN DISCARDS. Whoever wrote the tombstone
  * does the bookkeeping that goes with a cancellation -- releasing the
  * send's number beside the file. A copy found later has no business
  * doing that a second time; what it must do is not send.
@@ -881,7 +881,7 @@ describe('R9 a request that has been retired', () => {
   });
 
   /*
-   * ⚠️ THE CONTROL. A build that parked everything passes the cell
+   * NOTE: THE CONTROL. A build that parked everything passes the cell
    * above and fails this one.
    */
   it('sends one that has not been retired', async () => {
@@ -895,7 +895,7 @@ describe('R9 a request that has been retired', () => {
   });
 
   /*
-   * ⚠️ "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". The directory
+   * NOTE: "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". The directory
    * may be unreadable; the caller is deciding whether to SEND, and the
    * convenient reading of that is the one that resends cancelled work.
    */
@@ -917,7 +917,7 @@ describe('R9 a request that has been retired', () => {
  * write is the one that can fail with a number already spent. (section 13.1,
  * I7)
  *
- * ⚠️ NOTHING WAS SENT, SO THE NUMBER HAS TO COME BACK. Leaving it in
+ * NOTE: NOTHING WAS SENT, SO THE NUMBER HAS TO COME BACK. Leaving it in
  * `outstanding` would make the block a draft it can never stop being:
  * the record says a send is out, and there is no entry anywhere that
  * could ever answer for it.
@@ -962,7 +962,7 @@ describe('R4 a send whose queue write did not land', () => {
   });
 
   /*
-   * ⭐ AND SO DO THE TWO REFUSALS THAT COME BEFORE THE QUEUE WRITE.
+   * KEY: AND SO DO THE TWO REFUSALS THAT COME BEFORE THE QUEUE WRITE.
    *
    * The flag was written on the refusal in front of the reviewer who
    * asked for it -- an unwritable queue -- and on neither of the two

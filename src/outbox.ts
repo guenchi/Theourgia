@@ -58,7 +58,7 @@ export const OUTBOX_VERSION = 1;
  * different request wearing the first one's id.
  */
 /*
- * ⚠️ `parked` IS NOT `pending`, AND THE DIFFERENCE IS WHO IS WAITING.
+ * NOTE: `parked` IS NOT `pending`, AND THE DIFFERENCE IS WHO IS WAITING.
  *
  * `pending` means the store was asked and could not say what happened:
  * the answer may still arrive, and nothing past it may go out, because
@@ -90,7 +90,7 @@ export interface OutboxEntry {
   /*
    * WHAT THE SAVE WAS ABOUT, once the entry carries it. (section 13.1)
    *
-   * ⚠️ OPTIONAL FOR NOW, AND NOT BECAUSE IT IS OPTIONAL. Section 13
+   * NOTE: OPTIONAL FOR NOW, AND NOT BECAUSE IT IS OPTIONAL. Section 13
    * makes the entry the record and deletes the map in memory that held
    * this; entries written before that change have no record, and the
    * versioned legacy path reads them. The skeleton step declares the
@@ -267,7 +267,7 @@ export class Outbox {
   }
 
   /*
-   * ⚠️ THE ENTRIES COME OUT FROZEN.
+   * NOTE: THE ENTRIES COME OUT FROZEN.
    *
    * `slice()` copies the ARRAY and hands out the same objects, so a
    * caller could change an entry's `req` -- and the drain's guard, which
@@ -315,7 +315,7 @@ export class Outbox {
    * added that way is a request sent with nothing written down.
    */
   /*
-   * ⚠️ READ BEFORE CHANGING, AND THE REASON LIVES HERE ONLY.
+   * NOTE: READ BEFORE CHANGING, AND THE REASON LIVES HERE ONLY.
    * (section 13, r5-5)
    *
    * A mutator used to edit whatever this object last read and write the
@@ -328,14 +328,14 @@ export class Outbox {
    * through its write. The stable kernel lock prevents two participating
    * processes from reading and overwriting the same old queue snapshot.
    *
-   * ⚠️ THE RULE IS WRITTEN ONCE. It used to be repeated at all six call
+   * NOTE: THE RULE IS WRITTEN ONCE. It used to be repeated at all six call
    * sites, which is six places for it to drift and six things to edit
    * when the scope line moves. The call sites say `this.refresh()` and
    * mean it.
    *
    * RE-READ THE FILE, AND LEAVE THIS OBJECT ALONE IF IT CANNOT BE READ.
    *
-   * ⚠️ `load` IS NOT SAFE TO CALL FROM A MUTATOR ON ITS OWN. When the
+   * NOTE: `load` IS NOT SAFE TO CALL FROM A MUTATOR ON ITS OWN. When the
    * read fails it marks the queue unreadable, and the entries this
    * object was holding stop being counted -- so a save whose WRITE
    * failed would additionally disappear from "what is still unsent",
@@ -391,7 +391,7 @@ export class Outbox {
   /*
    * FORGET WHERE THE STORE STOOD. (section 13.3)
    *
-   * ⚠️ THIS IS NOT `setCursor(null)` AND THE DIFFERENCE IS THE POINT. A
+   * NOTE: THIS IS NOT `setCursor(null)` AND THE DIFFERENCE IS THE POINT. A
    * position is set when an answer establishes one; this says the
    * position we were holding can no longer be vouched for -- an
    * operator determined the work had been carried out and the core does
@@ -425,7 +425,7 @@ export class Outbox {
     const before = next.entries.length;
     next.entries = next.entries.filter((e) => e.req !== req);
     /*
-     * ⚠️ THE CURSOR MOVES ONLY IF THIS QUEUE WAS HOLDING THE REQUEST.
+     * NOTE: THE CURSOR MOVES ONLY IF THIS QUEUE WAS HOLDING THE REQUEST.
      *
      * It used to move whenever a cursor was passed, for any request id
      * at all -- and that is how another store's cursor was committed
@@ -451,7 +451,7 @@ export class Outbox {
      */
     if (cursor !== null && next.entries.length !== before) {
       /*
-       * ⚠️ AND IT MOVES THE WAY A LOG MOVES. (section 13.3, R10)
+       * NOTE: AND IT MOVES THE WAY A LOG MOVES. (section 13.3, R10)
        *
        * It used to take whatever position the answer carried, with
        * nothing asked about where this queue already stood. Two things
@@ -463,7 +463,7 @@ export class Outbox {
        * writer's numbering, which is not comparable with this one at
        * all.
        *
-       * ⚠️ ACROSS WRITERS THE POSITION IS DROPPED, NOT ADOPTED AND NOT
+       * NOTE: ACROSS WRITERS THE POSITION IS DROPPED, NOT ADOPTED AND NOT
        * KEPT. Adopting it writes a number that means nothing here;
        * keeping the old one asserts a position this answer gives no
        * reason to believe. Dropping it makes the next send ask the
@@ -565,7 +565,7 @@ export class Outbox {
   /*
    * PUT EVERY PARKED ENTRY BACK IN THE QUEUE, AND SAY HOW MANY.
    *
-   * ⚠️ NOT A TIMER AND NOT A RETRY BUTTON. An entry is parked because
+   * NOTE: NOT A TIMER AND NOT A RETRY BUTTON. An entry is parked because
    * nothing it can wait for will change the answer -- the store
    * directory does not exist, the socket path is longer than a unix
    * socket name may be, a person has to look at a mismatch. What
@@ -573,13 +573,13 @@ export class Outbox {
    * configuration change. If it did not, the same rule parks it again
    * on the same attempt, which is why "once" needs no counter here.
    *
-   * ⚠️ THE REASON STAYS ON THE ENTRY. It is what a person reads to find
+   * NOTE: THE REASON STAYS ON THE ENTRY. It is what a person reads to find
    * out what was wrong, and the state is what decides whether it goes
    * out; overwriting the sentence would lose the only record of why it
    * stopped.
    */
   /*
-   * ⛔ IT WROTE THE WHOLE QUEUE BACK WITHOUT THE LOCK.
+   * NEVER: IT WROTE THE WHOLE QUEUE BACK WITHOUT THE LOCK.
    *
    * Every other mutator here takes `withQueueExclusive` before its
    * refresh, and this one read, edited and committed outside it.
@@ -681,7 +681,7 @@ export class Outbox {
 /*
  * THE ONE READER OF A QUEUE FILE.
  *
- * ⚠️ EXPORTED BECAUSE TWO OTHER READERS HAD GROWN BESIDE IT. The
+ * NOTE: EXPORTED BECAUSE TWO OTHER READERS HAD GROWN BESIDE IT. The
  * recovery listing counted entries with its own checks and the migration
  * guard matched them with its own, and each of them accepted files this
  * one refuses: a queue declaring an unsupported version, an entry with
@@ -762,7 +762,7 @@ function readEntry(item: unknown, at: number): OutboxEntry {
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
     lastError: typeof raw.lastError === 'string' ? raw.lastError : null,
     /*
-     * ⚠️ THE KEY IS THIS FILE'S CONVENTION, NOT THE SIDECAR'S. The
+     * NOTE: THE KEY IS THIS FILE'S CONVENTION, NOT THE SIDECAR'S. The
      * queue has always written its fields under the names the code uses
      * (`lastError`, `createdAt`), because it serialises the record
      * directly; the sidecar, which is new, spells its keys the way section 12
@@ -779,7 +779,7 @@ function readEntry(item: unknown, at: number): OutboxEntry {
 /*
  * THE RECORD AN ENTRY CARRIES, READ ALL OF IT OR NONE OF IT.
  *
- * ⚠️ ABSENT AND BROKEN ARE DIFFERENT. An entry written before section 13 has
+ * NOTE: ABSENT AND BROKEN ARE DIFFERENT. An entry written before section 13 has
  * no record at all, and that is an ordinary thing with a path of its
  * own: it is sent and dequeued as before, and its answer may not write
  * a baseline, because the provenance a baseline needs was never

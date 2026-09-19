@@ -87,7 +87,7 @@ describe('R9 a cancelled request is retired where every copy can see it', () => 
   });
 
   /*
-   * ⚠️ A TOMBSTONE BELONGS TO ONE STORE. The same request id can exist
+   * NOTE: A TOMBSTONE BELONGS TO ONE STORE. The same request id can exist
    * in two stores -- nothing about a uuid says which store it was made
    * for -- and a check that ignored the store would cancel a live
    * request somewhere else.
@@ -108,7 +108,7 @@ describe('R9 a cancelled request is retired where every copy can see it', () => 
   });
 
   /*
-   * ⚠️ THE CHECK IS A PROBE, AND THAT IS A COST STATEMENT AS WELL AS A
+   * NOTE: THE CHECK IS A PROBE, AND THAT IS A COST STATEMENT AS WELL AS A
    * CORRECTNESS ONE. It runs before every transmission, every import
    * and every repair; a listing makes each of those proportional to how
    * much has ever been cancelled in that store.
@@ -136,7 +136,7 @@ describe('R9 a cancelled request is retired where every copy can see it', () => 
   });
 
   /*
-   * ⚠️ AND "I COULD NOT LOOK" IS ITS OWN ANSWER. The caller is deciding
+   * NOTE: AND "I COULD NOT LOOK" IS ITS OWN ANSWER. The caller is deciding
    * whether to send; reading an unsearchable directory as "nothing is
    * retired" is the convenient answer and the one that resends
    * cancelled work.
@@ -171,7 +171,7 @@ describe('R9 the names a tombstone path is built from are checked', () => {
   });
 
   /*
-   * ⚠️ AND SAYS WHICH OF THE TWO WAS WRONG. One message for both names
+   * NOTE: AND SAYS WHICH OF THE TWO WAS WRONG. One message for both names
    * would leave the reader of a report unable to tell a store setting
    * from a queue file somebody edited -- and those have different
    * people to go and talk to.

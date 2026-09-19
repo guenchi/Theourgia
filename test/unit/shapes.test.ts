@@ -184,7 +184,7 @@ describe('a field this client cannot read stops the block', () => {
 });
 
 /*
- * ⚠️ AND EVERY OTHER SENTENCE THAT COUNTS SOMETHING, AT ONE.
+ * NOTE: AND EVERY OTHER SENTENCE THAT COUNTS SOMETHING, AT ONE.
  *
  * A review read the eight takeover sentences at a count of one and found
  * all eight ungrammatical. The repair was applied to those eight -- and
@@ -343,7 +343,7 @@ describe('S8 what the user is told after a save', () => {
   });
 
   /*
-   * ⚠️ AND A REFUSAL SAYS WHICH BLOCK, AND WHAT BECAME OF THE TEXT.
+   * NOTE: AND A REFUSAL SAYS WHICH BLOCK, AND WHAT BECAME OF THE TEXT.
    *
    * It used to be the core's sentence and nothing else. Two things were
    * missing and both matter to somebody with several blocks open: which
@@ -674,7 +674,7 @@ describe('U8 the shape a refusal must come back in', () => {
  * then reaches the store twice, and that the store settles the second by
  * request id rather than doing the work again.
  *
- * ⚠️ ALL THREE OR NONE. Without the third it reads like data loss and
+ * NOTE: ALL THREE OR NONE. Without the third it reads like data loss and
  * nobody presses it; without the second it hides that there is a cost.
  * The sentence is built where a cell can read it for exactly that
  * reason.
@@ -687,7 +687,7 @@ describe('U-claim the sentence a forced takeover carries', () => {
     assert.match(text, /still running/, 'the sentence does not say the window may be alive');
     assert.match(text, /twice/, 'the sentence does not say the request is sent again');
     /*
-     * ⚠️ BOTH HALVES OF THE REASSURANCE, separately. A build that kept
+     * NOTE: BOTH HALVES OF THE REASSURANCE, separately. A build that kept
      * the words "already applied" and dropped the explanation -- that
      * the store recognises the request by its id, and does not do the
      * work again -- passed a single check for either. What makes the
@@ -719,7 +719,7 @@ describe('U-claim the sentence a forced takeover carries', () => {
    * the same news: one of them fixes itself and two of them do not.
    */
   /*
-   * ⚠️ THE SAME SESSION ID IN ALL THREE. With three different ids the
+   * NOTE: THE SAME SESSION ID IN ALL THREE. With three different ids the
    * three sentences differ whatever they say, so a build that gave the
    * unreadable case the start-time wording passed -- the ids alone made
    * the strings distinct. Found in review.
@@ -736,7 +736,7 @@ describe('U-claim the sentence a forced takeover carries', () => {
       'two of the five say the same thing, so the user cannot tell them apart'
     );
     /*
-     * ⚠️ AND ONLY THE ONES THAT CAN FIX THEMSELVES SAY SO. A record with
+     * NOTE: AND ONLY THE ONES THAT CAN FIX THEMSELVES SAY SO. A record with
      * no start time in it will never acquire one, and it used to be told
      * to try again in a moment.
      */
@@ -773,7 +773,7 @@ describe('U-claim the sentence a forced takeover carries', () => {
  * cause, and it was found by the core session applying the rule rather
  * than by anyone reporting a symptom.
  *
- * ⚠️ THIS CELL IS THE CONSUMER SIDE OF THAT CONTRACT, and it is
+ * NOTE: THIS CELL IS THE CONSUMER SIDE OF THAT CONTRACT, and it is
  * deliberately degenerate with the core's own: the core checks what it
  * writes, this checks that what arrives can be read by the reader this
  * client actually uses. One of them can be wrong without the other
@@ -839,7 +839,7 @@ describe('U8 every error answer the core can produce is readable by this client'
 });
 
 /*
- * ⭐ THE OTHER HALF OF THE CONSERVATION LAW: EVERY BUCKET THE LEDGER
+ * KEY: THE OTHER HALF OF THE CONSERVATION LAW: EVERY BUCKET THE LEDGER
  * CARRIES REACHES THE USER.
  *
  * `sessions.test.ts` asserts that everything a takeover saw is in
@@ -847,13 +847,13 @@ describe('U8 every error answer the core can produce is readable by this client'
  * report, and a bucket the report never mentions is work that vanished
  * between the count and the person -- the same defect one step later.
  *
- * ⚠️ THE BUCKETS ARE ENUMERATED FROM THE LEDGER ITSELF, not listed here.
+ * NOTE: THE BUCKETS ARE ENUMERATED FROM THE LEDGER ITSELF, not listed here.
  * A list written here would be a second place to forget the new bucket,
  * which is precisely the thing being guarded against.
  */
 describe('every bucket a takeover counts is something the user is told', () => {
   /*
-   * ⚠️ THE WHOLE SENTENCE, NOT A FRAGMENT OF IT.
+   * NOTE: THE WHOLE SENTENCE, NOT A FRAGMENT OF IT.
    *
    * These cells used to look for a phrase and, separately, for the
    * count. An outside judge showed what that lets through: "was not
@@ -866,7 +866,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * So each bucket's sentence is written out here in full and compared
    * exactly.
    *
-   * ⚠️ WHAT THAT BUYS, EXACTLY. The copy here was written by whoever
+   * NOTE: WHAT THAT BUYS, EXACTLY. The copy here was written by whoever
    * wrote the product's, so it is not an independent statement of what
    * the message ought to say and does not make a wrong sentence go red.
    * What it does is stop a sentence changing WITHOUT ANYONE LOOKING:
@@ -877,7 +877,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * Found in review.
    */
   /*
-   * ⚠️ TWO FINISHED SENTENCES PER BUCKET, ONE FOR EACH NUMBER.
+   * NOTE: TWO FINISHED SENTENCES PER BUCKET, ONE FOR EACH NUMBER.
    *
    * A single template with `${n}` in it cannot be wrong about agreement,
    * because it says the same thing at every count -- which is how "1
@@ -945,7 +945,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * the ones nobody could account for, or the ones carried across on an
    * earlier run. What is in this window's queue is not ambiguous.
    *
-   * ⚠️ AND IT PROMISES AN ATTEMPT, NOT AN OUTCOME. Naming the place let
+   * NOTE: AND IT PROMISES AN ATTEMPT, NOT AN OUTCOME. Naming the place let
    * the verb overstate: a save stops at the first request it cannot
    * settle, so "everything ... goes out with the next save" was false
    * for any window that already holds an unresolved one. The behaviour
@@ -986,7 +986,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
   });
 
   /*
-   * ⚠️ AND AGAIN AT ONE, WHICH IS WHERE THE THRESHOLDS ARE.
+   * NOTE: AND AGAIN AT ONE, WHICH IS WHERE THE THRESHOLDS ARE.
    *
    * Every sentence above is gated on `bucket > 0`, and the cell that
    * reads them used 5 for all of them. An outside judge changed one gate
@@ -1013,13 +1013,13 @@ describe('every bucket a takeover counts is something the user is told', () => {
   });
 
   /*
-   * ⚠️ AND THE ADVICE ONLY WHEN SOMETHING IS HERE TO SEND. It was
+   * NOTE: AND THE ADVICE ONLY WHEN SOMETHING IS HERE TO SEND. It was
    * unconditional, so a report about another store's requests ended by
    * telling the user they would go out with the next save -- of a queue
    * that does not hold them.
    */
   /*
-   * ⚠️ AND THIS CHECK LOOKED FOR A PHRASE THE PRODUCT NO LONGER SAYS.
+   * NOTE: AND THIS CHECK LOOKED FOR A PHRASE THE PRODUCT NO LONGER SAYS.
    * It searched for "go out with the next save" -- wording that two
    * rounds of review have since replaced -- so it passed for any advice
    * whatsoever, including an advice sentence that should not have been
@@ -1045,7 +1045,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
   });
 
   /*
-   * ⚠️ THE TWO REPORTS WHERE THE ADVICE HAD SOMETHING TO BE MISREAD AS.
+   * NOTE: THE TWO REPORTS WHERE THE ADVICE HAD SOMETHING TO BE MISREAD AS.
    *
    * A review named these: `{imported: 1, outcomeUnknown: 1}` puts the
    * advice directly after the sentence about requests nobody could
@@ -1130,7 +1130,7 @@ describe('every bucket a takeover counts is something the user is told', () => {
  * carries it succeeded. It names OTHER writers only, and a baseline
  * that is not behind carries no clause at all.
  *
- * ⚠️ AND A CLAUSE THE CORE COULD NOT BUILD IS SIMPLY ABSENT. The core
+ * NOTE: AND A CLAUSE THE CORE COULD NOT BUILD IS SIMPLY ABSENT. The core
  * answers a successful commit with no `behind` rather than an error
  * when it cannot compute one, so a reader that threw on a shape it did
  * not expect would turn a success into a failure at the one moment the
@@ -1144,7 +1144,7 @@ describe('plugin-r2 T2 a commit says who landed after its baseline', () => {
   const answerOf = (text: string): Datum => parseAnswers(`${text}\n`)[0];
 
   /*
-   * ⭐ THE WRITER AND THE COUNT ARE ASSERTED TOGETHER, in the words
+   * KEY: THE WRITER AND THE COUNT ARE ASSERTED TOGETHER, in the words
    * they appear in.
    *
    * Measured in a thirteenth review round: with `/other/` and `/3/`
@@ -1161,7 +1161,7 @@ describe('plugin-r2 T2 a commit says who landed after its baseline', () => {
   });
 
   /*
-   * ⚠️ ONE RECORD GETS ITS OWN SENTENCE. A template that reads "3
+   * NOTE: ONE RECORD GETS ITS OWN SENTENCE. A template that reads "3
    * records" at three and "1 records" at one is a template that cannot
    * be wrong about the number and is wrong about the language, and this
    * tree has been bitten by exactly that shape.
@@ -1169,7 +1169,7 @@ describe('plugin-r2 T2 a commit says who landed after its baseline', () => {
   it('writes a whole sentence at one record, not a template with a 1 in it', () => {
     const notice = String(behindNotice(answerOf('(ok (events (("w" . 6))) (behind (("other" . 1))))')));
     /*
-     * ⭐ AND IT STILL NAMES THE WRITER AND THE COUNT. Checking only
+     * KEY: AND IT STILL NAMES THE WRITER AND THE COUNT. Checking only
      * that "record" appears and "records" does not let the whole
      * rendering be replaced by a constant phrase -- measured in a
      * thirteenth review round with `a record landed`, which satisfies
@@ -1180,7 +1180,7 @@ describe('plugin-r2 T2 a commit says who landed after its baseline', () => {
   });
 
   /*
-   * ⭐ EACH WRITER KEEPS ITS OWN COUNT. Measured in a thirteenth review
+   * KEY: EACH WRITER KEEPS ITS OWN COUNT. Measured in a thirteenth review
    * round: rendering every writer with the FIRST one's number showed
    * alice and bob as 2 records each, and a cell that asked only for the
    * two names passed.

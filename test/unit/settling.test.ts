@@ -24,7 +24,7 @@
  * actually been answered stayed queued where nothing would look at it
  * again.
  *
- * ⚠️ AND THE SECOND HALF OF THAT DEFECT HAD NO CELL UNTIL THIS FILE.
+ * NOTE: AND THE SECOND HALF OF THAT DEFECT HAD NO CELL UNTIL THIS FILE.
  * `recovered` -- the path that works out which file an answer is about
  * when this process has no memory of sending it, which is every retry
  * after a restart -- looked the block up under the LIVE store. The
@@ -97,7 +97,7 @@ function rig(): Rig {
  * A REQUEST THAT WAS ON DISK BEFORE THIS PROCESS EXISTED, carrying the
  * record it was accepted with.
  *
- * ⚠️ THAT IS THE WHOLE OF WHAT MAKES IT SETTLEABLE. There used to be
+ * NOTE: THAT IS THE WHOLE OF WHAT MAKES IT SETTLEABLE. There used to be
  * two ways to find out what an answer was about -- a map in memory
  * while the window was up, and a reconstruction from the block's newest
  * version after a restart -- and they disagreed. The entry is the
@@ -112,7 +112,7 @@ async function queuedBeforeWeStarted(
 ): Promise<{ req: string; file: string }> {
   const directory = r.sessions.directoryFor('S-mine', store, blockId);
   /*
-   * ⚠️ PUBLISHED BY THE PRODUCT, NOT WRITTEN BY HAND. A version is a
+   * NOTE: PUBLISHED BY THE PRODUCT, NOT WRITTEN BY HAND. A version is a
    * file AND the record beside it, and `recognise` -- the thing under
    * test here -- answers "cannot say" when the record is missing. A
    * fixture that wrote the markdown itself would therefore measure the
@@ -170,7 +170,7 @@ async function queuedBeforeWeStarted(
 
 describe('U-settle an answer is settled against the queue and store it was sent for', () => {
   /*
-   * ⚠️ THE CELL THE EDITOR SUITE COULD NOT WRITE. The window has moved
+   * NOTE: THE CELL THE EDITOR SUITE COULD NOT WRITE. The window has moved
    * to store B; the answer is for a request store A's queue has been
    * holding since before this process started. Everything the settler
    * touches has to be A's.
@@ -199,7 +199,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * place and reported nothing.
      */
     /*
-     * ⚠️ WHAT THE RECORD SAYS, ASKED OF THE PRODUCT. The sidecar has no
+     * NOTE: WHAT THE RECORD SAYS, ASKED OF THE PRODUCT. The sidecar has no
      * field naming a request -- what a settled answer leaves behind is
      * the cursor it established and the bytes the store acknowledged --
      * so a cell that searched the file for the request id was looking
@@ -236,7 +236,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ A REFUSED SAVE IS STILL A DRAFT, AND THAT IS THE OBSERVABLE HALF
+   * NOTE: A REFUSED SAVE IS STILL A DRAFT, AND THAT IS THE OBSERVABLE HALF
    * OF "RECORDS NOTHING".
    *
    * The settler used to turn every answer into an acknowledgement: an
@@ -265,7 +265,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     });
 
     /*
-     * ⚠️ THE FILE HAS BEEN EDITED SINCE IT WAS PUBLISHED, because that
+     * NOTE: THE FILE HAS BEEN EDITED SINCE IT WAS PUBLISHED, because that
      * is what a save IS. The first version of this cell settled a
      * refusal over an untouched file and asked whether it was a draft:
      * it was not, and correctly so -- nothing had changed. The premise
@@ -302,7 +302,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ AND THE ONE REFUSAL THAT IS KEPT. `req-mismatch` says the store
+   * NOTE: AND THE ONE REFUSAL THAT IS KEPT. `req-mismatch` says the store
    * holds a different request under this id: no retry settles that, so
    * the entry stays for a person and the record is marked. Without this
    * row, a build that released everything passes the cell above.
@@ -332,7 +332,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ AND THE CONTEXT IN MEMORY MUST BE ABOUT THIS REQUEST'S BYTES.
+   * NOTE: AND THE CONTEXT IN MEMORY MUST BE ABOUT THIS REQUEST'S BYTES.
    *
    * `pendingSaves` lives for the life of the window, survives every
    * rebuild, and is keyed by BLOCK ID -- while the question an answer
@@ -354,7 +354,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const theirs = await queuedBeforeWeStarted(r, B, 'a.2', 'body from B\n');
 
     /*
-     * WHAT THE OTHER STORE'S SAVE LEFT UNDER THE SHARED ⭐ its file,
+     * WHAT THE OTHER STORE'S SAVE LEFT UNDER THE SHARED KEY: its file,
      * its digests, its block -- the same block id, which is the whole
      * reason it collides.
      */
@@ -391,7 +391,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     );
 
     /*
-     * ⚠️ AND STORE B'S OWN SEND IS UNTOUCHED, WITH ITS RECORD.
+     * NOTE: AND STORE B'S OWN SEND IS UNTOUCHED, WITH ITS RECORD.
      *
      * This assertion used to be about a map in memory: store B's
      * context had to survive store A's answer, because deleting it left
@@ -412,7 +412,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ THE INPUT THE DIGEST IS BLIND TO: THE SAME BYTES, IN ANOTHER
+   * NOTE: THE INPUT THE DIGEST IS BLIND TO: THE SAME BYTES, IN ANOTHER
    * STORE.
    *
    * The first repair compared the bytes a send carried, which separates
@@ -475,7 +475,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ THE TWIN THAT RULES OUT THE CHEAPER REPAIR: ONE STORE, ONE BLOCK,
+   * NOTE: THE TWIN THAT RULES OUT THE CHEAPER REPAIR: ONE STORE, ONE BLOCK,
    * TWO SENDS IN FLIGHT.
    *
    * Keying the memory by store and block together would make the cell
@@ -535,7 +535,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     settle(first.req, { verdict: 'confirmed', cursor: 'w:2' });
 
     /*
-     * ⚠️ THE LATER SEND STILL HAS ITS OWN RECORD. This used to be a
+     * NOTE: THE LATER SEND STILL HAS ITS OWN RECORD. This used to be a
      * question about a map keyed by block id, where the second save
      * overwrote the first; now each send carries its own, and the
      * assertion is that the earlier answer did not take the later
@@ -557,7 +557,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ AND THE SAVER IT IS HANDED TO MUST BE OVER THE SAME QUEUE OBJECT.
+   * NOTE: AND THE SAVER IT IS HANDED TO MUST BE OVER THE SAME QUEUE OBJECT.
    *
    * The pairing checked in `settlerFor` is settler-to-store. `Saver`
    * takes its outbox and its settlement callback as two arguments, so a
@@ -610,7 +610,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ AND A QUEUE THAT IS NOT THIS STORE'S IS REFUSED AT CONSTRUCTION.
+   * NOTE: AND A QUEUE THAT IS NOT THIS STORE'S IS REFUSED AT CONSTRUCTION.
    *
    * The move that made this module drivable also made it callable with
    * any pair: told store B while holding store A's queue, a settler
@@ -662,7 +662,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
   });
 
   /*
-   * ⚠️ THE TWIN FOR THE STORE THE BLOCKS ARE FILED UNDER. The pairing
+   * NOTE: THE TWIN FOR THE STORE THE BLOCKS ARE FILED UNDER. The pairing
    * check above forbids the inconsistent combination at construction, so
    * this drives the same question through a queue that IS store B's:
    * a settler for store B must not find store A's block.
@@ -700,7 +700,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     settle(req, { verdict: 'confirmed', cursor: 'w:2' });
 
     /*
-     * ⚠️ THE SIDECAR IS ALREADY THERE -- the fixture published a version
+     * NOTE: THE SIDECAR IS ALREADY THERE -- the fixture published a version
      * through the product, and a version is a file and its record. So
      * what separates "recorded this answer" from "did not" is whether
      * the record NAMES THE REQUEST, not whether the file exists. The
@@ -708,7 +708,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * for a reason that had nothing to do with stores.
      */
     /*
-     * ⚠️ THE SIDECAR IS ALREADY THERE -- the fixture published a version
+     * NOTE: THE SIDECAR IS ALREADY THERE -- the fixture published a version
      * through the product, and a version is a file and its record. So
      * what separates "recorded this answer" from "did not" is the
      * CURSOR, which a settlement moves and nothing else does.
@@ -744,7 +744,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
  *
  * The record beside a file keeps two things apart: WHICH SEND the store
  * confirmed, and what the file now holds. Every verdict has to say
- * something about the first -- ⚠️ "every verdict writes the record or
+ * something about the first -- NOTE: "every verdict writes the record or
  * none of them does" is not a choice: a refusal that wrote nothing
  * would leave its number in `outstanding` for ever, and the block would
  * be a draft it can never stop being.
@@ -789,7 +789,7 @@ describe('R5 each verdict leaves its own mark on the record', () => {
   });
 
   /*
-   * ⚠️ A REFUSAL WRITES ONE THING AND ONLY ONE THING. The store said
+   * NOTE: A REFUSAL WRITES ONE THING AND ONLY ONE THING. The store said
    * no: nothing about the file changed, so no baseline is written --
    * and the number has to come out, because the send is over. A build
    * that wrote nothing at all would leave the block permanently
@@ -816,7 +816,7 @@ describe('R5 each verdict leaves its own mark on the record', () => {
   });
 
   /*
-   * ⚠️ AN OPERATOR'S DETERMINATION IS RECORDED WITHOUT A POSITION, and
+   * NOTE: AN OPERATOR'S DETERMINATION IS RECORDED WITHOUT A POSITION, and
    * the queue's own position is dropped. The core says the
    * determination does not recover the original execution's event, so
    * there is no place to record -- and the number this queue was
@@ -849,7 +849,7 @@ describe('R5 each verdict leaves its own mark on the record', () => {
   });
 
   /*
-   * ⚠️ AND A MISMATCH KEEPS ITS NUMBER. The store is saying it cannot
+   * NOTE: AND A MISMATCH KEEPS ITS NUMBER. The store is saying it cannot
    * say what happened to this send; removing the number would make the
    * block read as though nothing were in flight, which is the one thing
    * that is certainly untrue.
@@ -896,7 +896,7 @@ describe('R4 which send becomes the baseline', () => {
   }
 
   /*
-   * ⚠️ AN ANSWER FOR AN OLDER SEND STILL SETTLES. It leaves the queue
+   * NOTE: AN ANSWER FOR AN OLDER SEND STILL SETTLES. It leaves the queue
    * and its number leaves `outstanding` -- it simply does not become
    * the baseline. A build that ignored it entirely would keep the block
    * a draft over a send the store has answered; a build that let it
@@ -945,7 +945,7 @@ describe('R4 which send becomes the baseline', () => {
   });
 
   /*
-   * ⚠️ AND THE TWIN ALONG THE ONE AXIS UNDER TEST: the same story with
+   * NOTE: AND THE TWIN ALONG THE ONE AXIS UNDER TEST: the same story with
    * the high-water mark BELOW the arriving send must replace. Without
    * it, a build that never wrote a baseline at all passes the cell
    * above.
@@ -964,7 +964,7 @@ describe('R4 which send becomes the baseline', () => {
   });
 
   /*
-   * ⚠️ TWO SENDS WEARING ONE NUMBER IS NOT A THING TO DECIDE QUIETLY.
+   * NOTE: TWO SENDS WEARING ONE NUMBER IS NOT A THING TO DECIDE QUIETLY.
    *
    * The number is taken from `nextSeq` and written down before anything
    * is sent, so within one window it cannot repeat. It can still arrive
@@ -1019,7 +1019,7 @@ describe('R4 which send becomes the baseline', () => {
   });
 
   /*
-   * ⚠️ THE SAME ANSWER TWICE IS NOT TWO SENDS. A replay, a retry after a
+   * NOTE: THE SAME ANSWER TWICE IS NOT TWO SENDS. A replay, a retry after a
    * restart, or a drain that runs while one is already in flight can
    * deliver the same request's answer again; the second one has no
    * entry to find and must change nothing.
@@ -1045,7 +1045,7 @@ describe('R4 which send becomes the baseline', () => {
  *
  * A queue written by the older build carries a request and bytes and
  * nothing else: no file, no digests, no number. It is sent and dequeued
- * exactly as before -- ⚠️ and its answer may not write anything beside
+ * exactly as before -- NOTE: and its answer may not write anything beside
  * a file, because the provenance a baseline needs was never recorded.
  * Writing one would mean deciding, after the fact, which version those
  * bytes went from.
@@ -1098,7 +1098,7 @@ describe('R14 an entry written before the record', () => {
   });
 
   /*
-   * ⚠️ AND A REFUSAL OF ONE HAS NO NUMBER TO RELEASE. It never took one.
+   * NOTE: AND A REFUSAL OF ONE HAS NO NUMBER TO RELEASE. It never took one.
    * A build that reached for `record.seq` here would be reading a field
    * that is not there, and the shape that catches it is this cell.
    */
@@ -1115,7 +1115,7 @@ describe('R14 an entry written before the record', () => {
   });
 
   /*
-   * ⚠️ AND A MISMATCH KEEPS IT, with nothing marked. There is no file to
+   * NOTE: AND A MISMATCH KEEPS IT, with nothing marked. There is no file to
    * mark -- the entry does not name one -- and the entry itself is what
    * a person will look at.
    */
@@ -1232,7 +1232,7 @@ describe('R6 what a withdrawal leaves behind', () => {
   });
 
   /*
-   * ⚠️ THE FALSE EXAMPLE, so that "always a draft" cannot pass. Same
+   * NOTE: THE FALSE EXAMPLE, so that "always a draft" cannot pass. Same
    * shape, one difference: the send that was refused is the one that
    * would have CHANGED the block away from what the store confirmed.
    * The file is back at what the baseline says, so it is clean -- and a

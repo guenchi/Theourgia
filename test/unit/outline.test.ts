@@ -424,7 +424,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
     assert.deepStrictEqual(roots[0].marks, [], 'a mark was invented from an item this client cannot read');
     assert.strictEqual(roots[0].marked, false);
     /*
-     * ⭐ AND THE READING SAYS IT WAS NOT COMPLETE.
+     * KEY: AND THE READING SAYS IT WAS NOT COMPLETE.
      *
      * This cell's own expectation is unchanged: an entry naming nobody
      * still produces no mark. What is added is the other half, which a
@@ -443,7 +443,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       'a mark this build recognises was lost and the reading still called itself complete'
     );
     /*
-     * ⭐ AND THE ROOT LISTING CARRIES IT, which is the half a
+     * KEY: AND THE ROOT LISTING CARRIES IT, which is the half a
      * sixteenth review round found missing. `roots` took `.marks` and
      * dropped the flag beside it, and the tree provider then set
      * `marksKnown` to a literal `true` for the root listing -- so this
@@ -533,7 +533,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
   });
 
   /*
-   * ⭐ ASKED OF A REAL BLOCK, because `root` is not one.
+   * KEY: ASKED OF A REAL BLOCK, because `root` is not one.
    *
    * This scripted `read root --recursive` with a success, and the pinned
    * core answers that request `(error unknown-id "root" (nearest ...))`

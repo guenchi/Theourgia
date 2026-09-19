@@ -59,7 +59,7 @@ async function useStore(core: FakeCore, store: string): Promise<void> {
 /*
  * THE DIRECTORY A STORE'S QUEUE LIVES IN.
  *
- * ⚠️ THIS IS A SECOND COPY OF THE PRODUCT'S RULE, and it is here rather
+ * NOTE: THIS IS A SECOND COPY OF THE PRODUCT'S RULE, and it is here rather
  * than imported because the rule lives inside `activate`, which a cell
  * cannot reach. What makes the duplicate acceptable is the direction it
  * fails in: if the extension ever names the directory differently, this
@@ -263,7 +263,7 @@ describe('a setting that changes while a request is in flight', function () {
    * C7 A SAVE THAT ANSWERS AFTER THE USER HAS MOVED ON -- A READING,
    * TAKEN ON PURPOSE, NOT A GUARD.
    *
-   * ⚠️ WHY THIS CELL EXISTS AND WHAT IT IS NOT. A census over every wait
+   * NOTE: WHY THIS CELL EXISTS AND WHAT IT IS NOT. A census over every wait
    * in `extension.ts` (test/unit/awaiting.test.ts) found one that does
    * not check the generation: `onSaved` issues the save to the Saver it
    * read before the wait, and reports the outcome after it. The main
@@ -274,7 +274,7 @@ describe('a setting that changes while a request is in flight', function () {
    * and will go red when that changes, which is exactly what the next
    * batch needs from it.
    *
-   * ⚠️ AND IT ANSWERS WHY C6 ABOVE IS GREEN, which is a different
+   * NOTE: AND IT ANSWERS WHY C6 ABOVE IS GREEN, which is a different
    * question from whether this path is safe. C6's stimulus is
    * `refreshOutline`, whose wait is inside `refreshConflicts` -- and
    * `refreshConflicts` takes the generation and drops a late answer.
@@ -283,7 +283,7 @@ describe('a setting that changes while a request is in flight', function () {
    * of anything in the painter, and nothing it does touches `onSaved`.
    * Measured here rather than reasoned about.
    *
-   * ⚠️ WHAT THIS CELL CANNOT SEE. `show` calls
+   * NOTE: WHAT THIS CELL CANNOT SEE. `show` calls
    * `vscode.window.showInformationMessage`, and the suite has no way to
    * read what was shown. The sentence about store A's save is therefore
    * beyond this reading, and that -- not the status bar -- is where the
@@ -295,7 +295,7 @@ describe('a setting that changes while a request is in flight', function () {
       { match: ['check'], stdout: '(check (writers (("w" (end 1) (torn #f) (integrity ())))) (verdict ok))\n', rc: 0 },
       { match: ['read'], stdout: `${BLOCK}\n`, rc: 0 },
       /*
-       * ⚠️ THE SHAPE A REAL CORE ANSWERS WITH, AND NOT ONE WRITTEN HERE.
+       * NOTE: THE SHAPE A REAL CORE ANSWERS WITH, AND NOT ONE WRITTEN HERE.
        * This cell used to spell its own `(ok ((cursor . "w:2")))`, which
        * `eventFromWrite` reads as an ok that names no record: the entry
        * is marked pending and THE SETTLER IS NEVER CALLED. So the first
@@ -361,7 +361,7 @@ describe('a setting that changes while a request is in flight', function () {
     assert.strictEqual(facts.cursor, null, 'store A’s cursor was painted under store B');
 
     /*
-     * ⚠️ AND THE FILES, WHICH IS WHERE THE DEFECT WAS.
+     * NOTE: AND THE FILES, WHICH IS WHERE THE DEFECT WAS.
      *
      * The status bar is recomputed from whatever is configured now, so
      * it is the wrong instrument for this: it showed nothing wrong while

@@ -39,7 +39,7 @@ import { assertRuledRefusal } from '../support/refusal-shape';
  * goes through `Saving.recordAnswer`.
  */
 /*
- * ⚠️ THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
+ * NOTE: THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
  *
  * These cells are about the sending, not about the recording, so the
  * settler here just releases the entry -- but it has to release it only
@@ -837,7 +837,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
   });
 
   /*
-   * ⚠️ THESE TWO CELLS ARE RED UNTIL THE CORE LANDS U8. That is
+   * NOTE: THESE TWO CELLS ARE RED UNTIL THE CORE LANDS U8. That is
    * deliberate and it is not a defect in this extension.
    *
    * WHAT WAS MEASURED against pin 9ecbd88e on 2026-09-12: the core now
@@ -869,7 +869,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
    * and not special-cased: a cell that tolerated both shapes would go on
    * passing after the change and would stop being evidence of anything.
    *
-   * ⚠️ SO THIS SUITE IS NOT ALL-GREEN BY DESIGN. "0 failing" is not the
+   * NOTE: SO THIS SUITE IS NOT ALL-GREEN BY DESIGN. "0 failing" is not the
    * gate for this delivery; "exactly these two, by these names" is.
    *
    * READING A STORE THAT ALREADY HOLDS SUCH AN EDGE is covered
@@ -921,7 +921,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
 
     if (failure !== null) {
       /*
-       * ⚠️ ONLY ONE FAILURE MEANS "WAITING ON THE CORE". Diagnosing
+       * NOTE: ONLY ONE FAILURE MEANS "WAITING ON THE CORE". Diagnosing
        * every exception this way would label a timeout, a missing
        * library or any other transport regression as an upstream wait --
        * and a gate that accepts these two cells by name would then be
@@ -960,7 +960,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
   /*
    * A NAME THE WIRE CANNOT CARRY, FROM THE WRITE SIDE.
    *
-   * ⚠️ THIS PARAGRAPH DESCRIBED THE OLD CORE AND IS KEPT AS HISTORY
+   * NOTE: THIS PARAGRAPH DESCRIBED THE OLD CORE AND IS KEPT AS HISTORY
    * RATHER THAN AS A STATEMENT ABOUT THE ONE UNDER TEST. It used to say
    * that `wire-safe-symbol?` answering false did NOT refuse a write --
    * `storable-encode` stored the wrapped form `("#%sym" "1")` and `read`
@@ -1072,7 +1072,7 @@ describe('S14 the bytes a store accepts are the bytes this client can read back,
 /*
  * ONE SESSION, TWO STORES, AND TWO CURSORS.
  *
- * ⚠️ THIS IS THE DEFECT THE WIRING PRODUCED. The queue moved inside the
+ * NOTE: THIS IS THE DEFECT THE WIRING PRODUCED. The queue moved inside the
  * session -- which is what stops two windows sharing one file -- and a
  * queue carries ONE cursor. A session spans as many stores as the user
  * points it at, so after switching, the saver was offering a position
@@ -1154,7 +1154,7 @@ describe('a session that writes to two stores keeps their cursors apart', functi
  * plugin-r2 T6: the fixture owns the paths, and the daemon it starts is
  * stopped.
  *
- * ⚠️ WHY THESE EXIST AT ALL. Turning the real-core cells onto the
+ * NOTE: WHY THESE EXIST AT ALL. Turning the real-core cells onto the
  * shipping transport made them start daemons, and `RealStore` set
  * neither `THEOURGIA_RUN` nor `THEOURGIA_HOME`: one run of this suite
  * left thirteen daemons running and thirteen directories in the user's
@@ -1183,7 +1183,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
   /*
    * WHERE THE USER'S OWN SOCKETS LIVE, spelled the way the core spells
    * it (client.ss:60-62) rather than the way this file would like to.
-   * ⛔ Not read from `THEOURGIA_RUN`: this process may well have one
+   * NEVER: Not read from `THEOURGIA_RUN`: this process may well have one
    * set, and then this would be measuring the fixture's directory
    * against itself and could never fail.
    */
@@ -1191,7 +1191,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
     path.join(process.env.HOME ?? '/tmp', '.theourgia', 'run');
 
   /*
-   * ⛔ A SECOND COPY OF A HELPER IS A SECOND PLACE FOR ITS DEFECT.
+   * NEVER: A SECOND COPY OF A HELPER IS A SECOND PLACE FOR ITS DEFECT.
    *
    * This was its own `entriesIn`, catching every error and answering
    * with an empty list -- so a run root that could not be READ was
@@ -1251,7 +1251,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
   it('stops that daemon when the store is disposed', async () => {
     const store = await RealStore.make();
     /*
-     * ⚠️ `dispose` IS BOTH THE SUBJECT AND THE CLEANUP HERE, so it is
+     * NOTE: `dispose` IS BOTH THE SUBJECT AND THE CLEANUP HERE, so it is
      * called again in the `finally` -- it is idempotent, and a cell
      * about leaked daemons that leaks daemons on its own red is a cell
      * that punishes the next run for this one's failure. Measured: the
@@ -1312,7 +1312,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
  * plugin-r2 T2 against the real core: a commit that says another
  * instance has landed records since this save's baseline.
  *
- * ⭐ WHAT IT TAKES TO PRODUCE THIS AT ALL, measured rather than
+ * KEY: WHAT IT TAKES TO PRODUCE THIS AT ALL, measured rather than
  * assumed, and the first recipe did not work.
  *
  * `behind` names LOG WRITERS. Every agent writing into one store on one
@@ -1323,7 +1323,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
  * writer of its own), committed into, and a segment of that log
  * published back.
  *
- * ⚠️ AND THE TWO CHANGES MUST BE TO DIFFERENT BLOCKS. With the draft
+ * NOTE: AND THE TWO CHANGES MUST BE TO DIFFERENT BLOCKS. With the draft
  * and the published change on one block the commit is refused
  * `stale-baseline` and there is no `behind` to read -- measured, and it
  * is what the first version of this cell got:
@@ -1337,7 +1337,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
  *                  (replay #f)))
  *       (behind (("45t9p6p6" . 4) ("mmob9sf6" . 2))))
  *
- * ⚠️ THE FIRST NAME IN THAT LIST IS THIS COMMIT'S OWN. `45t9p6p6` is
+ * NOTE: THE FIRST NAME IN THAT LIST IS THIS COMMIT'S OWN. `45t9p6p6` is
  * the writer its own cursor names -- its own record, reported back as
  * though it were somebody's. That is a defect in the core and is being
  * repaired there; this build drops the name its own cursor gives, which
@@ -1407,7 +1407,7 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
       };
 
       /*
-       * ⭐ ONE ORDINARY SAVE FIRST, AND IT IS NOT DECORATION.
+       * KEY: ONE ORDINARY SAVE FIRST, AND IT IS NOT DECORATION.
        *
        * Measured, and it is what the first version of this cell ran into:
        * a Saver with no cursor yet asks the store for one, and a store
@@ -1501,10 +1501,10 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
         `the notice does not name the other instance ${other}: ${said}`
       );
       /*
-       * ⭐ THE NAME THAT MUST NOT APPEAR IS THE STORE'S OWN LOG WRITER,
+       * KEY: THE NAME THAT MUST NOT APPEAR IS THE STORE'S OWN LOG WRITER,
        * not this window's draft writer.
        *
-       * ⛔ This asserted `!said.includes(window.writer)` -- and
+       * NEVER: This asserted `!said.includes(window.writer)` -- and
        * `window.writer` is `window-behind`, a DRAFT space, while `behind`
        * carries LOG writer ids. A name that could never have been in the
        * list is a negative assertion that cannot fail; measured in a

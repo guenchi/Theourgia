@@ -22,7 +22,7 @@ describe('XO save acceptance uses the chain-time identity and sidecar',function(
       if(scenario==='save-chain')assert.strictEqual(result.acceptances[0].because,'another-store','acceptance verdict');
       assert.ok(result.messages.some((m:string)=>m.includes('/stores/A')&&m.includes('/stores/B')));
       /*
-       * ⭐ AND IT WAS RAISED AS AN ALARM. The three message channels
+       * KEY: AND IT WAS RAISED AS AN ALARM. The three message channels
        * were indistinguishable in this harness, so a save refused for
        * belonging to another store could have been shown as a quiet
        * information notice and every assertion here would have held.
@@ -30,7 +30,7 @@ describe('XO save acceptance uses the chain-time identity and sidecar',function(
        * the first had been repaired for this a round earlier.
        */
       /*
-       * ⭐ THE CHANNEL OF THIS MESSAGE, not of any message.
+       * KEY: THE CHANNEL OF THIS MESSAGE, not of any message.
        *
        * `channels.includes('error')` was satisfied by the setup saves,
        * which raise errors of their own before the one this cell is

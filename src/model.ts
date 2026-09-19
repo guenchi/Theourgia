@@ -122,7 +122,7 @@ export interface Node {
   /*
    * THE BLOCK'S OWN KEYWORDS, TAKEN FROM ITS RECORD.
    *
-   * ⚠️ NOT FROM `outline --with-keywords`. That option exists and
+   * NOTE: NOT FROM `outline --with-keywords`. That option exists and
    * prints them, and reading them out of it would put this back in the
    * business `outline.ts` was written to get out of: the outline is a
    * rendering with no escaping in it, and a title containing two spaces
@@ -148,7 +148,7 @@ function nodeFromBlock(block: Block, marks: StructuralMark[] | null = []): Node 
 }
 
 /*
- * ⚠️ `namesRefusal` IS GONE. It asked whether a form's head was `error`
+ * NOTE: `namesRefusal` IS GONE. It asked whether a form's head was `error`
  * and its second element a given name -- which is exactly what
  * `answerOf(datum, 'error', {at: 1, is: 'unknown-id'})` asks, in the one
  * place that checks heads. A helper beside the decoder is a second
@@ -177,7 +177,7 @@ export class StoreModel {
   public async roots(): Promise<ChildListing> {
     const answer = await this.client.request('outline', ['--depth', '1']);
     /*
-     * ⛔ THE EXIT CODE IS READ BEFORE THE TEXT IS.
+     * NEVER: THE EXIT CODE IS READ BEFORE THE TEXT IS.
      *
      * A refused outline has empty text, and empty text parses to an
      * outline with no rows -- a store drawn as having nothing in it at
@@ -194,7 +194,7 @@ export class StoreModel {
     }
     const rows = parseOutline(answer.text);
     /*
-     * ⛔ AND WHETHER THE MARKS WERE ALL THERE TRAVELS WITH THE
+     * NEVER: AND WHETHER THE MARKS WERE ALL THERE TRAVELS WITH THE
      * LISTING.
      *
      * This took `.marks` and dropped the completeness flag beside it,
@@ -206,7 +206,7 @@ export class StoreModel {
      * `(orphan)`: complete came back false and the block was listed
      * unmarked, with nothing saying so.
      *
-     * ⚠️ IT IS NOT A REFUSAL, and the choice is deliberate. A mark
+     * NOTE: IT IS NOT A REFUSAL, and the choice is deliberate. A mark
      * decides membership here, so the listing could be argued to be
      * undrawable -- but a store that answers one unreadable mark would
      * then have no tree at all, and `childrenOf` has answered this same
@@ -279,7 +279,7 @@ export class StoreModel {
    * a tree.
    */
   /*
-   * ⚠️ `complete` IS THE THIRD STATE'S OWN EVIDENCE.
+   * NOTE: `complete` IS THE THIRD STATE'S OWN EVIDENCE.
    *
    * A mark whose head this build knows and which names nobody --
    * `(orphan)` -- is not a mark, and it is not nothing either: it says
@@ -289,7 +289,7 @@ export class StoreModel {
    * reading a user acts on, given at the moment the question went
    * unanswered.
    *
-   * ⛔ IT DOES NOT REFUSE. A `conflicts` answer carrying a report this
+   * NEVER: IT DOES NOT REFUSE. A `conflicts` answer carrying a report this
    * build does not recognise must not stop the extension working -- the
    * core is allowed to say new things. So the marks that WERE read are
    * returned, and `complete` says whether any were lost. Ruled by the
@@ -319,7 +319,7 @@ export class StoreModel {
     for (const item of answer.answers) {
       const mark = readMark(item);
       /*
-       * ⛔ AN ENTRY THIS BUILD CANNOT READ IS NOT A BLOCK WITH NO
+       * NEVER: AN ENTRY THIS BUILD CANNOT READ IS NOT A BLOCK WITH NO
        * MARKS.
        *
        * Skipping it turned an incomplete reading into known absence:
@@ -416,7 +416,7 @@ export class StoreModel {
     try {
       const read = await this.structuralMarks();
       /*
-       * ⚠️ AN INCOMPLETE READING IS REPORTED AS AN UNKNOWN ONE. Half
+       * NOTE: AN INCOMPLETE READING IS REPORTED AS AN UNKNOWN ONE. Half
        * the marks and a `marksKnown` of true would be the map looking
        * authoritative again, one layer down.
        */
@@ -428,7 +428,7 @@ export class StoreModel {
       marks = null;
     }
     /*
-     * ⛔ AN EMPTY SUCCESSFUL SUBTREE READ IS NOT A BLOCK WITH NO
+     * NEVER: AN EMPTY SUCCESSFUL SUBTREE READ IS NOT A BLOCK WITH NO
      * CHILDREN.
      *
      * `read <id> --recursive` includes the block itself -- the core's
@@ -448,7 +448,7 @@ export class StoreModel {
       );
     }
     /*
-     * ⛔ AND IT HAS TO BE THE SUBTREE THAT WAS ASKED FOR.
+     * NEVER: AND IT HAS TO BE THE SUBTREE THAT WAS ASKED FOR.
      *
      * The core's `read --recursive` includes the block itself
      * (`project.ss:159`), so an answer that never mentions it is not an
@@ -459,7 +459,7 @@ export class StoreModel {
      * emptiness guard reaching one case short again.
      */
     /*
-     * ⛔ NO EXEMPTION FOR THE PLACEMENT ROOT. There was one, and it
+     * NEVER: NO EXEMPTION FOR THE PLACEMENT ROOT. There was one, and it
      * existed for a stand-in: the only caller that ever asked this with
      * `root` was a cell whose script answered a request the pinned core
      * refuses (`(error unknown-id "root" (nearest ...))`, measured). The
@@ -472,7 +472,7 @@ export class StoreModel {
     for (const item of answer.answers) {
       const block = readBlock(item);
       /*
-       * ⛔ A RECORD THIS BUILD CANNOT READ IS NOT A CHILD THAT IS NOT
+       * NEVER: A RECORD THIS BUILD CANNOT READ IS NOT A CHILD THAT IS NOT
        * THERE.
        *
        * This skipped it, so a subtree containing one unreadable record
@@ -514,7 +514,7 @@ export class StoreModel {
    * NULL MEANS THE STORE SAYS THERE IS NO SUCH BLOCK. It does not mean
    * the store could not be asked.
    *
-   * ⛔ THE EXIT CODE ALONE CANNOT DECIDE THIS, which is why the name
+   * NEVER: THE EXIT CODE ALONE CANNOT DECIDE THIS, which is why the name
    * is read. A block that is genuinely not there IS a non-zero exit --
    * `(error unknown-id "a.9" (nearest ...))` -- and so is a daemon that
    * could not be started. This returned null for both, and the caller
@@ -528,7 +528,7 @@ export class StoreModel {
     if (!answer.ok) {
       const said = answer.answers.length > 0 ? answer.answers[0] : null;
       /*
-       * ⛔ AND THE REFUSAL HAS TO BE ABOUT THE BLOCK THAT WAS ASKED
+       * NEVER: AND THE REFUSAL HAS TO BE ABOUT THE BLOCK THAT WAS ASKED
        * FOR. `blockOf('a.1')` given `(error unknown-id "b.1" ...)`
        * answered null -- "a.1 is not there" -- on the strength of a
        * statement about another block. The success side was repaired for
@@ -552,7 +552,7 @@ export class StoreModel {
       );
     }
     /*
-     * ⛔ AND A SUCCESS THIS BUILD CANNOT READ IS NOT AN ABSENT BLOCK
+     * NEVER: AND A SUCCESS THIS BUILD CANNOT READ IS NOT AN ABSENT BLOCK
      * EITHER.
      *
      * Splitting the refusals was only half of it: exit zero with no
@@ -579,7 +579,7 @@ export class StoreModel {
      * would find no `id` entry and report the block as missing.
      */
     /*
-     * ⛔ AND THE FORM THAT HOLDS IT HAS TO HAVE SAID `ok`. Measured in
+     * NEVER: AND THE FORM THAT HOLDS IT HAS TO HAVE SAID `ok`. Measured in
      * an eleventh review round: `(garbage ((id . "a.1") ...))` was read
      * as block a.1, because only the length was checked. The same shape
      * as the search and catalogue readers, in a third place.
@@ -592,7 +592,7 @@ export class StoreModel {
       return unreadable('something that is not a block');
     }
     /*
-     * ⛔ AND IT HAS TO BE THE BLOCK THAT WAS ASKED FOR. Measured in a
+     * NEVER: AND IT HAS TO BE THE BLOCK THAT WAS ASKED FOR. Measured in a
      * twelfth review round: `blockOf('a.1')` handed a record for `b.1`
      * returned b.1, and the caller then opens another block's body into
      * a buffer named for the one the user clicked. The head check made
@@ -613,7 +613,7 @@ export class StoreModel {
   /*
    * WHAT THE STORE FOUND, BEST FIRST.
    *
-   * ⚠️ THE WORDS GO AS ONE ARGUMENT. `search <query>` takes one, and
+   * NOTE: THE WORDS GO AS ONE ARGUMENT. `search <query>` takes one, and
    * all its words must match; two words passed as two arguments get
    * `(usage (search <query>))` -- a complaint about the command line
    * that a caller could easily draw as "nothing matched". The joining
@@ -622,7 +622,7 @@ export class StoreModel {
   public async search(query: string): Promise<Hit[]> {
     const answer = await this.client.request('search', [query]);
     /*
-     * ⛔ THE EXIT CODE IS READ BEFORE THE BYTES ARE.
+     * NEVER: THE EXIT CODE IS READ BEFORE THE BYTES ARE.
      *
      * Found by an outside review and reproduced: on the human route no
      * hits IS no output, so a refusal whose stdout was empty parsed to
@@ -662,7 +662,7 @@ export class StoreModel {
     try {
       const answer = await this.client.request('describe', []);
       /*
-       * ⛔ AND A REFUSED CATALOGUE IS NOT AN EMPTY ONE. Answering
+       * NEVER: AND A REFUSED CATALOGUE IS NOT AN EMPTY ONE. Answering
        * with an empty set would hide every verb the core has, which is
        * the opposite of what a caller asking "can it do this?" needs.
        */
@@ -699,7 +699,7 @@ export class StoreModel {
  * AN ENTRY WHOSE HEAD IS A STRUCTURAL MARK AND WHOSE BLOCK CANNOT BE
  * READ.
  *
- * ⚠️ THE LINE IS DRAWN AT THE HEAD, and it has to be. `conflicts`
+ * NOTE: THE LINE IS DRAWN AT THE HEAD, and it has to be. `conflicts`
  * carries other kinds of report -- `(pending ...)`, and whatever the
  * core adds next -- and a client that refused every item it did not
  * recognise would stop working the day the core said something new.
@@ -708,7 +708,7 @@ export class StoreModel {
  * used to be skipped and so turned an incomplete reading into known
  * absence.
  *
- * ⚠️ `(orphan)` -- a known head naming nobody -- is still skipped,
+ * NOTE: `(orphan)` -- a known head naming nobody -- is still skipped,
  * because a cell has pinned that since before this repair. It is a
  * narrower line than the finding suggested; named in the delivery note
  * for a ruling rather than changed here.
@@ -716,7 +716,7 @@ export class StoreModel {
 const STRUCTURAL_HEADS = ['orphan', 'nested-document', 'conflict'];
 
 /*
- * ⚠️ `(orphan)` -- A HEAD THIS BUILD KNOWS, NAMING NOBODY -- IS STILL
+ * NOTE: `(orphan)` -- A HEAD THIS BUILD KNOWS, NAMING NOBODY -- IS STILL
  * SKIPPED, AND THAT IS A RULING RATHER THAN AN OVERSIGHT.
  *
  * A fifteenth review round argued it should refuse: the entry says
@@ -727,7 +727,7 @@ const STRUCTURAL_HEADS = ['orphan', 'nested-document', 'conflict'];
  * behaviour is pinned by a cell that predates this batch and the main
  * session has already ruled once that it stays.
  *
- * ⛔ WHAT IS REFUSED IS AN ENTRY WITH A SUBJECT THAT CANNOT BE READ --
+ * NEVER: WHAT IS REFUSED IS AN ENTRY WITH A SUBJECT THAT CANNOT BE READ --
  * `(orphan 5)`. That one used to be skipped too, and skipping it turned
  * an incomplete reading into known absence.
  */

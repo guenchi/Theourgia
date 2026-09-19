@@ -23,14 +23,14 @@
  * written down here. Everything downstream reads this record; nothing
  * downstream asks the settings, the document or the sidecar again.
  *
- * ⚠️ THE THREE USED TO BE READ AT THREE MOMENTS, and that is the defect
+ * NOTE: THE THREE USED TO BE READ AT THREE MOMENTS, and that is the defect
  * this type exists to make unsayable. The store came from the live
  * configuration after a wait, the bytes from a map kept by block id
  * that outlived the rebuild which replaced everything around it, and
  * the request id from inside the sender. Four rounds of review found
  * four faces of it; each repair pinned one pair and left the third.
  *
- * ⚠️ AND THE STORE COMES FROM THE FILE, NEVER FROM THE SETTINGS. A file
+ * NOTE: AND THE STORE COMES FROM THE FILE, NEVER FROM THE SETTINGS. A file
  * under a session directory belongs to the store it was published from,
  * and `sidecar.storeId` is the file saying so. The settings say what
  * this window is looking at now, which is a different question and can
@@ -66,7 +66,7 @@ export interface SendRecord {
 }
 
 /*
- * ⚠️ A SHALLOW FREEZE WOULD BE A PROMISE THIS SHAPE CANNOT KEEP.
+ * NOTE: A SHALLOW FREEZE WOULD BE A PROMISE THIS SHAPE CANNOT KEEP.
  *
  * `Object.freeze` stops the top-level fields and says nothing about
  * `intent`, whose `body` is the bytes that go to the store. I1 is that

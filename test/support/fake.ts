@@ -91,7 +91,7 @@ export class FakeCore {
      */
     fs.writeFileSync(path.join(this.corePath, FALLBACK_PROGRAM), ';; stand-in\n', 'utf8');
     /*
-     * ⚠️ AND THE STAND-IN CORE LOOKS LIKE A CORE. The client composes
+     * NOTE: AND THE STAND-IN CORE LOOKS LIKE A CORE. The client composes
      * the path to `theourgia.ss` and pins it, and it READS this
      * directory to decide which extension list the child gets: a
      * directory with neither `client.ss` nor `client.so` is neither
@@ -140,7 +140,7 @@ export class FakeCore {
   }
 
   /*
-   * ⛔ ONLY AN ABSENT LOG IS AN EMPTY ONE.
+   * NEVER: ONLY AN ABSENT LOG IS AN EMPTY ONE.
    *
    * This caught every read error and answered with no calls, and what
    * consumes it includes `pidsSeen` and `childrenStillRunning` -- the

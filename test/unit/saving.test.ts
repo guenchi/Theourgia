@@ -412,7 +412,7 @@ describe('a block whose body really uses CRLF is sent as it is', () => {
  * THE PREFIX AND THE BODY CAN USE DIFFERENT LINE ENDINGS, and until an
  * editor-hosted cell failed, nothing here said so.
  *
- * ⚠️ EVERY FIXTURE ABOVE GIVES THE PREFIX AND THE BODY THE SAME EOL, so
+ * NOTE: EVERY FIXTURE ABOVE GIVES THE PREFIX AND THE BODY THE SAME EOL, so
  * the ordering defect -- comparing the prefix before normalising --
  * was invisible to all twenty of them. In the editor it refused every
  * save of a CRLF buffer as "the heading changed", about a change the
@@ -481,7 +481,7 @@ describe('a file whose line endings differ from the record’s prefix', () => {
 /*
  * THE PREFIX IS NORMALISED TOO, AND THAT BRANCH IS LOAD-BEARING.
  *
- * ⚠️ A MUTATION SURVIVED HERE. Removing the `sidecar.prefix.replace(...)`
+ * NOTE: A MUTATION SURVIVED HERE. Removing the `sidecar.prefix.replace(...)`
  * left every cell green, because all three EOL cells above give the
  * prefix and the body the same line endings -- the shape that needs it
  * is a prefix with CRLF above a body WITHOUT, and none of them had it.
@@ -612,7 +612,7 @@ describe('X1c ⑨ line endings in the heading are not an edit to the heading', (
   });
 
   /*
-   * ⚠️ AND THE OTHER HALF OF SHAPE TWO, which was missing: the record's
+   * NOTE: AND THE OTHER HALF OF SHAPE TWO, which was missing: the record's
    * heading is CRLF and the BUFFER is LF, with `bodyHasCrlf` true so
    * normalisation is off by rule. A review pointed out that the cell
    * above repeats matching CRLF on both sides and therefore says nothing

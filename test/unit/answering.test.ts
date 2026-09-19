@@ -55,7 +55,7 @@ import { RecordingFs } from '../support/recording-fs';
  * cells that are about the number itself say so in their own fixtures.
  */
 /*
- * ⚠️ THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
+ * NOTE: THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
  * while nothing compared it and became a trap the moment the draft
  * rule started asking whether the split still matches: every cell in
  * this file would have read as a draft, for a reason that lived in
@@ -70,7 +70,7 @@ function scratch(): string {
 /*
  * THE DIGEST OF THE BODY THAT WENT OUT.
  *
- * ⚠️ THESE FIXTURES USED THE STRING 'sent'. That is not a digest of
+ * NOTE: THESE FIXTURES USED THE STRING 'sent'. That is not a digest of
  * anything, and it describes a world that cannot happen: a save whose
  * sent body has no relation to the file it came from. The cells passed
  * because nothing compared it with anything -- and the check that the
@@ -749,7 +749,7 @@ describe('review 20 an answer is recorded only if the record still produces what
  */
 describe('review 21 what the answer is checked against', () => {
   /*
-   * ⚠️ ONE BUFFER, TWO QUESTIONS. The digest and the split were two
+   * NOTE: ONE BUFFER, TWO QUESTIONS. The digest and the split were two
    * separate reads, and the writer they are about is another process. A
    * write landing between them let an acknowledgement be assembled out
    * of two different versions: the first satisfied the digest, the

@@ -15,7 +15,7 @@ const corePath = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-sche
 fs.writeFileSync(path.join(corePath, require(path.join(out, 'config.js')).WITNESS_SOURCE), ';; stand-in\n', 'utf8');
 const settings = {store:'/stores/A',corePath,scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000,transport:'cli'};
 let provider, configChanged, savedHandler, core, pickGate = null, requestGate = null, failWrite=false;
-// ⛔ `channels` ALONE CANNOT SAY WHICH MESSAGE WAS WHICH. A scenario that
+// NEVER: `channels` ALONE CANNOT SAY WHICH MESSAGE WAS WHICH. A scenario that
 // shows several notices satisfies "an error was raised" with an unrelated one:
 // measured in a twelfth review round, the earlier setup saves in the save
 // scenarios raise their own errors, so the assertion about the wrong-store
@@ -32,7 +32,7 @@ const vs = {
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
  languages:{setTextDocumentLanguage:async d=>d},
  window:{createStatusBarItem:()=>({show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
-  // ⛔ THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
+  // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
   // no cell could tell a warning from an alarm. The other editor double was
   // repaired for this in an earlier round; this one was missed because that
@@ -72,7 +72,7 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
 
  const read=`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)))\n`;
- // ⛔ THE SUBTREE INCLUDES THE BLOCK IT IS UNDER. Measured against the
+ // NEVER: THE SUBTREE INCLUDES THE BLOCK IT IS UNDER. Measured against the
  // pinned core: `read <id> --recursive` answers with the block itself first
  // and then its descendants. This stand-in answered with the child alone,
  // which is a shape the core does not produce -- and the product now refuses

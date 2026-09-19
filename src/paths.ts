@@ -17,7 +17,7 @@
 /*
  * A NAME THAT IS BUILT INTO A PATH IS CHECKED IN ONE PLACE. (section 13, r5-3)
  *
- * ⚠️ THE CHECK WAS WRITTEN FOR ONE CALLER AND THEN A SECOND APPEARED.
+ * NOTE: THE CHECK WAS WRITTEN FOR ONE CALLER AND THEN A SECOND APPEARED.
  *
  * `Sessions.outboxPathFor` composes a store's name into a path under a
  * session directory, and a name of `../live/a` addressed a LIVE
@@ -29,7 +29,7 @@
  * Two copies of a rule about untrusted input is one copy that will be
  * repaired and one that will not. This is the rule, once.
  *
- * ⚠️ WHAT IT IS, EXACTLY: a name is one path component under BOTH
+ * NOTE: WHAT IT IS, EXACTLY: a name is one path component under BOTH
  * platforms' rules, and holds no control character. It is NOT a test of
  * filesystem validity -- a 256-byte name, `a?b`, or `CON` all pass here
  * and some filesystems will refuse them -- and it rejects a tab, which
@@ -57,7 +57,7 @@ export interface NameKind {
 
 export function checkOneComponent(name: string, kind: NameKind): void {
   /*
-   * ⚠️ AND NO CONTROL CHARACTER. A NUL cannot occur in a filename on any
+   * NOTE: AND NO CONTROL CHARACTER. A NUL cannot occur in a filename on any
    * platform this runs on, and one in a store name got as far as the
    * read, where node refuses it -- and the takeover then counted that as
    * one more queue it could not inspect, reporting a path that was never
@@ -67,12 +67,12 @@ export function checkOneComponent(name: string, kind: NameKind): void {
     throw new Error(`${kind.noun} may not contain a control character; got ${JSON.stringify(name)}`);
   }
   /*
-   * ⚠️ THE TEST IS WHAT THE NAME MUST BE, not a list of what it must not
+   * NOTE: THE TEST IS WHAT THE NAME MUST BE, not a list of what it must not
    * contain: `basename` of a single path component is that component,
    * and of anything carrying a separator it is not. A blocklist is a
    * guess at the spellings somebody will try; this is the property.
    *
-   * ⚠️ ON EVERY PLATFORM'S RULES, NOT ONLY THIS ONE'S. `path.basename`
+   * NOTE: ON EVERY PLATFORM'S RULES, NOT ONLY THIS ONE'S. `path.basename`
    * on POSIX does not treat a backslash as a separator, so a name
    * carrying one passes there and is a path on Windows -- and these
    * names travel: the directory is written by whichever window made it

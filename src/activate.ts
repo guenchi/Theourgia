@@ -17,7 +17,7 @@
 /*
  * Everything activation does that is not about VS Code.
  *
- * ⚠️ IT EXISTS BECAUSE THE HARNESS WAS DOING THE PRODUCT'S WORK. The
+ * NOTE: IT EXISTS BECAUSE THE HARNESS WAS DOING THE PRODUCT'S WORK. The
  * two-process cells called `sessions.begin()` themselves, so every one
  * of them had a `session.json` -- while the extension never called it at
  * all. The recovery listing could not see a single directory the real
@@ -96,7 +96,7 @@ export function activateCore(deps: CoreDeps): Core {
     sessions,
     chain: new PathChain(),
     /*
-     * ⚠️ THE PUBLISHER THE EXTENSION USES KNOWS WHOSE SESSION IT IS.
+     * NOTE: THE PUBLISHER THE EXTENSION USES KNOWS WHOSE SESSION IT IS.
      *
      * Every path that writes a record beside a block passes the
      * ownership rule, and the rule needs to know who is asking. The one

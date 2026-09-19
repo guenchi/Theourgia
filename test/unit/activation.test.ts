@@ -17,7 +17,7 @@
 /*
  * What activation must leave behind.
  *
- * ⚠️ NONE OF THIS WAS CHECKED, AND IT WAS ALL MISSING. The extension
+ * NOTE: NONE OF THIS WAS CHECKED, AND IT WAS ALL MISSING. The extension
  * created a `Sessions` and a session id and never called `begin`, so no
  * `session.json` was ever written by the real thing -- every takeover,
  * every discard, every "other sessions" listing was blind to the
@@ -80,7 +80,7 @@ describe('activation leaves a session another window can see', () => {
   });
 
   /*
-   * ⚠️ THE QUEUES ONLY. The block directories are named by
+   * NOTE: THE QUEUES ONLY. The block directories are named by
    * `Sessions.directoryFor`, which this does not call; the cell's old
    * name promised both.
    */

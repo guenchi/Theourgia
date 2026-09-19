@@ -34,7 +34,7 @@ import * as assert from 'assert';
  * goes through `Saving.recordAnswer`.
  */
 /*
- * ⚠️ THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
+ * NOTE: THE STAND-IN SETTLER, AND WHAT IT DOES WITH EACH VERDICT.
  *
  * These cells are about the sending, not about the recording, so the
  * settler here just releases the entry -- but it has to release it only
@@ -384,7 +384,7 @@ describe('S6 an answer is sorted by what it says about the store', () => {
   });
 
   /*
-   * ⚠️ THIS EXPECTATION CHANGED, AND THE CHANGE IS THE POINT.
+   * NOTE: THIS EXPECTATION CHANGED, AND THE CHANGE IS THE POINT.
    *
    * It used to read "drops the entry", asserting `pendingCount === 0`,
    * and it was written against what the code did: every refusal was
@@ -1047,7 +1047,7 @@ describe('two savers over one queue share the queue, not just the lock', () => {
  * again -- for ever, sending the same request to the store on every
  * turn, inside a command the user is awaiting.
  *
- * ⚠️ HOW THIS SHOWED UP IS WHY IT IS WORTH SAYING: as `Timeout of
+ * NOTE: HOW THIS SHOWED UP IS WHY IT IS WORTH SAYING: as `Timeout of
  * 180000ms exceeded` in an editor-hosted cell, three runs out of three,
  * with nothing naming the queue. A hang is the failure a suite reports
  * worst.
@@ -1066,7 +1066,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
    * out. Either way the cell ends, and the COUNT is what tells them
    * apart -- a hang proves nothing a reader can act on.
    *
-   * ⚠️ THE FIRST VERSION OF THIS CELL MEASURED ONLY THE RETRY, after a
+   * NOTE: THE FIRST VERSION OF THIS CELL MEASURED ONLY THE RETRY, after a
    * `save` had already driven the entry into `pending` by exhausting the
    * script. It passed against the looping build. The loop happens inside
    * the FIRST call, so that is the call the count has to be about.
@@ -1147,7 +1147,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
    * THE GREEN TWIN. A build that stopped after every send would satisfy
    * both cells above and would never drain a queue.
    *
-   * ⚠️ AND IT HAS TO BE ONE CALL OVER TWO QUEUED ENTRIES. The first
+   * NOTE: AND IT HAS TO BE ONE CALL OVER TWO QUEUED ENTRIES. The first
    * version did two awaited saves, each of which began with an empty
    * queue -- so it passed a drain that returns after every single
    * normally settled request, which is exactly the build it exists to
@@ -1237,7 +1237,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
  * The core gained both with its batch E, and what separates them is what
  * the store knows. `store-busy` and `draining` say the store did not look
  * at this write; `transport-unknown` says the store may have applied it
- * and cannot say. ⛔ Neither may settle the entry, and they settle it in
+ * and cannot say. NEVER: Neither may settle the entry, and they settle it in
  * two DIFFERENT ways: one is retried under a cap, the other stops the
  * queue until somebody learns what happened. (v223, v224)
  */
@@ -1259,7 +1259,7 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
     assert.strictEqual(held.length, 1, 'the entry must still be in the queue');
     assert.strictEqual(held[0].req, outcome.req);
     /*
-     * ⛔ THE POINT OF THE ROW. A settled entry would be gone, and the
+     * NEVER: THE POINT OF THE ROW. A settled entry would be gone, and the
      * next save would go out under a NEW id -- which is a different
      * request as far as the store is concerned, and the first one's
      * outcome would never be established.
@@ -1268,7 +1268,7 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
   });
 
   /*
-   * ⛔ FIVE IN A ROW PARKS IT, AND THE QUEUE STEPS OVER IT. `pending`
+   * NEVER: FIVE IN A ROW PARKS IT, AND THE QUEUE STEPS OVER IT. `pending`
    * would stop the queue for ever on a store that is never going to
    * answer differently without a person; `parked` is the state that is
    * stepped over. The two are not interchangeable and this row is the
@@ -1284,7 +1284,7 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
       await r.saver.save('a.2', 'src', `body${i}\n`);
     }
     /*
-     * ⚠️ THE QUEUE IS WHAT THIS ROW READS, NOT WHAT `save` RETURNED.
+     * NOTE: THE QUEUE IS WHAT THIS ROW READS, NOT WHAT `save` RETURNED.
      * After the first refusal every later `save` answers about the entry
      * IT just queued -- "queued behind an earlier one whose outcome is
      * unknown" -- while the entry being retried is the first one. A row
@@ -1300,8 +1300,8 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
     );
 
     /*
-     * ⛔ AND THE QUEUE CARRIES ON, which is the whole difference between
-     * `parked` and `pending`. ⚠️ It has to be ANOTHER block: entries for
+     * NEVER: AND THE QUEUE CARRIES ON, which is the whole difference between
+     * `parked` and `pending`. NOTE: It has to be ANOTHER block: entries for
      * a parked block are held back with it, deliberately, so a same-block
      * save would be stepped over too and this row would pass for the
      * wrong reason.
@@ -1313,7 +1313,7 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
   });
 
   /*
-   * ⛔ TWIN: A RESTART STARTS THE COUNT OVER, ON PURPOSE. The count is
+   * NEVER: TWIN: A RESTART STARTS THE COUNT OVER, ON PURPOSE. The count is
    * in memory; a new Saver over the same queue file is what a restart
    * looks like from here. Persisting it would leave a user with an entry
    * that has used up its allowance and will never go again on its own,
@@ -1357,7 +1357,7 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
   const LOST = '(error transport-unknown (reason store-actor-down))\n';
 
   /*
-   * ⛔ THE REQUEST ID IS THE WHOLE ROW. The store may already have
+   * NEVER: THE REQUEST ID IS THE WHOLE ROW. The store may already have
    * applied this write; sending it again under a new id would ask the
    * store to do it a second time, and nothing would ever establish what
    * the first one did. So the resend carries the SAME id, and the core
@@ -1367,7 +1367,7 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
   it('resends under the same request id, and the core answers it as a replay', async () => {
     const r = rig([
       /*
-       * ⚠️ `once` IS LOAD BEARING. A scripted call without it answers
+       * NOTE: `once` IS LOAD BEARING. A scripted call without it answers
        * EVERY matching send, so the retry met the same lost answer again
        * and the row read "it was never settled" about a core that had
        * never been asked a second time. Measured: two sends, both
@@ -1387,7 +1387,7 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
     const sent = setCalls(core);
     const idOf = (call: string[]): string => call[call.indexOf('--req') + 1];
     /*
-     * ⚠️ THREE SENDS, NOT TWO, AND THE THIRD IS THE POINT OF THE FIRST
+     * NOTE: THREE SENDS, NOT TWO, AND THE THIRD IS THE POINT OF THE FIRST
      * TWO. Once the held entry is answered it leaves the queue, and the
      * queue carries on with the save that had been waiting behind it.
      * This row first asserted two, which described a queue that stays
@@ -1396,7 +1396,7 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
      */
     assert.ok(sent.length >= 2, `the held entry must have gone out again: ${sent.length} sends`);
     /*
-     * ⛔ THE REQUEST ID IS THE WHOLE ROW. The store may already have
+     * NEVER: THE REQUEST ID IS THE WHOLE ROW. The store may already have
      * applied the first send; going again under a NEW id would ask it to
      * do the work twice and leave the first attempt's outcome permanently
      * unestablished. The core recognising the id -- answering `(replay
@@ -1446,7 +1446,7 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
   });
 
   /*
-   * ⚠️ PARKED AT ONCE, NOT AFTER FIVE. Five attempts against a store
+   * NOTE: PARKED AT ONCE, NOT AFTER FIVE. Five attempts against a store
    * directory that does not exist are five identical failures and a
    * slower arrival at the same place. The message names the setting and
    * what to do with it, because that is the only thing that can change
@@ -1475,7 +1475,7 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
   });
 
   /*
-   * ⚠️ A NAME THIS BUILD HAS NEVER HEARD, FROM THE CLIENT'S OWN EXIT
+   * NOTE: A NAME THIS BUILD HAS NEVER HEARD, FROM THE CLIENT'S OWN EXIT
    * CODE, IS UNKNOWN AND NOT REFUSED.
    *
    * When a daemon fails to start the client answers with the last
@@ -1498,7 +1498,7 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
   });
 
   /*
-   * ⚠️ THE TWIN THAT KEEPS THE EXIT CODE MEANING SOMETHING. The same
+   * NOTE: THE TWIN THAT KEEPS THE EXIT CODE MEANING SOMETHING. The same
    * unknown name at an ordinary exit code is the STORE refusing with a
    * word this build does not know -- an `(error ...)` is the protocol's
    * way of saying the write did not happen -- and that settles.
@@ -1513,7 +1513,7 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
   });
 
   /*
-   * ⚠️ THE GUARD BEHIND THE CLASSIFIER'S ANSWER. `classifyRefusal`
+   * NOTE: THE GUARD BEHIND THE CLASSIFIER'S ANSWER. `classifyRefusal`
    * answers `refused` for both families so that the census over the
    * core's refusals does not read them as unclassified -- and nothing
    * in the running extension may ever reach that answer with one of
@@ -1581,7 +1581,7 @@ describe('plugin-r2 S-settings a configuration change releases what only a setti
   });
 
   /*
-   * ⚠️ THE TWIN THAT KEEPS THE RELEASE FROM BEING A TIMER. Draining
+   * NOTE: THE TWIN THAT KEEPS THE RELEASE FROM BEING A TIMER. Draining
    * without a release must not touch a parked entry -- that is the whole
    * point of parking it rather than leaving it pending.
    */

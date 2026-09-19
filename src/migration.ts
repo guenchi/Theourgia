@@ -13,7 +13,7 @@ export type MigrationOutcome =
   | {migrated:false;because:string;retained:string[]};
 
 /*
- * ⛔ A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT DOES NOT NAME
+ * NEVER: A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT DOES NOT NAME
  * THIS BLOCK.
  *
  * The catch walked past it and the function then answered null, which
@@ -65,7 +65,7 @@ export async function migrateLegacy(parts: {
     const journal=path.join(control,name);
     let plan:any;
     /*
-     * ⛔ A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT SAYS
+     * NEVER: A JOURNAL THIS COULD NOT READ IS NOT A JOURNAL THAT SAYS
      * NOTHING.
      *
      * `continue` walked past it, and with the legacy directory then

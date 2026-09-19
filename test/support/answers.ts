@@ -17,7 +17,7 @@
 /*
  * THE ANSWERS A STAND-IN CORE GIVES, IN ONE PLACE.
  *
- * ⚠️ WHY THIS FILE EXISTS. A cell about a save that settles wrote its
+ * NOTE: WHY THIS FILE EXISTS. A cell about a save that settles wrote its
  * own `ok`: `(ok ((cursor . "w:2")))`. That is not the shape a core
  * answers with -- the event is a pair, `(cursor ("w" . 2))` -- and
  * `eventFromWrite` reads the invented one as "ok, naming no record", so

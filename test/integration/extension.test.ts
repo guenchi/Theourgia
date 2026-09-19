@@ -44,13 +44,13 @@ async function settle(ms = 250): Promise<void> {
 }
 
 /*
- * ⚠️ THE FIXTURE'S STORES SHARE THE HOST'S RUN ROOT, deliberately.
+ * NOTE: THE FIXTURE'S STORES SHARE THE HOST'S RUN ROOT, deliberately.
  *
  * The extension under test was given `THEOURGIA_RUN` by the launcher. A
  * fixture that made its own would put the SAME store's socket under two
  * roots: two sockets for one key, two daemons opening one store, and
  * from inside a cell that shows up as a refusal with no cause anybody
- * can name. ⛔ It is read here rather than in `RealStore`, which must go
+ * can name. NEVER: It is read here rather than in `RealStore`, which must go
  * on making its own when nobody says otherwise -- a fixture that quietly
  * inherited an ambient variable would make the unit suite's run-root
  * gate compare a directory with itself.
@@ -66,9 +66,9 @@ function hostRunRoot(): string {
 }
 
 /*
- * ⭐ WAITING FOR SOMETHING TO HAPPEN, RATHER THAN FOR A WHILE.
+ * KEY: WAITING FOR SOMETHING TO HAPPEN, RATHER THAN FOR A WHILE.
  *
- * ⚠️ WHAT THE FIXED WAITS COST, MEASURED. Every one of these cells used
+ * NOTE: WHAT THE FIXED WAITS COST, MEASURED. Every one of these cells used
  * to sleep a flat 1500 ms after a save and then assert. That number was
  * chosen when a request cost about 460 ms because the core was read from
  * source; through a daemon the same request costs about 30 ms
@@ -79,7 +79,7 @@ function hostRunRoot(): string {
  * of anything: too short and the cell asserts before the work; too long
  * and it asserts after work the cell did not ask for.
  *
- * ⚠️ AND THE STARTING POINT IS PINNED FIRST. "Wait until the log is not
+ * NOTE: AND THE STARTING POINT IS PINNED FIRST. "Wait until the log is not
  * empty" is satisfied for ever by a log that was not empty to begin
  * with. Every caller here reads the count BEFORE acting and waits for a
  * number GREATER than that one.
@@ -133,7 +133,7 @@ interface Facts {
 /*
  * THE EXTENSION HAS TAKEN THE SETTINGS IT WAS JUST GIVEN.
  *
- * ⚠️ A SETTING IS DELIVERED TO A HANDLER, and the caller of `update` is
+ * NOTE: A SETTING IS DELIVERED TO A HANDLER, and the caller of `update` is
  * not that handler. Sleeping afterwards asserts a duration; what is
  * waited for here is the extension reporting the store and the actor it
  * was given, which one `readConfig` takes together -- so an actor that
@@ -143,7 +143,7 @@ interface Facts {
 /*
  * THE BLOCK IS OPEN IN THE ACTIVE EDITOR.
  *
- * ⚠️ THE COMMAND IS AWAITED AND THAT IS NOT THE SAME THING. Its handler
+ * NOTE: THE COMMAND IS AWAITED AND THAT IS NOT THE SAME THING. Its handler
  * awaits `showTextDocument`, so today the document is there when the
  * command resolves -- and a cell that sleeps 250 ms afterwards is
  * asserting a duration about a step it could simply look at. The file a
@@ -183,7 +183,7 @@ async function untilStatus(what: string, ready: (facts: Facts) => boolean): Prom
 async function logLength(store: RealStore, id: string): Promise<number> {
   const answer = await store.client.request('log', [id]);
   /*
-   * ⛔ A REFUSAL IS NOT A COUNT. Found in a second review round: this
+   * NEVER: A REFUSAL IS NOT A COUNT. Found in a second review round: this
    * returned `answers.length` whatever the exit code, and a refusal is
    * one datum -- `(error serve-path-occupied ...)` -- so two failed
    * reads compare equal and an assertion that nothing was appended
@@ -205,18 +205,18 @@ async function untilLogGrows(store: RealStore, id: string, from: number): Promis
 }
 
 /*
- * ⚠️ AND THE CELLS THAT ASSERT NOTHING HAPPENED STILL NEED A DURATION.
+ * NOTE: AND THE CELLS THAT ASSERT NOTHING HAPPENED STILL NEED A DURATION.
  *
  * There is nothing to wait for when the right behaviour is silence: the
  * extension decides not to send, shows a sentence, and returns, and
  * nothing it leaves behind distinguishes "it decided not to" from "it
- * has not decided yet". So this keeps a period -- ⭐ but it WATCHES that
+ * has not decided yet". So this keeps a period -- KEY: but it WATCHES that
  * period instead of sleeping through it, and fails the moment the record
  * it forbids appears, naming it. A cell that slept and then looked would
  * report the same failure a second and a half later and would say only
  * that the total was wrong.
  *
- * ⛔ THE NUMBER IS NOT A GUESS ABOUT HOW LONG A SAVE TAKES, which is what
+ * NEVER: THE NUMBER IS NOT A GUESS ABOUT HOW LONG A SAVE TAKES, which is what
  * the flat waits it replaces were. It is how long this cell is willing
  * to watch, and it may be generous: the only cost of a larger one is
  * that a passing cell takes longer.
@@ -364,7 +364,7 @@ describe('the extension inside an editor', function () {
    * cannot be exercised outside a host -- reports a dismissal as the
    * flow expects.
    *
-   * ⚠️ AND IT EXPECTS AN EMPTY LIST, WHICH THE RUNNER MAKES TRUE. The
+   * NOTE: AND IT EXPECTS AN EMPTY LIST, WHICH THE RUNNER MAKES TRUE. The
    * first version of this cell assumed that and was wrong: every earlier
    * run left a session directory in the host's storage and nothing
    * reclaims them, so the list opened and waited on a person -- 180
@@ -380,7 +380,7 @@ describe('the extension inside an editor', function () {
    */
   it('runs the recovery command, and finds no other window in a fresh host', async () => {
     /*
-     * ⛔ THIS CELL DOES NOT EXERCISE A DISMISSAL, and it used to say it
+     * NEVER: THIS CELL DOES NOT EXERCISE A DISMISSAL, and it used to say it
      * did.
      *
      * Measured in a review round: `chooseAndRecover` returns
@@ -407,7 +407,7 @@ describe('the extension inside an editor', function () {
       'the recovery command found another window in a host the runner had just emptied'
     );
     /*
-     * ⚠️ WHAT THIS CELL DOES NOT ESTABLISH: that nothing moved on disk.
+     * NOTE: WHAT THIS CELL DOES NOT ESTABLISH: that nothing moved on disk.
      * It knows the command's answer and not the host's storage path, and
      * inventing one would be asserting about a directory chosen by
      * guesswork. The disk-level claim -- no claim token, no directory
@@ -451,7 +451,7 @@ describe('the extension inside an editor', function () {
     const firstBytes = fs.readFileSync(first as string, 'utf8');
 
     /*
-     * ⭐ SOMETHING ELSE IS PUT IN FRONT FIRST, so that the second open
+     * KEY: SOMETHING ELSE IS PUT IN FRONT FIRST, so that the second open
      * has work to do.
      *
      * Measured in a review round: both waits accepted the document the
@@ -571,7 +571,7 @@ describe('the extension inside an editor', function () {
     );
 
     /*
-     * ⭐ AND THEN A SAVE THAT MUST LAND, WHICH IS WHAT MAKES THE
+     * KEY: AND THEN A SAVE THAT MUST LAND, WHICH IS WHAT MAKES THE
      * SILENCE ABOVE MEAN SOMETHING.
      *
      * Watching for two seconds says nothing about the two-point-first.
@@ -711,7 +711,7 @@ describe('the extension inside an editor', function () {
     const refused = document.getText();
 
     /*
-     * ⭐ THE EDITOR IS MOVED AWAY FIRST, so the open below is a real
+     * KEY: THE EDITOR IS MOVED AWAY FIRST, so the open below is a real
      * one, and the FILE is checked as well as the buffer.
      *
      * Two things were wrong with this and both were found in review
@@ -724,7 +724,7 @@ describe('the extension inside an editor', function () {
      */
     const file = document.uri.fsPath;
     /*
-     * ⛔ A DIFFERENT BLOCK. This said `idOfTitle(store, 'Two')` -- the
+     * NEVER: A DIFFERENT BLOCK. This said `idOfTitle(store, 'Two')` -- the
      * same block the cell is about -- so the editor never moved and the
      * open below was not a reopen at all. The fix for that was written
      * in a review round and made this same mistake; the next round
@@ -793,7 +793,7 @@ describe('a document block with front matter, edited twice', function () {
     await settings.update('actor', 'vscode-front', vscode.ConfigurationTarget.Global);
     await settings.update('store', store.store, vscode.ConfigurationTarget.Global);
     /*
-     * ⚠️ WAITING FOR THE EXTENSION TO HAVE TAKEN THE STORE, not for a
+     * NOTE: WAITING FOR THE EXTENSION TO HAVE TAKEN THE STORE, not for a
      * duration. A setting is delivered to a handler that rebuilds, and
      * the caller of `update` is not that handler; a cell that opened a
      * block before the rebuild ran would be reading the store it had
@@ -975,7 +975,7 @@ describe('a retry whose store changed while it was in flight', function () {
     const wrapper=`${store.root}/delay-commit.py`,entered=`${store.root}/commit-entered`;
     const armed=`${store.root}/stall-next-commit`;
     /*
-     * ⚠️ ONLY THE FIRST COMMIT IS HELD, and the marker file is what
+     * NOTE: ONLY THE FIRST COMMIT IS HELD, and the marker file is what
      * remembers that -- so nothing has to be UNSET afterwards to let the
      * queue drain again.
      *
@@ -986,11 +986,11 @@ describe('a retry whose store changed while it was in flight', function () {
      * the assertion ran the extension had quietly got the stranded save
      * through and `pending` was 0. It had passed for years only because
      * a request read from source took about 460 ms and the drain was
-     * still in flight. ⛔ The cell was not measuring what it said: it was
+     * still in flight. NEVER: The cell was not measuring what it said: it was
      * measuring that the core was slow.
      */
     /*
-     * ⭐ THE STALL IS ARMED, ONE COMMIT AT A TIME, and disarms itself.
+     * KEY: THE STALL IS ARMED, ONE COMMIT AT A TIME, and disarms itself.
      *
      * Two things need holding in this describe and they need holding at
      * different moments: the save, so that it is left stranded, and then
@@ -1020,7 +1020,7 @@ describe('a retry whose store changed while it was in flight', function () {
     await settings.update('scheme', wrapper, vscode.ConfigurationTarget.Global);
     await settings.update('timeoutMs', 10000, vscode.ConfigurationTarget.Global);
     /*
-     * ⛔ A PREDICATE THAT IS ALWAYS TRUE IS NOT A WAIT. This read
+     * NEVER: A PREDICATE THAT IS ALWAYS TRUE IS NOT A WAIT. This read
      * `() => true`, which returns on the first reading whatever it says
      * -- a guard comparing a value with itself. Found in a fourth review
      * round.
@@ -1037,10 +1037,10 @@ describe('a retry whose store changed while it was in flight', function () {
     await editor?.document.save();
     await until('the save reached commit after its W write', () => fs.existsSync(entered));
     /*
-     * ⭐ AND THEN FOR THE ENTRY TO BE IN THE STATE THIS CELL IS ABOUT,
+     * KEY: AND THEN FOR THE ENTRY TO BE IN THE STATE THIS CELL IS ABOUT,
      * read off the disk.
      *
-     * ⛔ NOT for `pending` to be 1: the entry is queued BEFORE the send,
+     * NEVER: NOT for `pending` to be 1: the entry is queued BEFORE the send,
      * so that count is 1 from the moment the save handler writes it --
      * long before the send has failed. Waiting for the count would have
      * gone on to the retry while the held commit was still running. The
@@ -1061,7 +1061,7 @@ describe('a retry whose store changed while it was in flight', function () {
     const stall = await strandOneSave();
     const settings = vscode.workspace.getConfiguration('theourgia');
     /*
-     * ⭐ THE RETRY IS HELD UNTIL THE SETTINGS CHANGE HAS BEEN MADE, and
+     * KEY: THE RETRY IS HELD UNTIL THE SETTINGS CHANGE HAS BEEN MADE, and
      * the holding is observed rather than assumed.
      *
      * This cell asks what a retry reports when the store changes UNDER
@@ -1146,7 +1146,7 @@ describe('what the status reports when the settings are unusable', function () {
     const settings = vscode.workspace.getConfiguration('theourgia');
     await settings.update('store', '', vscode.ConfigurationTarget.Global);
     /*
-     * ⚠️ WAITING FOR THE EXTENSION TO HAVE NOTICED, not for 250 ms.
+     * NOTE: WAITING FOR THE EXTENSION TO HAVE NOTICED, not for 250 ms.
      * Found in a second review round. A settings change is delivered to
      * a handler that rebuilds; sleeping and then reading is an assertion
      * about a duration. What is waited for is the store this extension
@@ -1187,8 +1187,8 @@ describe('what the status reports when the settings are unusable', function () {
  * daemon exists, whether a second request started a second one, and what
  * a user is told when one cannot be started at all.
  *
- * ⚠️ THE PROCESSES ARE FOUND BY THIS STORE'S PATH, which is in the
- * daemon's own argument list. ⛔ not by the word "scheme" -- a
+ * NOTE: THE PROCESSES ARE FOUND BY THIS STORE'S PATH, which is in the
+ * daemon's own argument list. NEVER: not by the word "scheme" -- a
  * dozen of the editor's own helpers carry it, and the core spells the
  * interpreter from THEOURGIA_SCHEME, so a machine that sets that to
  * `chez` would have this find nothing and say so cleanly.
@@ -1220,10 +1220,10 @@ describe('plugin-r2 T1 the extension reaches the core through a daemon', functio
 
   it('starts a daemon for the block it opens, and opens a second without starting another', async () => {
     /*
-     * ⭐ THE FIXTURE'S DAEMON IS STOPPED FIRST, and that is what makes
+     * KEY: THE FIXTURE'S DAEMON IS STOPPED FIRST, and that is what makes
      * this cell about the EXTENSION.
      *
-     * ⛔ It used to open a block and observe that the count had not
+     * NEVER: It used to open a block and observe that the count had not
      * changed -- and the daemon it was counting was the fixture's own,
      * started by the requests that fetched the ids. Measured in a review
      * round: forcing the extension onto the `cli` transport, which starts
@@ -1282,7 +1282,7 @@ describe('plugin-r2 T1 the extension reaches the core through a daemon', functio
 /*
  * plugin-r2 T1: and when a daemon cannot be started at all.
  *
- * ⭐ THE USER IS TOLD WHAT THE CORE SAID. The thin client's whole job
+ * KEY: THE USER IS TOLD WHAT THE CORE SAID. The thin client's whole job
  * on this path is to turn "I could not start a server" into words; an
  * extension that collapsed those into "unknown" would leave somebody
  * looking at a save that will not go with nothing to act on. Measured
@@ -1325,7 +1325,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
   it('relays the words the core used, rather than calling it unknown', async () => {
     const id = await idOfTitle(store, 'Two');
     /*
-     * ⚠️ WAITING FOR A DIFFERENT DOCUMENT, NOT FOR ONE TO EXIST. The
+     * NOTE: WAITING FOR A DIFFERENT DOCUMENT, NOT FOR ONE TO EXIST. The
      * describes above leave an editor open, so `activeTextEditor !==
      * undefined` is already true when this starts -- a guard comparing a
      * value with itself, which is how the first version of this cell
@@ -1349,7 +1349,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
      * nobody uses, and a cell that then passed for the wrong reason.
      */
     /*
-     * ⭐ THE BASELINE IS TAKEN WHILE THE STORE CAN STILL ANSWER. It was
+     * KEY: THE BASELINE IS TAKEN WHILE THE STORE CAN STILL ANSWER. It was
      * taken after the obstruction was in place, which made it a refusal
      * rather than a count -- and the comparison at the end of this cell
      * was then between two refusals, which are equal whatever the log
@@ -1377,7 +1377,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     });
     await document.save();
     /*
-     * ⭐ AND THE STORE IS ASKED AGAIN, because that is the request whose
+     * KEY: AND THE STORE IS ASKED AGAIN, because that is the request whose
      * failure the extension reports where a cell can read it.
      *
      * Measured, and it is what this cell got wrong twice: the save
@@ -1390,7 +1390,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     await vscode.commands.executeCommand('theourgia.refreshOutline');
 
     /*
-     * ⚠️ WHAT IS WAITED FOR IS THE EXTENSION SAYING IT IS BLOCKED, NOT A
+     * NOTE: WHAT IS WAITED FOR IS THE EXTENSION SAYING IT IS BLOCKED, NOT A
      * QUEUE ENTRY.
      *
      * Measured, and it is the first thing this cell got wrong: nothing
@@ -1416,7 +1416,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     });
     const said = String(blocked);
     /*
-     * ⭐ WHAT MAKES THE SENTENCE ACTIONABLE IS THE PATH, and the cell
+     * KEY: WHAT MAKES THE SENTENCE ACTIONABLE IS THE PATH, and the cell
      * asks for that rather than for one particular refusal name.
      *
      * It listed `serve-path-occupied|serve-start-failed` and a run
@@ -1453,7 +1453,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     /*
      * AND NOTHING LANDED -- ASKED AFTER THE OBSTRUCTION IS REMOVED.
      *
-     * ⚠️ IT USED TO BE ASKED WHILE THE SOCKET WAS STILL BLOCKED, which
+     * NOTE: IT USED TO BE ASKED WHILE THE SOCKET WAS STILL BLOCKED, which
      * meant both readings were refusals and the comparison was between
      * two error data. The store has to be reachable for this question to
      * have an answer at all.
@@ -1461,7 +1461,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     fs.rmSync(socket as string, { recursive: true, force: true });
     socket = null;
     /*
-     * ⭐ AND THE WATCHING IS WHAT MAKES THIS MEAN ANYTHING.
+     * KEY: AND THE WATCHING IS WHAT MAKES THIS MEAN ANYTHING.
      *
      * A single comparison here asks the question at one instant, and the
      * save handler this cell is about is an asynchronous listener that
@@ -1472,7 +1472,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
      */
     await stayedAt(store, id, before);
     /*
-     * ⭐ AND THEN A SAVE THAT MUST LAND, which is what makes the silence
+     * KEY: AND THEN A SAVE THAT MUST LAND, which is what makes the silence
      * above an observation rather than a wait.
      *
      * Watching for two seconds says nothing about the two-point-first,
@@ -1492,7 +1492,7 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
     const landed = '## Two\nsaved once the daemon can start again\n';
     await document.save();
     /*
-     * ⭐ WAITING FOR THE RECORD TO BE THIS ONE, not for the count to
+     * KEY: WAITING FOR THE RECORD TO BE THIS ONE, not for the count to
      * move.
      *
      * Measured in a ninth review round: `untilLogGrows` returns on any

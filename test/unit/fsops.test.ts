@@ -106,7 +106,7 @@ describe('the file-operation recorder records', () => {
 });
 
 /*
- * ⚠️ THE STAND-IN'S ANSWERS ARE READ BY THE PRODUCT BEFORE ANY CELL
+ * NOTE: THE STAND-IN'S ANSWERS ARE READ BY THE PRODUCT BEFORE ANY CELL
  * RELIES ON THEM.
  *
  * A cell about a save that settles invented its own `ok` and got the
@@ -174,7 +174,7 @@ describe('the answers a stand-in core gives are answers the product reads', () =
 });
 
 /*
- * ⚠️ "NOT THERE" AND "I COULD NOT LOOK" ARE TWO ANSWERS.
+ * NOTE: "NOT THERE" AND "I COULD NOT LOOK" ARE TWO ANSWERS.
  *
  * `existsSync` gives one word for both, which is the right convenience
  * for a caller deciding what to do next and the wrong one for a caller
@@ -220,7 +220,7 @@ describe('presence is three answers, not two', () => {
 
   it('says it could not be established when the ancestry cannot be searched', () => {
     /*
-     * ⚠️ ROOT CAN SEARCH ANYTHING, so this machine cannot produce the
+     * NOTE: ROOT CAN SEARCH ANYTHING, so this machine cannot produce the
      * state and the cell says which machine it was and what to do --
      * rather than reporting "skipped" and letting a reader take it for a
      * pass. Every run in this batch has been non-root.
@@ -270,7 +270,7 @@ describe('presence is three answers, not two', () => {
  * believed.
  */
 /*
- * ⛔ AND THE SPELLING OF THE MODULE IS NOT THE MODULE.
+ * NEVER: AND THE SPELLING OF THE MODULE IS NOT THE MODULE.
  *
  * This matched the text `'fs'` and nothing else. A sixteenth review
  * round added `import * as directFs from 'node:fs'` to documents.ts and

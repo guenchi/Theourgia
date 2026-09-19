@@ -50,7 +50,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
   });
 
   /*
-   * ⚠️ THE HANDOVER IS THE SAME ACT AS THE TAKING. A rewrite of the
+   * NOTE: THE HANDOVER IS THE SAME ACT AS THE TAKING. A rewrite of the
    * existing record would be a read-then-write, and two sessions
    * reaching it together would both succeed and both believe they hold
    * the block. Create-once has no such window: the second `link` gets
@@ -94,7 +94,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
   });
 
   /*
-   * ⚠️ A RECORD WHOSE NAME AND CONTENTS DISAGREE IS SOMEBODY ELSE'S
+   * NOTE: A RECORD WHOSE NAME AND CONTENTS DISAGREE IS SOMEBODY ELSE'S
    * FILE. Both are written by one act, so the disagreement cannot arise
    * from this program; reading past it to an older generation would let
    * anyone who can drop `owner.999` into the directory decide who owns
@@ -116,7 +116,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
   });
 
   /*
-   * ⚠️ A DIRECTORY THAT CANNOT BE WRITTEN IS NOT A RACE THAT WAS LOST.
+   * NOTE: A DIRECTORY THAT CANNOT BE WRITTEN IS NOT A RACE THAT WAS LOST.
    *
    * Both come back from the same `link` call, and collapsing them
    * tells the user somebody else owns their block when in fact nothing
@@ -170,7 +170,7 @@ describe('O1 ownership of a block directory is taken once, never negotiated', ()
   });
 
   /*
-   * ⚠️ THE OWNER RECORD IS NEVER HALF A RECORD.
+   * NOTE: THE OWNER RECORD IS NEVER HALF A RECORD.
    *
    * `rewrite` only ever shrinks the debt, so losing an update costs one
    * sidecar being stamped twice. A torn record costs something else
@@ -237,7 +237,7 @@ describe('O1 two processes reaching for one block directory', function () {
   this.timeout(120000);
 
   /*
-   * ⚠️ IT CANNOT BE READ INSIDE ONE PROCESS. The scan for the highest
+   * NOTE: IT CANNOT BE READ INSIDE ONE PROCESS. The scan for the highest
    * generation and the link that claims the next one are synchronous,
    * so two calls in one host never overlap -- and a cell that ran them
    * there would pass for an implementation that read, thought, and then
@@ -292,7 +292,7 @@ describe('O3 a takeover owes the sidecars it has not stamped yet', () => {
   });
 
   /*
-   * ⚠️ THE DEBT IS PER SIDECAR BECAUSE TWO VERSIONS SHARE ONE
+   * NOTE: THE DEBT IS PER SIDECAR BECAUSE TWO VERSIONS SHARE ONE
    * PREDECESSOR. A debt cleared the moment the first version was
    * stamped leaves the second carrying a stamp the record no longer
    * expects -- and the reader calls that contamination and sends the
@@ -364,7 +364,7 @@ describe('O4 a stamp that belongs to nobody the owner knows', () => {
   });
 
   /*
-   * ⚠️ THE COMPARISON IS THE WHOLE IDENTITY. Create-once makes the
+   * NOTE: THE COMPARISON IS THE WHOLE IDENTITY. Create-once makes the
    * generations unique, so a reader could compare only the number and
    * be right -- today. That is an argument about how numbers are handed
    * out, and a reader resting on it is wrong the first time it stops
@@ -380,7 +380,7 @@ describe('O4 a stamp that belongs to nobody the owner knows', () => {
 });
 
 /*
- * ⚠️ "THE SESSION LAYER KEEPS THE GATE" IS A SENTENCE, AND A SENTENCE
+ * NOTE: "THE SESSION LAYER KEEPS THE GATE" IS A SENTENCE, AND A SENTENCE
  * IS NOT A GUARD.
  *
  * `Owners.take` does not ask whether the session it is taking from is
@@ -449,7 +449,7 @@ describe('O1 nothing takes ownership without the session layer', () => {
           at = at.parent;
         }
         /*
-         * ⚠️ TAKING IS LEGITIMATE IN TWO CIRCUMSTANCES, AND THE CENSUS
+         * NOTE: TAKING IS LEGITIMATE IN TWO CIRCUMSTANCES, AND THE CENSUS
          * KNOWS BOTH.
          *
          * The rule it exists for is "nothing takes a block away from a
@@ -459,7 +459,7 @@ describe('O1 nothing takes ownership without the session layer', () => {
          * nobody, so no liveness question arises -- and that is the
          * publication path, where ownership of a block begins.
          *
-         * ⛔ Neither of these is an exemption: they are the two shapes
+         * NEVER: Neither of these is an exemption: they are the two shapes
          * in which the rule is satisfied. A third shape appearing means
          * this census has to be told about it.
          */
@@ -508,7 +508,7 @@ describe('O1 nothing takes ownership without the session layer', () => {
 /*
  * O2: EVERY PATH THAT WRITES A SIDECAR PASSES THE SAME RULE.
  *
- * ⚠️ AND A CENSUS CANNOT PROVE THE FENCE WORKS. It can only say that
+ * NOTE: AND A CENSUS CANNOT PROVE THE FENCE WORKS. It can only say that
  * each write site has a check before it; whether the check is still
  * true when the write lands is the lease problem, which section 13 names and
  * does not solve. The cells that transfer ownership under a paused
@@ -538,7 +538,7 @@ describe('O2 every sidecar write passes the ownership rule', () => {
   }
 
   /*
-   * ⚠️ `continue` LEAVES TOO, inside a loop -- and a loop is where one
+   * NOTE: `continue` LEAVES TOO, inside a loop -- and a loop is where one
    * of these writes lives: the migration walks a block's versions and
    * skips the ones this session may not write. A criterion that knew
    * only `return` and `throw` would have called that site unguarded
@@ -597,13 +597,13 @@ describe('O2 every sidecar write passes the ownership rule', () => {
           return true;
         }
         /*
-         * ⚠️ THE RULE HAS TWO ENTRY POINTS AND THEY ARE BOTH NAMED
+         * NOTE: THE RULE HAS TWO ENTRY POINTS AND THEY ARE BOTH NAMED
          * HERE. `mayWrite` asks whether this session holds the block;
          * `takeIfUnowned` is the publication's version, because a
          * publication is where ownership of a block BEGINS -- there is
          * nothing to own until the directory exists.
          *
-         * ⛔ THIS IS NOT AN EXEMPTION LIST. It is the list of ways to
+         * NEVER: THIS IS NOT AN EXEMPTION LIST. It is the list of ways to
          * ASK, and a third way appearing means this census has to be
          * told about it -- which is the right amount of friction for
          * adding one.

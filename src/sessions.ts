@@ -84,7 +84,7 @@ function sameStart(recorded: number | null, now: number | null): boolean | null 
    * an answer that claims the identity was checked when nothing was
    * compared. The rule says the third answer: cannot tell.
    *
-   * ⚠️ AND SEVERAL FIXTURES ENDORSED THE MISTAKE. Cells that wanted a
+   * NOTE: AND SEVERAL FIXTURES ENDORSED THE MISTAKE. Cells that wanted a
    * live session wrote `startedAt: null` because it was the easy way to
    * make the comparison pass -- so the cells agreed with the defect
    * instead of catching it. They now record a real start time.
@@ -115,7 +115,7 @@ export interface SessionIdentity {
  * caller errs towards alive and SAYS SO. (section 12.21.4, C8/C19)
  */
 /*
- * ⚠️ THE UNDECIDABLE CASES ARE THREE AND THEY ARE NOT THE SAME NEWS.
+ * NOTE: THE UNDECIDABLE CASES ARE THREE AND THEY ARE NOT THE SAME NEWS.
  *
  * `start-time-unavailable` is a failure to OBSERVE: the pid is there and
  * this machine could not be asked when it started. Waiting fixes it.
@@ -146,7 +146,7 @@ export type Liveness =
  * (section 12.19.1)
  */
 /*
- * ⚠️ `identity` IS NULL WHEN THE WINDOW LEFT NO READABLE RECORD, AND THE
+ * NOTE: `identity` IS NULL WHEN THE WINDOW LEFT NO READABLE RECORD, AND THE
  * ROW IS STILL LISTED.
  *
  * It used to be skipped: `others` read the record and moved on when it
@@ -245,7 +245,7 @@ export type DiscardOutcome =
     };
 
 /*
- * ⚠️ EVERY REQUEST A TAKEOVER SAW LANDS IN EXACTLY ONE BUCKET, AND THE
+ * NOTE: EVERY REQUEST A TAKEOVER SAW LANDS IN EXACTLY ONE BUCKET, AND THE
  * BUCKETS ADD UP TO WHAT IT SAW.
  *
  * Three times in one function a count answered with a smaller, more
@@ -261,14 +261,14 @@ export type DiscardOutcome =
  * exactly one of the buckets below. A cell adds the buckets and compares
  * them with `observed`.
  *
- * ⚠️ WHAT THAT CATCHES, EXACTLY: a thing counted as seen and put in no
+ * NOTE: WHAT THAT CATCHES, EXACTLY: a thing counted as seen and put in no
  * bucket. It does NOT catch a thing that was never counted as seen
  * either -- dropping both sides preserves the equality -- nor a thing
  * put in the WRONG bucket, nor an entry the destination did not really
  * keep. Arithmetic is not membership and it is not truth; it is one
  * property, and the cells for the individual buckets are the others.
  *
- * ⚠️ WHAT THE LAW DOES NOT SAY, WRITTEN DOWN BECAUSE IT COST A DEFECT:
+ * NOTE: WHAT THE LAW DOES NOT SAY, WRITTEN DOWN BECAUSE IT COST A DEFECT:
  * it governs WHERE what was seen went, and says nothing about whether
  * anything was seen at all. A takeover that visited no queue at all
  * satisfies it perfectly -- `observed` is zero and so is every bucket --
@@ -318,7 +318,7 @@ export interface TakeoverLedger {
    * A request the takeover could not move, because moving it threw --
    * the destination refused it, or the source could not be marked.
    *
-   * ⚠️ THIS REPLACES `malformedEntry`, WHICH NOTHING COULD FILL once the
+   * NOTE: THIS REPLACES `malformedEntry`, WHICH NOTHING COULD FILL once the
    * survey and the import agreed about which files are acceptable: the
    * loader rejects a file holding an element that is not a request, so
    * such a file is one `unreadableQueue` and never a collection of
@@ -329,7 +329,7 @@ export interface TakeoverLedger {
    */
   failedToMove: number;
   /*
-   * ⚠️ MOVED, AND THE SOURCE STILL SAYS IT IS WAITING.
+   * NOTE: MOVED, AND THE SOURCE STILL SAYS IT IS WAITING.
    *
    * The entry is in this window's queue and goes out from here when a
    * save reaches it; what failed is the mark on the OTHER window's copy.
@@ -338,7 +338,7 @@ export interface TakeoverLedger {
    * -- the opposite of the truth for this half, about work that had in
    * fact arrived. Found in review.
    *
-   * ⚠️ AND THIS COMMENT USED TO SAY "NOTHING IS SENT TWICE", which is
+   * NOTE: AND THIS COMMENT USED TO SAY "NOTHING IS SENT TWICE", which is
    * the very claim a review had already taken out of the sentence the
    * user reads: the other window's copy is still unmarked, so a later
    * takeover into a DIFFERENT queue can carry it again and send it. The
@@ -352,7 +352,7 @@ export interface TakeoverLedger {
    */
   movedButUnmarked: number;
   /*
-   * ⚠️ THE DESTINATION COULD NOT SAY WHETHER IT HAS IT.
+   * NOTE: THE DESTINATION COULD NOT SAY WHETHER IT HAS IT.
    *
    * Whether an entry arrived used to be inferred from `adopt` returning
    * without throwing, which is not the same statement: a destination
@@ -387,7 +387,7 @@ export function emptyLedger(): TakeoverLedger {
 /*
  * The sum of the buckets.
  *
- * ⚠️ IT IS A HAND-WRITTEN SUM AND THE COMPILER WILL NOT NOTICE A MISSING
+ * NOTE: IT IS A HAND-WRITTEN SUM AND THE COMPILER WILL NOT NOTICE A MISSING
  * TERM. An earlier comment here claimed it would; a review showed that
  * adding a bucket to the interface and initialising it leaves this
  * function compiling and quietly short. What notices is a cell that adds
@@ -412,7 +412,7 @@ export function ledgerTotal(ledger: TakeoverLedger): number {
  * WHICH OF A STORE'S SENDS ARE STILL OUT FOR ONE FILE. The queue is
  * read once per store; this picks the file's own sends out of it.
  *
- * ⚠️ EVERY ENTRY IN A QUEUE IS UNSETTLED. A settled one is removed, so
+ * NOTE: EVERY ENTRY IN A QUEUE IS UNSETTLED. A settled one is removed, so
  * there is no state to filter on here -- and adding one would be a
  * second statement of what "settled" means.
  */
@@ -470,7 +470,7 @@ export class Sessions {
     const file = this.identityFile(sessionId);
     if (!this.files.exists(file)) {
       /*
-       * ⚠️ "NOT THERE" AND "CANNOT LOOK" ARE DIFFERENT ANSWERS, and
+       * NOTE: "NOT THERE" AND "CANNOT LOOK" ARE DIFFERENT ANSWERS, and
        * `exists` gives one word for both: a directory this process may
        * not search reports every path inside it as absent.
        *
@@ -518,7 +518,7 @@ export class Sessions {
    * read" answered as cannot-tell rather than as dead.
    */
   /*
-   * ⚠️ IT NO LONGER ANSWERS `null` FOR A MISSING RECORD. `null` meant
+   * NOTE: IT NO LONGER ANSWERS `null` FOR A MISSING RECORD. `null` meant
    * "no record at all" and was read at four call sites as "no such
    * session", which is a different statement: a directory can be there,
    * with a queue in it, and no record beside it. The absence is now a
@@ -556,7 +556,7 @@ export class Sessions {
   public begin(sessionId: string, stores: string[]): SessionIdentity {
     return withExclusive(this.sessionDirectory(sessionId), (): SessionIdentity => {
     /*
-     * ⚠️ AN ID WITH A NEWLINE IN IT IS NOT A NAME, IT IS TWO.
+     * NOTE: AN ID WITH A NEWLINE IN IT IS NOT A NAME, IT IS TWO.
      *
      * A claim token is written as the id on one line and the nonce on
      * the next, and re-entry compares both. An id containing a newline
@@ -590,7 +590,7 @@ export class Sessions {
       stores
     };
     /*
-     * ⚠️ THE RECORD IS PUBLISHED BEFORE THIS WINDOW CALLS ITSELF BEGUN.
+     * NOTE: THE RECORD IS PUBLISHED BEFORE THIS WINDOW CALLS ITSELF BEGUN.
      *
      * These two assignments used to come first, so a failure to write
      * the identity left the object believing it had one: `claim`'s new
@@ -601,7 +601,7 @@ export class Sessions {
      * disk agrees is worth closing anyway. Found in review.
      */
     /*
-     * ⚠️ PUBLISHED THROUGH A TEMPORARY FILE, because `writeText` empties
+     * NOTE: PUBLISHED THROUGH A TEMPORARY FILE, because `writeText` empties
      * the target first. A second `begin` on one object -- or a rerun
      * after a crash -- could therefore leave `session.json` holding half
      * a record, and the object kept the identity it already had: it went
@@ -612,7 +612,7 @@ export class Sessions {
     this.files.makeDirectory(this.sessionDirectory(sessionId));
     const file = this.identityFile(sessionId);
     /*
-     * ⚠️ A NAME NO OTHER WRITER CAN BE USING, AND CLEARED UP IF THE
+     * NOTE: A NAME NO OTHER WRITER CAN BE USING, AND CLEARED UP IF THE
      * RENAME DOES NOT HAPPEN. `<file>.<pid>.tmp` is the same name on
      * every call in one process, so two writers with that pid would
      * share it; and a failed rename left it lying beside the record for
@@ -622,7 +622,7 @@ export class Sessions {
     const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
       /*
-       * ⚠️ THE WRITE IS INSIDE THE CLEANUP TOO. It was outside, so a
+       * NOTE: THE WRITE IS INSIDE THE CLEANUP TOO. It was outside, so a
        * write that created some bytes and then threw left the temporary
        * beside the record -- the same leak the rename's cleanup was
        * added for, one step earlier. Found in review.
@@ -684,7 +684,7 @@ export class Sessions {
         permissionDenied = true;
       } else {
         /*
-         * ⚠️ ASKING WHETHER THE PID EXISTS FAILED FOR A REASON NOBODY
+         * NOTE: ASKING WHETHER THE PID EXISTS FAILED FOR A REASON NOBODY
          * HERE UNDERSTANDS. That is not the start time being unavailable
          * -- the start time has not been asked for yet -- and labelling
          * it so sends the user a sentence about waiting for a reading
@@ -694,7 +694,7 @@ export class Sessions {
       }
     }
     /*
-     * ⚠️ TWO WAYS TO HAVE NO START TIME, AND THEY ARE DIFFERENT NEWS.
+     * NOTE: TWO WAYS TO HAVE NO START TIME, AND THEY ARE DIFFERENT NEWS.
      * The RECORD may not carry one -- written by an older build, or by a
      * platform that could not supply it -- in which case no later
      * attempt will produce it and "try again in a moment" is advice
@@ -723,7 +723,7 @@ export class Sessions {
    * separate paths. Recovery can reach an old window's queue, so its
    * mutations still require the session-scoped kernel lock. (section 12.9, C16)
    *
-   * ⚠️ AND ONE PER STORE, WHICH section 12.9's WORDING DOES NOT SAY. A queue
+   * NOTE: AND ONE PER STORE, WHICH section 12.9's WORDING DOES NOT SAY. A queue
    * carries a cursor, and a cursor belongs to one store: with a single
    * queue per session, switching the store left the saver holding a
    * position the new store had never issued, and every save came back
@@ -736,7 +736,7 @@ export class Sessions {
    * known.
    */
   /*
-   * ⚠️ AN EMPTY STORE NAME IS NOT A STORE. `path.join(dir, '', 'x')` is
+   * NOTE: AN EMPTY STORE NAME IS NOT A STORE. `path.join(dir, '', 'x')` is
    * `dir/x`, so passing `''` here silently resolved to the queue from
    * before stores had their own directories -- the one whose store
    * nothing can establish, and which an import must not treat as any
@@ -751,7 +751,7 @@ export class Sessions {
       throw new Error('a store name may not be empty; omit the argument for the legacy queue');
     }
     /*
-     * ⚠️ IT MUST BE THE NAME OF A DIRECT CHILD OF THE SESSION'S
+     * NOTE: IT MUST BE THE NAME OF A DIRECT CHILD OF THE SESSION'S
      * DIRECTORY, AND THAT IS CHECKED BEFORE THE PATH IS COMPOSED.
      *
      * `path.join` resolves `..`, so a store name of `../live/a`
@@ -760,7 +760,7 @@ export class Sessions {
      * session. Production names are digests and cannot do this; nothing
      * made that a requirement. Found in review.
      *
-     * ⚠️ THE RULE ITSELF LIVES IN `paths.ts`. Section 13's tombstones
+     * NOTE: THE RULE ITSELF LIVES IN `paths.ts`. Section 13's tombstones
      * compose a store name AND a request id into a path under the root,
      * and the request id comes off another session's queue file -- not
      * this program's to trust. Two copies of a rule about untrusted
@@ -803,7 +803,7 @@ export class Sessions {
       const drafts = this.draftsIn(name);
       const pendingEntries = this.pendingIn(name);
       /*
-       * ⚠️ A DIRECTORY WITH NO RECORD IS LISTED ONLY IF THERE IS
+       * NOTE: A DIRECTORY WITH NO RECORD IS LISTED ONLY IF THERE IS
        * SOMETHING IN IT TO RECOVER.
        *
        * Every directory under `sessions/` was becoming a row, so an
@@ -813,7 +813,7 @@ export class Sessions {
        * to press it, which is the opposite of what a second confirmation
        * is for.
        *
-       * ⚠️ IT IS THE ABSENCE OF A RECORD THAT MAKES A DIRECTORY
+       * NOTE: IT IS THE ABSENCE OF A RECORD THAT MAKES A DIRECTORY
        * ANONYMOUS, not the failure to read one. A `session.json` that
        * will not parse is still a window saying it was here, so that row
        * is listed whatever it holds -- it is the only trace of it, and
@@ -841,7 +841,7 @@ export class Sessions {
   /*
    * EVERY QUEUE THIS SESSION HOLDS, ACROSS ALL ITS STORES.
    *
-   * ⚠️ THIS READ `<session>/outbox.json` WHILE PRODUCTION WROTE
+   * NOTE: THIS READ `<session>/outbox.json` WHILE PRODUCTION WROTE
    * `<session>/<store-hash>/outbox.json`. The writer moved when the
    * cursor turned out to belong to a store; the readers did not, so a
    * real queue with real entries was counted as zero and an import
@@ -882,7 +882,7 @@ export class Sessions {
     for (const file of this.outboxPathsFor(relative[0])) {
       try {
         /*
-         * ⛔ THROUGH THE QUEUE'S OWN READER, for the reason above. A
+         * NEVER: THROUGH THE QUEUE'S OWN READER, for the reason above. A
          * malformed entry used simply to fail to match, and failing to
          * match is what this reader reports as "no relevant send is in
          * flight" -- which lets a migration proceed over work nobody
@@ -899,7 +899,7 @@ export class Sessions {
     const out: string[] = [];
     const session = this.sessionDirectory(sessionId);
     /*
-     * ⛔ A PATH THIS COULD NOT LOOK AT IS NOT A PATH WITH NO QUEUE.
+     * NEVER: A PATH THIS COULD NOT LOOK AT IS NOT A PATH WITH NO QUEUE.
      *
      * `exists` is `fs.existsSync`, which answers false for a path whose
      * ancestry cannot be searched as readily as for one that is not
@@ -934,7 +934,7 @@ export class Sessions {
     for (const file of this.outboxPathsFor(sessionId)) {
       try {
         /*
-         * ⛔ THROUGH THE QUEUE'S OWN READER, not a second opinion
+         * NEVER: THROUGH THE QUEUE'S OWN READER, not a second opinion
          * about what a queue is.
          *
          * This had its own checks, and they were looser: a file
@@ -973,7 +973,7 @@ export class Sessions {
    * race the token exists to settle. (section 12.11.3)
    */
   /*
-   * ⚠️ `forced` IS THE WAY OUT OF ONE UNDECIDABLE AND NOT OF THE OTHERS.
+   * NOTE: `forced` IS THE WAY OUT OF ONE UNDECIDABLE AND NOT OF THE OTHERS.
    *
    * It is open only when the record is MISSING -- a failure of evidence
    * that waiting cannot repair. It is closed when the start time could
@@ -999,7 +999,7 @@ export class Sessions {
   public async claim(deadSessionId: string, forced = false): Promise<ClaimOutcome> {
     return withExclusive(this.sessionDirectory(deadSessionId), () => {
     /*
-     * ⚠️ A WINDOW THAT NEVER SAID WHO IT IS CANNOT TAKE A CLAIM.
+     * NOTE: A WINDOW THAT NEVER SAID WHO IT IS CANNOT TAKE A CLAIM.
      *
      * Without `begin` this published a token reading `unnamed` with no
      * nonce -- which its own next call could not re-enter, and which no
@@ -1041,12 +1041,12 @@ export class Sessions {
        * entries the first is still holding, which is the double-send
        * this whole mechanism exists to prevent.
        *
-       * ⚠️ THIS IS NOT SYMMETRIC WITH `discard`'S COST. A refused
+       * NOTE: THIS IS NOT SYMMETRIC WITH `discard`'S COST. A refused
        * discard leaves files on disk; a claim that should have been
        * refused sends somebody else's requests a second time. Erring
        * toward "still running" is the cheap direction here.
        *
-       * ⚠️ AND IT IS NOT THE END OF IT. Refusing for ever would strand
+       * NOTE: AND IT IS NOT THE END OF IT. Refusing for ever would strand
        * the queue of a window whose record was deleted: no sequence of
        * ordinary claims can ever change that answer. `forced` is the way
        * out, and the listing names this state so the user can find it.
@@ -1090,7 +1090,7 @@ export class Sessions {
       const written = this.files.readText(path.join(this.sessionsRoot(), newest));
       const holder = written.split('\n')[0];
       /*
-       * ⚠️ THE SECOND LINE IS THE NONCE, AND RE-ENTRY NEEDS BOTH.
+       * NOTE: THE SECOND LINE IS THE NONCE, AND RE-ENTRY NEEDS BOTH.
        *
        * Comparing the id alone was not ownership. The text was trimmed
        * before the comparison, so a window called `"S "` published a
@@ -1109,7 +1109,7 @@ export class Sessions {
        */
       const stamp = written.split('\n')[1] ?? '';
       /*
-       * ⚠️ A CLAIM THIS WINDOW ALREADY HOLDS IS RE-ENTERED, NOT REFUSED.
+       * NOTE: A CLAIM THIS WINDOW ALREADY HOLDS IS RE-ENTERED, NOT REFUSED.
        *
        * The token names a dead SESSION and that session may have a queue
        * per store, so one takeover cannot finish the job: rescuing the
@@ -1177,7 +1177,7 @@ export class Sessions {
   /*
    * TAKING OVER A DEAD SESSION'S QUEUE, THROUGH THE QUEUE'S OWN CODE.
    *
-   * ⚠️ AN EARLIER VERSION READ AND WROTE THE QUEUE FILE HERE. That threw
+   * NOTE: AN EARLIER VERSION READ AND WROTE THE QUEUE FILE HERE. That threw
    * away everything `Outbox` exists for: a destination it could not
    * parse became `[]` and was then written over; the write truncated the
    * real queue before replacing it, so a stop in between destroyed the
@@ -1192,7 +1192,7 @@ export class Sessions {
    * is recorded rather than guessed. (section 12.11.3, P2-5)
    */
   /*
-   * ⚠️ ONE STORE'S QUEUE, NOT ALL OF THEM.
+   * NOTE: ONE STORE'S QUEUE, NOT ALL OF THEM.
    *
    * A session writes to as many stores as it was configured for and
    * keeps a queue for each, because a queue carries one cursor and a
@@ -1225,7 +1225,7 @@ export class Sessions {
     }
     const all = this.outboxPathsFor(token.deadSessionId);
     /*
-     * ⚠️ THE NAMED QUEUE IS NOT FILTERED BY `exists`. It was, and an
+     * NOTE: THE NAMED QUEUE IS NOT FILTERED BY `exists`. It was, and an
      * ancestry this process cannot search makes `exists` answer false
      * for a file that is right there -- so with the enumeration also
      * empty, nothing was loaded and every field of the ledger stayed
@@ -1237,7 +1237,7 @@ export class Sessions {
       storeHash === undefined ? all : [this.outboxPathFor(token.deadSessionId, storeHash)];
     const legacy = path.join(this.sessionDirectory(token.deadSessionId), 'outbox.json');
     /*
-     * ⚠️ THE UNION, BECAUSE THE ENUMERATION CAN COME BACK EMPTY. `list`
+     * NOTE: THE UNION, BECAUSE THE ENUMERATION CAN COME BACK EMPTY. `list`
      * answers `[]` for a directory it cannot read, so a selected queue
      * that plainly exists was never visited and never counted -- an
      * all-zero ledger over a file full of unsent work. Walking the
@@ -1299,7 +1299,7 @@ export class Sessions {
    * A QUEUE THIS TAKEOVER IS NOT OPENING, COUNTED THROUGH THE SAME DOOR
    * IT WOULD BE OPENED BY.
    *
-   * ⚠️ IT USED TO HAVE ITS OWN PARSER, and the two disagreed about which
+   * NOTE: IT USED TO HAVE ITS OWN PARSER, and the two disagreed about which
    * files are acceptable: the survey took `{"cursor":42}` and an entry
    * carrying only a `req` as ordinary work, while the loader refuses
    * both. A count of what is waiting that describes files the import
@@ -1354,7 +1354,7 @@ export class Sessions {
        * record of that window's unsent work, and a takeover that
        * repaired it would write over exactly what it came to rescue.
        *
-       * ⚠️ AND IT IS COUNTED. This answered "nothing imported" and
+       * NOTE: AND IT IS COUNTED. This answered "nothing imported" and
        * nothing else, so a takeover of the ONE queue it was asked to
        * take reported `imported: 0` with no explanation -- which reads
        * as "there was nothing there" over a file full of somebody's
@@ -1373,7 +1373,7 @@ export class Sessions {
         continue;
       }
       /*
-       * ⚠️ A MOVE THAT THROWS IS A BUCKET, NOT AN ESCAPE.
+       * NOTE: A MOVE THAT THROWS IS A BUCKET, NOT AN ESCAPE.
        *
        * `observed` was counted first and the three things that can throw
        * came after it, so a destination that refused an entry, or a
@@ -1388,7 +1388,7 @@ export class Sessions {
        * would not take is not a reason to abandon the others.
        */
       /*
-       * ⚠️ THE TWO FAILURES ARE DIFFERENT NEWS AND ARE COUNTED APART.
+       * NOTE: THE TWO FAILURES ARE DIFFERENT NEWS AND ARE COUNTED APART.
        *
        * If the destination refuses the entry, it did not move. If the
        * destination took it and the SOURCE could not be marked, it did
@@ -1398,7 +1398,7 @@ export class Sessions {
        * is not.
        */
       /*
-       * ⚠️ WHICH STEP FAILED IS KEPT, because presence afterwards does
+       * NOTE: WHICH STEP FAILED IS KEPT, because presence afterwards does
        * not say who put it there. The first question can throw and a
        * later one answer "yes" -- and that was reported as "it arrived",
        * over an attempt in which nothing was ever adopted. The entry was
@@ -1419,7 +1419,7 @@ export class Sessions {
         step = 'moving';
         into.adopt({ ...entry });
         /*
-         * ⚠️ THE DESTINATION IS ASKED BEFORE THE SOURCE IS MARKED.
+         * NOTE: THE DESTINATION IS ASKED BEFORE THE SOURCE IS MARKED.
          *
          * On the path where nothing throws, `imported` was counted from
          * `adopt` having been called -- so a destination that silently
@@ -1442,7 +1442,7 @@ export class Sessions {
         ledger.imported += 1;
       } catch (e) {
         /*
-         * ⚠️ WHETHER IT ARRIVED IS ASKED, NOT INFERRED.
+         * NOTE: WHETHER IT ARRIVED IS ASKED, NOT INFERRED.
          *
          * This used to read "`adopt` returned without throwing", which
          * is a different statement: a destination that stored the entry
@@ -1565,7 +1565,7 @@ export class Sessions {
   public draftsIn(sessionId: string): string[] {
     const out: string[] = [];
     /*
-     * ⚠️ THE FOURTH INPUT, AND IT IS READ ONCE PER STORE.
+     * NOTE: THE FOURTH INPUT, AND IT IS READ ONCE PER STORE.
      *
      * Whether a block is a draft depends on what the owner's queue
      * still holds for it -- a send that is out and unanswered means the
@@ -1573,7 +1573,7 @@ export class Sessions {
      * baseline. The queue is a file, so this scan reads one per store
      * rather than one per block.
      *
-     * ⚠️ THE STORE'S NAME COMES OFF THE PATH, NOT FROM HASHING THE
+     * NOTE: THE STORE'S NAME COMES OFF THE PATH, NOT FROM HASHING THE
      * STORE AGAIN. The directory a version lives in IS
      * `<session>/<storeHash>/<blockId>`, so the name is already there;
      * recomputing it here would be a second copy of a rule that lives
@@ -1606,7 +1606,7 @@ export class Sessions {
         }
       } catch (e) {
         /*
-         * ⚠️ A QUEUE THAT WILL NOT READ IS NOT AN EMPTY QUEUE, and the
+         * NOTE: A QUEUE THAT WILL NOT READ IS NOT AN EMPTY QUEUE, and the
          * listing already has a word for a record it cannot read: the
          * file is LISTED. The same reasoning applies one level up --
          * what cannot be read cannot be used to call anything settled
@@ -1635,7 +1635,7 @@ export class Sessions {
           continue;
         }
         /*
-         * ⚠️ A RECORD THAT WILL NOT READ IS LISTED, NOT SKIPPED. Skipping
+         * NOTE: A RECORD THAT WILL NOT READ IS LISTED, NOT SKIPPED. Skipping
          * it hid exactly the files that most need looking at: a window
          * stopped mid-write leaves an unreadable record beside bytes
          * nobody has sent, and a scan that passed over them made

@@ -56,7 +56,7 @@ export interface Answer {
   /*
    * THE OUTER FORM, WHEN THE REQUEST ASKED FOR THE MACHINE RENDERING.
    *
-   * ⚠️ `--wire` WRAPS AN ANSWER AND THE HUMAN RENDERING DROPS WHAT IS
+   * NOTE: `--wire` WRAPS AN ANSWER AND THE HUMAN RENDERING DROPS WHAT IS
    * ROUND IT. Measured on the pinned core: a commit answers
    * `(ok (events ...) (cursor ...) (replay #f))` by default and
    * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
@@ -142,7 +142,7 @@ const KNOWN_VERBS = new Set([
   'diff',
   'conflicts',
   /*
-   * ⚠️ `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
+   * NOTE: `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
    * An unknown verb throws out of `answerKind`, the caller that asks
    * which verbs the core has catches everything and answers "I could not
    * find out", and the entry that depends on the answer never appears --
@@ -239,14 +239,14 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
   /*
    * THE UNWRAPPING TURNS ON THE REQUEST, NOT ON THE SHAPE.
    *
-   * ⚠️ A SHAPE TEST WOULD REACH INTO A VERB THAT IS NOT WRAPPED. `tag`
+   * NOTE: A SHAPE TEST WOULD REACH INTO A VERB THAT IS NOT WRAPPED. `tag`
    * with no argument, `refs`, `conflicts` -- any verb whose own answer
    * is a list of items -- would have its items taken for an envelope's
    * items and be unwrapped a second time. What was asked for is a fact
    * about this request; what came back merely looks a certain way.
    */
   /*
-   * ⛔ AND THE FORM HAS TO HAVE SAID `ok`.
+   * NEVER: AND THE FORM HAS TO HAVE SAID `ok`.
    *
    * The request decides whether an envelope was asked for; the head
    * decides whether what came back is one. Without it,
@@ -258,7 +258,7 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
    * findings pointed.
    */
   /*
-   * ⛔ AND TWO `items` CLAUSES IS NOT AN ANSWER THAT CARRIES NONE.
+   * NEVER: AND TWO `items` CLAUSES IS NOT AN ANSWER THAT CARRIES NONE.
    *
    * The decoder refuses a duplicated clause, and until a sixteenth
    * review round it refused it the same way it says "no such clause" --

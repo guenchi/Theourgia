@@ -129,7 +129,7 @@ export interface Sidecar {
   unresolved: boolean;
 
   /*
-   * ⚠️ A SEND IS OUT THAT CANNOT WRITE A RECORD. (section 13.1, D6)
+   * NOTE: A SEND IS OUT THAT CANNOT WRITE A RECORD. (section 13.1, D6)
    *
    * A queue entry made before section 13 carries a request and bytes and
    * nothing else: no file, no digests, no sequence number. Its answer
@@ -153,7 +153,7 @@ export interface Sidecar {
    */
   bodyHasCrlf: boolean;
   /*
-   * ⚠️ EVERYTHING BELOW IS section 13's RECORD OF WHICH SEND THE STORE
+   * NOTE: EVERYTHING BELOW IS section 13's RECORD OF WHICH SEND THE STORE
    * CONFIRMED, AND IT IS DELIBERATELY SEPARATE FROM WHAT THE FILE NOW
    * HOLDS.
    *
@@ -222,7 +222,7 @@ export type Confirmed =
       cursor: string | null;
     }
   /*
-   * ⚠️ WHAT A RECORD WRITTEN BEFORE section 13 STILL TELLS US.
+   * NOTE: WHAT A RECORD WRITTEN BEFORE section 13 STILL TELLS US.
    *
    * My first version read an older sidecar as having NO baseline, on the
    * grounds that deriving one would invent a request id and a prefix
@@ -242,7 +242,7 @@ export type Confirmed =
    */
   | { by: 'legacy'; seq: 0; rawDigest: string; cursor: string | null }
   /*
-   * ⚠️ THE BASELINE A PUBLICATION ESTABLISHES, WHICH IS NOT A SEND.
+   * NOTE: THE BASELINE A PUBLICATION ESTABLISHES, WHICH IS NOT A SEND.
    *
    * A version published from the store holds bytes the store gave us.
    * That is a baseline -- these bytes are what the store had -- and it
@@ -302,7 +302,7 @@ export interface PublishRequest {
    * WHERE THE STORE STOOD WHEN THESE BYTES WERE READ, as far as this
    * window knows.
    *
-   * ⚠️ IT IS NOT TAKEN FROM THE READ ITSELF, because the core's answer
+   * NOTE: IT IS NOT TAKEN FROM THE READ ITSELF, because the core's answer
    * to a read carries no position -- only a write's answer does. What
    * is recorded here is the position this window held for the store at
    * the moment it published, which can be behind. It is written down
@@ -360,7 +360,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     'body-has-crlf': sidecar.bodyHasCrlf,
     'legacy-send': sidecar.legacySend,
     /*
-     * ⚠️ WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
+     * NOTE: WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
      * writes must be one this build can read back with the same meaning,
      * and a field that is only sometimes present is a second shape on
      * disk. `confirmed` is null until a settlement writes one; the
@@ -369,7 +369,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
      * read the same way.
      */
     /*
-     * ⚠️ A LEGACY BASELINE IS NOT WRITTEN BACK. It is what an older
+     * NOTE: A LEGACY BASELINE IS NOT WRITTEN BACK. It is what an older
      * record MEANS, worked out on the way in -- and the fields it was
      * worked out FROM (`acknowledged-raw`, `cursor`) are written above,
      * unchanged, so the next read derives it again.
@@ -536,7 +536,7 @@ export function sidecarFromDisk(text: string): SidecarRead {
 }
 
 /*
- * ⚠️ WHAT A RECORD WRITTEN BEFORE section 13 MEANS, WRITTEN DOWN RATHER THAN
+ * NOTE: WHAT A RECORD WRITTEN BEFORE section 13 MEANS, WRITTEN DOWN RATHER THAN
  * LEFT TO ARITHMETIC.
  *
  * An older sidecar has no `confirmed`, no `outstanding`, no `highWater`
@@ -567,7 +567,7 @@ function confirmationFrom(
 ): Pick<Sidecar, 'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy'> | null {
   const held = record.confirmed;
   /*
-   * ⚠️ `null` HERE DOES NOT MEAN "THIS BUILD SAYS THERE IS NO
+   * NOTE: `null` HERE DOES NOT MEAN "THIS BUILD SAYS THERE IS NO
    * BASELINE", and reading it that way costs a block its baseline.
    *
    * A derived baseline is deliberately NOT written back -- what goes to
@@ -588,7 +588,7 @@ function confirmationFrom(
       ? readConfirmed(held as Record<string, unknown>)
       : legacyBaseline(record);
   /*
-   * ⛔ AND THE LIST ITSELF IS A RECORD THAT CAN BE THERE AND NOT
+   * NEVER: AND THE LIST ITSELF IS A RECORD THAT CAN BE THERE AND NOT
    * READ.
    *
    * A thirteenth review round repaired the ENTRIES -- an item that will
@@ -610,7 +610,7 @@ function confirmationFrom(
   const outstanding: Outstanding[] = [];
   for (const item of out) {
     /*
-     * ⛔ A RECORD THAT IS THERE AND CANNOT BE READ IS NOT A RECORD
+     * NEVER: A RECORD THAT IS THERE AND CANNOT BE READ IS NOT A RECORD
      * THAT IS NOT THERE.
      *
      * Dropping it made an unreadable sidecar parse with
@@ -692,7 +692,7 @@ function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
     return { by: 'legacy', seq: 0, rawDigest: raw, cursor: typeof cursor === 'string' ? cursor : null };
   }
   /*
-   * ⚠️ AND A VERSION THE OLDER BUILD PUBLISHED AND NOBODY SAVED FROM
+   * NOTE: AND A VERSION THE OLDER BUILD PUBLISHED AND NOBODY SAVED FROM
    * STILL HAS A BASELINE: `written`. (section 13.6, ruled after the trace
    * below.)
    *
@@ -703,7 +703,7 @@ function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
    * when they have none -- a lie in the direction that costs them a
    * search.
    *
-   * ⚠️ IT IS ONLY TRUE WHERE `written` REALLY HOLDS THE STORE'S BYTES,
+   * NOTE: IT IS ONLY TRUE WHERE `written` REALLY HOLDS THE STORE'S BYTES,
    * AND THAT IS A TRACE, NOT A BELIEF. Every place this build assigns
    * `written`:
    *
@@ -723,14 +723,14 @@ function legacyBaseline(record: Record<string, unknown>): Confirmed | null {
    * it is the record's word, not an inference about it.
    */
   /*
-   * ⚠️ AND IT ONLY APPLIES TO A RECORD FROM BEFORE section 13. Every record
+   * NOTE: AND IT ONLY APPLIES TO A RECORD FROM BEFORE section 13. Every record
    * this build writes carries `next-seq`; a record without it was
    * written by the older one. `confirmed: null` cannot be the signal --
    * this build writes exactly that for a version it knows has no
    * baseline, and reading it as "work it out from `written`" would give
    * a baseline to the user's own bytes.
    *
-   * ⚠️ UNLIKE THE LEGACY ONE, THIS BASELINE IS WRITTEN BACK. It invents
+   * NOTE: UNLIKE THE LEGACY ONE, THIS BASELINE IS WRITTEN BACK. It invents
    * nothing: every field comes from the record (`written`, `prefix`,
    * `cursor`), so recording it states what was already there. The
    * legacy baseline is not written back because it HAS no request, sent
@@ -839,7 +839,7 @@ export function sidecarPathOf(file: string): string {
  * what a reader sees and says nothing about what survives a machine
  * losing power.
  *
- * ⚠️ IT IS A FUNCTION RATHER THAN A METHOD BECAUSE IT HAS TWO CALLERS.
+ * NOTE: IT IS A FUNCTION RATHER THAN A METHOD BECAUSE IT HAS TWO CALLERS.
  * `saving.ts` wrote the record with a bare `writeText` -- the exact
  * truncation this paragraph forbids -- while the comment explaining why
  * that is unsafe sat in this file, on the other implementation. A rule
@@ -853,7 +853,7 @@ export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): vo
 /*
  * IS THIS FILE HOLDING WORK THE STORE HAS NOT GOT?
  *
- * ⚠️ A FUNCTION OF WHAT IS ON DISK, AND OF NOTHING ELSE.
+ * NOTE: A FUNCTION OF WHAT IS ON DISK, AND OF NOTHING ELSE.
  *
  * Four persisted inputs: the file's bytes, its record, who owns the
  * block, and what the owner's queue still holds for it. Nothing in
@@ -863,7 +863,7 @@ export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): vo
  * started as for one that has been running all day, because the user is
  * asking about their file, not about our process.
  *
- * ⚠️ THE QUEUE IS AN INPUT, AND IT IS NOT THE SAME AS THE RECORD. The
+ * NOTE: THE QUEUE IS AN INPUT, AND IT IS NOT THE SAME AS THE RECORD. The
  * record's `outstanding` can be lost -- it lives in a file that is
  * rewritten whole -- while the queue still holds the entry, and the
  * reverse happens when a takeover carries the entry away. Asking both
@@ -911,7 +911,7 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
     };
   }
   /*
-   * ⚠️ AN OLD-FORMAT SEND IS OUT, AND IT HAS ITS OWN WORD. (D6)
+   * NOTE: AN OLD-FORMAT SEND IS OUT, AND IT HAS ITS OWN WORD. (D6)
    *
    * It could be folded into `still-out` -- both mean "something is in
    * flight" -- and then the one thing the user can be told about it
@@ -933,7 +933,7 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
     return { clean: false, because: 'bytes-moved' };
   }
   /*
-   * ⚠️ A LEGACY BASELINE IS NOT ASKED A QUESTION IT CANNOT ANSWER. The
+   * NOTE: A LEGACY BASELINE IS NOT ASKED A QUESTION IT CANNOT ANSWER. The
    * older build recorded no prefix digest, so comparing one would make
    * every upgraded file fail a check about something nobody wrote down.
    * What guarded the prefix before this build is unchanged and still
@@ -958,7 +958,7 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
 /*
  * WHETHER A CONFIRMATION BECOMES THE BASELINE. (section 13.3)
  *
- * ⚠️ THE AXIS IS `highWater`, NOT `confirmed.seq`, and that is the whole
+ * NOTE: THE AXIS IS `highWater`, NOT `confirmed.seq`, and that is the whole
  * reason this is a named function rather than a comparison written at
  * the one place that needed it. `highWater` only ever rises and
  * `reconcile` does not touch it; `confirmed.seq` disappears when
@@ -966,7 +966,7 @@ export function cleanliness(bytes: Buffer, sidecar: Sidecar, queue: QueueView): 
  * would then read `4 > 0` and put the removed baseline back -- reading
  * as clean a file somebody deliberately took the baseline off.
  *
- * ⚠️ A DERIVED BASELINE HAS NO SEND NUMBER OF ITS OWN. A legacy record
+ * NOTE: A DERIVED BASELINE HAS NO SEND NUMBER OF ITS OWN. A legacy record
  * and a publication both sit at `highWater` 0, so the first real send
  * replaces them -- and that is a consequence of how they are written,
  * not a rule this function may assume. It compares the one axis; the
@@ -997,7 +997,7 @@ export class Publisher {
    * `ownership.ts`; what each path DOES when it fails differs, so the
    * check is made at each of them and the reaction belongs to the path.
    *
-   * ⚠️ ABSENT MEANS NO CHECK, AND THAT IS A DOOR LEFT OPEN ON PURPOSE:
+   * NOTE: ABSENT MEANS NO CHECK, AND THAT IS A DOOR LEFT OPEN ON PURPOSE:
    * the cells about publication are about publication, and making every
    * one of them build a session and take ownership would be measuring
    * the fixture. What keeps the shipping path honest is the census in
@@ -1016,7 +1016,7 @@ export class Publisher {
   }
 
   /*
-   * ⚠️ THE RULE IS ONE FUNCTION AND THE REACTIONS ARE MANY. Whether
+   * NOTE: THE RULE IS ONE FUNCTION AND THE REACTIONS ARE MANY. Whether
    * this session may write beside a file is asked here; what to do when
    * it may not is the caller's, because "the save is not queued", "the
    * reconciliation did not happen" and "the record was not written" are
@@ -1212,7 +1212,7 @@ export class Publisher {
      * made every version a draft from the moment it was written, before
      * the user had touched it. (section 12.19.2's own rule names both digests.)
      *
-     * ⚠️ BUT `written` STOPS BEING THE BASELINE THE MOMENT THE STORE
+     * NOTE: BUT `written` STOPS BEING THE BASELINE THE MOMENT THE STORE
      * ANSWERS. Accepting EITHER digest for ever hid a real unsent edit:
      * publish, edit the body, save, and the store now holds the new
      * body; type the ORIGINAL text back in and the file matches
@@ -1228,7 +1228,7 @@ export class Publisher {
      * its baseline came from the file rather than from an answer.
      */
     /*
-     * ⚠️ ONE RULE, ONE PLACE. What a draft is used to be decided here
+     * NOTE: ONE RULE, ONE PLACE. What a draft is used to be decided here
      * AND in the listing that scans a session, in two spellings -- and
      * they disagreed: the listing called every freshly published
      * version a draft because it compared against `acknowledged-raw`
@@ -1290,7 +1290,7 @@ export class Publisher {
          * from the file rather than from an answer. (section 12.11.7)
          */
         /*
-         * ⚠️ AND THE BASELINE GOES WITH IT. `local-only` says this
+         * NOTE: AND THE BASELINE GOES WITH IT. `local-only` says this
          * version's baseline came from the FILE rather than from the
          * store; a `confirmed` left over from the publication would say
          * the opposite, in the field that now decides whether the block
@@ -1427,13 +1427,13 @@ export class Publisher {
    * MARK EVERY VERSION OF A BLOCK AS HAVING AN OLD-FORMAT SEND OUT, and
    * say which records were marked. (D6)
    *
-   * ⚠️ EVERY VERSION, NOT THE NEWEST. The entry names a block and
+   * NOTE: EVERY VERSION, NOT THE NEWEST. The entry names a block and
    * carries no file; the answer, when it comes, says nothing about
    * which version the bytes went from. Marking only the newest would
    * leave the others reading as settled while a send nobody can
    * attribute is still out.
    *
-   * ⚠️ AND IT RETURNS THE SET. Removing the mark later is the entry's
+   * NOTE: AND IT RETURNS THE SET. Removing the mark later is the entry's
    * job, and an entry that had to re-derive which records it marked
    * would be a second supplier of that fact -- the shape this batch
    * deleted `recovered()` for. The caller puts this list in the entry.

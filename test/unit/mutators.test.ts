@@ -17,7 +17,7 @@
 /*
  * EVERY CHANGE TO THE QUEUE IS A READ, A CHANGE, AND A WRITE. (R11)
  *
- * ⚠️ THE READ IS THE PART THAT IS MISSING.
+ * NOTE: THE READ IS THE PART THAT IS MISSING.
  *
  * Each mutator copies what this object last read, edits the copy, and
  * writes the whole file. Whatever another writer put there in between
@@ -31,7 +31,7 @@
  * file -- which is what a second process looks like from here, minus
  * the scheduling -- and ask whether the second writer's work survives.
  *
- * ⚠️ AND A STALE READER IS NOT A HYPOTHETICAL HERE. The design names
+ * NOTE: AND A STALE READER IS NOT A HYPOTHETICAL HERE. The design names
  * the cross-process race as out of scope and asks for the failure to be
  * VISIBLE; reloading under the lock is what makes a change addressed to
  * a request the writer never saw fail to erase it.
@@ -135,7 +135,7 @@ describe('R11 a change to the queue does not erase what it never read', () => {
   });
 
   /*
-   * ⚠️ THE NAMED SUCCESSOR TO `will not write to a queue nobody has
+   * NOTE: THE NAMED SUCCESSOR TO `will not write to a queue nobody has
    * read` (durability.test.ts).
    *
    * That cell pinned a flag: an object whose `load` had never been
@@ -145,7 +145,7 @@ describe('R11 a change to the queue does not erase what it never read', () => {
    * flag was protecting has to be asserted directly instead: what is on
    * disk survives a change made by something that had not looked.
    *
-   * ⛔ The retired cell is NOT edited here. The expectation it holds
+   * NEVER: The retired cell is NOT edited here. The expectation it holds
    * was written against the build it was written for, and changing it
    * to match new code is how a cell stops being independent evidence.
    * It goes to the main session as its own item.
@@ -166,7 +166,7 @@ describe('R11 a change to the queue does not erase what it never read', () => {
   });
 
   /*
-   * ⚠️ AND A CHANGE ADDRESSED TO SOMETHING THAT IS NOT THERE DOES
+   * NOTE: AND A CHANGE ADDRESSED TO SOMETHING THAT IS NOT THERE DOES
    * NOTHING AT ALL.
    *
    * The entry may have been settled by the other writer between the
@@ -206,7 +206,7 @@ describe('R11 a change to the queue does not erase what it never read', () => {
 });
 
 /*
- * ⚠️ AND THE RULE IS COUNTED, NOT REMEMBERED. A mutator added later
+ * NOTE: AND THE RULE IS COUNTED, NOT REMEMBERED. A mutator added later
  * that forgets to read first is the same defect again, and the only
  * thing that would notice is a census.
  */
@@ -291,7 +291,7 @@ describe('R10 the queue cursor only moves the way the store moved', () => {
   });
 
   /*
-   * ⚠️ AND THE TWIN, ALONG THE AXIS UNDER TEST: the same shape with the
+   * NOTE: AND THE TWIN, ALONG THE AXIS UNDER TEST: the same shape with the
    * positions the other way round must move it. A build that simply
    * stopped writing the cursor would pass the cell above.
    */
@@ -307,7 +307,7 @@ describe('R10 the queue cursor only moves the way the store moved', () => {
   });
 
   /*
-   * ⚠️ ANOTHER WRITER'S NUMBER IS NOT A LATER NUMBER, IT IS ANOTHER
+   * NOTE: ANOTHER WRITER'S NUMBER IS NOT A LATER NUMBER, IT IS ANOTHER
    * NUMBER. Nothing can be concluded by comparing them, so the position
    * is dropped rather than adopted, and the next send asks the store
    * where it stands.

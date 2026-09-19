@@ -15,7 +15,7 @@ export class Working {
   public async read(block: string, prefix: string): Promise<WorkingProjection> {
     const answer = await this.client.request('read',[block,'--working-info','--writer',this.writer]);
     /*
-     * ⛔ THE FORM THAT HOLDS THE PROJECTION HAS TO HAVE SAID `ok`.
+     * NEVER: THE FORM THAT HOLDS THE PROJECTION HAS TO HAVE SAID `ok`.
      *
      * This took the clause out of whatever came back, checking only the
      * exit code, while `write` below checks the head of its own answer.
@@ -28,7 +28,7 @@ export class Working {
     const form =
       answer.ok && answer.answers.length > 0 ? answerOf(answer.answers[0], 'ok') : null;
     /*
-     * ⚠️ THE WHOLE CLAUSE, because its digest is this projection's
+     * NOTE: THE WHOLE CLAUSE, because its digest is this projection's
      * identity -- see `Form.whole`.
      */
     const clause = form === null ? null : form.whole('projection');

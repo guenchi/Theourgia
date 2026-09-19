@@ -17,7 +17,7 @@
 /*
  * THE DECODER, AND THE TWO WAYS ROUND IT.
  *
- * ⭐ THE COMPILER IS THE CENSUS FOR THE FIRST WAY. `clause`,
+ * KEY: THE COMPILER IS THE CENSUS FOR THE FIRST WAY. `clause`,
  * `clauseRest`, `clauseValue` and `headName` are no longer exported from
  * `wire.ts`, so there is no way to take a clause out of an answer
  * without naming the head it must have. Thirteen review rounds found
@@ -59,7 +59,7 @@ const MAY_READ_A_RECORD: Record<string, string> = {
  * WHICH FILES CALL A THING EXPORTED FROM `wire.ts`, WHATEVER THEY CALL IT
  * LOCALLY.
  *
- * ⛔ MATCHING THE CALL SITE'S IDENTIFIER IS NOT ENOUGH. An import may
+ * NEVER: MATCHING THE CALL SITE'S IDENTIFIER IS NOT ENOUGH. An import may
  * rename what it brings in -- `import { clauseOfRecord as unchecked }`
  * -- and a census that looks for the original name then sees nothing.
  * Measured in a fourteenth review round: with the envelope's items
@@ -76,7 +76,7 @@ function callsIn(root: string, name: string): string[] {
     const text = fs.readFileSync(path.join(root, 'src', file), 'utf8');
     const parsed = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     /*
-     * ⛔ A NAMED IMPORT IS NOT THE ONLY WAY IN.
+     * NEVER: A NAMED IMPORT IS NOT THE ONLY WAY IN.
      *
      * The first version of this followed named imports and direct calls,
      * and a fifteenth review round walked past it three ways: a
@@ -125,7 +125,7 @@ function callsIn(root: string, name: string): string[] {
             local.add(node.name.text);
           }
           /*
-           * ⛔ AND A DESTRUCTURING IS A DECLARATION TOO.
+           * NEVER: AND A DESTRUCTURING IS A DECLARATION TOO.
            *
            * `const {clauseOfRecord: unchecked} = wireModule;` binds the
            * same function to a new name without ever writing an
@@ -234,7 +234,7 @@ describe('plugin-r2 what the decoder refuses', function () {
   const datum = (text: string): unknown => parseAnswers(text)[0];
 
   /*
-   * ⛔ `!== null` IS NOT "A FORM CAME BACK".
+   * NEVER: `!== null` IS NOT "A FORM CAME BACK".
    *
    * Measured in a fifteenth review round: returning `undefined` after a
    * successful check left every positive cell here passing, because
@@ -255,7 +255,7 @@ describe('plugin-r2 what the decoder refuses', function () {
     const form = answerOf(datum('(ok (items (hit "a.1" 6 "k")) (behind (("w" . 2))))'), 'ok');
     assert.ok(isForm(form));
     /*
-     * ⭐ WHAT IS IN THE CLAUSE, not how many things. Measured in a
+     * KEY: WHAT IS IN THE CLAUSE, not how many things. Measured in a
      * fourteenth review round: a `clause` that answered `[null]` passed
      * a cell asking only for a length of one.
      */
@@ -269,7 +269,7 @@ describe('plugin-r2 what the decoder refuses', function () {
       'the clause came back with something other than what was in it'
     );
     /*
-     * ⭐ AND AN ABSENT CLAUSE SAYS WHICH KIND OF NOTHING IT IS. A
+     * KEY: AND AN ABSENT CLAUSE SAYS WHICH KIND OF NOTHING IT IS. A
      * sixteenth review round found three callers reading "there are two
      * of these" as "there is no such clause", so the two are separate
      * answers now and a cell that accepted either would be back where
@@ -288,7 +288,7 @@ describe('plugin-r2 what the decoder refuses', function () {
   });
 
   /*
-   * ⭐ `whole` KEEPS THE NAME AND `clause` DROPS IT, and the difference
+   * KEY: `whole` KEEPS THE NAME AND `clause` DROPS IT, and the difference
    * is not cosmetic: a working projection's identity is the digest of
    * its whole clause. A refactor that quietly changed which one a reader
    * got would change every id this build computes.
@@ -300,7 +300,7 @@ describe('plugin-r2 what the decoder refuses', function () {
     assert.ok(kept.read, 'the whole clause was not found');
     const whole = kept.items;
     /*
-     * ⭐ THE WHOLE CLAUSE, AND NOTHING MORE. Measured in a fifteenth
+     * KEY: THE WHOLE CLAUSE, AND NOTHING MORE. Measured in a fifteenth
      * review round: appending an element to every clause left a cell
      * reading only elements 0 and 1 passing, and `(current "h" 99)`
      * was accepted as the whole of `(current "h")` -- which goes into
@@ -309,7 +309,7 @@ describe('plugin-r2 what the decoder refuses', function () {
     assert.strictEqual(whole.length, 2, `the clause came back as ${JSON.stringify(whole)}`);
     assert.strictEqual(whole[1], 'h');
     /*
-     * ⭐ AND THE NAME IS THE NAME. Measured in a fourteenth review
+     * KEY: AND THE NAME IS THE NAME. Measured in a fourteenth review
      * round: a `whole` answering `(WRONG "h")` passed a cell that read
      * only element 1 -- and element 0 is precisely what `whole` exists
      * to keep, because it goes into the digest that is a projection's
@@ -323,7 +323,7 @@ describe('plugin-r2 what the decoder refuses', function () {
   });
 
   /*
-   * ⭐ AND IT CAN BE ASKED WHETHER THE ANSWER IS ABOUT WHAT WAS ASKED.
+   * KEY: AND IT CAN BE ASKED WHETHER THE ANSWER IS ABOUT WHAT WAS ASKED.
    * Two defects in this delivery were of that kind -- a record for `b.1`
    * returned for `a.1`, and a refusal about another block read as this
    * one being absent.
@@ -334,7 +334,7 @@ describe('plugin-r2 what the decoder refuses', function () {
     assert.strictEqual(answerOf(said, 'error', { at: 2, is: 'a.1' }), null);
     assert.ok(isForm(answerOf(said, 'error', { at: 2, is: 'b.1' })));
     /*
-     * ⭐ AND THE HEAD IS STILL CHECKED WHEN `expect` IS GIVEN.
+     * KEY: AND THE HEAD IS STILL CHECKED WHEN `expect` IS GIVEN.
      * Measured in a fourteenth review round: disabling the head test
      * only for calls that pass `expect` left every cell here passing,
      * and `(garbage unknown-id "a.1")` then produced a Form. The second
@@ -348,7 +348,7 @@ describe('plugin-r2 what the decoder refuses', function () {
   });
 
   /*
-   * ⭐ A NAME MAY BE A SYMBOL OR A STRING, and the core uses both in one
+   * KEY: A NAME MAY BE A SYMBOL OR A STRING, and the core uses both in one
    * form: `(error unknown-id "a.1" ...)` names its family with a symbol
    * and its subject with a string. Comparing with `===` alone made the
    * symbol case never match, so a guard meant to ask "is this about what
@@ -356,7 +356,7 @@ describe('plugin-r2 what the decoder refuses', function () {
    * where an absence was expected.
    */
   /*
-   * ⭐ `value` AND `datum` ARE THE DECODER'S OTHER TWO ANSWERS, and its
+   * KEY: `value` AND `datum` ARE THE DECODER'S OTHER TWO ANSWERS, and its
    * own file never asked about either. Measured in a fifteenth review
    * round: making `value` answer undefined always, and `datum` be null
    * always, left every cell in this file passing.
@@ -364,7 +364,7 @@ describe('plugin-r2 what the decoder refuses', function () {
   it('gives the single value of a one-value clause, and the form it read', function () {
     const form = answerOf(datum('(ok (replay #f) (cursor ("w" . 6)))'), 'ok') as Form;
     /*
-     * ⛔ `false` IS BOTH AN ANSWER AND A REFUSAL HERE, so the cell
+     * NEVER: `false` IS BOTH AN ANSWER AND A REFUSAL HERE, so the cell
      * cannot be satisfied by a reader that gives it for everything.
      *
      * Measured in a sixteenth review round: `value: () => false` passed
@@ -399,7 +399,7 @@ describe('plugin-r2 what the decoder refuses', function () {
  * plugin-r2: the doors held open for headless values are only as wide as
  * those values.
  *
- * ⭐ A HEADLESS READER THAT ACCEPTS A HEADED FORM IS THE DEFECT WITH AN
+ * KEY: A HEADLESS READER THAT ACCEPTS A HEADED FORM IS THE DEFECT WITH AN
  * EXTRA STEP. `readBlock` exists because a block record has no head --
  * it begins `(id . "a.1")`, a pair -- and it checked only that the value
  * was a list. Measured in a fourteenth review round:
@@ -439,7 +439,7 @@ describe('plugin-r2 a record reader refuses a form', function () {
 /*
  * plugin-r2: a clause carrying more than this build knows how to read.
  *
- * ⭐ TAKING THE FIRST IS A GUESS. `(check (writers ((...)) ((...))))`
+ * KEY: TAKING THE FIRST IS A GUESS. `(check (writers ((...)) ((...))))`
  * carries two listings, and reading the first made a malformed answer
  * supply a cursor -- which is what lets this client write. Measured in a
  * fourteenth review round.
@@ -476,7 +476,7 @@ describe('plugin-r2 a clause with more values than expected is refused', functio
  * of its eight callers then did, and each of them is a shape this
  * delivery has repaired elsewhere: an inability answered as an absence.
  *
- * ⭐ THE CELLS ARE HERE, BESIDE THE DECODER, because what they are
+ * KEY: THE CELLS ARE HERE, BESIDE THE DECODER, because what they are
  * about is the decoder's contract. The two reasons are separate values
  * now and every caller has to name the one it is handling; these three
  * are the ones whose answer had to change.
@@ -507,7 +507,7 @@ describe('plugin-r2 two of a clause is not none of it', function () {
   });
 
   /*
-   * ⚠️ AND THE SEARCH NEEDS NO GUARD OF ITS OWN, which is why this
+   * NOTE: AND THE SEARCH NEEDS NO GUARD OF ITS OWN, which is why this
    * cell asserts the ANSWER rather than a refusal written for it. A
    * guard was added here and deleted: a mutation run showed
    * `(ok (items ...) (items ...))` already answers null, because the

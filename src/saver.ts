@@ -76,7 +76,7 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
  * rather than assumed, so that the one place which decides the order --
  * record first, remove second -- is the one the caller names.
  *
- * ⚠️ IT MAKES THE CHOICE EXPLICIT; IT DOES NOT ENFORCE THE ORDER. Any
+ * NOTE: IT MAKES THE CHOICE EXPLICIT; IT DOES NOT ENFORCE THE ORDER. Any
  * caller can pass `(req, cursor) => outbox.resolve(req, cursor)` and
  * remove the entry with nothing recorded -- the cells in this file do
  * exactly that on purpose, because what they are about is the sending
@@ -86,7 +86,7 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
  * cannot reach.
  */
 /*
- * ⚠️ WHAT THE STORE SAID, NOT JUST WHERE IT LEFT THE WRITER.
+ * NOTE: WHAT THE STORE SAID, NOT JUST WHERE IT LEFT THE WRITER.
  *
  * This was `(req, cursor: string | null)`, and `null` was used for two
  * things that could not be less alike: an answer that did not name a
@@ -104,7 +104,7 @@ export type SaveStatus = 'saved' | 'replayed' | 'pending' | 'refused' | 'blocked
 export type Settlement =
   | { verdict: 'confirmed'; cursor: string }
   /*
-   * ⚠️ SOMEBODY ELSE FINISHED IT, AND SAID WHERE. `(error
+   * NOTE: SOMEBODY ELSE FINISHED IT, AND SAID WHERE. `(error
    * resolved-executed (event ("w" . 6)))` is an operator's
    * determination that the work was carried out: the store HAS the
    * bytes, and the answer names the record it was written as.
@@ -119,7 +119,7 @@ export type Settlement =
    * wrong. Found by asking the review's own question of the source.
    */
   /*
-   * ⚠️ AND IT HAS NO POSITION, WHICH IS THE WHOLE DIFFERENCE FROM
+   * NOTE: AND IT HAS NO POSITION, WHICH IS THE WHOLE DIFFERENCE FROM
    * `confirmed`. (section 13.2)
    *
    * An earlier build read the `(event ...)` clause off this answer and
@@ -145,7 +145,7 @@ export interface SaveOutcome {
   message: string;
   answer: Datum | null;
   /*
-   * ⚠️ THIS REFUSAL LEFT THE REQUEST IN THE QUEUE ON PURPOSE.
+   * NOTE: THIS REFUSAL LEFT THE REQUEST IN THE QUEUE ON PURPOSE.
    *
    * `req-mismatch` is the one refusal no retry can settle -- the store
    * holds a different request under this id -- so the entry stays for a
@@ -158,7 +158,7 @@ export interface SaveOutcome {
    */
   keptForAPerson?: true;
   /*
-   * ⚠️ THE ENTRY NEVER REACHED THE QUEUE, AND A NUMBER WAS ALREADY
+   * NOTE: THE ENTRY NEVER REACHED THE QUEUE, AND A NUMBER WAS ALREADY
    * SPENT ON IT. (section 13.1, I7)
    *
    * The sequence is taken and written down BEFORE anything is queued,
@@ -190,7 +190,7 @@ export interface SaverOptions {
    * WHAT THE RECORD BESIDE A FILE SAYS ABOUT SENDS THAT HAVE ALREADY
    * BEEN CONFIRMED. (section 13, R8)
    *
-   * ⚠️ IT IS READ BEFORE EVERY TRANSMISSION, not once when the entry was
+   * NOTE: IT IS READ BEFORE EVERY TRANSMISSION, not once when the entry was
    * made. A queue can sit for a long time -- a store that was
    * unreachable, a window that was closed, a takeover carrying work in
    * -- and in that time another window may have saved the same file and
@@ -208,13 +208,13 @@ export interface SaverOptions {
   /*
    * WHETHER THIS REQUEST HAS BEEN RETIRED. (section 13, r4-2)
    *
-   * ⚠️ THE CHECK IS MADE IN FRONT OF THE TRANSMISSION, wherever the
+   * NOTE: THE CHECK IS MADE IN FRONT OF THE TRANSMISSION, wherever the
    * entry came from. Cancelling writes a tombstone rather than removing
    * an entry, because removing one removes it from ONE queue: the same
    * request can sit in a dead session's file no takeover has reached,
    * and the next takeover carries the cancelled work back in.
    *
-   * ⚠️ AND IT PARKS RATHER THAN DISCARDS. Whoever wrote the tombstone
+   * NOTE: AND IT PARKS RATHER THAN DISCARDS. Whoever wrote the tombstone
    * did the bookkeeping that goes with a cancellation -- releasing the
    * send's number beside the file. A copy found later has no business
    * doing that again; what it must do is not send.
@@ -228,11 +228,11 @@ export interface SaverOptions {
  * a determination, and `unknown` is the absence of one.
  */
 /*
- * ⚠️ AND `transport-unknown` IS THE THIRD, for the same reason and not
+ * NOTE: AND `transport-unknown` IS THE THIRD, for the same reason and not
  * by analogy. The daemon answers it when the process that owns the
  * store dies while a connection is open (daemon.ss:1097, 1192) -- the
  * request may already have been applied, and the connection is closed
- * before anything can say. ⛔ It must NOT be classified as a refusal:
+ * before anything can say. NEVER: It must NOT be classified as a refusal:
  * that path resolves the entry out of the queue and releases its send
  * number, which would record "the store declined this" about a write
  * that may have landed.
@@ -270,12 +270,12 @@ function saysNobodyKnows(datum: Datum): boolean {
  * `write-failed`, `serve-start-failed` and `detach-failed` all mean the
  * store never saw these bytes.
  *
- * ⚠️ `write-failed` HAS EXACTLY ONE MEANING AT THIS LAYER, and it is
+ * NOTE: `write-failed` HAS EXACTLY ONE MEANING AT THIS LAYER, and it is
  * worth saying why, because in the core it has two. A write that fails
  * after bytes have gone out is caught by the guard at client.ss:342-347
  * and becomes `(transport-error <errno>)`, which `theourgia.ss`'s
  * `settle` turns into `transport-unknown`; only the zero-byte case
- * (client.ss:378-383) arrives here under its own name. ⛔ There is no
+ * (client.ss:378-383) arrives here under its own name. NEVER: There is no
  * cell for the two-meaning case because this extension cannot produce
  * that input -- the distinction is made inside the core, and a cell here
  * would be measuring the core's classifier through a keyhole.
@@ -288,7 +288,7 @@ export const RETRYABLE_REFUSALS = [
   'serve-start-failed',
   'detach-failed',
   /*
-   * ⚠️ `serve-path-occupied` IS TRANSIENT BY DEFINITION, and it was in
+   * NOTE: `serve-path-occupied` IS TRANSIENT BY DEFINITION, and it was in
    * no table at all until a review round asked what happens to it.
    *
    * What occupies the socket path is another daemon, starting or
@@ -297,7 +297,7 @@ export const RETRYABLE_REFUSALS = [
    * one. Five attempts and still occupied is a stuck path, and the cap
    * then parks it for a person -- which is the right end for it.
    *
-   * ⛔ IT DOES NOT STAY IN "UNRECOGNISED". That branch is the default
+   * NEVER: IT DOES NOT STAY IN "UNRECOGNISED". That branch is the default
    * for names this build has never heard of, not a resting place for one
    * it has. Ruled by the main session.
    */
@@ -307,7 +307,7 @@ export const RETRYABLE_REFUSALS = [
 /*
  * THE REFUSALS A RETRY CANNOT HELP, BECAUSE THE ANSWER IS A SETTING.
  *
- * ⚠️ THESE DO NOT GO IN THE FAMILY ABOVE EVEN THOUGH NOTHING WAS SENT.
+ * NOTE: THESE DO NOT GO IN THE FAMILY ABOVE EVEN THOUGH NOTHING WAS SENT.
  * `store-not-found` is the store directory named by `theourgia.store`;
  * `socket-path-too-long` is the length of the run-root path the socket
  * is computed under, against a constant the operating system fixes at
@@ -334,7 +334,7 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
  * WHAT AN ANSWER THIS CLIENT DOES NOT RECOGNISE MEANS WHEN THE THIN
  * CLIENT IS THE ONE REFUSING.
  *
- * ⚠️ THE SAME RELAY THAT BRINGS `detach-failed` CAN BRING ANY NAME. When
+ * NOTE: THE SAME RELAY THAT BRINGS `detach-failed` CAN BRING ANY NAME. When
  * a daemon fails to start, the client reads the log it just wrote and
  * answers with the LAST `(error ...)` in it, whatever that is
  * (client.ss:525). So the set of names that can arrive this way is the
@@ -346,13 +346,13 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
  * own account. An unrecognised name at 75 is therefore a transport-side
  * refusal this build has never heard of, and the honest reading of it is
  * the one this extension already has for an outcome it cannot classify:
- * keep the entry, keep the request id, ask again. ⛔ Not `refused` --
+ * keep the entry, keep the request id, ask again. NEVER: Not `refused` --
  * that would be recording a determination nobody made.
  */
 export const CLIENT_REFUSED_EXIT = 75;
 
 /*
- * ⚠️ FIVE IN A ROW, COUNTED IN MEMORY ONLY, AND THE RESET ON RESTART IS
+ * NOTE: FIVE IN A ROW, COUNTED IN MEMORY ONLY, AND THE RESET ON RESTART IS
  * DELIBERATE. Persisting the count would mean a user who restarts meets
  * an entry that has used up its allowance and will never be sent again
  * on its own -- which is harder to explain than starting the count
@@ -387,7 +387,7 @@ function whichSettingsRefusal(datum: Datum): { kind: string; message: string } |
 }
 
 /*
- * ⚠️ IT ASKS THE CLASSIFIER RATHER THAN THE TABLE. The mark is the
+ * NOTE: IT ASKS THE CLASSIFIER RATHER THAN THE TABLE. The mark is the
  * product's own way of saying "nobody has looked at this one", and a
  * second reading of the table here would be a copy to keep in step.
  */
@@ -411,7 +411,7 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
 /*
  * EVERY ANSWER THAT REACHES A SETTLEMENT, AND WHICH VERDICT IT IS.
  *
- * ⚠️ THIS TABLE IS THE CLASSIFIER, not a comment beside one. A rule kept
+ * NOTE: THIS TABLE IS THE CLASSIFIER, not a comment beside one. A rule kept
  * in somebody's head has no way to notice the next answer that arrives:
  * `resolved-executed` sat in the refusal branch for a round, and the
  * cell that covered it asserted only a status and a count -- never the
@@ -428,7 +428,7 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
  * of that is to keep the request and let it be retried.
  */
 /*
- * ⚠️ THE NAMES CAME FROM THE CORE, NOT FROM THE CELLS.
+ * NOTE: THE NAMES CAME FROM THE CORE, NOT FROM THE CELLS.
  *
  * The first version of this table had seven rows and I had drawn them
  * from the cells that happened to exercise a refusal. Reading the pinned
@@ -499,7 +499,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
   'unknown-id': 'refused',
   internal: 'refused',
   /*
-   * ⚠️ THIS ONE SHOULD BE UNREACHABLE, AND IT IS A VERDICT ROW ANYWAY.
+   * NOTE: THIS ONE SHOULD BE UNREACHABLE, AND IT IS A VERDICT ROW ANYWAY.
    *
    * The core refuses a draft-space verb whose writer is unbound
    * (working.ss) so that two agents handed only an actor cannot silently
@@ -514,13 +514,13 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
 };
 
 /*
- * ⚠️ KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
+ * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
  * is made in the pinned core (manifest self md5
  * 0229f9fa246b99986564728d18beefce). The reason is the provenance, not a
  * guess about intent: if the grep does not find it, the row says so
  * rather than inventing a story.
  *
- * ⚠️ AND THIS TABLE IS A STOPGAP, said here so it is not mistaken for
+ * NOTE: AND THIS TABLE IS A STOPGAP, said here so it is not mistaken for
  * knowledge. Which refusals a given verb can produce is a fact about the
  * CORE, and the extension is deducing it by reading someone else's
  * source. The main session has put it on the core's queue: a
@@ -530,7 +530,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
  */
 export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   /*
-   * ⚠️ TWO ANSWERS OF THE THIN CLIENT THIS EXTENSION CANNOT PROVOKE. It
+   * NOTE: TWO ANSWERS OF THE THIN CLIENT THIS EXTENSION CANNOT PROVOKE. It
    * never passes `--socket` (the client computes the path from the store
    * and the run root), and it never runs `serve` itself -- the client
    * starts the daemon, and if that start fails what reaches here is the
@@ -560,7 +560,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'unknown-verb': 'rpc-dispatch-parsed, rpc.ss:685 -- dispatch, before any verb runs',
   'no-such-intent': 'resolve-from, store.ss:2033 -- resolving an intent by name, not writing',
   /*
-   * ⚠️ READ FROM THE W DELIVERY
+   * NOTE: READ FROM THE W DELIVERY
    * (archive/theourgia-code-delivery-w-2026-09-17-r1), not from the core
    * the md5 above names -- that manifest is an older cut and this kind
    * does not exist in it.
@@ -571,7 +571,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'extension sends (client.ts lists write, commit, drafts, discard), so no write can be ' +
     'answered with it',
   /*
-   * ⚠️ THESE THREE ARE ANSWERS TO A WRITE, and they are here for the
+   * NOTE: THESE THREE ARE ANSWERS TO A WRITE, and they are here for the
    * reason `unknown` and `working-unavailable` are: they are handled
    * BEFORE classification, so `classifyRefusal` is never asked about
    * them in the running extension. The row says where the core makes
@@ -590,11 +590,11 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.ss:266 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   /*
-   * ⚠️ THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
+   * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
    * CORE'S BATCH E, read from the core this run is pinned to
    * (theourgia 3017e45).
    *
-   * ⛔ THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
+   * NEVER: THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
    * STRUCTURAL REASON, not because they look unlikely: `eval` is not a
    * verb this extension can send. `client.ts` lists twenty-six verbs in
    * `KNOWN_VERBS` and neither `eval` nor `serve` is among them, and
@@ -616,11 +616,11 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'finish, eval-supervise.ss:230 -- the worker ended without a complete protocol line. It ' +
     'answers an `eval`, which this extension cannot send',
   /*
-   * ⛔ AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
+   * NEVER: AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
    * daemon's BOOT path, before it can serve: `store-loop` (daemon.ss:727)
    * tries to open the store, and on failure calls `report` --
    * `(write x) (newline)` to the daemon's own output, daemon.ss:665 --
-   * and then re-raises. ⚠️ It runs BEFORE `(send main-pid '(ready))`, so
+   * and then re-raises. NOTE: It runs BEFORE `(send main-pid '(ready))`, so
    * at that moment no connection exists for it to be an answer on. A
    * client sees the daemon fail to start, never this datum.
    */
@@ -636,7 +636,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
 
 export function classifyRefusal(datum: Datum): Settlement {
   /*
-   * ⚠️ TWO KINDS OF "NOT IN THE TABLE", AND THEY WANT OPPOSITE THINGS.
+   * NOTE: TWO KINDS OF "NOT IN THE TABLE", AND THEY WANT OPPOSITE THINGS.
    *
    * A name this build has not seen is still an `(error ...)`, and that
    * SHAPE is the protocol's word for "the write did not happen" -- so
@@ -653,7 +653,7 @@ export function classifyRefusal(datum: Datum): Settlement {
    * worst defects began.
    */
   /*
-   * ⚠️ AND A USAGE LINE IS AN ANSWER ON THIS PATH TOO. `(usage (set <id>
+   * NOTE: AND A USAGE LINE IS AN ANSWER ON THIS PATH TOO. `(usage (set <id>
    * <field> <value>))` is what a core WITHOUT request tracking says to a
    * write carrying --req and --cursor: the write did not happen, and the
    * reason is that the core is the wrong version. It is not an `(error
@@ -671,7 +671,7 @@ export function classifyRefusal(datum: Datum): Settlement {
     );
   }
   /*
-   * ⛔ A REFUSAL WHOSE NAME CANNOT BE READ IS NOT A REFUSAL.
+   * NEVER: A REFUSAL WHOSE NAME CANNOT BE READ IS NOT A REFUSAL.
    *
    * This turned a non-symbol into the empty string, which no table
    * holds, so the answer fell through to `unrecognised` -- and the send
@@ -694,7 +694,7 @@ export function classifyRefusal(datum: Datum): Settlement {
   const known = REFUSALS[name];
   if (known === 'executed-by-operator') {
     /*
-     * ⚠️ WHETHER IT NAMED A RECORD NO LONGER DECIDES ANYTHING. An
+     * NOTE: WHETHER IT NAMED A RECORD NO LONGER DECIDES ANYTHING. An
      * earlier build treated the answer as settleable only when it
      * carried an `(event ...)` clause, and recorded that clause as the
      * position -- which the core says is not recoverable from an
@@ -707,14 +707,14 @@ export function classifyRefusal(datum: Datum): Settlement {
     return { verdict: 'req-mismatch' };
   }
   /*
-   * ⚠️ THE TWO FAMILIES THE SEND PATH INTERCEPTS ARE RECOGNISED HERE
+   * NOTE: THE TWO FAMILIES THE SEND PATH INTERCEPTS ARE RECOGNISED HERE
    * ANYWAY, and the reason is that this function is what the census
    * asks. `U-ref` feeds every refusal the pinned core can make through
    * this classifier and fails on anything it marks unrecognised -- so a
    * name handled perfectly well three branches earlier in `send` would
    * still read as "nobody has looked at this one".
    *
-   * ⛔ THAT IS NOT THE SAME AS THEM BEING SETTLED AS REFUSALS. Nothing
+   * NEVER: THAT IS NOT THE SAME AS THEM BEING SETTLED AS REFUSALS. Nothing
    * in the running extension reaches this line with one of them: the
    * retryable family is intercepted before, and so is the settings
    * family. What keeps that true is not this comment but a cell --
@@ -755,7 +755,7 @@ function describeRefusal(datum: Datum): string {
   }
   const name = isSym(datum[1]) ? (datum[1] as { name: string }).name : 'refused';
   /*
-   * ⚠️ THE FORM IS ALREADY KNOWN TO BE AN `error` HERE -- every path
+   * NOTE: THE FORM IS ALREADY KNOWN TO BE AN `error` HERE -- every path
    * into this function passes through the head test above. Reading its
    * clause through the decoder says so in the code rather than in a
    * comment.
@@ -776,12 +776,12 @@ const queues = new Map<string, Promise<void>>();
 /*
  * WHICH ENTRY GOES NEXT. (section 13, r3-4)
  *
- * ⚠️ STILL ONE AT A TIME. What changes is only which one: a `parked`
+ * NOTE: STILL ONE AT A TIME. What changes is only which one: a `parked`
  * entry is stepped over, and so is any entry for a block that has a
  * parked entry in front of it -- because within a block the order is
  * what makes a second save mean "and then this". Other blocks carry on.
  *
- * ⚠️ AND A `pending` ENTRY IS NOT STEPPED OVER. Nobody knows whether the
+ * NOTE: AND A `pending` ENTRY IS NOT STEPPED OVER. Nobody knows whether the
  * store applied it, so nothing may be composed against a position that
  * may have moved; the loop stops at it, which is the behaviour this
  * batch inherited and does not change.
@@ -809,7 +809,7 @@ export class Saver {
   private readonly newRequestId: () => string;
   /*
    * HOW MANY TIMES IN A ROW THIS REQUEST HAS BEEN TOLD "NOT NOW".
-   * ⚠️ In memory, by decision: see RETRY_CAP.
+   * NOTE: In memory, by decision: see RETRY_CAP.
    */
   private readonly notNowCounts = new Map<string, number>();
   private readonly now: () => number;
@@ -821,7 +821,7 @@ export class Saver {
 
   constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions = {}) {
     /*
-     * ⚠️ IF THE SETTLER KNOWS WHICH QUEUE IT IS FOR, IT HAS TO BE THIS
+     * NOTE: IF THE SETTLER KNOWS WHICH QUEUE IT IS FOR, IT HAS TO BE THIS
      * ONE.
      *
      * `settlerFor` checks itself against its store; nothing checked it
@@ -837,7 +837,7 @@ export class Saver {
      * the same file, because two objects over one file are two copies
      * and writing one back erases what the other holds.
      *
-     * ⚠️ A BARE CALLBACK IS ACCEPTED, and that is deliberate rather than
+     * NOTE: A BARE CALLBACK IS ACCEPTED, and that is deliberate rather than
      * overlooked: the cells in this file pass one on purpose, since what
      * they are about is the sending. Every settler the extension builds
      * comes from `settlerFor`, which attaches its queue, so the path
@@ -920,7 +920,7 @@ export class Saver {
   /*
    * THE SEND THE RECORD DESCRIBES. (section 13.1)
    *
-   * ⚠️ NOT IMPLEMENTED YET, AND ADDED BESIDE `save` RATHER THAN
+   * NOTE: NOT IMPLEMENTED YET, AND ADDED BESIDE `save` RATHER THAN
    * REPLACING IT. This is the skeleton step: the signature lands so
    * that section 13's cells compile and can be read as red before the
    * behaviour exists. Changing `save` in place would take every cell
@@ -941,7 +941,7 @@ export class Saver {
   public submit(record: SendRecord): Promise<SaveOutcome> {
     return this.serialise(async () => {
       /*
-       * ⚠️ THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
+       * NOTE: THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
        *
        * The acceptance compared the file's store with this window's
        * before it made the record. This asks again, of the record and
@@ -959,7 +959,7 @@ export class Saver {
        * keeps the shipping path on `settlerFor`.
        */
       /*
-       * ⛔ A BLOCKED SUBMIT THAT NEVER QUEUED HAS TO SAY SO.
+       * NEVER: A BLOCKED SUBMIT THAT NEVER QUEUED HAS TO SAY SO.
        *
        * `notQueued` is what lets the save handler give the sequence
        * number back, and without it the sidecar keeps
@@ -1050,7 +1050,7 @@ export class Saver {
   }
 
   /*
-   * ⚠️ A TAKEOVER'S ENTRIES ARRIVE THROUGH THE SAME LOCK AS A SAVE.
+   * NOTE: A TAKEOVER'S ENTRIES ARRIVE THROUGH THE SAME LOCK AS A SAVE.
    *
    * The import used to be handed a bare `Outbox` and told the comment
    * "this is held by the Saver's serial chain". It was not: a save in
@@ -1173,7 +1173,7 @@ export class Saver {
         return outcomes;
       }
       /*
-       * ⚠️ AND THE BASELINE IS RE-READ BEFORE THIS ONE GOES OUT. (R8)
+       * NOTE: AND THE BASELINE IS RE-READ BEFORE THIS ONE GOES OUT. (R8)
        *
        * Not to count the reads -- to decide. A send whose number is
        * below what the record beside its file already has confirmed has
@@ -1201,7 +1201,7 @@ export class Saver {
       const current = this.outbox.find(entry.req) ?? entry;
       const outcome = await this.send(current);
       /*
-       * ⚠️ AND IT STOPS IF THE ENTRY IS STILL HERE.
+       * NOTE: AND IT STOPS IF THE ENTRY IS STILL HERE.
        *
        * This loop had exactly one way out: an answer of `pending`. It
        * took `entries[0]`, sent it, and went round again on the
@@ -1257,13 +1257,13 @@ export class Saver {
   }
 
   /*
-   * ⚠️ A `sent` ENTRY IS NOT AN EXECUTED ONE. It says this client put
+   * NOTE: A `sent` ENTRY IS NOT AN EXECUTED ONE. It says this client put
    * the request on the wire, not that the store applied it -- the whole
    * reason the queue keeps it. So the check is made for a sent entry
    * too, on every retry.
    */
   /*
-   * ⚠️ AND "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". The question
+   * NOTE: AND "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". The question
    * being decided is whether to SEND; a directory this process may not
    * search reports everything inside it as absent, and reading that as
    * "nobody cancelled this" resends cancelled work.
@@ -1298,7 +1298,7 @@ export class Saver {
 
   private async send(entry: OutboxEntry): Promise<SaveOutcome> {
     /*
-     * ⚠️ WHAT GOES ON THE WIRE COMES FROM THE RECORD WHEN THERE IS ONE.
+     * NOTE: WHAT GOES ON THE WIRE COMES FROM THE RECORD WHEN THERE IS ONE.
      *
      * The entry still carries `id`, `field` and `payload` so that a
      * queue written by this build can be read by the one before it --
@@ -1323,7 +1323,7 @@ export class Saver {
         return {status:'pending',req:entry.req,id:what.id,message:'The immutable working selection is unreadable; keep the request for recovery',answer:null};
       }
       /*
-       * ⚠️ `--wire` IS ASKED FOR HERE AND NOWHERE ELSE YET.
+       * NOTE: `--wire` IS ASKED FOR HERE AND NOWHERE ELSE YET.
        *
        * The human rendering drops every clause beside `items`
        * (render.ss:53-59), and `(behind ...)` -- who else has landed
@@ -1397,15 +1397,15 @@ export class Saver {
       }
       this.settle(entry.req, { verdict: 'confirmed', cursor: moved });
       /*
-       * ⚠️ WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS CARRIED OUT
+       * NOTE: WHAT LANDED WHILE THIS SAVE WAS BEING PREPARED IS CARRIED OUT
        * WITH THE SUCCESS, NOT INSTEAD OF IT. The clause is informational:
        * the commit worked, and the sentence saves whoever reads it a
-       * `drafts` round trip. ⛔ It must not change the status, the
+       * `drafts` round trip. NEVER: It must not change the status, the
        * settlement or the queue -- a save that succeeded is a save that
        * succeeded.
        */
       /*
-       * ⚠️ THE CLAUSE IS OUTSIDE THE ITEM, so it is read from the
+       * NOTE: THE CLAUSE IS OUTSIDE THE ITEM, so it is read from the
        * envelope; `datum` is the item and has never carried it. It is
        * read WITH the item as well, because the writer this commit
        * itself advanced is named in its own `behind` and the item's
@@ -1450,7 +1450,7 @@ export class Saver {
       const soFar = (this.notNowCounts.get(entry.req) ?? 0) + 1;
       if (soFar >= RETRY_CAP) {
         /*
-         * ⛔ PARKED, NOT PENDING, AND THE DIFFERENCE IS WHO IS WAITING.
+         * NEVER: PARKED, NOT PENDING, AND THE DIFFERENCE IS WHO IS WAITING.
          * `pending` stops the whole queue behind this entry; after this
          * many refusals nothing here is going to change on its own, so
          * the queue steps over it and carries on with other blocks while
@@ -1484,7 +1484,7 @@ export class Saver {
       };
     }
     /*
-     * ⚠️ ANY OTHER ANSWER BREAKS THE RUN. "Five in a row" means in a
+     * NOTE: ANY OTHER ANSWER BREAKS THE RUN. "Five in a row" means in a
      * row: an intervening answer of a different kind is the store
      * having looked at this request, so the next `not now` starts from
      * one.
@@ -1492,7 +1492,7 @@ export class Saver {
     this.notNowCounts.delete(entry.req);
 
     /*
-     * ⚠️ A REFUSAL ONLY A SETTING CAN ANSWER IS PARKED AT ONCE.
+     * NOTE: A REFUSAL ONLY A SETTING CAN ANSWER IS PARKED AT ONCE.
      *
      * Nothing about the store directory or the length of the run-root
      * path changes because time passed, so the five attempts the family
@@ -1518,7 +1518,7 @@ export class Saver {
     }
 
     /*
-     * ⚠️ AN UNRECOGNISED NAME AT THE CLIENT'S OWN EXIT CODE IS UNKNOWN,
+     * NOTE: AN UNRECOGNISED NAME AT THE CLIENT'S OWN EXIT CODE IS UNKNOWN,
      * NOT REFUSED.
      *
      * When a daemon fails to start, the thin client answers with the
@@ -1556,7 +1556,7 @@ export class Saver {
     }
 
     /*
-     * ⚠️ A REFUSAL IS CARRIED AS ONE, and the one refusal that means
+     * NOTE: A REFUSAL IS CARRIED AS ONE, and the one refusal that means
      * something different to the file is named: `req-mismatch` says the
      * store holds a DIFFERENT request under this id, which nobody here
      * can settle by retrying, so the record is marked for a person and

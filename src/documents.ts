@@ -122,7 +122,7 @@ export function markCommitted(file: string, committed: string, files: FileOps = 
 }
 
 /*
- * ⚠️ NOTHING IN THE SHIPPING EXTENSION CALLS THIS. It is the legacy
+ * NOTE: NOTHING IN THE SHIPPING EXTENSION CALLS THIS. It is the legacy
  * helper; the current path asks the publisher. It is repaired anyway,
  * because a reader that answers "no work here" for a file it could not
  * open is the shape this delivery has been chasing, and leaving one
@@ -135,7 +135,7 @@ export function hasUncommittedWork(file: string, files: FileOps = nodeFileOps): 
     text = files.readText(file);
   } catch (e) {
     /*
-     * ⛔ ONLY AN ABSENT FILE HAS NO WORK IN IT. Every other failure
+     * NEVER: ONLY AN ABSENT FILE HAS NO WORK IN IT. Every other failure
      * leaves the question open, and answering `false` closes it in the
      * direction that loses somebody's edits.
      */

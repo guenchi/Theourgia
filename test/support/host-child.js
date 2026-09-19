@@ -120,7 +120,7 @@ async function main() {
           break;
         case 'beginSession': {
           /*
-           * ⚠️ THROUGH THE PRODUCT'S OWN ENTRY, AND NOTHING ELSE.
+           * NOTE: THROUGH THE PRODUCT'S OWN ENTRY, AND NOTHING ELSE.
            *
            * This used to call `sessions.begin()` directly -- one step,
            * innocuous-looking, and the extension did not do it. Every

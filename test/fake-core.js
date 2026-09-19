@@ -107,7 +107,7 @@ const base = {
   pid: process.pid,
   cwd: process.cwd(),
   /*
-   * ⚠️ EVERY VARIABLE THE CLIENT SETS IS RECORDED, not only the two the
+   * NOTE: EVERY VARIABLE THE CLIENT SETS IS RECORDED, not only the two the
    * first cells asked about. The identities travel in the environment
    * now (design 7.6.50: the writer is deliberately NOT an argument), so
    * a stand-in that logged only the library path could not witness the

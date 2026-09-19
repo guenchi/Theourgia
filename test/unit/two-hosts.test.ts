@@ -76,7 +76,7 @@ describe('C1 two windows keep one block in two files', function () {
   /*
    * C11/S7: the trigger that used to destroy work, run for real.
    *
-   * ⚠️ THE FIRST VERSION NEVER SAVED. It published into paths it made up
+   * NOTE: THE FIRST VERSION NEVER SAVED. It published into paths it made up
    * outside the sessions tree and then asserted that two directories
    * existed -- which they did, holding nothing but `session.json`. The
    * sequence S7 names is: A holds an empty-prefix baseline, the store
@@ -159,7 +159,7 @@ describe('C16 the sessions are separate past their names', function () {
    * numbering. It passes C1 -- the block FILES are in separate
    * directories -- while both windows send each other's saves.
    *
-   * ⚠️ THE FIRST VERSION OF THIS CELL ENQUEUED NOTHING and asserted
+   * NOTE: THE FIRST VERSION OF THIS CELL ENQUEUED NOTHING and asserted
    * `queues.length === 0 || queues.length >= 1`, which is true of every
    * number. Each window now puts a request in its own queue and the
    * other window's count is required not to move.
@@ -233,7 +233,7 @@ describe('C16 the sessions are separate past their names', function () {
 /*
  * C8 contention, across two processes.
  *
- * ⚠️ THE FIRST VERSION RAN BOTH CLAIMS IN ONE PROCESS, where the scan
+ * NOTE: THE FIRST VERSION RAN BOTH CLAIMS IN ONE PROCESS, where the scan
  * and the link are one synchronous stretch and never overlap -- so a
  * read-then-write publication with a window between them would have
  * passed. These two hosts wait at a rendezvous until both are ready and
@@ -274,7 +274,7 @@ describe('C8 two windows racing for one claim', function () {
  * way to test that the states occur. These kill a real process at each
  * of the three points and ask the classifier what it finds.
  *
- * ⚠️ THESE THREE WERE ONCE DELETED BY A REWRITE OF THIS FILE and the
+ * NOTE: THESE THREE WERE ONCE DELETED BY A REWRITE OF THIS FILE and the
  * suite stayed green -- a shorter file looks tidier and the missing
  * guard does not announce itself. Counting the cells is what found it.
  */

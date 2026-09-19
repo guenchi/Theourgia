@@ -29,7 +29,7 @@
  * copied is two rules, and the second copy is always the one that was
  * not fixed.
  *
- * ⚠️ EVERY QUESTION HERE IS PUT TO THE SYNTAX TREE. A comment reading
+ * NOTE: EVERY QUESTION HERE IS PUT TO THE SYNTAX TREE. A comment reading
  * "with execFileSync throwing" is not a throw, and `!(code === 'ENOENT')`
  * is not a test for absence however much of it matches a regular
  * expression.
@@ -87,7 +87,7 @@ export function throwsSomewhere(block: ts.Block): boolean {
 /*
  * THE NAME OF THE THING BEING CALLED, and nothing else on the line.
  *
- * ⛔ THE CALLEE'S SOURCE TEXT IS NOT ITS NAME. This searched
+ * NEVER: THE CALLEE'S SOURCE TEXT IS NOT ITS NAME. This searched
  * `node.expression.getText()` with `includes`, and a sixteenth review
  * round put `(/* show *\/ Boolean)(0)` past it: a real call, to
  * something that reports nothing, whose text carries a reporting name
@@ -111,7 +111,7 @@ function calleeName(expression: ts.Expression): string | null {
 /*
  * A CALL TO ONE OF THESE, MADE ON EVERY PATH THROUGH THE CATCH.
  *
- * ⛔ ONE BRANCH IS NOT EVERY BRANCH. A sixteenth review round put
+ * NEVER: ONE BRANCH IS NOT EVERY BRANCH. A sixteenth review round put
  * `if (code === 'EIO') void Promise.reject(e); return false;` past the
  * first version: EACCES reports nothing and answers false, while a
  * reporting call existed SOMEWHERE in the block. So the call has to sit
@@ -144,7 +144,7 @@ export function callsOneOf(
 }
 
 /*
- * ⭐ A BLOCK THAT CANNOT FINISH QUIETLY.
+ * KEY: A BLOCK THAT CANNOT FINISH QUIETLY.
  *
  * "There is a throw in here" is not the property a leak gate needs. A
  * fifteenth review round demonstrated the gap exactly: a catch reading
@@ -182,7 +182,7 @@ function ends(statement: ts.Statement | undefined): boolean {
 }
 
 /*
- * ⛔ AND A `break` OR A `continue` IS AN EXIT AS SURELY AS A RETURN.
+ * NEVER: AND A `break` OR A `continue` IS AN EXIT AS SURELY AS A RETURN.
  *
  * A sixteenth review round wrote this counterexample:
  *
@@ -271,7 +271,7 @@ export function testsForAbsence(
     return false;
   }
   /*
-   * ⛔ AND THE VALUE BEING TESTED HAS TO BE THE FAILURE'S.
+   * NEVER: AND THE VALUE BEING TESTED HAS TO BE THE FAILURE'S.
    *
    * `if (String('ENOENT') === 'ENOENT') return 0;` is a test for absence
    * to anything that reads the operator and the right-hand side, and it

@@ -219,7 +219,7 @@ describe('T4 the argument vector and the environment are what the core expects',
   afterEach(() => core?.dispose());
 
   /*
-   * ⚠️ THE PROGRAM IN THIS ROW CHANGED WITH plugin-r2 AND THE ORDER DID
+   * NOTE: THE PROGRAM IN THIS ROW CHANGED WITH plugin-r2 AND THE ORDER DID
    * NOT. What this cell is about is the order -- the verb first, the
    * store and actor last -- because a store option placed ahead of the
    * verb is taken AS the verb. The program is now the thin client
@@ -297,7 +297,7 @@ describe('T4 the argument vector and the environment are what the core expects',
  * 56 ms through `cli.ss` from a product directory, 35 ms through the
  * thin client and a daemon.
  *
- * ⚠️ THE IDENTITIES GO IN THE ENVIRONMENT, NOT IN THE ARGUMENT VECTOR.
+ * NOTE: THE IDENTITIES GO IN THE ENVIRONMENT, NOT IN THE ARGUMENT VECTOR.
  * The client scans argv for four transport options and passes the rest
  * through untouched; `--writer` is deliberately not one of them, and a
  * writer spliced into argv by this extension would arrive at a verb
@@ -313,7 +313,7 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
   afterEach(() => core?.dispose());
 
   /*
-   * ⭐ THIS IS THE ONE CELL THAT SPELLS THE NAMES, and it is meant to.
+   * KEY: THIS IS THE ONE CELL THAT SPELLS THE NAMES, and it is meant to.
    *
    * The core has ruled two renamings -- every library `.ss` becomes
    * `.sc`, and the entry points split so that `cli.ss` goes away -- so
@@ -356,7 +356,7 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
   });
 
   /*
-   * ⚠️ THE WRITER DOES NOT FALL BACK TO ANYTHING IN THE CORE, and it
+   * NOTE: THE WRITER DOES NOT FALL BACK TO ANYTHING IN THE CORE, and it
    * does here -- for a different reason and at a different layer. The
    * core refuses an unbound writer (`writer-required`) so that two
    * agents cannot silently share one draft space; this extension is ONE
@@ -373,7 +373,7 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
 });
 
 /*
- * ⚠️ WHICH EXTENSION LIST DEPENDS ON WHAT THE DIRECTORY IS, and both
+ * NOTE: WHICH EXTENSION LIST DEPENDS ON WHAT THE DIRECTORY IS, and both
  * answers are needed for a reason that has a reading behind it.
  *
  * Measured on this machine, g-r5 core:
@@ -416,7 +416,7 @@ describe('plugin-r2 T1 the extension list is chosen from what the core directory
   });
 
   /*
-   * ⚠️ AND A DIRECTORY THAT IS NEITHER IS SAID, NOT GUESSED. Picking a
+   * NOTE: AND A DIRECTORY THAT IS NEITHER IS SAID, NOT GUESSED. Picking a
    * list for it would send the user a library-not-found exception from
    * inside Chez about a path they would have to work backwards from.
    */

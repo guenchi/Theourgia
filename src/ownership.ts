@@ -18,7 +18,7 @@ import {withExclusive,controlDirectory} from './fsops';
 /*
  * WHO MAY WRITE THE RECORDS BESIDE A BLOCK'S VERSIONS. (section 13, r4-3..r7-2)
  *
- * ⚠️ THE UNIT IS THE BLOCK DIRECTORY, NOT THE VERSION.
+ * NOTE: THE UNIT IS THE BLOCK DIRECTORY, NOT THE VERSION.
  *
  * A sidecar belongs to one version, so ownership held per sidecar would
  * mean that publishing a new version produces an unowned record -- and
@@ -27,7 +27,7 @@ import {withExclusive,controlDirectory} from './fsops';
  * and two `highWater` axes. The block directory is the boundary
  * `publish`, `latestIn` and `reconcile` already share.
  *
- * ⚠️ TAKING IT AND HANDING IT OVER ARE THE SAME PRIMITIVE.
+ * NOTE: TAKING IT AND HANDING IT OVER ARE THE SAME PRIMITIVE.
  *
  * Ownership is a record named with its generation, `owner.<N>`, and it
  * is claimed by LINKING a new name: whoever's `link` returns holds it,
@@ -36,7 +36,7 @@ import {withExclusive,controlDirectory} from './fsops';
  * fresh ones both moving N to N+1, because both write N+1 and both
  * stamps then agree.
  *
- * ⚠️ AND IT IS NOT A FENCE.
+ * NOTE: AND IT IS NOT A FENCE.
  *
  * Two processes that both hold a reading of one sidecar can still write
  * over one another: this is the lease/fencing problem, and it is named
@@ -75,7 +75,7 @@ export interface OwnerRecord {
 export type Held =
   | { held: true; record: OwnerRecord }
   /*
-   * ⚠️ "SOMEBODY ELSE GOT IT" AND "I COULD NOT" ARE DIFFERENT ANSWERS.
+   * NOTE: "SOMEBODY ELSE GOT IT" AND "I COULD NOT" ARE DIFFERENT ANSWERS.
    *
    * `link` fails with EEXIST when the name is taken, which is the race
    * being lost and is ordinary. It fails with other codes when the
@@ -145,7 +145,7 @@ export function sameStamp(a: Stamp, b: Stamp): boolean {
 }
 
 /*
- * ⚠️ THE COMPARISON IS THE WHOLE IDENTITY, NOT THE GENERATION.
+ * NOTE: THE COMPARISON IS THE WHOLE IDENTITY, NOT THE GENERATION.
  *
  * Create-once makes the generations unique, so two owners cannot both
  * be at N. That is an argument about how the number is handed out, and
@@ -195,7 +195,7 @@ export class Owners {
   }
 
   /*
-   * ⚠️ "NOT OWNED" AND "I COULD NOT LOOK" ARE DIFFERENT ANSWERS, and a
+   * NOTE: "NOT OWNED" AND "I COULD NOT LOOK" ARE DIFFERENT ANSWERS, and a
    * directory this process may not search reports everything inside it
    * as absent. A caller deciding whether to take ownership must not read
    * an unreadable directory as a free one.
@@ -207,7 +207,7 @@ export class Owners {
     if (fresh.read && fresh.names.some(n=>/^owner\.\d+$/.test(n))) return control;
     const legacy=this.files.readDirectory(directory);
     /*
-     * ⛔ AND AN UNREADABLE LEGACY DIRECTORY SENDS THE LOOKUP NOWHERE.
+     * NEVER: AND AN UNREADABLE LEGACY DIRECTORY SENDS THE LOOKUP NOWHERE.
      *
      * This fell through to the control directory, which is absent, so
      * `ownerOf` answered `{known: true, record: null}` -- "I looked and
@@ -235,7 +235,7 @@ export class Owners {
       return { known: true, record: null };
     }
     /*
-     * ⚠️ THE HIGHEST GENERATION IS THE ANSWER, AND IF IT DOES NOT READ
+     * NOTE: THE HIGHEST GENERATION IS THE ANSWER, AND IF IT DOES NOT READ
      * THE ANSWER IS "I DO NOT KNOW".
      *
      * Reading on to the next one down would hand ownership to whoever
@@ -323,7 +323,7 @@ export class Owners {
   public rewrite(directory: string, record: OwnerRecord): void {
     return withExclusive(directory, (): void => {
     /*
-     * ⚠️ THROUGH A TEMPORARY AND A RENAME, NOT OVER THE RECORD.
+     * NOTE: THROUGH A TEMPORARY AND A RENAME, NOT OVER THE RECORD.
      *
      * Writing in place puts a window where the owner record is half a
      * record -- and a record that does not parse is read as "I do not
@@ -343,7 +343,7 @@ export class Owners {
   }
 
   /*
-   * ⚠️ THE ANSWER IS THREE-WAY, and a boolean would collapse the two
+   * NOTE: THE ANSWER IS THREE-WAY, and a boolean would collapse the two
    * that demand opposite things: a directory nobody owns is one this
    * session may take, and a directory it could not read is one where
    * carrying on writes into somebody else's block.

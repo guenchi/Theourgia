@@ -18,17 +18,17 @@
  * A REQUEST THAT HAS BEEN RETIRED, AND WHERE THAT IS RECORDED.
  * (section 13, r4-2, r5-3)
  *
- * ⚠️ CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. An entry removed from a
+ * NOTE: CANCELLING IS A TOMBSTONE, NOT A DEQUEUE. An entry removed from a
  * queue is removed from ONE queue: the same request may sit in a dead
  * session's file that a takeover has not reached yet, and the next
  * takeover carries the cancelled work back in. A tombstone is the fact
  * that outlives every copy.
  *
- * ⚠️ AND IT LIVES UNDER THE STORAGE ROOT, not in a session directory.
+ * NOTE: AND IT LIVES UNDER THE STORAGE ROOT, not in a session directory.
  * Discarding a session moves its directory away; the tombstone has to
  * survive that, because the copies it is about do not all live there.
  *
- * ⚠️ IT IS PROBED BY NAME. Whoever asks holds a request id and a store;
+ * NOTE: IT IS PROBED BY NAME. Whoever asks holds a request id and a store;
  * that is a path, and the answer is whether the path is there. Listing
  * the directory turns every check into work proportional to how much
  * has ever been cancelled -- and the check sits on the import path, the
@@ -47,7 +47,7 @@ const STORE: { noun: string; inside: string } = {
 };
 
 /*
- * ⚠️ THE REQUEST ID IS UNTRUSTED INPUT. It is read out of a queue file
+ * NOTE: THE REQUEST ID IS UNTRUSTED INPUT. It is read out of a queue file
  * written by another session -- which a user can edit, and which a
  * takeover reads before anything has vouched for it. It goes through
  * the same rule as the store name and for the same reason.
@@ -60,7 +60,7 @@ const REQ: { noun: string; inside: string } = {
 export type Retired =
   | { known: true; retired: boolean }
   /*
-   * ⚠️ "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". A directory this
+   * NOTE: "I COULD NOT LOOK" IS NOT "NOTHING IS RETIRED". A directory this
    * process may not search reports everything inside it as absent, and
    * the caller asking this question is deciding whether to SEND. The
    * safe reading of "I do not know" is not the convenient one.
@@ -85,7 +85,7 @@ export class Tombstones {
   }
 
   /*
-   * ⚠️ THE FACT IS THE NAME. What is inside the file is for a person
+   * NOTE: THE FACT IS THE NAME. What is inside the file is for a person
    * reading the directory; nothing in this program reads it, because a
    * tombstone whose meaning depended on its contents would have a state
    * where it exists and says nothing -- and that state would arrive

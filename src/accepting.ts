@@ -22,12 +22,12 @@
  * file's own record, never from the settings), which file, which bytes,
  * which request, which sequence number.
  *
- * ⚠️ IT RUNS INSIDE THE CHAIN'S CRITICAL SECTION, in the same callback
+ * NOTE: IT RUNS INSIDE THE CHAIN'S CRITICAL SECTION, in the same callback
  * as `decide`. Outside it, the answers can change between the reading
  * and the record -- which is the defect four rounds of review kept
  * finding a new face of.
  *
- * ⚠️ AND THE NUMBER IS ON DISK BEFORE ANYTHING IS QUEUED. `takeSequence`
+ * NOTE: AND THE NUMBER IS ON DISK BEFORE ANYTHING IS QUEUED. `takeSequence`
  * advances `nextSeq` and adds the number to `outstanding` in one durable
  * write. If that write fails the save is NOT accepted: nothing is
  * queued, nothing is sent, and the user is told. A request that went out
@@ -70,7 +70,7 @@ export interface AcceptParts {
 export type Acceptance =
   | { accepted: true; record: SendRecord }
   /*
-   * ⚠️ EACH REFUSAL IS ITS OWN WORD BECAUSE EACH IS A DIFFERENT THING
+   * NOTE: EACH REFUSAL IS ITS OWN WORD BECAUSE EACH IS A DIFFERENT THING
    * FOR THE USER TO DO. "Another window is configured for this store",
    * "this file has no record beside it any more" and "the record could
    * not be written" are three sentences, and a boolean would make them
@@ -91,7 +91,7 @@ export function acceptSave(parts: AcceptParts): Acceptance {
   return withExclusive(path.dirname(parts.file), (): Acceptance => {
   const { sidecar, decision } = parts;
   /*
-   * ⚠️ THE STORE COMES FROM THE FILE. A window configured for another
+   * NOTE: THE STORE COMES FROM THE FILE. A window configured for another
    * store must not write this file's send into its own queue: that
    * queue carries another store's cursor, and a window that IS
    * configured for this file's store may be writing the queue it

@@ -192,7 +192,7 @@ function headName(value: Datum): string | null {
 /*
  * READING AN ANSWER: THE HEAD AND THE CLAUSE, TOGETHER OR NOT AT ALL.
  *
- * ⭐ WHY THIS EXISTS AND WHY `clause` STOPPED BEING EXPORTED.
+ * KEY: WHY THIS EXISTS AND WHY `clause` STOPPED BEING EXPORTED.
  *
  * Thirteen review rounds found ONE defect in nine readers: a clause
  * taken out of a form without asking what the form said. `(error
@@ -207,14 +207,14 @@ function headName(value: Datum): string | null {
  * without naming the head it must have, so the defect is not something a
  * reader can be written with. The compiler is the census.
  *
- * ⚠️ `expect` IS FOR "IS THIS ABOUT WHAT I ASKED". Two further defects
+ * NOTE: `expect` IS FOR "IS THIS ABOUT WHAT I ASKED". Two further defects
  * were of that kind -- a record for `b.1` returned for `a.1`, and a
  * subtree answer that never mentions the block it is under. A reader
  * that names the id it asked about gets an answer only if the form
  * agrees.
  */
 /*
- * ⛔ A `Form` IS NOT A SHAPE ANYBODY CAN BUILD.
+ * NEVER: A `Form` IS NOT A SHAPE ANYBODY CAN BUILD.
  *
  * It was a plain structural interface, so nothing stopped a caller
  * writing `{clause: clauseOfRecord.bind(null, datum), ...}` and handing
@@ -226,7 +226,7 @@ function headName(value: Datum): string | null {
  * from `answerOf` in this file, because nothing else can name it.
  */
 /*
- * ⚠️ A REAL SYMBOL, NOT A `declare`. The first version of this was a
+ * NOTE: A REAL SYMBOL, NOT A `declare`. The first version of this was a
  * type-only declaration, so `[VERIFIED]: true` compiled and threw at
  * run time -- the brand existed for the compiler and not for the
  * program. The suite said so at once, in 189 cells.
@@ -240,7 +240,7 @@ const VERIFIED: unique symbol = Symbol('a form whose head has been checked');
  * WHAT A CLAUSE LOOKUP FOUND, AND -- WHEN IT FOUND NOTHING USABLE --
  * WHICH OF THE TWO REASONS IT WAS.
  *
- * ⛔ `null` FOR BOTH WAS AN INABILITY ANSWERED AS AN ABSENCE, one
+ * NEVER: `null` FOR BOTH WAS AN INABILITY ANSWERED AS AN ABSENCE, one
  * level below every reader that has been repaired for that shape.
  *
  * A fifteenth review round had this decoder start refusing a DUPLICATED
@@ -281,7 +281,7 @@ export interface Form {
   /*
    * THE CLAUSE AS IT APPEARED, its own name at the front.
    *
-   * ⚠️ FOR THE READERS THAT DIGEST IT. A working projection's identity
+   * NOTE: FOR THE READERS THAT DIGEST IT. A working projection's identity
    * is the digest of its whole clause -- dropping the name would change
    * every id this build computes, silently, which is not a thing a
    * refactor may do. `clause` is what almost every reader wants; this is
@@ -313,7 +313,7 @@ export function answerOf(
   }
   if (expect !== undefined) {
     /*
-     * ⚠️ A NAME IN AN ANSWER MAY BE A SYMBOL OR A STRING, and the core
+     * NOTE: A NAME IN AN ANSWER MAY BE A SYMBOL OR A STRING, and the core
      * uses both: `(error unknown-id "a.1" ...)` names its family with a
      * symbol and its subject with a string. Comparing with `===` alone
      * made the symbol case never match -- so the guard that was meant
@@ -342,7 +342,7 @@ export function answerOf(
 /*
  * A CLAUSE OF A STORE RECORD, WHICH HAS NO HEAD TO CHECK.
  *
- * ⛔ NOT FOR AN ANSWER. A block record reads
+ * NEVER: NOT FOR AN ANSWER. A block record reads
  * `((id . "a.1") (deleted . #f) (fields ...) ...)` -- its first element
  * is a pair, not a name, so there is nothing for `answerOf` to verify
  * and nothing this could check on a caller's behalf. A writer entry in
@@ -361,7 +361,7 @@ export function recordValue(value: Datum, name: string): Datum | undefined {
 }
 
 /*
- * ⛔ TWO CLAUSES OF ONE NAME ARE NOT ONE CLAUSE.
+ * NEVER: TWO CLAUSES OF ONE NAME ARE NOT ONE CLAUSE.
  *
  * This returned the first match, so
  * `(check (writers (...)) (writers (...)))` answered the first listing
@@ -408,7 +408,7 @@ function clause(value: Datum, name: string): Clause {
  * THE TAIL OF A PAIR IN AN ASSOCIATION LIST -- a headless reader, and it
  * had escaped being named as one.
  *
- * ⚠️ THIS IS THE THIRD DOOR. `clauseOfRecord` and `recordValue` were
+ * NOTE: THIS IS THE THIRD DOOR. `clauseOfRecord` and `recordValue` were
  * pinned by a census and this was not, so
  * `assocTail(parseAnswers('(error (items 7))')[0], 'items')` answered
  * `7` -- a clause of an unchecked answer, through a name nobody had

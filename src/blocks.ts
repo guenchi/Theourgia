@@ -83,7 +83,7 @@ export function readBlock(value: Datum): Block | null {
     return null;
   }
   /*
-   * ⛔ A HEADLESS READER MUST REFUSE A FORM THAT HAS A HEAD.
+   * NEVER: A HEADLESS READER MUST REFUSE A FORM THAT HAS A HEAD.
    *
    * This checked only that the value was a list, so
    * `(garbage (id . "a.1") (fields (src . "forged")) ...)` read as a
@@ -110,13 +110,13 @@ export function readBlock(value: Datum): Block | null {
   }
   const deleted = assocTail(value, 'deleted');
   /*
-   * ⚠️ A BLOCK RECORD HAS NO HEAD. Its first element is
+   * NOTE: A BLOCK RECORD HAS NO HEAD. Its first element is
    * `(id . "a.1")` -- a pair, not a name -- so there is nothing for
    * `answerOf` to verify here, and the record has already come out of a
    * form whose head was checked. See `clauseOfRecord` in wire.ts.
    */
   /*
-   * ⛔ TWO `fields` CLAUSES IS NOT A RECORD WITH NO FIELDS.
+   * NEVER: TWO `fields` CLAUSES IS NOT A RECORD WITH NO FIELDS.
    *
    * The decoder began refusing a duplicated clause in a fifteenth review
    * round, and refused it by answering null -- the same answer as "this

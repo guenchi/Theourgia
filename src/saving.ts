@@ -263,7 +263,7 @@ export class Saving {
      * is not this encoding at all, which is a different thing to say
      * than "it begins with a mark this build strips".
      *
-     * ⚠️ AND WITHOUT A MARK, UTF-16 CANNOT BE RECOGNISED HERE. All-ASCII
+     * NOTE: AND WITHOUT A MARK, UTF-16 CANNOT BE RECOGNISED HERE. All-ASCII
      * text in UTF-16LE is a run of ASCII bytes separated by NULs, which
      * is perfectly valid UTF-8 -- measured, not supposed. Such a file is
      * still not sent, but the refusal that catches it is the comparison
@@ -290,7 +290,7 @@ export class Saving {
     /*
      * THE LINE ENDINGS ARE SETTLED BEFORE THE PREFIX IS COMPARED.
      *
-     * ⚠️ THIS ORDER WAS WRONG AND THE EDITOR CELLS FOUND IT. Comparing
+     * NOTE: THIS ORDER WAS WRONG AND THE EDITOR CELLS FOUND IT. Comparing
      * first meant a buffer the editor writes as CRLF never matched a
      * prefix the store gave as LF, so every save of such a file was
      * refused as "the heading changed" -- by the extension, about a
@@ -304,7 +304,7 @@ export class Saving {
      * about the body's.
      */
     /*
-     * ⚠️ AND THE COMPARISON IS ALWAYS EOL-AGNOSTIC, WHICH IT WAS NOT.
+     * NOTE: AND THE COMPARISON IS ALWAYS EOL-AGNOSTIC, WHICH IT WAS NOT.
      * Normalising only when the block's own body had no CRLF left two
      * shapes refusing a save as "the heading changed" when the user had
      * changed nothing:
@@ -364,14 +364,14 @@ export class Saving {
    * since, and the answer is `null`: the caller then does what it did
    * before, which is the safe direction.
    *
-   * ⚠️ IT DOES NOT WRITE. Recording goes through `recordAnswer` like
+   * NOTE: IT DOES NOT WRITE. Recording goes through `recordAnswer` like
    * every other acknowledgement, so the order -- record first, entry
    * second -- stays in one place. A function that both recognised and
    * recorded would be a second critical section. (section 12.7.4, C7)
    */
   public recognise(file: string, sentText: string): { rawDigest: string; sentDigest: string } | null {
     /*
-     * ⚠️ THE EXISTENCE PROBES ARE GUARDED TOO. They sat outside the
+     * NOTE: THE EXISTENCE PROBES ARE GUARDED TOO. They sat outside the
      * `try` below, and `FileOps.exists` is an interface: an
      * implementation that reports a permission failure by throwing would
      * escape from here into the settler, where the request has been
@@ -449,7 +449,7 @@ export class Saving {
   /*
    * A SEND IS OVER AND NOTHING ELSE IS RECORDED. (section 13.2, R5.6)
    *
-   * ⚠️ A REFUSAL HAS TO WRITE EXACTLY ONE THING. The store declined the
+   * NOTE: A REFUSAL HAS TO WRITE EXACTLY ONE THING. The store declined the
    * write, so no baseline may be written -- the bytes are still only in
    * the user's file. But the send IS over, and leaving its number in
    * `outstanding` would keep the block a draft it can never stop being:
@@ -528,7 +528,7 @@ export class Saving {
        * marked for a person to look at. (section 12.9)
        */
       /*
-       * ⚠️ AND THE NUMBER STAYS OUT. This send has not settled -- the
+       * NOTE: AND THE NUMBER STAYS OUT. This send has not settled -- the
        * store is saying it cannot say what happened to it -- so removing
        * it from `outstanding` would make the block read as though
        * nothing were in flight, which is the one thing that is certainly
@@ -538,7 +538,7 @@ export class Saving {
       return { dequeued: false, because: 'req-mismatch' };
     }
     /*
-     * ⚠️ THE FILE IS READ ONCE, AND EVERY QUESTION BELOW IS ASKED OF
+     * NOTE: THE FILE IS READ ONCE, AND EVERY QUESTION BELOW IS ASKED OF
      * THAT ONE BUFFER.
      *
      * The digest and the split used to be two separate reads, and the
@@ -588,7 +588,7 @@ export class Saving {
      * that sitting on the other implementation in publication.ts.
      */
     /*
-     * ⚠️ AND THE RECORD MUST STILL SPLIT THE FILE THE WAY THE SEND DID.
+     * NOTE: AND THE RECORD MUST STILL SPLIT THE FILE THE WAY THE SEND DID.
      *
      * The digest above says the BYTES have not moved. It says nothing
      * about the PREFIX, and the prefix lives in this same record and can
@@ -623,7 +623,7 @@ export class Saving {
      * went on reporting unsent work with nothing they could do about it.
      */
     /*
-     * ⚠️ WHICH SEND THE STORE CONFIRMED, AND WHETHER IT REPLACES WHAT
+     * NOTE: WHICH SEND THE STORE CONFIRMED, AND WHETHER IT REPLACES WHAT
      * WAS THERE. (section 13.3)
      *
      * The axis is `highWater`, not the baseline's own number: an answer
@@ -639,7 +639,7 @@ export class Saving {
     const settled = read.sidecar.outstanding.filter((out) => out.seq !== answer.send.seq);
     const replaces = replacesBaseline(read.sidecar.highWater, answer.send.seq);
     /*
-     * ⚠️ AND IF THE BASELINE ALREADY HOLDS THIS NUMBER FOR ANOTHER
+     * NOTE: AND IF THE BASELINE ALREADY HOLDS THIS NUMBER FOR ANOTHER
      * REQUEST, NOBODY HERE CAN SAY WHICH SEND IT MEANS.
      *
      * The number is taken from `nextSeq` and written down before
@@ -664,7 +664,7 @@ export class Saving {
       return { dequeued: false, because: 'number-taken' };
     }
     /*
-     * ⚠️ AN OPERATOR'S DETERMINATION HAS NO POSITION TO RECORD. The core
+     * NOTE: AN OPERATOR'S DETERMINATION HAS NO POSITION TO RECORD. The core
      * says such a determination does not recover the original
      * execution's event, so there is no cursor -- and writing the
      * queue's own position here would be recording where WE stood as
@@ -687,7 +687,7 @@ export class Saving {
       highWater: replaces ? answer.send.seq : read.sidecar.highWater,
       outstanding: settled,
       /*
-       * ⚠️ THE OLDER FIELDS ARE WRITTEN TOO, and they are a projection
+       * NOTE: THE OLDER FIELDS ARE WRITTEN TOO, and they are a projection
        * of this same act rather than a second record of it: one write,
        * one instant, derived from the same answer. They are what the
        * build before section 13 reads, and what this build's own draft listing

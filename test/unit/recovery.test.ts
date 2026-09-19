@@ -23,7 +23,7 @@
  * about the decisions the command makes -- which windows, which actions,
  * what the user is told they cost, and what happens when they walk away.
  *
- * ⚠️ THE CELLS DRIVE THE PRODUCT'S OWN ENTRY POINT. `chooseAndRecover`
+ * NOTE: THE CELLS DRIVE THE PRODUCT'S OWN ENTRY POINT. `chooseAndRecover`
  * is what the registered handler calls, in one line, with a `Chooser`
  * backed by the editor; here it is called with a `Chooser` that records.
  * Nothing is re-implemented, which is the mistake this batch has already
@@ -149,7 +149,7 @@ class Recorder implements Chooser {
   }
 
   /*
-   * ⚠️ EVERY SCRIPTED ANSWER HAD TO BE ASKED FOR.
+   * NOTE: EVERY SCRIPTED ANSWER HAD TO BE ASKED FOR.
    *
    * Without this, a flow that asked nothing at all and returned
    * `cancelled` passed every cancellation cell here -- four of them --
@@ -170,7 +170,7 @@ class Recorder implements Chooser {
     );
     assert.strictEqual(this.picks.length, 0, 'the script named choices the flow never offered');
     /*
-     * ⚠️ THE CONFIRMATION ANSWERS TOO. `asked` checked only that the
+     * NOTE: THE CONFIRMATION ANSWERS TOO. `asked` checked only that the
      * picks were consumed, so a script carrying an answer to a question
      * the flow never asked still passed -- while the comment above says
      * every scripted answer had to be asked for. A review said so.
@@ -188,7 +188,7 @@ class Recorder implements Chooser {
  * for this window's own. `adopt` is where the lock would be, and calling
  * `work` inside it is exactly what the Saver does.
  *
- * ⚠️ THE DESTINATION IS BUILT BY THE PRODUCT, `destinationFor`, and not
+ * NOTE: THE DESTINATION IS BUILT BY THE PRODUCT, `destinationFor`, and not
  * by hand here. A fixture that assembles its own destination is a
  * fixture that cannot see anything `destinationFor` decides -- and what
  * it decides is whether this is still the window's queue by the time the
@@ -220,7 +220,7 @@ function destination(storeHash = 'h'): {
   const into = destinationFor(() => box.queue);
   assert.ok(into !== null, 'the product refused to build a destination over a queue that is there');
   /*
-   * ⚠️ THE SAME OBJECT, NOT A COPY OF IT. Returning `{ ...box, into }`
+   * NOTE: THE SAME OBJECT, NOT A COPY OF IT. Returning `{ ...box, into }`
    * copied `runs` at the moment of return, so every later increment
    * landed on an object no cell was holding and the count read 0 for
    * ever -- caught immediately by the cell that asserts the import went
@@ -270,7 +270,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
   });
 
   /*
-   * ⚠️ THE EXPENSIVE ACTION IS OFFERED ONLY WHERE IT IS THE ONLY WAY
+   * NOTE: THE EXPENSIVE ACTION IS OFFERED ONLY WHERE IT IS THE ONLY WAY
    * OUT. A window that can be judged dead has the ordinary takeover;
    * putting the forced one beside it would teach the user to reach for
    * the one that may send somebody's requests twice.
@@ -300,7 +300,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
   });
 
   /*
-   * ⚠️ THE CONFIRMATION IS THE CONSTANT, NOT A SENTENCE THE UI WROTE.
+   * NOTE: THE CONFIRMATION IS THE CONSTANT, NOT A SENTENCE THE UI WROTE.
    * What makes the forced takeover offerable at all is the statement of
    * what it costs; a second copy of that statement is a second place for
    * it to be wrong, and this is the one question in the extension whose
@@ -315,7 +315,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder(['S-norecord', 'force-take-over'], [true]);
     const outcome = await chooseAndRecover(sessions, chooser, box.into);
     /*
-     * ⚠️ AND IT WENT THROUGH. A cell that only read the dialog's wording
+     * NOTE: AND IT WENT THROUGH. A cell that only read the dialog's wording
      * passed a flow that asked the right question and then did nothing,
      * which is not a forced takeover.
      */
@@ -471,7 +471,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
     const chooser = new Recorder(['S-dead', 'take-over']);
     const outcome = await chooseAndRecover(sessions, chooser, null);
     /*
-     * ⚠️ AND IT REFUSES BEFORE TAKING A TOKEN. Claiming first and then
+     * NOTE: AND IT REFUSES BEFORE TAKING A TOKEN. Claiming first and then
      * finding nowhere to put the entries left this window holding a live
      * claim over work it had not moved, and the advice it then gave --
      * configure a store and run this again -- was refused by that very
@@ -494,7 +494,7 @@ describe('U-recover the command that shows another window’s unsent work', () =
  */
 describe('review 22 a takeover moves one store’s work, through one lock', () => {
   /*
-   * ⚠️ A WINDOW WRITES TO AS MANY STORES AS IT WAS CONFIGURED FOR, and
+   * NOTE: A WINDOW WRITES TO AS MANY STORES AS IT WAS CONFIGURED FOR, and
    * keeps a queue for each -- a queue carries one cursor and a cursor
    * belongs to one store. The import walked every one of them into a
    * single destination, so requests written for one store landed in
@@ -548,7 +548,7 @@ describe('review 22 a takeover moves one store’s work, through one lock', () =
    * AND THE IMPORT HAPPENS INSIDE THE SECTION THAT HOLDS SAVES OF THIS
    * WINDOW'S OWN QUEUE.
    *
-   * ⚠️ THE FIRST VERSION OF THIS CELL SUPPLIED ITS OWN `run` AND WATCHED
+   * NOTE: THE FIRST VERSION OF THIS CELL SUPPLIED ITS OWN `run` AND WATCHED
    * ITS OWN FLAG. It passed with `Saver.adopt` replaced by an
    * implementation that threw -- it was testing the stand-in, not the
    * thing the stand-in stands for. A review found that. This one builds
@@ -670,7 +670,7 @@ describe('review 23 a takeover that moved one store’s work can come back for t
     assert.match(said.said[0].text, /2 were written for other stores and are still there/);
 
     /*
-     * ⚠️ THE SECOND RUN, WITH THE OTHER STORE CONFIGURED. This used to
+     * NOTE: THE SECOND RUN, WITH THE OTHER STORE CONFIGURED. This used to
      * be refused as `already-claimed` -- by this window, to this window,
      * with no way round it.
      */
@@ -763,7 +763,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
     useStore(hash: string): void;
   } {
     /*
-     * ⚠️ EVERY CALL ANSWERS WITH A NEW OBJECT, because the extension's
+     * NOTE: EVERY CALL ANSWERS WITH A NEW OBJECT, because the extension's
      * does: `rebuild` builds a fresh one, and a reference taken earlier
      * then goes on describing the window that has been replaced.
      *
@@ -824,7 +824,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
     const chooser = new Recorder(['S-dead', 'take-over']);
     const recovering = chooseAndRecover(sessions, chooser, into);
     /*
-     * ⚠️ THE CHANGE LANDS WHILE THE LOCK IS BEING TAKEN. This is the
+     * NOTE: THE CHANGE LANDS WHILE THE LOCK IS BEING TAKEN. This is the
      * position that decides where the check has to live: a check made
      * before `adopt` has already answered about a moment that has passed
      * by the time anything is written. Moving it there leaves this cell
@@ -852,7 +852,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
   });
 
   /*
-   * ⚠️ THE TWIN. Without it, a build that refuses EVERY takeover passes
+   * NOTE: THE TWIN. Without it, a build that refuses EVERY takeover passes
    * the cell above -- and the same stand-in, with the generation left
    * alone, has to carry the entries.
    */
@@ -881,7 +881,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
   });
 
   /*
-   * ⚠️ THE SETTINGS `rebuild` REACTS TO THAT DO NOT MOVE THE QUEUE --
+   * NOTE: THE SETTINGS `rebuild` REACTS TO THAT DO NOT MOVE THE QUEUE --
    * READ FROM THE MANIFEST, NOT TYPED OUT HERE.
    *
    * `rebuild` runs for every theourgia setting and builds a new Saver
@@ -892,7 +892,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
    * the same place. Refusing there costs the user a run and tells them
    * the store changed, which is untrue.
    *
-   * ⚠️ AND THE LIST WAS TYPED OUT, AND WAS ALREADY WRONG. It said
+   * NOTE: AND THE LIST WAS TYPED OUT, AND WAS ALREADY WRONG. It said
    * actor/scheme/corePath/libDirs and the extension also has
    * `timeoutMs` and `transport` -- a list written to make sure a new
    * setting had somewhere it must be added, missing two on the day it
@@ -967,7 +967,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
   }
 
   /*
-   * ⚠️ AND A STORE THAT LEFT AND CAME BACK IS THE SAME QUEUE. A -> B ->
+   * NOTE: AND A STORE THAT LEFT AND CAME BACK IS THE SAME QUEUE. A -> B ->
    * A while the user decides leaves the file, and the lock, exactly
    * where they were. A change counter calls that the worst case; the
    * queue's identity calls it no case at all.
@@ -994,7 +994,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
   });
 
   /*
-   * ⚠️ AND THE REFUSAL SPENDS NOTHING.
+   * NOTE: AND THE REFUSAL SPENDS NOTHING.
    *
    * "Nothing was moved and nothing was lost" is a claim about the source
    * queue, the adoption marks and the claim sequence, and it is worth
@@ -1042,7 +1042,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
  * plugin-r2: the recovery listing does not turn "I could not look" into
  * "there is nothing here".
  *
- * ⭐ THE SENTENCE THIS DENIES IS THE ONE THAT MATTERS. "No other window
+ * KEY: THE SENTENCE THIS DENIES IS THE ONE THAT MATTERS. "No other window
  * has left anything here" is what a person acts on by closing the
  * question -- and the unsent work of another window is exactly what it
  * would be denying the existence of. Both defects below were measured by
@@ -1055,7 +1055,7 @@ describe('plugin-r2 a listing that could not be read is not an empty one', () =>
   });
 
   /*
-   * ⚠️ A REAL FAILURE, not a stubbed one. A directory with no execute
+   * NOTE: A REAL FAILURE, not a stubbed one. A directory with no execute
    * permission cannot be listed, and `readdirSync` raises EACCES on it.
    * Running as root defeats that, so the cell says it could not set the
    * situation up rather than passing on a reading it did not take.
@@ -1095,7 +1095,7 @@ describe('plugin-r2 a listing that could not be read is not an empty one', () =>
   });
 
   /*
-   * ⭐ AND A QUEUE THAT PARSED INTO THE WRONG SHAPE IS NOT AN EMPTY
+   * KEY: AND A QUEUE THAT PARSED INTO THE WRONG SHAPE IS NOT AN EMPTY
    * ONE. The catch beside this line says exactly that about a queue that
    * will not parse; the counting line said the opposite about one that
    * parses into something unexpected, so the session vanished from the
@@ -1122,7 +1122,7 @@ describe('plugin-r2 a listing that could not be read is not an empty one', () =>
  * plugin-r2: a queue whose presence could not be established is offered,
  * not dropped.
  *
- * ⭐ THE DROP HAPPENED BEFORE THE READER THAT WAS REPAIRED. `exists` is
+ * KEY: THE DROP HAPPENED BEFORE THE READER THAT WAS REPAIRED. `exists` is
  * `fs.existsSync`, which answers false for a path whose ancestry cannot
  * be searched exactly as it does for one that is not there -- so an
  * unreadable queue never reached the reader that refuses unreadable
@@ -1154,7 +1154,7 @@ describe('plugin-r2 a queue whose presence is unknown is still offered', () => {
     );
     const paths = sessions.outboxPathsFor('S-dead');
     /*
-     * ⛔ `length >= 1` IS TRUE OF EITHER PATH ALONE.
+     * NEVER: `length >= 1` IS TRUE OF EITHER PATH ALONE.
      *
      * Measured in a fifteenth review round: with this stub, dropping
      * `out.push(legacy)` passed, and so did dropping `out.push(candidate)`.

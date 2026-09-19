@@ -85,7 +85,7 @@ const digestOf = (text: string): string =>
   require('crypto').createHash('sha256').update(text, 'utf8').digest('hex');
 
 /*
- * ⚠️ THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
+ * NOTE: THE REAL DIGEST OF THE REAL PREFIX. A placeholder here was fine
  * while nothing compared it and became a trap the moment the draft
  * rule started asking whether the split still matches: every cell in
  * this file would have read as a draft, for a reason that lived in

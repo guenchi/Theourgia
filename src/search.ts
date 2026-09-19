@@ -17,14 +17,14 @@
 /*
  * What the store found, and what the store can do.
  *
- * ⚠️ THE QUERY IS ONE ARGUMENT. `search <query>` takes a single one,
+ * NOTE: THE QUERY IS ONE ARGUMENT. `search <query>` takes a single one,
  * and the words in it are all required to match; handing the core two
  * words as two arguments gets `(usage (search <query>))` back, which is
  * a refusal about the command line rather than a search with no
  * results. Measured against the pinned core. The joining happens where
  * the request is built, so no caller can arrive at a different rule.
  *
- * ⚠️ AND NOTHING HERE PARSES A RENDERING. `--wire` answers are data:
+ * NOTE: AND NOTHING HERE PARSES A RENDERING. `--wire` answers are data:
  * `(ok (items (hit <id> <score> <note>) ...))`. The keywords or the cut
  * of text in the third position may contain anything at all, and it is
  * carried as a value rather than cut out of a line.
@@ -51,7 +51,7 @@ export interface Hit {
  * FOUND NOTHING. They are one collapse apart and they are opposite news:
  * the store saying it looked, and the store saying it did not.
  *
- * ⚠️ TWO SHAPES ARRIVE HERE, AND BOTH ARE READ. Measured against the
+ * NOTE: TWO SHAPES ARRIVE HERE, AND BOTH ARE READ. Measured against the
  * pinned core:
  *
  *     $ theourgia search "stale baseline"
@@ -67,13 +67,13 @@ export interface Hit {
  * `--wire` -- it will, for the clause the human rendering drops -- the
  * search must not become the reason that change is hard.
  *
- * ⚠️ ON THE HUMAN ROUTE NO HITS IS NO OUTPUT AT ALL, so an empty list
+ * NOTE: ON THE HUMAN ROUTE NO HITS IS NO OUTPUT AT ALL, so an empty list
  * arrives as an empty list and there is nothing to unwrap. That is why
  * an empty input is an empty answer here and not an unreadable one.
  */
 export function hitsOf(data: Datum[]): Hit[] | null {
   /*
-   * ⛔ AN `items` CLAUSE IS NOT AN ENVELOPE UNLESS THE FORM SAID `ok`.
+   * NEVER: AN `items` CLAUSE IS NOT AN ENVELOPE UNLESS THE FORM SAID `ok`.
    *
    * Found by an outside review and reproduced: this asked only whether
    * a clause of that name was present, so `(error (items))` -- a refusal
@@ -82,7 +82,7 @@ export function hitsOf(data: Datum[]): Hit[] | null {
    * what says whether this is an answer at all.
    */
   /*
-   * ⛔ AND A SECOND GUARD HERE WOULD HAVE NO CASE BEHIND IT EITHER.
+   * NEVER: AND A SECOND GUARD HERE WOULD HAVE NO CASE BEHIND IT EITHER.
    *
    * The decoder tells "two of this clause" from "no such clause" since a
    * sixteenth review round, and three of its callers had been reading
@@ -102,7 +102,7 @@ export function hitsOf(data: Datum[]): Hit[] | null {
   const wrapped = envelope === null ? null : envelope.clause('items');
   const items = wrapped !== null && wrapped.read ? wrapped.items : data;
   /*
-   * ⚠️ THIS READER DECIDES BY SHAPE, AND THAT IS THE DEFECT THIS
+   * NOTE: THIS READER DECIDES BY SHAPE, AND THAT IS THE DEFECT THIS
    * DELIVERY REPAIRED ELSEWHERE -- named here because removing it
    * changes what two cells expect.
    *
@@ -113,7 +113,7 @@ export function hitsOf(data: Datum[]): Hit[] | null {
    * `interpret` removes one envelope and this removes a second, so
    * `(ok (items (ok (items (hit "a.1" 2 "x")))))` yields the hit.
    *
-   * ⛔ A GUARD HERE WOULD HAVE NO CASE BEHIND IT. One was written --
+   * NEVER: A GUARD HERE WOULD HAVE NO CASE BEHIND IT. One was written --
    * refuse when the single item is itself an `ok` form -- and a mutation
    * run showed it changed nothing: that input is already refused one
    * line below, because `(ok ...)` is not a `hit`. It was deleted rather
@@ -144,7 +144,7 @@ export function hitsOf(data: Datum[]): Hit[] | null {
 /*
  * BEST FIRST, AND THE SAME ORDER EVERY TIME.
  *
- * ⭐ TIES ARE BROKEN BY THE ID rather than left as they arrived. Two
+ * KEY: TIES ARE BROKEN BY THE ID rather than left as they arrived. Two
  * blocks with one score are a common answer -- a two-word query matching
  * two keywords scores the same on both -- and an order that came from
  * the store's walk can differ between two runs of one search. A list
@@ -158,7 +158,7 @@ export function rankHits(hits: Hit[]): Hit[] {
 /*
  * EVERY VERB THE CORE SAID IT HAS.
  *
- * ⚠️ WHY THIS EXISTS AT ALL. The definition search wants `whereis`,
+ * NOTE: WHY THIS EXISTS AT ALL. The definition search wants `whereis`,
  * which the core does not have yet. This extension does not contribute a
  * command that answers "not implemented": that is a promise with nobody
  * responsible for it, and a stub is a thing nobody goes back to remove.
@@ -171,7 +171,7 @@ export function rankHits(hits: Hit[]): Hit[] {
  */
 export function knownVerbs(answer: Datum): Set<string> | null {
   /*
-   * ⛔ A `verbs` CLAUSE IS NOT A CATALOGUE UNLESS THE FORM SAID `ok`.
+   * NEVER: A `verbs` CLAUSE IS NOT A CATALOGUE UNLESS THE FORM SAID `ok`.
    *
    * `hitsOf` was repaired for exactly this in an earlier round and this
    * reader was left as it was, because the repair was made where the
@@ -186,7 +186,7 @@ export function knownVerbs(answer: Datum): Set<string> | null {
     return null;
   }
   /*
-   * ⚠️ BOTH REASONS REFUSE. A `describe` with no catalogue and one
+   * NOTE: BOTH REASONS REFUSE. A `describe` with no catalogue and one
    * carrying two are both answers this build cannot take a list of
    * verbs from, and null is "I could not find out" -- which is what the
    * caller must tell apart from a core with no verbs.
@@ -239,7 +239,7 @@ export type SearchOutcome =
   | { did: 'failed'; query: string; because: string };
 
 /*
- * ⚠️ THE QUERY IS TRIMMED AND AN EMPTY ONE IS NOT SENT. A box the user
+ * NOTE: THE QUERY IS TRIMMED AND AN EMPTY ONE IS NOT SENT. A box the user
  * dismissed and a box they left blank both come back as nothing to look
  * for, and sending that to the core gets a usage line back -- a
  * complaint about a command line, shown to somebody who never typed one.

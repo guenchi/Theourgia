@@ -109,7 +109,7 @@ describe('XC-10/11/12/13/15 legacy migration preserves every original',()=>{
     assert.ok(!result.migrated && result.because==='unreadable-migration-record',
       `an unreadable journal was reported as ${!result.migrated?result.because:'migrated'}`);
     /*
-     * ⛔ "SOMETHING IN THAT DIRECTORY" IS NOT "THE FILE THAT FAILED".
+     * NEVER: "SOMETHING IN THAT DIRECTORY" IS NOT "THE FILE THAT FAILED".
      *
      * Measured in a sixteenth review round: returning
      * `retained: [path.join(control, 'not-the-journal.json')]` passed

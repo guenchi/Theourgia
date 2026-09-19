@@ -17,7 +17,7 @@
 /*
  * EVERY REFUSAL THE CORE CAN MAKE, AGAINST THE ONE TABLE THAT SORTS THEM.
  *
- * ⚠️ THE LIST IS READ FROM THE CORE, NOT WRITTEN HERE.
+ * NOTE: THE LIST IS READ FROM THE CORE, NOT WRITTEN HERE.
  *
  * I wrote one by hand first, from the cells in `saver.test.ts` that
  * happened to exercise a refusal. It had seven names and looked
@@ -35,7 +35,7 @@
  * Dynamic refusal constructors still need an exported core schema to make
  * this a complete semantic catalog; the source pin remains reproducible.
  *
- * ⚠️ AND IT IS THE WRONG PLACE TO BE ASKING. Which refusals a verb can
+ * NOTE: AND IT IS THE WRONG PLACE TO BE ASKING. Which refusals a verb can
  * produce is a fact the CORE knows; deducing it by reading its source is
  * a stopgap, and the main session has put a machine-readable table on
  * the core's queue. When that lands, both tables here are derived from
@@ -61,7 +61,7 @@ function coreSources(): { directory: string; files: string[] } {
     'THEOURGIA_CORE is not set, so the refusals this cell is about cannot be read from the core'
   );
   /*
-   * ⚠️ THE DIRECTORY IS LISTED, NOT THE INDEX. This read the core's
+   * NOTE: THE DIRECTORY IS LISTED, NOT THE INDEX. This read the core's
    * sources with `git ls-files`, which answers "what is tracked" and not
    * "what is there". Two readings, both taken:
    *
@@ -129,7 +129,7 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
         continue;
       }
       /*
-       * ⚠️ IT IS PUT THROUGH THE PRODUCT'S OWN CLASSIFIER, not compared
+       * NOTE: IT IS PUT THROUGH THE PRODUCT'S OWN CLASSIFIER, not compared
        * with a copy of its table. A cell that restated the table would
        * be checking its own copy -- and the mark is the product's way of
        * saying "nobody has looked at this one", which is precisely what

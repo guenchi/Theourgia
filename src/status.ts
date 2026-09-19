@@ -53,7 +53,7 @@ export interface StatusFacts {
   /*
    * WHY THE STORE COULD NOT BE ASKED, IN THE CORE'S OWN WORDS.
    *
-   * ⭐ `conflicts: null` ALREADY SAYS THAT SOMETHING WENT WRONG AND
+   * KEY: `conflicts: null` ALREADY SAYS THAT SOMETHING WENT WRONG AND
    * CANNOT SAY WHAT. Measured: with a directory sitting where the
    * daemon's socket goes, the core answers
    * `(error serve-path-occupied (path "<run root>/<key>/socket"))` and
@@ -150,7 +150,7 @@ export interface Notice {
  * and a commit carrying it SUCCEEDED. It exists to save the reader a
  * `drafts` round trip, not to ask anything of them.
  *
- * ⚠️ IT NAMES OTHER INSTANCES OF THE STORE, NOT OTHER PEOPLE. Every
+ * NOTE: IT NAMES OTHER INSTANCES OF THE STORE, NOT OTHER PEOPLE. Every
  * agent writing into one store on one machine appends through the same
  * log writer, so a colleague's commit is NOT what shows up here. What
  * shows up is a copy of the store that was adopted elsewhere and had a
@@ -158,7 +158,7 @@ export interface Notice {
  * instance" for that reason: "somebody else has been writing" would be a
  * reading of this field that is wrong in the ordinary case.
  *
- * ⚠️ AND THE WRITER THIS COMMIT ITSELF ADVANCED IS DROPPED. Measured
+ * NOTE: AND THE WRITER THIS COMMIT ITSELF ADVANCED IS DROPPED. Measured
  * on the pinned core: a commit whose own cursor is `("w" . 7)` answers
  * `(behind (("w" . 7)))` -- its own record, reported back as though it
  * were somebody's. The core's rule excludes the DRAFT writer's name and
@@ -169,7 +169,7 @@ export interface Notice {
  * behaves, and the name to drop is read off this very answer's own
  * cursor rather than remembered anywhere.
  *
- * ⚠️ SO THIS NEVER FAILS A SAVE. The core answers a successful commit
+ * NOTE: SO THIS NEVER FAILS A SAVE. The core answers a successful commit
  * with no clause at all rather than an error when it cannot build one;
  * a reader that threw on an unexpected shape would turn that success
  * into a failure at the one moment somebody is watching. Every shape it
@@ -177,7 +177,7 @@ export interface Notice {
  */
 export function behindNotice(answer: Datum, ours: Datum = null): string | null {
   /*
-   * ⛔ AND THE FORM HAS TO HAVE SAID `ok`. Measured in a twelfth
+   * NEVER: AND THE FORM HAS TO HAVE SAID `ok`. Measured in a twelfth
    * review round: `(garbage (behind (("other" . 2))))` produced the
    * whole sentence. This reader was written in the same batch that
    * repaired four others for the same shape and was not one of them,
@@ -188,7 +188,7 @@ export function behindNotice(answer: Datum, ours: Datum = null): string | null {
     return null;
   }
   /*
-   * ⚠️ BOTH REASONS REFUSE. An answer with no `behind` clause is one
+   * NOTE: BOTH REASONS REFUSE. An answer with no `behind` clause is one
    * that says nothing about what landed, and an answer carrying two is
    * one this build cannot read; neither produces a notice, and null is
    * what this reader says for both.
@@ -209,7 +209,7 @@ export function behindNotice(answer: Datum, ours: Datum = null): string | null {
       return null;
     }
     /*
-     * ⚠️ ONE NAME BEFORE THE DOT, NOT THE FIRST OF SEVERAL. `(behind
+     * NOTE: ONE NAME BEFORE THE DOT, NOT THE FIRST OF SEVERAL. `(behind
      * (("w" . 3)))` is a pair; a clause carrying two items before the
      * dot is a shape this build does not know, and reading the first of
      * them would be a guess dressed as an answer.
@@ -230,14 +230,14 @@ export function behindNotice(answer: Datum, ours: Datum = null): string | null {
     return null;
   }
   /*
-   * ⚠️ ONE RECORD IS ITS OWN SENTENCE. `${n} records` is right for every
+   * NOTE: ONE RECORD IS ITS OWN SENTENCE. `${n} records` is right for every
    * n except the one a user is most likely to meet first.
    */
   const each = landed.map((one) =>
     one.seq === 1 ? `${one.writer} has 1 record` : `${one.writer} has ${one.seq} records`
   );
   /*
-   * ⚠️ THE PREAMBLE CARRIES NO COUNT WORD OF ITS OWN. The per-writer
+   * NOTE: THE PREAMBLE CARRIES NO COUNT WORD OF ITS OWN. The per-writer
    * phrase already says "1 record" or "n records", and a fixed word
    * beside it would be a second place for the number's language to be
    * wrong -- and would make the singular read "1 record ... records".
@@ -257,7 +257,7 @@ export function behindNotice(answer: Datum, ours: Datum = null): string | null {
  * sees, and a name wrongly kept is a line that is merely redundant.
  */
 /*
- * ⛔ THE SAME READER THE REST OF THIS BUILD USES FOR A CURSOR.
+ * NEVER: THE SAME READER THE REST OF THIS BUILD USES FOR A CURSOR.
  *
  * This had its own, narrower one: it required a dotted pair, while
  * `readEvent` also accepts `("w" 7)` as a two-element list (wire.ts).
@@ -290,7 +290,7 @@ export function saveNotice(
 ): Notice {
   if (outcome.status === 'refused' || outcome.status === 'blocked') {
     /*
-     * ⚠️ THE BLOCK IS NAMED, AND SO IS WHAT BECOMES OF THE EDIT.
+     * NOTE: THE BLOCK IS NAMED, AND SO IS WHAT BECOMES OF THE EDIT.
      *
      * This was the core's sentence alone -- "the core refused the write:
      * cursor-unreachable" -- with no way to tell WHICH block it was
@@ -690,7 +690,7 @@ export function refusalNotice(
  *     `replay`, so the work is not done twice;
  *   - what it costs is the transmission, not the change.
  *
- * ⚠️ ALL THREE SENTENCES OR NONE. Dropping the second turns a
+ * NOTE: ALL THREE SENTENCES OR NONE. Dropping the second turns a
  * manageable cost into what reads like data loss and nobody will ever
  * press it; dropping the first hides that there is a cost at all. The
  * confirmation word is returned rather than hard-coded at the call site
@@ -732,7 +732,7 @@ export function undecidableSessionNotice(
 ): Notice {
   if (because === 'start-time-unrecorded') {
     /*
-     * ⚠️ THIS ONE DOES NOT FIX ITSELF EITHER, and it used to be told to
+     * NOTE: THIS ONE DOES NOT FIX ITSELF EITHER, and it used to be told to
      * wait. The record carries no start time -- written by an older
      * build, or on a platform that could not supply one -- so no later
      * attempt produces it. Nothing is offered: the window may well be
@@ -815,7 +815,7 @@ export function refusedTakeoverNotice(
   }
   if (because === 'already-claimed') {
     /*
-     * ⚠️ IT DOES NOT SAY THE WORK IS BEING SENT. Whoever holds the claim
+     * NOTE: IT DOES NOT SAY THE WORK IS BEING SENT. Whoever holds the claim
      * may have imported nothing -- this window reached that state itself
      * once -- so "it is being sent from there" would be a promise this
      * code has no way to keep.
@@ -845,13 +845,13 @@ export function refusedTakeoverNotice(
 /*
  * WHAT A TAKEOVER MOVED.
  *
- * ⚠️ `skipped` COUNTS TWO DIFFERENT THINGS and the sentence must not
+ * NOTE: `skipped` COUNTS TWO DIFFERENT THINGS and the sentence must not
  * claim either: an entry already in this window's queue, and one the
  * source has marked as handed to some other claimant. An earlier comment
  * here said it meant the first, which a review pointed out is not
  * established.
  *
- * ⚠️ AND MOVING THEM IS NOT SENDING THEM. Nothing here starts a drain:
+ * NOTE: AND MOVING THEM IS NOT SENDING THEM. Nothing here starts a drain:
  * the entries wait for the next save or an explicit retry, and a
  * sentence promising they are on their way would be describing work that
  * has not been scheduled.
@@ -863,7 +863,7 @@ export function refusedTakeoverNotice(
  * something that did not look at what it was saying, which is the
  * impression to avoid in the one message a user acts on.
  *
- * ⚠️ AND THE FIRST REPAIR WAS A WORD, WHICH IS NOT WHERE THE PROBLEM
+ * NOTE: AND THE FIRST REPAIR WAS A WORD, WHICH IS NOT WHERE THE PROBLEM
  * WAS. Fixing the leading verb left "1 was written for other stores and
  * ARE still THERE ... bring THEM across" -- and a review reading all
  * eight sentences at a count of one found every one of them broken the
@@ -883,7 +883,7 @@ export function adoptedNotice(
 ): Notice {
   if (nowhereToPutThem) {
     /*
-     * ⚠️ NOTHING WAS TAKEN OVER. This used to say it was: the command
+     * NOTE: NOTHING WAS TAKEN OVER. This used to say it was: the command
      * claimed first and found out afterwards. It refuses before taking a
      * token now, so the sentence has to say that too.
      */
@@ -895,7 +895,7 @@ export function adoptedNotice(
     };
   }
   /*
-   * ⚠️ ONE SENTENCE PER NON-EMPTY BUCKET, AND NO BUCKET WITHOUT ONE.
+   * NOTE: ONE SENTENCE PER NON-EMPTY BUCKET, AND NO BUCKET WITHOUT ONE.
    *
    * The ledger's rule is that everything the takeover saw is in exactly
    * one bucket; this is the other half of it. A bucket the report did
@@ -906,7 +906,7 @@ export function adoptedNotice(
    * shows up as an unexplained difference in what the user is told.
    */
   /*
-   * ⚠️ THE IMPORTED SENTENCE IS CONDITIONAL LIKE EVERY OTHER. It was
+   * NOTE: THE IMPORTED SENTENCE IS CONDITIONAL LIKE EVERY OTHER. It was
    * unconditional, so a report about another store's requests opened
    * with "0 unsent request(s) are now in this window's queue" -- a
    * sentence about nothing, in front of the one the user needed. The
@@ -959,14 +959,14 @@ export function adoptedNotice(
   }
   if (ledger.unreadableQueue > 0) {
     /*
-     * ⚠️ "COULD NOT BE INSPECTED", NOT "COULD NOT BE READ". A path under
+     * NOTE: "COULD NOT BE INSPECTED", NOT "COULD NOT BE READ". A path under
      * an ancestry this process cannot search, or one that turns out not
      * to be a directory, fails the same way as a corrupt queue -- and
      * saying a FILE could not be read asserts that a file is there,
      * which none of those establish. Found in review.
      */
     /*
-     * ⚠️ AND THE SENTENCE FITS BOTH WAYS A PATH CAN FAIL. "Could not be
+     * NOTE: AND THE SENTENCE FITS BOTH WAYS A PATH CAN FAIL. "Could not be
      * inspected" overstates a file that WAS opened and read and whose
      * contents did not validate; "could not be read" overstated a path
      * that holds no file at all. What is true of both, and is what the
@@ -995,13 +995,13 @@ export function adoptedNotice(
   }
   if (ledger.movedButUnmarked > 0) {
     /*
-     * ⚠️ THESE ARRIVED -- the destination was asked, not assumed. The
+     * NOTE: THESE ARRIVED -- the destination was asked, not assumed. The
      * sentence for the bucket beside this one says the opposite, and the
      * two were one bucket until a review pointed out that it described
      * work which had in fact moved as work the user should go looking
      * for elsewhere.
      *
-     * ⚠️ AND IT NO LONGER PROMISES THAT NOTHING IS SENT TWICE. It did,
+     * NOTE: AND IT NO LONGER PROMISES THAT NOTHING IS SENT TWICE. It did,
      * and that was more than this code can know: the other window's copy
      * is still unmarked, so a later takeover into a DIFFERENT queue can
      * carry it again and send it. What is true is what the store does
@@ -1009,7 +1009,7 @@ export function adoptedNotice(
      * takeover rests on.
      */
     /*
-     * ⚠️ "WAS NOT CONFIRMED", NOT "COULD NOT BE MARKED". When the
+     * NOTE: "WAS NOT CONFIRMED", NOT "COULD NOT BE MARKED". When the
      * destination stored the entry and then threw, the mark was never
      * ATTEMPTED -- saying it failed sends the reader to look at
      * permissions on a file nothing tried to write. Found in review.
@@ -1028,7 +1028,7 @@ export function adoptedNotice(
   }
   if (ledger.outcomeUnknown > 0) {
     /*
-     * ⚠️ NEITHER ANSWER. The destination could not say whether it has
+     * NOTE: NEITHER ANSWER. The destination could not say whether it has
      * them, and this window is not going to choose the comfortable one
      * on its behalf.
      */
@@ -1043,7 +1043,7 @@ export function adoptedNotice(
     );
   }
   /*
-   * ⚠️ AND THE ADVICE ONLY WHEN THERE IS SOMETHING HERE TO SEND. It was
+   * NOTE: AND THE ADVICE ONLY WHEN THERE IS SOMETHING HERE TO SEND. It was
    * unconditional, so a report about another store's requests, or about
    * outcomes nobody could establish, ended by telling the user those
    * would go out with their next save -- of a queue that does not hold
@@ -1051,14 +1051,14 @@ export function adoptedNotice(
    */
   if (ledger.imported > 0 || ledger.movedButUnmarked > 0) {
     /*
-     * ⚠️ THE ADVICE NAMES ITS SUBJECT BY WHERE IT IS.
+     * NOTE: THE ADVICE NAMES ITS SUBJECT BY WHERE IT IS.
      *
      * It said "They go out with the next save", and when the sentence
      * before it was the one about requests whose whereabouts nobody
      * could establish, "they" read as those -- an offer to send what
      * this window has just said it cannot find.
      *
-     * ⚠️ AND "THE ONES THAT ARRIVED" DID NOT FIX IT, which is worth the
+     * NOTE: AND "THE ONES THAT ARRIVED" DID NOT FIX IT, which is worth the
      * space: that sentence still sits immediately after the
      * unknown-outcome one, where "arrived" can be read as "whichever of
      * those turn out to have arrived"; and after the sentence about
@@ -1068,7 +1068,7 @@ export function adoptedNotice(
      * the two sentences above invite is about something that is
      * somewhere else. Found in review.
      *
-     * ⚠️ AND IT SAYS WHAT IS TRIED, NOT WHAT IS ACHIEVED. Naming the
+     * NOTE: AND IT SAYS WHAT IS TRIED, NOT WHAT IS ACHIEVED. Naming the
      * place fixed the subject and then let the verb overstate:
      * "everything now in this window's queue goes out with the next
      * save" is a promise this layer cannot keep. A save works through
@@ -1082,7 +1082,7 @@ export function adoptedNotice(
      * whose queue is already in trouble. Found in review.
      */
     /*
-     * ⚠️ AND THE SAVE'S ATTEMPT IS CONDITIONAL, SO THE COMMAND GOES
+     * NOTE: AND THE SAVE'S ATTEMPT IS CONDITIONAL, SO THE COMMAND GOES
      * FIRST. "The next save will try this window's queue" was still more
      * than `save` does: it calls `ensureCursor` before it drains, and a
      * store it cannot reach makes it answer `blocked` without offering
@@ -1117,7 +1117,7 @@ export function adoptedNotice(
  * "deleted" to the person reading it.
  */
 /*
- * ⚠️ THE STORE CHANGED WHILE THE USER WAS DECIDING.
+ * NOTE: THE STORE CHANGED WHILE THE USER WAS DECIDING.
  *
  * The takeover was set up against the queue this window had when the
  * command started, and by the time it held that queue the window was
@@ -1168,7 +1168,7 @@ export function discardedNotice(sessionId: string, trash: string, liveAdopters: 
 export function unrecordedNotice(file: string, because: Unrecorded): Notice {
   if (because === 'split-changed') {
     /*
-     * ⚠️ NOT "THE HEADING CHANGED". The record can stop producing what
+     * NOTE: NOT "THE HEADING CHANGED". The record can stop producing what
      * was sent for more than one reason -- the heading it splits at, or
      * what it says the block's own line endings are -- and naming only
      * the first would be telling the user to look at something that did

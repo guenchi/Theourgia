@@ -24,20 +24,20 @@
  * -- one command, a list, an action, a confirmation -- and no more. No
  * tree view: every way out section 12 names is a command.
  *
- * ⚠️ THE EDITOR IS BEHIND ONE NARROW INTERFACE AND NOT IMPORTED HERE.
+ * NOTE: THE EDITOR IS BEHIND ONE NARROW INTERFACE AND NOT IMPORTED HERE.
  * Everything below is a decision about what to offer, what to say and
  * what to do, and a decision made inside a `vscode.window` call is a
  * decision no cell can read. `Chooser` is what the extension supplies
  * and what a cell supplies; the flow cannot tell them apart, so what a
  * cell exercises is what runs.
  *
- * ⚠️ THE SENTENCES THAT SAY WHAT AN ACTION COSTS ARE NOT WRITTEN HERE.
+ * NOTE: THE SENTENCES THAT SAY WHAT AN ACTION COSTS ARE NOT WRITTEN HERE.
  * The forced takeover's warning and the two fixed discard notes come
  * from `status.ts` and `sessions.ts` unchanged, because a copy of the
  * one thing that has to be exactly right is a second place for it to be
  * wrong.
  *
- * ⚠️ THE LABELS AND THE COUNTS ARE WRITTEN HERE, and an earlier version
+ * NOTE: THE LABELS AND THE COUNTS ARE WRITTEN HERE, and an earlier version
  * of this paragraph said otherwise -- it claimed every line the user
  * reads comes from elsewhere, which is false of the row descriptions,
  * the two decidable-liveness phrases, the action labels and details, the
@@ -165,7 +165,7 @@ function actionsFor(row: OtherSession): Array<Choice<RecoveryAction>> {
 /*
  * WHERE A TAKEOVER'S ENTRIES GO.
  *
- * ⚠️ IT IS A FUNCTION AND NOT AN OBJECT, and it carries the name of its
+ * NOTE: IT IS A FUNCTION AND NOT AN OBJECT, and it carries the name of its
  * store. Both were defects a review found. An object closing over a
  * queue is written to outside whatever serialises that queue, so a save
  * in flight erases the import while the source is already marked as
@@ -174,7 +174,7 @@ function actionsFor(row: OtherSession): Array<Choice<RecoveryAction>> {
  * the dead window's queues, so requests written for one store were
  * dropped into another and would have been sent there.
  *
- * ⚠️ AND THIS PARAGRAPH NAMES THE FUNCTION RATHER THAN ASSERTING THE
+ * NOTE: AND THIS PARAGRAPH NAMES THE FUNCTION RATHER THAN ASSERTING THE
  * STATE. The comment it replaces said the destination "is held by the
  * Saver's serial chain", which was a claim about how things stood and
  * was false -- nothing made it true and nothing would have noticed. What
@@ -191,7 +191,7 @@ export interface Destination {
 }
 
 /*
- * ⚠️ AND THE DESTINATION MAY REFUSE, WHICH IS NOT THE SAME AS FAILING.
+ * NOTE: AND THE DESTINATION MAY REFUSE, WHICH IS NOT THE SAME AS FAILING.
  *
  * `run` used to answer with the work's result and nothing else, so it
  * had no way to say "I am no longer the queue you were given". It can
@@ -231,14 +231,14 @@ export interface WindowQueue {
 /*
  * A DESTINATION THAT KNOWS WHEN IT HAS STOPPED BEING ONE.
  *
- * ⚠️ THE SECOND READING IS INSIDE THE LOCK, not before it. Between
+ * NOTE: THE SECOND READING IS INSIDE THE LOCK, not before it. Between
  * deciding to import and holding the queue there is a wait -- the lock
  * may be held by a save in flight -- and that wait is long enough for
  * the settings to change. A check before `adopt` answers about a moment
  * that has passed by the time anything is written, which is the same
  * defect as the one it is repairing, one step smaller.
  *
- * ⚠️ AND IT REFUSES RATHER THAN REDIRECTING. The survey that chose these
+ * NOTE: AND IT REFUSES RATHER THAN REDIRECTING. The survey that chose these
  * entries was made against the store hash captured with this
  * destination; carrying them into a different store's queue would be
  * making a decision the user never made. Refusing costs the user one
@@ -246,7 +246,7 @@ export interface WindowQueue {
  * window that holds it, so the second run surveys the new store
  * properly and reports the old store's entries as belonging elsewhere.
  *
- * ⚠️ WHAT IS COMPARED IS THE QUEUE'S IDENTITY, NOT A CHANGE COUNTER.
+ * NOTE: WHAT IS COMPARED IS THE QUEUE'S IDENTITY, NOT A CHANGE COUNTER.
  *
  * The first version compared the generation, and that is "something
  * changed" rather than "the thing I depended on changed". The extension
@@ -268,7 +268,7 @@ export function destinationFor(now: () => WindowQueue | null): Destination | nul
     return null;
   }
   /*
-   * ⚠️ THE STORE IS COPIED OUT, NOT READ BACK OFF `at` LATER. `now` is
+   * NOTE: THE STORE IS COPIED OUT, NOT READ BACK OFF `at` LATER. `now` is
    * free to answer with the same object every time -- the extension's
    * builds a fresh one, a stand-in need not -- and then `at.storeHash`
    * is not what was decided, it is whatever it says NOW, so the
@@ -355,7 +355,7 @@ async function act(
   }
 
   /*
-   * ⚠️ THE DESTINATION IS CHECKED BEFORE THE TOKEN IS TAKEN.
+   * NOTE: THE DESTINATION IS CHECKED BEFORE THE TOKEN IS TAKEN.
    *
    * Claiming first and then finding nowhere to put the entries left this
    * window holding a live claim over work it had not moved -- and the
@@ -371,7 +371,7 @@ async function act(
   const forced = action === 'force-take-over';
   if (forced) {
     /*
-     * ⚠️ THE ONE CONFIRMATION THAT HAS TO CARRY A COST. The sentence is
+     * NOTE: THE ONE CONFIRMATION THAT HAS TO CARRY A COST. The sentence is
      * `forceClaimNotice`'s, unchanged and unwrapped: it says the other
      * window may be running, that each request then reaches the store
      * twice, and that the store settles the second by request id rather
@@ -398,7 +398,7 @@ async function act(
    * also holds saves of this window's own queue -- so the import cannot
    * race one in flight.
    *
-   * ⚠️ AND ONE TAKEOVER NEED NOT FINISH THE JOB. The token names a
+   * NOTE: AND ONE TAKEOVER NEED NOT FINISH THE JOB. The token names a
    * SESSION and that session may have a queue per store; this moves the
    * one belonging to the destination's store and says how many it left.
    * Running the command again with another store configured takes those,
@@ -413,7 +413,7 @@ async function act(
   );
   if (!adoption.ran) {
     /*
-     * ⚠️ NOTHING WAS MOVED AND NOTHING WAS SPENT. The source queue, its
+     * NOTE: NOTHING WAS MOVED AND NOTHING WAS SPENT. The source queue, its
      * adoption marks and the claim's sequence are all as they were, and
      * the token is re-enterable by this window, so running the command
      * again surveys the store that is configured NOW -- under which the

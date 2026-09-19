@@ -17,14 +17,14 @@
 /*
  * THE WHOLE SUITE IS WATCHED, NOT EACH FIXTURE.
  *
- * ⚠️ WHY THIS FILE EXISTS. The shipping transport starts a daemon, and a
+ * NOTE: WHY THIS FILE EXISTS. The shipping transport starts a daemon, and a
  * daemon's socket goes under `THEOURGIA_RUN` -- which, unset, is the
  * user's own `~/.theourgia/run`. When these cells were first turned onto
  * that transport, one run of this suite left THIRTEEN daemons running
  * and thirteen directories in it. The suite was green. It was cleaned up
  * by hand.
  *
- * ⛔ AND FIXING THE FIXTURE WAS NOT ENOUGH, which is the reason this is a
+ * NEVER: AND FIXING THE FIXTURE WAS NOT ENOUGH, which is the reason this is a
  * gate over everything rather than an assertion inside `RealStore`.
  * Several cells build their own transport around the store's config --
  * `new CliTransport(store.config)` -- and that spelling takes
@@ -52,7 +52,7 @@ import { additionsTo, entriesIn, usersRunRoot } from '../support/run-root';
 import { FakeCore } from '../support/fake';
 
 /*
- * ⭐ AND EVERY PROCESS THIS RUN STARTED, WHEREVER ITS SOCKET WENT.
+ * KEY: AND EVERY PROCESS THIS RUN STARTED, WHEREVER ITS SOCKET WENT.
  *
  * The directory count above answers "did anything land in the user's
  * run root". It does NOT answer "is anything of mine still running": a
@@ -63,13 +63,13 @@ import { FakeCore } from '../support/fake';
  *
  * The scope is this process's own fixtures, which is what makes the
  * assertion sound: `RealStore` names its run root `tvr-<pid>-<n>` with
- * THIS pid, so nothing another session owns can match, and ⛔ nothing
+ * THIS pid, so nothing another session owns can match, and NEVER: nothing
  * here ever kills by a pattern like `scheme`.
  */
 function ourDaemons(): string[] {
   const mark = `tvr-${process.pid}-`;
   /*
-   * ⛔ NOT WRAPPED IN A `catch` THAT ANSWERS "none". A `ps` that could
+   * NEVER: NOT WRAPPED IN A `catch` THAT ANSWERS "none". A `ps` that could
    * not be run would then make this gate announce that nothing leaked --
    * the one answer it must never give. It is allowed to throw; a hook
    * that cannot look is a failing hook, which is the truth.
@@ -163,7 +163,7 @@ describe('plugin-r2 T6 the run-root gate reads the user\'s directory', function 
  * was never assigned. The cleanup was added: `make` disposes and
  * re-raises.
  *
- * ⭐ BUT THERE IS NO CELL FOR IT, because the failure it describes
+ * KEY: BUT THERE IS NO CELL FOR IT, because the failure it describes
  * cannot be produced today, and a cell that passes either way is worse
  * than none. `init` is the one verb the core routes LOCALLY -- `describe`
  * answers `(init (usage (init)) ... (route local))` -- so it never
@@ -181,14 +181,14 @@ describe('plugin-r2 T6 the run-root gate reads the user\'s directory', function 
 /*
  * plugin-r2: the hygiene readers refuse a look that failed.
  *
- * ⭐ THESE GUARDS HAD NO CELLS, and an eleventh review round said so.
+ * KEY: THESE GUARDS HAD NO CELLS, and an eleventh review round said so.
  * Every one of them was added because the reader had answered "nothing
  * is there" for a look that could not be taken -- the reassuring answer,
  * from the instruments the whole T6 section rests on. The repairs were
  * measured by injecting failures in a reviewer's memory, and nothing in
  * this tree would have noticed them being undone.
  *
- * ⚠️ WHAT IS MEASURED IS A REAL FAILURE, not a stubbed one: a path
+ * NOTE: WHAT IS MEASURED IS A REAL FAILURE, not a stubbed one: a path
  * inside a directory with no execute permission cannot be read, and
  * `readdirSync` raises EACCES on it. The directory is made and removed
  * here.
@@ -231,7 +231,7 @@ describe('plugin-r2 a look that failed is not a look that found nothing', functi
     }
     if (raised === null) {
       /*
-       * ⚠️ NOT A PASS. If the directory could be read after all -- as
+       * NOTE: NOT A PASS. If the directory could be read after all -- as
        * root, or on a filesystem that ignores the mode -- then this cell
        * did not put the reader in the situation it is about, and saying
        * so is the only honest outcome.
@@ -297,7 +297,7 @@ describe('plugin-r2 a look that failed is not a look that found nothing', functi
 /*
  * plugin-r2: the rest of the hygiene readers' failure paths.
  *
- * ⭐ THE FIRST SECTION COVERED TWO OF THEM AND A TWELFTH REVIEW ROUND
+ * KEY: THE FIRST SECTION COVERED TWO OF THEM AND A TWELFTH REVIEW ROUND
  * NAMED THE REST. `countRealRunRoot` keeps its own catch in the editor
  * runner, and `ps` is run in four places. Listing them here, with the
  * one that cannot be reached from this process named as such, is what
@@ -328,7 +328,7 @@ describe('plugin-r2 every hygiene reader refuses a look that failed', function (
       const visit = (node: ts.Node): void => {
         if (ts.isTryStatement(node) && /execFileSync\(\s*'ps'/.test(node.tryBlock.getText(parsed))) {
           /*
-           * ⛔ THE WORD `throw` IN THE TEXT IS NOT A `throw` STATEMENT.
+           * NEVER: THE WORD `throw` IN THE TEXT IS NOT A `throw` STATEMENT.
            *
            * This searched the catch's source for /throw/, and the
            * comment beside one of these readers says "with execFileSync
@@ -340,7 +340,7 @@ describe('plugin-r2 every hygiene reader refuses a look that failed', function (
            * which a comment cannot be.
            */
           /*
-           * ⭐ EVERY PATH OUT OF THE CATCH MUST THROW, not one of them.
+           * KEY: EVERY PATH OUT OF THE CATCH MUST THROW, not one of them.
            *
            * Measured in a fourteenth review round: adding
            * `if (code === 'EACCES') return [];` in front of the existing
@@ -350,7 +350,7 @@ describe('plugin-r2 every hygiene reader refuses a look that failed', function (
            * `return` beside it is the defect coming back.
            */
           /*
-           * ⭐ AND "EVERY PATH" INCLUDES FALLING OFF THE END.
+           * KEY: AND "EVERY PATH" INCLUDES FALLING OFF THE END.
            *
            * Measured in a fifteenth review round: making the catch read
            * `if (code !== 'EACCES') { throw e; }` and putting
@@ -410,7 +410,7 @@ describe('plugin-r2 every hygiene reader refuses a look that failed', function (
       ) {
         checked = true;
         /*
-         * ⛔ TOKEN PRESENCE IS NOT BEHAVIOUR. This asked whether the
+         * NEVER: TOKEN PRESENCE IS NOT BEHAVIOUR. This asked whether the
          * words ENOENT and throw appear in the function, which a
          * condition of `if (true || code === 'ENOENT')` satisfies while
          * returning zero for every failure -- measured in a thirteenth
@@ -419,7 +419,7 @@ describe('plugin-r2 every hygiene reader refuses a look that failed', function (
          * comparison against ENOENT.
          */
         /*
-         * ⭐ AND THE QUESTION IS ASKED OF EACH ANSWER, not of the
+         * KEY: AND THE QUESTION IS ASKED OF EACH ANSWER, not of the
          * function.
          *
          * Measured in a fifteenth review round, twice over. Adding

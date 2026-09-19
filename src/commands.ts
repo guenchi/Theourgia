@@ -78,7 +78,7 @@ export const MIGRATE_BLOCK: CommandName = {
 /*
  * FINDING A BLOCK BY WHAT IS IN IT.
  *
- * ⚠️ THERE IS NO "GO TO DEFINITION" COMMAND HERE, and its absence is
+ * NOTE: THERE IS NO "GO TO DEFINITION" COMMAND HERE, and its absence is
  * deliberate. That one wants the core's `whereis`, which the core does
  * not have yet; a command contributed anyway would answer "not
  * implemented" -- a promise with nobody's name on it, and a stub is a

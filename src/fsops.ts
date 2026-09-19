@@ -65,7 +65,7 @@ export interface FileOps {
   syncDirectory(directory: string): void;
   exists(file: string): boolean;
   /*
-   * ⚠️ THE HONEST FORM OF `exists`, FOR THE CALLER THAT REPORTS WHAT IT
+   * NOTE: THE HONEST FORM OF `exists`, FOR THE CALLER THAT REPORTS WHAT IT
    * FINDS.
    *
    * `existsSync` answers false for a file that is not there AND for one
@@ -87,7 +87,7 @@ export interface FileOps {
   link(existing: string, fresh: string): void;
   list(directory: string): string[];
   /*
-   * ⚠️ THE HONEST FORM OF `list`, FOR THE ONE CALLER THAT CANNOT AFFORD
+   * NOTE: THE HONEST FORM OF `list`, FOR THE ONE CALLER THAT CANNOT AFFORD
    * ITS ANSWER.
    *
    * `list` returns `[]` when it cannot read the directory, which is the
@@ -167,7 +167,7 @@ export const nodeFileOps: FileOps = {
   },
   link: (existing, fresh) => fs.linkSync(existing, fresh),
   /*
-   * ⛔ ONLY AN ABSENT DIRECTORY IS AN EMPTY ONE, and this is the
+   * NEVER: ONLY AN ABSENT DIRECTORY IS AN EMPTY ONE, and this is the
    * product, not a fixture.
    *
    * It caught every error and answered with no names. Measured in a
@@ -205,7 +205,7 @@ export const nodeFileOps: FileOps = {
     }
   },
   /*
-   * ⛔ A STAT THAT FAILED IS NOT A PATH THAT IS NOT A DIRECTORY.
+   * NEVER: A STAT THAT FAILED IS NOT A PATH THAT IS NOT A DIRECTORY.
    *
    * It answered false for every error, and the recovery listing skips
    * anything that answers false. Measured in a thirteenth review round
@@ -282,7 +282,7 @@ export function withExclusive<T>(resource:string,work:()=>T):T {
  * WHAT A CORE DIRECTORY HOLDS, asked through the one module that is
  * allowed to touch the file system.
  *
- * ⚠️ IT LIVES HERE AND NOT BESIDE THE RULE IT FEEDS. `config.ts` is a
+ * NOTE: IT LIVES HERE AND NOT BESIDE THE RULE IT FEEDS. `config.ts` is a
  * plain-value module on purpose -- a cell runs the transport with no
  * extension host and no disk around it -- and a census in this tree
  * holds every other source file to importing `fs` only through here. I

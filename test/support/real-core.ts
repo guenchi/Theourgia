@@ -88,7 +88,7 @@ export function coreDigest(corePath: string): CoreDigest {
   const bytes = createHash('sha256');
   const stamped = createHash('sha256');
   /*
-   * ⛔ NOT ONLY THE SOURCES. This listed `.ss` alone, and a core
+   * NEVER: NOT ONLY THE SOURCES. This listed `.ss` alone, and a core
    * directory may be a PRODUCT directory -- the compiled libraries beside
    * the two scripts -- which this extension supports and a cell may run
    * against. Measured in a review round: with `client.so` and `rpc.so`
@@ -158,7 +158,7 @@ export function checkCorePin(pinned: CorePin | undefined): void {
 export function locateCore(): CoreLocation {
   const corePath = process.env[CORE_PATH_ENV];
   /*
-   * ⚠️ `theourgia.ss` IS THE ONE THAT MUST BE THERE. Both forms of a
+   * NOTE: `theourgia.ss` IS THE ONE THAT MUST BE THERE. Both forms of a
    * core directory hold it -- a checkout beside its library sources, a
    * product directory beside the compiled ones -- and it is what the
    * shipping transport runs. Asking only for `cli.ss` let a directory
@@ -188,13 +188,13 @@ export class RealStore {
   public readonly runRoot: string;
   public readonly ownsRunRoot: boolean;
   /*
-   * ⚠️ THE ENVIRONMENT IS PUBLIC BECAUSE CELLS BUILD THEIR OWN
+   * NOTE: THE ENVIRONMENT IS PUBLIC BECAUSE CELLS BUILD THEIR OWN
    * TRANSPORTS. Several wrap one in a counter or in a stand-in that
    * loses the answer, and every `new CliTransport(store.config)` written
    * without this took `process.env` -- which names no run root, so the
    * daemon went to the user's. Measured: with only the client inside
    * this class fixed, a full unit run still left three daemons and three
-   * directories in `~/.theourgia/run`. ⭐ Use `transport()` below rather
+   * directories in `~/.theourgia/run`. KEY: Use `transport()` below rather
    * than this; it is exported so that a wrapper can be handed one that
    * is already right.
    */
@@ -207,7 +207,7 @@ export class RealStore {
     this.runRoot = runRoot;
     this.ownsRunRoot = ownsRunRoot;
     /*
-     * ⚠️ THE FIXTURE OWNS EVERY PATH THE PRODUCT COMPUTES.
+     * NOTE: THE FIXTURE OWNS EVERY PATH THE PRODUCT COMPUTES.
      *
      * The shipping transport starts a daemon, and the daemon's socket
      * goes under `THEOURGIA_RUN` -- which, unset, is the user's own
@@ -227,7 +227,7 @@ export class RealStore {
   }
 
   /*
-   * A TRANSPORT ONTO THIS STORE, with this store's directories. ⛔ Not
+   * A TRANSPORT ONTO THIS STORE, with this store's directories. NEVER: Not
    * `new CliTransport(store.config)`: that spelling is the one that
    * leaked, and it is still the shorter thing to write, so what keeps it
    * out is the gate in run-root.test.ts rather than anybody's memory.
@@ -237,7 +237,7 @@ export class RealStore {
   }
 
   /*
-   * ⚠️ A SUPPLIED RUN ROOT IS SHARED AND IS NOT THIS STORE'S TO DELETE.
+   * NOTE: A SUPPLIED RUN ROOT IS SHARED AND IS NOT THIS STORE'S TO DELETE.
    * The editor-hosted cells pass the one the launcher gave the extension
    * host, because the extension and the fixture must reach ONE daemon
    * for one store: two roots produce two sockets for the same key, two
@@ -259,7 +259,7 @@ export class RealStore {
     counter += 1;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `theourgia-real-${process.pid}-${counter}-`));
     /*
-     * ⚠️ SHORT, AND NOT UNDER `root`. A unix socket name may be 104
+     * NOTE: SHORT, AND NOT UNDER `root`. A unix socket name may be 104
      * bytes and the path is this root plus a sixteen-character key plus
      * `/socket`; a macOS temporary directory name is long enough on its
      * own that nesting one more level pushes past it. The pid and the
@@ -280,7 +280,7 @@ export class RealStore {
       writer: '',
       timeoutMs: DEFAULT_TIMEOUT_MS,
       /*
-       * ⚠️ THE SHIPPING PATH, NOT THE FALLBACK. These cells exist to run
+       * NOTE: THE SHIPPING PATH, NOT THE FALLBACK. These cells exist to run
        * against a real core, and what ships runs the thin client and
        * talks to a daemon. Leaving them on `cli` would measure a path
        * users are not on and would never meet the daemon at all.
@@ -289,7 +289,7 @@ export class RealStore {
     };
     const store = new RealStore(root, config, runRoot, ownRoot);
     /*
-     * ⛔ A SETUP THAT FAILS MUST NOT LEAVE A DAEMON BEHIND.
+     * NEVER: A SETUP THAT FAILS MUST NOT LEAVE A DAEMON BEHIND.
      *
      * Found by an outside review. `init` is a request, and a request is
      * what starts a daemon -- so a refusal here left one running with
@@ -318,7 +318,7 @@ export class RealStore {
    * THE CORE, RUN DIRECTLY, FOR WORK THAT IS THE FIXTURE'S AND NOT THE
    * PRODUCT'S.
    *
-   * ⚠️ A CELL THAT BUILDS A SECOND STORE HAS TO DRIVE THAT STORE, and
+   * NOTE: A CELL THAT BUILDS A SECOND STORE HAS TO DRIVE THAT STORE, and
    * the extension's client is bound to one. Adopting a copy and
    * publishing a segment out of it are things a person does with the
    * command line; putting them through the client under test would mean
@@ -330,7 +330,7 @@ export class RealStore {
    */
   public cli(args: string[]): string {
     /*
-     * ⚠️ THROUGH `environmentFor`, NOT WITH THE RAW ENVIRONMENT. The
+     * NOTE: THROUGH `environmentFor`, NOT WITH THE RAW ENVIRONMENT. The
      * library directories and the extension list are computed there,
      * from the core directory's own form -- sources or products -- and a
      * call that passed the bare environment got
@@ -364,20 +364,20 @@ export class RealStore {
   }
 
   /*
-   * ⚠️ THE DAEMON THIS STORE STARTED IS STOPPED BY PID, AND THEN THE
+   * NOTE: THE DAEMON THIS STORE STARTED IS STOPPED BY PID, AND THEN THE
    * STOPPING IS CHECKED.
    *
    * "Sent a signal" is not "it went": the core's line wrote a teardown
    * that deleted the file a daemon was writing and never signalled the
    * daemon at all, and what caught it was counting processes
    * afterwards. The daemons are found by this store's own run root,
-   * which no other process can be using -- ⛔ not by a pattern like
+   * which no other process can be using -- NEVER: not by a pattern like
    * `scheme`, which matches this line's own commands and, on this
    * machine, a dozen editor helpers whose arguments contain the word.
    */
   public dispose(): void {
     /*
-     * ⚠️ EVERY DAEMON THIS FIXTURE'S DIRECTORY GAVE RISE TO, not only
+     * NOTE: EVERY DAEMON THIS FIXTURE'S DIRECTORY GAVE RISE TO, not only
      * the one for its store.
      *
      * A cell may build a SECOND store under this root -- a copy of the
@@ -400,13 +400,13 @@ export class RealStore {
 /*
  * EVERY PROCESS WHOSE ARGUMENTS NAME THIS STORE'S SOCKET DIRECTORY.
  *
- * ⚠️ THE MATCH IS THE RUN ROOT, NOT THE WORD "scheme". On this machine
+ * NOTE: THE MATCH IS THE RUN ROOT, NOT THE WORD "scheme". On this machine
  * `ps -ax -o command | grep scheme` returns a dozen VS Code helper
  * processes -- their argument lists carry `--standard-schemes=` and
  * half a dozen more -- and a teardown built on that would report them
  * as leaked daemons and try to kill them.
  *
- * ⛔ AND IT IS NOT THE WORD "scheme" FOR A SECOND REASON, which is the
+ * NEVER: AND IT IS NOT THE WORD "scheme" FOR A SECOND REASON, which is the
  * one that would have hurt: the core spells the interpreter as
  * `THEOURGIA_SCHEME` or `scheme` (cli.ss:420), so on a machine that
  * sets that variable to `chez` this filter would exclude the daemon it
@@ -425,7 +425,7 @@ export function daemonsMatching(...needles: string[]): number[] {
     listing = execFileSync('ps', ['-ax', '-o', 'pid=,command='], { encoding: 'utf8' });
   } catch (e) {
     /*
-     * ⛔ A LOOK THAT FAILED IS NOT A LOOK THAT FOUND NOTHING.
+     * NEVER: A LOOK THAT FAILED IS NOT A LOOK THAT FOUND NOTHING.
      *
      * This returned an empty list, so a `ps` that could not be run made
      * `stopDaemonsFor` signal nobody and report `{asked: 0, left: 0}`,
@@ -464,7 +464,7 @@ export function daemonsUnder(runRoot: string): number[] {
 }
 
 /*
- * ⚠️ SCOPED TO ONE STORE, NOT TO A DIRECTORY.
+ * NOTE: SCOPED TO ONE STORE, NOT TO A DIRECTORY.
  *
  * A run root may be SHARED -- the editor-hosted cells hand their stores
  * the same root the extension under test was given, because two roots
@@ -478,7 +478,7 @@ export function daemonsUnder(runRoot: string): number[] {
  * THE SOCKET PATH A RUNNING DAEMON WAS GIVEN, read off its own argument
  * list rather than composed here.
  *
- * ⚠️ THE NAME UNDER THE RUN ROOT IS A DIGEST OF THE STORE'S REAL PATH
+ * NOTE: THE NAME UNDER THE RUN ROOT IS A DIGEST OF THE STORE'S REAL PATH
  * (client.ss:63-80) -- resolved through symlinks, with the components
  * below the longest existing prefix appended. A cell that worked it out
  * for itself would be a second implementation of that rule, and the one
