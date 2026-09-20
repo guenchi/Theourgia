@@ -357,19 +357,30 @@
 (run d2 "set" e1 "src" "nothing to find here")
 (run d2 "set" e3 "src" "we concatenate in the body")
 (run d2 "set" e4 "src" "the cat sat on the mat")
-;; CONTROL: e1 and e2 both score 2 for `cat`, and e1 was inserted first,
-;; so it also sorts first by id -- which would hide an ordering defect.
-;; The row below therefore also asserts that e2 follows e1, and this
-;; control says the two facts are independent: the tie is real.
-(want "CONTROL: the two blocks that tie were created in id order"
-      (string<? e1 e2)
-      #t)
+;; NEVER: THE TIE HAD TO BE REBUILT WHEN SCORING GAINED TIERS. e1 and e2
+;; used to tie at 2 for `cat`, and this control said so. With a word-boundary
+;; hit worth more than a mid-word one they no longer tie -- e1 begins a word
+;; and scores 3, e2 is inside `Concatenate` and scores 2 -- so the row that
+;; pins "equal scores go by id" would have kept passing WITH NO TIE LEFT TO
+;; ORDER. A pair that still ties is made below, both hits mid-word, and the
+;; control moves onto that pair.
+(define e5 (insert! d2 "--title" "Muscat grapes"))
 
-(want "title hits score 2, src hits 1, both 3, and equal scores go by id"
+(want "CONTROL: the two blocks that tie do so mid-word, and were created in id order"
+      (list (string<? e2 e5) 'and-both-are-inside-a-longer-word)
+      (list #t 'and-both-are-inside-a-longer-word))
+
+;; A hit that begins a word outranks one buried in a longer word, and each
+;; field has both tiers: title 3/2, src 2/1. The lower tier is what the field
+;; scored before tiers existed, so a block whose hits are all mid-word keeps
+;; the score it had -- e2 and e3 below are unchanged from the reading taken
+;; before this round.
+(want "a word-boundary hit outranks a mid-word one, field by field, and ties go by id"
       (lines-of (run d2 "search" "cat"))
-      (list (list 'hit e4 3 "cat and dog")
-            (list 'hit e1 2 "cat first inserted")
+      (list (list 'hit e4 5 "cat and dog")
+            (list 'hit e1 3 "cat first inserted")
             (list 'hit e2 2 "Concatenate strings")
+            (list 'hit e5 2 "Muscat grapes")
             (list 'hit e3 1 "we concatenate in the body")))
 (want "a hit is a case-insensitive substring, so cat finds concatenate"
       (lines-of (run d2 "search" "CAT"))
@@ -379,7 +390,7 @@
       (list 0 '()))
 (want "TWIN: two tokens that both hit the same block keep it"
       (lines-of (run d2 "search" "cat mat"))
-      (list (list 'hit e4 3 "cat and dog")))
+      (list (list 'hit e4 5 "cat and dog")))
 ;; A QUERY IS TEXT. This one would be an enormous exact integer if any
 ;; part of the path handed it to a numeric parser, and the row would not
 ;; return rather than returning empty.
@@ -390,6 +401,153 @@
       (run d2 "search" "zzzzzzzz")
       (list 0 '()))
 
+
+(printf "\n== N2b: one word, several spellings -- and the tiers of a CJK phrase ==\n")
+;; NEVER: EQUALITY BETWEEN TWO ANSWERS IS GREEN WHEN BOTH ARE EMPTY. The
+;; claim is that two spellings of one query find the SAME BLOCK, so the row
+;; pins the block and the score as well as the equality. A row that only
+;; compared the two answers would pass on a build where neither spelling
+;; found anything at all -- which is precisely the build this exists to catch,
+;; since before this round the first spelling found nothing.
+(define d2b (fresh-store!))
+(init! d2b)
+(define w1 (insert! d2b "--title" "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;"))
+;; both bigrams of the query are here and the phrase itself is not
+(define w2 (insert! d2b "--title" "\x6062;\x590d;\x4e86;\x4e00;\x534a;\xff0c;\x590d;\x65e7;\x7684;\x90e8;\x5206;\x6ca1;\x52a8;"))
+(define w3 (insert! d2b "--title" "parseBlock and friends"))
+(define w4 (insert! d2b "--title" "\xff26;\xff35;\xff2c;\xff2c;\xff37;\xff29;\xff24;\xff34;\xff28; letters"))
+
+(want "N2b a CJK phrase written against a latin word is the same query as one with a space"
+      (list (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;reaper"))
+            (lines-of (run d2b "search" "\x6062;\x590d;\x65e7; reaper")))
+      (list (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;"))
+            (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;"))))
+
+;; NEVER: AND THE PHRASE OUTRANKS ITS SCATTERED HALVES. A CJK token of two
+;; characters or more is matched by its bigrams -- wider than a substring, so
+;; no hit is lost -- and the tier says which kind of hit it was. Measured on
+;; the first version of this: every bigram hit answered the lower tier while a
+;; single character answered the higher one, so `\x590d;\x65e7;` ranked below
+;; `\x65e7;`; the more specific query ranked lower.
+(want "N2b the block holding the phrase outranks the one whose bigrams are merely both present"
+      (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;"))
+      (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;")
+            (list 'hit w2 2 "\x6062;\x590d;\x4e86;\x4e00;\x534a;\xff0c;\x590d;\x65e7;\x7684;\x90e8;\x5206;\x6ca1;\x52a8;")))
+
+(want "N2b a camelCase seam is a word boundary, and the query's own case does not matter"
+      (list (lines-of (run d2b "search" "block")) (lines-of (run d2b "search" "Block")))
+      (list (list (list 'hit w3 3 "parseBlock and friends"))
+            (list (list 'hit w3 3 "parseBlock and friends"))))
+
+(want "N2b a fullwidth spelling and an ascii one are one word"
+      (lines-of (run d2b "search" "fullwidth"))
+      (list (list 'hit w4 3 "\xff26;\xff35;\xff2c;\xff2c;\xff37;\xff29;\xff24;\xff34;\xff28; letters")))
+
+(printf "\n== N2d: a fold that changes the length must not move the positions ==\n")
+;; NEVER: THE POSITION OF A MATCH IS A POSITION IN A PARTICULAR STRING.
+;; `string-foldcase` is not length-preserving -- German sharp s folds to two
+;; letters -- and the match position found in the folded text was used to
+;; index the UNFOLDED one. Two consequences, both measured before the fix:
+;;
+;;   `Stra<sharp-s>e cat`  the boundary was judged on the `a` of `cat` rather
+;;                         than its first letter, so the hit scored a tier low
+;;   four sharp s and `cat` the folded index ran past the end of the unfolded
+;;                         string and `string-ref` RAISED -- the whole search
+;;                         answered nothing at all
+;;
+;; The second is why this row asks for a score rather than only for an answer:
+;; a build that raises has no answer to compare, and a build that merely
+;; mis-scores does.
+(define d2d (fresh-store!))
+(init! d2d)
+(define sharp1 (insert! d2d "--title" "Stra\xdf;e cat"))
+(define sharp2 (insert! d2d "--title" "\xdf;\xdf;\xdf;\xdf;cat"))
+
+(want "N2d a word after a letter that folds to two is still found, at the tier it begins"
+      (lines-of (run d2d "search" "cat"))
+      (list (list 'hit sharp1 3 "Stra\xdf;e cat")
+            (list 'hit sharp2 3 "\xdf;\xdf;\xdf;\xdf;cat")))
+
+(printf "\n== N2e: normalising may not take a hit away, and the parts need not be adjacent ==\n")
+;; NEVER: NORMALISING COMPOSES, AND COMPOSING CAN REMOVE A LETTER. A title
+;; written as the letter `e` followed by a combining acute is two characters;
+;; NFKC makes it one, which no longer contains `e` at all. Measured on the
+;; first version of this segment: that block scored 2 for the query `e` before
+;; the segment and NOTHING after it -- a hit lost, which is the one thing the
+;; whole design promised could not happen.
+;;
+;; The raw text is asked when the prepared text has no match, at the LOWER
+;; tier, which is the score that field had before tiers existed.
+(define d2e (fresh-store!))
+(init! d2e)
+(define acc (insert! d2e "--title" "e\x301;"))
+
+;; NEVER: AND THE EXPECTATION IS THE STRING THAT IS STORED, NOT THE ONE THAT
+;; LOOKS THE SAME. The snippet is the title as written -- `e` followed by a
+;; combining acute -- and the composed character is a DIFFERENT string that
+;; prints identically. The first version of this row expected the composed
+;; one and failed with an actual and an expected that could not be told apart
+;; by eye, which is the whole subject of this segment arriving in its own cell.
+(want "N2e a letter written with a combining mark is still found by the plain letter"
+      (lines-of (run d2e "search" "e"))
+      (list (list 'hit acc 2 "e\x301;")))
+
+;; NEVER: AND THE SEAM IS WRITTEN BEFORE THE QUERY IS CUT UP. `tokens-of`
+;; splits on whitespace and `prepare` WRITES whitespace at a CJK/Latin seam,
+;; so preparing after splitting left the seam inside one token, which then had
+;; to be found as a single contiguous run. Measured: against a title where the
+;; two words are NOT adjacent, the compact query found nothing while the
+;; spaced one found the block -- so the equivalence held only when the text
+;; happened to be spelled the way the query was.
+(define apart (insert! d2e "--title" "\x6062;\x590d;\x65e7; then reaper"))
+
+(want "N2e the two spellings agree even when the words are apart in the text"
+      (list (map cadr (lines-of (run d2e "search" "\x6062;\x590d;\x65e7;reaper")))
+            (map cadr (lines-of (run d2e "search" "\x6062;\x590d;\x65e7; reaper"))))
+      (list (list apart) (list apart)))
+
+;; NEVER: AND THE SNIPPET READS THE UNIT THE SCORE READ. The score reads a
+;; field whole; the snippet reads it line by line, so a query whose two
+;; bigrams sit on different lines scored a hit and showed the reader nothing.
+;; A line is still preferred -- that is what a reader wants -- and the whole
+;; field is the fallback rather than a blank.
+(define split-lines (insert! d2e "--title" "plain heading"))
+(run d2e "set" split-lines "src" "\x6062;\x590d;\n\x590d;\x65e7;")
+
+(want "N2e a hit whose parts are on two lines still shows the reader something"
+      (let ((hit (car (reverse (lines-of (run d2e "search" "\x6062;\x590d;\x65e7;"))))))
+        (list (cadr hit) (> (string-length (cadddr hit)) 0)))
+      (list split-lines #t))
+
+(printf "\n== N2c: the human rendering of a search is hit lines and nothing else ==\n")
+;; NEVER: THIS IS A CONTRACT WITH ANOTHER REPOSITORY, AND IT BREAKS ALL AT
+;; ONCE. The VS Code plugin runs `search` WITHOUT `--wire` and parses stdout
+;; as data (`client.ts readData` -> `parseAnswers`), then `search.ts hitsOf`
+;; walks the items: any item that is not a `(hit ...)` makes it `return null`
+;; for the WHOLE answer, and the user is told the store did not answer the
+;; search. So a helpful extra line -- "no hits; scanned 12 blocks" -- does not
+;; get ignored by that reader; it blanks the result.
+;;
+;; The mechanism is `render.sc:52-58`: for an `items` answer `render-human`
+;; writes each item on its own line and drops every other clause. That is why
+;; `cut`, `scanned` and `coverage` can only be asked for with `--wire`, and
+;; why zero hits has to mean zero output.
+(want "N2c zero hits print nothing at all"
+      (run d2b "search" "zzzzzzzzzz")
+      (list 0 (quote ())))
+
+(want "N2c and every line of a search that does hit reads back as a hit of four parts"
+      (let ((items (lines-of (run d2b "search" "reaper"))))
+        (list (> (length items) 0)
+              (for-all (lambda (item)
+                         (and (pair? item)
+                              (eq? (car item) 'hit)
+                              (= (length item) 4)
+                              (string? (cadr item))
+                              (integer? (caddr item))
+                              (string? (cadddr item))))
+                       items)))
+      (list #t #t))
 
 (printf "\n== N3: log lists what was applied, in delivery order ==\n")
 ;; ONLY THE RECORDS THE INTENT NAMES. Two near misses are the point of

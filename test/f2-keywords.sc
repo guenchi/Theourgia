@@ -133,11 +133,36 @@
 (define k1-id (id-of (cli "insert" "--title" "unrelated" "--text" "nothing here"
                           "--keywords" "ConCATenate, MAT")))
 
-(want "K1 a word only in keywords is found, scores 3, and the snippet is the keywords"
+;; NEVER: A FIELD'S TIER IS THE BEST ANY TOKEN REACHES IN IT, and this block
+;; carries TWO keywords. `cat` is buried inside `ConCATenate`, but `mat`
+;; begins `MAT` just after the comma -- a word boundary -- so the keywords
+;; field reaches the upper tier and scores 4 rather than the 3 it scored when
+;; every field had a single value.
+;;
+;; The prediction made before this round said 3, on the reading that both
+;; tokens were mid-word. One of them is not. The row below is the one that
+;; tests the prediction that WAS right: a block whose keyword hit is only ever
+;; mid-word still scores exactly what it scored before tiers existed.
+(want "K1 a word only in keywords is found, and a keyword that BEGINS with a token scores 4"
       (let ((r (cli "search" "cAt mAt")))
-        (list (if (contains? r (string-append "(hit \"" k1-id "\" 3 ")) 'scored-3 (list 'said r))
+        (list (if (contains? r (string-append "(hit \"" k1-id "\" 4 ")) 'scored-4 (list 'said r))
               (if (contains? r "\"ConCATenate, MAT\"") 'snippet-is-the-keywords 'WRONG-SNIPPET)))
-      '(scored-3 snippet-is-the-keywords))
+      '(scored-4 snippet-is-the-keywords))
+
+;; NEVER: AND THE TARGET HAS TO BE MID-WORD IN EVERY SENSE. The keyword above
+;; is spelled `ConCATenate` to show that matching ignores case, and that
+;; spelling puts a capital exactly where the token begins -- which the tier
+;; rule reads as a camelCase seam, correctly, and scores 4. Measured: the
+;; first version of this row used that same word and got 4 where it wanted 3.
+;; The floor needs a word with no seam in it at all.
+(define midword-id
+  (id-of (cli "insert" "--title" "plain heading" "--keywords" "concatenate")))
+
+(want "K1 TIER FLOOR: a keyword hit that is only mid-word scores what it scored before tiers"
+      (let ((r (cli "search" "cat")))
+        (if (contains? r (string-append "(hit \"" midword-id "\" 3 ")) 'scored-3-as-before
+            (list 'said r)))
+      'scored-3-as-before)
 
 (want "K1 TWIN: every token must still hit, so a token that matches nothing gives nothing"
       (let ((r (cli "search" "cat absent")))
@@ -146,10 +171,10 @@
 
 (define k2-id (id-of (cli "insert" "--title" "cat" "--text" "x" "--keywords" "mat")))
 
-(want "K2 a title hit and a keywords hit score 2 + 3"
+(want "K2 a title hit and a keywords hit add up, each at its own tier"
       (let ((r (cli "search" "cat mat")))
-        (if (contains? r (string-append "(hit \"" k2-id "\" 5 ")) 'scored-5 (list 'said r)))
-      'scored-5)
+        (if (contains? r (string-append "(hit \"" k2-id "\" 7 ")) 'scored-7 (list 'said r)))
+      'scored-7)
 
 ;; ---- K7: a keyword that is not ASCII ------------------------------------------
 (define k7-id (id-of (cli "insert" "--title" "seven" "--text" "y" "--keywords" "\x6c49;\x5b57;, tail")))

@@ -292,6 +292,63 @@
          (loop (+ i 1) #f (if start (cons (substring query start i) out) out)))
         (else (loop (+ i 1) (or start i) out)))))
 
+  ;; ---- normalisation, and what counts as a word boundary -------------------
+  ;;
+  ;; NEVER: TWO SPELLINGS OF ONE WORD ARE ONE WORD. Measured before this
+  ;; existed: a three-character CJK word written against `reaper` with no space
+  ;; did not find the same word with a space, because the query was
+  ;; split on whitespace and there is none between a CJK character and the
+  ;; Latin one beside it. A fullwidth capital A and an ASCII `A` were two
+  ;; things, as were a ligature and the letters it stands for.
+  ;;
+  ;; `prepare` puts text in NFKC and writes a space at every CJK/ASCII
+  ;; boundary. IT DOES NOT FOLD CASE, on purpose: matching is
+  ;; case-insensitive and folds at comparison time, while the SCORE needs to
+  ;; see `parseBlock` as two words, and folding first would erase the only
+  ;; evidence of that.
+  ;; NOTE: WHAT THIS DOES NOT COVER, SAID OUT LOUD. Han, kana and the CJK
+  ;; compatibility block are here; HANGUL (AC00-D7AF) IS NOT. Korean text
+  ;; therefore gets no seam spacing and no bigram matching -- it is matched as
+  ;; a substring, which finds what it finds and ranks by the Latin rule. That
+  ;; is a gap rather than a decision about Korean, and it is written here
+  ;; rather than left for a reader to infer from a range.
+  (define (cjk-char? ch)
+    (let ((c (char->integer ch)))
+      (or (and (>= c #x3400) (<= c #x4DBF))
+          (and (>= c #x4E00) (<= c #x9FFF))
+          (and (>= c #xF900) (<= c #xFAFF))
+          (and (>= c #x3040) (<= c #x30FF)))))
+
+  (define (ascii-word-char? ch)
+    (or (char-numeric? ch)
+        (and (char-alphabetic? ch) (< (char->integer ch) 128))))
+
+  (define (prepare text)
+    (let* ((nf (string-normalize-nfkc text))
+           (n (string-length nf)))
+      (let loop ((i 0) (out (quote ())))
+        (if (= i n)
+            (list->string (reverse out))
+            (let ((ch (string-ref nf i)))
+              (loop (+ i 1)
+                    (cond
+                      ((= i 0) (cons ch out))
+                      ((or (and (cjk-char? ch) (ascii-word-char? (string-ref nf (- i 1))))
+                           (and (ascii-word-char? ch) (cjk-char? (string-ref nf (- i 1)))))
+                       (cons ch (cons #\space out)))
+                      (else (cons ch out)))))))))
+
+  ;; A hit begins a word when nothing precedes it, when what precedes it is
+  ;; not a word character -- a space, a `-`, a `_`, punctuation -- or when it
+  ;; is the upper-case letter that starts the second half of `camelCase`.
+  (define (boundary-at? text i token)
+    (or (= i 0)
+        (let ((before (string-ref text (- i 1)))
+              (here (string-ref text i)))
+          (or (not (ascii-word-char? before))
+              (and (char-alphabetic? before) (char-lower-case? before)
+                   (char-alphabetic? here) (char-upper-case? here))))))
+
   (define (contains-ci? text token)
     (let* ((t (string-downcase text))
            (q (string-downcase token))
@@ -303,6 +360,114 @@
                ((> (+ i m) n) #f)
                ((string=? (substring t i (+ i m)) q) #t)
                (else (loop (+ i 1))))))))
+
+  ;; ---- what a token hits, and how well ------------------------------------
+  ;;
+  ;; A token hits a text when the text contains it, case folded -- THE SAME
+  ;; RULE AS BEFORE, so nothing that could be found yesterday is lost today.
+  ;; What is new is the TIER: a hit that begins a word is worth more than one
+  ;; buried inside another word, because `cat` in `Concatenate` is a weaker
+  ;; answer than `cat` in `cat and dog` and both are answers.
+  ;;
+  ;; A CJK token of two characters or more is matched by its bigrams, all of
+  ;; them: a three-character word asks for its first two characters and its
+  ;; last two. That is WIDER than a substring
+  ;; and so cannot lose a hit either. A single character has no bigram and
+  ;; falls back to the substring rule.
+  ;; NEVER: A FOLD THAT CHANGES THE LENGTH MOVES EVERY POSITION AFTER IT.
+  ;; `string-foldcase` is not length-preserving -- German sharp s folds to two
+  ;; letters -- and the match position found in the folded text was being used
+  ;; to index the UNFOLDED one, where it no longer means the same place.
+  ;; Measured: a title reading `Stra<sharp-s>e cat` puts `cat` at folded index
+  ;; 8, where the unfolded text holds the `a` of `cat` instead of its start, so
+  ;; the boundary was judged on the wrong characters and the hit scored a tier
+  ;; too low. With four sharp s in front of the word the folded index runs off
+  ;; the end of the unfolded string entirely and `string-ref` RAISES -- one
+  ;; search, no answer.
+  ;;
+  ;; Folding character by character keeps every index meaning the same place.
+  ;; The cost is that a sharp s no longer matches the two letters it folds to,
+  ;; which is a narrower case-insensitivity than R6RS gives; correct positions
+  ;; are worth more than that pair.
+  (define (fold-preserving s)
+    (list->string (map char-foldcase (string->list s))))
+
+  (define (token-tier text token)
+    (let* ((t (prepare text))
+           (folded (fold-preserving t))
+           (q (fold-preserving (prepare token)))
+           (n (string-length folded))
+           (m (string-length q)))
+      (cond
+        ((= m 0) #f)
+        ;; NEVER: AND THE WHOLE PHRASE OUTRANKS ITS PIECES. Measured on the
+        ;; first version of this: a two-character query scored 2 on a block
+        ;; whose title held the three-character word, while a ONE-character
+        ;; query scored 3 on that same block -- the more specific query ranked
+        ;; LOWER, because bigrams
+        ;; always answered `inside` and a lone character fell through to the
+        ;; ASCII rule and found itself at what that rule calls a word
+        ;; boundary. CJK has no word boundary to find; what it has is the
+        ;; difference between a phrase that is there and one whose halves
+        ;; merely both occur, which is what the two tiers say here.
+        ((for-all cjk-char? (string->list q))
+         (cond
+           ((substring-at? folded q) 'boundary)
+           ((< m 2) #f)
+           (else
+             (let loop ((i 0))
+               (cond ((> (+ i 2) m) 'inside)
+                     ((substring-at? folded (substring q i (+ i 2))) (loop (+ i 1)))
+                     (else #f))))))
+        (else
+          (let loop ((i 0) (best #f))
+            (cond
+              ((> (+ i m) n)
+               ;; NEVER: NORMALISING CAN TAKE A MATCH AWAY, AND THE FLOOR SAYS
+               ;; IT MAY NOT. NFKC COMPOSES, so a title written as `e` plus a
+               ;; combining acute becomes one character and no longer contains
+               ;; the letter `e` at all: measured, that block scored 2 for the
+               ;; query `e` before this segment and nothing after it. When the
+               ;; prepared text has no match, the raw text is asked -- at the
+               ;; LOWER tier, which is exactly the score that field had before
+               ;; tiers existed, so the floor is kept and nothing outranks a
+               ;; hit that the normalised text can actually see.
+               (or best (and (substring-at? (fold-preserving text)
+                                            (fold-preserving token))
+                             'inside)))
+              ((string=? (substring folded i (+ i m)) q)
+               (if (boundary-at? t i q) 'boundary (loop (+ i 1) 'inside)))
+              (else (loop (+ i 1) best))))))))
+
+  (define (substring-at? text needle)
+    (let ((n (string-length text)) (m (string-length needle)))
+      (and (<= m n)
+           (let loop ((i 0))
+             (cond ((> (+ i m) n) #f)
+                   ((string=? (substring text i (+ i m)) needle) #t)
+                   (else (loop (+ i 1))))))))
+
+  ;; The best tier this token reaches anywhere in a field's strings.
+  (define (field-tier strings token)
+    (let loop ((l strings) (best #f))
+      (cond ((null? l) best)
+            (else
+              (let ((tier (token-tier (car l) token)))
+                (cond ((eq? tier 'boundary) 'boundary)
+                      ((eq? tier 'inside) (loop (cdr l) 'inside))
+                      (else (loop (cdr l) best))))))))
+
+  ;; NEVER: THE TWO TIERS OF A FIELD STRADDLE THE OLD SINGLE VALUE. The lower
+  ;; tier is exactly what that field scored before, so a block whose hits are
+  ;; all mid-word keeps the score it had; only a block that begins a word
+  ;; moves up. A round of scoring that lowered anything would have made
+  ;; yesterday's answers worse, which is not what this is for.
+  (define (tier-score field tier)
+    (case field
+      ((keywords) (case tier ((boundary) 4) ((inside) 3) (else 0)))
+      ((title) (case tier ((boundary) 3) ((inside) 2) (else 0)))
+      ((src) (case tier ((boundary) 2) ((inside) 1) (else 0)))
+      (else 0)))
 
   ;; ONLY TEXT IS SEARCHED. A field whose value is not a string is not
   ;; text, and a field in conflict offers every candidate that is.
@@ -360,16 +525,43 @@
            (kws (field-strings block (quote keywords)))
            (lines (append kws titles
                           (apply append (map lines-of-text srcs)))))
+      ;; NEVER: THE SNIPPET ASKS THE SAME QUESTION THE SCORE DID. This looked
+      ;; for the token as a raw substring while the score had already found it
+      ;; through normalisation, so a block could be reported as a hit and come
+      ;; back with an EMPTY snippet: measured, `\x6062;\x590d;\x65e7;reaper`
+      ;; scored 3 against a title reading `\x6062;\x590d;\x65e7; reaper
+      ;; \x7684;\x505a;\x6cd5;` and showed the reader nothing, and a query
+      ;; matched by its bigrams did the same. Two rules for one question is
+      ;; how the answer comes to disagree with itself.
+      ;; NEVER: AND THE UNIT THE SNIPPET SEARCHES IS THE UNIT THE SCORE
+      ;; SEARCHED. The score reads a field whole; this reads it line by line,
+      ;; so a query whose bigrams sit on two different lines scored a hit and
+      ;; came back with nothing to show -- the same disagreement as before,
+      ;; one level down. A line is still preferred, because a line is what a
+      ;; reader wants; the whole field is the fallback rather than a blank.
       (let loop ((ls lines))
         (cond
-          ((null? ls) "")
-          ((exists (lambda (tk) (contains-ci? (car ls) tk)) tokens)
+          ((null? ls)
+           (let whole ((fs (append kws titles srcs)))
+             (cond ((null? fs) "")
+                   ((exists (lambda (tk) (token-tier (car fs) tk)) tokens)
+                    (clip (collapse-whitespace (car fs))))
+                   (else (whole (cdr fs))))))
+          ((exists (lambda (tk) (token-tier (car ls) tk)) tokens)
            (clip (collapse-whitespace (car ls))))
           (else (loop (cdr ls)))))))
 
   (define (store-search store query)
     (let* ((state (open-and-reduce store))
-           (tokens (tokens-of query)))
+           ;; NEVER: THE QUERY IS PREPARED BEFORE IT IS SPLIT, NOT AFTER.
+           ;; `tokens-of` cuts on whitespace, and `prepare` WRITES whitespace
+           ;; at a CJK/Latin seam -- so splitting first left the seam inside a
+           ;; single token, which then had to be found as one contiguous run.
+           ;; Measured: against a title reading "<three CJK characters> then
+           ;; reaper" the compact query found nothing while the spaced one
+           ;; found the block. The equivalence this segment promises held only
+           ;; when the two words happened to be adjacent in the text as well.
+           (tokens (tokens-of (prepare query))))
       (if (null? tokens)
           (quote ())
           (let ((hits
@@ -386,23 +578,34 @@
                                ;; block whose keywords match is a better
                                ;; answer than one whose prose happens to.
                                (kws (field-strings block (quote keywords)))
-                               (in-title (exists (lambda (tk) (any-hit? titles tk)) tokens))
-                               (in-src (exists (lambda (tk) (any-hit? srcs tk)) tokens))
-                               (in-kw (exists (lambda (tk) (any-hit? kws tk)) tokens))
+                               ;; The tier a field reaches is the best any
+                               ;; token reaches in it.
+                               (best (lambda (strings)
+                                       (let loop ((l tokens) (out #f))
+                                         (cond ((null? l) out)
+                                               (else
+                                                 (let ((tier (field-tier strings (car l))))
+                                                   (cond ((eq? tier 'boundary) 'boundary)
+                                                         ((eq? tier 'inside) (loop (cdr l) 'inside))
+                                                         (else (loop (cdr l) out)))))))))
+                               (title-tier (best titles))
+                               (src-tier (best srcs))
+                               (kw-tier (best kws))
                                ;; NEVER: EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
                                ;; Keywords widen where a token may be
                                ;; found; they do not turn the query into
                                ;; an OR across tokens.
                                (every-token
                                  (for-all (lambda (tk)
-                                            (or (any-hit? titles tk) (any-hit? srcs tk)
-                                                (any-hit? kws tk)))
+                                            (or (field-tier titles tk) (field-tier srcs tk)
+                                                (field-tier kws tk)))
                                           tokens)))
                           (loop (cdr ds)
                                 (if every-token
                                     (cons (list id
-                                                (+ (if in-title 2 0) (if in-src 1 0)
-                                                   (if in-kw 3 0))
+                                                (+ (tier-score 'title title-tier)
+                                                   (tier-score 'src src-tier)
+                                                   (tier-score 'keywords kw-tier))
                                                 (snippet-for block tokens))
                                           out)
                                     out)))))))
