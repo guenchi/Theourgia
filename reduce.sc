@@ -43,6 +43,7 @@
   (export datum-spelling payload-reason caller-fields-reason caller-payload-reason
           reduce-empty reduce-apply! reduce-pending reduce-noted
           reduce-applied-cut reduce-trace reduce-gates
+          known-kinds kind-known?
           state-read state-outline state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
@@ -1110,9 +1111,88 @@
                        (else (loop (cdr ps)))))))
              (else #f)))))
 
+  ;; ---- the kinds a block may have -------------------------------------------
+  ;;
+  ;; NEVER: ONE LIST, AND EVERY TEST OF LEGALITY ASKS IT. The hazard this
+  ;; guards is not that somebody compares a kind -- dispatching on a known
+  ;; value is ordinary, and the tree does it in a dozen places -- it is A
+  ;; SECOND ALLOWLIST: another hardcoded set that can accept or reject the
+  ;; same value and drift from this one. There is exactly one membership test
+  ;; over kind literals in the shipped sources, and `facade-gate` counts it.
+  ;;
+  ;; NEVER: WHICH IS WHY THE ENTRIES ARE NOT SPELLED OUT ANYWHERE ELSE. The
+  ;; write entries and the export report reach this through `kind-known?`, and
+  ;; BEHAVIOUR CELLS ARE WHAT HOLD THEM TO IT; the census only says nobody
+  ;; grew a second list. A census cannot see a route that asks nothing.
+  ;;
+  ;; The five that existed before this table, measured across the tree by
+  ;; construction site: `code` 5, `section` 3, `library` 1, `file` 1, `doc` 1.
+  ;; `other` appears only in a fixture and is deliberately NOT admitted -- a
+  ;; placeholder a test picked is not a kind, and listing it here would make
+  ;; it one.
+  ;;
+  ;; `decision` is the sixth and nothing writes one yet: it is named by the
+  ;; brief that this table was cut out of, and the verb that reads it comes
+  ;; next. THAT IS THE ONLY WAY AN ENTRY GETS IN -- measured in the tree, or
+  ;; decided somewhere a reader can go and check. An earlier draft of this
+  ;; line also carried `verification`, which was neither: nothing wrote it,
+  ;; nothing read it, and admitting it would have been the fixture mistake
+  ;; made one line higher up. `datum` is not here either, and looks like an
+  ;; omission: it is a MODE (`(mode . datum)` beside `(kind . code)`), and
+  ;; the two were only ever confusable from a distance.
+  (define known-kinds '(code section file doc library decision))
+
+  (define (kind-known? k) (and (symbol? k) (memq k known-kinds) #t))
+
+  ;; NEVER: EVERY ROUTE THAT WRITES A KIND ARRIVES HERE, WHICH IS WHY THE CHECK
+  ;; IS HERE AND NOT AT THE COMMAND LINE. `set` converts and refuses while
+  ;; parsing, but `batch` hands intents over already built -- measured before
+  ;; this existed, a batch wrote `(kind . "decision")` as a STRING and an
+  ;; unknown symbol without complaint, and neither was ever going to match
+  ;; anything, silently.
+  ;;
+  ;; NEVER: AND THIS IS THE CALLER'S PATH, NOT REPLAY. A record already on
+  ;; disk carrying a kind this version does not know still loads; refusing it
+  ;; here would make a later version's write unreadable by an earlier one,
+  ;; which is the opposite of what unknown-field preservation promises.
+  ;; NEVER: AND THE REFUSAL CARRIES THE LEGAL SET, ON EVERY ROUTE. The command
+  ;; line already answered `(kind "nonsense") (known (…))`; a batch answering a
+  ;; bare `kind-not-known` would leave its caller -- a plugin, an agent -- with
+  ;; a refusal and no way to learn what would have been accepted. The envelope
+  ;; may differ between an intent-level and a request-level answer; THE DETAIL
+  ;; MAY NOT. `known-kinds` is the one supplier for both.
+  ;; NEVER: THE REFUSAL QUOTES A SPELLING, NOT THE DATUM. This echoed the
+  ;; value it had just refused, and a symbol is exactly what the wire layer
+  ;; may not be able to write: measured, `set <id> kind |1|` through the
+  ;; batch route produced `(kind-not-known (kind \x31;) ...)` and RENDERING
+  ;; THAT ANSWER RAISED -- the caller got an exception where a refusal was
+  ;; due. `symbol-field-reason` catches such a symbol in a `put`, field
+  ;; values and all, which is why the `insert` route never reached here; for
+  ;; `set` it checks the field NAME only, and the value position arrives.
+  ;;
+  ;; The tree already had this lesson written down, one screen up: a refusal
+  ;; about an unwritable datum was unreadable whenever it was right. Same
+  ;; answer here, and the two routes' answers become the same shape as well.
+  (define (kind-not-known-reason v)
+    (list 'kind-not-known (list 'kind (datum-spelling v)) (list 'known known-kinds)))
+
+  (define (kind-field-reason payload)
+    (define (bad-kind? v) (not (kind-known? v)))
+    (and (pair? payload)
+         (case (car payload)
+           ((put) (let ((e (assq 'kind (car (cdr payload)))))
+                    (and e (bad-kind? (cdr e)) (kind-not-known-reason (cdr e)))))
+           ((set) (let ((args (cdr payload)))
+                    (and (pair? (cdr args)) (eq? (car (cdr args)) 'kind)
+                         (pair? (cdr (cdr args)))
+                         (bad-kind? (car (cdr (cdr args))))
+                         (kind-not-known-reason (car (cdr (cdr args)))))))
+           (else #f))))
+
   (define (caller-payload-reason payload)
     (or (payload-reason payload)
         (symbol-field-reason payload)
+        (kind-field-reason payload)
         (and (pair? payload)
              (case (car payload)
                ((put) (let ((e (assq 'title (car (cdr payload)))))
@@ -1518,6 +1598,20 @@
   ;; a reader who cannot see the block cannot act on them. Design 9.2
   ;; says these appear under root and marked, so that is what comes back:
   ;; a fourth element naming why, absent on an ordinary row.
+  ;; WHAT IS ORDERED HERE IS SIBLINGS, AND NOT THE LIST. Rows are returned
+  ;; in whatever order the blocks come out of the reduction, which follows
+  ;; the writer name and so differs between two stores holding the same
+  ;; tree: measured over six fresh stores built from one identical file,
+  ;; the `doc` row came first in three of them and the `section` row first
+  ;; in the other three. THE ORDER OF THE LIST IS NOT PART OF WHAT THIS
+  ;; PROMISES. What is promised is the pair above: rows sharing a parent
+  ;; carry `(ord, block-id)`, and every caller that wants an order filters
+  ;; to one parent and sorts by that -- which is what `outline`, `refs`
+  ;; and the code projection do, and why the `outline` verb's text is
+  ;; identical across those same six stores. A caller that wants the whole
+  ;; tree uses the rows as a SET (the markdown projection does). Anything
+  ;; that takes `(car ...)` of this list is choosing a block by tossing a
+  ;; coin -- a fixture did, and went red one run in five.
   (define (state-outline r)
     (let* ((structure (state-structure r))
            (cyclic (cdr (assq 'conflicts structure)))

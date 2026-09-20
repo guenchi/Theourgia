@@ -23,10 +23,22 @@
 ;; 2.4 exists, and it is why a parser that understands very little is
 ;; enough for a projection that loses nothing.
 (library (theourgia project)
-  (export export-md import-md md-tree subtree-ids block-text)
-  (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
+  (export export-md import-md md-tree subtree-ids block-text md-kinds)
+  (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs hashtables)
+          (rnrs unicode)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
-          (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?)
+          (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?
+                real-path path-case-sensitive?)
+          ;; NEVER: THE RULE IS SHARED, NOT COPIED. `code-safe-path?` is
+          ;; `relative-safe?` in the code projection, and it already says what
+          ;; a path a projection may write has to be. A second rule here --
+          ;; and the first version of this file had one, weaker: it allowed a
+          ;; NUL and a backslash and DROPPED `.` components rather than
+          ;; refusing them -- is how two projections come to disagree about
+          ;; what is safe. This is a sibling import rather than a shared
+          ;; library because moving the rule somewhere lower touches both
+          ;; projections; that move is recorded, not done here.
+          (only (theourgia code-project) code-safe-path?)
           (theourgia md)
           (theourgia reduce)
           (theourgia store))
@@ -159,20 +171,292 @@
   (define (subtree-ids state id)
     (and (state-read state id) (cons id (descendant-ids state id))))
 
+  ;; THE KINDS THIS PROJECTION WRITES. Not a second opinion about which kinds
+  ;; are legal -- `known-kinds` in the reducer is the only thing that decides
+  ;; that, and every write route asks it. This says which of those kinds this
+  ;; verb is responsible for, so that a `code` block no markdown file contains
+  ;; is understood as addressed elsewhere rather than reported as lost.
+  (define md-kinds '(doc section))
+
+  ;; THE PATH IS CHECKED BEFORE ANYTHING IS WRITTEN, AND TWO SPELLINGS OF ONE
+  ;; FILE ARE ONE FILE. Readings that got here, each of them something this
+  ;; verb had always done:
+  ;;
+  ;;   "../x.md" wrote OUTSIDE the directory the caller named and answered ok
+  ;;   a document with no path opened that directory as a file
+  ;;   "same.md" and "./same.md" replaced each other with no conflict reported
+  ;;   "a.md" and "A.md" are one file on a case-insensitive volume, and the
+  ;;     conflict key compared them as text
+  ;;   a NUL in a path is a truncation point for the system and was not for us
+  ;;   a symlink inside the target directory leads out of it
+  ;;
+  ;; THE TEXTUAL RULE IS `code-safe-path?`, shared with the code projection.
+  ;; THE IDENTITY OF A FILE IS ASKED OF THE FILESYSTEM, which is what
+  ;; `client.sc`'s `key-name` does for store keys, under a comment worth
+  ;; reading: a key derived from the spelling gives one store several
+  ;; identities. The primitives are the same ones (`real-path`,
+  ;; `path-case-sensitive?`); this is a second CALLER of that technique, not a
+  ;; second statement of it, because `key-name` is not exported and closing
+  ;; over it would mean moving it.
+  ;;
+  ;; TWO NUANCES TAKEN FROM THERE, BOTH MEASURED THERE FIRST: the question
+  ;; goes to the nearest EXISTING directory, because a file that is not there
+  ;; yet has no filesystem to answer for it; and `unknown` folds nothing,
+  ;; since folding on a case-sensitive volume would give one key to two files
+  ;; that really are different -- the worse direction of the two.
+  ;;
+  ;; NOT DONE HERE, AND RECORDED RATHER THAN LEFT SILENT: nothing is `stat`ed
+  ;; before writing, so a path naming an existing directory, or `x.md` beside
+  ;; `x.md/y.md`, still reaches `mkdir-p!` and `write-file`. The code
+  ;; projection refuses those with `unsupported-file` after looking; doing the
+  ;; same here is a separate piece of work.
+  (define (nearest-existing path)
+    (if (file-exists? path)
+        path
+        (let ((parent (parent-directory path)))
+          (if (string=? parent path) path (nearest-existing parent)))))
+
+  (define (under? dir path)
+    (let ((n (string-length dir)))
+      (and (>= (string-length path) n)
+           (string=? (substring path 0 n) dir)
+           (or (= (string-length path) n)
+               (char=? (string-ref path n) #\/)))))
+
+  ;; The absolute name of the file this path would write, with symlinks
+  ;; resolved as far as anything exists, or #f when the path may not be
+  ;; written at all.
+  (define (file-key dir path)
+    (and (code-safe-path? path)
+         (let* ((home (or (real-path dir) dir))
+                (full (string-append home "/" path))
+                (anchor (real-path (nearest-existing full))))
+           (and anchor
+                (under? home anchor)
+                (if (eq? #f (path-case-sensitive? (nearest-existing full)))
+                    (string-downcase full)
+                    full)))))
+
   (define (export-md store dir . opts)
     (let* ((recover? (and (pair? opts) (car opts)))
            (state (open-and-reduce store))
-           (docs (md-tree state)))
+           (docs (md-tree state))
+           (path-of (lambda (id) (text-field (state-read state id) 'path)))
+           (winner (make-hashtable string-hash string=?))
+           (doc-key (make-hashtable string-hash string=?)))
+      ;; NEVER: TWO DOCUMENTS WITH ONE PATH ARE NOT TWO FILES. Nothing stops
+      ;; two doc blocks carrying the same `path`. Both were written to it, the
+      ;; second replacing the first, and the answer counted two files while one
+      ;; document's text no longer existed anywhere -- the exact shape this
+      ;; round is about, in the one place that was still doing it.
+      ;;
+      ;; The first by ID wins. Not the first in `md-tree`'s order, which
+      ;; follows the generated writer name and would make which document
+      ;; survives a matter of chance.
+      ;; The key of each document is computed ONCE, here, and every later
+      ;; question -- was it written, did it lose, is its path usable -- is
+      ;; answered from this table. Asking the filesystem again further down
+      ;; would be a second reading of something that can change underneath.
+      (for-each
+        (lambda (doc)
+          (hashtable-set! doc-key (car doc) (file-key dir (path-of (car doc)))))
+        docs)
       (for-each
         (lambda (doc)
           (let* ((id (car doc))
-                 (b (state-read state id))
-                 (path (text-field b 'path))
-                 (full (string-append dir "/" path)))
-            (mkdir-p! (parent-directory full))
-            (write-file full (block-text state id recover?))))
-        docs)
-      (list 'ok (list 'files (length docs)))))
+                 (key (hashtable-ref doc-key id #f)))
+            (when (and key (not (hashtable-ref winner key #f)))
+              (hashtable-set! winner key id)
+              (let ((full (string-append dir "/" (path-of id))))
+                (mkdir-p! (parent-directory full))
+                (write-file full (block-text state id recover?))))))
+        (list-sort (lambda (a b) (string<? (car a) (car b))) docs))
+      (let* ((rows (state-outline state))
+             (written (make-hashtable string-hash string=?))
+             (parent (make-hashtable string-hash string=?))
+             (children (make-hashtable string-hash string=?))
+             (enumerated (make-hashtable string-hash string=?))
+             (a-document?
+               (let ((ids (make-hashtable string-hash string=?)))
+                 (for-each (lambda (doc) (hashtable-set! ids (car doc) #t)) docs)
+                 (lambda (id) (hashtable-ref ids id #f))))
+             ;; NEVER: AND ONLY A DOCUMENT CAN LOSE A PATH. `text-field`
+             ;; answers "" for a block that has no path at all, which is most
+             ;; of them, so asking this question of every block would make one
+             ;; document with a missing path the winner of "" and every
+             ;; unwritten SECTION its loser -- a reason that is wrong about
+             ;; both blocks it names.
+             (lost-path
+               (lambda (id)
+                 (and (a-document? id)
+                      (let ((key (hashtable-ref doc-key id #f)))
+                        (and key
+                             (let ((w (hashtable-ref winner key #f)))
+                               (and w (not (equal? w id)) w)))))))
+             (unusable-path
+               (lambda (id)
+                 (and (a-document? id) (not (hashtable-ref doc-key id #f))))))
+        ;; NEVER: THE ROWS ARE WALKED ONCE, NOT ONCE PER DOC AND NOT ONCE PER
+        ;; ENTRY. `subtree-ids` and `descendant-ids` each rebuild the whole
+        ;; outline, so asking either inside a loop made export quadratic in
+        ;; whatever the loop ran over. Both were measured after the fact, on
+        ;; shapes the fixtures do not have:
+        ;;
+        ;;   once per doc   -- 200 one-heading documents: 280 ms before this
+        ;;                     round, 540 ms with the per-doc call
+        ;;   once per entry -- 600 unwritten blocks at root: 806 ms, and
+        ;;                     climbing as the cube; at a few thousand it is
+        ;;                     seconds
+        ;;
+        ;; A fixture with one document and two skipped blocks cannot see
+        ;; either. One pass builds the parent map, the child map and the set
+        ;; of rows; the reach is walked from the child map.
+        (for-each (lambda (r)
+                    (hashtable-set! enumerated (caddr r) #t)
+                    (hashtable-set! parent (caddr r) (car r))
+                    (when (string? (car r))
+                      (hashtable-set! children (car r)
+                                      (cons (caddr r)
+                                            (hashtable-ref children (car r) (quote ()))))))
+                  rows)
+        ;; NEVER: AND THE WALK STOPS AT A NESTED DOCUMENT, BECAUSE THE
+        ;; RENDERER DOES. `subtree` refuses to descend into a document -- it
+        ;; has its own file, and writing its sections into the parent's file
+        ;; too would duplicate every one of them. A walk that descended anyway
+        ;; marked those blocks written when nothing had written them:
+        ;; measured, a nested document that LOST a path conflict took its
+        ;; section with it and the answer reported neither, undercounting by
+        ;; two. Each winning document is its own starting point, so a nested
+        ;; winner is still reached -- by its own file, which is the truth.
+        ;; NEVER: THE WALK STARTS FROM THE DOCUMENTS THAT GOT A FILE. "Not a
+        ;; path loser" is not the same set: a document whose path cannot be
+        ;; used is not a loser either, and starting from it marked it and its
+        ;; whole subtree written when nothing had been written at all -- the
+        ;; answer then had no skip clause to put it in.
+        (let walk ((ids (map car
+                             (filter (lambda (doc)
+                                       (let ((k (hashtable-ref doc-key (car doc) #f)))
+                                         (and k (equal? (hashtable-ref winner k #f) (car doc)))))
+                                     docs))))
+          (cond ((null? ids) 'done)
+                ((hashtable-ref written (car ids) #f) (walk (cdr ids)))
+                (else
+                  (hashtable-set! written (car ids) #t)
+                  (walk (append (filter (lambda (child)
+                                          (not (eq? 'doc (kind-of (state-read state child)))))
+                                        (hashtable-ref children (car ids) (quote ())))
+                                (cdr ids))))))
+        (let* ((unwritten? (lambda (id) (not (hashtable-ref written id #f))))
+               ;; NEVER: AND THE KIND SAYS WHOSE BLOCK IT IS, NOT WHETHER IT
+               ;; IS LEGAL. `md-kinds` is the set this projection writes; a
+               ;; `code`, `library` or `file` block that no markdown file
+               ;; contains was addressed to another projection, not skipped by
+               ;; this one. THE ONE AUTHORITY ON WHICH KINDS EXIST AT ALL IS
+               ;; `known-kinds` IN THE REDUCER -- this list says which of them
+               ;; are this verb's business, a different question, and
+               ;; `facade-gate` names both places and checks this one is a
+               ;; subset of that one.
+               ;; NEVER: AND THE REACH COUNTS THE SAME BLOCKS THE REASONS DO.
+               ;; It used to count every unwritten descendant, including ones
+               ;; addressed to another projection: a section with a `code`
+               ;; child reported `(subtree 1)`, making `1 + n` say two blocks
+               ;; were lost when only one was this verb's to lose. The sum has
+               ;; to be over one population or it is not an invariant.
+               (ours?
+                 (lambda (id)
+                   (let* ((b (state-read state id))
+                          (fs (and b (assq 'fields b)))
+                          (e (and fs (assq 'kind (cdr fs)))))
+                     (and b
+                          (unwritten? id)
+                          (or (not e)
+                              (not (symbol? (cdr e)))
+                              (memq (cdr e) md-kinds))
+                          #t))))
+               (reason-for
+                 (lambda (id)
+                   (let* ((b (state-read state id))
+                          (fs (and b (assq 'fields b)))
+                          ;; `field` answers #f both for "there is no kind"
+                          ;; and for "the kind is #f", so a block carrying
+                          ;; `(kind . #f)` -- which only an older store can
+                          ;; hold, since the write path now refuses it -- was
+                          ;; reported as having no kind at all.
+                          (e (and fs (assq 'kind (cdr fs)))))
+                     (cond ((not b) #f)
+                           ((not (unwritten? id)) #f)
+                           ((not e) 'kind-absent)
+                           ((not (symbol? (cdr e))) 'kind-not-a-symbol)
+                           ((not (memq (cdr e) md-kinds)) #f)
+                           ((unusable-path id) 'path-not-usable)
+                           ((lost-path id) 'path-conflict)
+                           (else 'not-in-any-document)))))
+               ;; NEVER: SUPPRESSION REQUIRES AN ANCESTOR THAT IS ACTUALLY
+               ;; LISTED, NOT MERELY ONE THAT HAS A REASON. A DELETED doc
+               ;; stays readable through `state-read` while dropping out of
+               ;; the outline rows, so an ancestor could have a reason and yet
+               ;; never appear in the answer. Measured: delete a doc with a
+               ;; live section under it and the section, which now belongs to
+               ;; no document, was suppressed in favour of an entry that was
+               ;; never written -- `(ok (files 0))`, nothing on disk, two live
+               ;; blocks reported by nobody.
+               (listed?
+                 (lambda (id)
+                   (and (hashtable-ref enumerated id #f) (reason-for id) #t)))
+               (named?
+                 (lambda (id)
+                   (let loop ((up (hashtable-ref parent id #f)))
+                     (cond ((not up) #f)
+                           ((eq? up (quote root)) #f)
+                           ((listed? up) #t)
+                           (else (loop (hashtable-ref parent up #f)))))))
+               ;; NEVER: AND THE CAUSE IS NAMED ONCE, WITH ITS REACH. When a
+               ;; doc goes unwritten its whole subtree goes with it, and a doc
+               ;; of two hundred blocks would otherwise report two hundred
+               ;; lines. The outermost unwritten block is named and carries
+               ;; the number of blocks below it that went unwritten TOO -- a
+               ;; written block underneath is not lost and is not counted,
+               ;; which a nested document is how you see.
+               ;;
+               ;; Entries never nest, so `1 + n` summed over them counts each
+               ;; lost block exactly once, and a caller can add them up.
+               (reach
+                 (lambda (id)
+                   (let loop ((ids (hashtable-ref children id (quote ()))) (n 0))
+                     (cond ((null? ids) n)
+                           (else
+                             (loop (append (hashtable-ref children (car ids) (quote ()))
+                                           (cdr ids))
+                                   (if (ours? (car ids)) (+ n 1) n)))))))
+               (entry
+                 (lambda (id r)
+                   (cons id
+                         (cons r
+                               (append (cond
+                                         ((eq? r 'path-conflict)
+                                          (list (list 'with (lost-path id))))
+                                         ;; The RAW path, not a normalised
+                                         ;; one: the caller has to be able to
+                                         ;; recognise what it wrote.
+                                         ((eq? r 'path-not-usable)
+                                          (list (list 'path (path-of id))))
+                                         (else (quote ())))
+                                       (list (list (quote subtree) (reach id))))))))
+               (skipped
+                 (list-sort
+                   (lambda (a b) (string<? (car a) (car b)))
+                   (fold-right
+                     (lambda (id acc)
+                       (let ((r (reason-for id)))
+                         (if (and r (not (named? id)))
+                             (cons (entry id r) acc)
+                             acc)))
+                     (quote ())
+                     (map caddr rows)))))
+          (if (null? skipped)
+              (list 'ok (list 'files (hashtable-size winner)))
+              (list 'ok (list 'files (hashtable-size winner))
+                    (cons 'skipped skipped)))))))
 
   (define (parent-directory path)
     (let loop ((i (string-length path)))

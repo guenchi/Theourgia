@@ -16,7 +16,8 @@
 ;; H2: a directory and a store, each derivable from the other.
 ;; A3 (bytes), A3' (a local edit costs one record) and A6 (identity).
 (import (chezscheme) (theourgia project) (theourgia store) (theourgia reduce)
-        (theourgia log) (theourgia ffi) (theourgia md))
+        (theourgia log) (theourgia ffi) (theourgia md)
+        (only (theourgia code-project) code-safe-path?))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -529,6 +530,918 @@
             (list (cdr (assq 'title (cdr (assq 'fields b))))
                   (cdr (assq 'src (cdr (assq 'fields b))))))))
       (list "S2" "two\n"))
+
+(printf "== F42: a block the projection cannot place is named, not dropped ==\n")
+;; A KIND THAT IS NOT A SYMBOL CANNOT BE COMPARED WITH ONE. Every place that
+;; asks what a block is asks with `eq?`, so a kind left as the string
+;; "decision" -- which is what the command line used to store -- matches
+;; nothing and the block quietly stops being whatever it says it is. The
+;; write routes refuse such a value now; a store written before they did
+;; still holds them, and this is what export does when it meets one.
+;;
+;; THE RECORD IS APPENDED TO THE LOG DIRECTLY, on purpose: going through a
+;; write route is exactly what is now impossible, and a fixture that could
+;; only build this state through a route would have to be deleted the day
+;; the route was fixed -- taking the coverage of old stores with it.
+(define (text-field-of store id name)
+  (let* ((b (state-read (open-and-reduce store) id))
+         (fs (and b (assq 'fields b)))
+         (e (and fs (assq name (cdr fs)))))
+    (and e (cdr e))))
+
+(define (kind-of-block store id)
+  (let* ((b (state-read (open-and-reduce store) id))
+         (fs (and b (assq 'fields b)))
+         (e (and fs (assq 'kind (cdr fs)))))
+    (and e (cdr e))))
+
+;; NEVER: THE BLOCK IS CHOSEN BY WHAT IT IS, NOT BY WHERE IT CAME IN THE LIST.
+;; `state-outline` hands back the rows of the tree, and the ORDER OF THAT LIST
+;; IS NOT PART OF WHAT IT PROMISES: measured over six fresh stores holding the
+;; same one file, the doc row came first three times and the section row first
+;; the other three -- the writer name is generated, and the row order follows
+;; it. Each consumer that needs an order makes one (the `outline` verb walks
+;; parent to child, and its output was byte-identical across those runs). An
+;; earlier version of the two rows below took `(car …)` and so tested a
+;; different block on different days; it went red once in five runs, which is
+;; the worst rate a wrong row can have.
+(define (block-of-kind store want-kind)
+  (let loop ((ids (map caddr (state-outline (open-and-reduce store)))))
+    (cond ((null? ids) (list 'NO-BLOCK-OF-KIND want-kind))
+          ((eq? want-kind (kind-of-block store (car ids))) (car ids))
+          (else (loop (cdr ids))))))
+
+(define (set-kind! store id value)
+  (let* ((sess (log-begin store (lambda args 'applied)))
+         (v (session-view sess)))
+    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                      (view-expect-seq v) "independent-fixture" '()
+                                      (list 'set id 'kind value)))
+    (session-commit! sess)
+    (log-end! sess)))
+
+(define t9 (fresh-case! (list (cons "nine.md" "# Nine\nbody of nine\n\n## Deeper\nunder the heading\n"))))
+(define d9 (cdr t9))
+(import-md d9 (car t9) "tester")
+(define out9a (string-append root "/c" (number->string case-n) "/out-a"))
+(define out9b (string-append root "/c" (number->string case-n) "/out-b"))
+(system (string-append "mkdir -p " out9a " " out9b))
+
+(want "F42 CONTROL: with every kind a symbol, export says only how many files it wrote"
+      (export-md d9 out9a)
+      '(ok (files 1)))
+
+(define section9 (block-of-kind d9 'section))
+(define doc9 (block-of-kind d9 'doc))
+
+;; NEVER: AND THE FIXTURE SAYS IT FOUND THEM. `block-of-kind` answers a list
+;; when it finds nothing, which would otherwise travel into the rows below as
+;; a block id that matches no block -- and a skip list that names nothing is
+;; exactly what those rows would then be measuring.
+(want "F42 the store really does hold one block of each kind the rows below break"
+      (list (string? section9) (string? doc9) (equal? section9 doc9))
+      (list #t #t #f))
+
+(set-kind! d9 section9 "section")
+
+(want "F42 the string-form kind really is in the store, and really is a string"
+      (let ((k (kind-of-block d9 section9)))
+        (list k (symbol? k)))
+      (list "section" #f))
+
+
+(define (holds? text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) #t)
+            (else (loop (+ i 1)))))))
+
+;; NEVER: A SECTION WHOSE KIND CANNOT BE READ IS STILL WRITTEN, AND SO IS NOT
+;; REPORTED. `md-tree` uses the kind to pick the blocks that become FILES;
+;; everything under one is rendered by structure, kind or no kind. The first
+;; version of this row asserted the opposite -- it expected the section in the
+;; skip list -- and passed, because the code agreed with it. What neither of
+;; them had done was open the file: the section's heading and body were in it
+;; the whole time. THE ROW NOW READS THE FILE.
+(want "F42 a section with an unreadable kind is written into its file, and is not reported"
+      (list (export-md d9 out9b)
+            (let ((text (slurp (string-append out9b "/nine.md"))))
+              (list (and (holds? text "# Nine") 'the-doc-is-there)
+                    (and (holds? text "body of nine") 'with-its-body)
+                    (and (holds? text "## Deeper") 'and-the-section-whose-kind-is-broken)
+                    (and (holds? text "under the heading") 'with-its-body-too))))
+      (list '(ok (files 1))
+            '(the-doc-is-there with-its-body
+              and-the-section-whose-kind-is-broken with-its-body-too)))
+
+
+;; NEVER: THE ID IS DERIVED THE WAY THE PRODUCT DERIVES IT. Spelling
+;; `<writer>.<seq>` here would be this fixture's own copy of the derivation
+;; rule, green on the day it was written and silent afterwards.
+(define (id-written-by answer)
+  (let* ((ok (car answer))
+         (ev (car (cadr (assq 'events (cdr ok))))))
+    (block-id (car ev) (cdr ev))))
+
+;; NEVER: WHEN IT IS THE DOC'S KIND, THE WHOLE SUBTREE GOES, AND THE ANSWER
+;; SAYS HOW MUCH. Nothing is written at all -- `(files 0)` with an `ok` head
+;; is what a caller reading only the head would take for success -- and the
+;; blocks under it are lost with it. The entry names the cause once and
+;; carries its reach, so the caller can add up what it lost without being
+;; handed a line per block.
+(define t10 (fresh-case! (list (cons "ten.md" "# Ten\nbody\n\n## A\na\n\n## B\nb\n"))))
+(define d10 (cdr t10))
+(import-md d10 (car t10) "tester")
+(define out10 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out10))
+(define doc10 (block-of-kind d10 'doc))
+(define under10 (length (filter (lambda (id) (not (equal? id doc10)))
+                                (map caddr (state-outline (open-and-reduce d10))))))
+(set-kind! d10 doc10 "doc")
+
+(want "F42 a doc that cannot be placed takes its whole subtree, and the entry carries the reach"
+      (list (export-md d10 out10)
+            (length (directory-list out10))
+            under10)
+      (list (list 'ok (list 'files 0)
+                  (list 'skipped (list doc10 'kind-not-a-symbol (list 'subtree under10))))
+            0
+            3))
+
+;; NEVER: AND AN ENTRY IS NEVER INSIDE ANOTHER ENTRY. A block with no kind
+;; sitting under a doc whose kind is broken is unwritten for the doc's
+;; reason, not for its own; listing both would count it twice for a caller
+;; adding `1 + n` over the entries, which is the one arithmetic this shape
+;; exists to support.
+(define t13 (fresh-case! (list (cons "thirteen.md" "# Thirteen\nbody\n"))))
+(define d13 (cdr t13))
+(import-md d13 (car t13) "tester")
+(define out13 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out13))
+(define doc13 (block-of-kind d13 'doc))
+(define kindless13
+  (id-written-by
+    (with-store-write d13
+      (lambda (s v) (list (list 'insert doc13 #f (list (cons 'title "kindless child")))))
+      "tester")))
+(set-kind! d13 doc13 "doc")
+
+(want "F42 a block inside a named block is counted in its reach, not listed on its own"
+      (let* ((answer (export-md d13 out13))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (length sk) (car (car sk)) (equal? (car (car sk)) doc13)
+              (cadr (assq 'subtree (cddr (car sk))))
+              (assoc kindless13 sk)))
+      (list 1 doc13 #t 2 #f))
+
+(define t11 (fresh-case! (list (cons "eleven.md" "# Eleven\nbody of eleven\n"))))
+(define d11 (cdr t11))
+(import-md d11 (car t11) "tester")
+(define out11 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out11))
+(define kindless11
+  (id-written-by
+    (with-store-write d11
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'title "kindless")))))
+      "tester")))
+
+;; NEVER: AND THE ROUTE THAT ACCEPTED IT STILL REFUSES AN UNKNOWN KIND. These
+;; two rows are the same call with one field changed, and together they say
+;; what the write path's rule actually is: a kind it does not know is refused,
+;; NO kind is accepted. Without the second one, "the store can hold a block
+;; with no kind" reads like the check is simply absent on this route -- and
+;; this route is a third one, `insert`, whose payload only becomes a `put`
+;; inside `resolve`, after the caller's intent has been left behind.
+(want "F42 the same write route refuses a kind the table does not have"
+      (let ((answer (with-store-write d11
+                      (lambda (s v) (list (list 'insert 'root #f
+                                                (list (cons 'kind 'nonsense)
+                                                      (cons 'title "refused")))))
+                      "tester")))
+        (list (car (car answer)) (cadr (car answer))
+              (car (caddr (car answer)))))
+      (list 'error 'malformed-intent 'kind-not-known))
+
+(want "F42 the kindless block really was accepted by the write path"
+      (list (kind-of-block d11 kindless11)
+            (if (state-read (open-and-reduce d11) kindless11) 'present 'MISSING))
+      (list #f 'present))
+
+(want "F42 a block with no kind is named with its own reason, and its reach is zero"
+      (export-md d11 out11)
+      (list 'ok (list 'files 1)
+            (list 'skipped (list kindless11 'kind-absent (list 'subtree 0)))))
+
+
+
+
+;; NEVER: A KIND THAT IS PRESENT AND #f IS NOT A MISSING KIND. `field` answers
+;; #f for both, so a block carrying `(kind . #f)` was reported as having no
+;; kind at all -- the field is right there, and its value is simply not a
+;; symbol. Only an older store can hold one now (the write path refuses #f),
+;; which is exactly why the reason has to be right: it is the only thing the
+;; reader has.
+(define t14 (fresh-case! (list (cons "fourteen.md" "# Fourteen\nbody\n"))))
+(define d14 (cdr t14))
+(import-md d14 (car t14) "tester")
+(define out14 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out14))
+(define doc14 (block-of-kind d14 'doc))
+(set-kind! d14 doc14 #f)
+
+(want "F42 a kind that is present and #f is reported as not a symbol, not as absent"
+      (list (kind-of-block d14 doc14) (export-md d14 out14))
+      (list #f (list 'ok (list 'files 0)
+                     (list 'skipped (list doc14 'kind-not-a-symbol (list 'subtree 1))))))
+
+
+;; NEVER: A DELETED PARENT IS NOT A NAMED PARENT. `state-read` still answers
+;; for a deleted block while the outline stops listing it, so an ancestor can
+;; have a reason and never appear in the answer. Measured before this was
+;; fixed: delete a doc that has a live section under it and the section --
+;; which now belongs to no document -- was suppressed in favour of an entry
+;; that was never written. `(ok (files 0))`, nothing on disk, two live blocks
+;; reported by nobody. The suppression rule now asks whether the ancestor is
+;; LISTED, not whether it has a reason.
+(define t17 (fresh-case! (list (cons "seventeen.md" "# Top\ntop body\n\n## Under\nunder body\n"))))
+(define d17 (cdr t17))
+(import-md d17 (car t17) "tester")
+(define out17 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out17))
+(define doc17 (block-of-kind d17 'doc))
+(define section17 (block-of-kind d17 'section))
+(define del17 (car (with-store-write d17 (lambda (s v) (list (list 'del doc17))) "tester")))
+
+(want "F42 a deleted document leaves its live blocks named, not hidden behind an entry nobody will read"
+      (let* ((answer (export-md d17 out17))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (car del17)
+              (and (state-read (open-and-reduce d17) doc17) 'the-deleted-doc-still-reads-back)
+              (length sk)
+              (car (car sk))
+              (cadr (car sk))
+              (cadr (assq 'subtree (cddr (car sk))))
+              (length (directory-list out17))))
+      (list 'ok 'the-deleted-doc-still-reads-back
+            1 section17 'not-in-any-document 1 0))
+
+
+;; NEVER: THE REACH COUNTS WHAT WAS LOST, NOT WHAT IS UNDERNEATH. A block
+;; below an unwritten one is usually unwritten too, which is why every fixture
+;; here agreed with a reach that simply counted descendants -- a mutation
+;; removing the filter survived all of them. It matters when a WRITTEN block
+;; sits under an unwritten one, and the way that happens is a nested document:
+;; the write route refuses one (`doc-must-be-top-level`), so this record goes
+;; into the log directly, which is how a store written by another version
+;; could hold it. `md-tree` then sees two documents and exports both.
+;;
+;; Break the OUTER document's kind and its file goes; the inner one is still
+;; written, so the outer's reach is the section between them -- one block, not
+;; the two that are under it.
+(define t19 (fresh-case! (list (cons "nineteen.md" "# Outer\nouter body\n"))))
+(define d19 (cdr t19))
+(import-md d19 (car t19) "tester")
+(define out19 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out19))
+(define outer19 (block-of-kind d19 'doc))
+
+(want "F42 the write route refuses a document below another document"
+      (let ((answer (with-store-write d19
+                      (lambda (s v) (list (list 'insert outer19 #f
+                                                (list (cons 'kind 'doc)
+                                                      (cons 'path "inner.md")
+                                                      (cons 'title "Inner")))))
+                      "tester")))
+        (list (car (car answer)) (cadr (car answer))))
+      (list 'error 'doc-must-be-top-level))
+
+(define inner19
+  (let* ((sess (log-begin d19 (lambda args 'applied)))
+         (v (session-view sess))
+         (id (block-id (view-writer v) (view-expect-seq v))))
+    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                      (view-expect-seq v) "independent-fixture" '()
+                                      (list 'put (list (cons 'kind 'doc)
+                                                       (cons 'path "inner.md")
+                                                       (cons 'title "Inner")
+                                                       (cons 'parent outer19) (cons 'ord 0)))))
+    (session-commit! sess)
+    (log-end! sess)
+    id))
+
+(want "F42 CONTROL: with both documents readable, both are written"
+      (list (export-md d19 out19)
+            (list-sort string<? (directory-entries out19)))
+      (list '(ok (files 2)) '("inner.md" "nineteen.md")))
+
+(set-kind! d19 outer19 "doc")
+(define out19b (string-append root "/c" (number->string case-n) "/out-b"))
+(system (string-append "mkdir -p " out19b))
+
+(want "F42 a written block under an unwritten one is not counted in its reach"
+      (let* ((answer (export-md d19 out19b))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (car answer) (cadr answer)
+              (length sk) (car (car sk)) (cadr (assq 'subtree (cddr (car sk))))
+              (list-sort string<? (directory-entries out19b))))
+      (list 'ok '(files 1) 1 outer19 1 '("inner.md")))
+
+
+;; NEVER: TWO DOCUMENTS WITH ONE PATH ARE NOT TWO FILES. Both used to be
+;; written to it, the second replacing the first, and the answer said
+;; `(files 2)` while one document's text existed nowhere -- a count that was
+;; right about the writes and wrong about the result. The first by ID wins,
+;; which is an order that does not depend on which generated writer name
+;; sorted first, and the loser is reported like anything else this projection
+;; should have written and did not: with the winner named, so the reader can
+;; see WHY rather than only that.
+;;
+;; The discriminating part is the FILE: it must hold the winner's text. An
+;; answer that named the right loser while the losing text sat on disk would
+;; have the story exactly backwards.
+(define t20 (fresh-case! (list (cons "twenty.md" "# First\nfirst body\n"))))
+(define d20 (cdr t20))
+(import-md d20 (car t20) "tester")
+(define out20 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out20))
+(define first20 (block-of-kind d20 'doc))
+;; NEVER: THE PATH IS READ BEFORE THE WRITE CALL, NOT INSIDE IT. Reading the
+;; store from within a `with-store-write` callback re-opens a store whose lock
+;; that same process is holding, and the fixture stops forever with no
+;; diagnostic -- measured, the first version of this row hung md2 for the
+;; full fifteen minutes of its timeout, and the reading looked exactly like a
+;; product defect until the same case ran with the read moved out.
+(define path20 (text-field-of d20 first20 'path))
+(define second20
+  (id-written-by
+    (with-store-write d20
+      (lambda (s v) (list (list 'insert 'root #f
+                                (list (cons 'kind 'doc)
+                                      (cons 'path path20)
+                                      (cons 'title "Second")))))
+      "tester")))
+
+(want "F42 two documents claiming one path: both exist, and they do claim the same path"
+      (list (equal? (text-field-of d20 first20 'path) (text-field-of d20 second20 'path))
+            (text-field-of d20 first20 'path)
+            (string<? first20 second20))
+      (list #t "twenty.md" #t))
+
+(want "F42 the first by id is written, the other is named with the winner, and the file is the winner's"
+      (let* ((answer (export-md d20 out20))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (text (slurp (string-append out20 "/twenty.md"))))
+        (list (cadr answer)
+              (length sk)
+              (car (car sk))
+              (cadr (car sk))
+              (cadr (assq 'with (cddr (car sk))))
+              (and (holds? text "first body") 'the-winners-body-is-on-disk)
+              (if (holds? text "Second") 'THE-LOSER-OVERWROTE-IT 'and-the-losers-is-not)))
+      (list '(files 1) 1 second20 'path-conflict first20
+            'the-winners-body-is-on-disk 'and-the-losers-is-not))
+
+
+;; NEVER: A SECTION IS NOT A DOCUMENT, AND CANNOT LOSE A DOCUMENT'S PATH.
+;; `text-field` answers "" for a block with no path, which is most of them, so
+;; asking "did your path lose?" of every block would make one document with a
+;; missing path the winner of "" and every unwritten section its loser -- a
+;; reason wrong about both blocks it names. Here the section carries a real
+;; path, the document's own, and it is still not a path conflict: it is simply
+;; in no document.
+(define t21 (fresh-case! (list (cons "twentyone.md" "# Real\nbody\n"))))
+(define d21 (cdr t21))
+(import-md d21 (car t21) "tester")
+(define out21 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out21))
+(define doc21 (block-of-kind d21 'doc))
+(define path21 (text-field-of d21 doc21 'path))
+(define impostor21
+  (id-written-by
+    (with-store-write d21
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'section)
+                                                       (cons 'title "Impostor")
+                                                       (cons 'path path21)))))
+      "tester")))
+
+(want "F42 a section carrying a document's path is in no document, not in a path conflict"
+      (let* ((answer (export-md d21 out21))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (text-field-of d21 impostor21 'path)
+              (cadr answer)
+              (length sk) (car (car sk)) (cadr (car sk))))
+      (list path21 '(files 1) 1 impostor21 'not-in-any-document))
+
+;; NEVER: WHICH DOCUMENT SURVIVES MUST NOT DEPEND ON THE ROW ORDER. `md-tree`
+;; hands its documents back in the order the outline produced them. For two
+;; documents at root that order is their `(ord, id)` -- and a `move` changes
+;; the ord without touching the id, so the two orders can be made to disagree
+;; and then the rule that picks the winner is visible.
+;;
+;; An earlier version of this row asked the question of eight freshly built
+;; stores and hoped the generated writer names would make the orders differ.
+;; They never did, and the row SAID SO rather than passing: root documents are
+;; siblings, and siblings are sorted. A row that cannot tell the two rules
+;; apart should fail, not read as evidence.
+(define t22 (fresh-case! (list (cons "pair.md" "# Pair\nbody of the first\n"))))
+(define d22 (cdr t22))
+(import-md d22 (car t22) "tester")
+(define out22 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out22))
+(define first22 (block-of-kind d22 'doc))
+(define path22 (text-field-of d22 first22 'path))
+(define second22
+  (id-written-by
+    (with-store-write d22
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path path22)
+                                                       (cons 'title "Second")))))
+      "tester")))
+(define moved22
+  (car (with-store-write d22
+         (lambda (s v) (list (list 'move first22 'root second22)))
+         "tester")))
+
+(want "F42 the two orders really do disagree in this store"
+      (list (car moved22)
+            (equal? (list-sort string<? (list first22 second22)) (list first22 second22))
+            (equal? (map car (md-tree (open-and-reduce d22))) (list second22 first22)))
+      (list 'ok #t #t))
+
+(want "F42 and the surviving document is the first by id, not the first the rows mention"
+      (let* ((answer (export-md d22 out22))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (text (slurp (string-append out22 "/" path22))))
+        (list (cadr answer)
+              (car (car sk))
+              (cadr (car sk))
+              (cadr (assq 'with (cddr (car sk))))
+              (and (holds? text "body of the first") 'the-first-by-id-is-on-disk)))
+      (list '(files 1) second22 'path-conflict first22 'the-first-by-id-is-on-disk))
+
+
+;; NEVER: A NESTED DOCUMENT THAT LOSES TAKES ITS SECTIONS WITH IT, AND THE
+;; ANSWER SAYS SO. The written-set walk used to descend into nested documents,
+;; which the RENDERER refuses to do -- so the blocks under a nested document
+;; that lost a path conflict were marked written although nothing wrote them,
+;; and the answer undercounted by two.
+(define t23 (fresh-case! (list (cons "twentythree.md" "# Outer\nouter body\n"))))
+(define d23 (cdr t23))
+(import-md d23 (car t23) "tester")
+(define out23 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out23))
+(define outer23 (block-of-kind d23 'doc))
+(define path23 (text-field-of d23 outer23 'path))
+(define inner23
+  (let* ((sess (log-begin d23 (lambda args 'applied)))
+         (v (session-view sess))
+         (id (block-id (view-writer v) (view-expect-seq v))))
+    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                      (view-expect-seq v) "independent-fixture" '()
+                                      (list 'put (list (cons 'kind 'doc)
+                                                       (cons 'path path23)
+                                                       (cons 'title "Inner")
+                                                       (cons 'parent outer23) (cons 'ord 0)))))
+    (session-commit! sess)
+    (log-end! sess)
+    id))
+(define under23
+  (let* ((sess (log-begin d23 (lambda args 'applied)))
+         (v (session-view sess))
+         (id (block-id (view-writer v) (view-expect-seq v))))
+    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                      (view-expect-seq v) "independent-fixture" '()
+                                      (list 'put (list (cons 'kind 'section)
+                                                       (cons 'title "Under the inner one")
+                                                       (cons 'parent inner23) (cons 'ord 0)))))
+    (session-commit! sess)
+    (log-end! sess)
+    id))
+
+(want "F42 the nested document and its section are really there, under the outer one"
+      (let* ((rows (state-outline (open-and-reduce d23)))
+             (parent-of (lambda (id)
+                          (let ((row (assoc id (map (lambda (r) (list (caddr r) (car r))) rows))))
+                            (and row (cadr row))))))
+        (list (equal? (text-field-of d23 inner23 'path) path23)
+              (parent-of inner23)
+              (parent-of under23)))
+      (list #t outer23 inner23))
+
+(want "F42 a nested document that loses the path takes its section with it, and both are counted"
+      (let* ((answer (export-md d23 out23))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (claimed (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
+        (list (cadr answer)
+              (length sk)
+              (car (car sk)) (cadr (car sk))
+              (cadr (assq 'subtree (cddr (car sk))))
+              claimed))
+      (list '(files 1) 1 inner23 'path-conflict 1 2))
+
+;; NEVER: AND THE REACH COUNTS THE SAME BLOCKS THE REASONS DO. A `code` child
+;; belongs to another projection: it is not this verb's to lose, it gets no
+;; reason of its own, and counting it in somebody else's reach made `1 + n`
+;; claim two blocks were lost where one was.
+(define t24 (fresh-case! (list (cons "twentyfour.md" "# Real\nbody\n"))))
+(define d24 (cdr t24))
+(import-md d24 (car t24) "tester")
+(define out24 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out24))
+(define stray24
+  (id-written-by
+    (with-store-write d24
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'section) (cons 'title "Stray")))))
+      "tester")))
+(define code24
+  (id-written-by
+    (with-store-write d24
+      (lambda (s v) (list (list 'insert stray24 #f (list (cons 'kind 'code) (cons 'title "fn")))))
+      "tester")))
+
+(want "F42 a block of another projection's kind is not counted in anybody's reach"
+      (let* ((answer (export-md d24 out24))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (claimed (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
+        (list (kind-of-block d24 code24)
+              (length sk) (car (car sk)) (cadr (assq 'subtree (cddr (car sk))))
+              claimed))
+      (list 'code 1 stray24 0 1))
+
+
+;; NEVER: A PATH THAT WOULD LEAVE THE TARGET DIRECTORY IS NOT WRITTEN AT ALL.
+;; `../x.md` used to be handed to `write-file` as `dir + "/../x.md"`, which
+;; puts a file OUTSIDE the directory the caller named, and the answer was
+;; `(ok (files 1))` -- a caller asking for an export into a scratch directory
+;; got a write into its parent and was told everything went fine. The row
+;; below looks in the parent directory, which is the only place the evidence
+;; would be.
+(define t25 (fresh-case! (list (cons "twentyfive.md" "# Fine\nbody\n"))))
+(define d25 (cdr t25))
+(import-md d25 (car t25) "tester")
+(define case25 (string-append root "/c" (number->string case-n)))
+(define out25 (string-append case25 "/out"))
+(system (string-append "mkdir -p " out25))
+(define escaper25
+  (id-written-by
+    (with-store-write d25
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path "../escaped.md")
+                                                       (cons 'title "Escape")))))
+      "tester")))
+
+(want "F42 a path that climbs out of the target directory is refused, named, and writes nothing"
+      (let* ((answer (export-md d25 out25))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (cadr answer)
+              (length sk) (car (car sk)) (cadr (car sk))
+              (cadr (assq 'path (cddr (car sk))))
+              (if (file-exists? (string-append case25 "/escaped.md"))
+                  'IT-WROTE-OUTSIDE-THE-TARGET-DIRECTORY
+                  'and-nothing-was-written-outside)
+              (list-sort string<? (directory-entries out25))))
+      (list '(files 1) 1 escaper25 'path-not-usable "../escaped.md"
+            'and-nothing-was-written-outside '("twentyfive.md")))
+
+;; NEVER: AND A DOCUMENT WITH NO PATH DOES NOT OPEN THE DIRECTORY AS A FILE.
+;; `text-field` answers "" for a missing path, and `dir + "/"` is the
+;; directory itself; `write-file` opens it with `no-fail`. The row asserts the
+;; export answers at all -- which is what it could not do if the open raised --
+;; and that the directory is still a directory afterwards.
+(define t26 (fresh-case! (list (cons "twentysix.md" "# Fine\nbody\n"))))
+(define d26 (cdr t26))
+(import-md d26 (car t26) "tester")
+(define out26 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out26))
+(define pathless26
+  (id-written-by
+    (with-store-write d26
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'title "No path at all")))))
+      "tester")))
+
+(want "F42 a document with no path is named, and the target directory is left a directory"
+      (let* ((answer (guard (e (#t (list 'RAISED))) (export-md d26 out26)))
+             (sk (and (pair? answer) (eq? (car answer) 'ok)
+                      (cdr (assq 'skipped (cddr answer))))))
+        (list (and (pair? answer) (car answer))
+              (and sk (length sk))
+              (and sk (car (car sk)))
+              (and sk (cadr (car sk)))
+              (and sk (cadr (assq 'path (cddr (car sk)))))
+              (if (file-is-directory? out26) 'still-a-directory 'NO-LONGER-A-DIRECTORY)))
+      (list 'ok 1 pathless26 'path-not-usable "" 'still-a-directory))
+
+;; NEVER: A PATH WITH A `.` COMPONENT IS REFUSED, NOT REPAIRED. An earlier
+;; version of this round normalised `./a.md` into `a.md` and reported the
+;; second document as a conflict. The code projection already had a rule for
+;; what a projection may write -- `code-safe-path?` -- and it REFUSES such a
+;; path rather than repairing it. Two projections disagreeing about what is
+;; safe is worse than either answer, so this one asks the same rule.
+(define t27 (fresh-case! (list (cons "twentyseven.md" "# First\nbody of the first\n"))))
+(define d27 (cdr t27))
+(import-md d27 (car t27) "tester")
+(define out27 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out27))
+(define first27 (block-of-kind d27 'doc))
+(define dotted27 (string-append "./" (text-field-of d27 first27 'path)))
+(define second27
+  (id-written-by
+    (with-store-write d27
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path dotted27)
+                                                       (cons 'title "Second")))))
+      "tester")))
+
+(want "F42 a path with a dot component is refused by the same rule the code projection uses"
+      (let* ((answer (export-md d27 out27))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (text (slurp (string-append out27 "/twentyseven.md"))))
+        (list (code-safe-path? dotted27)
+              (cadr answer)
+              (length sk) (car (car sk)) (cadr (car sk))
+              (cadr (assq 'path (cddr (car sk))))
+              (and (holds? text "body of the first") 'the-first-is-on-disk)))
+      (list #f '(files 1) 1 second27 'path-not-usable dotted27 'the-first-is-on-disk))
+
+;; NEVER: A NUL IS A TRUNCATION POINT FOR THE SYSTEM AND HAS TO BE ONE FOR US.
+;; `"a.md\x0;suffix"` reaches the filesystem as `a.md`, so it and `a.md` are
+;; one file while being two strings. The shared rule refuses any NUL.
+(define t28 (fresh-case! (list (cons "twentyeight.md" "# Fine\nbody\n"))))
+(define d28 (cdr t28))
+(import-md d28 (car t28) "tester")
+(define out28 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out28))
+(define nul28 (string-append (text-field-of d28 (block-of-kind d28 'doc) 'path)
+                             (string (integer->char 0)) "suffix"))
+(define nulled28
+  (id-written-by
+    (with-store-write d28
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path nul28)
+                                                       (cons 'title "Nulled")))))
+      "tester")))
+
+(want "F42 a path carrying a NUL is refused"
+      (let* ((answer (export-md d28 out28))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (code-safe-path? nul28)
+              (cadr answer)
+              (length sk) (car (car sk)) (cadr (car sk))
+              (list-sort string<? (directory-entries out28))))
+      (list #f '(files 1) 1 nulled28 'path-not-usable '("twentyeight.md")))
+
+;; NEVER: AND TWO SPELLINGS THE FILESYSTEM CALLS ONE FILE ARE ONE FILE. On a
+;; case-insensitive volume `a.md` and `A.md` are the same file, and a conflict
+;; key compared as text saw two. The key is now the filesystem's own answer,
+;; so this row ASKS THE VOLUME rather than assuming: where case is folded the
+;; second document is a conflict, and where it is not they are two documents
+;; and two files. A case-sensitive volume on a case-insensitive machine is
+;; ordinary, and a row that assumed either way would be wrong on somebody's
+;; machine rather than measuring.
+(define t29 (fresh-case! (list (cons "twentynine.md" "# Lower\nbody of the lower\n"))))
+(define d29 (cdr t29))
+(import-md d29 (car t29) "tester")
+(define out29 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out29))
+(define lower29 (block-of-kind d29 'doc))
+(define upper29-path (string-upcase (text-field-of d29 lower29 'path)))
+(define upper29
+  (id-written-by
+    (with-store-write d29
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path upper29-path)
+                                                       (cons 'title "Upper")))))
+      "tester")))
+
+;; NEVER: AND THIS ROW CANNOT SEE HALF OF WHAT IT ASKS, ON THIS MACHINE.
+;; Folding case unconditionally -- ignoring what the volume says -- behaves
+;; exactly like the correct rule on a volume that folds, so the mutation that
+;; does it SURVIVES here: macOS's default volume folds. The same mutation is
+;; killed on a case-sensitive volume, where folding would report a conflict
+;; between two documents that are genuinely two files, and this suite runs on
+;; FreeBSD as well. That is the reading this row cannot produce on the machine
+;; it was written on, written down rather than left to look like coverage.
+(want "F42 two spellings the volume calls one file are one file, and where it does not they are two"
+      (let* ((folds (eq? #f (path-case-sensitive? out29)))
+             (answer (export-md d29 out29))
+             (sk (if (null? (cddr answer)) '() (cdr (assq 'skipped (cddr answer))))))
+        (list (if folds 'the-volume-folds-case 'the-volume-keeps-case)
+              (cadr answer)
+              (length sk)
+              (map cadr sk)))
+        (let ((folds (eq? #f (path-case-sensitive? out29))))
+          (if folds
+              (list 'the-volume-folds-case '(files 1) 1 '(path-conflict))
+              (list 'the-volume-keeps-case '(files 2) 0 '()))))
+
+;; NEVER: AND A SYMLINK IS A WAY OUT THAT NO AMOUNT OF READING THE STRING
+;; WILL SHOW. `link/out.md` has no `..` in it and is perfectly relative; if
+;; `link` is a symlink to somewhere else, writing it puts a file outside the
+;; directory the caller named. That is why the key is the filesystem's answer
+;; and not the spelling: the containment check is made against the RESOLVED
+;; name. The row looks outside, which is where the evidence would be.
+(define t30 (fresh-case! (list (cons "thirty.md" "# Fine\nbody\n"))))
+(define d30 (cdr t30))
+(import-md d30 (car t30) "tester")
+(define case30 (string-append root "/c" (number->string case-n)))
+(define out30 (string-append case30 "/out"))
+(define elsewhere30 (string-append case30 "/elsewhere"))
+(system (string-append "mkdir -p " out30 " " elsewhere30))
+(system (string-append "ln -s " elsewhere30 " " out30 "/link"))
+(define through30
+  (id-written-by
+    (with-store-write d30
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'doc)
+                                                       (cons 'path "link/out.md")
+                                                       (cons 'title "Through the link")))))
+      "tester")))
+
+(want "F42 the symlink is really there and really points out of the target directory"
+      (list (if (file-is-directory? (string-append out30 "/link")) 'the-link-resolves-to-a-directory 'NO-LINK)
+            (code-safe-path? "link/out.md")
+            (equal? (real-path (string-append out30 "/link")) (real-path elsewhere30)))
+      (list 'the-link-resolves-to-a-directory #t #t))
+
+(want "F42 a path leading through a symlink out of the target is refused, named, and writes nothing"
+      (let* ((answer (export-md d30 out30))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (cadr answer)
+              (length sk) (car (car sk)) (cadr (car sk))
+              (cadr (assq 'path (cddr (car sk))))
+              (if (file-exists? (string-append elsewhere30 "/out.md"))
+                  'IT-WROTE-THROUGH-THE-LINK
+                  'and-nothing-was-written-through-it)))
+      (list '(files 1) 1 through30 'path-not-usable "link/out.md"
+            'and-nothing-was-written-through-it))
+
+;; NEVER: AND THE REPORT IS NOT ALLOWED TO COST MORE THAN THE EXPORT. Every
+;; entry used to recompute the whole outline to count its reach, which is
+;; invisible in a fixture with two skipped blocks and ruinous in a store with
+;; many: measured at 600 unwritten blocks, 806 ms, rising as the cube -- at a
+;; few thousand it is seconds. The budget below is generous by more than an
+;; order of magnitude against the reading that failed (12 ms now, 806 ms
+;; then), so it is about a change of SHAPE and will not flap on a loaded
+;; machine.
+(define t18 (fresh-case! (list (cons "eighteen.md" "# Eighteen\nbody\n"))))
+(define d18 (cdr t18))
+(import-md d18 (car t18) "tester")
+(define out18 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out18))
+(with-store-write d18
+  (lambda (s v)
+    (let loop ((i 0) (acc '()))
+      (if (= i 600)
+          (reverse acc)
+          (loop (+ i 1)
+                (cons (list 'insert 'root #f (list (cons 'title (number->string i)))) acc)))))
+  "tester")
+
+(want "F42 six hundred unwritten blocks are reported in a time that says the walk is not repeated"
+      (let* ((t0 (current-time 'time-monotonic))
+             (answer (export-md d18 out18))
+             (t1 (current-time 'time-monotonic))
+             (dt (time-difference t1 t0))
+             (ms (+ (* 1000 (time-second dt)) (div (time-nanosecond dt) 1000000)))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (length sk)
+              (if (< ms 200) 'within-budget (list 'TOO-SLOW ms))))
+      (list 600 'within-budget))
+
+;; NEVER: AND WHEN THERE ARE TWO, THE LIST HAS AN ORDER OF ITS OWN. The rows
+;; `state-outline` returns follow the generated writer name, so a skip list
+;; built in row order is a different list on two stores holding the same
+;; tree. The row below asks for the property -- ascending by id -- rather
+;; than restating the sort: an answer that merely happened to come out
+;; ascending on this store would pass, and the mutation that reverses the
+;; comparison is what says the property is held on purpose.
+;;
+;; Both blocks sit at root, side by side and not one inside the other, which
+;; is what makes this a question about ORDER and not about nesting.
+(define t12 (fresh-case! (list (cons "twelve.md" "# Twelve\nbody of twelve\n"))))
+(define d12 (cdr t12))
+(import-md d12 (car t12) "tester")
+(define out12 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out12))
+(define (kindless-at-root! store)
+  (id-written-by
+    (with-store-write store
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'title "kindless")))))
+      "tester")))
+(define kindless12a (kindless-at-root! d12))
+(define kindless12b (kindless-at-root! d12))
+
+(want "F42 two unwritable blocks are both named, each with its reach, in ascending id order"
+      (let* ((answer (export-md d12 out12))
+             (sk (cdr (assq 'skipped (cddr answer)))))
+        (list (equal? (map car sk) (list-sort string<? (map car sk)))
+              (length sk)
+              (assoc kindless12a sk)
+              (assoc kindless12b sk)))
+      (list #t 2
+            (list kindless12a 'kind-absent '(subtree 0))
+            (list kindless12b 'kind-absent '(subtree 0))))
+
+;; NEVER: AND THE TOTAL IS SOMETHING THE CALLER CAN ADD UP. That is the whole
+;; reason the reach is a number in the entry rather than a line per block:
+;; `1 + n` summed over the entries is the count of blocks that went unwritten,
+;; each one counted once. This row does that sum and compares it with the
+;; blocks the store actually failed to export.
+
+;; NEVER: A BLOCK THAT BELONGS TO ANOTHER PROJECTION IS NOT LOST, AND THE SUM
+;; IS ABOUT THIS PROJECTION'S BLOCKS. A `code` block is written by the code
+;; projection, not this one; no markdown file contains it and none should.
+;; Listing it would make every store with code in it report a page of entries,
+;; which is the noise the reach exists to avoid. So the arithmetic below is
+;; exact for the blocks this verb owns, and this row is what says the other
+;; kind is deliberately outside it rather than accidentally missing.
+(define t16 (fresh-case! (list (cons "sixteen.md" "# Sixteen\nbody\n"))))
+(define d16 (cdr t16))
+(import-md d16 (car t16) "tester")
+(define out16 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out16))
+(define code16
+  (id-written-by
+    (with-store-write d16
+      (lambda (s v) (list (list 'insert 'root #f (list (cons 'kind 'code)
+                                                       (cons 'title "a function")))))
+      "tester")))
+
+(want "F42 a block of another projection's kind is not written here and is not reported"
+      (let* ((answer (export-md d16 out16))
+             (text (slurp (string-append out16 "/sixteen.md"))))
+        (list (kind-of-block d16 code16)
+              answer
+              (length (directory-list out16))
+              (if (holds? text "a function") 'THE-CODE-BLOCK-WAS-WRITTEN-HERE 'and-it-is-not-in-the-file)
+              (and (holds? text "# Sixteen") 'while-the-document-is)))
+      (list 'code '(ok (files 1)) 1 'and-it-is-not-in-the-file 'while-the-document-is))
+
+;; THE SUM IS ASKED OF TWO STORES THAT FAIL DIFFERENTLY. One is a doc whose
+;; kind cannot be read; the other is a store whose blocks were moved into a
+;; CYCLE, which `state-outline` resolves by relocating them to root -- they
+;; belong to no document any more, the one file written is zero bytes, and
+;; before the third reason existed the answer to that store was
+;; `(ok (files 1))` with nothing to say about three lost blocks. A property
+;; asked of one store is a reading; asked of two that fail for unrelated
+;; reasons it starts to be a property.
+(define (claimed-unwritten store dir)
+  (let* ((answer (export-md store dir))
+         (sk (if (null? (cddr answer)) '() (cdr (assq 'skipped (cddr answer))))))
+    (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
+
+(want "F42 one plus the reach, summed over the entries, is the number of blocks not written"
+      (let ((claimed (claimed-unwritten d13 out13))
+            (all (length (map caddr (state-outline (open-and-reduce d13))))))
+        (list claimed all (= claimed all)))
+      (list 3 3 #t))
+
+;; The cycle store: four blocks, the doc is written (empty, which is its own
+;; question and is recorded for a later round), and the three under it reach
+;; no file at all.
+(define t15 (fresh-case! (list (cons "fifteen.md" "# A\na\n\n## B\nb\n\n### C\nc\n"))))
+(define d15 (cdr t15))
+(import-md d15 (car t15) "tester")
+(define out15 (string-append root "/c" (number->string case-n) "/out"))
+(system (string-append "mkdir -p " out15))
+(define rows15 (state-outline (open-and-reduce d15)))
+(define child15 (caddr (car (filter (lambda (r) (not (eq? 'root (car r)))) rows15))))
+(define grand15 (caddr (car (filter (lambda (r) (equal? (car r) child15)) rows15))))
+;; The move goes through the ordinary write route, which ACCEPTS it: a block
+;; moved under its own child is a cycle the store does not refuse, and the
+;; reduction resolves it by relocating the blocks to root. That is the point
+;; of this case -- nothing here is forced through a back door.
+(define move15
+  (car (with-store-write d15
+         (lambda (s v) (list (list 'move child15 grand15 #f)))
+         "tester")))
+
+(want "F42 the store accepts a move that makes a cycle, which is what strands the blocks"
+      (list (car move15)
+            (length (filter (lambda (r) (eq? 'root (car r)))
+                            (state-outline (open-and-reduce d15)))))
+      (list 'ok 3))
+
+(want "F42 blocks that belong to no document are named too, and the sum still closes"
+      (let* ((answer (export-md d15 out15))
+             (sk (cdr (assq 'skipped (cddr answer))))
+             (claimed (claimed-unwritten d15 out15))
+             (all (length (map caddr (state-outline (open-and-reduce d15)))))
+             (written (filter (lambda (id) (not (assoc id sk)))
+                              (map caddr (state-outline (open-and-reduce d15))))))
+        (list (map cadr sk)
+              (list-sort string<? (map car sk))
+              (map (lambda (e) (cadr (assq 'subtree (cddr e)))) sk)
+              claimed all
+              (length (directory-list out15))
+              (= claimed (- all 1))))
+      (list '(not-in-any-document not-in-any-document)
+            (list-sort string<? (list child15 grand15))
+            '(0 1)
+            3 4
+            1
+            #t))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)

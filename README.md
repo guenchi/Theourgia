@@ -291,6 +291,14 @@ conditional: the store refuses it if the block has moved on from that
 version, so a caller that read, thought, and came back cannot overwrite
 what happened in between.
 
+Most fields take the text as given. `kind` does not: it is a symbol from a
+fixed set -- `code`, `section`, `file`, `doc`, `library`, `decision` -- and a
+spelling outside that set is refused, with the legal set in the answer, rather
+than stored. A kind stored as text would match nothing and the block would
+simply stop behaving like what it said it was. The same set applies to a kind
+written through `batch`, and to nothing else: a record already in a store
+keeps whatever kind it carries, including one a later version introduced.
+
 ### `move <id> <parent> [--after <id>]`
 
     (move <id> <parent> ("--after" <id>))
@@ -436,6 +444,39 @@ file that has disappeared from the directory leaves its blocks alone.
 
 Writes the store out as Markdown. `--with-ids` keeps each block's id in
 the text, so the result can be imported back onto the same blocks.
+
+The answer counts the files written. Every block this projection should have
+written and did not is listed after that count, with a reason:
+`kind-not-a-symbol` for a kind stored as text, `kind-absent` for a block with
+no kind at all, `not-in-any-document` for a block that belongs to no document
+-- which happens when blocks have been moved into a cycle, since the reduction
+resolves that by relocating them -- and `path-conflict` for a document whose
+`path` another document already claimed, which also names the winner:
+`(<id> path-conflict (with <id>) (subtree <n>))`. Where two documents claim
+one path the first by id is written, so which one survives does not depend on
+the order the blocks happen to come back in. A caller reading `ok` and a
+number is never being told less than the whole story.
+
+A document's `path` is checked before anything is written, by the same rule
+the code projection uses: it must be relative and non-empty, with no `.`,
+`..` or empty component, no NUL and no backslash. A path that fails, or that
+leads out of the directory you named once symlinks are resolved, is refused
+with `path-not-usable` and the path you gave quoted back, and nothing is
+written for it.
+
+Two documents conflict when they would write the same FILE, which is asked of
+the filesystem rather than compared as text: on a volume that folds case
+`doc.md` and `DOC.md` are one file and one of them is reported, and on a
+volume that does not they are two documents and two files.
+
+Each entry carries the number of blocks below it that went unwritten too:
+`(<id> <reason> (subtree <n>))`. When a document cannot be written its whole
+subtree goes with it, so the cause is named once rather than a line per block,
+and entries never nest -- which means `1 + n` added up over the entries is the
+number of blocks lost, each counted once.
+
+Blocks that belong to another projection, such as `code`, are not listed: they
+were addressed elsewhere, not skipped.
 
 ### `import-code <dir> [--allow-delete] [--datum]`
 

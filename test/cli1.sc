@@ -666,6 +666,112 @@
         (list (code-of r) (> (string-length (out-of r)) 0)))
       (list 0 #t))
 
+(printf "== F42 kind: one table, and every writing route asks it ==\n")
+;; NEVER: THE HAZARD IS A SECOND ALLOWLIST, NOT A COMPARISON. Dispatching on a
+;; known kind is ordinary and the tree does it in a dozen places. What must not
+;; exist is a second hardcoded set that can accept or reject the same value and
+;; drift from the table. `facade-gate` counts those; these rows say the routes
+;; actually ask.
+
+(define dk (test-dir "cli1kind"))
+(putenv "THEOURGIA_HOME" (string-append scratch "/homeK"))
+(run dk "init")
+(run dk "insert --under root --title K")
+(define bk (string-append (writer-of dk) ".1"))
+
+(define (kind-of-block id)
+  (let* ((r (run dk (string-append "read \"" id "\"")))
+         (body (and (= 0 (code-of r)) (pair? (datum-of r)) (cadr (datum-of r))))
+         (fs (and (pair? body) (assq 'fields body))))
+    (cond ((not fs) (list 'COULD-NOT-READ (code-of r)))
+          ((assq 'kind (cdr fs)) => cdr)
+          (else 'ABSENT))))
+
+;; NEVER: A SYMBOL, NOT THE STRING THE COMMAND LINE HANDED OVER. Everything
+;; that compares a kind compares a symbol, so a stored string matched nothing
+;; and the block simply never behaved like what it said it was -- silently.
+(want "F42 set stores a known kind as a symbol"
+      (let ((r (run dk (string-append "set \"" bk "\" kind decision"))))
+        (list (code-of r) (car (datum-of r)) (kind-of-block bk)
+              (symbol? (kind-of-block bk))))
+      (list 0 'ok 'decision #t))
+
+(define cli-refusal (run dk (string-append "set \"" bk "\" kind nonsense")))
+
+;; NEVER: AND IT QUOTES BACK THE VALUE IT WOULD NOT TAKE. This row used to
+;; check the head symbols and that a `known` clause EXISTED -- so a refusal
+;; naming somebody else's kind, or an empty legal set, passed it. The clause
+;; a caller acts on is the one that says which value was refused.
+(want "F42 set refuses a kind the table does not have, quotes it, and says what would be taken"
+      (let ((d (datum-of cli-refusal)))
+        (list (> (code-of cli-refusal) 0)
+              (car d) (cadr d) (caddr d)
+              (cadr (assq 'kind (cdddr d)))
+              (cadr (assq 'known (cdddr d)))))
+      (list #t 'error 'bad-request 'kind-not-known
+            "nonsense"
+            known-kinds))
+
+;; NEVER: AND THE BATCH ROUTE ASKS THE SAME TABLE. It hands intents over
+;; already built, so the command line's parse never sees them -- measured
+;; before the check moved to the shared path, a batch wrote `(kind . "decision")`
+;; as a STRING and an unknown symbol, both without complaint.
+;; The three runs happen in this order and the rows below read the block
+;; between them, so each answer is checked against the state it left behind.
+(define batch-string
+  (run dk "batch" (string-append "'((set \"" bk "\" kind \"decision\"))'")))
+(define kind-after-string (kind-of-block bk))
+(define batch-unknown
+  (run dk "batch" (string-append "'((set \"" bk "\" kind nonsense))'")))
+(define kind-after-unknown (kind-of-block bk))
+(define batch-known
+  (run dk "batch" (string-append "'((set \"" bk "\" kind doc))'")))
+
+;; NEVER: AND THE STORE IS READ AFTER EACH REFUSAL, NOT ONLY AT THE END. The
+;; last of these three writes is a legal one, and a row that looks at the
+;; block only afterwards cannot tell "the two bad writes were refused" from
+;; "they were applied and then overwritten". The kind is read between them.
+(want "F42 batch refuses a string-form kind and an unknown one, and neither reaches the block"
+      (list (car (car (cadr (datum-of batch-string))))  kind-after-string
+            (car (car (cadr (datum-of batch-unknown)))) kind-after-unknown)
+      (list 'error 'decision 'error 'decision))
+
+(want "F42 and a known kind through the same route is taken"
+      (list (car (car (cadr (datum-of batch-known)))) (kind-of-block bk))
+      (list 'ok 'doc))
+
+;; NEVER: AND THE REFUSAL IS READ ALL THE WAY DOWN. A row that looks only at
+;; the head of an answer is green for `(error something-else ...)` too, and
+;; "the batch route refuses" is not the claim being made -- the claim is that
+;; it refuses FOR THIS REASON and hands back the value it would not take.
+(want "F42 each batch refusal names the condition and quotes the value it would not take"
+      (let ((why (lambda (answer) (caddr (car (cadr (datum-of answer)))))))
+        (list (cadr (car (cadr (datum-of batch-unknown))))
+              (car (why batch-unknown)) (cadr (why batch-unknown))
+              (car (why batch-string)) (cadr (why batch-string))))
+      (list 'malformed-intent
+            'kind-not-known '(kind "nonsense")
+            'kind-not-known '(kind "\"decision\"")))
+
+;; NEVER: AND BOTH ROUTES NAME THE SAME LEGAL SET. The envelope differs because
+;; the layers differ -- one is request-level, the other intent-level -- but a
+;; caller of either has to be able to learn what would have been accepted, and
+;; from ONE supplier. Two lists that agree today are two lists.
+;; NEVER: AND BOTH ARE THE TABLE, NOT MERELY EACH OTHER. Two reports that
+;; agree can agree on something wrong -- set both to `(decision)` and an
+;; equality row still passes. Each side is compared with `known-kinds` as the
+;; library exports it, so the row fails if either wire answer drifts from the
+;; one supplier, and fails if they drift together.
+(want "F42 the legal set a refusal reports is the table itself, on both routes"
+      (let* ((cli-known (cadr (assq 'known (cdddr (datum-of cli-refusal)))))
+             (unknown-known (cadr (assq 'known (cdr (caddr (car (cadr (datum-of batch-unknown))))))))
+             (string-known (cadr (assq 'known (cdr (caddr (car (cadr (datum-of batch-string)))))))))
+        (list (equal? cli-known known-kinds)
+              (equal? unknown-known known-kinds)
+              (equal? string-known known-kinds)
+              (if (null? known-kinds) 'THE-TABLE-IS-EMPTY 'and-the-table-is-not-empty)))
+      (list #t #t #t 'and-the-table-is-not-empty))
+
 (printf "== L11: --if-unchanged, the optimistic-conflict criterion ==\n")
 ;; NEVER: THIS OPTION HAD NEVER BEEN PASSED BY ANY FIXTURE. Searching for it
 ;; returned three files and every one of them was a MENTION, not a use:

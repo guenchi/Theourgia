@@ -41,7 +41,13 @@
 ;; The first three are here. Two sides -- the list and the tree -- and
 ;; both directions of each; there is no fifth way for them to disagree.
 
-(import (chezscheme))
+(import (chezscheme)
+        ;; NEVER: THE GATE ASKS THE PRODUCT WHAT THE TABLE IS. Writing the
+        ;; kinds out here would give the tree a second copy of the very set
+        ;; whose uniqueness is the question, and this file would then agree
+        ;; with itself for as long as nobody changed both.
+        (only (theourgia reduce) known-kinds)
+        (only (theourgia project) md-kinds))
 
 (define failures 0)
 (define rows 0)
@@ -266,16 +272,27 @@
 ;; The name of the definition a hit sits inside, taken from the datum. The
 ;; text version searched the FILE for `(define (batch-answer`, which a comment
 ;; could satisfy.
-(define (hits-in form enclosing quoted?)
+;; THE TRAVERSAL TAKES THE QUESTION AS AN ARGUMENT. There are two censuses
+;; in this file now and there is one walk: a second copy of this would be a
+;; second instrument, free to drift from the first and to be right about a
+;; different tree.
+(define (hits-in pred form enclosing quoted?)
   (cond
     ((not (pair? form)) (quote ()))
     (else
-     (let* ((name (if (and (eq? (car form) (quote define))
-                          (pair? (cdr form))
-                          (pair? (cadr form))
-                          (symbol? (car (cadr form))))
-                     (car (cadr form))
-                     enclosing))
+     ;; BOTH SPELLINGS OF `define` NAME A DEFINITION. A table is bound
+     ;; with `(define known-kinds '(…))`, whose cadr is the symbol
+     ;; itself; reading only the procedure spelling reported `#f` for
+     ;; it, and a twin row that says which definition a hit is inside
+     ;; would then have been unable to say anything about exactly the
+     ;; kind of definition a table is.
+     (let* ((name (cond
+                    ((not (eq? (car form) (quote define))) enclosing)
+                    ((not (pair? (cdr form))) enclosing)
+                    ((symbol? (cadr form)) (cadr form))
+                    ((and (pair? (cadr form)) (symbol? (car (cadr form))))
+                     (car (cadr form)))
+                    (else enclosing)))
             ;; NEVER: AND `unquote` LEAVES THE QUOTATION. Inside a
             ;; quasiquote an unquoted expression is ordinary code again, so
             ;; `,(let ((done (box #f))) …)` would otherwise be counted -- the
@@ -285,26 +302,26 @@
                        ((memq (car form) (quote (unquote unquote-splicing))) #f)
                        ((memq (car form) (quote (quasiquote quote))) #t)
                        (else quoted?)))
-            (here (if (builds-done-clause? form quoted?) (list name) (quote ()))))
+            (here (if (pred form quoted?) (list name) (quote ()))))
        (let loop ((xs form) (acc here))
          (cond
-           ((pair? xs) (loop (cdr xs) (append acc (hits-in (car xs) name inside?))))
+           ((pair? xs) (loop (cdr xs) (append acc (hits-in pred (car xs) name inside?))))
            ((null? xs) acc)
-           (else (append acc (hits-in xs name inside?)))))))))
+           (else (append acc (hits-in pred xs name inside?)))))))))
 
-(define (census-done)
+(define (census pred)
   (let loop ((fs (sources-under root)) (hits (quote ())))
     (if (null? fs)
         hits
         (let ((found (apply append
-                            (map (lambda (f) (hits-in f #f #f))
+                            (map (lambda (f) (hits-in pred f #f #f))
                                  (read-forms (car fs))))))
           (loop (cdr fs)
                 (if (null? found)
                     hits
                     (cons (cons (car fs) found) hits)))))))
 
-(define done-hits (census-done))
+(define done-hits (census builds-done-clause?))
 
 (want "F32 exactly one place in the shipped sources builds the done clause"
       (list (length done-hits)
@@ -323,6 +340,98 @@
           'THE-CENSUS-SAW-NOTHING
           (cdr (car done-hits)))
       '(batch-answer))
+
+;; F42: ONE TABLE OF KINDS, AND THE CENSUS IS HOW WE KNOW.
+;;
+;; A kind decides what a block is, and four routes write one: the command
+;; line, an intent in a batch, replay, and the projection that exports. The
+;; failure this counts is not "a bad kind got in" -- it is TWO ALLOWLISTS:
+;; a second literal set somewhere, agreeing today, and one of them extended
+;; next month. The rows in `cli1.sc` say the routes refuse; this says there
+;; is one thing for them to ask.
+;;
+;; WHAT COUNTS AS A HIT: any list, anywhere in the shipped sources, of two or
+;; more distinct symbols every one of which is a kind. That catches a quoted
+;; `'(code doc)` handed to `memq`, and it also catches the bare clause head of
+;; a `case`, which is not quoted and which a search for quotations would miss.
+;; It does NOT catch a set built at run time, or one spelled with strings --
+;; SO THIS IS NOT A PROOF OF UNIQUENESS, it is a tripwire on the spelling a
+;; second allowlist would most likely have.
+;; NEVER: A DRIFTING LIST IS EXACTLY THE ONE WITH AN EXTRA NAME IN IT. The
+;; first version of this required EVERY element to be a known kind, so
+;; `'(code doc)` was counted and `'(code doc alien)` was not -- and a second
+;; allowlist that has drifted is far more likely to look like the second. The
+;; test is now two or more DISTINCT known kinds among a list of symbols,
+;; whatever else is in it.
+;;
+;; The cost is false positives: any list of symbols that happens to contain
+;; two kind names -- a formals list `(code section)`, say -- is counted. That
+;; is the right way round for a tripwire, and the expected count is a number
+;; in the row below, so a false positive announces itself the day it appears
+;; rather than hiding something.
+(define (kind-set? form quoted?)
+  (and (pair? form)
+       (list? form)
+       (for-all symbol? form)
+       (let loop ((xs form) (seen (quote ())))
+         (cond ((null? xs) (>= (length seen) 2))
+               ((and (memq (car xs) known-kinds) (not (memq (car xs) seen)))
+                (loop (cdr xs) (cons (car xs) seen)))
+               (else (loop (cdr xs) seen))))))
+
+(define kind-hits (census kind-set?))
+
+;; NEVER: THE PLACES ARE NAMED, NOT COUNTED. There are two lists of kinds in
+;; the shipped sources and they answer different questions: `known-kinds` says
+;; which kinds EXIST -- every write route asks it, and it is the only thing
+;; that decides legality -- while `md-kinds` says which of them the markdown
+;; projection is responsible for, so that a `code` block is understood as
+;; addressed elsewhere rather than reported as lost.
+;;
+;; Naming them is what keeps this a tripwire. A row that only counted would
+;; have to be edited to a bigger number every time somebody added a list, and
+;; a number is exactly the thing nobody argues with. A THIRD list, wherever it
+;; appears and whatever it is for, makes this row red and has to be defended.
+(want "F42 two places in the shipped sources spell out a set of kinds, and these are they"
+      (list (apply + (map (lambda (h) (length (cdr h))) kind-hits))
+            (list-sort string<?
+                       (map (lambda (h) (let ((p (car h)))
+                                          (substring p (+ 1 (last-slash p)) (string-length p))))
+                            kind-hits)))
+      (list 2 '("project.sc" "reduce.sc")))
+
+;; NEVER: AND THE ONE HIT IS THE DEFINITION ITSELF, NOT A USE OF IT. Reported
+;; from the datum, so renaming the table to something else and leaving
+;; `known-kinds` as an alias -- which keeps the count at one and keeps every
+;; import working -- is what this row is here to be red about.
+;; NEVER: AND EACH ONE IS THE DEFINITION IT IS SUPPOSED TO BE, NOT A USE OF
+;; IT. Reported from the datum, so renaming a table and leaving the old name
+;; as an alias -- which keeps the count right and every import working -- is
+;; what this row is here to be red about.
+(want "F42 TWIN: and the definitions they are inside are known-kinds and md-kinds"
+      (if (null? kind-hits)
+          'THE-CENSUS-SAW-NOTHING
+          (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+                     (apply append (map cdr kind-hits))))
+      '(known-kinds md-kinds))
+
+
+;; NEVER: AND THE TWO TABLES STAND IN A FIXED RELATION. The census counts the
+;; PLACES that spell out a set of kinds; it cannot see a change to what one of
+;; them CONTAINS -- measured: putting `code` and `library` into `md-kinds`
+;; left the census green, and only a behaviour row noticed. This is the other
+;; half. `md-kinds` says which kinds this projection writes and `known-kinds`
+;; says which kinds exist, so a kind that this projection claims and the
+;; reducer has never heard of is a table that has drifted, whichever of the
+;; two moved.
+;;
+;; Both sides come from the libraries' own exports, so neither is this file's
+;; copy of anything.
+(want "F42 every kind the markdown projection claims is a kind that exists"
+      (list (length (filter (lambda (k) (not (memq k known-kinds))) md-kinds))
+            (filter (lambda (k) (not (memq k known-kinds))) md-kinds)
+            (if (null? md-kinds) 'THE-PROJECTION-CLAIMS-NOTHING 'and-it-claims-something))
+      (list 0 '() 'and-it-claims-something))
 
 (printf "rows: ~a\n~a failures\nfacade-gate complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

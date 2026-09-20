@@ -1379,6 +1379,72 @@
         (reduce-apply! r "a" 2 '() '(set "a.1" title "next")))
       'accepted)
 
+(printf "== F42 kind: the caller is judged, the record is not ==\n")
+;; NEVER: REPLAY MUST NOT ACQUIRE AN OPINION ABOUT KINDS. The table lives on
+;; the caller path on purpose. A store written by another version -- or by a
+;; later one, which is the case that matters -- carries kinds this build has
+;; never heard of, and the moment replay judges them that store stops being
+;; readable HERE, in the one place that has no way to ask anybody. Refusing a
+;; write is a message to someone who is present; refusing a record is data
+;; loss.
+(want "a record carrying a kind this version has never heard of replays and reads back"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . other) (title . "written elsewhere"))))
+               '("a" 2 () (set "a.1" title "and still writable")))
+        (list (field-of r "a.1" 'kind)
+              (field-of r "a.1" 'title)
+              (reduce-noted r)))
+      (list 'other "and still writable" '()))
+
+;; NEVER: AND THE TWIN IS THE SAME KIND ARRIVING FROM A CALLER. Without this
+;; row the one above is equally green when NOTHING checks kinds anywhere --
+;; it is the pair that says where the check is, and a row that cannot tell
+;; "in the right place" from "absent" is not measuring the design.
+;; NEVER: AND THE REPLAY SIDE IS ASKED ABOUT BOTH SPELLINGS. The row above
+;; brings the unknown kind in through a `put`. A replay check that judged
+;; only `set` would leave it green while still making an existing store
+;; unreadable the moment any of its kinds had been changed after the fact.
+(want "and a set that changes a kind to one this version never heard of replays too"
+      (let ((r (reduce-empty)))
+        (feed! r
+               '("a" 1 () (put ((kind . section) (title . "t"))))
+               '("a" 2 () (set "a.1" kind other)))
+        (list (field-of r "a.1" 'kind) (reduce-noted r)))
+      (list 'other '()))
+
+;; NEVER: THE TWIN IS THE SAME KIND ARRIVING FROM A CALLER, IN BOTH SPELLINGS.
+;; Without it the two rows above are equally green when NOTHING checks kinds
+;; anywhere -- they are the pair that says where the check is, and a row that
+;; cannot tell "in the right place" from "absent" is not measuring the design.
+;;
+;; The reason quotes a SPELLING, not the datum: a symbol is exactly what the
+;; wire layer may be unable to write, and a refusal that cannot be rendered
+;; is not a refusal.
+(want "TWIN: the same kind offered by a caller is refused, in put and in set alike"
+      (let ((why (lambda (p) (caller-payload-reason p))))
+        (list (why '(put ((kind . other) (title . "x"))))
+              (car (why '(set "a.1" kind other)))
+              (cadr (assq 'kind (cdr (why '(set "a.1" kind other)))))))
+      (list (list 'kind-not-known (list 'kind "other") (list 'known known-kinds))
+            'kind-not-known
+            "other"))
+
+;; NEVER: AND THE REFUSAL CAN BE WRITTEN DOWN. Measured before the spelling
+;; went in: `set <id> kind |1|` through the batch route answered
+;; `(kind-not-known (kind \x31;) ...)`, and RENDERING that answer raised --
+;; the caller got an exception where a refusal was due. A refusal about a
+;; datum the wire cannot write must not itself be undeliverable.
+(want "a refusal about a kind the wire layer could not write is still renderable"
+      (let* ((weird (string->symbol "two words"))
+             (why (caller-payload-reason (list 'set "a.1" 'kind weird)))
+             (rendered (guard (e (#t 'RAISED-WHILE-RENDERING))
+                         (sexpr->string-extended (list 'error 'malformed-intent why)))))
+        (list (car why)
+              (cadr (assq 'kind (cdr why)))
+              (string? rendered)))
+      (list 'kind-not-known "two words" #t))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "reduce1 complete\n")

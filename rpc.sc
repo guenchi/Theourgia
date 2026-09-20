@@ -408,12 +408,35 @@
               (cond
                 ((= 3 (length rest))
                  (list 'set (car rest) (string->symbol (cadr rest))
-                       (if (and (string=? (cadr rest) "body")
-                                (eq? (code-field (reduction-for store state) (car rest) 'mode) 'datum))
-                           (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
-                             (if (= (length forms) 1) (caar forms)
-                                 (raise '(error bad-source (reason expected-one-form)))))
-                           (caddr rest))))
+                       (cond
+                         ;; NEVER: `kind` IS A SYMBOL FIELD AND THE COMMAND LINE
+                         ;; HANDS OVER STRINGS. Everything the tree compares a
+                         ;; kind against is a symbol, so `set <id> kind doc`
+                         ;; stored the string "doc" and nothing ever matched it
+                         ;; -- silently: the block simply never behaved like a
+                         ;; doc. The conversion happens here, and an unknown
+                         ;; spelling is refused BY NAME rather than stored.
+                         ((string=? (cadr rest) "kind")
+                          (let ((k (string->symbol (caddr rest))))
+                            (if (kind-known? k)
+                                k
+                                ;; NEVER: THE SAME CONDITION GETS THE SAME NAME
+                                ;; ON BOTH ROUTES. This said `unknown-kind`
+                                ;; while the intent layer said
+                                ;; `kind-not-known` -- two names I coined for
+                                ;; one thing inside one change, which is how a
+                                ;; reader ends up believing they are two
+                                ;; things. The envelope differs because the
+                                ;; layers differ; the condition does not.
+                                (raise (list 'error 'bad-request 'kind-not-known
+                                             (list 'kind (caddr rest))
+                                             (list 'known known-kinds))))))
+                         ((and (string=? (cadr rest) "body")
+                               (eq? (code-field (reduction-for store state) (car rest) 'mode) 'datum))
+                          (let ((forms (datum-source-read (string->utf8 (caddr rest)))))
+                            (if (= (length forms) 1) (caar forms)
+                                (raise '(error bad-source (reason expected-one-form))))))
+                         (else (caddr rest)))))
                 ((= 2 (length rest))
                  (list 'set (car rest) (string->symbol (cadr rest))))
                 (else #f))))
