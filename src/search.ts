@@ -44,6 +44,17 @@ export interface Hit {
    * half.
    */
   note: string;
+  /*
+   * WHICH FIELDS THE QUERY MATCHED, when the core says so.
+   *
+   * NOTE: UNDEFINED MEANS THE ANSWER DID NOT CARRY IT, not that the hit
+   * matched nothing. A core older than the S batch answers a hit with
+   * four elements and no `fields` clause at all, and `theourgia.corePath`
+   * can always name one -- so the absence is a fact about the core, and
+   * a caller that drew "matched no field" from it would be reading this
+   * client's age rather than the store.
+   */
+  fields?: string[];
 }
 
 /*
@@ -92,7 +103,37 @@ export function hitsOf(data: Datum[]): Hit[] | null {
   const items = data;
   const out: Hit[] = [];
   for (const item of items) {
-    if (!isList(item) || answerOf(item, 'hit') === null || item.length !== 4) {
+    /*
+     * NEVER: A HIT THAT CARRIES MORE THAN THIS BUILD KNOWS IS STILL A HIT.
+     *
+     * This asked for a length of exactly four. The core's S batch adds a
+     * fifth element -- `(fields (title keywords ...))`, which fields the
+     * query matched -- and an exact length would have made every search
+     * against that core answer "the search did not happen", for every
+     * query, the day it landed. Told in advance by the main session and
+     * done before it lands rather than after.
+     *
+     * Four is the minimum and the first four positions do not move, so a
+     * sixth element some later core adds is read the same way. This is
+     * the accepting end of the rule this tree keeps: take a wider range
+     * than is needed, hand on a narrower one.
+     *
+     * NEVER: AND THERE IS NO LOWER BOUND HERE, BECAUSE IT HAD NO CASE.
+     *
+     * `item.length < 4` was written beside the relaxation and a mutation
+     * run showed it changed nothing: a hit with fewer than four elements
+     * has `item[3]` undefined, and the three checks below already refuse
+     * it -- measured by loosening the bound to `< 3` and watching every
+     * row stay green. That is the THIRD guard deleted from this function
+     * for having no case behind it; the notes above record the other
+     * two. The rule this function keeps being tested against is that a
+     * refusal one line down is wider than the guard being added over it.
+     */
+    if (!isList(item)) {
+      return null;
+    }
+    const hit = answerOf(item, 'hit');
+    if (hit === null) {
       return null;
     }
     const id = item[1];
@@ -101,7 +142,28 @@ export function hitsOf(data: Datum[]): Hit[] | null {
     if (typeof id !== 'string' || score === null || typeof note !== 'string') {
       return null;
     }
-    out.push({ id, score, note });
+    /*
+     * AND THE FIFTH IS READ THROUGH THE FORM WHOSE HEAD WAS CHECKED.
+     *
+     * NEVER: NOT THROUGH THE RECORD READER. The first version reached for
+     * `clauseOfRecord(item.slice(4), 'fields')`, and the census over
+     * headless readers refused it -- rightly: the tail of a `hit` is not
+     * a record with no head, it is the remainder of a form whose head
+     * this line has just verified, and the door held open for headless
+     * values is not for it. Asking the form is also the reading that
+     * refuses two `fields` clauses rather than taking the first.
+     */
+    const matched = hit.clause('fields');
+    if (!matched.read && matched.because !== 'absent') {
+      return null;
+    }
+    const fields = matched.read
+      ? matched.items.filter((name): name is { name: string } => isSym(name)).map((n) => n.name)
+      : undefined;
+    if (matched.read && fields !== undefined && fields.length !== matched.items.length) {
+      return null;
+    }
+    out.push(fields === undefined ? { id, score, note } : { id, score, note, fields });
   }
   return out;
 }

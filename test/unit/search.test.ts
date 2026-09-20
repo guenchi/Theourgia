@@ -85,6 +85,53 @@ describe('plugin-r2 T5 reading a search answer', function () {
   });
 
   /*
+   * plugin-r3: a hit with a fifth element, and one with four.
+   *
+   * The core's S batch adds `(fields (title keywords ...))` to every hit.
+   * A reader asking for a length of exactly four would answer "the
+   * search did not happen" for every query the day that lands -- so the
+   * four-element shape and the five-element shape are both read, and
+   * neither is the one this client requires. `theourgia.corePath` can
+   * always name an older core, so four is not a legacy spelling to be
+   * removed later; it is one of two shapes that are both current.
+   */
+  it('reads a hit that carries the fields it matched, and one that does not', function () {
+    assert.deepStrictEqual(
+      hitsOf(data('(hit "a.1" 6 "k" (fields title keywords))')),
+      [{ id: 'a.1', score: 6, note: 'k', fields: ['title', 'keywords'] }],
+      'the fifth element was not read'
+    );
+    assert.deepStrictEqual(
+      hitsOf(data('(hit "a.1" 6 "k")')),
+      [{ id: 'a.1', score: 6, note: 'k' }],
+      'a four-element hit stopped being readable'
+    );
+    /*
+     * AND UNDEFINED IS NOT AN EMPTY SET. A hit from an older core says
+     * nothing about which fields matched; `(fields)` from a newer one
+     * says none did. A reader that gave `[]` for both would put this
+     * client's age into the store's answer.
+     */
+    assert.deepStrictEqual(hitsOf(data('(hit "a.1" 6 "k" (fields))')), [
+      { id: 'a.1', score: 6, note: 'k', fields: [] }
+    ]);
+  });
+
+  it('refuses a hit with fewer than four elements, and one whose fifth is not readable', function () {
+    assert.strictEqual(hitsOf(data('(hit "a.1" 6)')), null, 'a three-element hit was read');
+    assert.strictEqual(
+      hitsOf(data('(hit "a.1" 6 "k" (fields title) (fields keywords))')),
+      null,
+      'two fields clauses supplied one of them'
+    );
+    assert.strictEqual(
+      hitsOf(data('(hit "a.1" 6 "k" (fields "title"))')),
+      null,
+      'a field name that is not a symbol was read as one'
+    );
+  });
+
+  /*
    * NEVER: THE ENVELOPE IS NOT THIS READER'S TO OPEN, and these two cells
    * used to say the opposite.
    *
