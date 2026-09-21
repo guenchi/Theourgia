@@ -136,6 +136,8 @@
       ;; `--all` releases grep's two caps; `--under` takes a block id and is
       ;; therefore not here.
       ((grep) '("--all"))
+      ;; `search` answers its best ten unless asked for everything.
+      ((search) '("--all"))
       ((read) '("--md" "--recursive" "--working" "--working-info"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.

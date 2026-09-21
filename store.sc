@@ -23,7 +23,7 @@
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
-          store-check store-adopt! store-search store-search-report store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
+          store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -1257,15 +1257,96 @@
         ((string? (cdr e)) (list (cdr e)))
         (else (list (datum-spelling (cdr e)))))))
 
-  ;; -> the hits, or with a second argument, a report about the scan.
+  ;; -> the hits. A caller that also wants to know what was looked at asks
+  ;; `store-search-report`, which answers an alist.
   ;;
   ;; TWO SHAPES, AND THE DEFAULT ONE IS THE OLD ONE. `store-search` answers
   ;; a list of hits and is called that way from several fixtures; a verb
   ;; that also wants to say what was looked at asks for the report instead.
   ;; Changing the single return into a report would have made every caller
   ;; read one field to get what it already had.
-  (define (store-search-report store query)
-    (store-search store query #t))
+  ;;
+  ;; THE CAP IS A PARAMETER, NOT A NAME. There were two report functions for
+  ;; one day: `store-search-report`, and `store-search-report/all` taking a
+  ;; boolean. They read as two operations while differing only in a limit,
+  ;; and the limit was invisible at the call site.
+  ;;
+  ;; NEVER: WHAT THAT COST. `store-search-report` passed a constant down to
+  ;; `store-search`, and when `store-search` learned to read that constant
+  ;; differently, `store-search-report` began capping its answer at ten --
+  ;; AN EXPORTED FUNCTION WHOSE TEXT HAD NOT CHANGED BY ONE CHARACTER. A
+  ;; function's behaviour can change while its own lines stand still,
+  ;; whenever it hands a value on and the reader of that value changes its
+  ;; mind about what the value means. So the limit is named where it is
+  ;; decided: `#f` is no cap, a positive integer is the cap, and the verb
+  ;; that wants ten says ten.
+  ;; HOW MANY HITS AN ANSWER CARRIES WHEN NOBODY SAID.
+  ;;
+  ;; Ten, and it is not the same question `grep`'s caps answer. Grep counts
+  ;; LINES, and its two caps exist because one block can hold hundreds of
+  ;; them -- measured, 418 in a single file -- so a line budget alone lets
+  ;; one block starve the rest. Search counts BLOCKS, and a block appears at
+  ;; most once however many of its fields matched, so there is no starving
+  ;; to prevent: the only question is how many ranked answers a reader wants
+  ;; before they would rather narrow the query.
+  ;;
+  ;; Ten because the answer is RANKED and the scoring is built to separate
+  ;; the top of it: an exact name match scores 12 and the most a block with
+  ;; no name can reach is 11, so the blocks a reader is looking for are at
+  ;; the head of the list rather than spread through it. A budget larger
+  ;; than that mostly carries blocks the ranking has already decided are
+  ;; worse answers.
+  (define search-hit-limit 10)
+
+  ;; ONE CONSTRUCTOR, AND BOTH BRANCHES GO THROUGH IT.
+  ;;
+  ;; NEVER: A REPORT'S KEYS ARE NOT A PROPERTY OF THE BRANCH THAT BUILT IT.
+  ;; `store-search` answers from two branches -- one for a query that has no
+  ;; tokens, one for a query that has some -- and each used to spell its own
+  ;; alist. The empty one left out `omitted-hits`, so a caller that read
+  ;; that key without asking whether it was there met `(cdr #f)`: `search
+  ;; ""` and `search "   "` answered `(error internal ...)`, with or without
+  ;; `--all`. Nothing said so, because no row had ever asked an empty query.
+  ;; One answer with two shapes is the defect this batch has spent its
+  ;; length taking apart, one level below where it was being taken apart.
+  ;;
+  ;; The fixture asks for the KEY SET rather than for the presence of the
+  ;; one key that was missing: a row that only checked `omitted-hits` would
+  ;; go on being green the next time a branch grows a key of its own.
+  ;;
+  ;; LIVE BLOCKS, NOT RECORDS, in `scanned`. `state-datum` lists tombstones
+  ;; and the hit loop walks them, skipping each one; `state-outline` is the
+  ;; set of blocks that exist. Reporting the walk's length made `scanned`
+  ;; mean something different here than it means for `grep`, which counts
+  ;; what it looked at -- one clause name with two definitions. Measured:
+  ;; delete the only block in a store and search answered `(scanned (blocks
+  ;; 1))` with no live block left.
+  ;;
+  ;; `defs-built` is whether the definitions index -- what `whereis` and the
+  ;; name tier read -- was BUILT for this answer. It is the fact `coverage`
+  ;; reports.
+  (define (search-report state shown omitted scanned)
+    (list (cons (quote items) shown)
+          (cons (quote omitted-hits) omitted)
+          (cons (quote scanned-blocks) scanned)
+          (cons (quote fields) (quote (title keywords src names doc body)))
+          (cons (quote cut) (reduce-applied-cut state))
+          (cons (quote defs-built) (and (defs-index state) #t))))
+
+  ;; The report, with the cap the caller chose. `#f` asks for every hit.
+  ;;
+  ;; NEVER: THE LIMIT IS CHECKED HERE, WHERE THE CALLER IS. An unexpected
+  ;; value used to be a silent change of shape -- `#t` once meant "report"
+  ;; and later meant "report, capped" -- and the reading a caller got
+  ;; depended on which build it was linked against. A wrong limit is now a
+  ;; refusal at the door rather than a different answer.
+  (define (store-search-report store query limit)
+    (if (not (or (eq? limit #f)
+                 (and (integer? limit) (exact? limit) (positive? limit))))
+        (assertion-violation 'store-search-report
+                             "the limit is #f for every hit, or a positive integer"
+                             limit)
+        (store-search store query limit)))
 
   (define (store-search store query . rest)
     (let* ((state (open-and-reduce store))
@@ -1298,13 +1379,9 @@
                    t)))
       (if (null? tokens)
           (let ((none (prepared-end! (quote ()))))
-            (if (and (pair? rest) (car rest))
-                (list (cons (quote items) none)
-                      ;; An empty query looks at nothing.
-                      (cons (quote scanned-blocks) 0)
-                      (cons (quote fields) (quote (title keywords src names doc body)))
-                      (cons (quote cut) (reduce-applied-cut state))
-                      (cons (quote defs-built) (and (defs-index state) #t)))
+            (if (pair? rest)
+                ;; An empty query looks at nothing, and leaves nothing out.
+                (search-report state none 0 0)
                 none))
           (let ((hits
                   (let loop ((ds (state-datum state)) (out (quote ())))
@@ -1428,7 +1505,51 @@
                                                   (append kws titles
                                                           (apply append (map lines-of-text srcs))
                                                           names docs bodies srcs)
-                                                  tokens))
+                                                  tokens)
+                                                ;; WHICH FIELDS THIS BLOCK
+                                                ;; MATCHED IN, added after
+                                                ;; the snippet so that a
+                                                ;; reader taking the first
+                                                ;; four positions goes on
+                                                ;; taking the same four.
+                                                ;;
+                                                ;; NEVER: THIS IS NOT THE
+                                                ;; `fields` OF `scanned`.
+                                                ;; That one says which
+                                                ;; fields the SEARCH looked
+                                                ;; at, the same list for
+                                                ;; every answer; this says
+                                                ;; which fields THIS BLOCK
+                                                ;; was found in, and it
+                                                ;; differs from block to
+                                                ;; block. Two clauses of one
+                                                ;; name in one answer is
+                                                ;; exactly the shape this
+                                                ;; batch has spent its
+                                                ;; length taking apart, so
+                                                ;; it is allowed here only
+                                                ;; because a row measures
+                                                ;; that the two are not the
+                                                ;; same list -- see the
+                                                ;; fixture row that asks for
+                                                ;; an input where they
+                                                ;; differ. If they could not
+                                                ;; differ, one of them would
+                                                ;; have to be renamed.
+                                                ;;
+                                                ;; The order is fixed rather
+                                                ;; than the order they were
+                                                ;; tested in, so two answers
+                                                ;; about one block read the
+                                                ;; same.
+                                                (list 'fields
+                                                      (filter (lambda (x) x)
+                                                              (list (and title-tier 'title)
+                                                                    (and kw-tier 'keywords)
+                                                                    (and src-tier 'src)
+                                                                    (and nm-tier 'names)
+                                                                    (and doc-tier 'doc)
+                                                                    (and body-tier 'body)))))
                                           out)
                                     out)))))))
             (let ((sorted (prepared-end!
@@ -1437,25 +1558,18 @@
                                              (string<? (car a) (car b))
                                              (> (cadr a) (cadr b))))
                                        hits))))
-              (if (and (pair? rest) (car rest))
-                  (list (cons (quote items) sorted)
-                        ;; LIVE BLOCKS, NOT RECORDS. `state-datum` lists
-                        ;; tombstones and this loop walks them, skipping each
-                        ;; one; `state-outline` is the set of blocks that
-                        ;; exist. Reporting the walk's length made `scanned`
-                        ;; mean something different here than it means for
-                        ;; `grep`, which counts what it looked at -- one
-                        ;; clause name with two definitions, in a batch spent
-                        ;; taking exactly that apart. Measured: delete the
-                        ;; only block in a store and search answers
-                        ;; `(scanned (blocks 1))` with no live block left.
-                        (cons (quote scanned-blocks) (length (state-outline state)))
-                        (cons (quote fields) (quote (title keywords src names doc body)))
-                        (cons (quote cut) (reduce-applied-cut state))
-                        ;; The definitions index is what `whereis` and the
-                        ;; name tier read. Whether it was BUILT for this
-                        ;; answer is the fact `coverage` reports.
-                        (cons (quote defs-built) (and (defs-index state) #t)))
+              (if (pair? rest)
+                  (let* ((limit (car rest))
+                         (total (length sorted))
+                         (shown (if (or (not limit) (<= total limit))
+                                    sorted
+                                    (let take ((l sorted) (k limit) (out (quote ())))
+                                      (if (or (null? l) (= k 0))
+                                          (reverse out)
+                                          (take (cdr l) (- k 1) (cons (car l) out)))))))
+                    (search-report state shown
+                                   (- total (length shown))
+                                   (length (state-outline state))))
                   sorted))))))
 
   ;; ---- grep: lines, where search answers with blocks ----------------------

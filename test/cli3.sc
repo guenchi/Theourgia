@@ -429,11 +429,11 @@
 ;; before this round.
 (want "a word-boundary hit outranks a mid-word one, field by field, and ties go by id"
       (lines-of (run d2 "search" "cat"))
-      (list (list 'hit e4 5 "cat and dog")
-            (list 'hit e1 3 "cat first inserted")
-            (list 'hit e2 2 "Concatenate strings")
-            (list 'hit e5 2 "Muscat grapes")
-            (list 'hit e3 1 "we concatenate in the body")))
+      (list (list 'hit e4 5 "cat and dog" '(fields (title src)))
+            (list 'hit e1 3 "cat first inserted" '(fields (title)))
+            (list 'hit e2 2 "Concatenate strings" '(fields (title)))
+            (list 'hit e5 2 "Muscat grapes" '(fields (title)))
+            (list 'hit e3 1 "we concatenate in the body" '(fields (src)))))
 (want "a hit is a case-insensitive substring, so cat finds concatenate"
       (lines-of (run d2 "search" "CAT"))
       (lines-of (run d2 "search" "cat")))
@@ -442,7 +442,7 @@
       (list 0 '()))
 (want "TWIN: two tokens that both hit the same block keep it"
       (lines-of (run d2 "search" "cat mat"))
-      (list (list 'hit e4 5 "cat and dog")))
+      (list (list 'hit e4 5 "cat and dog" '(fields (title src)))))
 ;; A QUERY IS TEXT. This one would be an enormous exact integer if any
 ;; part of the path handed it to a numeric parser, and the row would not
 ;; return rather than returning empty.
@@ -469,11 +469,20 @@
 (define w3 (insert! d2b "--title" "parseBlock and friends"))
 (define w4 (insert! d2b "--title" "\xff26;\xff35;\xff2c;\xff2c;\xff37;\xff29;\xff24;\xff34;\xff28; letters"))
 
+;; THE EQUIVALENCE IS THE CLAIM, AND IT IS ASKED WITHOUT A LITERAL. The two
+;; spellings must answer the same thing; WHAT they answer is the row under
+;; this one. Written as one row against a literal, it went red every time a
+;; hit gained a part -- and the reading then named the new part rather than
+;; saying the two spellings had come apart.
 (want "N2b a CJK phrase written against a latin word is the same query as one with a space"
-      (list (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;reaper"))
-            (lines-of (run d2b "search" "\x6062;\x590d;\x65e7; reaper")))
-      (list (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;"))
-            (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;"))))
+      (let ((compact (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;reaper")))
+            (spaced  (lines-of (run d2b "search" "\x6062;\x590d;\x65e7; reaper"))))
+        (list (equal? compact spaced) (> (length compact) 0)))
+      (list #t #t))
+
+(want "N2b TWIN: and what both spellings answer is that block, at the title tier"
+      (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;reaper"))
+      (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;" '(fields (title)))))
 
 ;; NEVER: AND THE PHRASE OUTRANKS ITS SCATTERED HALVES. A CJK token of two
 ;; characters or more is matched by its bigrams -- wider than a substring, so
@@ -483,17 +492,24 @@
 ;; `\x65e7;`; the more specific query ranked lower.
 (want "N2b the block holding the phrase outranks the one whose bigrams are merely both present"
       (lines-of (run d2b "search" "\x6062;\x590d;\x65e7;"))
-      (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;")
-            (list 'hit w2 2 "\x6062;\x590d;\x4e86;\x4e00;\x534a;\xff0c;\x590d;\x65e7;\x7684;\x90e8;\x5206;\x6ca1;\x52a8;")))
+      (list (list 'hit w1 3 "\x6062;\x590d;\x65e7; reaper \x7684;\x505a;\x6cd5;" '(fields (title)))
+            (list 'hit w2 2 "\x6062;\x590d;\x4e86;\x4e00;\x534a;\xff0c;\x590d;\x65e7;\x7684;\x90e8;\x5206;\x6ca1;\x52a8;" '(fields (title)))))
 
+;; Same shape as the pair above: the claim is that the two spellings agree,
+;; and what they agree on is its twin.
 (want "N2b a camelCase seam is a word boundary, and the query's own case does not matter"
-      (list (lines-of (run d2b "search" "block")) (lines-of (run d2b "search" "Block")))
-      (list (list (list 'hit w3 3 "parseBlock and friends"))
-            (list (list 'hit w3 3 "parseBlock and friends"))))
+      (let ((lower (lines-of (run d2b "search" "block")))
+            (upper (lines-of (run d2b "search" "Block"))))
+        (list (equal? lower upper) (> (length lower) 0)))
+      (list #t #t))
+
+(want "N2b TWIN: and what those two answer is that block, at the title tier"
+      (lines-of (run d2b "search" "block"))
+      (list (list 'hit w3 3 "parseBlock and friends" '(fields (title)))))
 
 (want "N2b a fullwidth spelling and an ascii one are one word"
       (lines-of (run d2b "search" "fullwidth"))
-      (list (list 'hit w4 3 "\xff26;\xff35;\xff2c;\xff2c;\xff37;\xff29;\xff24;\xff34;\xff28; letters")))
+      (list (list 'hit w4 3 "\xff26;\xff35;\xff2c;\xff2c;\xff37;\xff29;\xff24;\xff34;\xff28; letters" '(fields (title)))))
 
 (printf "\n== N2d: a fold that changes the length must not move the positions ==\n")
 ;; NEVER: THE POSITION OF A MATCH IS A POSITION IN A PARTICULAR STRING.
@@ -517,8 +533,8 @@
 
 (want "N2d a word after a letter that folds to two is still found, at the tier it begins"
       (lines-of (run d2d "search" "cat"))
-      (list (list 'hit sharp1 3 "Stra\xdf;e cat")
-            (list 'hit sharp2 3 "\xdf;\xdf;\xdf;\xdf;cat")))
+      (list (list 'hit sharp1 3 "Stra\xdf;e cat" '(fields (title)))
+            (list 'hit sharp2 3 "\xdf;\xdf;\xdf;\xdf;cat" '(fields (title)))))
 
 (printf "\n== N2e: normalising may not take a hit away, and the parts need not be adjacent ==\n")
 ;; NEVER: NORMALISING COMPOSES, AND COMPOSING CAN REMOVE A LETTER. A title
@@ -542,7 +558,7 @@
 ;; by eye, which is the whole subject of this segment arriving in its own cell.
 (want "N2e a letter written with a combining mark is still found by the plain letter"
       (lines-of (run d2e "search" "e"))
-      (list (list 'hit acc 2 "e\x301;")))
+      (list (list 'hit acc 2 "e\x301;" '(fields (title)))))
 
 ;; NEVER: AND THE SEAM IS WRITTEN BEFORE THE QUERY IS CUT UP. `tokens-of`
 ;; splits on whitespace and `prepare` WRITES whitespace at a CJK/Latin seam,
@@ -588,18 +604,40 @@
       (run d2b "search" "zzzzzzzzzz")
       (list 0 (quote ())))
 
-(want "N2c and every line of a search that does hit reads back as a hit of four parts"
+;; THE ARITY MOVED, AND THIS ROW IS WHERE THAT WAS DECIDED.
+;;
+;; It read "a hit of four parts" and asked `(= (length item) 4)`. A hit now
+;; carries a fifth, `(fields ...)`, naming the fields this block matched in,
+;; so the row says AT LEAST four and names what the fifth is.
+;;
+;; That is a change to a contract with another repository and this row is
+;; where the contract is written down. The plugin's `hitsOf` reads an entry
+;; of at least four elements with a string second and an integer third and
+;; ignores anything after -- it was widened to do so before this landed, in
+;; `theourgia-vsc` commit `ab41230` -- so a fifth element is carried, not
+;; dropped, and an older build of the plugin would have discarded the WHOLE
+;; answer rather than one hit.
+;;
+;; The first four positions are unchanged on purpose: a reader taking them
+;; by position goes on taking the same four things.
+(want "N2c and every line of a search that does hit reads back as a hit of at least four parts, the fifth being fields"
       (let ((items (lines-of (run d2b "search" "reaper"))))
         (list (> (length items) 0)
               (for-all (lambda (item)
                          (and (pair? item)
                               (eq? (car item) 'hit)
-                              (= (length item) 4)
+                              (>= (length item) 4)
                               (string? (cadr item))
                               (integer? (caddr item))
                               (string? (cadddr item))))
+                       items)
+              (for-all (lambda (item)
+                         (and (= (length item) 5)
+                              (pair? (list-ref item 4))
+                              (eq? 'fields (car (list-ref item 4)))
+                              (list? (cadr (list-ref item 4)))))
                        items)))
-      (list #t #t))
+      (list #t #t #t))
 
 (define (whereis-in store q) (lines-of (run store "whereis" q)))
 
@@ -2208,6 +2246,242 @@
                    (holds? (text-of out-path) "cut")))
       (list #f #f))
 
+(printf "\n== N8: search answers its best ten unless asked for all ==\n")
+;; NEVER: AND IT IS NOT THE SAME QUESTION grep's CAPS ANSWER. `grep` counts
+;; LINES and needs two caps, because one block can hold hundreds of them and
+;; a line budget alone lets the largest starve the rest. `search` counts
+;; BLOCKS, and a block appears at most once however many of its fields
+;; matched, so there is nothing to starve: the only question is how many
+;; ranked answers a reader wants before they would rather narrow the query.
+;;
+;; The ten are the TOP ten. The scoring is built so the head of the list is
+;; where the wanted blocks are -- an exact name scores 12 and the most a
+;; block with no name can reach is 11 -- so this row asks for the order, not
+;; only the count. A build that returned ten arbitrary hits would satisfy a
+;; row that counted.
+(define d8 (fresh-store!))
+(init! d8)
+(define d8-ids
+  (map (lambda (i)
+         (insert! d8 "--title" (string-append "quilvane block " (number->string i))))
+       '(0 1 2 3 4 5 6 7 8 9 10 11 12 13)))
+;; One block is given a keyword as well, which scores above a title match,
+;; so the ranking has something to put first.
+(run-with-stdin d8
+                (string-append "((set \"" (car (reverse d8-ids)) "\" keywords \"quilvane\"))")
+                "batch")
+
+(want "N8 CONTROL: there are more matching blocks than the limit"
+      (let ((all (lines-of (run d8 "search" "quilvane" "--all"))))
+        (list (length all) (> (length all) 10)))
+      (list 14 #t))
+
+(want "N8 the answer carries ten of them, and says how many it left out"
+      (let* ((r (run d8 "search" "quilvane" "--wire"))
+             (answer (car (lines-of r)))
+             (hits (cdr (assq 'items (cdr answer)))))
+        (list (car r) (length hits) (assq 'truncated (cdr answer))))
+      (list 0 10 '(truncated (hits 4))))
+
+;; THE TEN ARE THE BEST TEN. The block with the keyword scores above every
+;; title-only match, so it has to be first; if the limit took the first ten
+;; it met rather than the first ten in rank, it would not be.
+(want "N8 and they are the highest scoring ones, in order"
+      (let* ((hits (lines-of (run d8 "search" "quilvane")))
+             (scores (map caddr hits)))
+        (list (car (map cadr hits))
+              (= (car scores) (apply max scores))
+              (equal? scores (list-sort > scores))))
+      (list (car (reverse d8-ids)) #t #t))
+
+(want "N8 TWIN: --all carries every one and drops the clause"
+      (let* ((r (run d8 "search" "quilvane" "--all" "--wire"))
+             (answer (car (lines-of r)))
+             (hits (cdr (assq 'items (cdr answer)))))
+        (list (length hits) (and (assq 'truncated (cdr answer)) #t)))
+      (list 14 #f))
+
+;; NEVER: AND A COUNT THAT FITS SAYS NOTHING AT ALL. Without this, a build
+;; that always announced a truncation would pass every row above.
+(want "N8 TWIN: an answer that fits carries no truncated clause"
+      (let* ((r (run d8 "search" "quilvane block 3" "--wire"))
+             (answer (car (lines-of r)))
+             (hits (cdr (assq 'items (cdr answer)))))
+        (list (<= (length hits) 10) (and (assq 'truncated (cdr answer)) #t)))
+      (list #t #f))
+
+;; THE CLAUSE IS NAMED, and this row is what stops it becoming a bare
+;; integer again. `grep` answers `(truncated (lines n) (blocks m))`; a number
+;; alone after a clause name means whatever the verb decided, and a reader
+;; takes clauses by name without knowing which verb replied.
+(want "N8 the truncation names its dimension rather than carrying a bare number"
+      (let* ((r (run d8 "search" "quilvane" "--wire"))
+             (answer (car (lines-of r)))
+             (t (assq 'truncated (cdr answer))))
+        (list (pair? (cadr t)) (car (cadr t)) (integer? (cadr (cadr t)))))
+      (list #t 'hits #t))
+
+;; AND NONE OF IT REACHES A PERSON, who gets the ten lines and nothing else.
+(want "N8 TWIN: the human rendering shows the hits and not the clause"
+      (begin (run d8 "search" "quilvane")
+             (list (length (lines-of (run d8 "search" "quilvane")))
+                   (holds? (text-of out-path) "truncated")))
+      (list 10 #f))
+
+(printf "\n== N8b: two clauses called fields, and why that is allowed ==\n")
+;; NEVER: ONE ANSWER NOW CARRIES TWO CLAUSES NAMED `fields`, AND THIS PAIR
+;; IS THE WHOLE JUSTIFICATION FOR IT.
+;;
+;;   (hit <id> <score> <snippet> (fields (title src)))   <- where THIS block matched
+;;   (scanned (blocks n) (fields (title keywords ...)))  <- what the SEARCH looked at
+;;
+;; This batch spent its length taking apart clauses whose name meant two
+;; things -- `scanned (blocks n)` meant "records" in one verb and "blocks"
+;; in another -- so adding a name deliberately needs a reason that can be
+;; measured, not a comment saying the two are obviously different.
+;;
+;; The reason is that they CAN differ, and this row measures an input where
+;; they do. The first is a subset of the second by construction: a block
+;; cannot match in a field the search did not read.
+;;
+;; NEVER: A SUBSET TEST ALONE WOULD NOT DO. If the two lists were always
+;; equal, a subset row would still be green -- and two clauses that are
+;; always equal are one clause written twice, which is the case where one of
+;; them should be renamed. So the row asks for BOTH: the subset always, and
+;; inequality on a named input.
+(define d8b (fresh-store!))
+(init! d8b)
+(define src8b (string-append scratch "/src8b"))
+(system (string-append "rm -rf " src8b "; mkdir -p " src8b))
+(put! (string-append src8b "/p.sc")
+      (string->utf8 ";; a heading\n(define (wexlint x)\n  x)\n"))
+(run d8b "import-code" src8b)
+
+(define (fields-of-hit-and-scan query)
+  (let* ((r (run d8b "search" query "--wire"))
+         (answer (car (lines-of r)))
+         (hits (cdr (assq 'items (cdr answer))))
+         (scan (assq 'scanned (cdr answer))))
+    (list (and (pair? hits) (cadr (list-ref (car hits) 4)))
+          (cadr (assq 'fields (cdr scan))))))
+
+(want "N8b CONTROL: the query finds something, so there are two lists to compare"
+      (let ((p (fields-of-hit-and-scan "wexlint")))
+        (list (and (pair? (car p)) #t) (and (pair? (cadr p)) #t)))
+      (list #t #t))
+
+(want "N8b the fields a block matched in are a subset of the fields the search read"
+      (let* ((p (fields-of-hit-and-scan "wexlint"))
+             (matched (car p)) (looked (cadr p)))
+        (for-all (lambda (f) (and (memq f looked) #t)) matched))
+      #t)
+
+;; THE INPUT WHERE THEY DIFFER. Without this the two clauses could be one.
+(want "N8b and on this input they are NOT the same list, which is why both names exist"
+      (let* ((p (fields-of-hit-and-scan "wexlint"))
+             (matched (car p)) (looked (cadr p)))
+        (list matched looked (equal? matched looked)))
+      (list '(src names) '(title keywords src names doc body) #f))
+
+(printf "\n== N9: an empty query is an answer, and one report shape ==\n")
+;; NEVER: A QUERY WITH NO TOKENS ANSWERED `(error internal ...)`, AND
+;; NOTHING ASKED. `store-search` builds its report in two branches -- one
+;; for a query that tokenises to nothing, one for a query that does not --
+;; and each spelled its own alist. The empty one left out `omitted-hits`.
+;; The verb, taught in this batch to report what it left out, read that key
+;; without asking whether it was there, so `(cdr #f)` was raised and
+;; `guarded` turned it into an internal error.
+;;
+;; THE WITNESS, taken on the tree as it was before this round rather than
+;; argued for: with the same store and the same command,
+;;
+;;     search ""         -> (error internal (condition "~s is not a pair")), exit 1
+;;     search "   " --all -> the same
+;;     search quilvane   -> ten hits, exit 0
+;;
+;; so the defect was not in the search, and not in the flag: it was in the
+;; one query shape no row had ever asked about.
+;;
+;; THE FIX IS ONE CONSTRUCTOR, not a guard at the reader. A reader that
+;; tested for the key would have been correct and would have left the two
+;; shapes in place for the next reader to meet. `search-report` is now the
+;; only thing that builds a search report, and the row below asks for the
+;; KEY SET rather than for the presence of the key that was missing --
+;; a row about `omitted-hits` alone would go green again the next time one
+;; branch grows a key of its own.
+(want "N9 an empty query is an answer, not a failure"
+      (run d8 "search" "")
+      (list 0 '()))
+
+(want "N9 TWIN: a query of only spaces is the same query"
+      (run d8 "search" "   ")
+      (list 0 '()))
+
+(want "N9 TWIN: and --all does not change either of them"
+      (list (run d8 "search" "" "--all")
+            (run d8 "search" "   " "--all"))
+      (list (list 0 '()) (list 0 '())))
+
+(want "N9 CONTROL: the same store answers hits for a query that has a token"
+      (let ((r (run d8 "search" "quilvane")))
+        (list (code-of r) (length (lines-of r))))
+      (list 0 10))
+
+;; THE TWO BRANCHES, ASKED SIDE BY SIDE. The empty query and a query that
+;; hits are the two branches; the report they build must have the same keys.
+;;
+;; THIS ROW IS A TRIPWIRE AND NOT A SPECIFICATION, and it is wider than the
+;; rule in two ways. It pins the ORDER of the keys, which carries no meaning
+;; -- an alist is read by name -- and it pins the LIST, which the rule does
+;; not fix either. So a red here has two different readings:
+;;
+;;   * the two branches disagree. That is the defect this section exists
+;;     for, and the fix is in the product.
+;;   * somebody added a key to `search-report`. That is a legitimate change
+;;     -- there is one constructor, so both branches got it -- and the fix
+;;     is to change the expectation on this row.
+;;
+;; A row wider than its rule has to say where it is wider, or the next
+;; person to add a key reads the red as damage they did.
+(want "N9 both branches build a report with the same keys, in the same order"
+      (let ((empty (map car (store-search-report d8 "" search-hit-limit)))
+            (hits  (map car (store-search-report d8 "quilvane" search-hit-limit))))
+        (list empty (equal? empty hits)))
+      (list '(items omitted-hits scanned-blocks fields cut defs-built) #t))
+
+(want "N9 and the empty one says it left nothing out and looked at nothing"
+      (let ((r (store-search-report d8 "" search-hit-limit)))
+        (list (cdr (assq 'items r))
+              (cdr (assq 'omitted-hits r))
+              (cdr (assq 'scanned-blocks r))))
+      (list '() 0 0))
+
+;; ---- the cap is a parameter now, and the parameter is checked ------------
+;;
+;; NEVER: AN EXPORTED FUNCTION WHOSE TEXT DID NOT CHANGE BY ONE CHARACTER
+;; CHANGED ITS ANSWER. `store-search-report` passed a constant down to
+;; `store-search`; `store-search` learned to read that constant as "capped
+;; at ten"; and the report function began capping although its own two
+;; lines stood still. There was no caller in the tree, which is the only
+;; reason nothing broke. These rows ask for the limit BY VALUE, so the
+;; question "how many does this answer carry" has an answer at the call
+;; site rather than in whatever the callee currently believes.
+(want "N9 a limit of #f answers every hit and leaves nothing out"
+      (let ((r (store-search-report d8 "quilvane" #f)))
+        (list (length (cdr (assq 'items r))) (cdr (assq 'omitted-hits r))))
+      (list 14 0))
+
+(want "N9 TWIN: a limit of ten answers ten and says four are left out"
+      (let ((r (store-search-report d8 "quilvane" 10)))
+        (list (length (cdr (assq 'items r))) (cdr (assq 'omitted-hits r))))
+      (list 10 4))
+
+(want "N9 a limit that is neither #f nor a positive integer is refused at the door"
+      (list (car (caught (store-search-report d8 "quilvane" #t)))
+            (car (caught (store-search-report d8 "quilvane" 0)))
+            (car (caught (store-search-report d8 "quilvane" "10"))))
+      (list 'RAISED 'RAISED 'RAISED))
+
 (printf "\n== N7e: the three verbs count the same blocks ==\n")
 ;; NEVER: ONE CLAUSE NAME, ONE DEFINITION -- AND FOR A WHILE IT HAD THREE.
 ;;
@@ -2226,6 +2500,19 @@
 ;; The blocks a verb looked at are the blocks that exist. `whereis` reads an
 ;; index, and that index is itself built from `state-outline`, so the blocks
 ;; it covers are the live ones too.
+;;
+;; NEVER: AND THE EQUALITY IS NOT WIDER THAN THIS. Two readings that look
+;; like exceptions are not:
+;;
+;;   * a search with an empty query answers `(blocks 0)`. It looked at
+;;     nothing, which is true, and it is not asked here.
+;;   * under `--under`, grep's count is smaller than the other two. That is
+;;     not a disagreement either -- it really did look at fewer blocks.
+;;
+;; What this row asks is that the three verbs counted the same blocks when
+;; asked the same question of the same store. It does not say the number is
+;; a constant, and the twin below is what keeps somebody from reading it
+;; that way.
 (define d7e (fresh-store!))
 (init! d7e)
 (define src7e (string-append scratch "/src7e"))

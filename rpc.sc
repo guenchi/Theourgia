@@ -674,7 +674,7 @@
             "Read one block: its fields, or its text." #f 'daemon)
       (list 'refs '(refs <id>)
             "List the relations a block takes part in." #f 'daemon)
-      (list 'search '(search <query>)
+      (list 'search '(search <query> ["--all"])
             "Find blocks whose title, keywords or text match every word given." #f 'daemon)
       (list 'grep '(grep <pattern> ["--under" <id>] ["--all"])
             "List the lines that contain a pattern, literally." #f 'daemon)
@@ -1110,11 +1110,34 @@
       (cons 'search
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(search <query>))
+                  (usage '(search <query> ["--all"]))
                   (guarded (lambda ()
-                             (let* ((r (store-search-report store (car args)))
-                                    (hits (cdr (assq 'items r))))
+                             ;; THE CAP IS NAMED AT THE CALL, NOT CHOSEN BY
+                             ;; THE CALLEE. `#f` is every hit; the number is
+                             ;; `search-hit-limit`, defined beside the
+                             ;; reasoning for it in `store.sc` so that the
+                             ;; verb names one value rather than a second
+                             ;; copy of it.
+                             (let* ((r (store-search-report
+                                         store (car args)
+                                         (if (argument-option options "--all")
+                                             #f
+                                             search-hit-limit)))
+                                    (hits (cdr (assq 'items r)))
+                                    (omitted (cdr (assq 'omitted-hits r))))
                                (append (items (map (lambda (hit) (cons 'hit hit)) hits))
+                                       ;; NAMED, NOT A BARE INTEGER. `grep`
+                                       ;; answers `(truncated (lines n)
+                                       ;; (blocks m))` and this answers
+                                       ;; `(truncated (hits n))`: a number
+                                       ;; alone after a clause name means
+                                       ;; whatever the verb decided it
+                                       ;; meant, and a reader takes clauses
+                                       ;; by name without knowing which verb
+                                       ;; replied.
+                                       (if (> omitted 0)
+                                           (list (list 'truncated (list 'hits omitted)))
+                                           '())
                                        (scan-clauses r (null? hits)))))))))
       ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
       ;; THING THAT SAYS SO. A grep line and a search hit have the same

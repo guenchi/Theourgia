@@ -576,12 +576,18 @@
 ;; THE PROPERTY, ASKED SEPARATELY FROM THE LIST. The row above notices any
 ;; change at all; this one is the rule.
 ;;
-;; NEVER: AND THE RULE IT CHECKS IS NOT QUITE THE PROPERTY WE WANT. What we
-;; want is that no two ANSWERS share a tag. What this checks is that no tag
-;; is constructed in two PLACES. Those are the same only if each place serves
-;; one answer -- and that premise is not checked here. It is written down so
-;; that whoever relies on it does so knowingly, rather than inheriting it.
-(want "S-B2b TWIN: and no tag is constructed in two different places"
+;; NEVER: AND THE RULE IT CHECKS IS NOT QUITE THE PROPERTY WE WANT. The rule
+;; is written once, at `rpc.sc` above the `grep` handler: NO TWO VERBS ANSWER
+;; WITH ONE TAG. Every other place that describes this gate points there
+;; rather than restating it, and the paragraph above the last row of this
+;; section says where the gate is stricter than the rule.
+;;
+;; WHAT THIS ROW MEASURES, EXACTLY. `note!` keys on `(verb . tag)`, so two
+;; construction sites inside ONE verb collapse to one entry and this row
+;; cannot see them; what it finds is a tag that appears under two DIFFERENT
+;; verbs. The row's title used to say "in two different places", which is
+;; not what the deduplication does.
+(want "S-B2b TWIN: and no tag is constructed under two different verbs"
       (let loop ((ps tag-sites) (bad '()))
         (cond
           ((null? ps) (reverse bad))
@@ -611,6 +617,52 @@
 ;; `orphan`, `nested-document` and `pending` from `store-conflicts`. THOSE
 ;; NAMES ARE TAKEN AND THIS GATE WILL NOT SHOUT FOR THEM -- if a verb ever
 ;; answers with one of them as well, nothing here notices.
+;;
+;; THREE OF THEM ARE DISPATCHED ON BY THE PLUGIN, read in its own source
+;; rather than taken on report: `theourgia-vsc/src/model.ts:716` holds
+;; `const STRUCTURAL_HEADS = ['orphan', 'nested-document', 'conflict']`, and
+;; `pending` reaches the same reader as an item that build does not know.
+;;
+;; BUT ITS READERS DISPATCH PER VERB, and that makes the real rule narrower
+;; than the one this gate checks: `structuralMarks` issues
+;; `request('conflicts', [])` and reads only that answer, and `hitsOf` is
+;; handed a search answer. So a collision misleads a reader only when two
+;; items are in ONE VERB'S answer. The safe boundary is a different verb,
+;; not a different meaning.
+;;
+;; Three things follow, and the third is why they are written here:
+;;
+;;   1. The rule that matters is written at `rpc.sc`, above the `grep`
+;;      handler: no two verbs answer with one tag. What a reader needs is
+;;      that one verb's answer never carries two different kinds of item
+;;      under one tag.
+;;   2. This gate checks something STRICTER. What the TWIN row measures is
+;;      that no tag appears under two different VERBS -- `note!` keys on
+;;      `(verb . tag)`, so two construction sites inside one verb collapse
+;;      to a single entry and are invisible to it. That is stricter than
+;;      the rule, because a verb may legitimately answer with a kind of
+;;      item another verb also answers with.
+;;
+;;      AN EARLIER VERSION OF THIS PARAGRAPH SAID the gate forbids a tag
+;;      being constructed "in two places at all". It does not, and the
+;;      difference is not academic: a comment that describes the wrong
+;;      mechanism sends the next reader looking for a second construction
+;;      site when what went red was a second VERB.
+;;   3. SO A RED ROW HERE IS NOT NECESSARILY A DEFECT. It may be a
+;;      legitimate reuse of a tag across two verbs. When it goes red, the
+;;      thing to do is judge it -- NOT widen the expectation.
+;;
+;;      MEASURED, rather than argued: copy the `refs` handler to a
+;;      `backlinks` verb and leave it answering the same `ref` items it
+;;      answers today. Nothing is ambiguous -- both verbs return exactly
+;;      one kind of item, and a reader of either answer knows what a `ref`
+;;      is -- and the TWIN row goes from `()` to `((ref refs backlinks))`.
+;;      That reading was taken by applying the change to the census
+;;      expression in memory, not by adding the verb to this build.
+;;
+;; A gate that is stricter than the rule, and does not say where it is
+;; stricter, teaches the next person to raise the expectation until it stops
+;; complaining.
 (want "S-B2b and these are the items sites the walk cannot follow"
       (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                  (cadr items-scan))

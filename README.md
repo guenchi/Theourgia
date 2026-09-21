@@ -152,7 +152,22 @@ returns about the block.
 
 ### `search <query>`
 
-    (hit <id> <score> "<snippet>")
+    (hit <id> <score> "<snippet>" (fields (<field> ...)))
+    --all           every hit, not just the best ten
+
+The fifth part names the fields THIS block matched in. It is not the
+`fields` of the `scanned` clause, which names the fields the search read and
+is the same for every answer; this one differs from block to block and is
+always a subset of it.
+
+Ten hits come back unless `--all` is given, and when there are more the
+answer carries
+
+    (truncated (hits <n>))
+
+with `<n>` the number not shown. The count is named for the same reason
+grep's is: a bare number after a clause name means whatever the verb decided
+it meant.
 
 Whitespace splits the query into tokens and **every** token must hit. A hit is a
 case-insensitive substring, so `cat` finds `concatenate`.
