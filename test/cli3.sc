@@ -2210,9 +2210,13 @@
 (printf "\n== N7c: what --wire adds, and what it does not ==\n")
 ;; NEVER: `coverage` IS THE STATE OF AN INDEX THE ANSWER CONSULTED, so grep
 ;; does not get one. It reads the text of every live block and consults no
-;; index; `(defs absent)` would be true as English and wrong as a reading --
-;; a constant clause that points a caller at something playing no part in
+;; index; `(defs (names 0))` would be true as English and wrong as a reading
+;; -- a constant clause that points a caller at something playing no part in
 ;; the answer. `scanned` is grep's answer to the same question.
+;;
+;; The clause used to read `(defs built)` or `(defs absent)`, and `absent`
+;; was a word nothing could produce: the index is always built. It is a
+;; count now, and `(names 0)` is what `absent` was reaching for.
 ;;
 ;; Somebody will add it back for the sake of one shape for all three verbs.
 ;; This pair is what says no, and the comment above says why.
@@ -2235,7 +2239,7 @@
       (let* ((r (run d7 "grep" "zzznotpresent" "--wire"))
              (answer (car (lines-of r))))
         (assq 'scanned (cdr answer)))
-      '(scanned (blocks 2) (fields (src doc body))))
+      '(scanned (blocks 2) (fields (src doc body)) (unreadable-blocks 0)))
 
 ;; NEVER: AND NONE OF THIS REACHES A PERSON. The human rendering of an items
 ;; answer writes the items and drops every other clause, which is what keeps
@@ -2447,7 +2451,7 @@
       (let ((empty (map car (store-search-report d8 "" search-hit-limit)))
             (hits  (map car (store-search-report d8 "quilvane" search-hit-limit))))
         (list empty (equal? empty hits)))
-      (list '(items omitted-hits scanned-blocks fields cut defs-built) #t))
+      (list '(items omitted-hits scanned-blocks unreadable-blocks fields cut defs-names) #t))
 
 (want "N9 and the empty one says it left nothing out and looked at nothing"
       (let ((r (store-search-report d8 "" search-hit-limit)))
@@ -2481,6 +2485,225 @@
             (car (caught (store-search-report d8 "quilvane" 0)))
             (car (caught (store-search-report d8 "quilvane" "10"))))
       (list 'RAISED 'RAISED 'RAISED))
+
+(printf "\n== N10: what this scan could not read, and how many names there are ==\n")
+;; TWO CLAUSES, TWO FACTS THIS SECTION EXISTS TO SEPARATE.
+;;
+;; `(scanned ... (unreadable-blocks m))` is how many of the blocks THIS answer
+;; scanned held text that could not be decoded, counted once per block.
+;; There is also a process-wide counter, `text-decode-skipped-count`, and it
+;; answers a DIFFERENT question: it counts decode ATTEMPTS and keeps
+;; counting across every search a process makes. Measured before this
+;; section was written: one block with one undecodable `src`, four queries
+;; in one process -- including one that matched nothing -- moved it by one
+;; each time, to four. A caller reading one answer cannot use that number.
+;; That reading, and the corpus readings below, were taken for this round and
+;; are written out in `archive/theourgia-s-b2b-c3-2026-09-21/NOTES.md`.
+;;
+;; `(coverage (defs (names n)))` replaces `(defs built)`. The old clause had
+;; two words and one of them was unreachable: the index is always built, so
+;; `absent` could never be said, and a 3564-block markdown corpus got the
+;; same word as an empty store. Measured over four corpora, every one of
+;; them holds zero names.
+;;
+;; NEVER: A FOURTH COPY OF THIS SENTENCE SAID `--datum` DECIDES. It does
+;; not -- the CONTENT does -- and the row further down pins `d4e`, imported
+;; without the flag, at `(names 1)`. The sentence was corrected in that row
+;; first and left standing in three other places, one of them here and two
+;; in the shipped sources. Correcting a sentence is not done until its
+;; copies have been counted.
+;;
+;; AN UNDECODABLE FIELD DOES NOT NEED A DATUM INTENT, and this paragraph
+;; used to say it did.
+;;
+;; NEVER: WHAT IT SAID, AND WHAT OVERTURNED IT. It said "the only route to
+;; an undecodable field is a datum intent -- no importer writes a bytevector
+;; field", resting on a census of 6897 title/src/keywords fields over two
+;; corpora that found 0 non-string. Measured after a reviewer asked: put one
+;; source file holding the bytes FF FE in a directory, import it with
+;; `import-code` and NO `--datum`, and
+;;
+;;     search tag -> (scanned (blocks 4) (fields ...) (unreadable-blocks 1))
+;;     grep   tag -> (scanned (blocks 4) (fields ...) (unreadable-blocks 1))
+;;
+;; with the literal word `tag` sitting in that file and NEITHER verb finding
+;; it. A text block keeps its source as a bytevector -- this file says so
+;; itself, at the N4e note about bytes not being text -- so an ordinary
+;; import of an ordinary file that is not valid UTF-8 makes one.
+;;
+;; The census was not wrong; the conclusion drawn from it was. Those corpora
+;; hold no bytevector fields because those particular sources are all valid
+;; UTF-8, not because no route exists.
+;;
+;; WHAT THAT MEANS FOR THIS SECTION. The rows below still forge their input
+;; through `batch`, because forging is how a fixture gets a SPECIFIC shape
+;; -- one bad field, two bad candidates in one field -- not because it is
+;; the only way to get a bad field at all. And it means the clause these
+;; rows measure earns its keep on a route nobody has to contrive: a block
+;; whose text is silently unsearchable, which before this round nothing in
+;; any answer mentioned.
+(define d11 (fresh-store!))
+(init! d11)
+(define d11-bad (insert! d11 "--title" "a block whose source is not text"))
+(define d11-ok (insert! d11 "--title" "a block whose source is text"))
+(run-with-stdin d11
+                (string-append "((set \"" d11-bad "\" src #vu8(255 254 253))"
+                               " (set \"" d11-ok "\" src \"readable source\"))")
+                "batch")
+
+;; CONTROL: the store answers, so a zero below would be a fact about the
+;; blocks and not about a search that never ran.
+(want "N10 CONTROL: both blocks are there and the query finds them"
+      (let ((r (run d11 "search" "block" "--wire")))
+        (list (code-of r) (length (cdr (assq 'items (cdr (car (lines-of r))))))))
+      (list 0 2))
+
+(want "N10 a search says how many of the blocks it scanned it could not read"
+      (assq 'scanned (cdr (car (lines-of (run d11 "search" "block" "--wire")))))
+      '(scanned (blocks 2) (fields (title keywords src names doc body)) (unreadable-blocks 1)))
+
+(want "N10 TWIN: grep reads the same field and says the same thing"
+      (assq 'scanned (cdr (car (lines-of (run d11 "grep" "readable" "--wire")))))
+      '(scanned (blocks 2) (fields (src doc body)) (unreadable-blocks 1)))
+
+;; THE OTHER SIDE. Without it, a clause stuck at 1 would read the same.
+(define d11c (fresh-store!))
+(init! d11c)
+(insert! d11c "--title" "a block whose source is text")
+(want "N10 TWIN: a store with nothing undecodable in it says zero"
+      (list (assq 'scanned (cdr (car (lines-of (run d11c "search" "block" "--wire")))))
+            (assq 'scanned (cdr (car (lines-of (run d11c "grep" "block" "--wire"))))))
+      (list '(scanned (blocks 1) (fields (title keywords src names doc body)) (unreadable-blocks 0))
+            '(scanned (blocks 1) (fields (src doc body)) (unreadable-blocks 0))))
+
+;; ONCE PER BLOCK, AND ABOUT THIS ANSWER, ASKED IN ONE PROCESS.
+;;
+;; NEVER: AND THE FIRST VERSION OF THIS ROW COULD NOT ASK IT. It ran two
+;; `search` commands and compared their answers, which is two PROCESSES:
+;; the process counter starts at zero in each of them, so a build that
+;; reported the process total instead of this answer's count gave exactly
+;; the same two readings. The mutation that does precisely that survived
+;; with the row green -- the row's title promised something its measurement
+;; could not see.
+;;
+;; Asked in one process, the two are different: the answer's count stays at
+;; one while the process counter climbs, and a build reading the counter
+;; would answer 1 and then 2. The process counter is read here as well, so
+;; the row also says WHY the two differ rather than only that they do.
+(want "N10 the count is a fact about the answer, not a running total"
+      (let* ((before (text-decode-skipped-count))
+             (a (cdr (assq 'unreadable-blocks (store-search-report d11 "block" 10))))
+             (mid (text-decode-skipped-count))
+             (b (cdr (assq 'unreadable-blocks (store-search-report d11 "source" 10))))
+             (after (text-decode-skipped-count)))
+        (list a b (> mid before) (> after mid)))
+      (list 1 1 #t #t))
+
+(want "N10 TWIN: and two unreadable blocks are two"
+      (let ((d (fresh-store!)))
+        (init! d)
+        (let ((x (insert! d "--title" "first bad block"))
+              (y (insert! d "--title" "second bad block")))
+          (run-with-stdin d
+                          (string-append "((set \"" x "\" src #vu8(255 254))"
+                                         " (set \"" y "\" src #vu8(253 252)))")
+                          "batch")
+          (assq 'unreadable-blocks (cdr (assq 'scanned (cdr (car (lines-of (run d "search" "block" "--wire")))))))))
+      '(unreadable-blocks 2))
+
+;; ONE BLOCK, TWO FAILED DECODES -- AND THE ANSWER SAYS ONE.
+;;
+;; NEVER: EVERY ROW ABOVE GAVE ITS BLOCKS EXACTLY ONE UNDECODABLE FIELD, so
+;; "once per block" and "once per attempt" produce the same number in all of
+;; them. The mutation that counts attempts survived against them. What tells
+;; the two apart is a block that costs more than one attempt, and the
+;; product's own comment says where one comes from: a field in CONFLICT is
+;; decoded once per candidate.
+;;
+;; The conflict is forged, because there is no other way to it: a conflict
+;; value is what the reducer builds from two writers who had not seen each
+;; other, and the caller path cannot write one.
+;;
+;; NEVER: AND A RECORD IS SPELLED THE WAY THE STORE SPELLS IT. The first
+;; version of this wrote `#vu8(255 254)`, which is how a bytevector is
+;; written in Scheme source. A store writes one as BASE64 inside a string --
+;; read out of a segment the store itself produced:
+;;
+;;     1782f600 (2 ... (set "6adwqbqa.1" src #vu8"//79"))
+;;
+;; and a record the reader cannot spell out is dropped in silence: the
+;; applied cut stayed at the record BEFORE it, the field never appeared, and
+;; the row read `(0 1 0)` -- which is exactly what a search over a store with
+;; nothing wrong in it reads. The reading that told them apart was the cut.
+(define d11d (fresh-store!))
+(init! d11d)
+(define d11d-id (insert! d11d "--title" "a vesselwort block"))
+(forge-record! d11d
+  (string-append "(set \"" d11d-id
+                 "\" src (conflict ((#vu8\"//4=\" \"w1\" 1) (#vu8\"/fw=\" \"w2\" 1))))"))
+
+(want "N10 a block with two undecodable candidates in one field is ONE unreadable block"
+      (let* ((before (text-decode-skipped-count))
+             (r (store-search-report d11d "vesselwort" 10))
+             (after (text-decode-skipped-count)))
+        (list (cdr (assq 'unreadable-blocks r))
+              (cdr (assq 'scanned-blocks r))
+              (- after before)))
+      (list 1 1 2))
+
+;; A VERB THAT READ NO BLOCK'S TEXT DOES NOT CARRY THE CLAUSE. `whereis`
+;; consults the definitions index; blocks it could not read are that
+;; index's own fact and have their own counter. A constant `(unreadable-blocks 0)`
+;; there would be true as English and wrong as a reading.
+(want "N10 whereis scanned carries blocks and fields, and NO unreadable-blocks"
+      (let ((sc (assq 'scanned (cdr (car (lines-of (run d4 "whereis" "borrowed-name" "--wire")))))))
+        (list (and (assq 'blocks (cdr sc)) #t)
+              (and (assq 'fields (cdr sc)) #t)
+              (and (assq 'unreadable-blocks (cdr sc)) #t)))
+      (list #t #t #f))
+
+;; ---- how many names, rather than whether there is an index --------------
+(define (defs-clause store q)
+  (let* ((answer (car (lines-of (run store "search" q "--wire"))))
+         (cov (assq 'coverage (cdr answer))))
+    (and cov (assq 'defs (cdr cov)))))
+
+(define (scanned-blocks-of store q)
+  (cadr (assq 'blocks (cdr (assq 'scanned (cdr (car (lines-of (run store "search" q "--wire")))))))))
+
+;; NEVER: AND THE ZERO SIDE IS NOT "THE STORE WITHOUT --datum". I wrote this
+;; row against `d4e` -- a library imported WITHOUT `--datum` -- because a
+;; corpus imported that way had held zero names. It answered `(names 1)`.
+;; The flag is not what decides: `d4e`'s source defines a procedure and the
+;; name is derived from the source, which is the very thing the N4e section
+;; exists to show. What holds zero names is a store with nothing NAMEABLE in
+;; it, and that is the ordinary prose store -- which is the case the old
+;; clause flattened together with an empty one.
+(want "N10 a store of prose has blocks and no names at all"
+      (list (> (scanned-blocks-of d11c "zzznotpresentanywhere") 0)
+            (defs-clause d11c "zzznotpresentanywhere"))
+      (list #t '(defs (names 0))))
+
+;; AND THE NUMBER TRACKS THE CONTENT, not the import flag: one name, from a
+;; store imported the same way as the corpus that had none.
+(want "N10 TWIN: a library without --datum whose source defines something counts it"
+      (defs-clause d4e "zzznotpresentanywhere")
+      '(defs (names 1)))
+
+;; THE CONTRAST, and it is the whole reason the clause is a number: these
+;; two stores used to answer with the same word.
+(want "N10 TWIN: a library imported WITH --datum has names, and the clause counts them"
+      (let ((c (defs-clause d4 "zzznotpresentanywhere")))
+        (list (and (pair? c) (eq? (car c) 'defs))
+              (and (pair? c) (eq? (car (cadr c)) 'names))
+              (and (pair? c) (> (cadr (cadr c)) 0))))
+      (list #t #t #t))
+
+(want "N10 and neither store ever says a word instead of a number"
+      (list (defs-clause d11c "zzznotpresentanywhere")
+            (let ((c (defs-clause d4 "zzznotpresentanywhere")))
+              (list (car c) (car (cadr c)))))
+      (list '(defs (names 0)) '(defs names)))
 
 (printf "\n== N7e: the three verbs count the same blocks ==\n")
 ;; NEVER: ONE CLAUSE NAME, ONE DEFINITION -- AND FOR A WHILE IT HAD THREE.

@@ -194,6 +194,45 @@ or carried, not a field anyone may set -- so `search` and `whereis` ask the same
 question of the same blocks. A deleted block is not searched: the set of blocks
 that exist is the outline.
 
+#### What a `--wire` answer says about the scan
+
+`search` and `grep` carry, after their items:
+
+    (scanned (blocks <n>) (fields (<field> ...)) (unreadable-blocks <m>))
+
+`<n>` is how many live blocks THIS answer looked at, which is not always how
+many the store holds: a query with no tokens looks at nothing and says `0`
+over a store full of blocks, and `grep --under` counts only the subtree it
+was given. `<m>` is how many of those `<n>` held text that could not be
+decoded, counted once per block however many of its fields were affected.
+`<m>` is a fact about THIS answer; it does not accumulate. The clause names
+its unit because a bare `unreadable` could as easily have counted lines,
+fields or bytes.
+
+A successful `whereis` carries `scanned` without `unreadable-blocks`: it
+consults the definitions index rather than reading block text, and a count
+that could only ever be zero would point a caller at something playing no
+part in the answer. A `whereis` that does not know the name answers an error
+with the nearest names it does know, and carries no `scanned` at all.
+
+When `search` finds nothing it also carries
+
+    (coverage (defs (names <n>)) (names-from (datum lexical)))
+
+`<n>` is how many names the definitions index holds. Zero beside a non-zero
+`blocks` is the ordinary case for prose, and it has **two** sources this
+answer cannot tell apart: a store with nothing nameable in it, and a store
+whose nameable blocks could not be read -- the index guards each block and
+contributes no names for one it could not parse. Naming the second is
+scheduled work; until it lands, `(names 0)` does not say which of the two it
+is. Whether a block is nameable is decided by what is IN it, not by the flag
+it was imported with. `grep` gets no `coverage` clause -- it consults no
+index, and
+`scanned` already says what it looked at.
+
+None of these clauses appear without `--wire`. The human rendering of an
+answer with items writes the items and nothing else.
+
 ### `grep <pattern>`
 
     (match <id> <line-no> "<text>")

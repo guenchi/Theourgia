@@ -1322,16 +1322,74 @@
   ;; delete the only block in a store and search answered `(scanned (blocks
   ;; 1))` with no live block left.
   ;;
-  ;; `defs-built` is whether the definitions index -- what `whereis` and the
-  ;; name tier read -- was BUILT for this answer. It is the fact `coverage`
-  ;; reports.
-  (define (search-report state shown omitted scanned)
+  ;; `defs-names` is how many names the definitions index -- what `whereis`
+  ;; and the name tier read -- holds for this answer. It is the fact
+  ;; `coverage` reports. It replaced `defs-built`, a boolean; the paragraph
+  ;; at `defs-names` below says why.
+  ;; `unreadable-blocks` IS A FACT ABOUT THIS ANSWER, and the process counter
+  ;; is not. `text-decode-skipped-count` counts DECODE ATTEMPTS and keeps
+  ;; counting across every search a process makes -- measured, one block
+  ;; with one undecodable `src` moves it by one on each of four queries,
+  ;; including a query that matched nothing. That is a diagnostic about a
+  ;; process. What a caller reading one answer needs is how many of the
+  ;; blocks THIS scan looked at had text it could not read, counted once per
+  ;; block. Two facts, two places; the counter's own comment already says it
+  ;; counts attempts.
+  ;;
+  ;; It is derived FROM that counter, per block: the count is read before a
+  ;; block's fields and after them, and the block is unreadable if it moved.
+  ;; That is once per block by construction, whatever route the fields took,
+  ;; and it costs no second decode.
+  (define (search-report state shown omitted scanned unreadable)
     (list (cons (quote items) shown)
           (cons (quote omitted-hits) omitted)
           (cons (quote scanned-blocks) scanned)
+          (cons (quote unreadable-blocks) unreadable)
           (cons (quote fields) (quote (title keywords src names doc body)))
           (cons (quote cut) (reduce-applied-cut state))
-          (cons (quote defs-built) (and (defs-index state) #t))))
+          ;; HOW MANY NAMES THE INDEX HOLDS, not whether it exists.
+          ;;
+          ;; NEVER: THE OLD ANSWER HAD A VALUE NOTHING COULD PRODUCE.
+          ;; `coverage` carried `(defs built)` or `(defs absent)`, and
+          ;; `absent` was unreachable: `build-defs-index` always returns its
+          ;; table, guarding per block, so `(and (defs-index state) #t)` is
+          ;; `#t` for every store there is -- measured over a 3564-block
+          ;; markdown corpus, an 86-block code corpus, a two-block store and
+          ;; an EMPTY one, all four built for the question and read in
+          ;; `archive/theourgia-s-b2b-c3-2026-09-21/NOTES.md`, which is where
+          ;; the numbers in this comment can be checked. The clause existed
+          ;; to separate "nothing in this store answers to that" from "there
+          ;; was nothing to consult", and it could only ever say the first.
+          ;;
+          ;; The number says both, and the second is the common case rather
+          ;; than a corner: all four of those stores hold ZERO names. A store
+          ;; of 3564 blocks and an empty store used to give a caller the same
+          ;; word.
+          ;;
+          ;; NEVER: AND THE REASON WRITTEN HERE USED TO BE WRONG. It said
+          ;; "only a `--datum` import writes name-bearing blocks". It does
+          ;; not: what decides is the CONTENT. Overturned by a fixture --
+          ;; `d4e` in `test/cli3.sc` imports a library WITHOUT `--datum` and
+          ;; the clause answers `(names 1)`, because the source defines a
+          ;; procedure and the name is derived from the source. The corpora
+          ;; below hold zero names because of what is in them, not because of
+          ;; the flag they were imported with.
+          ;;
+          ;; NEVER: AND ZERO STILL HAS TWO SOURCES THIS ANSWER CANNOT TELL
+          ;; APART. A store with nothing nameable in it reads `(names 0)`,
+          ;; and so does a store whose nameable blocks could not be read:
+          ;; `build-defs-index` guards each block, counts the failures into
+          ;; `defs-index-skipped`, and contributes no names for them. So
+          ;; "none" and "we could not tell" are one number again -- the very
+          ;; shape this clause replaced `(defs built)` to fix. Naming the
+          ;; second is scheduled; until it lands, a reader of `(names 0)`
+          ;; does not know which one it has.
+          (cons (quote defs-names) (defs-index-name-count state))))
+
+  ;; -> how many distinct names the definitions index holds for this state.
+  (define (defs-index-name-count state)
+    (let ((ix (defs-index state)))
+      (if ix (vector-length (hashtable-keys ix)) 0)))
 
   ;; The report, with the cap the caller chose. `#f` asks for every hit.
   ;;
@@ -1376,12 +1434,17 @@
            (live (let ((t (make-hashtable string-hash string=?)))
                    (for-each (lambda (r) (hashtable-set! t (caddr r) #t))
                              (state-outline state))
-                   t)))
+                   t))
+           ;; HOW MANY LIVE BLOCKS THIS SCAN COULD NOT READ THE TEXT OF.
+           ;; One search, one count; it is raised once per block by the
+           ;; loop below and read by the report at the end.
+           (unreadable-here 0))
       (if (null? tokens)
           (let ((none (prepared-end! (quote ()))))
             (if (pair? rest)
-                ;; An empty query looks at nothing, and leaves nothing out.
-                (search-report state none 0 0)
+                ;; An empty query looks at nothing, leaves nothing out,
+                ;; and reads no block's text.
+                (search-report state none 0 0 0)
                 none))
           (let ((hits
                   (let loop ((ds (state-datum state)) (out (quote ())))
@@ -1390,6 +1453,11 @@
                         (let* ((id (cadr (car ds)))
                                (block (state-read state id))
                                (alive (hashtable-ref live id #f))
+                               ;; READ BEFORE THIS BLOCK'S FIELDS, compared
+                               ;; after them: the process counter moves once
+                               ;; per failed decode, and what this needs is
+                               ;; whether it moved at all for THIS block.
+                               (decodes-before (text-decode-skipped-count))
                                (titles (field-strings block (quote title)))
                                (srcs (field-strings block (quote src)))
                                ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
@@ -1460,6 +1528,14 @@
                                (names (map symbol->string (block-names state live id)))
                                (docs (derived-strings state live id (quote doc)))
                                (bodies (derived-strings state live id (quote body)))
+                               ;; EVERY FIELD OF THIS BLOCK HAS BEEN READ BY
+                               ;; HERE, including the derived ones, so this is
+                               ;; the point where the comparison is complete.
+                               (block-unreadable
+                                 (> (text-decode-skipped-count) decodes-before))
+                               (ignored-unreadable
+                                 (when (and alive block-unreadable)
+                                   (set! unreadable-here (+ unreadable-here 1))))
                                (name-row (row name-tier names))
                                (doc-row (row field-tier docs))
                                (body-row (row field-tier bodies))
@@ -1569,7 +1645,8 @@
                                           (take (cdr l) (- k 1) (cons (car l) out)))))))
                     (search-report state shown
                                    (- total (length shown))
-                                   (length (state-outline state))))
+                                   (length (state-outline state))
+                                   unreadable-here))
                   sorted))))))
 
   ;; ---- grep: lines, where search answers with blocks ----------------------
@@ -1643,24 +1720,37 @@
            (ids (map caddr rows))
            (wanted (if under (subtree-ids rows under) #f))
            (q (fold-preserving (prepare pattern))))
-      (define (report items omitted unseen scanned)
+      ;; `unreadable` MEANS HERE WHAT IT MEANS IN A SEARCH ANSWER: how many
+      ;; of the blocks THIS scan looked at had text it could not read,
+      ;; counted once per block. `grep` reads `src` through the same
+      ;; `field-strings`, so the same failure reaches it, and a clause that
+      ;; meant one thing in one verb's answer and another in another verb's
+      ;; is the shape this batch exists to take apart.
+      (define (report items omitted unseen scanned unreadable)
         (list (cons (quote items) items)
               (cons (quote omitted-lines) omitted)
               (cons (quote unseen-blocks) unseen)
               (cons (quote scanned-blocks) scanned)
+              (cons (quote unreadable-blocks) unreadable)
               (cons (quote fields) (quote (src doc body)))
               (cons (quote cut) (reduce-applied-cut state))))
       (if (= 0 (string-length q))
-          (report (quote ()) 0 0 0)
-          (let loop ((l ids) (out (quote ())) (shown 0) (omitted 0) (unseen 0) (scanned 0))
+          (report (quote ()) 0 0 0 0)
+          (let loop ((l ids) (out (quote ())) (shown 0) (omitted 0) (unseen 0) (scanned 0)
+                     (unreadable 0))
             (cond
-              ((null? l) (report (reverse out) omitted unseen scanned))
+              ((null? l) (report (reverse out) omitted unseen scanned unreadable))
               ((and wanted (not (hashtable-ref wanted (car l) #f)))
-               (loop (cdr l) out shown omitted unseen scanned))
+               (loop (cdr l) out shown omitted unseen scanned unreadable))
               (else
                 (let* ((id (car l))
+                       ;; Read before this block's text and compared after
+                       ;; it, exactly as the search loop does.
+                       (decodes-before (text-decode-skipped-count))
                        (lines (apply append
                                      (map lines-of-text (grep-text-of state live id))))
+                       (block-unreadable
+                         (> (text-decode-skipped-count) decodes-before))
                        (matching
                          (let scan ((ls lines) (n 1) (acc (quote ())))
                            (cond
@@ -1680,7 +1770,8 @@
                         (+ shown take-n)
                         (+ omitted (- count take-n))
                         (+ unseen (if (and (> count 0) (= take-n 0)) 1 0))
-                        (+ scanned 1)))))))))
+                        (+ scanned 1)
+                        (+ unreadable (if block-unreadable 1 0))))))))))
 
   ;; Every id at or below `root-id`, by the outline's parent links. A block
   ;; that is its own ancestor cannot happen here -- the outline marks a cycle

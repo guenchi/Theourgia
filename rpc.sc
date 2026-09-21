@@ -159,20 +159,63 @@
     (let ((field (lambda (k) (let ((e (assq k report))) (and e (cdr e))))))
       (append
         (list (list 'cut (field 'cut))
-              (list 'scanned
-                    (list 'blocks (field 'scanned-blocks))
-                    (list 'fields (field 'fields))))
+              (append
+                (list 'scanned
+                      (list 'blocks (field 'scanned-blocks))
+                      (list 'fields (field 'fields)))
+                ;; `unreadable-blocks` SAYS HOW MANY OF THOSE BLOCKS HELD
+                ;; TEXT THIS SCAN COULD NOT READ, counted once per block.
+                ;;
+                ;; THE NAME CARRIES THE UNIT, and that is the reason for it
+                ;; rather than a nicety. `(unreadable 1)` reads as "one
+                ;; what": lines, fields, bytes and blocks are all plausible
+                ;; here, and the clause beside it counts BLOCKS while the
+                ;; process counter this is derived from counts ATTEMPTS. It
+                ;; is the same rule `(truncated (hits n))` is written under
+                ;; -- a number after a clause name means whatever the verb
+                ;; decided it meant -- and it would apply even if the word
+                ;; were free.
+                ;;
+                ;; IT IS ALSO TAKEN, and by this project's own client.
+                ;; Read in `theourgia-vsc/src/client.ts` on the `vscode`
+                ;; branch: `TransportError('unreadable', ...)` is raised
+                ;; there when an answer's SHAPE cannot be read -- two item
+                ;; lists where one was expected, and the like. That is a
+                ;; client-side refusal and never travels on the wire, so the
+                ;; two never meet in one place. They would still be one word
+                ;; meaning two things on the two sides of one boundary, and
+                ;; the cheapest moment to avoid that is before the first
+                ;; reader.
+                ;;
+                ;; A VERB THAT READ NO BLOCK'S TEXT DOES NOT GET IT, by the
+                ;; same rule that keeps `coverage` off grep's answers: a
+                ;; clause that could only ever be `(unreadable-blocks 0)`
+                ;; is true as English and wrong as a reading: it points a
+                ;; worried caller at something that plays no part in the
+                ;; answer. `search` and `grep` read block text and carry the
+                ;; count; `whereis` reads the definitions index, whose
+                ;; unreadable blocks are a different fact with a counter of
+                ;; its own.
+                ;;
+                ;; Presence in the report decides, so the rule lives in the
+                ;; verb that knows whether it read any text -- not in a list
+                ;; of verb names here, which would be a second place
+                ;; answering the same question.
+                (if (assq 'unreadable-blocks report)
+                    (list (list 'unreadable-blocks (field 'unreadable-blocks)))
+                    '())))
         ;; COVERAGE IS THE STATE OF THE INDEX THIS ANSWER CONSULTED, and a
         ;; verb that consults none does not get the clause.
         ;;
-        ;; For `search` and `whereis` it is the whole point: `absent`
-        ;; separates "nothing in this store answers to that" from "there was
-        ;; nothing to consult", and a caller deciding whether to trust an
-        ;; empty answer needs to know which one it got.
+        ;; For `search` it is the whole point: a caller deciding whether to
+        ;; trust an empty answer needs to know whether nothing in this store
+        ;; answers to that, or whether there was nothing to consult. The
+        ;; NUMBER of names is what says which; the paragraph below says why
+        ;; it is a number and not a word.
         ;;
         ;; `grep` answers that same question with `scanned`: `(blocks 0)` is
         ;; its "there was nothing to look at". A `coverage` clause here would
-        ;; be a constant -- `(defs absent)` on every answer, for ever --
+        ;; be a constant -- `(defs (names 0))` on every answer, for ever --
         ;; and a clause that never varies is noise that gets read as
         ;; information. It is true as English and wrong as a reading: it
         ;; points a worried caller at something that plays no part in the
@@ -185,12 +228,38 @@
         ;; answer would be told to worry about something that plays no part
         ;; in it. `scanned` already says what grep looked at.
         ;;
-        ;; The verbs that DO consult the definitions index say so here, and
-        ;; for them `absent` is the fact that matters: it separates "nothing
-        ;; in this store answers to that" from "nothing could be consulted".
-        (if (and empty? (assq 'defs-built report))
+        ;; The verb that DOES consult the definitions index says so here.
+        ;; HOW MANY NAMES, NOT WHETHER THERE IS AN INDEX.
+        ;;
+        ;; NEVER: `(defs absent)` WAS A WORD NOTHING COULD PRODUCE. The
+        ;; index is always built -- it guards per block and answers with its
+        ;; table whatever it found -- so the old clause said `built` for
+        ;; every store there is, including an empty one. It existed to
+        ;; separate "nothing in this store answers to that" from "there was
+        ;; nothing to consult" and could only say the first.
+        ;;
+        ;; `(names 0)` is the second, and it is the ordinary case rather than
+        ;; a corner: a 3564-block markdown corpus holds zero names, the same
+        ;; as an empty store -- but now it also says 3564 blocks beside it,
+        ;; and the two readings together are what a caller needs. What holds
+        ;; no names is a store with nothing NAMEABLE in it; the reason once
+        ;; written here, that only a `--datum` import writes name-bearing
+        ;; blocks, is wrong and the fixture `d4e` in `test/cli3.sc` -- a
+        ;; library imported without that flag, answering `(names 1)` -- is
+        ;; what overturned it. `store.sc` carries the same correction beside
+        ;; the field this clause reads.
+        ;;
+        ;; NEVER: AND ZERO HAS A SECOND SOURCE THIS ANSWER CANNOT SEPARATE.
+        ;; A store whose nameable blocks could not be READ also answers
+        ;; `(names 0)`: the index guards each block and counts the failures
+        ;; elsewhere. "None" and "we could not tell" are one number, which is
+        ;; the shape this clause replaced `(defs built)` to fix. Naming the
+        ;; second is scheduled; until then a reader of `(names 0)` does not
+        ;; know which of the two it has, and this comment is the only place
+        ;; that says so.
+        (if (and empty? (assq 'defs-names report))
             (list (list 'coverage
-                        (list 'defs (if (field 'defs-built) 'built 'absent))
+                        (list 'defs (list 'names (field 'defs-names)))
                         (list 'names-from '(datum lexical))))
             '()))))
   (define (text t) (list 'ok (list 'text t)))
