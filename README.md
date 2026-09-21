@@ -179,6 +179,37 @@ or carried, not a field anyone may set -- so `search` and `whereis` ask the same
 question of the same blocks. A deleted block is not searched: the set of blocks
 that exist is the outline.
 
+### `grep <pattern>`
+
+    (match <id> <line-no> "<text>")
+    --under <id>    only the block given and what is under it
+    --all           no limit on how many lines come back
+
+`search` finds blocks; `grep` finds lines. It prints every line of a live
+block's text that contains the pattern, in outline order, with the number of
+the line within that block.
+
+The pattern is **literal**. A `.` matches a dot and nothing else; there is no
+regular expression syntax here.
+
+Matching ignores case. The text searched is a block's `src` together with the
+`doc` and the printed body derived from it, in that order, and the line number
+counts through that sequence.
+
+Two limits keep one block from crowding out the rest: at most 20 lines from any
+one block, and at most 200 lines in all. When either applies the answer carries
+
+    (truncated (lines <n>) (blocks <m>))
+
+where `<n>` is how many matching lines were not shown and `<m>` how many blocks
+matched without a single line of theirs appearing. `--all` removes both limits.
+The counts are named because a bare number after a clause means whatever the
+verb decides it means, and a reader takes clauses by name.
+
+Both `grep` and `search` are answered against the same blocks: a deleted block
+has no lines.
+
+
 Order is score descending then id ascending — total, so two runs over one store agree.
 The query is only ever text: nothing in it reaches a numeric parser.
 

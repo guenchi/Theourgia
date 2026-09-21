@@ -2034,6 +2034,275 @@
         (> hits 0))
       #t)
 
+;; ---- N7: grep finds lines, where search finds blocks ---------------------
+(printf "\n== N7: grep answers with lines ==\n")
+;; `search` ranks blocks; `grep` lists lines. The two answer different
+;; questions and carry different item tags, and `facade-gate.sc` keeps the
+;; rule that no two verbs share a tag -- because a `(match id n text)` and a
+;; `(hit id score snippet)` have the same arity and the same types in the
+;; same places, so a reader that checks shape cannot tell them apart.
+(define d7 (fresh-store!))
+(init! d7)
+(define src7 (string-append scratch "/src7"))
+(system (string-append "rm -rf " src7 "; mkdir -p " src7))
+(put! (string-append src7 "/a.sc")
+      (string->utf8
+        (string-append
+          ";; a file about quenchel\n"
+          "(define (one x) x)\n"
+          "(define (two y) y)\n"
+          ";; QUENCHEL again, shouting\n"
+          "(define (three z) z)\n"
+          ";; literal marker a.c here\n"
+          ";; and a regex would also take abc here\n")))
+(run d7 "import-code" src7)
+
+(want "N7 CONTROL: the store has the file, and search finds the block"
+      (let ((r (run d7 "search" "quenchel")))
+        (list (car r) (> (length (lines-of r)) 0)))
+      (list 0 #t))
+
+;; THE LINE NUMBER IS WITHIN THE BLOCK, and the text is the line as written.
+(want "N7 a match names the block, the line number and the line"
+      (let* ((r (run d7 "grep" "quenchel"))
+             (ls (lines-of r)))
+        (list (car r)
+              (length ls)
+              (map car ls)
+              (map caddr ls)))
+      (list 0 2 '(match match) '(1 4)))
+
+;; CASE IS IGNORED, which is why both lines came back above -- one says
+;; `quenchel` and the other `QUENCHEL`.
+(want "N7 TWIN: the two lines differ in case, so the match is case-insensitive"
+      (let ((ls (lines-of (run d7 "grep" "quenchel"))))
+        (map (lambda (l) (holds? (cadddr l) "QUENCHEL")) ls))
+      '(#f #t))
+
+;; NEVER: THE PATTERN IS LITERAL, AND THIS IS THE ROW THAT SAYS SO. A `.`
+;; is a dot. If a regular expression ever arrives it will be a second
+;; language inside this one, and this row is what makes that a decision
+;; rather than a drift.
+;; The file holds `a.c` on one line and `abc` on another. A literal pattern
+;; takes the first and not the second; a regular expression would take both,
+;; and that difference is the whole of what this row is for.
+;;
+;; The first version of this row grepped for `.` alone and asked that every
+;; line returned contained a dot -- and the file it ran against had no dots
+;; in it at all, so the answer was empty and the second half of the row was
+;; vacuously true. It reported `(#f #t)`: the half that failed was the one
+;; asking whether anything came back.
+(want "N7 a dot matches a dot, not any character"
+      (let* ((ls (lines-of (run d7 "grep" "a.c")))
+             (texts (map cadddr ls)))
+        (list (length ls)
+              (for-all (lambda (t) (holds? t "a.c")) texts)
+              (exists (lambda (t) (holds? t "would also take abc")) texts)))
+      (list 1 #t #f))
+
+(want "N7 TWIN: and a pattern that is in no line answers with nothing"
+      (let ((r (run d7 "grep" "zzznotpresent")))
+        (list (car r) (length (lines-of r))))
+      (list 0 0))
+
+;; THE CROSS-REPOSITORY CONTRACT, for grep as for search: a person who greps
+;; for something absent gets no output at all, because the plugin parses
+;; this same text and discards the whole answer on any item it cannot read.
+(want "N7 zero matches print nothing at all"
+      (begin (run d7 "grep" "zzznotpresent") (string-length (text-of out-path)))
+      0)
+
+(printf "\n== N7b: the two caps, and what the answer says about them ==\n")
+;; One block with more than twenty matching lines, and enough blocks that the
+;; total cap is reached as well.
+(define d7b (fresh-store!))
+(init! d7b)
+(define src7b (string-append scratch "/src7b"))
+(system (string-append "rm -rf " src7b "; mkdir -p " src7b))
+(let loop ((f 0))
+  (when (< f 12)
+    (put! (string-append src7b "/f" (number->string f) ".sc")
+          (string->utf8
+            (let build ((i 0) (out ";; frobwick header\n"))
+              (if (= i 30)
+                  out
+                  (build (+ i 1) (string-append out ";; frobwick line " (number->string i) "\n"))))))
+    (loop (+ f 1))))
+(run d7b "import-code" src7b)
+
+(want "N7b CONTROL: without the caps there are far more than 200 matching lines"
+      (let ((n (length (lines-of (run d7b "grep" "frobwick" "--all")))))
+        (list (> n 200) n))
+      (list #t 372))
+
+;; TWENTY FROM ANY ONE BLOCK, AND TWO HUNDRED IN ALL. The per-block cap is
+;; what stops the largest block spending the whole budget: without it, one
+;; file of 418 matching lines would fill the answer and the other 38 that
+;; matched would not appear, while the answer said only that lines were
+;; dropped.
+(want "N7b the answer holds 200 lines, and no block contributes more than 20"
+      (let* ((ls (lines-of (run d7b "grep" "frobwick")))
+             (per (let count ((l ls) (acc '()))
+                    (cond ((null? l) acc)
+                          (else
+                            (let* ((id (cadr (car l)))
+                                   (e (assoc id acc)))
+                              (count (cdr l)
+                                     (if e
+                                         (map (lambda (p) (if (equal? (car p) id) (cons id (+ 1 (cdr p))) p)) acc)
+                                         (cons (cons id 1) acc)))))))))
+        (list (length ls) (apply max (map cdr per)) (length per)))
+      (list 200 20 10))
+
+;; AND THE TRUNCATION CARRIES BOTH DIMENSIONS. A count of lines alone cannot
+;; say that two blocks matched and showed nothing at all.
+(want "N7b the truncated clause names the lines omitted and the blocks unseen"
+      (let* ((r (run d7b "grep" "frobwick" "--wire"))
+             (answer (car (lines-of r)))
+             (t (assq 'truncated (cdr answer))))
+        (list (car r) t))
+      (list 0 '(truncated (lines 172) (blocks 2))))
+
+(want "N7b TWIN: --all removes both caps and the clause with them"
+      (let* ((r (run d7b "grep" "frobwick" "--all" "--wire"))
+             (answer (car (lines-of r))))
+        (list (car r) (and (assq 'truncated (cdr answer)) #t)))
+      (list 0 #f))
+
+(printf "\n== N7c: what --wire adds, and what it does not ==\n")
+;; NEVER: `coverage` IS THE STATE OF AN INDEX THE ANSWER CONSULTED, so grep
+;; does not get one. It reads the text of every live block and consults no
+;; index; `(defs absent)` would be true as English and wrong as a reading --
+;; a constant clause that points a caller at something playing no part in
+;; the answer. `scanned` is grep's answer to the same question.
+;;
+;; Somebody will add it back for the sake of one shape for all three verbs.
+;; This pair is what says no, and the comment above says why.
+(want "N7c grep's empty answer carries cut and scanned, and NO coverage"
+      (let* ((r (run d7 "grep" "zzznotpresent" "--wire"))
+             (answer (car (lines-of r)))
+             (has (lambda (k) (and (assq k (cdr answer)) #t))))
+        (list (has 'items) (has 'cut) (has 'scanned) (has 'coverage)))
+      (list #t #t #t #f))
+
+(want "N7c TWIN: search's empty answer DOES carry coverage, which is the contrast"
+      (let* ((r (run d7 "search" "zzznotpresent" "--wire"))
+             (answer (car (lines-of r)))
+             (has (lambda (k) (and (assq k (cdr answer)) #t))))
+        (list (has 'items) (has 'cut) (has 'scanned) (has 'coverage)))
+      (list #t #t #t #t))
+
+;; AND THE CLAUSES ARE EXACT, not merely present.
+(want "N7c the scanned clause says how many blocks and which fields"
+      (let* ((r (run d7 "grep" "zzznotpresent" "--wire"))
+             (answer (car (lines-of r))))
+        (assq 'scanned (cdr answer)))
+      '(scanned (blocks 2) (fields (src doc body))))
+
+;; NEVER: AND NONE OF THIS REACHES A PERSON. The human rendering of an items
+;; answer writes the items and drops every other clause, which is what keeps
+;; the zero-output contract true while the machine reading gains clauses.
+(want "N7c TWIN: none of those clauses appear without --wire"
+      (begin (run d7 "grep" "quenchel")
+             (list (holds? (text-of out-path) "scanned")
+                   (holds? (text-of out-path) "cut")))
+      (list #f #f))
+
+(printf "\n== N7e: the three verbs count the same blocks ==\n")
+;; NEVER: ONE CLAUSE NAME, ONE DEFINITION -- AND FOR A WHILE IT HAD THREE.
+;;
+;; `scanned (blocks n)` was written three times. `grep` counted the blocks it
+;; walked, taken from the outline; `search` and `whereis` reported
+;; `(length (state-datum state))`, which counts TOMBSTONES -- so a store
+;; whose only block had been deleted answered `(scanned (blocks 1))` with no
+;; live block left in it.
+;;
+;; A reader of any ONE of those answers sees nothing wrong. The number is
+;; plausible, it is near the size of the store, and nothing in that answer
+;; says which of the two things it means. It takes two verbs side by side,
+;; over one store, to see it -- which is why this row asks all three at once
+;; and why it could not have been a row about `search`.
+;;
+;; The blocks a verb looked at are the blocks that exist. `whereis` reads an
+;; index, and that index is itself built from `state-outline`, so the blocks
+;; it covers are the live ones too.
+(define d7e (fresh-store!))
+(init! d7e)
+(define src7e (string-append scratch "/src7e"))
+(system (string-append "rm -rf " src7e "; mkdir -p " src7e))
+(put! (string-append src7e "/p.sc")
+      (string->utf8 ";; a heading\n(define (gnarlwick x)\n  x)\n"))
+(run d7e "import-code" src7e)
+(define dead7e (insert! d7e "--title" "a block that will be deleted"))
+(run d7e "del" dead7e)
+
+(define (scanned-blocks-of . args)
+  (let* ((r (apply run d7e (append args '("--wire"))))
+         (answer (car (lines-of r)))
+         (c (and (pair? answer) (assq 'scanned (cdr answer)))))
+    (if c (cadr (assq 'blocks (cdr c))) (list 'NO-SCANNED-CLAUSE answer))))
+
+(define live7e (length (lines-of (run d7e "outline"))))
+
+;; CONTROL: THE STORE REALLY HOLDS A TOMBSTONE. Without one, a count of
+;; records and a count of live blocks are the same number and the row below
+;; cannot tell the two apart.
+;;
+;; The first version of this control asked that `read` on the deleted block
+;; EXIT NON-ZERO, and it does not: reading a deleted block succeeds and
+;; answers `(deleted . #t)`. That is the better reading anyway -- it says the
+;; record is still there, which is exactly what a tombstone is, where a
+;; refusal would only have said the block is gone.
+(want "N7e CONTROL: the store holds a tombstone, so records and live blocks differ"
+      (let ((r (run d7e "read" dead7e)))
+        (list (> live7e 0)
+              (car r)
+              (holds? (text-of out-path) "(deleted . #t)")
+              (holds? (text-of out-path) "(deleted . #f)")))
+      (list #t 0 #t #f))
+
+(want "N7e all three verbs report the same number of blocks, and it is the live count"
+      (let ((s (scanned-blocks-of "search" "zzznotpresent"))
+            (g (scanned-blocks-of "grep" "zzznotpresent"))
+            (w (scanned-blocks-of "whereis" "gnarlwick")))
+        (list s g w (and (equal? s g) (equal? g w) (equal? s live7e))))
+      (list live7e live7e live7e #t))
+
+;; TWIN: AND THE NUMBER IS NOT SIMPLY ZERO OR CONSTANT. A build that reported
+;; 0 everywhere, or the same figure whatever the store, would satisfy the row
+;; above perfectly.
+(want "N7e TWIN: the number follows the store, and is not a constant"
+      (let* ((before (scanned-blocks-of "grep" "zzznotpresent"))
+             (extra (insert! d7e "--title" "one more block"))
+             (after (scanned-blocks-of "grep" "zzznotpresent")))
+        (list (> before 0) (= after (+ before 1))))
+      (list #t #t))
+
+(printf "\n== N7d: --under limits the answer to a subtree ==\n")
+(want "N7d CONTROL: the file block has a child, and the whole store has both"
+      (let ((rows (lines-of (run d7 "outline"))))
+        (> (length rows) 1))
+      #t)
+
+(want "N7d --under answers only about the block given and what is under it"
+      (let* ((all-ids (map cadr (lines-of (run d7 "grep" "quenchel"))))
+             (one (car all-ids))
+             (under (map cadr (lines-of (run d7 "grep" "quenchel" "--under" one)))))
+        (list (> (length all-ids) 0)
+              (for-all (lambda (id) (string=? id one)) under)))
+      (list #t #t))
+
+;; NEVER: AND THE OPTION HAS TO BE GIVEABLE. `--under` was declared in the
+;; usage form and nowhere else, and the parser reads a token as an option
+;; only if it appears in its own tables -- so `grep <pattern> --under <id>`
+;; arrived as three positionals and was refused for its arity. The option
+;; was advertised and could not be given. `describe.sc`'s DS-3b now asks
+;; that of every option of every verb; this row is the one that noticed.
+(want "N7d TWIN: giving --under is not a usage error"
+      (let ((r (run d7 "grep" "quenchel" "--under" "nosuch.1")))
+        (list (car r) (length (lines-of r))))
+      (list 0 0))
+
 (printf "\n== N3: log lists what was applied, in delivery order ==\n")
 ;; ONLY THE RECORDS THE INTENT NAMES. Two near misses are the point of
 ;; this section: a record whose DEPS name a block has not touched it, and

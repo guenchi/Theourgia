@@ -23,7 +23,7 @@
           prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
-          store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
+          store-check store-adopt! store-search store-search-report store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
           request-verdict)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
@@ -1257,7 +1257,17 @@
         ((string? (cdr e)) (list (cdr e)))
         (else (list (datum-spelling (cdr e)))))))
 
-  (define (store-search store query)
+  ;; -> the hits, or with a second argument, a report about the scan.
+  ;;
+  ;; TWO SHAPES, AND THE DEFAULT ONE IS THE OLD ONE. `store-search` answers
+  ;; a list of hits and is called that way from several fixtures; a verb
+  ;; that also wants to say what was looked at asks for the report instead.
+  ;; Changing the single return into a report would have made every caller
+  ;; read one field to get what it already had.
+  (define (store-search-report store query)
+    (store-search store query #t))
+
+  (define (store-search store query . rest)
     (let* ((state (open-and-reduce store))
            ;; NEVER: THE QUERY IS PREPARED BEFORE IT IS SPLIT, NOT AFTER.
            ;; `tokens-of` cuts on whitespace, and `prepare` WRITES whitespace
@@ -1287,7 +1297,15 @@
                              (state-outline state))
                    t)))
       (if (null? tokens)
-          (prepared-end! (quote ()))
+          (let ((none (prepared-end! (quote ()))))
+            (if (and (pair? rest) (car rest))
+                (list (cons (quote items) none)
+                      ;; An empty query looks at nothing.
+                      (cons (quote scanned-blocks) 0)
+                      (cons (quote fields) (quote (title keywords src names doc body)))
+                      (cons (quote cut) (reduce-applied-cut state))
+                      (cons (quote defs-built) (and (defs-index state) #t)))
+                none))
           (let ((hits
                   (let loop ((ds (state-datum state)) (out (quote ())))
                     (if (null? ds)
@@ -1413,12 +1431,160 @@
                                                   tokens))
                                           out)
                                     out)))))))
-            (prepared-end!
-              (list-sort (lambda (a b)
-                           (if (= (cadr a) (cadr b))
-                               (string<? (car a) (car b))
-                               (> (cadr a) (cadr b))))
-                         hits))))))
+            (let ((sorted (prepared-end!
+                            (list-sort (lambda (a b)
+                                         (if (= (cadr a) (cadr b))
+                                             (string<? (car a) (car b))
+                                             (> (cadr a) (cadr b))))
+                                       hits))))
+              (if (and (pair? rest) (car rest))
+                  (list (cons (quote items) sorted)
+                        ;; LIVE BLOCKS, NOT RECORDS. `state-datum` lists
+                        ;; tombstones and this loop walks them, skipping each
+                        ;; one; `state-outline` is the set of blocks that
+                        ;; exist. Reporting the walk's length made `scanned`
+                        ;; mean something different here than it means for
+                        ;; `grep`, which counts what it looked at -- one
+                        ;; clause name with two definitions, in a batch spent
+                        ;; taking exactly that apart. Measured: delete the
+                        ;; only block in a store and search answers
+                        ;; `(scanned (blocks 1))` with no live block left.
+                        (cons (quote scanned-blocks) (length (state-outline state)))
+                        (cons (quote fields) (quote (title keywords src names doc body)))
+                        (cons (quote cut) (reduce-applied-cut state))
+                        ;; The definitions index is what `whereis` and the
+                        ;; name tier read. Whether it was BUILT for this
+                        ;; answer is the fact `coverage` reports.
+                        (cons (quote defs-built) (and (defs-index state) #t)))
+                  sorted))))))
+
+  ;; ---- grep: lines, where search answers with blocks ----------------------
+  ;;
+  ;; `search` answers the question "which blocks are about this", scored and
+  ;; ranked. `grep` answers "which lines say this", literally and in order.
+  ;; They are different questions and they carry different item tags, which
+  ;; is a rule the facade gate now keeps: a reader that keys on the tag must
+  ;; not be able to take one for the other.
+  ;;
+  ;; LITERAL, NOT A PATTERN LANGUAGE. A `.` matches a dot. There is no
+  ;; regular expression here and no plan for one: a pattern language is a
+  ;; second language inside this one, and the fixtures pin the literal rule
+  ;; with a row that greps for `.` and gets only the lines that contain one.
+  ;;
+  ;; TWO CAPS, AND BOTH OF THEM WERE MEASURED RATHER THAN CHOSEN.
+  ;;
+  ;; Counting matching lines over the two corpora this store is verified
+  ;; against: in the prose arm (3531 blocks) a query for an ordinary word
+  ;; matches tens of thousands of lines spread thin -- `the` gives 31614
+  ;; lines over 3135 blocks, a median of 7 per block and at most 49. In the
+  ;; code arm (86 blocks) the same total arrives concentrated: `let` gives
+  ;; 1996 lines over 39 blocks with 418 of them in ONE block.
+  ;;
+  ;; So a total cap alone is the wrong instrument: on the code arm the
+  ;; largest block would spend the whole budget and the other 38 files would
+  ;; not appear at all, while the answer said only that some lines were
+  ;; dropped. The per-block cap is what stops one block starving the rest.
+  ;;
+  ;; 20 is the per-block cap because the medians measured above -- 17 in the
+  ;; code arm, 2 to 7 in the prose arm -- are shown whole. 200 is the total,
+  ;; so at least ten blocks reach the reader whatever else is true.
+  (define grep-block-limit 20)
+  (define grep-line-limit 200)
+
+  ;; THE TEXT OF A BLOCK, IN A FIXED ORDER, and the order matters only for a
+  ;; case that does not yet occur: measured over both corpora, no block
+  ;; carries more than one of these fields -- 0 of 3531 and 0 of 86 hold
+  ;; both `src` and `doc`, and none holds `body`. A line number is the nth
+  ;; line of this sequence, so the order is written down now rather than
+  ;; discovered later by whoever first writes two of them.
+  (define (grep-text-of state live id)
+    (let ((stored (lambda (name)
+                    (let ((b (state-read state id)))
+                      (if b (field-strings b name) (quote ())))))
+          (derived (lambda (name) (derived-strings state live id name))))
+      (append (stored (quote src))
+              (derived (quote doc))
+              (derived (quote body)))))
+
+  ;; -> AN ALIST, NOT A TUPLE. The caller reads `items`, `omitted-lines`,
+  ;; `unseen-blocks`, `scanned-blocks`, `fields` and `cut` by name. A tuple
+  ;; would mean every later addition either moves a position or adds one
+  ;; more thing to count, and the reason is the same one that made
+  ;; `(truncated (lines n) (blocks m))` carry names rather than a bare
+  ;; integer: a value that is identified by where it sits can only be read
+  ;; by something that already knows the shape.
+  ;;
+  ;; An item is `(id line-number text)`. A block that matched but shows no
+  ;; line at all is counted in `unseen-blocks`, which is the dimension a
+  ;; count of lines cannot carry.
+  (define (store-grep store pattern under all?)
+    (let* ((state (open-and-reduce store))
+           (rows (state-outline state))
+           (live (let ((t (make-hashtable string-hash string=?)))
+                   (for-each (lambda (r) (hashtable-set! t (caddr r) #t)) rows)
+                   t))
+           ;; THE ORDER IS THE OUTLINE'S, so two runs over one store answer
+           ;; in the same order and a truncated answer is a prefix of the
+           ;; whole one rather than an arbitrary sample.
+           (ids (map caddr rows))
+           (wanted (if under (subtree-ids rows under) #f))
+           (q (fold-preserving (prepare pattern))))
+      (define (report items omitted unseen scanned)
+        (list (cons (quote items) items)
+              (cons (quote omitted-lines) omitted)
+              (cons (quote unseen-blocks) unseen)
+              (cons (quote scanned-blocks) scanned)
+              (cons (quote fields) (quote (src doc body)))
+              (cons (quote cut) (reduce-applied-cut state))))
+      (if (= 0 (string-length q))
+          (report (quote ()) 0 0 0)
+          (let loop ((l ids) (out (quote ())) (shown 0) (omitted 0) (unseen 0) (scanned 0))
+            (cond
+              ((null? l) (report (reverse out) omitted unseen scanned))
+              ((and wanted (not (hashtable-ref wanted (car l) #f)))
+               (loop (cdr l) out shown omitted unseen scanned))
+              (else
+                (let* ((id (car l))
+                       (lines (apply append
+                                     (map lines-of-text (grep-text-of state live id))))
+                       (matching
+                         (let scan ((ls lines) (n 1) (acc (quote ())))
+                           (cond
+                             ((null? ls) (reverse acc))
+                             ((substring-at? (fold-preserving (prepare (car ls))) q)
+                              (scan (cdr ls) (+ n 1) (cons (list id n (car ls)) acc)))
+                             (else (scan (cdr ls) (+ n 1) acc)))))
+                       (count (length matching))
+                       (room (if all? count (max 0 (- grep-line-limit shown))))
+                       (take-n (if all? count (min count grep-block-limit room)))
+                       (taken (let cut ((m matching) (k take-n) (acc (quote ())))
+                                (if (or (null? m) (= k 0))
+                                    (reverse acc)
+                                    (cut (cdr m) (- k 1) (cons (car m) acc))))))
+                  (loop (cdr l)
+                        (append (reverse taken) out)
+                        (+ shown take-n)
+                        (+ omitted (- count take-n))
+                        (+ unseen (if (and (> count 0) (= take-n 0)) 1 0))
+                        (+ scanned 1)))))))))
+
+  ;; Every id at or below `root-id`, by the outline's parent links. A block
+  ;; that is its own ancestor cannot happen here -- the outline marks a cycle
+  ;; under root rather than placing it -- so this walk terminates.
+  (define (subtree-ids rows root-id)
+    (let ((children (make-hashtable string-hash string=?))
+          (out (make-hashtable string-hash string=?)))
+      (for-each (lambda (r)
+                  (let ((p (car r)))
+                    (when (string? p)
+                      (hashtable-set! children p
+                                      (cons (caddr r) (hashtable-ref children p (quote ())))))))
+                rows)
+      (let walk ((id root-id))
+        (unless (hashtable-ref out id #f)
+          (hashtable-set! out id #t)
+          (for-each walk (hashtable-ref children id (quote ())))))
+      out))
 
   (define (known? state id) (and (state-read state id) #t))
   ;; ---- evidence for a request ----------------------------------------------

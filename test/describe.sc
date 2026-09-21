@@ -25,7 +25,9 @@
 ;; verb" is satisfied by a catalogue with one entry in it.
 
 (import (chezscheme)
-        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs verb-catalogue write-protocol))
+        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs verb-catalogue write-protocol)
+        ;; DS-3b asks the parser itself rather than a copy of its tables.
+        (only (theourgia arguments) parse-arguments))
 
 (define bad 0)
 (define rows 0)
@@ -202,6 +204,98 @@
            (loop (cdr es) bad))
           (else (loop (cdr es) (cons (car (car es)) bad)))))
       '())
+
+;; ---- DS-3b the options a usage form declares can actually be given --------
+;;
+;; NEVER: DECLARING AN OPTION IN A USAGE FORM IS NOT DECLARING IT. The
+;; parser reads a token as an option only if it appears in `value-options`
+;; or `flag-options` inside `arguments.sc`; anything else becomes a
+;; positional. So a verb can advertise an option in the text a person is
+;; shown, and answer a usage error when they give it.
+;;
+;; That is not hypothetical. `grep` was written with `["--under" <id>]` in
+;; its usage form and nowhere else, and `grep <pattern> --under <id>`
+;; arrived as three positionals and was refused for its arity. It was found
+;; by RUNNING the verb, not by reading either list -- which is the point:
+;; the usage form and the parser are two lists, and only one of them is
+;; consulted when a command is read.
+;;
+;; THE ROW ASKS THE PARSER, NOT A SECOND COPY OF THE TABLE. `value-options`
+;; and `flag-options` are not exported -- the file that holds them warns in
+;; its own comment that they are "a second place that knows the command
+;; line" -- so a row that restated them would be a third. `parse-arguments`
+;; is exported and is the thing that DECIDES, so the row hands it a command
+;; and looks at what came back.
+;;
+;; That choice is the whole design of this row, and it is written down
+;; because the other way looks more direct: a row either asks the thing that
+;; decides, or it is adding another copy of what that thing knows. Comparing
+;; the usage forms against those two tables would read as a tighter check
+;; and would in fact be a third list to keep in step -- and the first of the
+;; three to drift would be the one nothing runs.
+;;
+;; THE TECHNIQUE WAS ALREADY HERE, in another fixture, and this row did not
+;; invent it: `docs-check.sc`'s DOC-2 asks the same question of the README's
+;; advertised options with the same `parse-arguments` call. What is new is
+;; the SOURCE list -- the usage forms the catalogue hands out, which is what
+;; `describe` shows and what the MCP tool descriptions are built from.
+;;
+;; The two do not make each other redundant, and they would have failed
+;; differently on the defect that prompted this row: `--under` was in the
+;; usage form and not yet in the README, so DOC-2 had nothing to compare and
+;; stayed green. An option that is in both is covered twice, which is fine;
+;; an option in either alone is covered once, which is the point.
+;;
+;; NEVER: AND THIS IS ONE DIRECTION OF THREE. The gate above asks that the
+;; catalogue and the dispatcher agree; this one asks that what a usage form
+;; declares, the parser accepts. The third -- that every option a HANDLER
+;; reads is one the parser accepts -- is still missing, and it needs a
+;; different scan, over the handler bodies rather than over the catalogue.
+;; It is recorded in the queue as B3 and is not done here. Saying so is the
+;; difference between a gap and the impression that this was dealt with.
+(define (usage-options form)
+  ;; `["--md"]` reads as ("--md"), `["--writer" <name>]` as ("--writer" <name>)
+  (let loop ((xs (cdr form)) (out '()))
+    (cond
+      ((not (pair? xs)) (reverse out))
+      ((and (pair? (car xs)) (string? (car (car xs)))
+            (> (string-length (car (car xs))) 2)
+            (string=? "--" (substring (car (car xs)) 0 2)))
+       (loop (cdr xs) (cons (car xs) out)))
+      (else (loop (cdr xs) out)))))
+
+;; -> #f when the parser took it as an option, else a word saying what it did.
+(define (parser-takes? verb decl)
+  (let* ((name (car decl))
+         (valued? (> (length decl) 1))
+         (argv (if valued? (list "subject" name "a-value") (list "subject" name)))
+         (nodes (parse-arguments verb argv)))
+    (cond
+      ((not (list? nodes)) 'refused)
+      ((exists (lambda (n) (and (pair? n) (memq (car n) '(option flag))
+                                (string? (cadr n)) (string=? (cadr n) name)))
+               nodes)
+       #f)
+      (else 'read-as-a-positional))))
+
+(want "DS-3b every option a usage form declares is one the parser will accept"
+      (let loop ((es entries) (bad '()))
+        (cond
+          ((null? es) (reverse bad))
+          (else
+            (let* ((verb (car (car es)))
+                   (form (entry-field (car es) 'usage))
+                   (missed (filter (lambda (d) (parser-takes? verb d))
+                                   (usage-options form))))
+              (loop (cdr es)
+                    (if (null? missed) bad (cons (cons verb (map car missed)) bad)))))))
+      '())
+
+;; CONTROL: the row is looking at something. A run where no usage form
+;; declared any option at all would satisfy it perfectly.
+(want "DS-3b CONTROL: usage forms do declare options, and this many of them"
+      (> (apply + (map (lambda (e) (length (usage-options (entry-field e 'usage)))) entries)) 5)
+      #t)
 
 ;; ---- DS-4 the protocol is the one constant ---------------------------------
 ;;

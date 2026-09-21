@@ -264,6 +264,33 @@
                   (list 'said (text-of (cadr out)))))
         '(#f the-core-refusal)))
 
+;; ---- MC-03b the third route answers with the same items ---------------------
+;;
+;; NEVER: AND NOT BYTE FOR BYTE, BECAUSE IT CANNOT BE. The command line and
+;; the thin client hand back the same bytes and a row elsewhere says so; the
+;; shell wraps the same text in a JSON envelope, so the comparison that can
+;; be made here is that the ITEMS are the ones the core produced -- an id and
+;; a line number in a `match`. Claiming byte-for-byte across an envelope
+;; would be a row that passed by measuring the envelope.
+;;
+;; The payload is required to be non-empty first. Three routes agreeing that
+;; nothing was found is not agreement about anything.
+(let* ((made (talk (list hello ready
+                         (call-tool "theourgia_insert"
+                                    (list "--title" "MCPSEEK" "--text" "a line holding mcpseek")))))
+       (found (talk (list hello ready (call-tool "theourgia_grep" '("mcpseek"))))))
+  (want "MC-03b CONTROL: the block was written through the shell"
+        (if (contains? (text-of (cadr made)) "(ok") 'written
+            (list 'said (text-of (cadr made))))
+        'written)
+
+  (want "MC-03b the shell answers grep with the core's items, id and line number"
+        (let ((t (text-of (cadr found))))
+          (list (contains? t "(match ")
+                (contains? t "mcpseek")
+                (contains? t "(items)")))
+        (list #t #t #f)))
+
 ;; NEVER: AND IT BRANCHES ON THE TRANSPORT'S TAG, NOT ON THE TEXT. A core
 ;; answer whose text happens to READ like a transport failure is still an
 ;; answer -- this one is produced on purpose, and a shell that matched on

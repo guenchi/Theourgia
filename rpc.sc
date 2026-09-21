@@ -124,6 +124,75 @@
   ;; pairs is probably items" -- would classify a block's field alist as
   ;; a list of items the first time someone read a block with two fields.
   (define (items xs) (list 'ok (cons 'items xs)))
+
+  ;; THE CLAUSES A MACHINE READS, AND WHY THE CORE DOES NOT GATE THEM.
+  ;;
+  ;; These appear only under `--wire`, and that is the RENDERER's doing, not
+  ;; a decision taken here. `render-human` for an items answer writes the
+  ;; items and ignores every other clause, so a clause added after `items`
+  ;; is invisible to a person and present for a machine, and the core does
+  ;; not have to know which one is asking.
+  ;;
+  ;; The first version asked `(argument-option options "--wire")` here and
+  ;; emitted nothing: `--wire` is the CLIENT's flag, consumed where the
+  ;; answer is rendered, and a handler never sees it. That reading -- no
+  ;; clauses at all, under either mode -- is what pointed at the renderer.
+  ;;
+  ;; THE ZERO-HIT CONTRACT STILL HOLDS, and it is why this matters: a person
+  ;; who greps for something absent must get no output at all, because the
+  ;; plugin parses that same human text and discards the whole answer on any
+  ;; item it does not recognise. NOTHING ON THAT PATH IS AN ITEM, so nothing
+  ;; here can reach it; the contract is kept by `render-human` and pinned by
+  ;; `cli3.sc`'s row that greps for an absent word and asks for no output.
+  ;;
+  ;; AND THE CORE DOES NOT ASK A SECOND TIME. It would be easy to have the
+  ;; handler check for `--wire` as well, as a belt on top of the braces.
+  ;; That would be a SECOND place answering "is this answer for a machine or
+  ;; for a person", and two places that answer one question are what this
+  ;; batch has spent its length taking apart. The renderer answers it.
+  ;;
+  ;; `cut` says which state was read, `scanned` says how much was looked at
+  ;; and where, and `coverage` -- only when nothing was found -- says
+  ;; whether the absence is a fact about the store or about an index that
+  ;; was not there to be consulted.
+  (define (scan-clauses report empty?)
+    (let ((field (lambda (k) (let ((e (assq k report))) (and e (cdr e))))))
+      (append
+        (list (list 'cut (field 'cut))
+              (list 'scanned
+                    (list 'blocks (field 'scanned-blocks))
+                    (list 'fields (field 'fields))))
+        ;; COVERAGE IS THE STATE OF THE INDEX THIS ANSWER CONSULTED, and a
+        ;; verb that consults none does not get the clause.
+        ;;
+        ;; For `search` and `whereis` it is the whole point: `absent`
+        ;; separates "nothing in this store answers to that" from "there was
+        ;; nothing to consult", and a caller deciding whether to trust an
+        ;; empty answer needs to know which one it got.
+        ;;
+        ;; `grep` answers that same question with `scanned`: `(blocks 0)` is
+        ;; its "there was nothing to look at". A `coverage` clause here would
+        ;; be a constant -- `(defs absent)` on every answer, for ever --
+        ;; and a clause that never varies is noise that gets read as
+        ;; information. It is true as English and wrong as a reading: it
+        ;; points a worried caller at something that plays no part in the
+        ;; answer it is worried about.
+        ;;
+        ;; `grep` reads the text of every live block and nothing else. Giving
+        ;; it `(defs absent)` on a zero-hit answer would be true as English
+        ;; and wrong as a reading: it says an index was not there, when no
+        ;; index was wanted, and a caller deciding whether to trust an empty
+        ;; answer would be told to worry about something that plays no part
+        ;; in it. `scanned` already says what grep looked at.
+        ;;
+        ;; The verbs that DO consult the definitions index say so here, and
+        ;; for them `absent` is the fact that matters: it separates "nothing
+        ;; in this store answers to that" from "nothing could be consulted".
+        (if (and empty? (assq 'defs-built report))
+            (list (list 'coverage
+                        (list 'defs (if (field 'defs-built) 'built 'absent))
+                        (list 'names-from '(datum lexical))))
+            '()))))
   (define (text t) (list 'ok (list 'text t)))
 
   ;; A STORE THAT IS NOT THERE IS ITS OWN ANSWER, decided before anything
@@ -607,6 +676,8 @@
             "List the relations a block takes part in." #f 'daemon)
       (list 'search '(search <query>)
             "Find blocks whose title, keywords or text match every word given." #f 'daemon)
+      (list 'grep '(grep <pattern> ["--under" <id>] ["--all"])
+            "List the lines that contain a pattern, literally." #f 'daemon)
       (list 'whereis '(whereis <name>)
             "Say where a name is defined, and which libraries carry it." #f 'daemon)
       (list 'log '(log [<id>])
@@ -1003,17 +1074,100 @@
                              (found (hashtable-ref index wanted '()))
                              (defs (filter (lambda (r) (eq? (car r) 'def)) found))
                              (exports (filter (lambda (r) (eq? (car r) 'export)) found)))
+                        ;; NEVER: `whereis` HAS NO EMPTY ANSWER, so there is
+                        ;; nowhere for `coverage` to go.
+                        ;;
+                        ;; A name it cannot place is an ERROR carrying the
+                        ;; nearest names, not an `items` answer with nothing
+                        ;; in it -- so the clause that would say whether the
+                        ;; index was there has no answer to be a clause of.
+                        ;; Appending one to the error would change the shape
+                        ;; of a refusal that callers already match on, to
+                        ;; carry a fact the refusal itself implies: the index
+                        ;; was consulted, because `nearest` came out of it.
+                        ;;
+                        ;; So the found answer carries `cut` and `scanned`
+                        ;; like the others, and the refusal is left alone.
+                        ;; This is written down because "all three verbs get
+                        ;; the same three clauses" is the obvious reading of
+                        ;; the rule, and it is not what the verbs can do.
                         (if (null? found)
                             (list 'error 'unknown-name (string->symbol wanted)
                                   (cons 'nearest (nearest-names index wanted)))
-                            (items (append defs exports)))))))))
+                            (append
+                              (items (append defs exports))
+                              (scan-clauses
+                                (list (cons 'cut (reduce-applied-cut state))
+                                      ;; LIVE BLOCKS, for the same reason as
+                                      ;; `search`: `state-datum` counts
+                                      ;; tombstones, and the index this verb
+                                      ;; reads is itself built from
+                                      ;; `state-outline`, so the blocks it
+                                      ;; covers are the live ones.
+                                      (cons 'scanned-blocks (length (state-outline state)))
+                                      (cons 'fields '(names exports)))
+                                #f)))))))))
       (cons 'search
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(search <query>))
                   (guarded (lambda ()
-                             (items (map (lambda (hit) (cons 'hit hit))
-                                         (store-search store (car args)))))))))
+                             (let* ((r (store-search-report store (car args)))
+                                    (hits (cdr (assq 'items r))))
+                               (append (items (map (lambda (hit) (cons 'hit hit)) hits))
+                                       (scan-clauses r (null? hits)))))))))
+      ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
+      ;; THING THAT SAYS SO. A grep line and a search hit have the same
+      ;; arity and the same types in the same places -- an id, an integer, a
+      ;; string -- so a reader that checks shape cannot tell them apart. The
+      ;; plugin's `hitsOf` keys on the tag `hit` and checks only that the
+      ;; entry has at least four elements with a string second and an
+      ;; integer third, which a grep line satisfies exactly; under one tag it
+      ;; would read line numbers as scores and say nothing was wrong.
+      ;;
+      ;; The defence is here, in what this file names things, and not in the
+      ;; reader: a consumer's accepting shape is usually wider than the shape
+      ;; it was written against, so two answers a protocol reader would never
+      ;; confuse can still be indistinguishable to code. `facade-gate.sc`
+      ;; keeps the rule that no two verbs answer with one tag.
+      (cons 'grep
+            (lambda (store actor args req options state writer cwd)
+              (let ((under (argument-option options "--under"))
+                    (all? (and (argument-option options "--all") #t)))
+                (if (not (= 1 (length args)))
+                    (usage '(grep <pattern> ["--under" <id>] ["--all"]))
+                    (guarded
+                      (lambda ()
+                        (let* ((r (store-grep store (car args) under all?))
+                               (field (lambda (k) (cdr (assq k r))))
+                               (lines (field 'items))
+                               (omitted (field 'omitted-lines))
+                               (unseen (field 'unseen-blocks))
+                               ;; THE TAG IS BUILT WHERE THE ITEMS CLAUSE IS.
+                               ;; It was built in a binding above this line at
+                               ;; first, and the facade gate's census -- which
+                               ;; reads the tag of each item constructed under
+                               ;; an `items` form -- could not see it, so the
+                               ;; verb was missing from the table of which
+                               ;; verb answers with which tag. One call, and
+                               ;; the tag is in it.
+                               (answer (items (map (lambda (m) (cons 'match m)) lines))))
+                          (if (and (= omitted 0) (= unseen 0))
+                              (append answer (scan-clauses r (null? lines)))
+                              ;; THE TRUNCATION CARRIES BOTH DIMENSIONS, and
+                              ;; each is named. A bare integer after a clause
+                              ;; name means whatever the verb decides it
+                              ;; means, and a consumer reads clauses by name:
+                              ;; `(lines n)` and `(blocks m)` can be asked for
+                              ;; without knowing which verb answered. `blocks`
+                              ;; is the count of blocks that matched and show
+                              ;; no line at all, which a count of lines cannot
+                              ;; express.
+                              (append answer
+                                      (list (list 'truncated
+                                                  (list 'lines omitted)
+                                                  (list 'blocks unseen)))
+                                      (scan-clauses r (null? lines)))))))))))
       (cons 'log
             (lambda (store actor args req options state writer cwd)
               (if (not (or (null? args) (= 1 (length args))))

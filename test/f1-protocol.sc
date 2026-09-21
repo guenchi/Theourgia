@@ -164,6 +164,40 @@
           (list 'said (if tools-line (substring tools-line 0 (min 120 (string-length tools-line))) #f)))
       'listed)
 
+;; EVERY VERB IS OFFERED, EXCEPT THE ONE THAT CANNOT BE, and the list of
+;; verbs comes from the catalogue rather than being written here. A row that
+;; named one new verb would have to be edited for the next one, and the verb
+;; after that would be offered by nobody's row -- which is how a verb could
+;; arrive with a catalogue entry, a README section and no tool.
+;;
+;; `init` is the exception and it is named rather than filtered out of sight.
+;; It is what CREATES a store, so there is no daemon for the shell to send it
+;; to; the shell once offered it, sent it to a daemon for a store that did
+;; not exist, and the daemon could not start. The route field in the
+;; catalogue says `local` for it, and the shell has no local route.
+;;
+;; Written as a list of one rather than as a `route` test on purpose: if a
+;; second verb ever cannot be offered, somebody has to come here and say why.
+(define not-offered-by-the-shell '(init))
+
+(want "MC-P1 every verb in the catalogue is offered as a tool, except init"
+      (let loop ((es (verb-catalogue)) (missing '()))
+        (cond
+          ((null? es) (reverse missing))
+          ((memq (car (car es)) not-offered-by-the-shell) (loop (cdr es) missing))
+          ((and tools-line
+                (contains? tools-line
+                           (string-append "theourgia_" (symbol->string (car (car es))))))
+           (loop (cdr es) missing))
+          (else (loop (cdr es) (cons (car (car es)) missing)))))
+      '())
+
+;; CONTROL: the exception is a real one. If `init` were offered after all,
+;; the list above would be excusing something that does not need excusing.
+(want "MC-P1 CONTROL: and init really is absent from the listing"
+      (and tools-line (contains? tools-line "theourgia_init"))
+      #f)
+
 ;; NEVER: THE VERB'S SENTENCE COMES FROM THE SERVER, NOT FROM A LITERAL HERE.
 ;; This used to pin the string "Execute the core insert command" -- the
 ;; generic sentence the shell built for every verb, which said nothing

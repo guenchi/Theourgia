@@ -200,6 +200,44 @@
 ;; NOTE: THE ROW IS "IT DID NOT USE THE DAEMON", not "the answer was right":
 ;; the two routes give the same answer on purpose, so the answer cannot
 ;; tell them apart. The daemon says who it served, in its trace.
+;; ---- P-4b the same answer for a verb whose payload is not a list of names
+;;
+;; NEVER: TWO ROUTES AGREEING ON NOTHING IS NOT AGREEMENT. The rows above
+;; compare an outline, which this store has. A verb that answered nothing at
+;; all through both routes would satisfy any byte-for-byte row perfectly, so
+;; this pair asks for a payload first and compares second: the answer must
+;; carry an id and a line number before the comparison is worth making.
+;;
+;; `grep` is the verb chosen because its items were added after the client
+;; existed, and because its answer carries a number in a position where
+;; `search` carries a score -- the shape the two routes could most easily
+;; disagree about without either looking wrong.
+(let ((made (client "" (string-append "insert --title SEEKME --text \"a line holding seekme\" --store "
+                                      store " --wire"))))
+  (want "P-4b CONTROL: the block was written, so there is something to find"
+        (if (contains? (out-of made) "(ok") 'written (list 'said (out-of made)))
+        'written))
+
+(let ((a (out-of (client "" (string-append "grep seekme --store " store " --wire"))))
+      (b (out-of (server "" (string-append "grep seekme --store " store " --wire")))))
+
+  (want "P-4b CONTROL: the payload is not empty, and carries an id and a line number"
+        (list (contains? a "(match ")
+              (contains? a "(items)"))
+        (list #t #f))
+
+  (want "P-4b the client's bytes are the server's for grep, in wire mode"
+        (if (string=? a b) 'byte-for-byte (list 'client a 'server b))
+        'byte-for-byte))
+
+(let ((a (out-of (client "" (string-append "grep seekme --store " store))))
+      (b (out-of (server "" (string-append "grep seekme --store " store)))))
+  (want "P-4b and in human mode, where the clauses are dropped and the lines are not"
+        (list (if (string=? a b) 'byte-for-byte (list 'client a 'server b))
+              (contains? a "(match ")
+              (contains? a "scanned"))
+        (list 'byte-for-byte #t #f)))
+
 (define dispatch-log (string-append here "/dispatch.txt"))
 
 ;; NEVER: THE LOG IS WHERE THE CLIENT PUT IT, which is under the run root and
@@ -266,9 +304,21 @@
 ;; NEVER: AND IT REALLY WAS THE SEARCH TERM. Without this, the row above is
 ;; also passed by a client that dropped the argument entirely and matched
 ;; on something else.
+;; NEVER: THIS ASKS ABOUT THE ITEMS, NOT ABOUT THE WHOLE ANSWER. It used to
+;; look for the text `(ok (items))` -- the entire answer, spelled out -- and
+;; went red the day `search` began carrying `cut`, `scanned` and `coverage`
+;; beside its items. Nothing about what this row is for had changed: it
+;; wants to know that the search after the separator found nothing.
+;;
+;; A row that pins a whole answer is red for every addition to it, and the
+;; reading it gives names the clause that was added rather than the thing
+;; that broke.
 (want "P-6 TWIN: a different literal after the separator finds nothing"
       (let ((r (client "" (string-append "search --store " store " --wire -- --nosuchthing"))))
-        (if (contains? (out-of r) "(ok (items))") 'no-hits (list 'said (out-of r))))
+        (if (and (contains? (out-of r) "(ok (items)")
+                 (not (contains? (out-of r) "(hit ")))
+            'no-hits
+            (list 'said (out-of r))))
       'no-hits)
 
 ;; NEVER: AND ROUTING BEFORE THE SEPARATOR STILL ROUTES. A scanner that

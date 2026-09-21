@@ -411,6 +411,226 @@
       (list-sort (lambda (a b) (string<? (car a) (car b))) view-read-hits)
       '(("code-project.sc" . 1) ("rpc.sc" . 3) ("store.sc" . 1)))
 
+;; ---- S-B2b no two places construct the same item tag ----------------------
+;;
+;; WHY A TAG IS LOAD-BEARING. An answer's items carry a tag and the tag is
+;; the only thing that says which question was asked. `search` answers
+;; `(hit <id> <score> <snippet>)` and `grep` answers
+;; `(match <id> <line> <text>)`: same arity, same types in the same places.
+;; The plugin's reader keys on the tag and then checks only that an entry has
+;; at least four elements with a string second and an integer third -- which
+;; both satisfy. Under one tag it would read line numbers as scores and
+;; report nothing wrong. It should not be asked to invent a rule about the
+;; range of a score to tell them apart: a consumer's accepting shape is
+;; usually wider than the shape it was written against, so the defence
+;; belongs in what the core names things.
+;;
+;; THE DIMENSION IS THE PLACE THAT CONSTRUCTS THE TAG, NOT THE VERB THAT
+;; ANSWERS WITH IT, and the title says so because the two are not the same.
+;; A tag built in `store.sc` reaches an answer because some handler passes a
+;; function's result to `items`, and that link is a data flow across two
+;; files. This walk cannot follow it, and a census that guessed the
+;; attribution would read as though it had checked it. So the pairs are
+;; (where it is built . tag): a verb name for the handlers that build their
+;; own, a function name for the rest.
+;;
+;; WHAT IT WALKS. Every `(items X)` in `rpc.sc`. X comes in three shapes: a
+;; literal construction, a call to a named function, or a variable bound in
+;; the same handler to such a call. The first gives the tag directly; the
+;; other two are followed into `store.sc`. A site that fits none of them is
+;; reported by name -- see the row below -- rather than passed over, because
+;; a scope nobody measured is the thing this file exists to avoid.
+;; Every function `store.sc` defines, so the walk follows only names it can
+;; actually read the body of.
+(define store-forms
+  (let walk ((fs (read-forms (string-append root "/store.sc"))) (acc '()))
+    (cond ((null? fs) acc)
+          ((and (pair? (car fs)) (eq? (car (car fs)) 'library))
+           (walk (cdr fs) (append acc (cdr (car fs)))))
+          (else (walk (cdr fs) (append acc (list (car fs))))))))
+
+(define store-defines
+  (let loop ((fs store-forms) (out '()))
+    (cond ((null? fs) out)
+          ((and (pair? (car fs)) (eq? (car (car fs)) 'define)
+                (pair? (cdr (car fs))) (pair? (cadr (car fs))))
+           (loop (cdr fs) (cons (car (cadr (car fs))) out)))
+          (else (loop (cdr fs) out)))))
+
+(define (items-call? f) (and (pair? f) (eq? (car f) 'items)))
+
+(define (literal-tag f)
+  (and (pair? f) (memq (car f) '(cons list))
+       (pair? (cdr f))
+       (let ((a (cadr f)))
+         (and (pair? a) (eq? (car a) 'quote) (pair? (cdr a)) (symbol? (cadr a)) (cadr a)))))
+
+(define (verb-of f)
+  (and (pair? f) (eq? (car f) 'cons) (pair? (cdr f)) (pair? (cddr f))
+       (let ((a (cadr f)) (b (caddr f)))
+         (and (pair? a) (eq? (car a) 'quote) (pair? (cdr a)) (symbol? (cadr a))
+              (pair? b) (eq? (car b) 'lambda)
+              (cadr a)))))
+
+;; The outermost literal tags in a form, not descending past one that is found.
+(define (outermost-tags f)
+  (let walk ((x f) (out '()))
+    (cond
+      ((not (pair? x)) out)
+      ((literal-tag x) => (lambda (t) (if (memq t out) out (cons t out))))
+      (else (let loop ((l x) (acc out))
+              (cond ((pair? l) (loop (cdr l) (walk (car l) acc)))
+                    (else acc)))))))
+
+;; Every (name (f ...)) binding anywhere in a form, so `(items (cadr a))`
+;; can be followed back to the call that produced `a`.
+(define (bindings-in f)
+  (let walk ((x f) (out '()))
+    (cond
+      ((not (pair? x)) out)
+      ((and (pair? (car x)) (symbol? (car (car x)))
+            (pair? (cdr (car x))) (pair? (car (cdr (car x))))
+            (symbol? (car (car (cdr (car x))))))
+       (let ((acc (cons (cons (car (car x)) (car (car (cdr (car x))))) out)))
+         (let loop ((l x) (a acc))
+           (cond ((pair? l) (loop (cdr l) (walk (car l) a))) (else a)))))
+      (else (let loop ((l x) (acc out))
+              (cond ((pair? l) (loop (cdr l) (walk (car l) acc))) (else acc)))))))
+
+(define (symbols-in f)
+  (let walk ((x f) (out '()))
+    (cond ((symbol? x) (if (memq x out) out (cons x out)))
+          ((pair? x) (let loop ((l x) (acc out))
+                       (cond ((pair? l) (loop (cdr l) (walk (car l) acc))) (else acc))))
+          (else out))))
+
+;; -> (list pairs unresolved), walking rpc.sc
+(define items-scan
+  (let ((pairs '()) (unresolved '()))
+    (define (note! where tag)
+      (let ((k (cons where tag)))
+        (unless (member k pairs) (set! pairs (cons k pairs)))))
+    ;; NEVER: A NAME IS ONLY FOLLOWED IF IT IS A FUNCTION THIS WALK CAN READ.
+    ;;
+    ;; The first version took the head symbol of whatever it found, so
+    ;; `(items (cadr a))` resolved to `cadr` and `read`'s
+    ;; `(items (map (lambda (id) (view-read ...)) ids))` resolved to
+    ;; `view-read`. Both were then "followed" into `store.sc`, found nothing,
+    ;; and contributed no tags -- a resolution that reads as success and
+    ;; produces silence. Two whole verbs' tags went missing that way, and the
+    ;; list looked complete.
+    ;;
+    ;; So a name is followed only when `store.sc` defines it. Anything else
+    ;; is unresolved and is REPORTED, which is the honest answer: the tags are
+    ;; built somewhere this walk does not go.
+    (define (callee-of x binds)
+      (cond
+        ((and (pair? x) (symbol? (car x)) (memq (car x) store-defines)) (car x))
+        ((symbol? x) (let ((e (assq x binds)))
+                       (and e (memq (cdr e) store-defines) (cdr e))))
+        ((pair? x) (let loop ((l (cdr x)))
+                     (cond ((null? l) #f)
+                           ((callee-of (car l) binds) => (lambda (r) r))
+                           (else (loop (cdr l))))))
+        (else #f)))
+    (define (walk f verb binds)
+      (when (pair? f)
+        (let* ((v (or (verb-of f) verb))
+               (b (append (bindings-in f) binds)))
+          (when (and (items-call? f) v)
+            (let ((tags (outermost-tags (cdr f))))
+              (if (pair? tags)
+                  (for-each (lambda (t) (note! v t)) tags)
+                  ;; NOT FOLLOWED INTO ANOTHER FILE. Following the name and
+                  ;; taking the outermost tags of its body takes the wrong
+                  ;; thing: `store-diff` yielded `error`, `from`, `ok` and
+                  ;; `to` -- its own answer envelope -- while the item tags
+                  ;; it really builds are deeper, and `rpc.sc` takes the
+                  ;; SECOND element of what it returns. Getting that right
+                  ;; needs to know which part of a return value becomes the
+                  ;; items, which is a data flow and not a shape.
+                  ;;
+                  ;; A gate that can raise a false alarm is worse than one
+                  ;; with a narrower reach: a false alarm has to be
+                  ;; disproved, a narrow reach is merely uncovered. So the
+                  ;; site is recorded by name and the row below expects it.
+                  (let ((callee (callee-of (cadr f) b)))
+                    (set! unresolved
+                          (cons (cons v (or callee (if (pair? (cadr f)) (car (cadr f)) (cadr f))))
+                                unresolved))))))
+          (let loop ((l f))
+            (cond ((pair? l) (walk (car l) v b) (loop (cdr l))) (else #f))))))
+    (for-each (lambda (form) (walk form #f '())) (read-forms (string-append root "/rpc.sc")))
+    (list pairs unresolved)))
+
+;; The tags each followed function constructs, taken from its definition in
+;; store.sc.
+(define tag-sites
+  (list-sort (lambda (a b) (string<? (symbol->string (cdr a)) (symbol->string (cdr b))))
+             (car items-scan)))
+
+(want "S-B2b these are the item tags and the place each one is constructed in"
+      tag-sites
+      '((log . entry) (search . hit) (grep . match) (refs . ref) (tag . tag)))
+
+;; THE PROPERTY, ASKED SEPARATELY FROM THE LIST. The row above notices any
+;; change at all; this one is the rule.
+;;
+;; NEVER: AND THE RULE IT CHECKS IS NOT QUITE THE PROPERTY WE WANT. What we
+;; want is that no two ANSWERS share a tag. What this checks is that no tag
+;; is constructed in two PLACES. Those are the same only if each place serves
+;; one answer -- and that premise is not checked here. It is written down so
+;; that whoever relies on it does so knowingly, rather than inheriting it.
+(want "S-B2b TWIN: and no tag is constructed in two different places"
+      (let loop ((ps tag-sites) (bad '()))
+        (cond
+          ((null? ps) (reverse bad))
+          (else
+            (let* ((tag (cdr (car ps)))
+                   (places (map car (filter (lambda (q) (eq? (cdr q) tag)) tag-sites))))
+              (loop (cdr ps)
+                    (if (and (> (length places) 1) (not (assq tag bad)))
+                        (cons (cons tag places) bad)
+                        bad))))))
+      '())
+
+;; WHAT THE WALK COULD NOT FOLLOW, as a reading rather than as prose. An
+;; `(items X)` whose X is neither a literal construction nor a call this walk
+;; can name is listed here; its tags are built somewhere this gate does not
+;; look, and saying which sites those are is the difference between a scope
+;; that was measured and a comment that claims one.
+;; THE SITES IT COULD NOT FOLLOW ARE AN EXPECTATION, NOT A PRINT.
+;;
+;; Printing them would say what is uncovered today and nothing at all on the
+;; day a fifth appears. As a row, a new unfollowable site is a red one and
+;; somebody comes to look.
+;;
+;; THE COST OF (A), STATED PLAINLY. The tags built behind these four sites
+;; are not in the table above: `def` and `export` from the definitions index,
+;; `added`, `removed` and `changed` from `store-diff`, and `conflict`,
+;; `orphan`, `nested-document` and `pending` from `store-conflicts`. THOSE
+;; NAMES ARE TAKEN AND THIS GATE WILL NOT SHOUT FOR THEM -- if a verb ever
+;; answers with one of them as well, nothing here notices.
+(want "S-B2b and these are the items sites the walk cannot follow"
+      (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
+                 (cadr items-scan))
+      '((conflicts . store-conflicts) (diff . store-diff) (read . map) (whereis . append)))
+
+;; THE THREE THINGS IT STILL CANNOT SEE, named rather than described as a
+;; class:
+;;
+;;   * a tag constructed in a binding ABOVE the `items` call. I made exactly
+;;     that mistake in this batch -- `grep` built its tag in a `let*` above
+;;     the call, and this census did not list grep at all until it moved.
+;;   * a tag that is a variable, or taken from a table, rather than written
+;;     as a literal symbol.
+;;   * a construction reached through a function call. Those four sites are
+;;     the row above, and what is built behind them is listed there.
+;;
+;; So what this gate sees is that somebody constructed an item literally in
+;; one of the places it walks. It stops the most likely accident, not every
+;; one.
+
 (define done-hits (census builds-done-clause?))
 
 (want "F32 exactly one place in the shipped sources builds the done clause"

@@ -71,6 +71,14 @@
         ;; day here, when a socket path was derived twice and the two
         ;; derivations disagreed about a store that did not exist yet.
         ((serve) '("--log"))
+        ;; NEVER: DECLARING AN OPTION IN THE USAGE FORM IS NOT DECLARING IT
+        ;; HERE. A token is only read as an option if it appears in this list
+        ;; or in `flag-options`; anything else becomes a positional. `grep`
+        ;; was written with `--under` in its usage line and nowhere else, so
+        ;; `grep define --under <id>` arrived as three positionals and was
+        ;; answered with a usage error -- the option was advertised and could
+        ;; not be given.
+        ((grep) '("--under"))
         (else '()))
       (case verb
         ;; NOTE: `--keywords` IS A VALUE OPTION AND ITS VALUE IS TEXT. The
@@ -125,6 +133,9 @@
       ;; is a flag the CLIENT passes and a person does not.
       ((serve) '("--detach"))
       ((outline) '("--with-keywords"))
+      ;; `--all` releases grep's two caps; `--under` takes a block id and is
+      ;; therefore not here.
+      ((grep) '("--all"))
       ((read) '("--md" "--recursive" "--working" "--working-info"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.
