@@ -18,6 +18,7 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
+          defs-index defs-index-build-count defs-index-skipped-count name-bearing-kinds
           store-init! nearest-ids store-snapshot!
           batch-answer
           store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
@@ -52,6 +53,19 @@
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event!)
           (only (theourgia digest) sha256 bytevector->hex)
+          ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
+          ;; `code-project.sc` says it outright: a code block's `name` is
+          ;; derived from its source and is not in the stored fields at all.
+          ;; Search and `whereis` both need those names, so both read the
+          ;; view -- one derivation, two callers. No cycle: `view` imports
+          ;; `reduce`, `languages`, `text-code` and `datum-code`, and never
+          ;; this library.
+          ;;
+          ;; Measured on a store of this tree's own sources, 906 blocks:
+          ;; `view-read` over every block takes 2 ms, the same order as
+          ;; `state-read`. Deriving names is not what makes search cost
+          ;; anything, so nothing is cached for that reason.
+          (only (theourgia view) view-read)
           (theourgia reduce))
 
   ;; WHAT THE REDUCER ANSWERS AND WHAT THE LOAD ASKS ARE NOT THE SAME
@@ -471,14 +485,47 @@
 
   ;; ONLY TEXT IS SEARCHED. A field whose value is not a string is not
   ;; text, and a field in conflict offers every candidate that is.
+  ;; NEVER: A SHAPE IS CHECKED, NOT CAUGHT. A field in conflict is
+  ;; `(conflict ((<value> <writer> <seq>) ...))` and this took the second
+  ;; element and mapped `car` over it -- which raises on anything else, and
+  ;; `set <id> title (conflict)` is accepted by the write path. `store-search`
+  ;; reads titles, srcs and keywords through here, from `state-read`, so a
+  ;; single such field took down every query in the store. It is NOT behind the
+  ;; guarded read: that one covers the view, and this does not go through it.
+  ;;
+  ;; The repair is to test the shape rather than to wrap it in a `guard`, and
+  ;; the difference matters. A raise here would mean "we wrote the branch
+  ;; wrong" just as readily as "the data is odd", and catching it would file
+  ;; both under the same count -- so a real mistake of ours would hide inside a
+  ;; number that is supposed to mean "a block could not be read".
+  ;;
+  ;; For the same reason a field whose shape does not fit contributes NOTHING
+  ;; and is not counted in `defs-index-skipped`: that counter means a BLOCK
+  ;; could not be read, and mixing "this one field looks strange" into it would
+  ;; leave both of its bounds describing nothing.
+  ;;
+  ;; TWO PRODUCERS SHARE THE TAG AND DO NOT SHARE THE SHAPE. `reduce.sc` builds
+  ;; `(conflict (<triple> ...))` for a field, and `(conflict <count>)` for a
+  ;; POSITION. They never meet today -- a position is not a field -- but the
+  ;; count form would have raised here in exactly the same way, and the test
+  ;; below rejects it rather than relying on them staying apart.
+  (define (conflict-candidates value)
+    (and (pair? value)
+         (eq? (car value) (quote conflict))
+         (pair? (cdr value))
+         (let ((cs (cadr value)))
+           (and (list? cs)
+                (for-all pair? cs)
+                cs))))
+
   (define (field-strings block name)
     (let* ((fields (cdr (assq (quote fields) block)))
            (e (assq name fields)))
       (cond
         ((not e) (quote ()))
         ((string? (cdr e)) (list (cdr e)))
-        ((and (pair? (cdr e)) (eq? (car (cdr e)) (quote conflict)))
-         (filter string? (map car (cadr (cdr e)))))
+        ((conflict-candidates (cdr e))
+         => (lambda (cs) (filter string? (map car cs))))
         (else (quote ())))))
 
   (define (any-hit? strings token)
@@ -519,37 +566,454 @@
   ;; its keywords shows them. A snippet drawn from the prose for a
   ;; keyword hit would show a line that does not contain the word the
   ;; caller searched for, which reads as a wrong result.
-  (define (snippet-for block tokens)
-    (let* ((titles (field-strings block (quote title)))
-           (srcs (field-strings block (quote src)))
-           (kws (field-strings block (quote keywords)))
-           (lines (append kws titles
-                          (apply append (map lines-of-text srcs)))))
-      ;; NEVER: THE SNIPPET ASKS THE SAME QUESTION THE SCORE DID. This looked
-      ;; for the token as a raw substring while the score had already found it
-      ;; through normalisation, so a block could be reported as a hit and come
-      ;; back with an EMPTY snippet: measured, `\x6062;\x590d;\x65e7;reaper`
-      ;; scored 3 against a title reading `\x6062;\x590d;\x65e7; reaper
-      ;; \x7684;\x505a;\x6cd5;` and showed the reader nothing, and a query
-      ;; matched by its bigrams did the same. Two rules for one question is
-      ;; how the answer comes to disagree with itself.
-      ;; NEVER: AND THE UNIT THE SNIPPET SEARCHES IS THE UNIT THE SCORE
-      ;; SEARCHED. The score reads a field whole; this reads it line by line,
-      ;; so a query whose bigrams sit on two different lines scored a hit and
-      ;; came back with nothing to show -- the same disagreement as before,
-      ;; one level down. A line is still preferred, because a line is what a
-      ;; reader wants; the whole field is the fallback rather than a blank.
-      (let loop ((ls lines))
+  ;; NEVER: THE SNIPPET LOOKS AT EXACTLY WHAT THE SCORE LOOKED AT. This has
+  ;; now been wrong three times in one batch, each time for the same reason
+  ;; and each time one field further on: the score learned to read a field and
+  ;; the snippet did not, so a block came back with a number and an empty
+  ;; string. The fix that lasts is not another field added here -- it is that
+  ;; the caller hands over the strings it scored, so there is nothing left to
+  ;; forget.
+  ;;
+  ;; The order is preference, not truth: a keyword, then a title, then a line
+  ;; of source, then the names, the doc, and last the printed body -- which is
+  ;; a whole datum and the least readable of them.
+  (define (snippet-for strings tokens)
+    (let loop ((ls strings))
+      (cond
+        ((null? ls) "")
+        ((exists (lambda (tk) (token-tier (car ls) tk)) tokens)
+         (clip (collapse-whitespace (car ls))))
+        (else (loop (cdr ls))))))
+
+  ;; WHICH KINDS CARRY NAMES. Two verbs ask -- the index to decide what to
+  ;; walk, search to decide what may score at the name tier -- so it is defined
+  ;; once and both read it. How it came to be a table, and why the kind census
+  ;; in `facade-gate` counts two rather than three, is written at that row;
+  ;; this is not the place to keep a second copy of that history.
+  ;; NEVER: AND THE TABLE IS THE DISPATCH, NOT A GATE BESIDE IT. The first
+  ;; version of this was a set of kinds plus a `cond` that branched on the same
+  ;; kinds -- the rule said twice, once as data and once as control flow. A
+  ;; mutation that deleted the GATE survived, because the `cond`'s final clause
+  ;; already returned nothing for every other kind: the table was a restatement
+  ;; and nothing could tell whether it was there.
+  ;;
+  ;; A table that IS the dispatch cannot come apart from the branches, because
+  ;; there are no branches: "which kinds have names" and "how their names are
+  ;; read" are the same fact here.
+  ;;
+  ;; NEVER: BUT ADDING A READER IS NOT THE WHOLE OF ADDING A KIND, AND THIS
+  ;; COMMENT SAID IT WAS. The index below still chooses the RECORD a kind
+  ;; produces with its own `eq?` branches, and its final clause is silent -- so
+  ;; a third reader makes `search` score a block at the name tier that
+  ;; `whereis` cannot name, which is the disagreement this table exists to
+  ;; prevent. Measured by a reviewer: a `decision` reader plus a `decision`
+  ;; block gave search 12 and the index no entry at all.
+  ;;
+  ;; Adding a kind is three edits: a reader here, a record branch in the index,
+  ;; and the pinned-keys row in `facade-gate`. That row is the reason this
+  ;; cannot happen silently -- it fails the moment the keys change -- but it
+  ;; asks about the keys, not about the index, so it will not tell you which of
+  ;; the other two you forgot. Making the record shape table-driven as well is
+  ;; the way to close that, and it is deliberately not done here: it reaches
+  ;; further than this round, and belongs with the work that rebuilds the
+  ;; index.
+  (define (read-code-names fld)
+    ;; A datum block carries BOTH the plural `names` and the singular `name`,
+    ;; so reading both put every definition in twice -- measured, `whereis
+    ;; reaper-start` answered with the same def record listed two times. The
+    ;; plural is the complete answer where it exists; the singular is what a
+    ;; TEXT-mode block has instead, and text is what `import-code` writes by
+    ;; default.
+    (let ((plural (names-in (fld (quote names)))))
+      (if (null? plural) (names-in (fld (quote name))) plural)))
+
+  ;; A LIBRARY'S NAMES ARE ITS EXPORTS AND NOTHING ELSE. Its `name` field is
+  ;; the library's own name and it is a LIST of symbols -- `(probe d)` -- so a
+  ;; route that put it through `names-in` scored each component as a defined
+  ;; name: measured, `search probe` answered `(hit "..." 12 "probe")`, the top
+  ;; of the scale, about a library that defines nothing of the sort, while
+  ;; `whereis probe` correctly said the name was unknown.
+  (define (read-library-names fld)
+    (names-in (fld (quote exports))))
+
+  (define name-readers
+    (list (cons (quote code) read-code-names)
+          (cons (quote library) read-library-names)))
+  (define name-bearing-kinds (map car name-readers))
+
+  ;; THE NAMES A BLOCK HAS, IN ONE FUNCTION, BECAUSE TWO VERBS ASK IT.
+  ;;
+  ;; NEVER: A GUARD PROTECTS THE DOOR THAT HOLDS IT, NOT THE PARSER IT WRAPS.
+  ;; The index used to carry the per-block guard and the kind rules itself, and
+  ;; `store-search` reached the same parser by a second route with neither.
+  ;; Measured on the store this tree's own N4g fixture builds -- one library
+  ;; whose export list has a rename clause with an improper tail:
+  ;;
+  ;;     whereis kept -> (def "..." (library (probe broken)) (name kept) ...)
+  ;;     search  kept -> (error internal (condition "~s is not a proper list"))
+  ;;     search  x    -> (error internal (condition "~s is not a proper list"))
+  ;;
+  ;; ONE unreadable block took down EVERY query in that store, while the verb
+  ;; with the guard was unharmed. Three times in one round a hazard turned out
+  ;; to have a second entrance -- tombstones, then which kinds have names, then
+  ;; this -- and each time the repair was made at the door that had been
+  ;; noticed. So the rule and the guard live here, both verbs come through, and
+  ;; the second door does not exist to be forgotten.
+  ;;
+  ;; A LIBRARY'S NAMES ARE ITS EXPORTS AND NOTHING ELSE. Its `name` field is
+  ;; the library's own name and it is a LIST of symbols -- `(probe d)` -- so a
+  ;; route that put it through `names-in` scored each component as a defined
+  ;; name: measured, `search probe` answered `(hit "..." 12 "probe")`, the top
+  ;; of the scale, about a library that defines nothing called `probe`, while
+  ;; `whereis probe` correctly said the name was unknown.
+  ;; NEVER: THE GUARD BELONGS AT THE READ, NOT AT THE VERB THAT NOTICED. The
+  ;; previous round put it around NAME PARSING and had both verbs come through
+  ;; that -- and a malformed block does not reach name parsing. It raises while
+  ;; the FIELDS are being derived, and both verbs read fields outside that
+  ;; guard: the index takes a block's `kind` through its own reader BEFORE
+  ;; asking for names, and search reads `doc` and `body` AFTER. The outline
+  ;; reads a label through a third path again.
+  ;;
+  ;; The shape that does it is a NESTED improper list, not the outer one the
+  ;; old comment used as its example:
+  ;;
+  ;;     (define-record-type thing (fields (mutable x . broken)))
+  ;;
+  ;; `datum-code.sc` tests `(list? body)` at the outer level, so
+  ;; `(fields . broken)` is caught there and returns nothing. One level in, the
+  ;; mutator arity is computed as `(> (length field) 3)` behind a `pair?` test
+  ;; with no `list?`, and `length` on an improper list raises.
+  ;;
+  ;; So: ONE place reads a block, and it is guarded. `block-names`,
+  ;; `derived-strings` and the index's field reader are all built on this, and
+  ;; `view-read` has exactly one call site in this library. A block that cannot
+  ;; be read has no fields, which every caller already knows how to handle.
+  (define (viewed-fields state live id)
+    (guard (e (#t (set! defs-index-skipped (+ defs-index-skipped 1)) (quote ())))
+      (if (not (hashtable-ref live id #f))
+          (quote ())
+          (let ((b (view-read state id)))
+            (if (and b (assq (quote fields) b))
+                (cdr (assq (quote fields) b))
+                (quote ()))))))
+
+  ;; TWO GUARDS, BECAUSE THERE ARE TWO STEPS THAT CAN FAIL, AND THEY FAIL ON
+  ;; DIFFERENT SHAPES. `viewed-fields` covers deriving the fields, which is
+  ;; where a nested improper list raises. This one covers PARSING the names out
+  ;; of those fields, which is where an improper export clause raises -- a
+  ;; block whose fields read perfectly well and whose `exports` is
+  ;; `(kept (rename (inner outer) . oops))`.
+  ;;
+  ;; This is not the duplicate-guard mistake of the previous round. That was
+  ;; two guards over the SAME step, where removing either changed nothing and
+  ;; neither could be tested. These two have a mutation each and a fixture
+  ;; each: N4k raises in the read and N4g raises in the parse, and taking away
+  ;; either guard reds its own rows and not the other's.
+  (define (block-names state live id)
+    (guard (e (#t (set! defs-index-skipped (+ defs-index-skipped 1)) (quote ())))
+      (let* ((fs (viewed-fields state live id))
+             (fld (lambda (n) (let ((e (assq n fs))) (and e (cdr e)))))
+             (reader (assq (fld (quote kind)) name-readers)))
+        (if reader ((cdr reader) fld) (quote ())))))
+
+  ;; ---- the defs index: where a name lives -----------------------------------
+  ;;
+  ;; TWO KINDS OF ANSWER, BECAUSE A NAME CAN BE IN A LIBRARY WITHOUT BEING
+  ;; DEFINED THERE. Three of this tree's own libraries -- `digest`, `json`,
+  ;; `sched` -- define nothing at all: they name what they re-export and the
+  ;; definitions live elsewhere, in igropyr. An index built only from
+  ;; definitions answers "unknown" about `json-ref*`, which is written plainly
+  ;; in an export list one line long. So a def record says where a name is
+  ;; DEFINED and an export record says which library CARRIES it, and the
+  ;; caller is told which it got.
+  ;;
+  ;; NEVER: BUILT AFTER REDUCTION AND NOT WRITTEN DOWN. An index on disk is a
+  ;; second copy of the truth with its own staleness; this one is derived from
+  ;; the reduction each time it is wanted, at the cost measured above.
+  ;; ---- and it is built once per reduction, not once per question -----------
+  ;;
+  ;; NEVER: THE KEY IS THE APPLIED CUT, NOT THE REDUCTION OBJECT. When the
+  ;; resident cache is on, a write DELIVERS INTO THE SAME reduction object
+  ;; rather than making a new one, so an index remembered against that object
+  ;; would answer about a store that has since changed -- and the row that
+  ;; catches staleness dispatches twice in one process with a write between,
+  ;; which is exactly that case. The applied cut moves with every record, so
+  ;; it is what identifies the state an index describes.
+  ;;
+  ;; Measured on a store of this tree's own sources, 906 blocks: one build is
+  ;; 14 ms, and `whereis` was rebuilding it on every call -- 8.7 seconds per
+  ;; question before the walk was fixed, and a rebuild per question after.
+  (define defs-index-builds 0)
+  (define defs-index-skipped 0)
+  (define (defs-index-skipped-count) defs-index-skipped)
+  (define (defs-index-build-count) defs-index-builds)
+  (define cached-index #f)
+  (define cached-index-cut #f)
+
+  (define (defs-index state)
+    (let ((cut (reduce-applied-cut state)))
+      ;; NEVER: AND THE KEY CANNOT BE THE OBJECT. Two readings, opposite ways:
+      ;; with the resident cache ON a write delivers into the SAME reduction
+      ;; object, so object identity says "unchanged" about a store that
+      ;; changed; with it OFF every call replays into a NEW object, so object
+      ;; identity says "changed" on every question and the memo never hits --
+      ;; measured, two answers in one process rebuilt the index twice. The
+      ;; applied cut is the thing that moves exactly when the store does, and
+      ;; a cut carries writer ids that are generated per store, so two stores
+      ;; cannot collide on one.
+      (if (and cached-index (equal? cached-index-cut cut))
+          cached-index
+          (let ((built (build-defs-index state)))
+            (set! cached-index built)
+            (set! cached-index-cut cut)
+            (set! defs-index-builds (+ defs-index-builds 1))
+            built))))
+
+  (define (build-defs-index state)
+    (let ((by-name (make-hashtable string-hash string=?))
+          (live (make-hashtable string-hash string=?))
+          ;; NEVER: THE ROWS ARE WALKED ONCE. The first version asked
+          ;; `parent-in-outline` for every step of every block's ancestry, and
+          ;; that rescans the whole outline each time -- measured on a store of
+          ;; this tree's own sources, 906 blocks: ONE INDEX BUILD TOOK 8.5
+          ;; SECONDS, and `whereis` rebuilds it per call, so the verb answered
+          ;; in 8.7. The same walk done once, into a parent table, is the shape
+          ;; the markdown projection already uses for the same reason.
+          (parent (make-hashtable string-hash string=?))
+          ;; And each block's fields are derived ONCE. `view-read` is cheap --
+          ;; 2 ms over every block in that store -- but not when it is called
+          ;; per ancestor step per block.
+          (fields (make-hashtable string-hash string=?)))
+      ;; The memo wraps the one guarded reader rather than replacing it: this
+      ;; used to call `view-read` itself, which is how a malformed block took
+      ;; the index down through `kind` before `block-names` was ever reached.
+      (define (fields-of id)
+        (or (hashtable-ref fields id #f)
+            (let ((fs (viewed-fields state live id)))
+              (hashtable-set! fields id fs)
+              fs)))
+      (define (field id n)
+        (let ((e (assq n (fields-of id))))
+          (and e (cdr e))))
+      (define (add! name record)
+        (let ((key (symbol->string name)))
+          (hashtable-set! by-name key
+                          (append (hashtable-ref by-name key (quote ())) (list record)))))
+      ;; NEVER: AN ANCESTOR THAT IS GONE IS NOT THE ANSWER. This walked the
+      ;; ancestry without asking whether each step still exists, so deleting a
+      ;; LIBRARY block left its name reported by every definition under it --
+      ;; measured, after deleting only the library:
+      ;;
+      ;;     (def "cntj2d0l.2" (library (probe gone)) (name kept2) (kind code))
+      ;;
+      ;; The `export` record went, correctly, because that record IS the
+      ;; library; the `def` record went on naming one that is not there. A dead
+      ;; step is walked THROUGH rather than stopped at: a block whose library
+      ;; was deleted is still inside whatever encloses that.
+      ;;
+      ;; NEVER: AND IT DOES NOT CHECK LIVENESS ITSELF, BECAUSE IT CANNOT BE THE
+      ;; ONE THAT DECIDES. It used to, and a mutation removing that check
+      ;; SURVIVED: `field` reads through `viewed-fields`, which returns nothing
+      ;; for a block that is not in the outline, so a dead ancestor has no
+      ;; `kind` and this walk passes over it regardless. Two authorities on one
+      ;; question, and the one written here was never the live one. The
+      ;; property is held by the check in `viewed-fields`, and the mutation
+      ;; that removes THAT one reds this row along with the tombstone rows.
+      ;;
+      ;; NEVER: AND ASKING "IS IT A LIBRARY" VIA EMPTY FIELDS MERGES TWO CASES.
+      ;; This asks whether the ancestor has `kind` of `library`, and gets its
+      ;; fields from a reader that returns NOTHING for two different reasons --
+      ;; the block is gone, or the block could not be read. Both now mean "not
+      ;; a library here, keep walking", so a live-but-unreadable library
+      ;; ancestor would have its definitions attributed to whatever encloses
+      ;; IT. That looks unreachable today, because the view derives only for
+      ;; `kind` of `code` and a `library` block does not go through the path
+      ;; that raises -- but "unreachable today" is a reason, not a promise, and
+      ;; the merge is written here rather than left to be rediscovered.
+      (define (library-of id)
+        (let loop ((up (hashtable-ref parent id #f)))
+          (cond ((not up) #f)
+                ((eq? up (quote root)) #f)
+                ((eq? (quote library) (field up (quote kind))) up)
+                (else (loop (hashtable-ref parent up #f))))))
+      (for-each (lambda (r)
+                  (hashtable-set! parent (caddr r) (car r))
+                  ;; NEVER: A DELETED BLOCK IS NOT AN ANSWER. `state-datum`
+                  ;; lists tombstones and `state-outline` does not, and this
+                  ;; read the first and checked neither -- measured, a deleted
+                  ;; block defining `ghost` produced
+                  ;; `(def "deleted" (library #f) (name ghost))`, so the verb
+                  ;; sent a reader to a block that is not there. The outline is
+                  ;; the set of blocks that exist.
+                  (hashtable-set! live (caddr r) #t))
+                (state-outline state))
+      ;; ONE MALFORMED BLOCK MAY NOT TAKE THE WHOLE VERB WITH IT: a block that
+      ;; cannot be read is skipped and counted, and the count is readable so a
+      ;; row can see that skipping happened at all. The guard that does it is
+      ;; in `viewed-fields`, which every reader here comes through; what is left
+      ;; in this loop is the RECORD each kind produces, which is the part the
+      ;; two verbs legitimately differ about.
+      ;;
+      ;; NEVER: AND THE EXAMPLE THIS COMMENT USED TO GIVE DID NOT RAISE. It
+      ;; named `(define-record-type thing (fields . broken))`, which is caught
+      ;; by a `list?` test at the outer level and quietly yields no names. The
+      ;; shape that actually raises is nested -- `(fields (mutable x . broken))`
+      ;; -- and the difference is not pedantry: the fixture for the guard was
+      ;; written from that example, so it exercised a path the guard already
+      ;; handled and left the real one untested for a round. A worked example
+      ;; that does not reproduce the failure it illustrates is worse than none.
+      (for-each
+        (lambda (row)
+          ;; NEVER: AND THE LIVE CHECK IS IN ONE PLACE TOO. This kept its own
+          ;; `(and (hashtable-ref live id #f) ...)` after the rule moved into
+          ;; `block-names`, so there were two authorities on whether a block
+          ;; exists and the index was relying on the older one. A mutation that
+          ;; removed the check inside `block-names` SURVIVED, which is how that
+          ;; was found: a redundant guard does not make a tree safer, it makes
+          ;; the guard that matters impossible to test.
+          (let* ((id (cadr row))
+                 (kind (field id (quote kind)))
+                 (found (block-names state live id)))
+            (cond
+              ((null? found) (quote ()))
+              ((eq? kind (quote code))
+               (let ((lib (library-of id)))
+                 (for-each
+                   (lambda (n)
+                     (add! n (list (quote def) id
+                                   (list (quote library) (or (and lib (field lib (quote name))) (quote #f)))
+                                   (list (quote name) n)
+                                   (list (quote kind) (quote code)))))
+                   found)))
+              ((eq? kind (quote library))
+               (let ((libname (field id (quote name))))
+                 (for-each
+                   (lambda (n)
+                     (add! n (list (quote export) id
+                                   (list (quote library) libname)
+                                   (list (quote name) n))))
+                   found)))
+              (else (quote ())))))
+        (state-datum state))
+      by-name))
+
+  ;; ---- what a name match is worth -------------------------------------------
+  ;;
+  ;; A NAME IS NOT PROSE, so it is not scored like prose. Asking for
+  ;; `store-search` and being given the block that DEFINES it is a different
+  ;; kind of answer from being given a paragraph that mentions it, and the
+  ;; scores say so -- the numbers are at `name-score` below, which is the one
+  ;; place that sets them. A name is compared whole, not as a substring,
+  ;; because `cat` matching `concatenate` is a reasonable prose hit and a poor
+  ;; answer to "where is cat defined".
+  ;;
+  ;; CASE IS FOLDED HERE AND NOT IN `whereis`, ON PURPOSE. Searching is asking
+  ;; what a store is about, and a reader typing `Reaper` means `reaper`;
+  ;; `whereis` is a lookup of an identifier, and in Scheme two spellings that
+  ;; differ by case are two different names. So `search Direct` takes the name
+  ;; tier where `whereis Direct` refuses -- the two verbs differ here because
+  ;; they are being asked different questions, and the README says so.
+  (define (name-tier names token)
+    (let ((q (fold-preserving (prepare token))))
+      (let loop ((l names) (best #f))
         (cond
-          ((null? ls)
-           (let whole ((fs (append kws titles srcs)))
-             (cond ((null? fs) "")
-                   ((exists (lambda (tk) (token-tier (car fs) tk)) tokens)
-                    (clip (collapse-whitespace (car fs))))
-                   (else (whole (cdr fs))))))
-          ((exists (lambda (tk) (token-tier (car ls) tk)) tokens)
-           (clip (collapse-whitespace (car ls))))
-          (else (loop (cdr ls)))))))
+          ((null? l) best)
+          (else
+            (let ((n (fold-preserving (prepare (car l)))))
+              (cond
+                ((string=? n q) 'exact)
+                ((and (>= (string-length n) (string-length q))
+                      (string=? (substring n 0 (string-length q)) q))
+                 (loop (cdr l) (or best 'prefix)))
+                (else (loop (cdr l) best)))))))))
+
+  ;; NEVER: A DEFINITION HAS TO OUTRANK A MENTION, AND THE NUMBERS ARE CHOSEN
+  ;; AGAINST THE BEST PROSE CAN DO, NOT AGAINST TODAY'S PROSE. Measured on the
+  ;; first version: a block carrying the query in its title, its keywords AND
+  ;; its source scores 4 + 3 + 2 = 9, while an exact definition scored 5 -- so
+  ;; the block that merely talks about the name beat the block that defines
+  ;; it, which is the one claim this segment is named for.
+  ;;
+  ;; The numbers were then 10 and 8, chosen against that 9 -- and that was
+  ;; choosing against a number the tree happens to produce TODAY. A text-mode
+  ;; block's source and doc are not searched yet only because they are held as
+  ;; bytevectors; when they are read, one block reaches
+  ;; keywords 4 + title 3 + src 2 + doc 1 = 10 with no name match at all, and
+  ;; 10 was exactly the weakest name match. The ceiling moved and the gap
+  ;; closed to a tie decided by id order.
+  ;;
+  ;; So: exact 12, prefix 10, chosen against the ceiling prose will have rather
+  ;; than the one it has. An exact definition stays above fully-loaded prose
+  ;; once that gap closes; a prefix match ties with it, which is deliberate --
+  ;; `reaper-start-all` is a worse answer to `reaper-start` than a page about
+  ;; it, and a tie broken by id is an honest way to say so.
+  (define (name-score tier)
+    (case tier ((exact) 12) ((prefix) 10) (else 0)))
+
+  ;; The names a block defines, derived rather than stored, and the printed
+  ;; form of a datum body -- the two things a code block has that a prose
+  ;; block does not.
+  ;; NEVER: ONE RULE FOR WHAT A NAME FIELD CONTAINS, READ BY BOTH SIDES. The
+  ;; index and the search scored from two different readings of the same
+  ;; field, so a `(rename (local public))` clause handled in one was still
+  ;; dropped by the other -- `search` found the alias and `whereis` did not,
+  ;; which is the same disagreement between the two verbs that this round is
+  ;; fixing one line above.
+  ;;
+  ;; A block imported in TEXT mode carries a singular `name` and no `names`;
+  ;; an export list may hold a rename clause whose usable name is the SECOND
+  ;; element. Both are here, once.
+  (define (names-in value)
+    (cond
+      ((symbol? value) (list value))
+      ;; NEVER: A NAME IS NOT ALWAYS A SYMBOL, AND THE COMMON CASE IS THE
+      ;; STRING. A DATUM block's names are read out of the form and come back
+      ;; as symbols; a TEXT block's name is derived by its language from the
+      ;; source and comes back as a STRING. This cond began at `symbol?` and
+      ;; fell straight through to `(not (list? value))`, so a text-mode block
+      ;; contributed no names at all -- and `--datum` is the OPT-IN, so text
+      ;; is what `import-code` writes by default. Measured before the repair:
+      ;; `whereis helper-fn` answered `(error unknown-name helper-fn (nearest))`
+      ;; about a block the outline lists under exactly that name, and
+      ;; `search helper-fn` found nothing. Every cell in this segment imported
+      ;; with `--datum`, so nothing in the tree had ever taken the default path.
+      ((string? value) (list (string->symbol value)))
+      ((not (list? value)) (quote ()))
+      (else
+        (apply append
+               (map (lambda (n)
+                      (cond
+                        ((symbol? n) (list n))
+                        ((and (pair? n) (eq? (car n) (quote rename)))
+                         (apply append
+                                (map (lambda (pair)
+                                       (if (and (pair? pair) (pair? (cdr pair))
+                                                (symbol? (cadr pair)))
+                                           (list (cadr pair))
+                                           (quote ())))
+                                     (cdr n))))
+                        (else (quote ()))))
+                    value)))))
+
+  (define (derived-strings state live id field)
+    (let* ((fs (viewed-fields state live id))
+           (e (assq field fs)))
+      (cond
+        ((not e) (quote ()))
+        ;; NEVER: BYTES ARE NOT TEXT, AND SPELLING THEM IS WORSE THAN DROPPING
+        ;; THEM. A text-mode block keeps its `src` -- and the `doc` derived
+        ;; from it -- as a BYTEVECTOR, and the fallback below printed whatever
+        ;; it was handed: the doc went into the search as
+        ;; `#vu8(59 59 32 119 111 ...)`, so `search vu8` returned a hit whose
+        ;; snippet was a wall of byte numbers and `search 119` matched a byte
+        ;; VALUE. Not finding the words in that source is a gap; answering
+        ;; with its bytes is a wrong answer, and the two are not the same
+        ;; size of wrong. The gap is named in the round's delivery note and
+        ;; closes when the index is built; this clause is only here so that
+        ;; until then the gap stays a gap.
+        ((bytevector? (cdr e)) (quote ()))
+        ((string? (cdr e)) (list (cdr e)))
+        (else (list (datum-spelling (cdr e)))))))
 
   (define (store-search store query)
     (let* ((state (open-and-reduce store))
@@ -561,7 +1025,20 @@
            ;; reaper" the compact query found nothing while the spaced one
            ;; found the block. The equivalence this segment promises held only
            ;; when the two words happened to be adjacent in the text as well.
-           (tokens (tokens-of (prepare query))))
+           (tokens (tokens-of (prepare query)))
+           ;; NEVER: THE SET OF BLOCKS THAT EXIST IS THE OUTLINE, AND THIS
+           ;; LOOP HAD TO LEARN IT SEPARATELY. `state-datum` lists tombstones.
+           ;; The index learned this when a deleted block kept answering
+           ;; `whereis`; this loop reads the same list and learned nothing, so
+           ;; search kept answering about deleted blocks after the index had
+           ;; stopped. Measured, with a control on each side: the outline
+           ;; listed the block before `del` and not after, and `search` still
+           ;; returned `(hit ... 3 "a page about nothing")` for its title.
+           ;; A guard's comment is a map of the entrance nobody guarded.
+           (live (let ((t (make-hashtable string-hash string=?)))
+                   (for-each (lambda (r) (hashtable-set! t (caddr r) #t))
+                             (state-outline state))
+                   t)))
       (if (null? tokens)
           (quote ())
           (let ((hits
@@ -570,6 +1047,7 @@
                         out
                         (let* ((id (cadr (car ds)))
                                (block (state-read state id))
+                               (alive (hashtable-ref live id #f))
                                (titles (field-strings block (quote title)))
                                (srcs (field-strings block (quote src)))
                                ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
@@ -591,6 +1069,43 @@
                                (title-tier (best titles))
                                (src-tier (best srcs))
                                (kw-tier (best kws))
+                               ;; NEVER: AND THE THINGS ONLY A CODE BLOCK HAS.
+                               ;; `names` is derived from the source rather
+                               ;; than stored, so it is read from the view;
+                               ;; `doc` and a datum `body` are stored, and the
+                               ;; body is a datum, so it is compared as the
+                               ;; text it prints as. Measured before this:
+                               ;; three searches for code found nothing at
+                               ;; all, because none of these was looked at.
+                               ;; NEVER: AND THE TWO VERBS ANSWER ABOUT THE
+                               ;; SAME NAMES. `whereis` learned to report a
+                               ;; library that CARRIES a name without defining
+                               ;; it, and search did not -- measured, a name
+                               ;; only re-exported was found by one verb and
+                               ;; not the other, over the same store. A block's
+                               ;; names are what it defines together with what
+                               ;; it exports.
+                               ;; NEVER: AND SEARCH DOES NOT HAVE ITS OWN IDEA
+                               ;; OF WHAT A NAME IS. It used to append three
+                               ;; fields here and gate them on a kind rule of
+                               ;; its own, which is how it came to disagree with
+                               ;; the index three separate times: about blocks
+                               ;; imported the default way, about which kinds
+                               ;; have names, and about a library's own name
+                               ;; being a name. There is one function that
+                               ;; answers this and both verbs call it.
+                               (names (map symbol->string (block-names state live id)))
+                               (docs (derived-strings state live id (quote doc)))
+                               (bodies (derived-strings state live id (quote body)))
+                               (nm-tier
+                                 (let loop ((l tokens) (out #f))
+                                   (cond ((null? l) out)
+                                         (else (let ((t (name-tier names (car l))))
+                                                 (cond ((eq? t 'exact) 'exact)
+                                                       ((eq? t 'prefix) (loop (cdr l) 'prefix))
+                                                       (else (loop (cdr l) out))))))))
+                               (doc-tier (best docs))
+                               (body-tier (best bodies))
                                ;; NEVER: EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
                                ;; Keywords widen where a token may be
                                ;; found; they do not turn the query into
@@ -598,15 +1113,35 @@
                                (every-token
                                  (for-all (lambda (tk)
                                             (or (field-tier titles tk) (field-tier srcs tk)
-                                                (field-tier kws tk)))
+                                                (field-tier kws tk) (name-tier names tk)
+                                                (field-tier docs tk) (field-tier bodies tk)))
                                           tokens)))
                           (loop (cdr ds)
-                                (if every-token
+                                (if (and alive every-token)
                                     (cons (list id
                                                 (+ (tier-score 'title title-tier)
                                                    (tier-score 'src src-tier)
-                                                   (tier-score 'keywords kw-tier))
-                                                (snippet-for block tokens))
+                                                   (tier-score 'keywords kw-tier)
+                                                   (name-score nm-tier)
+                                                   (if doc-tier 1 0)
+                                                   (if body-tier 1 0))
+                                                (snippet-for
+                                                  ;; NEVER: AND THE WHOLE
+                                                  ;; FIELD STAYS AT THE END.
+                                                  ;; A line is what a reader
+                                                  ;; wants, but a query whose
+                                                  ;; parts land on two lines
+                                                  ;; matches neither of them
+                                                  ;; alone -- the fallback is
+                                                  ;; why that hit has anything
+                                                  ;; to show. Collapsing this
+                                                  ;; list to lines only lost
+                                                  ;; that, and the row for it
+                                                  ;; went red the same hour.
+                                                  (append kws titles
+                                                          (apply append (map lines-of-text srcs))
+                                                          names docs bodies srcs)
+                                                  tokens))
                                           out)
                                     out)))))))
             (list-sort (lambda (a b)

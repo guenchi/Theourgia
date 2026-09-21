@@ -131,7 +131,54 @@
 ;;
 ;; NEVER: MEASURED WITH A VERB THAT DOES NOT EXIST, so no store is opened and
 ;; nothing but the program's own loading is timed.
-(define budget-ms 495)
+;;
+;; ---- the budget was raised from 495 to 540, and here is the reading -------
+;;
+;; It went red on two deliveries in a row. The question was whether segment B1
+;; had made startup slower -- `store.sc` grew by about five hundred lines and
+;; it is in the command line's static closure -- so that was measured instead
+;; of argued. Two runs back to back on the same quiet machine, 2026-09-21:
+;;
+;;   the tree BEFORE segment B1 (6c5c881, git archive)   median 497   RED
+;;     all (497 502 492 505 497 493 497 500 496 515)
+;;   this tree, 502 lines longer                         median 491   green
+;;
+;; **The older tree misses the same budget, and the longer one is faster.**
+;; Segment B1 did not raise this cost.
+;;
+;; And four readings of the SAME code say what this row actually measures:
+;;
+;;   the tree before B1, quiet machine                   497   red
+;;   this tree, quiet machine                            491   green
+;;   this tree, inside a full suite run                  505   red
+;;   this tree, in another session's isolated copy       511   red   (load 14)
+;;
+;; This row could not tell the two trees apart. It told two MINUTES apart. The
+;; margin was smaller than the spread, so its colour was decided by what else
+;; the machine happened to be doing.
+;;
+;; WHAT 540 STILL CATCHES, AND WHAT IT NO LONGER DOES. A quiet reading of this
+;; tree is about 491 ms, so 540 leaves roughly ten percent of headroom: **a
+;; regression that makes startup less than about nine percent slower will not
+;; be seen here any more.** What it still catches is the shape this row was
+;; built for -- the heavy libraries being pulled back into the static closure,
+;; which cost 691 against 465 in the reading above, half as much again. A
+;; number this row cannot see is not a number nobody should care about; it is
+;; one this row is the wrong instrument for.
+;;
+;; THE RIGHT INSTRUMENT IS RELATIVE, and it is queued rather than built here:
+;; F54 measures two arms in ONE run -- the command line against the tree
+;; before the heavy imports -- and asserts a ratio, not milliseconds. An
+;; absolute constant on a development machine that other work perturbs will
+;; drift for ever, and a row that flickers is not a row: when it goes red
+;; nobody believes it.
+;;
+;; Raised by the main session, 2026-09-21. The number was changed because
+;; somebody looked and decided, which is the only way a budget is allowed to
+;; move; the alternative on the table -- moving new code out of the static
+;; closure -- was rejected because the measurement says there is nothing there
+;; to move.
+(define budget-ms 540)
 
 (define (median xs)
   (let ((v (list-sort < xs)))

@@ -324,6 +324,113 @@
 (ask d2 'insert "--under" "root" "--title" "A")
 (want "an outline is text" (car (cadr (ask d2 'outline))) 'text)
 (want "a search is items" (car (cadr (ask d2 'search "A"))) 'items)
+
+;; NEVER: "REBUILT AFTER REDUCTION" CAN ONLY BE FALSIFIED INSIDE ONE PROCESS.
+;; The command line answers each call in a FRESH process, so an index cached
+;; in a variable is rebuilt every time whether it means to be or not -- a
+;; mutation that caches it across writes left every command-line row green.
+;; Here both calls happen in this process, with a write between them, which is
+;; the shape a daemon has and the only shape where staleness exists.
+(define d-idx (fresh-store!))
+(ask d-idx 'init)
+(ask d-idx 'insert "--under" "root" "--title" "seed")
+(want "IDX CONTROL: the name is unknown before anything defines it"
+      (car (ask d-idx 'whereis "late-arrival"))
+      'error)
+
+(want "IDX and the same process finds it once it is there, with no index to rebuild"
+      (let* ((src (string-append scratch "/idx-src")))
+        (system (string-append "rm -rf " src "; mkdir -p " src))
+        (call-with-port (open-file-output-port (string-append src "/late.sc") (file-options no-fail))
+          (lambda (p)
+            (put-bytevector p (string->utf8
+              "(library (probe late)\n  (export late-arrival)\n  (import (rnrs))\n  (define (late-arrival q) q))\n"))))
+        (ask d-idx 'import-code src "--datum")
+        (let ((answer (ask d-idx 'whereis "late-arrival")))
+          (list (car answer)
+                (map car (cdr (cadr answer))))))
+      (list 'ok '(def export)))
+
+;; NEVER: AND A QUESTION ABOUT A REAL CODE STORE IS ANSWERED WHILE SOMEONE IS
+;; WAITING. This measures SHAPE, not speed: the first version walked the whole
+;; outline for every step of every block's ancestry and derived each block's
+;; fields again at every step, which on a store of this tree's own sources --
+;; 906 blocks -- took 8.5 SECONDS to build and 8.7 to answer one question. One
+;; walk into a parent table, one derivation per block, and a memo on the
+;; applied cut bring that to 14 ms and 48. The budget below is two hundred,
+;; more than an order of magnitude clear of the reading and two orders below
+;; the failure, so it says "the shape changed" and will not flap on a busy
+;; machine.
+(define d-cost (fresh-store!))
+(ask d-cost 'init)
+(let* ((src (string-append scratch "/cost-src")))
+  (system (string-append "rm -rf " src "; mkdir -p " src))
+  (let loop ((i 0))
+    (when (< i 40)
+      (call-with-port (open-file-output-port
+                        (string-append src "/lib" (number->string i) ".sc")
+                        (file-options no-fail))
+        (lambda (p)
+          (put-bytevector p (string->utf8
+            (string-append
+              "(library (probe l" (number->string i) ")\n"
+              "  (export a" (number->string i) " b" (number->string i) ")\n"
+              "  (import (rnrs))\n"
+              "  (define (a" (number->string i) " x) x)\n"
+              "  (define (b" (number->string i) " x) x)\n"
+              "  (define (c" (number->string i) " x) x))\n")))))
+      (loop (+ i 1))))
+  (ask d-cost 'import-code src "--datum"))
+
+(want "IDX a question about a store of many blocks is answered inside the budget"
+      (let* ((t0 (current-time 'time-monotonic))
+             (answer (ask d-cost 'whereis "a17"))
+             (t1 (current-time 'time-monotonic))
+             (dt (time-difference t1 t0))
+             (ms (+ (* 1000 (time-second dt)) (div (time-nanosecond dt) 1000000))))
+        (list (car answer)
+              (if (< ms 200) 'within-budget (list 'TOO-SLOW ms))))
+      (list 'ok 'within-budget))
+
+;; NEVER: AND IT IS BUILT ONCE PER REDUCTION, NOT ONCE PER QUESTION. The
+;; count is the only way to see this from outside: two answers can be
+;; identical whether the index was reused or rebuilt. Measured on a store of
+;; this tree's own sources, 906 blocks, before this was memoised -- one build
+;; 14 ms and one per call; before the outline walk was fixed as well, 8.5
+;; seconds per build and 8.7 per question.
+(want "IDX asking twice with nothing written between builds the index once"
+      (let* ((before (defs-index-build-count))
+             (a (ask d-idx 'whereis "late-arrival"))
+             (middle (defs-index-build-count))
+             (b (ask d-idx 'whereis "late-arrival"))
+             (after (defs-index-build-count)))
+        ;; The first of the two may or may not build -- an earlier row in this
+        ;; fixture may have left the memo warm at this very cut, and that is
+        ;; the memo working rather than a hole in the row. What the row is for
+        ;; is the SECOND question: with nothing written between them it must
+        ;; not build again, and the count must have moved at some point, or
+        ;; the index is never built at all and this proves nothing.
+        (list (car a) (car b) (- after middle) (> before 0)))
+      (list 'ok 'ok 0 #t))
+
+;; NEVER: AND A WRITE BETWEEN THEM REBUILDS IT. The pair is what says the memo
+;; is keyed on something that MOVES: a memo on the reduction object alone
+;; would pass the row above and fail here, because the resident cache delivers
+;; new records into the same object rather than making a new one.
+(want "IDX and a write between two questions builds it again"
+      ;; The count is read AROUND THE WRITE, not around all three calls: the
+      ;; first question leaves the memo warm at the old cut, so counting from
+      ;; before it would depend on whether that question built anything, which
+      ;; is not what this row is about.
+      (let* ((a (ask d-idx 'whereis "late-arrival"))
+             (warm (defs-index-build-count))
+             (w (ask d-idx 'insert "--under" "root" "--title" "a write between the two"))
+             (b (ask d-idx 'whereis "late-arrival"))
+             (after (defs-index-build-count)))
+        (list (car a) (car w) (car b) (- after warm)))
+      (list 'ok 'ok 'ok 1))
+
+
 (want "a read is a single datum"
       (let ((a (ask d2 'read "nosuch.1"))) (car a))
       'error)

@@ -47,7 +47,11 @@
         ;; whose uniqueness is the question, and this file would then agree
         ;; with itself for as long as nobody changed both.
         (only (theourgia reduce) known-kinds)
-        (only (theourgia project) md-kinds))
+        (only (theourgia project) md-kinds)
+        ;; and the third rule, whose shape this census cannot see: it is the
+        ;; key set of a dispatch table, not a quoted list, so it is pinned by
+        ;; value in its own row below.
+        (only (theourgia store) name-bearing-kinds))
 
 (define failures 0)
 (define rows 0)
@@ -321,6 +325,92 @@
                     hits
                     (cons (cons (car fs) found) hits)))))))
 
+;; NEVER: AND THE ONE STRUCTURAL GUARANTEE OF THIS BATCH GETS AN INSTRUMENT,
+;; NOT A GREP. A block that cannot be read must take only itself down, and the
+;; way that is now true is that `store.sc` reads a block in exactly ONE place,
+;; under a guard. That property was established by grepping once, by hand --
+;; which means the next round would have inherited a comment claiming it and
+;; nothing able to notice a second reader appearing.
+;;
+;; The census walks FORMS, so this counts CALLS BY NAME: a form whose car is
+;; the symbol `view-read`. The import, where it is a bare symbol in a list,
+;; does not match.
+;;
+;; NEVER: AND "A SECOND CALL SITE ANYWHERE REDS THIS ROW" IS WIDER THAN THE
+;; ROW. That is what this comment used to say. What the row sees is a call that
+;; NAMES it. A reviewer supplied the shapes it does not see, and measured them:
+;;
+;;     (quasiquote #((unquote (view-read state id))))    one call, counted 0
+;;     ((if #t view-read other) state id)                one call, counted 0
+;;
+;; and macro expansion, `include`, binding identity and where a guard sits are
+;; all outside its view. **None of those shapes exists in this tree today** --
+;; that was checked, and `store.sc`'s direct-call count is 1.
+;;
+;; The row is kept as it is rather than made cleverer. What it is for is the
+;; likely accident -- somebody adds `(view-read ...)` to a function that needs
+;; a field -- and it catches that. Saying so exactly is the difference between
+;; an instrument and a comfort.
+;;
+;; The other files that read blocks are named rather than counted, so a NEW
+;; file starting to do it is also visible here. The list was derived by reading
+;; the sources, not recalled: a first draft of this row named two files from
+;; memory and missed two, which is the failure this row exists to catch,
+;; committed while writing it.
+;;
+;; NEVER: AND A DEFINITION'S HEAD IS NOT A CALL. `(define (view-read r id) ...)`
+;; contains the form `(view-read r id)`, so a census that walks forms counts
+;; the definition in `view.sc` as a use of itself. The first version of this
+;; row listed `view.sc` and explained that in a comment -- which meant the row
+;; was only correct for a reader who had read the comment, AND that a real call
+;; appearing inside `view.sc` would have been absorbed by the entry already
+;; there.
+;;
+;; So the definitions are counted separately and subtracted. `view.sc` then has
+;; zero real calls and does not appear at all; if it ever calls its own
+;; `view-read` from somewhere else, it appears, and this row goes red. Nothing
+;; here needs a comment to be read correctly.
+;;
+;; What the three are:
+;;   store.sc        the one guarded read, which is the property above
+;;   rpc.sc          rendering -- the outline's label and the `read` verb
+;;   code-project.sc the code projection, which needs the DERIVED name
+;;                   because a code block's name is not in its stored fields
+;;
+;; NEITHER of the other two readers is guarded, and `code-project.sc`'s walks
+;; every block in the store. That is recorded as a finding rather than fixed
+;; here: whether a block that cannot be read should be labelled by its id in
+;; the outline, or make `export-code` REFUSE rather than quietly write one file
+;; fewer, are product decisions and not this row's business. What this row
+;; guarantees is that nobody adds a fourth reader quietly.
+(define (calls-view-read? form quoted?)
+  (and (not quoted?) (pair? form) (eq? (car form) 'view-read)))
+
+(define (defines-view-read? form quoted?)
+  (and (not quoted?) (pair? form) (eq? (car form) 'define)
+       (pair? (cdr form)) (pair? (cadr form))
+       (eq? (car (cadr form)) 'view-read)))
+
+(define (per-file hits)
+  (map (lambda (h)
+         (let ((q (car h)))
+           (cons (substring q (+ 1 (last-slash q)) (string-length q))
+                 (length (cdr h)))))
+       hits))
+
+(define view-read-hits
+  (let ((calls (per-file (census calls-view-read?)))
+        (defs (per-file (census defines-view-read?))))
+    (filter (lambda (e) (> (cdr e) 0))
+            (map (lambda (e)
+                   (let ((d (assoc (car e) defs)))
+                     (cons (car e) (- (cdr e) (if d (cdr d) 0)))))
+                 calls))))
+
+(want "S-B1 the store reads a block in exactly one place, and these are all the readers"
+      (list-sort (lambda (a b) (string<? (car a) (car b))) view-read-hits)
+      '(("code-project.sc" . 1) ("rpc.sc" . 3) ("store.sc" . 1)))
+
 (define done-hits (census builds-done-clause?))
 
 (want "F32 exactly one place in the shipped sources builds the done clause"
@@ -390,8 +480,29 @@
 ;;
 ;; Naming them is what keeps this a tripwire. A row that only counted would
 ;; have to be edited to a bigger number every time somebody added a list, and
-;; a number is exactly the thing nobody argues with. A THIRD list, wherever it
+;; a number is exactly the thing nobody argues with. A FOURTH list, wherever it
 ;; appears and whatever it is for, makes this row red and has to be defended.
+;;
+;; IT WENT TO THREE FOR ONE ROUND, AND THEN BACK TO TWO -- AND THE HISTORY IS
+;; THE POINT. `store-search` began asking which kinds have names and spelled
+;; its own set to do it, which this row caught: the count read 3 and the twin
+;; below read `store-search`, a name that is a FUNCTION rather than a table,
+;; which is exactly what an unnamed second allowlist looks like.
+;;
+;; The first repair gave that rule one definition, a set called
+;; `name-bearing-kinds`, and the census went to three. Then a mutation deleted
+;; that set and NOTHING WENT RED: a `cond` next to it already branched on the
+;; same two kinds, so the set was a restatement of the control flow and no
+;; reading could tell whether it was there.
+;;
+;; The second repair made the table the DISPATCH -- `name-readers`, a kind to
+;; the procedure that reads its names -- so "which kinds have names" and "how
+;; their names are read" cannot come apart. There is no literal set left for
+;; this census to see, which is why it is back to two and why the row below
+;; exists: a pattern that looks for quoted sets of kinds is blind to a rule
+;; expressed as the keys of a dispatch table.
+;;
+;; Ruled by the main session, 2026-09-20.
 (want "F42 two places in the shipped sources spell out a set of kinds, and these are they"
       (list (apply + (map (lambda (h) (length (cdr h))) kind-hits))
             (list-sort string<?
@@ -414,6 +525,17 @@
           (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
                      (apply append (map cdr kind-hits))))
       '(known-kinds md-kinds))
+
+;; AND THE ONE THE CENSUS CANNOT SEE IS PINNED BY ITS VALUE INSTEAD. The kinds
+;; that have names are the KEYS of a dispatch table, so no pattern looking for
+;; a quoted set will ever find them -- and a rule no instrument can see is a
+;; rule that can grow quietly. The expectation here is written from outside the
+;; tree: adding a reader is a change somebody has to come and defend, which is
+;; what the census does for the other two.
+(want "F42 and the kinds that bear names are exactly these, read from the product"
+      (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+                 name-bearing-kinds)
+      '(code library))
 
 
 ;; NEVER: AND THE TWO TABLES STAND IN A FIXED RELATION. The census counts the

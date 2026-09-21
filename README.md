@@ -155,10 +155,52 @@ returns about the block.
     (hit <id> <score> "<snippet>")
 
 Whitespace splits the query into tokens and **every** token must hit. A hit is a
-case-insensitive substring, so `cat` finds `concatenate`. Title is worth 2 and src 1,
-counted once each however many times they match, so a block hit in both scores 3.
+case-insensitive substring, so `cat` finds `concatenate`.
+
+Text is compared after normalising: NFKC, and a space written at every boundary
+between CJK and Latin characters, so a CJK word typed against a Latin one is the
+same query as the two with a space between them. A CJK token of two characters or
+more is matched by its bigrams, which finds more than a plain substring would.
+
+Each field scores in two tiers: a hit that begins a word — at the start, after a
+non-word character, or at a camelCase seam — outranks one buried inside a longer
+word. Keywords score 4 or 3, title 3 or 2, src 2 or 1. A name a block defines is
+not prose and scores above all of them TOGETHER: 12 for the whole name, 10 for a
+name that begins with the query. A match in `doc` or in the printed body of a datum
+scores 1, so the most a block with no name match can reach is
+keywords 4 + title 3 + src 2 + doc 1 + body 1 = 11. An exact definition is above
+that; a prefix match ties with it and the tie is broken by id, which is the
+intended answer -- a name that merely BEGINS with the query is not obviously a
+better result than a page about the query.
+Fields are counted once each however many times they match.
+
+Only a `code` or `library` block has names at all -- a name is something defined
+or carried, not a field anyone may set -- so `search` and `whereis` ask the same
+question of the same blocks. A deleted block is not searched: the set of blocks
+that exist is the outline.
+
 Order is score descending then id ascending — total, so two runs over one store agree.
 The query is only ever text: nothing in it reaches a numeric parser.
+
+### `whereis <name>`
+
+    (def <id> (library <lib>) (name <sym>) (kind code))
+    (export <lib-id> (library <lib>) (name <sym>))
+
+Says where a name is. A `def` record is a block that defines it; an `export` record
+is a library that carries it in its export list, which means this library re-exports
+the name and the definition is somewhere else — possibly in another package
+entirely. Definitions come first.
+
+The name must match whole and EXACTLY: these are Scheme identifiers, where two
+spellings that differ by case are two different names, so
+the lookup does not fold case. A name given in the wrong case is refused like any
+other name that is not there -- and the right spelling is normally one edit away,
+so it comes back under `nearest`.
+
+A name that is nowhere is refused with `(error unknown-name <name> (nearest ...))`,
+naming up to five of the closest names it does know: those sharing a prefix first,
+then those containing the query, then those within a couple of typing errors.
 
 ### `log [<id>]`
 

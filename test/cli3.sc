@@ -231,6 +231,13 @@
 (define scratch (test-dir "cli3"))
 (define home (string-append scratch "/home"))
 
+(define (holds? text needle)
+  (let ((n (string-length needle)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) needle) #t)
+            (else (loop (+ i 1)))))))
+
 (define (put! path bv)
   (call-with-port (open-file-output-port path (file-options no-fail))
     (lambda (p) (put-bytevector p bv))))
@@ -264,19 +271,60 @@
                 "--store " store " > " out-path " 2> " err-path))
          (code (system cmd))
          (text (text-of out-path)))
-    (list code
-          (let loop ((i 0) (start 0) (out '()))
-            (cond
-              ((>= i (string-length text)) (reverse out))
-              ((char=? (string-ref text i) #\newline)
-               (let ((line (substring text start i)))
-                 (loop (+ i 1) (+ i 1)
-                       (if (= 0 (string-length line))
-                           out
-                           (cons (guard (e (#t (list 'unreadable line)))
-                                   (read (open-string-input-port line)))
-                                 out)))))
-              (else (loop (+ i 1) start out)))))))
+    (list code (lines-of-text text))))
+
+;; The splitter, named so a row can ask it directly. It is the harness, and a
+;; harness that nothing measures is where a blind spot lives longest.
+(define (lines-of-text text)
+  (let ()
+          ;; NEVER: AND THE LAST LINE COUNTS EVEN WITHOUT ITS NEWLINE. This
+          ;; returned at end of text without taking what was left since the
+          ;; previous newline, so anything printed WITHOUT a trailing newline
+          ;; was invisible to every row that reads these lines -- and the
+          ;; answer that arrives last is very often the error. Found by a
+          ;; reviewer, who showed that a row asserting an EMPTY answer passed
+          ;; while the program had printed `(error internal)`: no newline, no
+          ;; line, `(0 ())`, green.
+          ;;
+          ;; This is the fixture harness, so the change reaches every row in
+          ;; the file. The row baseline is what says it reached them harmlessly
+          ;; -- every fixture's counts are recorded, and a line appearing
+          ;; anywhere it had not before shows up there as drift.
+          (let ((take (lambda (line out)
+                        (if (= 0 (string-length line))
+                            out
+                            (cons (guard (e (#t (list 'unreadable line)))
+                                    (read (open-string-input-port line)))
+                                  out)))))
+            (let loop ((i 0) (start 0) (out '()))
+              (cond
+                ((>= i (string-length text))
+                 (reverse (take (substring text start i) out)))
+                ((char=? (string-ref text i) #\newline)
+                 (loop (+ i 1) (+ i 1) (take (substring text start i) out)))
+                (else (loop (+ i 1) start out)))))))
+
+;; NEVER: AND `batch` TAKES ITS INTENTS ON STDIN, NOT IN ARGV. Three attempts
+;; to drive it through `run` were answered `(usage (batch <intents>))`, which
+;; reads like a quoting problem and is not one: the verb takes NO command-line
+;; argument and reads the intents from standard input. `cli1` has always called
+;; it that way -- its `run` takes a stdin string -- and this file's `run` has no
+;; such parameter, so the shape was simply unavailable here.
+;;
+;; This is a separate helper rather than a new parameter on `run`, because
+;; `run` is called by every row in this file and the row baseline is what says
+;; a harness change reached them harmlessly. An addition nothing else calls
+;; cannot.
+(define (run-with-stdin store input . args)
+  (let* ((cmd (string-append
+                "printf '%s' '" input "' | "
+                "env -u THEOURGIA_INJECT -u THEOURGIA_FAULT -u THEOURGIA_BARRIER "
+                "THEOURGIA_HOME=" home " "
+                "scheme --script " cli " "
+                (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
+                "--store " store " > " out-path " 2> " err-path))
+         (code (system cmd)))
+    (list code (lines-of-text (text-of out-path)))))
 
 (define (code-of r) (car r))
 (define (lines-of r) (cadr r))
@@ -548,6 +596,1175 @@
                               (string? (cadddr item))))
                        items)))
       (list #t #t))
+
+(define (whereis-in store q) (lines-of (run store "whereis" q)))
+
+;; How many blocks a store lists, asked of the product rather than counted by
+;; hand, so a row can bound something in terms of the store's SIZE instead of a
+;; number that happens to be right today.
+;; NEVER: AND IT REFUSES TO COUNT FROM A COMMAND THAT FAILED. This ran
+;; `outline` and counted newlines in its stdout while IGNORING the exit status
+;; -- the binding was even called `ignored`. The first store it was used on is
+;; one where `outline` FAILS, which a row in that section asserts two lines
+;; further down, so it counted the lines of a one-line error message and
+;; answered 1. A bound computed from that cannot bind.
+;;
+;; A count of blocks has to come from a verb that SUCCEEDED on this store. If
+;; none does, the caller must state the number and pin it with a control that
+;; uses a verb which does work -- saying so out loud rather than taking a
+;; number from whatever happened to print.
+(define (blocks-in store)
+  (let* ((r (run store "outline" "--depth" "9"))
+         (text (text-of out-path)))
+    (if (not (= 0 (car r)))
+        'outline-failed-so-this-store-cannot-be-counted
+        (let loop ((i 0) (n 0))
+          (cond ((>= i (string-length text)) n)
+                ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ n 1)))
+                (else (loop (+ i 1) n)))))))
+
+(printf "\n== N4: where a name is, and what a name match is worth ==\n")
+;; A SMALL LIBRARY WITH THREE KINDS OF NAME IN IT: one this library defines
+;; and exports, one it defines and keeps to itself, and one it re-exports
+;; without defining -- which is what three of this tree's own libraries do,
+;; and what makes an index built only from definitions answer `unknown` about
+;; a name written plainly in an export list.
+(define d4 (fresh-store!))
+(init! d4)
+(define src4 (string-append scratch "/src4"))
+(system (string-append "rm -rf " src4 "; mkdir -p " src4))
+(put! (string-append src4 "/own.sc")
+      (string->utf8
+        (string-append
+          "(library (probe own)\n"
+          "  (export reaper-start reaper-stop)\n"
+          "  (import (rnrs))\n"
+          "  (define (reaper-start x) x)\n"
+          "  (define (reaper-stop x) x)\n"
+          "  (define (helper-only y) y))\n")))
+(put! (string-append src4 "/shim.sc")
+      (string->utf8
+        (string-append
+          "(library (probe shim)\n"
+          "  (export borrowed-name)\n"
+          "  (import (only (elsewhere thing) borrowed-name)))\n")))
+(run d4 "import-code" src4 "--datum")
+
+(define (whereis-of q) (lines-of (run d4 "whereis" q)))
+
+(want "N4 a name this library defines is reported as a definition, with its library and kind"
+      ;; NEVER: AND THE RECORD NAMES A BLOCK. Every row here used to read the
+      ;; tag, the library, the name and the kind, and none of them read the
+      ;; second element -- the block id, which is the one part a reader uses to
+      ;; go and look. An index answering with the right shape about the wrong
+      ;; block passed all of them.
+      (let* ((r (whereis-of "helper-only"))
+             (id (cadr (car r)))
+             (read-back (run d4 "read" id)))
+        (list (length r) (car (car r)) (cadr (assq 'library (cddr (car r))))
+              (cadr (assq 'name (cddr (car r)))) (cadr (assq 'kind (cddr (car r))))
+              (string? id) (= 0 (car read-back))))
+      (list 1 'def '(probe own) 'helper-only 'code #t #t))
+
+;; NEVER: A NAME A LIBRARY CARRIES WITHOUT DEFINING IS STILL AN ANSWER. The
+;; shim above defines nothing; an index built from definitions alone would say
+;; `unknown-name` about a name its one export line spells out. The record says
+;; which it is, so the reader knows the definition is somewhere else.
+(want "N4 a name only re-exported comes back as an export record, and there is no definition"
+      (let ((r (whereis-of "borrowed-name")))
+        (list (length r) (car (car r)) (cadr (assq 'library (cddr (car r))))))
+      (list 1 'export '(probe shim)))
+
+(want "N4 a name both defined and exported gives the definition first"
+      (let ((r (whereis-of "reaper-start")))
+        (list (map car r) (cadr (assq 'library (cddr (car r))))))
+      (list '(def export) '(probe own)))
+
+(want "N4 a name that is nowhere is refused, and the refusal points at the nearest ones"
+      ;; `run` answers (exit-code lines); a refusal is one line, and that line
+      ;; is the datum -- so the datum is one `car` further in than the
+      ;; item-shaped answers above.
+      (let* ((r (run d4 "whereis" "reaper-star"))
+             (d (car (cadr r))))
+        (list (> (car r) 0) (car d) (cadr d)
+              (list-sort (lambda (a b) (string<? (symbol->string a) (symbol->string b)))
+                         ;; (error unknown-name <name> (nearest ...)) -- the
+                         ;; clauses begin after the name, not after the verb.
+                         (cdr (assq 'nearest (cdddr d))))))
+      (list #t 'error 'unknown-name '(reaper-start reaper-stop)))
+
+;; NEVER: AND THE INDEX IS NOT A FILE. It is derived from the reduction when
+;; it is wanted; an index on disk would be a second copy of the truth with its
+;; own staleness. The row counts what is in the store directory before and
+;; after asking.
+(define (store-files d)
+  (let ((out (string-append scratch "/files.txt")))
+    (system (string-append "find " d " -type f | sort > " out))
+    (text-of out)))
+
+(want "N4 asking where a name is writes nothing into the store"
+      (let* ((before (store-files d4))
+             (ignored (whereis-of "reaper-start"))
+             (after (store-files d4)))
+        (list (string=? before after) (> (string-length before) 0)))
+      (list #t #t))
+
+;; NEVER: AND IT FOLLOWS THE STORE. Derived after the reduction means a name
+;; committed a moment ago is found a moment later, with nothing to rebuild.
+(define src4b (string-append scratch "/src4b"))
+(system (string-append "rm -rf " src4b "; mkdir -p " src4b))
+(put! (string-append src4b "/later.sc")
+      (string->utf8 "(library (probe later)\n  (export arrived-late)\n  (import (rnrs))\n  (define (arrived-late z) z))\n"))
+
+(want "N4 CONTROL: the new name is unknown before the import"
+      (car (car (cadr (run d4 "whereis" "arrived-late"))))
+      'error)
+
+(want "N4 and known immediately after it, with no index to rebuild"
+      (begin (run d4 "import-code" src4b "--datum")
+             (let ((r (whereis-of "arrived-late")))
+               (list (map car r) (cadr (assq 'library (cddr (car r)))))))
+      (list '(def export) '(probe later)))
+
+(printf "\n== N4c: what the index refuses to carry, and what it must not drop ==\n")
+;; NEVER: A DELETED BLOCK IS NOT AN ANSWER. `state-datum` lists tombstones and
+;; `state-outline` does not; the index read the first and checked neither, so
+;; a deleted block kept answering for the name it used to define -- measured,
+;; `(def "deleted" (library #f) (name ghost) (kind code))`, which sends a
+;; reader to a block that is not there.
+(define d4c (fresh-store!))
+(init! d4c)
+(define src4c (string-append scratch "/src4c"))
+(system (string-append "rm -rf " src4c "; mkdir -p " src4c))
+(put! (string-append src4c "/ghosts.sc")
+      (string->utf8
+        (string-append
+          "(library (probe ghosts)\n"
+          "  (export kept)\n"
+          "  (import (rnrs))\n"
+          "  (define (kept x) x)\n"
+          "  (define (ghost y) y))\n")))
+(run d4c "import-code" src4c "--datum")
+
+(want "N4c CONTROL: both names are there before anything is deleted"
+      (list (car (car (whereis-in d4c "kept"))) (car (car (whereis-in d4c "ghost"))))
+      (list 'def 'def))
+
+(want "N4c a deleted block stops answering for the name it defined"
+      (let* ((victim (cadr (car (whereis-in d4c "ghost"))))
+             (gone (run d4c "del" victim))
+             (after (run d4c "whereis" "ghost")))
+        (list (car gone)
+              (car (car (cadr after)))
+              (car (car (whereis-in d4c "kept")))))
+      (list 0 'error 'def))
+
+;; NEVER: AND WHAT IS LEFT OF THIS ROW IS ONLY WHAT IT CAN ACTUALLY ASK. It
+;; used to read `defs-index-skipped-count` either side of this call and assert
+;; `(>= after before)`. Both readings were always 0 -- `whereis-in` runs the
+;; product in a `(system ...)` SUBPROCESS and the counter lives in this one --
+;; and `(>= 0 0)` holds anyway, so the row said nothing about the skipping it
+;; was named for. A mutation that deleted the guard survived and is how that
+;; was found. The counting moved to N4g, where the index is built in this
+;; process and the numbers mean something; what stays here is the half this
+;; store can answer: after one block is deleted, the other still answers.
+(want "N4c deleting one block leaves the other one answering"
+      (car (car (whereis-in d4c "kept")))
+      'def)
+
+(printf "\n== N4g: a block that cannot be read, and the rest of the store ==\n")
+;; NEVER: A GUARD NEEDS A CASE BEHIND IT, AND THIS ONE HAD NONE. The per-block
+;; guard in the index was written for a real failure: a datum body whose clause
+;; was an improper list made the extractor raise, and the condition travelled
+;; all the way out to the verb, which answered `(error internal ...)` about a
+;; store where every other block was fine.
+;;
+;; The row written for it measured nothing, and a mutation that DELETED THE
+;; GUARD survived to prove it. Three faults, any one of which empties the row:
+;;
+;;   1. the store it used held no unreadable block at all -- the malformed body
+;;      was in the COMMENT, and the fixture built two ordinary definitions;
+;;   2. the assertion was `(>= after before)`, which holds when the two sides
+;;      are equal, so it could not tell a skip from no skip;
+;;   3. and the counters it read live in THIS process while the work happens in
+;;      a `(system ...)` SUBPROCESS, so both readings were always 0.
+;;
+;; The third is the one that made it hollow rather than merely weak, and it
+;; came from copying a row in `rpc1` that works -- because `rpc1` reaches the
+;; product in process. The same line is sound there and empty here.
+;;
+;; So this store is used by NOTHING ELSE, which is what lets the build counter
+;; below mean "the index was built inside this row".
+(define d4g (fresh-store!))
+(init! d4g)
+(define src4g (string-append scratch "/src4g"))
+(system (string-append "rm -rf " src4g "; mkdir -p " src4g))
+;; The export list holds a rename clause whose tail is improper. `names-in`
+;; takes the rename branch and maps over `(cdr n)`, which is
+;; `((inner outer) . oops)` -- and `map` raises on that. It is the smallest
+;; thing that reaches the guard, and it reaches it through the field a
+;; `library` block really carries.
+(put! (string-append src4g "/broken.sc")
+      (string->utf8
+        (string-append
+          "(library (probe broken)\n"
+          "  (export kept (rename (inner outer) . oops))\n"
+          "  (import (rnrs))\n"
+          "  (define (kept x) x)\n"
+          "  (define (inner y) y))\n")))
+(run d4g "import-code" src4g "--datum")
+
+;; The counting half runs IN THIS PROCESS, because that is where the counters
+;; are. The build counter is part of the reading, not decoration: without it a
+;; delta of zero skips could mean "nothing was skipped" or "the index was
+;; already built and was not rebuilt", and those are different answers.
+(want "N4g a block that cannot be read is skipped, counted once, and the others are indexed"
+      (let* ((st (open-and-reduce d4g))
+             (s0 (defs-index-skipped-count))
+             (b0 (defs-index-build-count))
+             (ix (defs-index st))
+             (s1 (defs-index-skipped-count))
+             (b1 (defs-index-build-count)))
+        (list (- s1 s0)
+              (- b1 b0)
+              (if (pair? (hashtable-ref ix "kept" (quote ()))) 'kept-is-indexed 'MISSING)))
+      (list 1 1 'kept-is-indexed))
+
+;; And the product half runs through the command line, because what a caller
+;; sees is a different question from what a counter says.
+(want "N4g and the verb answers about the rest of the store rather than refusing"
+      (let ((a (whereis-in d4g "kept")))
+        (list (car (car a)) (eq? (car (car a)) 'error)))
+      (list 'def #f))
+
+(printf "\n== N4d: the two verbs answer about the same names ==\n")
+;; NEVER: ONE STORE, TWO VERBS, ONE ANSWER. `whereis` learned to report a
+;; library that CARRIES a name without defining it; `search` did not, so the
+;; same store answered "here it is" to one question and "nothing" to the
+;; other. They now read one index of names, so a disagreement is a red row
+;; rather than something a user discovers.
+;;
+;; The rename clause is here for the same reason: an export list may hold
+;; `(rename (local public))`, where the usable name is the SECOND element, and
+;; a guard that wanted a bare symbol threw the whole clause away.
+(define d4d (fresh-store!))
+(init! d4d)
+(define src4d (string-append scratch "/src4d"))
+(system (string-append "rm -rf " src4d "; mkdir -p " src4d))
+(put! (string-append src4d "/own.sc")
+      (string->utf8
+        (string-append
+          "(library (probe carried)\n"
+          "  (export direct (rename (inner outer-alias)))\n"
+          "  (import (rnrs))\n"
+          "  (define (direct x) x)\n"
+          "  (define (inner y) y))\n")))
+(put! (string-append src4d "/shim.sc")
+      (string->utf8
+        (string-append
+          "(library (probe carried-shim)\n"
+          "  (export only-borrowed)\n"
+          "  (import (only (elsewhere thing) only-borrowed)))\n")))
+(run d4d "import-code" src4d "--datum")
+
+(want "N4d a name a library only carries is found by BOTH verbs, not one of them"
+      (list (car (car (whereis-in d4d "only-borrowed")))
+            (> (length (lines-of (run d4d "search" "only-borrowed"))) 0))
+      (list 'export #t))
+
+(want "N4d a renamed export is reachable by the name a caller would write"
+      (list (car (car (whereis-in d4d "outer-alias")))
+            (car (car (whereis-in d4d "inner"))))
+      (list 'export 'def))
+
+;; NEVER: AND A REFUSAL ABOUT A NAME IS NOT A REFUSAL ABOUT THE VERB. Both
+;; answer `(error ...)`, so a row that checked only the first symbol passed
+;; against a build where `whereis` did not exist at all.
+(want "N4d the refusal names the missing NAME, not a missing verb"
+      (let ((d (car (cadr (run d4d "whereis" "no-such-name-at-all")))))
+        (list (car d) (cadr d) (eq? (cadr d) 'unknown-verb)))
+      (list 'error 'unknown-name #f))
+
+;; NEVER: TWO SPELLINGS THAT DIFFER BY CASE ARE TWO NAMES. These are Scheme
+;; identifiers and the reader keeps their case, so folding here would make the
+;; verb answer about a name the store does not hold. The README said the
+;; opposite for two rounds -- "must match whole, ignoring case" -- while the
+;; index has always been keyed on the exact spelling; nothing measured it, so
+;; the sentence and the code were free to disagree.
+;;
+;; The second half is what makes the refusal usable rather than merely
+;; correct: a caller who typed the wrong case is one edit away, so the name
+;; they wanted comes back under `nearest`. Exactness without that is just a
+;; verb saying no.
+(want "N4d a name given in the wrong case is not that name, and nearest says so"
+      (let* ((right (car (car (whereis-in d4d "direct"))))
+             (d (car (cadr (run d4d "whereis" "Direct"))))
+             (near (if (and (pair? d) (eq? (car d) 'error) (= 4 (length d)))
+                       (cdr (cadddr d))
+                       'NO-NEAREST-CLAUSE)))
+        (list right (cadr d) (if (memq 'direct near) 'offers-the-right-spelling near)))
+      (list 'def 'unknown-name 'offers-the-right-spelling))
+
+(printf "\n== N4e: the store a caller gets when they type the short command ==\n")
+;; NEVER: EVERY CELL IN THIS SEGMENT TOOK THE OPT-IN PATH. `import-code`
+;; writes TEXT-mode blocks; `--datum` is the flag, so datum mode is what a
+;; caller has to ask for -- and every fixture above asks for it. So the whole
+;; segment was measured on the path a caller does NOT take by default, and the
+;; default path was broken the entire time in a way nothing could see.
+;;
+;; A text-mode block's name is derived by its language and comes back as a
+;; STRING, where a datum block gives symbols. Measured before the repair:
+;;
+;;     whereis helper-fn -> (error unknown-name helper-fn (nearest))
+;;     search  helper-fn -> no hits
+;;
+;; about a block the outline lists under exactly that name. Both verbs, one
+;; cause, and neither of the two repairs written for this round -- the one
+;; that made the verbs agree, and the one that added the singular `name` as a
+;; fallback -- did anything at all on this path.
+(define d4e (fresh-store!))
+(init! d4e)
+(define src4e (string-append scratch "/src4e"))
+(system (string-append "rm -rf " src4e "; mkdir -p " src4e))
+(put! (string-append src4e "/plain.sc")
+      (string->utf8
+        (string-append
+          ";; wombat everywhere in the documentation line\n"
+          "(define (helper-fn x)\n"
+          "  (let ((note \"wombat appears in the source too\"))\n"
+          "    x))\n")))
+;; NO `--datum` HERE, AND THAT IS THE POINT OF THE SECTION.
+(run d4e "import-code" src4e)
+
+;; CONTROL: the name really is derived from the source rather than stored,
+;; which is what makes this a different path and not just a different fixture.
+(want "N4e CONTROL: the block is listed under a name nobody wrote into a field"
+      (let* ((ignored (run d4e "outline" "--depth" "2"))
+             (joined (text-of out-path)))
+        (if (holds? joined "helper-fn") 'derived-from-the-source 'MISSING))
+      'derived-from-the-source)
+
+(want "N4e a block imported the DEFAULT way answers to the name it defines"
+      (list (car (car (whereis-in d4e "helper-fn")))
+            (if (> (length (lines-of (run d4e "search" "helper-fn"))) 0)
+                'search-finds-it-too
+                'SEARCH-DOES-NOT))
+      (list 'def 'search-finds-it-too))
+
+;; NEVER: BYTES ARE NOT TEXT. A text block keeps its source -- and the doc
+;; derived from it -- as a bytevector, and the fallback that turned a field
+;; into a string printed it: the doc entered the search as
+;; `#vu8(59 59 32 119 ...)`. That is not a gap, it is a WRONG ANSWER -- the
+;; hit came back with a snippet of byte numbers, and a caller searching for a
+;; number matched a byte VALUE. Not finding words in that source is the gap;
+;; answering with its bytes was the defect.
+(want "N4e neither the printed vector nor a byte value inside it is a hit"
+      (list (length (lines-of (run d4e "search" "vu8")))
+            (length (lines-of (run d4e "search" "119"))))
+      (list 0 0))
+
+;; THIS ROW IS THE GAP ITSELF, AND IT IS SUPPOSED TO GO RED ONE DAY. The words
+;; in a text block's source are still not searchable -- `appears` is in that
+;; file and finds nothing. The index that segment B2 builds is where this
+;; closes, and on the day it closes THIS ROW GOES RED. That red means the gap
+;; shut, not that something broke: delete the row and say so in the note. It
+;; is here because a gap named only in a delivery note is a gap nobody runs.
+(want "N4e KNOWN GAP (red when B2 closes it): words in a text block's source are not searched"
+      (length (lines-of (run d4e "search" "appears")))
+      0)
+
+(printf "\n== N4f: search and the index answer about the same blocks ==\n")
+;; NEVER: THE SET OF BLOCKS THAT EXIST IS THE OUTLINE, AND SEARCH LEARNED IT
+;; SECOND. The index stopped answering about deleted blocks when N4c was
+;; written; `store-search` walks the same `state-datum` list and had not, so
+;; the two verbs disagreed about a block that is not there. A guard's comment
+;; is a map of the entrance nobody guarded.
+;;
+;; NEVER: AND ONLY SOME BLOCKS HAVE NAMES. `names` is a field, so anything can
+;; carry one; a NAME is something a `code` block defines or a `library` block
+;; carries. The index applied that rule and search applied none, so a page with
+;; a `names` field scored at the top of the name scale while `whereis` said the
+;; name did not exist -- reachable with two ordinary commands, no batch and no
+;; fixture trickery.
+(define d4f (fresh-store!))
+(init! d4f)
+(define src4f (string-append scratch "/src4f"))
+(system (string-append "rm -rf " src4f "; mkdir -p " src4f))
+(put! (string-append src4f "/lib.sc")
+      (string->utf8
+        (string-append
+          "(library (probe kept)\n"
+          "  (export gremlin-real)\n"
+          "  (import (rnrs))\n"
+          "  (define (gremlin-real x) x))\n")))
+(run d4f "import-code" src4f "--datum")
+(define page4f (insert! d4f "--title" "a page about gremlins"))
+(run d4f "set" page4f "names" "gremlin")
+
+;; CONTROL: the page IS found, and IS in the outline, before anything is said
+;; about how it is scored or what happens when it goes away.
+(want "N4f CONTROL: the page is in the outline and search finds it"
+      (let* ((ignored (run d4f "outline"))
+             (listed (holds? (text-of out-path) "a page about gremlins")))
+        (list listed (> (length (lines-of (run d4f "search" "gremlins"))) 0)))
+      (list #t #t))
+
+;; The score is the whole point: 3 for the title and nothing for the `names`
+;; field, where an exact name match would be 12. Reading the number rather
+;; than "is it below the definition" is what keeps this row about the rule
+;; instead of about the two blocks that happen to be in this store.
+(want "N4f a names field on a page is not a name: prose score only, and both verbs agree"
+      (let* ((hits (lines-of (run d4f "search" "gremlin")))
+             (page (assoc page4f (map (lambda (h) (cons (cadr h) (caddr h))) hits)))
+             (w (car (cadr (run d4f "whereis" "gremlin")))))
+        (list (if page (cdr page) 'NOT-A-HIT-AT-ALL) (car w) (cadr w)))
+      (list 3 'error 'unknown-name))
+
+(want "N4f CONTROL: the library's real name still answers, at the name tier"
+      (let ((hits (lines-of (run d4f "search" "gremlin-real"))))
+        (list (car (car (whereis-in d4f "gremlin-real")))
+              (> (caddr (car hits)) 3)))
+      (list 'def #t))
+
+;; And the deleted block. Both sides are controlled: the outline lists it
+;; before, does not list it after, and a SIBLING stays findable -- so a row
+;; that went green because search stopped working entirely would still be red.
+(want "N4f a deleted block stops being a search result, and its neighbours do not"
+      (let* ((before (> (length (lines-of (run d4f "search" "gremlins"))) 0))
+             (ignored (run d4f "del" page4f))
+             (outlined (begin (run d4f "outline")
+                              (holds? (text-of out-path) "a page about gremlins")))
+             (after (length (lines-of (run d4f "search" "gremlins"))))
+             (sibling (length (lines-of (run d4f "search" "gremlin-real")))))
+        (list before outlined after (> sibling 0)))
+      (list #t #f 0 #t))
+
+(printf "\n== N4h: the same unreadable block, asked of the OTHER verb ==\n")
+;; NEVER: A GUARD PROTECTS THE DOOR THAT HOLDS IT. N4g above proves the index
+;; survives a block it cannot read. `search` reached the same parser by a
+;; second route that had no guard, and one such block took down EVERY query in
+;; that store -- measured, on this very fixture:
+;;
+;;     whereis kept -> (def "..." (library (probe broken)) (name kept) ...)
+;;     search  kept -> (error internal (condition "~s is not a proper list"))
+;;     search  x    -> (error internal (condition "~s is not a proper list"))
+;;
+;; The fixture for the guard was already here; nothing had ever pointed the
+;; other verb at it. So this row exists to point it, and both verbs now come
+;; through one function that owns the rule and the guard together.
+;;
+;; The second row needs a query that matches NOTHING, because a store where
+;; every query fails looks the same as a store with no matches unless a row
+;; asks for the difference between an empty answer and an error.
+;;
+;; It first used `x` -- which matches, because `x` is the parameter in
+;; `(define (kept x) x)` and the printed body is searched. The row went red and
+;; the product was right: a one-character query is a substring of almost
+;; anything. A CONTROL now states the premise rather than assuming it, so a
+;; token that starts matching something cannot quietly turn this row into a
+;; test of nothing.
+(want "N4h search survives the same block, counts the skip, and still scores the name"
+      (let* ((s0 (defs-index-skipped-count))
+             (hits (store-search d4g "kept"))
+             (s1 (defs-index-skipped-count)))
+        (list (- s1 s0)
+              (if (pair? hits) 'found-it 'NO-HIT)
+              (if (and (pair? hits) (> (cadr (car hits)) 10)) 'at-the-name-tier 'PROSE-ONLY)
+              ;; the id is not spelled here -- it is asked of the OTHER verb,
+              ;; so the row is about the two agreeing rather than about a
+              ;; string this fixture happens to know.
+              (if (and (pair? hits)
+                       (equal? (car (car hits)) (cadr (car (whereis-in d4g "kept")))))
+                  'the-same-block-whereis-names
+                  'A-DIFFERENT-BLOCK)))
+      (list 1 'found-it 'at-the-name-tier 'the-same-block-whereis-names))
+
+;; The premise is checked against the BYTES this store was built from, which
+;; is the whole of what is in it -- the fixture writes that one file and
+;; imports it and does nothing else to this store. It is a weaker check than
+;; asking the store itself, and it is written down as such: what it rules out
+;; is the token quietly becoming present because somebody edited the source
+;; above, which is exactly how the previous version of this row rotted.
+(want "N4h CONTROL: the token below is absent from the text this store was built from"
+      (let ((src (utf8->string (slurp (string-append src4g "/broken.sc")))))
+        (list (if (holds? src "qzwxjv") 'THE-TOKEN-IS-PRESENT 'absent)
+              (if (holds? src "kept") 'and-the-present-one-is-present 'CONTROL-IS-BROKEN)))
+      (list 'absent 'and-the-present-one-is-present))
+
+(want "N4h and a query that matches nothing is an empty answer, not an error"
+      (let ((r (run d4g "search" "qzwxjv")))
+        (list (car r) (lines-of r)))
+      (list 0 '()))
+
+(printf "\n== N4i: a library's own name is not a name it defines ==\n")
+;; NEVER: AND A LIBRARY'S `name` IS A LIST OF SYMBOLS. `(probe broken)` is the
+;; library's own name, not something it defines, and search put it through the
+;; same extractor as a definition -- so each COMPONENT scored at the top of the
+;; name scale: measured, `search probe` answered `(hit "..." 12 "probe")` about
+;; a library that defines nothing of the sort, while `whereis probe` correctly
+;; said the name was unknown. The two verbs read one function now, and its
+;; library branch reads `exports` and nothing else.
+;; NEVER: AND THIS ROW HAS TO BE ASKED OF A LIBRARY THAT CAN BE READ. It first
+;; used `d4g`, whose library is the BROKEN one -- its export list raises, the
+;; guard turns the whole block into no names at all, and so the library branch
+;; never produces a name there whatever it is told to read. The row was green
+;; because nothing in that store matched, not because the repair held: a
+;; mutation that made the library branch read `name` as well SURVIVED it.
+;;
+;; So: a clean library, and a CONTROL that the name component really is
+;; reachable in that store -- otherwise `(< top 10)` is true for the same
+;; empty reason all over again.
+(define d4i (fresh-store!))
+(init! d4i)
+(define src4i (string-append scratch "/src4i"))
+(system (string-append "rm -rf " src4i "; mkdir -p " src4i))
+(put! (string-append src4i "/clean.sc")
+      (string->utf8
+        (string-append
+          "(library (marmoset clean)\n"
+          "  (export thing)\n"
+          "  (import (rnrs))\n"
+          "  (define (thing x) x))\n")))
+(run d4i "import-code" src4i "--datum")
+
+(want "N4i CONTROL: this library is readable, and the word is in its name"
+      (list (car (car (whereis-in d4i "thing")))
+            (if (holds? (utf8->string (slurp (string-append src4i "/clean.sc"))) "marmoset")
+                'the-component-is-there
+                'CONTROL-IS-BROKEN))
+      (list 'def 'the-component-is-there))
+
+(want "N4i a library name component scores no name tier, and both verbs agree"
+      (let* ((hits (store-search d4i "marmoset"))
+             (top (if (pair? hits) (apply max (map cadr hits)) 0))
+             (w (car (cadr (run d4i "whereis" "marmoset")))))
+        (list (< top 10) (car w) (cadr w)))
+      (list #t 'error 'unknown-name))
+
+(printf "\n== N4j: a library that was deleted is not a library to name ==\n")
+;; NEVER: AND AN ANCESTOR THAT IS GONE IS NOT THE ANSWER EITHER. Deleting a
+;; library block left its name being reported by every definition under it,
+;; because the ancestor walk never asked whether each step still exists --
+;; measured, after deleting only the library:
+;;
+;;     (def "cntj2d0l.2" (library (probe gone)) (name kept2) (kind code))
+;;
+;; The `export` record went, correctly, because that record IS the library.
+;; The `def` record went on naming one that is not there.
+(define d4j (fresh-store!))
+(init! d4j)
+(define src4j (string-append scratch "/src4j"))
+(system (string-append "rm -rf " src4j "; mkdir -p " src4j))
+(put! (string-append src4j "/gone.sc")
+      (string->utf8
+        (string-append
+          "(library (probe gone)\n"
+          "  (export kept2)\n"
+          "  (import (rnrs))\n"
+          "  (define (kept2 x) x))\n")))
+(run d4j "import-code" src4j "--datum")
+(define lib4j
+  (let ((r (whereis-in d4j "kept2")))
+    (let loop ((l r))
+      (cond ((null? l) 'no-export)
+            ((eq? 'export (car (car l))) (cadr (car l)))
+            (else (loop (cdr l)))))))
+
+(want "N4j CONTROL: before the delete, both records are there and both name the library"
+      (let ((r (whereis-in d4j "kept2")))
+        (list (map car r)
+              ;; a record is (def <id> (library X) (name n) (kind code)) --
+              ;; a list whose second element is a STRING, so it is read by
+              ;; position rather than with assq.
+              (cadr (caddr (car r)))))
+      (list '(def export) '(probe gone)))
+
+(want "N4j after deleting the library, the definition stops naming it and the export is gone"
+      (let* ((gone (run d4j "del" lib4j))
+             (r (whereis-in d4j "kept2")))
+        (list (car gone)
+              (map car r)
+              (cadr (caddr (car r)))))
+      (list 0 '(def) #f))
+
+(printf "\n== N4z: the harness itself, pinned ==\n")
+;; NEVER: A ROW THAT READS NOTHING CANNOT TELL "NO OUTPUT" FROM "OUTPUT WITHOUT
+;; A NEWLINE". `run` used to stop at end of text without taking what followed
+;; the last newline, so a program printing an answer with no trailing newline
+;; produced an EMPTY line list. Every row in this file reads those lines, and
+;; the answer that arrives last is very often the error -- so the blind spot
+;; sat exactly where the bad news does. A reviewer found it by showing a row
+;; asserting an empty answer staying green while the program printed
+;; `(error internal)`.
+;;
+;; This row does not go through the product at all: it writes the two shapes
+;; itself and asks the harness what it sees, because the question is about the
+;; harness. The pair is the reading -- with and without the newline -- since a
+;; splitter that dropped BOTH would pass a row that only checked one.
+(want "N4z the harness reads a final line whether or not it ends in a newline"
+      (let ((with-nl (string-append scratch "/nl-yes.txt"))
+            (without (string-append scratch "/nl-no.txt")))
+        (put! with-nl (string->utf8 "(one)\n(two)\n"))
+        (put! without (string->utf8 "(one)\n(two)"))
+        (list (lines-of-text (text-of with-nl))
+              (lines-of-text (text-of without))))
+      (list '((one) (two)) '((one) (two))))
+
+(printf "\n== N4m: a field whose value is not the shape its branch assumes ==\n")
+;; NEVER: A SHAPE IS TESTED, NOT CAUGHT. `field-strings` reads a field in
+;; conflict as `(conflict ((<value> <writer> <seq>) ...))` and took the second
+;; element and mapped `car` over it. `set <id> title (conflict)` is accepted by
+;; the write path, and then that expression raises -- and `store-search` reads
+;; titles, srcs and keywords through it, on a block from `state-read`, which
+;; the guarded read does not cover because it never goes through the view.
+;; One such field took down every query in the store.
+;;
+;; It is repaired by testing the shape rather than wrapping it in a `guard`.
+;; A raise there would say "we wrote the branch wrong" exactly as loudly as
+;; "the data is odd", and catching it would file both under the count that
+;; means "a block could not be read" -- so a real mistake of ours would hide
+;; inside a number. A field whose shape does not fit contributes nothing, and
+;; is NOT counted.
+(define d4m (fresh-store!))
+(init! d4m)
+(define d4m-odd (insert! d4m "--title" "zibbet the title word"))
+(define d4m-plain (insert! d4m "--title" "plain neighbour"))
+(run-with-stdin d4m (string-append "((set \"" d4m-odd "\" title (conflict)))") "batch")
+
+;; NEVER: AND THE ROUTE DECIDES THE VALUE'S TYPE. The keyword below is written
+;; as a STRING because `batch` carries the intent as data -- `keywords
+;; odd-keyword` would store the SYMBOL, and `field-strings` reads only strings,
+;; so the block would have no searchable keywords and the row below would fail
+;; for a reason that has nothing to do with what it is asking. The command line
+;; would have converted it; this route does not. That difference is the same
+;; one this batch already found in `set <id> kind`, where the command line
+;; stored a string and `batch` stored a symbol.
+(want "N4m CONTROL: the store accepted a title that is not the shape the branch assumes"
+      (list (car (run-with-stdin d4m (string-append "((set \"" d4m-odd "\" keywords \"quorvan\"))") "batch"))
+            (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED))
+      (list 0 'the-write-landed))
+
+(want "N4m search still answers about the other blocks, and exits cleanly"
+      (let ((r (run d4m "search" "neighbour")))
+        (list (car r) (> (length (lines-of r)) 0)))
+      (list 0 #t))
+
+;; NEVER: AND THE TWO TOKENS MUST NOT OVERLAP. The first version searched for
+;; `odd` against a keyword `odd-keyword`, and `odd` is a SUBSTRING of it -- so
+;; the row that was meant to show the broken title matching nothing found the
+;; block through its keyword instead and read 1. Two words with nothing in
+;; common now, so each half of the row can only be answered by the field it is
+;; about.
+(want "N4m and the odd block does not match on that field, while its other fields still do"
+      (let* ((by-title (run d4m "search" "zibbet"))
+             (by-keyword (run d4m "search" "quorvan")))
+        (list (car by-title)
+              (length (lines-of by-title))
+              (car by-keyword)
+              (> (length (lines-of by-keyword)) 0)))
+      (list 0 0 0 #t))
+
+;; TWIN: AND A REAL CONFLICT IS STILL READ. Narrowing a test is the easy way to
+;; break the path it was protecting, and nothing would say so -- the rows above
+;; pass just as well if `field-strings` stopped reading conflicts altogether.
+;; A genuine conflict is what `reduce.sc` builds when two writers set one
+;; field, so this one is written in that shape by hand.
+(define d4m-real (insert! d4m "--title" "placeholder"))
+(run-with-stdin d4m
+                (string-append "((set \"" d4m-real
+                               "\" title (conflict ((\"winning words\" \"w1\" 1) (\"other words\" \"w2\" 1)))))")
+                "batch")
+
+;; NEVER: AND EVERY CLAUSE OF THE SHAPE TEST NEEDS A CASE. The test has four
+;; parts -- a pair, the tag, a second element, and a candidate list whose
+;; members are pairs -- and the fixture above exercises exactly one of them:
+;; `(conflict)` is rejected because there is no second element. A mutation that
+;; deleted either of the last two would have survived, not because those checks
+;; are wrong but because nothing here asked them anything.
+;;
+;; So both remaining shapes, each of which raises in a different expression if
+;; its clause is removed: `(conflict 5)` reaches `for-all` with a non-list, and
+;; `(conflict (1 2))` reaches `(map car ...)` with members that are not pairs.
+(define d4m-notlist (insert! d4m "--title" "havrel the second"))
+(define d4m-notpairs (insert! d4m "--title" "yompus the third"))
+(run-with-stdin d4m (string-append "((set \"" d4m-notlist "\" title (conflict 5)))") "batch")
+(run-with-stdin d4m (string-append "((set \"" d4m-notpairs "\" title (conflict (1 2))))") "batch")
+
+(want "N4m every shape the test rejects leaves search working, and none of them matches"
+      (let ((a (run d4m "search" "havrel"))
+            (b (run d4m "search" "yompus"))
+            (c (run d4m "search" "neighbour")))
+        (list (car a) (length (lines-of a))
+              (car b) (length (lines-of b))
+              (car c) (> (length (lines-of c)) 0)))
+      (list 0 0 0 0 0 #t))
+
+;; NEVER: AND THE TAG ITSELF NEEDS A CASE. The three malformed values above all
+;; BEGIN with `conflict`, so deleting the tag test changes nothing any of them
+;; reads -- a reviewer showed it: with that clause removed those three and the
+;; twin are unchanged, while `(not-conflict (("sentinel" "w1" 1)))` goes from
+;; contributing nothing to contributing `("sentinel")`.
+;;
+;; The rule this breaks is one this batch wrote down a round earlier: count the
+;; clauses of a guard, then count the shapes the fixture feeds it. It was
+;; applied here to "the clauses after the first", and the first was skipped
+;; because it looked obviously right. **Obviously right is exactly the kind of
+;; reason that leaves a clause with no case.** The tag test is the one most
+;; likely to be skipped, because it reads as a definition of what the value IS
+;; rather than as a judgement about it.
+(define d4m-wrongtag (insert! d4m "--title" "murken the fourth"))
+(run-with-stdin d4m
+                (string-append "((set \"" d4m-wrongtag
+                               "\" title (not-conflict ((\"murken-candidate\" \"w1\" 1)))))")
+                "batch")
+
+(want "N4m NEGATIVE TWIN: a value with another tag is not read as a conflict"
+      (let ((a (run d4m "search" "murken-candidate"))
+            (b (run d4m "search" "neighbour")))
+        (list (car a) (length (lines-of a))
+              (car b) (> (length (lines-of b)) 0)))
+      (list 0 0 0 #t))
+
+(want "N4m TWIN: a field in a real conflict is still searched, on every candidate"
+      (let ((a (run d4m "search" "winning"))
+            (b (run d4m "search" "other")))
+        (list (> (length (lines-of a)) 0) (> (length (lines-of b)) 0)))
+      (list #t #t))
+
+(printf "\n== N4n: a word written as a symbol is in the store and cannot be found ==\n")
+;; KNOWN OPEN, PINNED SO THAT FIXING IT IS LOUD. `batch` carries an intent as
+;; DATA, so `(set <id> title tinvor)` stores the SYMBOL; the command line would
+;; have converted it to a string. `field-strings` reads only strings. So a word
+;; written by that route is IN the store, the write answers `ok` with exit 0,
+;; and no query will ever find it.
+;;
+;; This is the same family as the naming defect this batch repaired -- a
+;; text-mode block's name is a string and a datum block's is a symbol, and the
+;; extractor took only one of them. That was the reading side for NAMES; this
+;; is the reading side for TEXT, and it is not repaired here: the type rule for
+;; field values belongs with the work that rebuilds field reading, and it needs
+;; its own twin saying which fields should NOT accept a symbol.
+;;
+;; What this row is for: a note in a delivery has nobody to shout for it. This
+;; goes red on the day the behaviour changes, and red is the reminder. It is
+;; the third time this batch has used that shape -- after the text-source gap
+;; and the three unnamed refusals -- and the most deserving of the three,
+;; because what it pins is SILENT DATA LOSS: the word is there, the write
+;; succeeded, and the user will report it as "search is broken".
+;;
+;; The six tokens are pairwise non-substring on purpose. An earlier row in this
+;; file searched `odd` while a keyword read `odd-keyword`, and the half meant to
+;; show a broken title matching nothing was answered by the keyword instead.
+(define d4n (fresh-store!))
+(init! d4n)
+(define d4n-ids
+  (map (lambda (t) (insert! d4n "--title" t))
+       (list "carrier one" "carrier two" "carrier three"
+             "carrier four" "carrier five" "carrier six")))
+(define (d4n-set! i field value)
+  (run-with-stdin d4n
+                  (string-append "((set \"" (list-ref d4n-ids i) "\" " field " " value "))")
+                  "batch"))
+;; NEVER: AND THE CONTROL HAS TO ASSERT THE WRITES, NOT THAT THE BLOCKS EXIST.
+;; It used to check that `read` on the six blocks exits 0 -- which is true
+;; whether or not the symbol writes were ACCEPTED, because the blocks were made
+;; by `insert!` before any of this. So if the type rule is one day settled by
+;; REFUSING a symbol-valued text field, those writes would start failing, the
+;; searches would still read `(0 1 0 1 0 1)`, and this row would stay green
+;; through the very change it exists to announce.
+;;
+;; A reviewer found it, and the general form is worth more than the fix: **a
+;; row that pins a known-open behaviour has to be red for EVERY way the thing
+;; could be settled, not for the one the author had in mind.** The fixed action
+;; is to list the ways it could be fixed before writing the row, and if some
+;; are not covered, to say which.
+;;
+;; The two ways here: the reader learns to take symbols (the searches change),
+;; or the writer refuses them (these responses change). Both are now watched.
+(define d4n-writes
+  (list (d4n-set! 0 "title"    "tinvor")
+        (d4n-set! 1 "title"    "\"pesgul\"")
+        (d4n-set! 2 "src"      "raxmid")
+        (d4n-set! 3 "src"      "\"qolnev\"")
+        (d4n-set! 4 "keywords" "hufpar")
+        (d4n-set! 5 "keywords" "\"dewzin\"")))
+
+(want "N4n CONTROL: all six writes were ACCEPTED, symbol-valued ones included"
+      (list (apply max (map car d4n-writes))
+            (length (filter (lambda (r)
+                              (let ((ls (cadr r)))
+                                (and (pair? ls) (pair? (car ls)) (eq? 'batch (car (car ls))))))
+                            d4n-writes)))
+      (list 0 6))
+
+(want "N4n CONTROL: and the six blocks are readable, so the searches below ask about something"
+      (let ((codes (map (lambda (i) (car (run d4n "read" (list-ref d4n-ids i)))) '(0 1 2 3 4 5))))
+        (list (apply max codes) (length codes)))
+      (list 0 6))
+
+(want "N4n KNOWN OPEN (red when B2 settles the type rule): a symbol is unfindable, a string is not"
+      (map (lambda (w) (length (lines-of (run d4n "search" w))))
+           '("tinvor" "pesgul" "raxmid" "qolnev" "hufpar" "dewzin"))
+      '(0 1 0 1 0 1))
+
+(printf "\n== N4k: the other way a block can be unreadable ==\n")
+;; NEVER: A BLOCK IS NOT UNREADABLE IN ONE WAY, AND N4g MODELLED ONLY ONE OF
+;; THEM. Its fixture raises while the NAMES are parsed, which the guard used to
+;; catch because the guard was around name parsing. A block can also raise
+;; while its FIELDS are derived -- before any verb asks for a name -- and that
+;; path had no guard at all: the index read `kind` through its own reader
+;; BEFORE calling for names, and search read `doc` and `body` AFTER.
+;;
+;; The shapes are not interchangeable and the difference is one level of
+;; nesting. `(fields . broken)` is caught by a `list?` test at the outer level
+;; and yields nothing; `(fields (mutable x . broken))` reaches an arity test
+;; written as `(> (length field) 3)` behind a `pair?` check, and `length` on an
+;; improper list raises. The comment that documented the guard gave the FIRST
+;; shape as its example, the fixture was written from the comment, and so the
+;; round that added the guard never exercised the case the guard was for.
+(define d4k (fresh-store!))
+(init! d4k)
+;; NEVER: AND THE ROUTE MATTERS, BECAUSE ONE WRITER REFUSES THIS SHAPE. The
+;; first version of this fixture built the block with `import-code --datum`,
+;; which answers `(error bad-source (reason reader-rejected))` -- the source
+;; reader will not read a file containing it, so that route cannot make one and
+;; the fixture silently built an EMPTY store. Every row below would have been
+;; asking questions of nothing, and passing.
+;;
+;; `batch` does accept it, and THAT IS CORRECT -- do not go and stop it. A
+;; record reaches a store two ways: a caller writes one, or replay brings one
+;; from another build. `import-code` is the external-input side and it already
+;; refuses this, at the reader. Replay is the other side, and refusing to
+;; replay a record is data loss -- which this tree decided against where replay
+;; is defined, on the grounds that a store written by a LATER build must still
+;; load here. `batch` is the intent layer both arrive through, so it is exactly
+;; the wrong place to put that refusal.
+;;
+;; So the shape is reachable by an ordinary documented verb, the guard is not
+;; theoretical, and the next reader who notices that `batch` will store a
+;; broken body should read this paragraph before plugging it.
+(define d4k-id (insert! d4k "--title" "holder"))
+;; The neighbour is what "the rest of the store" MEANS here, so it has to be a
+;; block the two verbs can answer about -- a plain inserted block has no name
+;; and neither verb would say anything about it, which would make the rows
+;; below green for the wrong reason.
+(define d4k-neighbour (insert! d4k "--title" "neighbour"))
+(run-with-stdin d4k (string-append "((set \"" d4k-neighbour "\" kind code))") "batch")
+(run-with-stdin d4k (string-append "((set \"" d4k-neighbour "\" mode datum))") "batch")
+(run-with-stdin d4k (string-append "((set \"" d4k-neighbour "\" body (define (ok-name x) x)))") "batch")
+(run-with-stdin d4k (string-append "((set \"" d4k-id "\" kind code))") "batch")
+(run-with-stdin d4k (string-append "((set \"" d4k-id "\" mode datum))") "batch")
+(define d4k-write
+  (run-with-stdin d4k
+                  (string-append "((set \"" d4k-id
+                                 "\" body (define-record-type thing (fields (mutable x . broken)))))")
+                  "batch"))
+
+;; CONTROL: the write LANDED. It cannot be confirmed by reading the block back,
+;; because `read` is one of the verbs this body takes down -- so the control
+;; asks the writer instead, which is the last point at which anything can still
+;; answer about it.
+(want "N4k CONTROL: the store accepted the body that cannot be read"
+      (list (car d4k-write)
+            (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED))
+      (list 0 'the-write-landed))
+
+;; NEVER: AND THE COUNTER IS IN THIS PROCESS WHILE THE VERB IS NOT. The first
+;; version of this row read `defs-index-skipped-count` either side of
+;; `whereis-in`, which runs the product in a `(system ...)` SUBPROCESS -- so
+;; the counter never moved and the row read `(def #f #t)`. That is the third
+;; time in this batch that a call was copied from elsewhere without asking
+;; which channel it goes through; the first cost a round, because the row it
+;; broke was green instead of red.
+;;
+;; So the halves are split by channel, as in N4g: the counting runs IN THIS
+;; PROCESS where the counter lives, and what a caller sees is asked of the
+;; command line.
+;; NEVER: AND THE UPPER BOUND WAS COMPUTED FROM A COMMAND THAT FAILS. It used
+;; `(blocks-in d4k)` -- and `outline` is one of the three verbs this very store
+;; takes down, which the KNOWN OPEN row below asserts. So the count was of a
+;; one-line error message, the bound became `d <= 3`, and the limit that was
+;; added to stop the counting degenerating unnoticed could never have bound
+;; anything. The factor was wrong as well: the INDEX path reads a block at most
+;; TWICE -- `fields-of` and `block-names` -- and it is SEARCH that reads three
+;; times, with `doc` and `body`. This row measures the index.
+;;
+;; No listing verb works on this store, so the size is STATED here, and the
+;; control above pins it with the verb that does work.
+(want "N4k CONTROL: no listing verb can count this store, so the size below is stated"
+      (blocks-in d4k)
+      'outline-failed-so-this-store-cannot-be-counted)
+
+(want "N4k the index skips the unreadable block, counts it, and still indexes the rest"
+      (let* ((n 2)
+             (st (open-and-reduce d4k))
+             (s0 (defs-index-skipped-count))
+             (ix (defs-index st))
+             (s1 (defs-index-skipped-count))
+             (d (- s1 s0)))
+        (list (if (pair? (hashtable-ref ix "ok-name" (quote ()))) 'the-rest-is-indexed 'MISSING)
+              (> d 0)
+              (<= d (* 2 n))))
+      (list 'the-rest-is-indexed #t #t))
+
+(want "N4k and the verb answers about the rest of the store"
+      (car (car (whereis-in d4k "ok-name")))
+      'def)
+
+(want "N4k search answers about the rest of the store"
+      (let ((hits (store-search d4k "ok-name")))
+        (list (if (pair? hits) 'found-it 'NO-HIT)
+              (if (and (pair? hits) (> (cadr (car hits)) 10)) 'at-the-name-tier 'PROSE-ONLY)))
+      (list 'found-it 'at-the-name-tier))
+
+(want "N4k and a search that matches nothing is still an empty answer"
+      (let ((r (run d4k "search" "qzwxjv")))
+        (list (car r) (lines-of r)))
+      (list 0 '()))
+
+;; KNOWN OPEN, MEASURED HERE RATHER THAN LEFT TO BE DISCOVERED. Three verbs
+;; read a block without the guard, and on this store all three refuse:
+;;
+;;     outline      -> (error internal (condition "~s is not a proper list"))
+;;     read <id>    -> the same
+;;     export-code  -> the same
+;;
+;; They fail LOUDLY, which is the better half of the news -- a projection that
+;; wrote one file fewer and exited 0 would be worse. What is wrong is that the
+;; refusal does not say WHICH block: `(error internal (condition ...))` is the
+;; same sentence on every path, and it drops the one useful fact at the point
+;; where it was still known.
+;;
+;; NEVER: AND THIS ROW PINS TODAY'S ANSWER, NOT THE RIGHT ONE. It is expected
+;; to go red, and the two ways it can go red mean opposite things:
+;;
+;;   somebody fixed it       -- the refusals name the block, or a verb learns
+;;                              to fall back. Change this row, deliberately.
+;;   somebody quietly added  -- a guard appears on one of these paths and the
+;;   a guard                    verb starts SKIPPING. That would nail "silently
+;;                              incomplete" down as the design.
+;;
+;; The row asserts both halves separately -- that all three refuse, AND that
+;; none of them names the block -- so the reading says which half moved. A row
+;; that asserted only "it refuses" could not tell the fix from the regression.
+;; NEVER: AND THE TITLE OF THIS ROW IS THE PROMISE IT MAKES. What was measured
+;; is that an unreadable block is found BEFORE anything is written: the verb
+;; refuses and the target directory is empty, whether the broken block is in
+;; the middle of the store or the last one in it -- the second case is what
+;; tells "all or nothing" apart from "it failed before it got that far".
+;;
+;; It does NOT say the projection is atomic. A failure during WRITING -- the
+;; disk filling on the third file, a target that cannot be written, the process
+;; being killed -- would still leave a half-written tree, and this row would be
+;; green through all of it. Whether the projection should write to a temporary
+;; directory and rename is open, and belongs with the rest of the unreadable-
+;; block question rather than here.
+(want "N4k an unreadable block is found before anything is written: the verb refuses and the directory is empty"
+      (let* ((out (string-append scratch "/n4k-empty"))
+             (ignored (system (string-append "rm -rf " out "; mkdir -p " out)))
+             (r (run d4k "export-code" out))
+             (left (length (filter (lambda (f) (not (member f '("." ".."))))
+                                   (directory-list out)))))
+        (list (> (car r) 0) left))
+      (list #t 0))
+
+;; NEVER: AND EACH VERB'S OUTPUT IS READ BEFORE THE NEXT ONE OVERWRITES IT.
+;; This ran all three and THEN read `(text-of out-path)` -- but `run`
+;; redirects every call to the same file, so the naming half measured only
+;; `export-code`, and it never looked at stderr at all. The consequence is not
+;; a wrong answer today: it is that the row would stay GREEN on the day
+;; somebody makes `read` name the block, which is the only day it exists for.
+;;
+;; The fixture already contained the idiom that avoids this, in two other rows
+;; -- `(begin (run ...) (text-of out-path))`, each run paired with its own read
+;; immediately. A sweep of the file found three rows that call `run` more than
+;; once before reading the shared output; those two were safe for exactly that
+;; reason, and this one was not.
+;;
+;; Both streams are read, because a refusal in this tree has appeared on each.
+(want "N4k KNOWN OPEN: the three unguarded readers all refuse, and none of them names the block"
+      (let* ((names? (lambda (r)
+                       (list (> (car r) 0)
+                             (if (or (holds? (text-of out-path) d4k-id)
+                                     (holds? (text-of err-path) d4k-id))
+                                 'names-the-block
+                                 'no))))
+             (o (names? (run d4k "outline")))
+             (r (names? (run d4k "read" d4k-id)))
+             (e (names? (run d4k "export-code" (string-append scratch "/n4k-export")))))
+        (append o r e))
+      (list #t 'no #t 'no #t 'no))
+
+(printf "\n== N4b: the outline calls a code block by the name it defines ==\n")
+;; NEVER: AND THIS ONE WAS ALREADY TRUE. D10 asked for it and the outline has
+;; been doing it; the row exists because nothing said so, and a listing that
+;; quietly went back to `chez:7` would be a worse tree with a green suite.
+;; The names below are DERIVED from the source, not stored, so this also
+;; pins that the listing reads the view rather than the stored fields.
+(want "N4b a code block is listed under the name it defines, not a positional label"
+      ;; The outline is TEXT, not items: `run` splits stdout into lines and the
+      ;; row wants the characters, so it reads the captured stdout the way the
+      ;; other outline rows in this fixture do (line 971) rather than the
+      ;; split-up form.
+      (let* ((ignored (run d4 "outline" "--depth" "2"))
+             (joined (text-of out-path)))
+        (list (if (holds? joined "reaper-start") 'names-the-definition 'POSITIONAL-LABEL)
+              (if (holds? joined "helper-only") 'and-the-unexported-one-too 'MISSING)))
+      (list 'names-the-definition 'and-the-unexported-one-too))
+
+(printf "\n== N5: a name match outranks a mention of the same word ==\n")
+;; NEVER: THE BLOCKS COMPETE, AND THE PROSE COMPETITOR IS FULLY LOADED. Four
+;; blocks carry the token `reaper-start`: one DEFINES it, one is the library
+;; that exports it, one defines a name that BEGINS with it, and one is prose
+;; carrying the query in ALL THREE of title, keywords and source.
+;;
+;; That last one is the row's whole point. The first version of this cell gave
+;; prose only a title, and under the scores of the day -- an exact name worth
+;; 5 -- it passed while a fully-loaded prose block scored 4 + 3 + 2 = 9 and
+;; BEAT the definition. The claim this segment is named for was false and the
+;; cell could not see it, because its competitor was too weak to reach the
+;; number that breaks it.
+(define d5 (fresh-store!))
+(init! d5)
+(define src5 (string-append scratch "/src5"))
+(system (string-append "rm -rf " src5 "; mkdir -p " src5))
+(put! (string-append src5 "/defs.sc")
+      (string->utf8
+        (string-append
+          "(library (probe defs)\n"
+          "  (export reaper-start reaper-start-all)\n"
+          "  (import (rnrs))\n"
+          "  (define (reaper-start x) x)\n"
+          "  (define (reaper-start-all xs) xs))\n")))
+(run d5 "import-code" src5 "--datum")
+(define prose5 (insert! d5 "--title" "all about reaper-start"
+                        "--keywords" "reaper-start, notes"
+                        "--text" "reaper-start appears in the body as well"))
+
+(want "N5 a definition outranks prose that carries the query in every field it has"
+      (let* ((r (lines-of (run d5 "search" "reaper-start")))
+             (scored (map (lambda (h) (cons (cadr h) (caddr h))) r)))
+        (list (map cdr scored)
+              (> (cdr (car scored)) (cdr (assoc prose5 scored)))))
+      ;; EVERY NUMBER HERE IS DERIVED FROM THE DOCUMENTED RULE, NOT COPIED
+      ;; FROM A RUN. Exact name 12, prefix 10, doc and printed body 1 each,
+      ;; keywords 4 / title 3 / src 2 at the upper tier:
+      ;;
+      ;;   the definition        12 (exact name) + 1 (its own body)  = 13
+      ;;   the library exporting 12 (exact name), no body of its own = 12
+      ;;   the prefix definition 10 (prefix)     + 1 (its own body)  = 11
+      ;;   the prose               4 + 3 + 2, and no name at all     =  9
+      ;;
+      ;; The gap between 11 and 9 is not the point and will close: when a
+      ;; text-mode block's source and doc are read, prose reaches 10 and ties
+      ;; the prefix match. That tie is the intended answer and was chosen
+      ;; against, which is why exact is 12 rather than 10. What the row is for
+      ;; is the top of the list.
+      (list '(13 12 11 9) #t))
+
+(printf "\n== N5b: how high a block with no name at all can get ==\n")
+;; NEVER: THE NAME SCORE IS CHOSEN AGAINST A CEILING, AND NOTHING MEASURED THE
+;; CEILING. The first numbers -- exact 5 -- were chosen against a prose block
+;; with a title. The second -- exact 10 -- against 4 + 3 + 2 = 9, the best
+;; THIS TREE happened to produce that day. Both times the number that mattered
+;; was "the most a block can score without a name", and both times it was
+;; arrived at by thinking rather than by building the block and reading the
+;; number. A ceiling nothing measures moves quietly: when a text block's
+;; source and doc are read -- which is what segment B2 does -- prose gains a
+;; point, and under the second set of numbers that was a tie with the weakest
+;; name match, arriving in a later segment with nothing red to say so.
+;;
+;; So: build the block, ask for its number, and let the row hold the number
+;; down. Every field that can carry a match at once, and no name:
+;; keywords 4 + title 3 + src 2 + the printed body 1.
+;;
+;; `doc` is NOT in that sum and it is worth saying why, because the reason is
+;; an accident rather than a rule: a caller cannot set it -- the write path
+;; answers `(error malformed-intent (invalid-doc))` -- the datum importer
+;; leaves it empty, and on a text-mode block it is a bytevector and is
+;; skipped. If any of those three change, this row goes red, and that is the
+;; row doing its job.
+(define d5b (fresh-store!))
+(init! d5b)
+(define src5b (string-append scratch "/src5b"))
+(system (string-append "rm -rf " src5b "; mkdir -p " src5b))
+(put! (string-append src5b "/zeb.sc")
+      (string->utf8
+        (string-append
+          "(library (probe zeb)\n"
+          "  (export other zebra)\n"
+          "  (import (rnrs))\n"
+          "  (define (other q) (list (quote zebra) q))\n"
+          "  (define (zebra q) q))\n")))
+(run d5b "import-code" src5b "--datum")
+;; The loaded block is the one that does NOT define the query: `other`, whose
+;; body mentions `zebra` without being called it. Its id comes from asking the
+;; product where `other` is defined -- not from a position in the outline,
+;; whose row order is not promised, and not from counting inserts.
+(define loaded5b
+  (let ((r (whereis-in d5b "other")))
+    (if (and (pair? r) (pair? (car r)) (eq? 'def (car (car r))))
+        (cadr (car r))
+        'no-block)))
+(run d5b "set" loaded5b "title" "zebra topic")
+(run d5b "set" loaded5b "keywords" "zebra, more")
+(run d5b "set" loaded5b "src" "zebra in a src field")
+
+;; NEVER: A CONTROL THAT TRIED ONE INVALID VALUE AND CONCLUDED SOMETHING ABOUT
+;; ALL OF THEM. This row used to set `doc` to "a zebra doc", read the refusal
+;; `(error malformed-intent (invalid-doc))`, and call that "a caller cannot add
+;; a doc" -- which is how the ceiling came to be recorded as 10. But `doc` has
+;; a GRAMMAR, not a ban: `datum-doc-format?` accepts a string of `;` comment
+;; lines each ending in a newline, so the refusal was about the value, not
+;; about the field. The review of the previous round is what said so.
+;;
+;; Both values are here now, because the pair is the reading: the invalid one
+;; is refused, the valid one is taken, and the ceiling below is measured with
+;; the doc IN PLACE.
+(want "N5b CONTROL: doc has a grammar, not a ban -- one value is refused and one is taken"
+      (let* ((bad (run d5b "set" loaded5b "doc" "a zebra doc"))
+             (refused (or (holds? (text-of err-path) "invalid-doc")
+                          (holds? (text-of out-path) "invalid-doc")))
+             (good (run d5b "set" loaded5b "doc" ";; zebra\n")))
+        (list (> (car bad) 0)
+              (if refused 'refused-as-invalid-doc 'ACCEPTED-THE-BAD-ONE)
+              (car good)))
+      (list #t 'refused-as-invalid-doc 0))
+
+;; Both numbers are derived from the documented rule, not copied from a run,
+;; and with the doc now set the sum has every term it can have:
+;;
+;;   the loaded block, no name   keywords 4 + title 3 + src 2 + doc 1 + body 1 = 11
+;;   the definition `zebra`      exact name 12 + its own printed body 1        = 13
+;;
+;; and the row asks for the ORDER as well, so a change that moved both by the
+;; same amount would still have to explain itself. Eleven is the number that
+;; matters: it is what an exact name match has to beat, and it is why exact is
+;; 12 rather than the 10 it was for part of this batch.
+;; NEVER: AND A CEILING MEASURED WITH ONE WORD IS A CEILING FOR ONE WORD. The
+;; row below asks a single-token query. A reviewer showed that a per-token doc
+;; score -- `(if doc-tier (length tokens) 0)` instead of `(if doc-tier 1 0)` --
+;; leaves every number in that row unchanged while a two-word query lifts the
+;; same no-name block to 12, above an exact name match. The claim is about a
+;; BLOCK's maximum, so it has to be asked with more than one token too.
+;;
+;; The expectation is derived, not read off a run: every field counts once
+;; however many tokens hit it, so two tokens that both land in this block's
+;; fields score exactly what one does. The definition keeps its lead.
+(want "N5b and the ceiling is the same for a query of two words"
+      (let* ((hits (lines-of (run d5b "search" "zebra topic")))
+             (scored (map (lambda (h) (cons (cadr h) (caddr h))) hits))
+             (mine (assoc loaded5b scored)))
+        (if mine (cdr mine) 'NOT-A-HIT))
+      11)
+
+(want "N5b the most a block with no name match scores is 11, and a definition is above it"
+      (let* ((hits (lines-of (run d5b "search" "zebra")))
+             (scored (map (lambda (h) (cons (cadr h) (caddr h))) hits))
+             (mine (assoc loaded5b scored))
+             (top (apply max (map cdr scored))))
+        (list (if mine (cdr mine) 'NOT-A-HIT) top (> top (if mine (cdr mine) 0))))
+      (list 11 13 #t))
 
 (printf "\n== N3: log lists what was applied, in delivery order ==\n")
 ;; ONLY THE RECORDS THE INTENT NAMES. Two near misses are the point of

@@ -43,6 +43,7 @@
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
+          (rnrs hashtables)
           (theourgia store) (theourgia reduce) (theourgia log)
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
@@ -606,6 +607,8 @@
             "List the relations a block takes part in." #f 'daemon)
       (list 'search '(search <query>)
             "Find blocks whose title, keywords or text match every word given." #f 'daemon)
+      (list 'whereis '(whereis <name>)
+            "Say where a name is defined, and which libraries carry it." #f 'daemon)
       (list 'log '(log [<id>])
             "Show the changes recorded, for the store or for one block." #f 'daemon)
       (list 'tag '(tag [<name>])
@@ -632,6 +635,75 @@
                              (list 'route (list-ref entry 4))))
                      (verb-catalogue)))
           (list 'protocol write-protocol)))
+
+  ;; The ordinary edit distance, bounded so a long name cannot be "near"
+  ;; everything: anything further than a few edits is not a typo.
+  (define (edit-distance a b)
+    (let* ((n (string-length a)) (m (string-length b)))
+      (if (> (abs (- n m)) 2)
+          99
+          (let ((prev (make-vector (+ m 1) 0)) (cur (make-vector (+ m 1) 0)))
+            (let init ((j 0)) (when (<= j m) (vector-set! prev j j) (init (+ j 1))))
+            (let rows ((i 1))
+              (if (> i n)
+                  (vector-ref prev m)
+                  (begin
+                    (vector-set! cur 0 i)
+                    (let cols ((j 1))
+                      (when (<= j m)
+                        (vector-set! cur j
+                                     (min (+ 1 (vector-ref cur (- j 1)))
+                                          (+ 1 (vector-ref prev j))
+                                          (+ (vector-ref prev (- j 1))
+                                             (if (char=? (string-ref a (- i 1))
+                                                         (string-ref b (- j 1)))
+                                                 0 1))))
+                        (cols (+ j 1))))
+                    (let copy ((j 0))
+                      (when (<= j m)
+                        (vector-set! prev j (vector-ref cur j))
+                        (copy (+ j 1))))
+                    (rows (+ i 1)))))))))
+
+  ;; NEVER: AND A REFUSAL POINTS SOMEWHERE. A name that is not there is the
+  ;; common case -- a typo, a name from another version, a name the reader
+  ;; half remembers -- so the refusal carries the closest names it knows, at
+  ;; most five.
+  ;;
+  ;; THREE KINDS OF CLOSE, IN THIS ORDER: a shared prefix, which is what a
+  ;; half-remembered name looks like; then plain containment; then a small
+  ;; edit distance, which is what a TYPO looks like. Measured while writing
+  ;; the cell for this: asking for `reaper-star` in a store holding
+  ;; `reaper-start` and `reaper-stop` offered only the first, because the
+  ;; second shares no prefix and is not contained -- and it is exactly the
+  ;; name a reader who typed `reaper-star` might have meant.
+  (define (nearest-names index wanted)
+    (let* ((all (vector->list (hashtable-keys index)))
+           (prefix (filter (lambda (k)
+                             (and (>= (string-length k) (string-length wanted))
+                                  (string=? (substring k 0 (string-length wanted)) wanted)))
+                           all))
+           (inside (filter (lambda (k)
+                             (and (not (member k prefix))
+                                  (let ((n (string-length k)) (m (string-length wanted)))
+                                    (and (<= m n)
+                                         (let loop ((i 0))
+                                           (cond ((> (+ i m) n) #f)
+                                                 ((string=? (substring k i (+ i m)) wanted) #t)
+                                                 (else (loop (+ i 1)))))))))
+                           all))
+           (near (filter (lambda (k)
+                           (and (not (member k prefix))
+                                (not (member k inside))
+                                (<= (edit-distance k wanted) 2)))
+                         all))
+           (ranked (append (list-sort string<? prefix)
+                           (list-sort string<? inside)
+                           (list-sort string<? near))))
+      (let take ((l ranked) (n 0) (out '()))
+        (if (or (null? l) (= n 5))
+            (map string->symbol (reverse out))
+            (take (cdr l) (+ n 1) (cons (car l) out))))))
 
   (define (verb-table)
     (list
@@ -909,6 +981,32 @@
                                                 (list 'via (caddr r))))
                                         (cadr a)))
                             a)))))))
+      ;; NEVER: A NAME CAN BE IN A LIBRARY WITHOUT BEING DEFINED THERE, AND
+      ;; THE ANSWER SAYS WHICH IT IS. Three of this tree's own libraries
+      ;; define nothing -- they re-export what igropyr defines -- so an answer
+      ;; built only from definitions would say `unknown-name` about a name
+      ;; written plainly in a one-line export list. Definitions come first
+      ;; because that is what a reader usually wants; the export records say
+      ;; which library carries the name, wherever it is defined.
+      (cons 'whereis
+            (lambda (store actor args req options state writer cwd)
+              (if (not (= 1 (length args)))
+                  (usage '(whereis <name>))
+                  (guarded
+                    (lambda ()
+                      (let* ((wanted (car args))
+                             ;; The handler is handed whatever the daemon had;
+                             ;; `reduction-for` is how every other read verb
+                             ;; turns that into a reduction to read.
+                             (state (reduction-for store state))
+                             (index (defs-index state))
+                             (found (hashtable-ref index wanted '()))
+                             (defs (filter (lambda (r) (eq? (car r) 'def)) found))
+                             (exports (filter (lambda (r) (eq? (car r) 'export)) found)))
+                        (if (null? found)
+                            (list 'error 'unknown-name (string->symbol wanted)
+                                  (cons 'nearest (nearest-names index wanted)))
+                            (items (append defs exports)))))))))
       (cons 'search
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
