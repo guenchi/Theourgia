@@ -154,8 +154,20 @@
   (let loop ((i 0) (out "0"))
     (if (= i n) out (loop (+ i 1) (string-append "#(" out ")")))))
 
+;; NEVER: AND THE FIELD IS NOT A TEXT FIELD. These depths used to be written
+;; as a `title`, which no longer reaches the store: a text field's value must
+;; be something a reader can turn into text, and a 59-deep vector is not, so
+;; every row here started reading a refusal from the TYPE rule instead of the
+;; behaviour it is about. ND-04 showed it plainly -- the refusal it expects
+;; from the record codec at 61 levels arrived at every depth, from somewhere
+;; else.
+;;
+;; The field name was never the subject. What these rows pin is where the
+;; DESCRIBE layer stops being able to hash a value and where the codec stops
+;; being able to write one, so the value moves to a field the text rule does
+;; not cover and the depths go on being the only thing that varies.
 (define (intent n)
-  (string-append "((insert root #f ((kind . section) (title . " (nest n) "))))"))
+  (string-append "((insert root #f ((kind . section) (depth-probe . " (nest n) "))))"))
 
 ;; ONE STORE PER DEPTH. Sending two intents to one store would make the
 ;; second row read a state the first row's block is also in, and

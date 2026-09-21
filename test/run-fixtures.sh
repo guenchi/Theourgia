@@ -387,93 +387,20 @@ echo "all $total scripts accounted for"
 # without it behaves identically until the day a mutant lands on it, and
 # then it reports quiet instead of a kill. So the absence is counted
 # here rather than left to be discovered.
-# A FIXTURE THAT COUNTS ITS ROWS MUST HAVE A BASELINE LINE. The count is
-# the only thing that tells "this mutant was caught" from "this mutant
-# killed the file after four rows", and it is useless without a reading
-# of the same file on unmutated code. `rows-baseline.txt` is a list of
-# names, and a list of names is silent about the one it does not have:
-# fourteen fixtures added in one batch printed a row count that nothing
-# compared against, for as long as nobody counted the lines.
-# THE TABLE ITSELF HAS TO BE THERE. `while read < missing-file` prints a
-# redirection error, runs its body zero times, and leaves every variable
-# empty -- which then reads as "everything matches".
-if [ ! -r rows-baseline.txt ]; then
-  echo "NO ROW BASELINE TABLE: rows-baseline.txt is missing or unreadable"
+# THE ROW BASELINE CHECK LIVES IN ITS OWN SCRIPT, so that it can be run on
+# made-up input without running the suite. It reads `rows-baseline.txt` and
+# `$out/<name>.out` from this directory and prints two lines, one about the
+# hashes and one about the counts; only the hash line refuses. The reason it
+# is a separate file is written at the top of it.
+sh row-baseline-check.sh "$out"
+baseline_rc=$?
+if [ "$baseline_rc" = 2 ]; then
+  echo "ROW BASELINE CHECK WAS CALLED WRONG -- it needs the output directory"
   exit 1
 fi
-missing=""
-for f in *.sc; do
-  n=${f%.sc}
-  [ -f "$out/$n.out" ] || continue
-  grep -q "^rows: " "$out/$n.out" || continue
-  grep -q "^$n " rows-baseline.txt 2>/dev/null || missing="$missing $n"
-done
-# THE FINDINGS ARE COLLECTED AND PRINTED TOGETHER, and the refusal comes
-# at the end. This used to exit here, which put the three baseline checks
-# in SERIES: a run with two unnamed fixtures stopped before any md5 was
-# compared, so sixteen fixtures whose contents had changed -- every one of
-# them stale against the table -- were never looked at, and the run said
-# nothing about them. A missing NAME hid every stale HASH behind it.
-#
-# So nothing between here and the refusal exits; each check adds to a list
-# and the list is printed whole, because the person reading it wants to
-# fix the table once and not once per run.
 
-# AND A BASELINE LINE IS ABOUT A PARTICULAR VERSION OF A PARTICULAR FILE.
-# The md5 is the column that says so, and nothing in a normal run had
-# ever compared it: `vendored`'s hash had been wrong since the commit
-# that removed the external dependency, and the table went on printing a
-# confident number about a file it was no longer describing.
-#
-# ONLY THE MD5 IS A REFUSAL HERE. The other two columns are readings of a
-# RUN, and this suite has fixtures whose output length depends on the
-# machine -- `cli3`, `q8`, `smoke-ffi` and `wire-outside` all differ by a
-# line or more between environments. A hash does not: it is a fact about
-# the file. So a changed hash stops the run, and a changed count is
-# printed for a person to read.
-stale=""; drift=""
-# `|| [ -n "$name" ]` KEEPS THE LAST LINE when the file does not end in a
-# newline: `read` returns non-zero there although it has filled the
-# variables, so the final record was silently skipped -- by the hash
-# check, which is the one that refuses.
-while read -r name rows lines digest || [ -n "$name" ]; do
-  [ -n "$name" ] || continue
-  [ -f "$name.sc" ] || { stale="$stale $name(gone)"; continue; }
-  now=$(md5 -q "$name.sc")
-  if [ "$now" != "$digest" ]; then stale="$stale $name"; continue; fi
-  [ -f "$out/$name.out" ] || continue
-  r=$(grep "^rows: " "$out/$name.out" | tail -1 | sed "s/^rows: //")
-  [ -n "$r" ] || r="-"
-  l=$(wc -l < "$out/$name.out" | tr -d " ")
-  [ "$r" = "$rows" ] && [ "$l" = "$lines" ] || drift="$drift $name($rows/$lines->$r/$l)"
-done < rows-baseline.txt
-# NOTE: THE md5 SECTION ANNOUNCES THAT IT RAN. Silence here used to be
-# indistinguishable from "this check did not get to run", which is
-# exactly what had been happening.
-if [ -n "$missing" ]; then
-  echo "NO ROW BASELINE (the fixture counts rows and rows-baseline.txt does not list it):$missing"
-fi
-if [ -n "$stale" ]; then
-  echo "ROW BASELINE IS ABOUT ANOTHER VERSION of these fixtures (md5 differs):$stale"
-elif [ -n "$missing" ]; then
-  echo "row baseline: every LISTED fixture matches its recorded hash (the unlisted ones named above are not checked against anything)"
-else
-  echo "row baseline: every listed fixture matches its recorded hash and counts"
-fi
-# A count that differs is printed for a person to read and does not refuse;
-# a hash that differs, or a name that is not there at all, does.
-if [ -n "$drift" ]; then
-  echo "row baseline, counts that differ in this environment:$drift"
-fi
-# NEVER: THIS SETS A FLAG AND DOES NOT EXIT. Every check after the fixtures
-# have run reports on the SAME run, and a check that leaves early hides
-# every check behind it. That is not hypothetical here: this file already
-# had the missing-name check exiting before any md5 was compared, so a run
-# with two unnamed fixtures said nothing about sixteen whose contents had
-# changed -- and when a leak gate was added at the end, this very refusal
-# hid it on its first real run. Collect, print everything, refuse once.
 baseline_bad=0
-if [ -n "$stale" ] || [ -n "$missing" ]; then
+if [ "$baseline_rc" != 0 ]; then
   baseline_bad=1
 fi
 # AND THE GATE ABOVE ONLY SEES FIXTURES THAT PRINT A COUNT. The ones that

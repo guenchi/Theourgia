@@ -44,6 +44,7 @@
           reduce-empty reduce-apply! reduce-pending reduce-noted
           reduce-applied-cut reduce-trace reduce-gates
           known-kinds kind-known?
+          text-field-types value-kind
           state-read state-outline state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
@@ -1033,6 +1034,79 @@
       (and (not (= n 9))
            (or (< n 32) (and (>= n 127) (< n 160))))))
 
+  ;; WHAT A TEXT FIELD'S VALUE MAY BE, ONE FIELD PER LINE.
+  ;;
+  ;; These are the fields `store-search` reads as text. Before this table
+  ;; there was no rule at all: `set` at the command line always produced a
+  ;; string, but `batch` carries its intents as DATA, so
+  ;; `(set <id> title tinvor)` stored the SYMBOL and `(set <id> title 42)`
+  ;; stored the NUMBER -- both accepted, both then invisible to every query,
+  ;; because `field-strings` returns the empty list for anything that is not
+  ;; a string. Measured, not inferred: all three landed in a store.
+  ;;
+  ;; THE RULE IS WRITTEN POSITIVELY -- what a value MAY be -- rather than as
+  ;; a list of what is refused. A rule spelled "symbols are not allowed"
+  ;; would have let `42` through, and the reading that found `42` is what
+  ;; settled the spelling.
+  ;;
+  ;; `src` TAKES BYTES ON PURPOSE. A code block imported in text mode holds
+  ;; its source as a bytevector, and that is the importer's own write path:
+  ;; measured over this repository, 43 of 43 file blocks store `src` as a
+  ;; bytevector while the markdown arm stores all 3531 as strings. Admitting
+  ;; bytevectors here is not a concession, it is where the text mode's
+  ;; payload is written down.
+  ;;
+  ;; THE TABLE IS DATA, NOT PREDICATES. Kinds are named by symbol so that
+  ;; something reading this table can work out what to WRITE, not only what
+  ;; to accept -- the cell that checks every accepted kind is reachable by a
+  ;; query derives its cases from this list, and a field added here without
+  ;; a reader turns that cell red.
+  ;;
+  ;; WHAT IS DELIBERATELY NOT HERE: `kind`, `lang` and `mode` are symbols and
+  ;; `level` is an integer, by design and by measurement. They are not text,
+  ;; nothing searches them as text, and this rule must not reach them.
+  (define text-field-types
+    (list (cons 'title    '(string))
+          (cons 'keywords '(string))
+          (cons 'src      '(string bytevector))))
+
+  ;; THE NAME OF A VALUE'S KIND, so a refusal can say what it got. The last
+  ;; branch catches everything: a refusal that could not name the kind would
+  ;; be a refusal nobody can act on.
+  (define (value-kind v)
+    (cond ((string? v) 'string)
+          ((bytevector? v) 'bytevector)
+          ((symbol? v) 'symbol)
+          ((and (integer? v) (exact? v)) 'integer)
+          ((boolean? v) 'boolean)
+          ((null? v) 'null)
+          ((pair? v) 'pair)
+          (else 'other)))
+
+  ;; -> #f when this value is allowed in this field, else a named refusal.
+  ;;
+  ;; A FIELD THAT IS NOT IN THE TABLE IS NOT JUDGED HERE. This rule is about
+  ;; the text fields and nothing else; every other field keeps whatever rule
+  ;; it already had, and a field with no rule stays as it was.
+  (define (text-field-reason name value)
+    (let ((e (assq name text-field-types)))
+      (and e
+           (not (memq (value-kind value) (cdr e)))
+           (list 'field-value-not-text
+                 (list 'field name)
+                 (list 'kind (value-kind value))
+                 (list 'allowed (cdr e))))))
+
+  ;; Every text field carried by a `put`'s field list, in the order written.
+  (define (text-fields-reason alist)
+    (let loop ((ps alist))
+      (cond
+        ((not (pair? ps)) #f)
+        ((not (pair? (car ps))) (loop (cdr ps)))
+        ((text-field-reason (car (car ps)) (cdr (car ps)))
+         => (lambda (r) r))
+        (else (loop (cdr ps))))))
+
   (define (title-text-reason v)
     (and (string? v)
          (let loop ((i 0))
@@ -1189,18 +1263,30 @@
                          (kind-not-known-reason (car (cdr (cdr args)))))))
            (else #f))))
 
+  ;; THE TEXT-FIELD TYPE RULE RUNS BEFORE THE TITLE'S OWN RULE, and that
+  ;; order is the repair. `title-text-reason` is wrapped in
+  ;; `(and (string? v) ...)`, so for a value that is not a string it answers
+  ;; #f -- "no reason to refuse" -- and the one existing value check on a
+  ;; text field passed every non-string through by construction. The type
+  ;; rule is what now answers for those, and the title's rule keeps doing
+  ;; the job it was written for on the strings that reach it.
   (define (caller-payload-reason payload)
     (or (payload-reason payload)
         (symbol-field-reason payload)
         (kind-field-reason payload)
         (and (pair? payload)
              (case (car payload)
-               ((put) (let ((e (assq 'title (car (cdr payload)))))
-                        (and e (title-text-reason (cdr e)))))
+               ((put) (let ((alist (car (cdr payload))))
+                        (or (text-fields-reason alist)
+                            (let ((e (assq 'title alist)))
+                              (and e (title-text-reason (cdr e)))))))
                ((set) (let ((args (cdr payload)))
-                        (and (pair? (cdr args)) (eq? (car (cdr args)) 'title)
-                             (pair? (cdr (cdr args)))
-                             (title-text-reason (car (cdr (cdr args)))))))
+                        (and (pair? (cdr args)) (pair? (cdr (cdr args)))
+                             (let ((name (car (cdr args)))
+                                   (value (car (cdr (cdr args)))))
+                               (or (text-field-reason name value)
+                                   (and (eq? name 'title)
+                                        (title-text-reason value)))))))
                (else #f)))))
 
   ;; PRESENCE IS ASKED SEPARATELY FROM VALUE, so a key holding #f is

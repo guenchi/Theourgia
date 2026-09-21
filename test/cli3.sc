@@ -32,7 +32,7 @@
 ;; is a different fact.
 
 (import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log)
-        (theourgia ffi) (theourgia wire)
+        (theourgia ffi) (theourgia wire) (theourgia crc32)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia wire) string->sexpr-extended))
 
@@ -181,14 +181,18 @@
      (begin (set! rows-run (+ rows-run 1))
             (want-1 label (caught got) (caught expect))))))
 
+;; THE RENDERER IS SHARED, NOT COPIED. This file read a raised condition
+;; with `condition-message` alone, which threw the irritants away: the
+;; reading `(RAISED "variable ~:s is not bound")` names a variable it does
+;; not contain, and that is where the defect was first seen. What replaces
+;; it, and what it is measured by, are in `condition-render.ss` and
+;; `condition-render.sc` beside this file.
+(include "condition-render.ss")
+(include "forge-record.ss")
+
 (define-syntax caught
   (syntax-rules ()
-    ((_ e0)
-     (guard (e (#t (list 'RAISED
-                         (if (and (condition? e) (message-condition? e))
-                             (condition-message e)
-                             e))))
-       e0))))
+    ((_ e0) (guard (e (#t (list 'RAISED (condition->text e)))) e0))))
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
 ;; delivery directory the fixture and cli.sc sit side by side; in the
@@ -963,15 +967,32 @@
             (length (lines-of (run d4e "search" "119"))))
       (list 0 0))
 
-;; THIS ROW IS THE GAP ITSELF, AND IT IS SUPPOSED TO GO RED ONE DAY. The words
-;; in a text block's source are still not searchable -- `appears` is in that
-;; file and finds nothing. The index that segment B2 builds is where this
-;; closes, and on the day it closes THIS ROW GOES RED. That red means the gap
-;; shut, not that something broke: delete the row and say so in the note. It
-;; is here because a gap named only in a delivery note is a gap nobody runs.
-(want "N4e KNOWN GAP (red when B2 closes it): words in a text block's source are not searched"
-      (length (lines-of (run d4e "search" "appears")))
-      0)
+;; THE GAP IS SHUT, AND THIS ROW IS WHAT SAID SO.
+;;
+;; It used to read "KNOWN GAP (red when B2 closes it): words in a text
+;; block's source are not searched", expecting zero hits, and it was written
+;; to go red on the day the gap closed. It did exactly that, on the first run
+;; after the source began to be decoded -- which is the whole reason a gap
+;; gets a row instead of a sentence in a note.
+;;
+;; WHAT CLOSED IT WAS NOT A SEARCH CHANGE. A text-mode source is stored as a
+;; bytevector, and `field-strings` had no branch for one, so the value was
+;; dropped one step before any query saw it. Nothing had ever declined to
+;; search it. The repair is in that function, and it is the same `else`
+;; branch that was throwing symbol-valued fields away.
+;;
+;; The row is now positive, and it asks for the block by id rather than for
+;; a count: a count of 1 would also be satisfied by some other block
+;; matching, and the claim is about THIS source.
+;; The word is inside a string literal in the source, so a hit can only come
+;; from the source having been read as text. The snippet is asked for too:
+;; a count alone would be satisfied by any block matching for any reason.
+(want "N4e a word in a text block's source is found, and the hit shows it in context"
+      (let ((r (run d4e "search" "appears")))
+        (list (car r)
+              (> (length (lines-of r)) 0)
+              (holds? (text-of out-path) "wombat appears in the source")))
+      (list 0 #t #t))
 
 (printf "\n== N4f: search and the index answer about the same blocks ==\n")
 ;; NEVER: THE SET OF BLOCKS THAT EXIST IS THE OUTLINE, AND SEARCH LEARNED IT
@@ -1229,7 +1250,20 @@
 (init! d4m)
 (define d4m-odd (insert! d4m "--title" "zibbet the title word"))
 (define d4m-plain (insert! d4m "--title" "plain neighbour"))
-(run-with-stdin d4m (string-append "((set \"" d4m-odd "\" title (conflict)))") "batch")
+;; NEVER: AND THE ROUTE HAS TO BE THE ONE SUCH A VALUE REALLY ARRIVES BY.
+;; This used to write `(conflict)` through `batch`, which the write path
+;; accepted at the time. It does not any more: a text field's value must be
+;; something a reader can turn into text, and `(conflict)` is not. The value
+;; is still worth asking about -- more so, because the caller path now being
+;; shut means a record is the ONLY way it can reach a field, which is exactly
+;; what a foreign or damaged record is.
+;;
+;; So it is appended to the writer's segment and found by replay. Replay
+;; judges nothing, by design: a store already holding such a value has to
+;; stay readable, or the rule that refuses the write would cost its owner
+;; the library. `forge-record.ss` says how, and why the checksum it writes
+;; was measured rather than assumed.
+(forge-record! d4m (string-append "(set \"" d4m-odd "\" title (conflict))"))
 
 ;; NEVER: AND THE ROUTE DECIDES THE VALUE'S TYPE. The keyword below is written
 ;; as a STRING because `batch` carries the intent as data -- `keywords
@@ -1239,10 +1273,26 @@
 ;; would have converted it; this route does not. That difference is the same
 ;; one this batch already found in `set <id> kind`, where the command line
 ;; stored a string and `batch` stored a symbol.
-(want "N4m CONTROL: the store accepted a title that is not the shape the branch assumes"
-      (list (car (run-with-stdin d4m (string-append "((set \"" d4m-odd "\" keywords \"quorvan\"))") "batch"))
+;; NEVER: AND THE CONTROL HAS TO SAY THE ODD VALUE IS REALLY THERE. This row
+;; used to read "the store accepted a title that is not the shape the branch
+;; assumes", which was true when `batch` would write one and is not true now
+;; -- the caller path refuses it and the value arrives by record instead. A
+;; title that goes on claiming the old fact would be green on a run where the
+;; forged record never landed, and every row under it asks about a block that
+;; would then be perfectly ordinary.
+;;
+;; So it asks two things: the odd value IS in the block, and an ordinary
+;; write still lands on that same block.
+(want "N4m CONTROL: the odd value is in the block, and ordinary writes still land on it"
+      (list (let ((r (run d4m "read" d4m-odd)))
+              ;; `run` answers with the PARSED lines, so the raw text is read
+              ;; from the output file rather than from the answer.
+              (if (and (= 0 (car r)) (holds? (text-of out-path) "(title conflict)"))
+                  'the-odd-value-is-there
+                  'NOT-THERE))
+            (car (run-with-stdin d4m (string-append "((set \"" d4m-odd "\" keywords \"quorvan\"))") "batch"))
             (if (holds? (text-of out-path) "ok") 'the-write-landed 'REFUSED))
-      (list 0 'the-write-landed))
+      (list 'the-odd-value-is-there 0 'the-write-landed))
 
 (want "N4m search still answers about the other blocks, and exits cleanly"
       (let ((r (run d4m "search" "neighbour")))
@@ -1270,10 +1320,9 @@
 ;; A genuine conflict is what `reduce.sc` builds when two writers set one
 ;; field, so this one is written in that shape by hand.
 (define d4m-real (insert! d4m "--title" "placeholder"))
-(run-with-stdin d4m
-                (string-append "((set \"" d4m-real
-                               "\" title (conflict ((\"winning words\" \"w1\" 1) (\"other words\" \"w2\" 1)))))")
-                "batch")
+(forge-record! d4m
+  (string-append "(set \"" d4m-real
+                 "\" title (conflict ((\"winning words\" \"w1\" 1) (\"other words\" \"w2\" 1))))"))
 
 ;; NEVER: AND EVERY CLAUSE OF THE SHAPE TEST NEEDS A CASE. The test has four
 ;; parts -- a pair, the tag, a second element, and a candidate list whose
@@ -1287,8 +1336,8 @@
 ;; `(conflict (1 2))` reaches `(map car ...)` with members that are not pairs.
 (define d4m-notlist (insert! d4m "--title" "havrel the second"))
 (define d4m-notpairs (insert! d4m "--title" "yompus the third"))
-(run-with-stdin d4m (string-append "((set \"" d4m-notlist "\" title (conflict 5)))") "batch")
-(run-with-stdin d4m (string-append "((set \"" d4m-notpairs "\" title (conflict (1 2))))") "batch")
+(forge-record! d4m (string-append "(set \"" d4m-notlist "\" title (conflict 5))"))
+(forge-record! d4m (string-append "(set \"" d4m-notpairs "\" title (conflict (1 2)))"))
 
 (want "N4m every shape the test rejects leaves search working, and none of them matches"
       (let ((a (run d4m "search" "havrel"))
@@ -1389,20 +1438,45 @@
         (d4n-set! 4 "keywords" "hufpar")
         (d4n-set! 5 "keywords" "\"dewzin\"")))
 
-(want "N4n CONTROL: all six writes were ACCEPTED, symbol-valued ones included"
-      (list (apply max (map car d4n-writes))
-            (length (filter (lambda (r)
-                              (let ((ls (cadr r)))
-                                (and (pair? ls) (pair? (car ls)) (eq? 'batch (car (car ls))))))
-                            d4n-writes)))
-      (list 0 6))
+;; THE RULE IS SETTLED, AND IT WAS SETTLED THE SECOND WAY: the writer
+;; refuses a symbol in a text field. The rule itself lives in one place,
+;; `text-field-types` in `reduce.sc`, and `field-types.sc` is where it is
+;; measured field by field. What stays here is the half this section was
+;; always about -- the ROUTE. `batch` carries an intent as data, so it is
+;; the only route that can offer a symbol at all, and these rows are what
+;; say the refusal is on that route and not only at the command line.
+;;
+;; NEVER: AND THE ROW THAT PINNED THE OPEN QUESTION COULD NOT SEE ITS OWN
+;; ANSWER. It read the six searches and expected `(0 1 0 1 0 1)` -- a symbol
+;; is unfindable, a string is not. Under this settlement it still reads
+;; `(0 1 0 1 0 1)`, BYTE FOR BYTE: the symbol words never enter the store,
+;; so searching for them still finds nothing, for the opposite reason, and
+;; the row cannot tell the two reasons apart. That was measured before the
+;; change, with a mutation that made the writer refuse -- the row stayed
+;; green through the very settlement it existed to announce, and the
+;; CONTROL below is what saw it.
+(want "N4n the three symbol writes are refused, each by name, and the three string writes land"
+      (list (map car d4n-writes)
+            (map (lambda (r)
+                   (let ((ls (cadr r)))
+                     (and (pair? ls) (pair? (car ls)) (eq? 'batch (car (car ls)))
+                          (let ((items (cadr (car ls))))
+                            (and (pair? items) (pair? (car items))
+                                 (car (car items)))))))
+                 d4n-writes))
+      (list '(1 0 1 0 1 0)
+            '(error ok error ok error ok)))
 
-(want "N4n CONTROL: and the six blocks are readable, so the searches below ask about something"
+(want "N4n CONTROL: the six blocks are still readable, so the searches below ask about something"
       (let ((codes (map (lambda (i) (car (run d4n "read" (list-ref d4n-ids i)))) '(0 1 2 3 4 5))))
         (list (apply max codes) (length codes)))
       (list 0 6))
 
-(want "N4n KNOWN OPEN (red when B2 settles the type rule): a symbol is unfindable, a string is not"
+;; AND THE SEARCHES READ THE SAME SIX NUMBERS AS BEFORE, which is why they
+;; are no longer the row that carries the claim. They are kept because they
+;; say the three words that WERE written are findable, and the row above is
+;; what says why the other three are not.
+(want "N4n the three words that were written are findable, and nothing else is"
       (map (lambda (w) (length (lines-of (run d4n "search" w))))
            '("tinvor" "pesgul" "raxmid" "qolnev" "hufpar" "dewzin"))
       '(0 1 0 1 0 1))
@@ -1766,6 +1840,200 @@
         (list (if mine (cdr mine) 'NOT-A-HIT) top (> top (if mine (cdr mine) 0))))
       (list 11 13 #t))
 
+;; NEVER: AND THE CEILING WAS DERIVED WHEN ONE OF ITS TERMS COULD NOT BE
+;; REACHED. `src 2` has been in the sum above since it was written, but a
+;; text-mode block stores its source as a BYTEVECTOR, and that value was
+;; dropped before scoring -- so for those blocks the term was always zero
+;; and no run could have shown it. Now that bytes are decoded, the term is
+;; reachable by a second route, and the ceiling has to be re-derived rather
+;; than re-asserted.
+;;
+;; IT IS UNCHANGED, AND THIS IS WHY: decoding did not add a term, it made an
+;; existing one reachable. A field counts once, at its own tier, whatever it
+;; is stored as -- so the question is whether bytes and text score the SAME,
+;; and that is what this pair asks. If they ever differ, the sum above is
+;; wrong for one kind of block and the number 11 is about the other one.
+(define d5c (fresh-store!))
+(init! d5c)
+(define d5c-text (insert! d5c "--title" "a carrier"))
+(define d5c-bytes (insert! d5c "--title" "a carrier"))
+(run-with-stdin d5c
+                (string-append "((set \"" d5c-text "\" src \"quoxal at the start\"))")
+                "batch")
+;; The same nineteen characters, as bytes.
+(run-with-stdin d5c
+                (string-append "((set \"" d5c-bytes "\" src #vu8("
+                               (let loop ((l (bytevector->u8-list (string->utf8 "quoxal at the start")))
+                                          (out ""))
+                                 (if (null? l)
+                                     out
+                                     (loop (cdr l)
+                                           (string-append out (if (string=? out "") "" " ")
+                                                          (number->string (car l))))))
+                               ")))")
+                "batch")
+
+(want "N5c a source stored as bytes scores exactly what the same source stored as text scores"
+      (let* ((hits (lines-of (run d5c "search" "quoxal")))
+             (scored (map (lambda (h) (cons (cadr h) (caddr h))) hits))
+             (a (assoc d5c-text scored))
+             (b (assoc d5c-bytes scored)))
+        (list (if a (cdr a) 'TEXT-NOT-A-HIT)
+              (if b (cdr b) 'BYTES-NOT-A-HIT)
+              (equal? (and a (cdr a)) (and b (cdr b)))))
+      (list 2 2 #t))
+
+;; TWIN: AND NEITHER OF THEM REACHES THE NAME TIER. A source that scored as
+;; a name would put the ceiling above 11 without any field being added, and
+;; the row above would not notice because both halves would move together.
+(want "N5c TWIN: a word in a source is a source hit, not a name hit"
+      (let* ((hits (lines-of (run d5c "search" "quoxal")))
+             (top (apply max (map caddr hits))))
+        (list top (< top 10)))
+      (list 2 #t))
+
+;; ---- N6: every token must hit, and the two questions are different ------
+(printf "\n== N6: a hit needs every token, but not all in one field ==\n")
+;; SCORING AND SELECTION ARE TWO PROJECTIONS OF ONE TABLE, and they collapse
+;; different axes of it. A field's score is the BEST tier any token reached
+;; in that field, which throws away WHICH token. Selection asks whether every
+;; token was taken by SOME field, which throws away which field was best.
+;;
+;; NEVER DERIVE ONE FROM THE OTHER. Asking selection of the collapsed
+;; per-field values would look for one field that every token reached, and
+;; that is a stricter rule than the one this store has: two tokens landing in
+;; two different fields is a hit. A single-token query cannot tell the two
+;; rules apart -- with one token, "some field took it" and "one field took
+;; them all" are the same sentence -- so the row below uses two tokens that
+;; deliberately land apart.
+(define d6t (fresh-store!))
+(init! d6t)
+(define split-block (insert! d6t "--title" "vundrel heading"))
+(run-with-stdin d6t
+                (string-append "((set \"" split-block "\" src \"a source mentioning glarpis once\"))")
+                "batch")
+(define other6t (insert! d6t "--title" "an unrelated neighbour"))
+
+(want "N6 CONTROL: each word alone finds the block, and they are in different fields"
+      (let ((a (run d6t "search" "vundrel"))
+            (b (run d6t "search" "glarpis")))
+        (list (length (lines-of a)) (length (lines-of b))))
+      (list 1 1))
+
+;; THE ROW THE MATRIX EXISTS FOR. `vundrel` is only in the title and
+;; `glarpis` is only in the source; no single field holds both.
+(want "N6 two tokens that land in two different fields are a hit"
+      (let ((r (run d6t "search" "vundrel glarpis")))
+        (list (car r) (length (lines-of r))
+              (if (> (length (lines-of r)) 0) (cadr (car (lines-of r))) 'NO-HIT)))
+      (list 0 1 split-block))
+
+;; THE OTHER DIRECTION, so that a rule which simply said yes would not pass.
+(want "N6 TWIN: a token that no field takes empties the answer, however well the others hit"
+      (let ((r (run d6t "search" "vundrel glarpis wexlom")))
+        (list (car r) (length (lines-of r))))
+      (list 0 0))
+
+;; AND THE SCORE IS STILL THE PER-FIELD BEST, which is the other projection.
+;; Title boundary is 3 and source boundary is 2, and a block reached by both
+;; scores the sum -- so this row would also notice a selection rule that had
+;; quietly started deciding the score.
+(want "N6 and the score is the sum of what each field gave, not a count of tokens"
+      (let ((r (run d6t "search" "vundrel glarpis")))
+        (if (> (length (lines-of r)) 0) (caddr (car (lines-of r))) 'NO-HIT))
+      5)
+
+;; ---- N6b: the normalised-text table lives for one search ----------------
+(printf "\n== N6b: the text table is built per search, and not kept ==\n")
+;; WHY THIS IS PINNED. `store-search` normalises each field's text once and
+;; reuses it for every query token; that table is dropped when the search
+;; ends. Keeping it across searches is the obvious next thought, and it was
+;; tried: with the table keyed by the string OBJECT it never hit once --
+;; `state-read` copies every field value, so the key is a different object on
+;; every read -- while it went on admitting each fresh copy as a new entry.
+;; Measured at 254 MB still held after five queries and a full collection,
+;; against 58 MB when the table is dropped per search.
+;;
+;; So this row is not about speed. It is a tripwire on the shape: without it,
+;; somebody moves that table to module scope to "cache across queries", every
+;; reading still looks right, and the memory comes back in silence. A table
+;; that could be reused across searches needs a key that survives a copy --
+;; (block id, field name) rather than the string -- and that is written up as
+;; an input to the work on search candidates, not done here.
+;;
+;; THE ROWS RUN IN THIS PROCESS, not through the command line: the counter is
+;; in the library, and a subprocess would take its own copy of it away.
+(define d6b (fresh-store!))
+(init! d6b)
+(define d6b-block (insert! d6b "--title" "brindle the searchable heading"))
+
+(want "N6b CONTROL: the store answers the query at all, so the rows below are about a real search"
+      (length (store-search d6b "brindle"))
+      1)
+
+;; THE TRIPWIRE ASKS ABOUT IDENTITY, AND IT USED TO ASK ABOUT A COUNT.
+;;
+;; The count was evadable, and the review said so with a change small enough
+;; to apply: `prepared-begin!` is two independent assignments, so deleting
+;; the one that replaces the table and keeping the one that increments the
+;; counter leaves a module-level table surviving every search -- and all four
+;; rows here stayed green while the retention came back. The counter and
+;; "is this a different table" were two facts, and only one of them was
+;; being asked about.
+;;
+;; A token minted with the table cannot be separated from it by that edit.
+;; `prepared-token-now` exists for this row and for nothing else, which is
+;; written at its definition.
+(want "N6b two searches in one process do not share a table"
+      (let* ((ignored-a (store-search d6b "brindle"))
+             (first (prepared-token-now))
+             (ignored-b (store-search d6b "brindle"))
+             (second (prepared-token-now)))
+        (list (eq? first second) (and first #t) (and second #t)))
+      (list #f #t #t))
+
+;; The count is kept beside it, no longer carrying the claim. On its own it
+;; is satisfied by a build that never replaces the table at all; what it adds
+;; is that a table was begun once per search rather than, say, once per
+;; block.
+(want "N6b and the table is begun exactly once per search"
+      (let* ((before (prepared-generation-count))
+             (ignored-a (store-search d6b "brindle"))
+             (ignored-b (store-search d6b "brindle")))
+        (- (prepared-generation-count) before))
+      2)
+
+;; NEVER: AND THIS ROW DOES NOT SAY THE TABLE WAS DROPPED, although the
+;; first version of its title said exactly that. Measured with a mutation
+;; that makes the table survive across searches: this row stayed GREEN and
+;; only the build count above went red. The reason is the same copy that
+;; runs through this whole note -- a surviving table is keyed by string
+;; objects that are new on every read, so the second search misses just as
+;; often whether the table was kept or not.
+;;
+;; What it does establish is that each search does the normalising work
+;; itself, and does the same amount of it, which is what makes the build
+;; count meaningful rather than a number about an empty table. The row that
+;; can tell a kept table from a dropped one is the one above.
+(want "N6b each search normalises the text itself, and by the same amount"
+      (let* ((h0 (prepared-miss-count))
+             (ignored-a (store-search d6b "brindle"))
+             (first (- (prepared-miss-count) h0))
+             (h1 (prepared-miss-count))
+             (ignored-b (store-search d6b "brindle"))
+             (second (- (prepared-miss-count) h1)))
+        (list (> first 0) (= first second)))
+      (list #t #t))
+
+;; TWIN: WITHIN ONE SEARCH THE TABLE IS USED. Without this, a table that was
+;; built and never consulted would satisfy both rows above.
+(want "N6b TWIN: within one search the table is hit, so it is not merely being built"
+      (let* ((h0 (prepared-hit-count))
+             (ignored (store-search d6b "brindle heading"))
+             (hits (- (prepared-hit-count) h0)))
+        (> hits 0))
+      #t)
+
 (printf "\n== N3: log lists what was applied, in delivery order ==\n")
 ;; ONLY THE RECORDS THE INTENT NAMES. Two near misses are the point of
 ;; this section: a record whose DEPS name a block has not touched it, and
@@ -2118,7 +2386,7 @@
            (text (text-of out-path)))
       (list code (guard (e (#t (list 'unreadable text)))
                    (read (open-string-input-port text)))))))
-(define one-intent "((insert root #f ((kind . section) (title \"B1\"))))")
+(define one-intent "((insert root #f ((kind . section) (title . \"B1\"))))")
 (define dB (fresh-store!))
 (init! dB)
 (define WB
@@ -2321,7 +2589,7 @@
 ;; the request.
 (want "a malformed item in a TRACKED batch of several is answered, not raised"
       (let* ((a (cadr (run-piped dB
-                        (string-append "(() (insert root #f ((kind . section) (title \"TB\"))))")
+                        (string-append "(() (insert root #f ((kind . section) (title . \"TB\"))))")
                         "batch" "--req" "r-tb" "--cursor" cursor-WB))))
         (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
             (car (car (cadr a)))
@@ -2331,7 +2599,7 @@
 ;; answer, which is the part a raise used to take away.
 (want "TWIN: a good item before a malformed one keeps its answer"
       (let* ((a (cadr (run-piped dB
-                        (string-append "((insert root #f ((kind . section) (title \"TC\")))"
+                        (string-append "((insert root #f ((kind . section) (title . \"TC\")))"
                                        " (insert root))")
                         "batch" "--req" "r-tc" "--cursor" cursor-WB))))
         (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
@@ -2341,8 +2609,8 @@
 ;; TWIN: and a tracked batch of several well-formed items still runs.
 (want "TWIN: a tracked batch of two good items still executes both"
       (let* ((a (cadr (run-piped dB
-                        (string-append "((insert root #f ((kind . section) (title \"TD\")))"
-                                       " (insert root #f ((kind . section) (title \"TE\"))))")
+                        (string-append "((insert root #f ((kind . section) (title . \"TD\")))"
+                                       " (insert root #f ((kind . section) (title . \"TE\"))))")
                         "batch" "--req" "r-td" "--cursor" cursor-WB))))
         (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
             (map (lambda (x) (and (pair? x) (car x))) (cadr a))
@@ -2401,8 +2669,8 @@
 ;; second block back and compares its parent with the first block's id.
 (want "TWIN: a back-reference resolves to the item it names, not to root"
       (let* ((a (cadr (run-piped dB
-                        (string-append "((insert root #f ((kind . section) (title \"F1\")))"
-                                       " (insert (from 0) #f ((kind . section) (title \"F2\"))))")
+                        (string-append "((insert root #f ((kind . section) (title . \"F1\")))"
+                                       " (insert (from 0) #f ((kind . section) (title . \"F2\"))))")
                         "batch")))
              (heads (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
                         (map (lambda (x) (and (pair? x) (car x))) (cadr a))
@@ -2464,8 +2732,8 @@
   ;; it is shown.
   (want "TWIN: string, root, #f and a back-reference are all still ids"
         (let ((a (cadr (run-piped dB
-                         (string-append "((insert root #f ((kind . section) (title \"J1\")))"
-                                        " (insert (from 0) #f ((kind . section) (title \"J2\")))"
+                         (string-append "((insert root #f ((kind . section) (title . \"J1\")))"
+                                        " (insert (from 0) #f ((kind . section) (title . \"J2\")))"
                                         " (del \"" idA "\"))")
                          "batch"))))
           (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
@@ -2570,7 +2838,7 @@
 (want "TWIN: a good item before a bad one is kept, and the bad one refused"
       (let* ((before (block-count dM))
              (a (cadr (run-piped dM
-                        "((insert root #f ((kind . section) (title \"Keep\"))) (insert root #f (7)))"
+                        "((insert root #f ((kind . section) (title . \"Keep\"))) (insert root #f (7)))"
                         "batch")))
              (heads (if (and (pair? a) (eq? (car a) 'batch) (list? (cadr a)))
                         (map (lambda (x) (and (pair? x) (car x))) (cadr a))
@@ -2582,7 +2850,7 @@
 (want "TWIN: a well-formed field collection is still written"
       (let* ((before (block-count dM))
              (a (cadr (run-piped dM
-                        "((insert root #f ((kind . section) (title \"Fine\"))))"
+                        "((insert root #f ((kind . section) (title . \"Fine\"))))"
                         "batch"))))
         (list (car (car (cadr a))) (- (block-count dM) before)))
       (list 'ok 1))
@@ -3138,10 +3406,17 @@
 (define deep-title
   (let loop ((i 0) (out "0"))
     (if (= i 59) out (loop (+ i 1) (string-append "#(" out ")")))))
+;; NEVER: AND THE FIELD IT SITS IN IS NOT A TEXT FIELD. This value used to
+;; be written as a `title`, which no longer reaches the store: a text
+;; field's value must be something a reader can turn into text, and a
+;; 59-deep vector is not. The field name was never the subject here -- what
+;; these rows ask about is a value the DESCRIBE layer cannot hash -- so it
+;; moves to a field the text rule does not cover, and the rows go on asking
+;; the question they were written for.
 (define odd-intent
-  (string-append "((insert root #f ((kind . section) (title . " deep-title "))))"))
+  (string-append "((insert root #f ((kind . section) (depth-probe . " deep-title "))))"))
 (define plain-intent
-  "((insert root #f ((kind . section) (title \"plain\")))) ")
+  "((insert root #f ((kind . section) (title . \"plain\")))) ")
 (define (outline-count d) (length (lines-of (run d "outline"))))
 ;; CONTROL: THE RECORD IS DURABLE. Every row below is about a block that
 ;; is on the disk. Against a store that refused the intent they would all
@@ -3224,7 +3499,7 @@
     (cadr (assq 'cursor (cdr a)))))
 (define cursor-WH (string-append (car WH) ":" (number->string (cdr WH))))
 (define two-intents
-  "((insert root #f ((kind . section) (title \"one\"))) (insert root))")
+  "((insert root #f ((kind . section) (title . \"one\"))) (insert root))")
 (define tracked-answers
   (let ((a (cadr (run-piped dH two-intents "batch" "--req" "r-k2"
                             "--cursor" cursor-WH))))

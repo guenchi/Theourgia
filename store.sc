@@ -19,6 +19,8 @@
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
           defs-index defs-index-build-count defs-index-skipped-count name-bearing-kinds
+          text-decode-skipped-count prepared-generation-count prepared-token-now
+          prepared-hit-count prepared-miss-count
           store-init! nearest-ids store-snapshot!
           batch-answer
           store-check store-adopt! store-search store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
@@ -406,10 +408,143 @@
   (define (fold-preserving s)
     (list->string (map char-foldcase (string->list s))))
 
+  ;; THE NORMALISED FORM OF A TEXT, COMPUTED ONCE PER GENERATION.
+  ;;
+  ;; `token-tier` used to normalise its text on every call -- `prepare`, then
+  ;; `fold-preserving`, and a third pass over the raw text in the fallback --
+  ;; and it is called once per BLOCK per FIELD per QUERY TOKEN. Measured on a
+  ;; store of 3531 blocks holding 3,446,421 characters of searched text: of
+  ;; the 391 ms a single-token query spent deciding tiers, 275 ms was
+  ;; normalising text that had not changed. A four-token query did it four
+  ;; times over.
+  ;;
+  ;; TWO KEYS, AND THEY ARE NOT THE SAME KIND OF KEY. The generation is
+  ;; keyed by the APPLIED CUT, like `defs-index` -- object identity is wrong
+  ;; for that and this batch has the two readings that say why, one in each
+  ;; direction. Inside a generation the entry is keyed by the string OBJECT,
+  ;; which is sound for a different reason: while the cut is unchanged the
+  ;; reduction is the same object graph, so a field's value is the same
+  ;; string every time it is fetched. A worse case than staleness is not
+  ;; possible here -- a missed hit costs a recomputation and nothing else.
+  ;;
+  ;; THE ENTRY HOLDS WHAT THE THREE PASSES PRODUCED, and the third is filled
+  ;; only if something asks: the raw fold is needed by the fallback for
+  ;; composed characters, which most queries never reach.
+  ;;
+  ;; A CACHED STRING IS NEVER MUTATED. Field values come out of the
+  ;; reduction and nothing writes into them; if that ever stops being true
+  ;; this table is wrong, and that is why the sentence is here.
+  ;; WHAT THIS TABLE CAN AND CANNOT REUSE, measured rather than assumed.
+  ;;
+  ;; The first two designs were both keyed for reuse that does not exist.
+  ;; `state-read` calls `copy-datum` on every field value, so a field's
+  ;; text is a FRESH string on every read -- checked across 401 blocks of a
+  ;; real store, two reads of one resident reduction: 0 shared objects, 401
+  ;; fresh copies. The same query run five times against that reduction
+  ;; missed 6733 times on every run, the same number each time.
+  ;;
+  ;; (The check that first said otherwise asked ONE block, and that block
+  ;; had no title: it compared #f with #f and read "absent" as "shared".)
+  ;;
+  ;; So nothing survives a read, and a table kept across searches would
+  ;; hold a whole store's normalised text that can never be hit again --
+  ;; measured at 254 MB still held after five queries and a full
+  ;; collection, against 58 MB when the table is dropped.
+  ;;
+  ;; THE REUSE THAT DOES EXIST IS WITHIN ONE SEARCH. `field-strings` is
+  ;; called once per block per field, and every query token is then asked
+  ;; against that same string. That is what the table is for, and it is
+  ;; what the numbers show: the per-token cost of a query fell from 201 ms
+  ;; to 39 ms, while a single-token query -- which has no second token to
+  ;; reuse anything -- moved much less.
+  ;;
+  ;; WHAT THE MEASUREMENTS ABOVE DO AND DO NOT SETTLE, because the first
+  ;; version of this note claimed more than they support.
+  ;;
+  ;; They settle that a table keyed by the string OBJECT cannot be reused
+  ;; across searches: the copy makes every read a new object, so the key is
+  ;; never the same twice. They also explain the 254 MB -- an object-keyed
+  ;; table admits every fresh copy as a new entry, so it grew by a whole
+  ;; store's text per query.
+  ;;
+  ;; They say NOTHING about a table keyed by (block id, field name) and
+  ;; dropped when the applied cut moves. That table holds one entry per
+  ;; field however many times the field is read, so the copy does not reach
+  ;; it: the copy defeats object identity, not a lookup by name. It has not
+  ;; been tried here and it is not ruled out; it is written up as an input
+  ;; to the work on search candidates, where it has to be decided together
+  ;; with any index, because two tables over the same text with two
+  ;; invalidation rules is the arrangement that goes wrong quietly.
+  ;;
+  ;; WHY IT IS NOT DONE HERE. It needs a key the per-search table does not
+  ;; carry, and it buys nothing at all for a one-shot CLI command, where
+  ;; the building and the saving are settled inside one process. Its case
+  ;; is a long-lived process answering repeated queries.
+  (define prepared-table (make-eq-hashtable))
+  (define prepared-generations 0)
+  (define (prepared-generation-count) prepared-generations)
+  ;; A TOKEN PER TABLE, AND IT EXISTS FOR ONE ROW IN THE FIXTURES.
+  ;;
+  ;; This is not a product interface. `cli3.sc`'s N6b asks that two searches
+  ;; did not share a table, and it has to ask about IDENTITY rather than
+  ;; about a count: the review was asked whether a count could be evaded and
+  ;; answered with a change small enough to apply -- delete the line that
+  ;; replaces the table, keep the line that increments the counter, and a
+  ;; module-level table survives every search while all four rows stay
+  ;; green. A token that changes when the table is replaced cannot be
+  ;; separated from the table that way.
+  (define prepared-token (list 'prepared))
+  (define (prepared-token-now) prepared-token)
+  (define (prepared-begin!)
+    (set! prepared-table (make-eq-hashtable))
+    (set! prepared-token (list 'prepared))
+    (set! prepared-generations (+ prepared-generations 1)))
+  ;; AND THE TABLE IS LET GO WHEN THE SEARCH RETURNS, rather than when the
+  ;; next search replaces it.
+  ;;
+  ;; Replacing it at the start of the next search is enough to bound what
+  ;; the table can grow to, and that is all the first version did -- so a
+  ;; process that answered a query and then waited went on holding the whole
+  ;; of that query's normalised text. Measured on 3531 blocks holding
+  ;; 3,446,421 characters, with the reduction warmed separately so the
+  ;; reading is about the table and not about the store: 56,952,080 bytes
+  ;; held between two searches, against 320,656 bytes when the table is
+  ;; emptied on the way out. Fifty-four megabytes, held for nothing, in
+  ;; exactly the long-lived process the table was least able to help.
+  (define (prepared-end! result)
+    (hashtable-clear! prepared-table)
+    result)
+  (define raw-fold-not-yet (string->symbol "raw-fold-not-yet"))
+  ;; THE TABLE SAYS WHETHER IT IS WORKING. A cache that is never hit costs
+  ;; memory and buys nothing, and it looks exactly like one that is working
+  ;; unless something counts. These two are what a row asks.
+  (define prepared-hits 0)
+  (define prepared-misses 0)
+  (define (prepared-hit-count) prepared-hits)
+  (define (prepared-miss-count) prepared-misses)
+  (define (prepared-of text)
+    (let ((found (hashtable-ref prepared-table text #f)))
+      (if found
+          (begin (set! prepared-hits (+ prepared-hits 1)) found)
+          (let* ((t (prepare text))
+                 (v (vector t (fold-preserving t) raw-fold-not-yet text)))
+            (set! prepared-misses (+ prepared-misses 1))
+            (hashtable-set! prepared-table text v)
+            v))))
+  (define (prepared-raw-fold v)
+    (let ((cached (vector-ref v 2)))
+      (if (eq? cached raw-fold-not-yet)
+          (let ((computed (fold-preserving (vector-ref v 3))))
+            (vector-set! v 2 computed)
+            computed)
+          cached)))
+
   (define (token-tier text token)
-    (let* ((t (prepare text))
-           (folded (fold-preserving t))
-           (q (fold-preserving (prepare token)))
+    (let* ((tv (prepared-of text))
+           (qv (prepared-of token))
+           (t (vector-ref tv 0))
+           (folded (vector-ref tv 1))
+           (q (vector-ref qv 1))
            (n (string-length folded))
            (m (string-length q)))
       (cond
@@ -446,8 +581,8 @@
                ;; LOWER tier, which is exactly the score that field had before
                ;; tiers existed, so the floor is kept and nothing outranks a
                ;; hit that the normalised text can actually see.
-               (or best (and (substring-at? (fold-preserving text)
-                                            (fold-preserving token))
+               (or best (and (substring-at? (prepared-raw-fold tv)
+                                            (prepared-raw-fold qv))
                              'inside)))
               ((string=? (substring folded i (+ i m)) q)
                (if (boundary-at? t i q) 'boundary (loop (+ i 1) 'inside)))
@@ -462,6 +597,31 @@
                    (else (loop (+ i 1))))))))
 
   ;; The best tier this token reaches anywhere in a field's strings.
+  ;; boundary beats inside beats nothing; the first boundary settles it.
+  (define (collapse-field-row row)
+    (let loop ((l row) (out #f))
+      (cond ((null? l) out)
+            ((eq? (car l) 'boundary) 'boundary)
+            ((eq? (car l) 'inside) (loop (cdr l) 'inside))
+            (else (loop (cdr l) out)))))
+
+  ;; exact beats prefix beats nothing.
+  (define (collapse-name-row row)
+    (let loop ((l row) (out #f))
+      (cond ((null? l) out)
+            ((eq? (car l) 'exact) 'exact)
+            ((eq? (car l) 'prefix) (loop (cdr l) 'prefix))
+            (else (loop (cdr l) out)))))
+
+  ;; Walks the rows in step, one token position at a time: every position
+  ;; must have some field that took it. The rows are the same length by
+  ;; construction -- each is one entry per query token.
+  (define (every-token-hit? rows)
+    (let loop ((rs rows))
+      (cond ((null? (car rs)) #t)
+            ((exists car rs) (loop (map cdr rs)))
+            (else #f))))
+
   (define (field-tier strings token)
     (let loop ((l strings) (best #f))
       (cond ((null? l) best)
@@ -518,14 +678,71 @@
                 (for-all pair? cs)
                 cs))))
 
+  ;; BYTES BECOME TEXT HERE, WHICH IS WHERE THEY WERE BEING LOST.
+  ;;
+  ;; A code block imported in text mode holds its source as a bytevector.
+  ;; This function had no branch for one, so it fell to `else` and answered
+  ;; the empty list -- and every verb that reads a field as text reads it
+  ;; through here. That is the whole mechanism of "a text block's source is
+  ;; not searched": nothing declined to search it, the value was thrown away
+  ;; one step before the search ever saw it.
+  ;;
+  ;; VALIDITY IS DECIDED BY A ROUND TRIP, not by a scanner written here.
+  ;; `utf8->string` never raises: it substitutes U+FFFD for any byte it
+  ;; cannot read, so "it decoded" is not the same question as "those bytes
+  ;; were text". Re-encoding the result and comparing answers that question
+  ;; exactly, and it is right in the case a hand-written check gets wrong --
+  ;; a source that genuinely contains U+FFFD re-encodes to the bytes it came
+  ;; from and is text, while a stray #xFF does not and is not.
+  ;;
+  ;; This directory already holds six partial readers of one syntax or
+  ;; another, and a seventh -- a UTF-8 validator -- would have to be right
+  ;; about overlong forms, surrogates and truncation to be worth more than
+  ;; the round trip that is right about all of them by construction.
+  ;;
+  ;; A FIELD THAT IS NOT TEXT IS SKIPPED AND COUNTED, under its own counter.
+  ;; `defs-index-skipped` means a BLOCK could not be read; this means a
+  ;; block was read perfectly well and one field of it is not text. One
+  ;; counter, one fact.
+  ;;
+  ;; IT COUNTS ATTEMPTS, NOT BLOCKS, and a field in conflict can cost more
+  ;; than one: each candidate that is bytes is decoded on its own, so a
+  ;; conflict holding two undecodable candidates moves the counter by two.
+  ;; That was left as it is on purpose. The question was whether the count
+  ;; depends on the order fields and tokens are evaluated in -- the search
+  ;; now evaluates every field/token pair where it used to stop early -- and
+  ;; it does not, because decoding happens in `field-strings`, once per
+  ;; block per field, outside the token loops. Measured on a store with
+  ;; three valid and three undecodable sources, five queries of one to four
+  ;; tokens, under both the old evaluation order and the new: +3 on every
+  ;; query, 15 in total, identical in both. A counter that moved with the
+  ;; evaluation order would have been noise rather than a diagnostic, and
+  ;; would have been changed to count blocks instead.
+  (define (decoded-text bv)
+    (let ((text (utf8->string bv)))
+      (if (bytevector=? (string->utf8 text) bv)
+          text
+          (begin (set! text-decode-skipped (+ text-decode-skipped 1)) #f))))
+
   (define (field-strings block name)
     (let* ((fields (cdr (assq (quote fields) block)))
            (e (assq name fields)))
       (cond
         ((not e) (quote ()))
         ((string? (cdr e)) (list (cdr e)))
+        ((bytevector? (cdr e))
+         (let ((text (decoded-text (cdr e))))
+           (if text (list text) (quote ()))))
         ((conflict-candidates (cdr e))
-         => (lambda (cs) (filter string? (map car cs))))
+         => (lambda (cs)
+              (let loop ((l cs) (out (quote ())))
+                (cond
+                  ((null? l) (reverse out))
+                  ((string? (car (car l))) (loop (cdr l) (cons (car (car l)) out)))
+                  ((bytevector? (car (car l)))
+                   (let ((text (decoded-text (car (car l)))))
+                     (loop (cdr l) (if text (cons text out) out))))
+                  (else (loop (cdr l) out))))))
         (else (quote ())))))
 
   (define (any-hit? strings token)
@@ -746,6 +963,12 @@
   (define defs-index-builds 0)
   (define defs-index-skipped 0)
   (define (defs-index-skipped-count) defs-index-skipped)
+  ;; A FIELD WHOSE BYTES ARE NOT TEXT. Counted apart from the block-level
+  ;; counter above because they answer different questions: that one means
+  ;; a block could not be read at all, this one means a readable block has
+  ;; a field that cannot be searched.
+  (define text-decode-skipped 0)
+  (define (text-decode-skipped-count) text-decode-skipped)
   (define (defs-index-build-count) defs-index-builds)
   (define cached-index #f)
   (define cached-index-cut #f)
@@ -947,6 +1170,25 @@
   ;; once that gap closes; a prefix match ties with it, which is deliberate --
   ;; `reaper-start-all` is a worse answer to `reaper-start` than a page about
   ;; it, and a tie broken by id is an honest way to say so.
+  ;;
+  ;; THAT GAP HAS NOW CLOSED, AND THE NUMBERS DID NOT MOVE. The paragraph
+  ;; above was written while a text-mode source could not be searched, and
+  ;; said what would happen when it could. It can now: `field-strings`
+  ;; decodes a bytevector.
+  ;;
+  ;; THE CEILING IS STILL 11, BUT THE DERIVATION IS NOT THE ONE IT WAS, and
+  ;; a reader who checks only the number will think nothing happened. `src 2`
+  ;; was always a term in that sum and was never REACHABLE for a text-mode
+  ;; block -- the value was thrown away before scoring, so no run could have
+  ;; shown it. Decoding did not add a term; it gave an existing term a second
+  ;; route to be reached by.
+  ;;
+  ;; That is why the re-derivation is measured as an EQUALITY rather than as
+  ;; a maximum: the question is whether bytes and text score the same, and
+  ;; `cli3.sc`'s N5c rows ask exactly that, with a twin saying a word in a
+  ;; source is a source hit and not a name hit. If those two ever came apart,
+  ;; the sum above would be right about one kind of block and wrong about the
+  ;; other, and the number 11 would quietly be about only one of them.
   (define (name-score tier)
     (case tier ((exact) 12) ((prefix) 10) (else 0)))
 
@@ -1026,6 +1268,11 @@
            ;; found the block. The equivalence this segment promises held only
            ;; when the two words happened to be adjacent in the text as well.
            (tokens (tokens-of (prepare query)))
+           ;; ONE TABLE PER SEARCH. It is built here and released by
+           ;; `prepared-end!` on the way out, on both exits. See the note at
+           ;; `prepared-begin!` for why it cannot usefully outlive one
+           ;; search, and what would have to change for it to.
+           (ignored-generation (prepared-begin!))
            ;; NEVER: THE SET OF BLOCKS THAT EXIST IS THE OUTLINE, AND THIS
            ;; LOOP HAD TO LEARN IT SEPARATELY. `state-datum` lists tombstones.
            ;; The index learned this when a deleted block kept answering
@@ -1040,7 +1287,7 @@
                              (state-outline state))
                    t)))
       (if (null? tokens)
-          (quote ())
+          (prepared-end! (quote ()))
           (let ((hits
                   (let loop ((ds (state-datum state)) (out (quote ())))
                     (if (null? ds)
@@ -1058,17 +1305,38 @@
                                (kws (field-strings block (quote keywords)))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
-                               (best (lambda (strings)
-                                       (let loop ((l tokens) (out #f))
-                                         (cond ((null? l) out)
-                                               (else
-                                                 (let ((tier (field-tier strings (car l))))
-                                                   (cond ((eq? tier 'boundary) 'boundary)
-                                                         ((eq? tier 'inside) (loop (cdr l) 'inside))
-                                                         (else (loop (cdr l) out)))))))))
-                               (title-tier (best titles))
-                               (src-tier (best srcs))
-                               (kw-tier (best kws))
+                               ;; ONE MATRIX, TWO PROJECTIONS OF IT.
+                               ;;
+                               ;; A field's score wants the BEST tier any
+                               ;; token reached in it, and the answer to
+                               ;; "did every token hit something" wants,
+                               ;; for each token, whether ANY field took
+                               ;; it. Those are two projections of the same
+                               ;; (field x token) table, along different
+                               ;; axes, and the code used to compute the
+                               ;; table twice -- once collapsed per field,
+                               ;; then again inside `every-token`, which
+                               ;; re-ran `field-tier` over all six fields.
+                               ;; Measured at 196 ms of a 910 ms query, on
+                               ;; work that had just been done.
+                               ;;
+                               ;; NEVER DERIVE ONE PROJECTION FROM THE
+                               ;; OTHER. The per-field best has already
+                               ;; thrown away WHICH token reached it, so
+                               ;; "every token hit something" cannot be
+                               ;; recovered from it: two tokens, one
+                               ;; matching only the title and the other
+                               ;; only the source, is a hit, and a rule
+                               ;; asked of the collapsed values would have
+                               ;; to find one field that both reached. A
+                               ;; single-token query can never show the
+                               ;; difference, which is why the row that
+                               ;; does uses two tokens in two fields.
+                               (row (lambda (f strings)
+                                      (map (lambda (tk) (f strings tk)) tokens)))
+                               (title-row (row field-tier titles))
+                               (src-row (row field-tier srcs))
+                               (kw-row (row field-tier kws))
                                ;; NEVER: AND THE THINGS ONLY A CODE BLOCK HAS.
                                ;; `names` is derived from the source rather
                                ;; than stored, so it is read from the view;
@@ -1097,25 +1365,26 @@
                                (names (map symbol->string (block-names state live id)))
                                (docs (derived-strings state live id (quote doc)))
                                (bodies (derived-strings state live id (quote body)))
-                               (nm-tier
-                                 (let loop ((l tokens) (out #f))
-                                   (cond ((null? l) out)
-                                         (else (let ((t (name-tier names (car l))))
-                                                 (cond ((eq? t 'exact) 'exact)
-                                                       ((eq? t 'prefix) (loop (cdr l) 'prefix))
-                                                       (else (loop (cdr l) out))))))))
-                               (doc-tier (best docs))
-                               (body-tier (best bodies))
+                               (name-row (row name-tier names))
+                               (doc-row (row field-tier docs))
+                               (body-row (row field-tier bodies))
+                               ;; The collapses come after every row exists,
+                               ;; so the matrix is complete before either
+                               ;; projection is taken from it.
+                               (title-tier (collapse-field-row title-row))
+                               (src-tier (collapse-field-row src-row))
+                               (kw-tier (collapse-field-row kw-row))
+                               (doc-tier (collapse-field-row doc-row))
+                               (body-tier (collapse-field-row body-row))
+                               (nm-tier (collapse-name-row name-row))
                                ;; NEVER: EVERY TOKEN STILL HAS TO HIT SOMEWHERE.
                                ;; Keywords widen where a token may be
                                ;; found; they do not turn the query into
                                ;; an OR across tokens.
                                (every-token
-                                 (for-all (lambda (tk)
-                                            (or (field-tier titles tk) (field-tier srcs tk)
-                                                (field-tier kws tk) (name-tier names tk)
-                                                (field-tier docs tk) (field-tier bodies tk)))
-                                          tokens)))
+                                 (every-token-hit?
+                                   (list title-row src-row kw-row
+                                         name-row doc-row body-row))))
                           (loop (cdr ds)
                                 (if (and alive every-token)
                                     (cons (list id
@@ -1144,11 +1413,12 @@
                                                   tokens))
                                           out)
                                     out)))))))
-            (list-sort (lambda (a b)
-                         (if (= (cadr a) (cadr b))
-                             (string<? (car a) (car b))
-                             (> (cadr a) (cadr b))))
-                       hits)))))
+            (prepared-end!
+              (list-sort (lambda (a b)
+                           (if (= (cadr a) (cadr b))
+                               (string<? (car a) (car b))
+                               (> (cadr a) (cadr b))))
+                         hits))))))
 
   (define (known? state id) (and (state-read state id) #t))
   ;; ---- evidence for a request ----------------------------------------------

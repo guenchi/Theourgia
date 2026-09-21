@@ -408,7 +408,7 @@
               (list 'head (and (pair? datum) (car datum)))))))
 
 (want "EV-13 a batch with one failed item exits non-zero"
-      (batch-outcome "((insert root #f ((kind . section) (title \"EV13-A\"))) (del \"nosuch.1\"))")
+      (batch-outcome "((insert root #f ((kind . section) (title . \"EV13-A\"))) (del \"nosuch.1\"))")
       '(1 a-batch-answer))
 
 ;; NEVER: THE TWIN, and it is what makes the row above about the ITEMS. A
@@ -416,7 +416,7 @@
 ;; exit 0 -- so "exit 1 whenever the answer is a batch" fails here, and
 ;; so does a build that cannot run a batch at all.
 (want "EV-13 TWIN: a batch whose items all succeeded exits zero"
-      (batch-outcome "((insert root #f ((kind . section) (title \"EV13-B\"))))")
+      (batch-outcome "((insert root #f ((kind . section) (title . \"EV13-B\"))))")
       '(0 a-batch-answer))
 
 ;; ---- EV-12 a suffix that used to be read as "nothing follows" -------------
