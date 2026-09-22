@@ -422,6 +422,85 @@
               (else (loop (cdr xs) bad))))
       '())
 
+;; ---- DS-7 a refusal carries the form the catalogue publishes ---------------
+;;
+;; NEVER: A VERB'S REFUSAL USED TO SAY NOTHING ABOUT WHAT THE VERB ACCEPTS.
+;; `commit` takes any number of block ids, including none, so there is no
+;; argument count that can be wrong; a caller who misspelled an option was
+;; told what was wrong with the value and never what the verb takes. The
+;; form is appended to whatever refusal came back, which leaves the
+;; refusal's own classification alone.
+;;
+;; NEVER: AND NOTHING ASKED WHETHER IT ARRIVED. That form had a definition,
+;; a catalogue entry and three comments written about it, and not one row:
+;; deleting the append left every cell in the tree green. A behaviour with
+;; no instrument is not the same failure as an instrument that overstates
+;; itself -- the second misleads a reader, the first loses the feature in
+;; silence and nothing says so.
+;;
+;; Both answers below are RUN. This file reads no source: `describe`
+;; publishes the catalogue's spelling, a refused `commit` carries the
+;; refusal's, and the two are compared.
+;;
+;; NOTE: WHAT THIS PAIR CAN AND CANNOT SAY. The two sites reference one
+;; binding, so their equality holds by construction, and this is NOT a
+;; check that two spellings agree. What it checks is that the site is
+;; still there and still emits this form. Whether a form is WRITTEN in more
+;; than one place is a different question and belongs to
+;; `test/options-gate.sc`; where a form is written and how it reaches a
+;; caller are not the same question.
+;;
+;; NOTE: THE REFUSAL IS CHOSEN TO REACH THE HANDLER. The store-missing
+;; refusal would have been the wrong choice: it is answered before the
+;; handler runs, so it carries no usage clause and would have proved
+;; something else.
+;;
+;; NEVER: BUT IT IS NOT UNRELATED TO THIS ROW, WHICH IS WHAT THIS SAID.
+;; The control below asks for `(error bad-request duplicate-block)` exactly,
+;; so renaming that refusal, or accepting repeated ids, or adding an earlier
+;; check that answers this request first, turns the control red while the
+;; usage form it is really about has not moved. The control is coupled to
+;; that rule and the coupling is written here rather than denied: if it goes
+;; red, read the row below it before concluding anything about commit's
+;; usage form.
+(define commit-entry (assq 'commit entries))
+(define commit-published-usage
+  (and (pair? commit-entry) (entry-field commit-entry 'usage)))
+
+(define commit-refusal (rpc-dispatch store '(commit "b1" "b1" "--writer" "w") "test"))
+
+(define (usage-clause-of answer)
+  (and (pair? answer)
+       (let look ((xs (cdr answer)))
+         (cond
+           ((not (pair? xs)) #f)
+           ((and (pair? (car xs)) (eq? (car (car xs)) 'usage) (pair? (cdr (car xs))))
+            (cadr (car xs)))
+           (else (look (cdr xs)))))))
+
+;; CONTROL: the catalogue really published a form for this verb. Without
+;; this, a missing entry would make the comparison below compare #f with #f
+;; on the day the refusal also stopped carrying one.
+(want "DS-7 CONTROL: describe publishes a commit form, and it is a commit form"
+      (list (and (pair? commit-published-usage) #t)
+            (and (pair? commit-published-usage) (car commit-published-usage)))
+      (list #t 'commit))
+
+;; CONTROL: and the call really was refused, by the rule this row picked.
+;; If this goes red the premise is wrong, and the reading says which
+;; refusal answered instead -- which is what a control is for.
+(want "DS-7 CONTROL: the call was refused, for the reason this row chose"
+      (list (and (pair? commit-refusal) (car commit-refusal))
+            (and (pair? commit-refusal) (pair? (cdr commit-refusal)) (cadr commit-refusal))
+            (and (pair? commit-refusal) (pair? (cdr commit-refusal))
+                 (pair? (cddr commit-refusal)) (caddr commit-refusal)))
+      (list 'error 'bad-request 'duplicate-block))
+
+(want "DS-7 a refused commit carries the usage form, compared whole"
+      (list (and (usage-clause-of commit-refusal) #t)
+            (equal? (usage-clause-of commit-refusal) commit-published-usage))
+      (list #t #t))
+
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\ndescribe complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

@@ -100,10 +100,30 @@
   ;;
   ;; NOTE: ENGLISH, like every other user-facing string in this library.
   ;;
-  ;; NEVER: EDITING THIS IS A USER-VISIBLE CHANGE. `docs-check.sc` compares it
-  ;; to the COMMITTED README byte for byte, and `f1-protocol.sc` checks
-  ;; each rule is still in it -- so a rule cannot be dropped quietly, and
-  ;; the README cannot drift from it.
+  ;; NEVER: EDITING THIS IS A USER-VISIBLE CHANGE. `f1-protocol.sc` compares
+  ;; it to the README byte for byte (DOC-P1), so the README cannot drift from
+  ;; it, and DOC-P2 checks that the phrases in ITS OWN LIST are still here.
+  ;;
+  ;; NEVER: AND THAT LIST IS NOT EVERY RULE. This said DOC-P2 checks each
+  ;; rule. It checks the nine it names, and the writer-holding rule is not
+  ;; among them -- that one is asked separately, by `docs-check.sc`'s DOC-5,
+  ;; which looks for the phrase "one agent at a time" in this string and in
+  ;; the README. NOTE: A PHRASE, NOT A RULE. Change what holding means, or
+  ;; drop the requirement while keeping the words, and DOC-5 stays green. Saying "each rule" was replacing one
+  ;; sentence that claimed more than its file does with another that claimed
+  ;; more than its row does.
+  ;;
+  ;; NEVER: AND IT NAMES THE FILE THAT ACTUALLY ASKS. This said `docs-check.sc`
+  ;; for a round, which does neither of those two things: its DOC-5 asks a
+  ;; narrower question, whether the writer-holding rule is in the README and in
+  ;; this constant. A sentence about which file guarantees what is the worst
+  ;; kind to get wrong, because a reader stops looking once they believe a gate
+  ;; is there.
+  ;;
+  ;; NEVER: AND IT IS THE FILE ON DISK, NOT THE COMMITTED ONE. This said
+  ;; COMMITTED. The reader is `(file-text "../README.md")`, so what is compared
+  ;; is the working tree -- which is the right thing to compare and the wrong
+  ;; thing to call it.
   (define write-protocol
     (string-append
       "A block is the unit of writing: one block should answer one question on its own.\n"
@@ -296,10 +316,10 @@
 
   ;; A NUMBER FROM A REQUEST IS CHECKED BY SHAPE BEFORE IT IS CONVERTED.
   ;; `string->number` implements the whole of Scheme's numeric syntax, and
-  ;; `#e1e99999999` is a request to build an exact integer of ten billion
-  ;; digits: it does not refuse, it allocates until the machine is
-  ;; exhausted, and no check placed after it ever runs because the call
-  ;; does not return. A shape test first -- plain ASCII digits, and few
+  ;; `#e1e99999999` is twelve characters requesting an exact integer of a
+  ;; hundred million decimal digits -- about 40 MiB of value bits, built by a
+  ;; conversion whose cost bears no relation to the caller's twelve bytes. It
+  ;; does not refuse, and no check placed after it runs until it is done. A shape test first -- plain ASCII digits, and few
   ;; enough of them to name something a store could hold -- makes the
   ;; conversion bounded work.
   (define count-digit-limit 18)
@@ -703,8 +723,33 @@
             "Record a named relation between two blocks." #f 'daemon)
       (list 'unlink '(unlink <from> <rel> <to>)
             "Remove a named relation between two blocks." #f 'daemon)
+      ;; NEVER: AND THIS ENTRY WAS THREE OPTIONS SHORT OF THE HANDLER'S OWN
+      ;; SPELLING. It named `--writer`, `--based-on` and `--rebase` while the
+      ;; handler's refusal named `--working-cut`, `--working-parent-writer`
+      ;; and `--working-parent` as well -- all three accepted by the parser.
+      ;; NEVER: AND THE REASON THE OPTIONS GATE DID NOT SEE IT IS NOT THAT
+      ;; IT UNIONED THE TWO SPELLINGS -- which is what this comment said
+      ;; when it was written. The gate's `usage-forms` is the `(usage ...)`
+      ;; call sites appended to the `<verb>-usage` definitions, and the verb
+      ;; table is in neither: it never read the catalogue at all. The union
+      ;; is real, and it is a union of call sites with named definitions.
+      ;;
+      ;; The difference decides where the repair goes. "I read two places
+      ;; and merged them" asks for a better comparison; "there is a place I
+      ;; never read" asks for a wider census. The first story was the one
+      ;; acted on, and it produced a comparison of the right shape whose
+      ;; reach was still short.
+      ;;
+      ;; It was not only a documentation gap: this entry is what `describe`
+      ;; publishes, and `usage-form-of` reads it for `under-cwd-nodes`, which
+      ;; rewrites the arguments a form calls paths against the caller's
+      ;; directory. None of the three is a path today, so nothing was
+      ;; computed wrongly -- but the next path-valued option written into a
+      ;; handler and left out of here would be rewritten by nothing, in
+      ;; silence.
       (list 'write '(write <block> <bytes> ["--writer" <name>] ["--based-on" <version>]
-                           ["--rebase"])
+                           ["--working-cut" <cut>] ["--working-parent-writer" <name>]
+                           ["--working-parent" <version>] ["--rebase"])
             "Save a draft of a block in a writer's own space, without committing it." #t 'daemon)
       (list 'restore '(restore <version> ["--writer" <name>])
             "Take an earlier version of a draft back into a writer's space." #f 'daemon)
@@ -1221,7 +1266,13 @@
       ;; reader: a consumer's accepting shape is usually wider than the shape
       ;; it was written against, so two answers a protocol reader would never
       ;; confuse can still be indistinguishable to code. `facade-gate.sc`
-      ;; keeps the rule that no two verbs answer with one tag.
+      ;; keeps that rule over the tag sites it collects, with a written list
+      ;; of sites it accepts as exceptions; a collision involving one of
+      ;; those is outside what it detects, and it says so where the list is.
+      ;;
+      ;; NEVER: THIS SAID THE RULE HELD FOR ALL VERBS, full stop. A gate with
+      ;; a stated exception list is not the same claim as a gate without one,
+      ;; and the difference is exactly where a defect would sit.
       (cons 'grep
             (lambda (store actor args req options state writer cwd)
               (let ((under (argument-option options "--under"))
@@ -1507,11 +1558,40 @@
   ;;
   ;; -2 ENOENT (nothing at that path), -38 ENOTSOCK (something that is
   ;; not a socket), -61 ECONNREFUSED (a socket file whose daemon has
-  ;; gone). KEY: All three measured on this platform against a real daemon,
-  ;; the last by killing one with SIGKILL so it could not unlink its own
-  ;; socket. -111 is the same refusal on Linux, where libuv reports that
-  ;; errno instead; it is listed by name rather than left to be found by
-  ;; a user whose CLI stopped working.
+  ;; gone). KEY: All three measured 2026-09-18 on the development machine
+  ;; (Darwin arm64) against a real daemon, the last by ending one with an
+  ;; uncatchable signal so it could not unlink its own socket. -111 is the
+  ;; same refusal on Linux, where libuv reports that errno instead; it is
+  ;; listed by name rather than left to be found by a user whose CLI
+  ;; stopped working.
+  ;;
+  ;; NOTE: THOSE ARE OBSERVATIONS ABOUT PLATFORMS, AS OF THAT DATE, not
+  ;; properties of this program: a platform's mapping can change, and the
+  ;; Linux figure was never measured here at all: `grep -rn '\-111' test/*.sc`
+  ;; prints nothing and exits 1, there being no match.
+  ;;
+  ;; NEVER: THAT SENTENCE SAID THE COMMAND "ANSWERS 0", WHICH IT DOES NOT --
+  ;; `grep -c` would. The rule this comment was written under is that a claim
+  ;; about what nothing covers must carry the command supporting it, and the
+  ;; command was quoted without being run. Quoting a command is the act that
+  ;; makes a reader stop checking, so what belongs here is its output.
+  ;;
+  ;; NEVER: AND THE SENTENCE SAYING NOTHING WOULD GO RED WAS FALSE. It said
+  ;; dropping a status from this list turns nothing red. `test/cli-forward.sc`
+  ;; ends a daemon with an uncatchable signal, checks the socket it bound is
+  ;; still on disk, and requires the next call to answer from the local store
+  ;; -- and on this platform that path arrives here as ECONNREFUSED. Remove
+  ;; `-61` and that row goes red. The claim was taken from a review that had
+  ;; read four files and said so, and the qualifier was lost on the way into
+  ;; this comment. A sentence telling the next reader that nothing covers
+  ;; something tells them not to look.
+  ;;
+  ;; What IS uncovered, narrowly: `-2`, `-38` and `-111` have no row of their
+  ;; own, and no row contrasts the four with a failure that lost an answer
+  ;; mid-flight. That distinction is tethered elsewhere and by other means --
+  ;; `test/client-start.sc`'s CS-9 rows separate "provably never went out"
+  ;; from "this may already have happened", and they do it by the COUNT of
+  ;; bytes written, not by an errno.
   (define (transport-unreachable? outcome)
     (and (pair? outcome)
          (eq? 'transport-error (car outcome))
@@ -1641,9 +1721,23 @@
 
   ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader
   ;; implements the whole of Scheme's numeric syntax, and `#e1e99999999`
-  ;; is eleven characters asking it to build an integer of ten billion
-  ;; digits: it does not refuse, it allocates until the machine is gone,
-  ;; and no check placed after it ever runs.
+  ;; is twelve characters asking it to build an integer of a hundred million
+  ;; digits: it does not refuse, it allocates and computes for as long as that
+  ;; takes, and no check placed after it runs until it is done.
+  ;;
+  ;; NOTE: THE SIZE IS LARGE, NOT UNBOUNDED, and this used to say the machine
+  ;; would be exhausted. A hundred million decimal digits is about 332 million
+  ;; value bits, roughly 40 MiB before overhead: far more than the caller's
+  ;; twelve bytes, which is the point, and not enough to justify the stronger
+  ;; word.
+  ;;
+  ;; NEVER: BOTH NUMBERS IN THIS SENTENCE WERE WRONG. It said eleven
+  ;; characters and ten billion digits; the literal is twelve characters and
+  ;; the exponent asks for 99999999 + 1. The digit count was written in two
+  ;; places, the character count in one -- and the correction first said both
+  ;; were in both, which added a wrong number while fixing two. The argument
+  ;; never depended on either figure, but the figures are the part a later
+  ;; reader quotes.
   (define (parse-after text)
     (let loop ((i 0))
       (cond

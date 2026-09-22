@@ -84,8 +84,25 @@
           (else (substring text 0 i)))))
 
 ;; THE SESSION ID IS ASKED OF THE SYSTEM, not inferred. `ps -o sess=`
-;; answers 0 on macOS, which would have made every row below agree for
-;; the wrong reason, so this goes through getsid(2) directly.
+;; answered 0 on macOS when this was written (2026-09-19), which would
+;; have made every row below agree for the wrong reason, so this goes
+;; through getsid(2) directly.
+;;
+;; NOTE: THIS KIND OF OBSERVATION IS SAFE TO LEAVE AS HISTORY, and it is
+;; worth saying why, because the same shape appears twice more in this
+;; file: the note beside the launcher saying `setsid(1)` is not on macOS,
+;; and the one beside the child's stdio saying `<&-` is not portable enough
+;; to rely on. All three explain why a tool was NOT used.
+;;
+;; NEVER: AND THEY ARE NAMED, NOT NUMBERED. This cited two line numbers, and
+;; they were wrong by the time the round ended -- wrong because of edits made
+;; to this same file, in the same sitting, by the person who wrote them. A
+;; line number in a comment is a fact about a file that the comment's own
+;; neighbours can change.
+;; A dated reading that justifies a REJECTION cannot decay dangerously:
+;; if the platform changes, nothing in this file was resting on the old
+;; behaviour. It is the readings that justify RELIANCE that need a row,
+;; because those are the ones a change can quietly falsify.
 (define (sid-of pid-string path)
   (system (string-append
             "python3 -c 'import os,sys;print(os.getsid(int(sys.argv[1])))' "
@@ -173,6 +190,175 @@
       'same-as-the-caller)
 
 (system (string-append "kill " fg-pid " 2>/dev/null; sleep 1"))
+
+;; ---- D-2b `--detach` with no `--log` refuses, and says what serve takes --
+;;
+;; NEVER: AND THE FORM IT SAYS IS THE ONE FORM. This refusal used to write a
+;; usage form of its own -- `(usage (serve "--detach" "--log" <path>))` --
+;; which is not a fragment of `serve-usage` but a different statement in the
+;; same notation: `serve-usage` brackets `--detach`, meaning optional, and
+;; that spelling did not, meaning required. It read as "serve needs
+;; --detach --log <path>", which is false.
+;;
+;; The options gate found it as a second spelling of one verb's usage form.
+;; Nothing here had asked what this refusal says, so nothing would have
+;; noticed the false one either: this row is the missing half.
+(define nolog-out (string-append here "/nolog.txt"))
+(define nolog-code
+  (system (string-append (env-prefix "") " scheme --script " cli
+                         " serve " store " --socket " here "/nolog.sock --detach"
+                         " > " nolog-out " 2>&1")))
+;; NEVER: THE FIRST DATUM ON THAT STREAM IS NOT THE ANSWER. The CLI prints
+;; `(theourgia machine-home ...)` when it has to create the home directory,
+;; so a reader taking the first form read the notice and reported it as the
+;; refusal. Every datum is read and the one that is an `error` is the answer.
+(define nolog-data
+  (guard (e (#t '()))
+    (with-input-from-file nolog-out
+      (lambda ()
+        (let loop ((acc '()))
+          (let ((x (read)))
+            (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))))
+(define nolog-answer
+  (let look ((xs nolog-data))
+    (cond ((null? xs) (list 'no-answer-in (length nolog-data)))
+          ((and (pair? (car xs)) (eq? (car (car xs)) 'error)) (car xs))
+          (else (look (cdr xs))))))
+
+;; NEVER: `(and (pair? nolog-answer) ...)` WAS AN INVARIANT, NOT A CHECK.
+;; `nolog-answer` is either an `error` form or the `(no-answer-in n)` this
+;; file builds, and both are pairs -- so those guards were true whatever
+;; happened and the row read as if it had asked something it had not. The
+;; clauses below take the parts directly and let a wrong shape show as a
+;; wrong reading.
+;;
+;; NEVER: AND THE SENTENCE ABOVE WAS TRUE OF NOTHING FOR A ROUND. It said
+;; the guards had been taken out while four of them were still there, one
+;; in each row below. A comment that describes a change nobody made is
+;; worse than no comment: the next reader believes the question was asked.
+;; The readers are now named, so the rows below cannot quietly grow a
+;; guard back without this file saying so in one place.
+;;
+;; NOTE: AND THEY ARE THE SAME READERS THE WITNESS ROW USES. A witness that
+;; fed a bad shape to its own copy of these expressions would answer the
+;; same whether the rows were right or only the copy was.
+(define (answer-head a) (car a))
+
+(define (answer-second a)
+  (if (pair? (cdr a)) (cadr a) 'no-second-element))
+
+(define (usage-clause-of a)
+  (exists (lambda (x) (and (pair? x) (eq? (car x) 'usage) x)) (cdr a)))
+;;
+;; AND HOW MANY ERROR FORMS THE STREAM CARRIED. One is the answer; more than
+;; one means the run said something this row is not looking at, and taking
+;; the first would hide it.
+(define nolog-error-count
+  (let loop ((xs nolog-data) (n 0))
+    (cond ((null? xs) n)
+          ((and (pair? (car xs)) (eq? (car (car xs)) 'error)) (loop (cdr xs) (+ n 1)))
+          (else (loop (cdr xs) n)))))
+
+(want "D-2b --detach without --log is refused, and the answer names the error"
+      (list (if (= 0 nolog-code) 'EXIT-ZERO 'refused)
+            nolog-error-count
+            (answer-head nolog-answer)
+            (answer-second nolog-answer))
+      (list 'refused 1 'error 'detach-needs-a-log))
+
+;; WITNESS: AND A SHAPE THAT IS NOT AN ANSWER SHOWS AS A WRONG READING.
+;; This is the row that makes the removal above mean something. With the
+;; guards in place, a broken answer and the `(no-answer-in n)` this file
+;; builds came back through the same tidy path, so the row could not tell
+;; "the program said this" from "the reader could not take it apart".
+;;
+;; NOTE: IT USES THE READERS THE ROW ABOVE USES, not a copy of them. A
+;; witness with its own copy of these expressions would answer the same
+;; whether the row was right or only the copy was, which is the shape this
+;; batch keeps finding.
+;;
+;; NOTE: THE RAISE IS ASKED FOR BY ITS TAG, NOT BY ITS TEXT. Which words
+;; an implementation puts in the condition are not this file's business,
+;; and pinning them would make the row red on a different Chez.
+;; NEVER: AND IT EXERCISES ALL THREE READERS. The first version called two of
+;; them and left `usage-clause-of` -- the one the two rows below depend on --
+;; untouched, so a guard growing back in THAT reader would have gone unseen by
+;; the row whose whole purpose is to see it.
+(want "D-2b WITNESS: the readers do not tidy away a shape that is not an answer"
+      (list (car (caught (answer-head 'not-an-answer)))
+            (car (caught (answer-second 'not-an-answer)))
+            (car (caught (usage-clause-of 'not-an-answer)))
+            (answer-head '(error detach-needs-a-log))
+            (answer-second '(error detach-needs-a-log))
+            (answer-second '(error))
+            (usage-clause-of '(error detach-needs-a-log (usage (serve))))
+            (usage-clause-of '(error detach-needs-a-log)))
+      (list 'RAISED 'RAISED 'RAISED
+            'error 'detach-needs-a-log 'no-second-element
+            '(usage (serve)) #f))
+
+;; AND THE USAGE CLAUSE IS THE WHOLE FORM -- compared against the one this
+;; program keeps, read out of `cli.sc`.
+;;
+;; NEVER: THE FIRST VERSION OF THIS ROW WAS TITLED "is serve's own form" AND
+;; DID NOT COMPARE IT. It checked that the clause's head was `serve` and that
+;; `--detach` was bracketed, which is a check on the SHAPE. The question this
+;; row exists for is whether that refusal tells the caller what the verb
+;; really accepts, and a shape check cannot answer it: a form with the right
+;; head and the right bracketing and a missing option would pass.
+(define serve-usage-in-source
+  (let ((data (guard (e (#t '()))
+                (with-input-from-file cli
+                  (lambda ()
+                    (let loop ((acc '()))
+                      (let ((x (read)))
+                        (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
+    (let look ((xs data))
+      (cond
+        ((null? xs) #f)
+        ((and (pair? (car xs)) (eq? (car (car xs)) 'define)
+              (pair? (cdr (car xs))) (eq? (cadr (car xs)) 'serve-usage)
+              (pair? (cddr (car xs))) (pair? (caddr (car xs)))
+              (eq? (car (caddr (car xs))) 'quote))
+         (cadr (caddr (car xs))))
+        (else (look (cdr xs)))))))
+
+;; CONTROL: the form was found in the source at all. Without this, a failure
+;; to read it would make the comparison below compare `#f` with `#f` on some
+;; future day when the refusal also stopped carrying one.
+(want "D-2b CONTROL: serve-usage was read out of cli.sc and is a serve form"
+      (list (and (pair? serve-usage-in-source) #t)
+            (and (pair? serve-usage-in-source) (car serve-usage-in-source)))
+      (list #t 'serve))
+
+(want "D-2b TWIN: the usage clause it carries IS serve-usage, compared whole"
+      (let ((u (usage-clause-of nolog-answer)))
+        (list (and u #t)
+              (and u (equal? (cadr u) serve-usage-in-source))))
+      (list #t #t))
+
+;; AND THE NOTATION, ASKED SEPARATELY. The row above would also pass if both
+;; sides were wrong in the same way; this one says what the notation means
+;; and is the row that fails when a partial form is written.
+;;
+;; NEVER: THESE TWO PREDICATES ARE COMPLEMENTS ONLY IF THE OPTION APPEARS
+;; ONCE. A form naming `--detach` twice -- bare in one place and bracketed in
+;; another -- would answer true to both, and the pair would say nothing. The
+;; premise is asserted rather than assumed.
+(define (count-occurrences form)
+  (let loop ((xs form) (bare 0) (bracketed 0))
+    (cond
+      ((null? xs) (list bare bracketed))
+      ((equal? (car xs) "--detach") (loop (cdr xs) (+ bare 1) bracketed))
+      ((and (pair? (car xs)) (equal? (car (car xs)) "--detach"))
+       (loop (cdr xs) bare (+ bracketed 1)))
+      (else (loop (cdr xs) bare bracketed)))))
+
+(want "D-2b and the notation says --detach is optional, exactly once"
+      (let ((u (usage-clause-of nolog-answer)))
+        (if u (count-occurrences (cadr u)) 'no-usage-clause))
+      (list 0 1))
+
 
 ;; ---- D-3 a detach that cannot happen is loud -----------------------------
 ;;

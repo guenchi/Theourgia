@@ -52,9 +52,10 @@
 ;; and the forwarding path -- so a plain `theourgia read` paid to load
 ;; igropyr's scheduler and libuv machinery and then never used them.
 ;;
-;; MEASURED, on this machine, against the same libraries, in BOTH forms
-;; this ships in -- because the numbers are very different and only one
-;; of them is a user's:
+;; MEASURED AND RECORDED 2026-09-18, on the development machine (Darwin
+;; arm64, Chez machine type `tarm64osx`), against the same libraries, in
+;; BOTH forms this ships in -- because the numbers are very different and
+;; only one of them is a user's:
 ;;
 ;;     from source   static 623ms   on demand 435ms   -188ms
 ;;     from .so      static  51ms   on demand  42ms   -9ms
@@ -78,6 +79,12 @@
 ;; NEVER: WHAT THIS DOES NOT SAVE, said plainly: a call that FORWARDS to a
 ;; daemon still loads `net`, which still needs `sched` -- 637ms measured,
 ;; the same as before. The saving is for calls answered in this process.
+;;
+;; NOTE: EVERY FIGURE ABOVE IS HISTORY, AS OF 2026-09-18. Nothing
+;; re-measures them and no row turns red when they stop being true; they
+;; are kept because they are why the imports are arranged this way, not
+;; as a present-day claim about what this program costs. The structural
+;; statement at the top of this block is the part that does not decay.
 ;; A mechanism that also made forwarding cheap would have to not use the
 ;; actor system for the transport, which is a different design and not
 ;; this one.
@@ -416,8 +423,18 @@
                                  (cons 'worker (beside-this-program "eval-worker.sc"))))
                          wire?)))))))))))
 
-;; NOTE: THE INTERPRETER THIS PROGRAM IS ITSELF RUNNING UNDER, so a tree
-;; started with a particular Chez starts its children with the same one.
+;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
+;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS
+;; IS RUNNING UNDER: start a tree with a Chez that is not the one on PATH,
+;; leave the variable unset, and the children run under a different one.
+;;
+;; NEVER: THIS CLAIMED THE RUNNING INTERPRETER. It advertised a property the
+;; two lines under it do not have, and nothing anywhere compared a parent's
+;; interpreter with a child's. `beside-this-program` below is a different
+;; question with a different answer, and is not an example of this one: it
+;; takes `(car (command-line))`, which under `--script` is THE SCRIPT's path,
+;; so it finds a file beside this script and says nothing about which
+;; interpreter is reading it.
 (define (scheme-binary)
   (or (getenv "THEOURGIA_SCHEME") "scheme"))
 
@@ -499,10 +516,16 @@
 ;; simply never becomes ready and reports that the daemon would not
 ;; start; the lock is a descriptor and closes with the process, so
 ;; nothing is left holding it. Closing the window needs the spawn itself
-;; to set the session, which is `POSIX_SPAWN_SETSID` -- and that does not
-;; exist on FreeBSD 15 (measured 2026-09-18), which is one of the two
-;; platforms this ships to. So the window stays, described, rather than
-;; being closed on one platform and not the other.
+;; to set the session, which is `POSIX_SPAWN_SETSID` -- and that did not
+;; exist on FreeBSD 15 as of 2026-09-18, when this was measured, which is
+;; one of the two platforms this ships to. So the window stays, described,
+;; rather than being closed on one platform and not the other.
+;;
+;; NOTE: THAT LAST SENTENCE IS AN OBSERVATION ABOUT A PLATFORM ON A DATE,
+;; not a property of this program, and nothing here re-checks it. A later
+;; FreeBSD can grow the flag without anything in this tree noticing. What
+;; a row can and does check is the consequence: `test/detach.sc` asserts
+;; the child ends up in its own session.
 (define (detach-errno e)
   ;; NOTE: TWO SHAPES, BECAUSE THE TWO STEPS FAIL DIFFERENTLY. `setsid!`
   ;; raises an assertion violation carrying the errno as an irritant;
@@ -527,7 +550,17 @@
   ;; the caller's stderr is still attached, is the last moment at which
   ;; anything can be said at all.
   (unless log-path
-    (say '(error detach-needs-a-log (usage (serve "--detach" "--log" <path>))))
+    ;; NEVER: AND THE USAGE CLAUSE NAMES THE ONE FORM, it does not write a
+    ;; second one. This said `(usage (serve "--detach" "--log" <path>))`,
+    ;; which is not a fragment of `serve-usage` but a different statement in
+    ;; the same notation: `serve-usage` has `--detach` in brackets, meaning
+    ;; optional, and that spelling had it bare, meaning required. It read as
+    ;; "serve needs --detach --log <path>", which is false.
+    ;;
+    ;; Two clauses, two jobs: the tag says what went wrong here, and `usage`
+    ;; says what the verb accepts. A partial form is the tag doing its work
+    ;; in a notation that can say something untrue.
+    (say (list 'error 'detach-needs-a-log (list 'usage serve-usage)))
     (exit 71))
   ;; NOTE: TWO STEPS, NAMED SEPARATELY. Both fail into the same exit and the
   ;; same tag, and written as one guard the answer could not say which
@@ -593,24 +626,37 @@
   ;; scanned past there, and the flag search below matches `--wire` where
   ;; it is an option's value. Both are recorded with their readings.
   ;;
-  ;; NOTE: MEASURED WITH IT AFTER THE PARSE: `show me --store` answered
-  ;; `(error bad-request missing-option-value "--store")` here and
+  ;; NOTE: MEASURED 2026-09-19, WITH IT AFTER THE PARSE: `show me --store`
+  ;; answered `(error bad-request missing-option-value "--store")` here and
   ;; `(error bad-request unknown-verb (spelling "show me"))` from the thin
   ;; client -- two programs, one argv, two answers.
   ;;
+  ;; KEY: AND THAT ONE IS TETHERED, unlike the two readings below it.
+  ;; `test/cli-forward.sc`'s F-16 runs `'show me' --store` through both
+  ;; programs and requires them to answer identically, so moving this check
+  ;; back below the parse turns a row red. Its TWIN runs `outline --store`
+  ;; and requires `missing-option-value` from both, which is the other half:
+  ;; without it, a check at the front that called every malformed command
+  ;; line a spelling problem would satisfy the first row.
+  ;;
   ;; NOTE: AND `--wire` IS FOUND BY LOOKING, because the parser has not run
   ;; yet. NEVER: THIS DOES NOT AGREE WITH THE THIN CLIENT, and an earlier
-  ;; version of this comment claimed it did. Measured: for
+  ;; version of this comment claimed it did. Measured 2026-09-19: for
   ;; ("show me" "--store" "--wire") this search answers yes while the thin
   ;; client's scanner answers no, because there "--wire" is the value of
   ;; `--store`; ("show me" "--" "--wire") differs the same way. Which
   ;; spelling of an argument list means what, and which layer decides, is
-  ;; the open design question named below.
-  ;; NOTE: MEASURED: it makes no difference to THIS answer today -- an error
-  ;; renders the same in both modes, and only an `ok` answer differs. The
-  ;; mode is passed anyway because it is the mode the caller asked for,
-  ;; and a refusal that ignored it would be right only for as long as
-  ;; error rendering happens to match.
+  ;; the open design question named below. AS OF that date, and not
+  ;; re-measured: either scanner can change and this paragraph goes on
+  ;; reading correctly, because no row exercises these two argument lists.
+  ;; NOTE: MEASURED 2026-09-19: it made no difference to THIS answer -- an
+  ;; error rendered the same in both modes, and only an `ok` answer
+  ;; differed. The mode is passed anyway because it is the mode the caller
+  ;; asked for, and a refusal that ignored it would be right only for as
+  ;; long as error rendering happens to match. AS OF that date: nothing
+  ;; compares this refusal in both modes, so if error rendering ever stops
+  ;; matching, the reason to pass the mode is the one above and not this
+  ;; reading.
   (let ((spelling-error (verb-spelling-error (car argv))))
     (when spelling-error
       (print-answer spelling-error (and (member "--wire" argv) #t))

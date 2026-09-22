@@ -502,7 +502,7 @@ NEVER: **There is no machinery behind this rule** -- no record of who holds an
 id, no lock, and nothing refuses a second process. It is a convention,
 stated here because the failure it prevents is silent.
 
-### `write <block> <bytes> [--writer <name>] [--based-on <version>] [--rebase]`
+### `write <block> <bytes> [--writer <name>] [--based-on <version>] [--working-cut <cut>] [--working-parent-writer <name>] [--working-parent <version>] [--rebase]`
 
     (write <block> <bytes> ("--writer" <name>) ("--based-on" <version>)
            ("--working-cut" <cut>) ("--working-parent-writer" <name>)
