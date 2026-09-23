@@ -46,12 +46,21 @@
         ;; kinds out here would give the tree a second copy of the very set
         ;; whose uniqueness is the question, and this file would then agree
         ;; with itself for as long as nobody changed both.
-        (only (theourgia reduce) known-kinds)
+        (only (theourgia reduce) known-kinds block-id state-datum reduce-applied-cut)
         (only (theourgia project) md-kinds)
         ;; and the third rule, whose shape this census cannot see: it is the
         ;; key set of a dispatch table, not a quoted list, so it is pinned by
         ;; value in its own row below.
-        (only (theourgia store) name-bearing-kinds))
+        (only (theourgia store) name-bearing-kinds open-and-reduce store-evidence)
+        ;; What the run-time census at the end of this file needs to make each
+        ;; verb answer: the dispatcher, and the pieces restore's and publish's
+        ;; own setups are built from.
+        (only (theourgia rpc) rpc-dispatch rpc-ok? rpc-verbs)
+        (only (theourgia ffi) mkdir-p!)
+        (only (theourgia wire) encode-record storable-encode)
+        (only (theourgia log) log-publish! segment-sha)
+        (only (theourgia request) ev-actor ev-payload actor-sub)
+        (only (theourgia code-project) code-field))
 
 (define failures 0)
 (define rows 0)
@@ -826,6 +835,428 @@
             (filter (lambda (k) (not (memq k known-kinds))) md-kinds)
             (if (null? md-kinds) 'THE-PROJECTION-CLAIMS-NOTHING 'and-it-claims-something))
       (list 0 '() 'and-it-claims-something))
+
+;; ---- F58 the run-time census of item tags ----------------------------------
+;;
+;; KEY: THE STATIC ROWS ABOVE READ rpc.sc; THESE RUN IT. For every verb the
+;; program answers to, one invocation is made and its answer is classified.
+;; The census is of the answers exercised here, one invocation per verb; it
+;; is not a proof of every tag a verb can produce, and a verb's class says
+;; what ITS invocation answered.
+;;
+;; THE POPULATION IS (rpc-verbs), not a scanner and not what a run produced.
+;; Success is `rpc-ok?`'s, the product's own rule, and nowhere else.
+;;
+;; Every invocation lands in exactly one class:
+;;   tagged       an items answer with an item that is a symbol-headed pair:
+;;                recorded as verb -> (sorted heads . count of other items)
+;;   untagged     an items answer with items, none symbol-headed
+;;   not-items    a success that is not an items answer: recorded with its head
+;;   unexercised  anything else, with a structured reason:
+;;                (no-invocation), (empty-items), (refused <head> <reason>),
+;;                (raised <message>)
+;; An items answer is `(ok (items x ...) clause ...)`; the trailing clauses
+;; are siblings of the items list, never items.
+
+;; A FRESH ROOT, REFUSED IF IT EXISTS. The root is named by process id, and a
+;; recycled id with a directory left behind would hand this census a store
+;; it did not build (F71).
+(define census-root
+  (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
+                 "/facade-gate-census-" (number->string (get-process-id))))
+(when (file-exists? census-root)
+  (error 'facade-gate "the census wants a fresh root" census-root))
+(mkdir-p! census-root)
+
+(define (census-write! path s)
+  (call-with-port (open-file-output-port path (file-options no-fail))
+    (lambda (p) (put-bytevector p (if (string? s) (string->utf8 s) s)))))
+(define (census-new-id answer)
+  (let ((ev (and (pair? answer) (assq 'events (cdr answer)))))
+    (and ev (let ((e (car (cadr ev)))) (block-id (car e) (cdr e))))))
+
+;; ISOLATION IS A FRESH STORE, NOT A COPY: a copied store keeps the
+;; original's instance identity, and the machine registry lives in the
+;; machine home. So each verb gets its own home, its own store and its own
+;; directory for every file it reads or writes outside the store.
+(define census-areas '())
+(define (census-case! name)
+  (let* ((area (string-append census-root "/" name))
+         (home (string-append area "/home"))
+         (store (string-append area "/store"))
+         (ext (string-append area "/ext")))
+    (set! census-areas (cons (list name home store ext (file-exists? area)) census-areas))
+    (mkdir-p! ext)
+    (putenv "THEOURGIA_HOME" home)
+    (cons store ext)))
+(define (census-ask store . req) (rpc-dispatch store req "census"))
+
+;; THE COMMON SEED. Each step is here because some verb needs it:
+;;   P, C, then P deleted     C is an orphan, for conflicts
+;;   B with "needle" text     a hit for search and a match for grep
+;;   F, then t0; then B's title, src, level, parent and ord (moved under
+;;   F) and links (B explains C) all changed, D deleted, E inserted; then t1
+;;                            added, removed, and changed in every field diff
+;;                            compares (store.sc projected-fields), between two
+;;                            cuts; and stored tags, for the argument-free tag
+;;   B explains E             a link to E, for refs
+;;   a datum-mode library     somewhere for def to define into, and a live
+;;                            export for whereis
+;;   a draft of B             written after every committed edit to B, and
+;;                            differing from it, for drafts, commit, discard
+;; Every step's answer is kept, and a CONTROL row below asks that each one
+;; succeeded: a step that failed would change what the verbs answer.
+(define census-seed-failures '())
+(define (census-seed! store ext)
+  (let ((steps '()))
+    (define (step! label answer)
+      (unless (rpc-ok? answer)
+        (set! census-seed-failures (cons (list label answer) census-seed-failures)))
+      answer)
+    (let* ((init (step! 'init (census-ask store 'init)))
+           (writer (cadr (assq 'writer (cdr init))))
+           (P (census-new-id (step! 'insert-p (census-ask store 'insert "--under" "root" "--title" "Parent"))))
+           (C (census-new-id (step! 'insert-c (census-ask store 'insert "--under" P "--title" "Child"))))
+           (del-p (step! 'del-p (census-ask store 'del P)))
+           ;; F comes before B at the root, so that moving B under F changes
+           ;; its ord as well as its parent.
+           (F (census-new-id (step! 'insert-f (census-ask store 'insert "--under" "root" "--title" "Foxtrot"))))
+           (B (census-new-id (step! 'insert-b (census-ask store 'insert "--under" "root" "--title" "Beta"
+                                                          "--text" "a needle in the beta block"))))
+           (D (census-new-id (step! 'insert-d (census-ask store 'insert "--under" "root" "--title" "Delta"))))
+           (t0 (step! 'tag-t0 (census-ask store 'tag "t0")))
+           (retitle (step! 'retitle-b (census-ask store 'set B "title" "Beta renamed")))
+           (resrc (step! 'resrc-b (census-ask store 'set B "src" "a needle in the changed beta block")))
+           ;; level is an integer, and `set` hands its value on as text, which
+           ;; the product refuses as a malformed intent; a batch intent is read
+           ;; as data, so the level goes through batch.
+           (relevel (step! 'relevel-b (census-ask store 'batch
+                                                  (string-append "((set \"" B "\" level 3))"))))
+           (move-b (step! 'move-b (census-ask store 'move B F)))
+           (link-c (step! 'link-b-c (census-ask store 'link B "explains" C)))
+           (del-d (step! 'del-d (census-ask store 'del D)))
+           (E (census-new-id (step! 'insert-e (census-ask store 'insert "--under" "root" "--title" "Echo"))))
+           (t1 (step! 'tag-t1 (census-ask store 'tag "t1")))
+           (link (step! 'link (census-ask store 'link B "explains" E)))
+           (lib-dir (string-append ext "/lib-in")))
+      (mkdir-p! lib-dir)
+      (census-write! (string-append lib-dir "/a.sc")
+                     "(library (a) (export gnarlwick) (import (rnrs)) (define gnarlwick 1))\n")
+      (step! 'import-lib (census-ask store 'import-code lib-dir "--datum"))
+      (let* ((state (open-and-reduce store))
+             (lib (find (lambda (id) (equal? (code-field state id 'name) '(a)))
+                        (map cadr (state-datum state)))))
+        (step! 'draft-b (census-ask store 'write B "draft text that differs" "--writer" writer))
+        (list (cons 'writer writer) (cons 'B B) (cons 'C C) (cons 'E E) (cons 'lib lib))))))
+(define (census-get seed key) (cdr (assq key seed)))
+(define census-diff-block #f)
+(define (seeded proc)
+  (lambda (store ext) (proc store ext (census-seed! store ext))))
+
+;; THE INVOCATION TABLE: one entry per verb. A verb with no entry is
+;; (no-invocation), so a verb added to the dispatcher is named, not skipped.
+(define census-table
+  (list
+    (cons 'describe (seeded (lambda (st x s) (census-ask st 'describe))))
+    ;; init is given a directory nothing has initialised
+    (cons 'init (lambda (st x) (census-ask st 'init)))
+    (cons 'insert (seeded (lambda (st x s) (census-ask st 'insert "--under" "root" "--title" "Census"))))
+    (cons 'set (seeded (lambda (st x s) (census-ask st 'set (census-get s 'E) "title" "Echo renamed"))))
+    (cons 'move (seeded (lambda (st x s) (census-ask st 'move (census-get s 'E) (census-get s 'B)))))
+    (cons 'del (seeded (lambda (st x s) (census-ask st 'del (census-get s 'E)))))
+    (cons 'link (seeded (lambda (st x s) (census-ask st 'link (census-get s 'E) "explains" (census-get s 'B)))))
+    (cons 'unlink (seeded (lambda (st x s) (census-ask st 'unlink (census-get s 'B) "explains" (census-get s 'E)))))
+    (cons 'write (seeded (lambda (st x s)
+                           (census-ask st 'write (census-get s 'E) "a draft of echo"
+                                       "--writer" (census-get s 'writer)))))
+    (cons 'drafts (seeded (lambda (st x s) (census-ask st 'drafts "--writer" (census-get s 'writer)))))
+    (cons 'commit (seeded (lambda (st x s)
+                            (census-ask st 'commit (census-get s 'B) "--writer" (census-get s 'writer)))))
+    (cons 'discard (seeded (lambda (st x s)
+                             (census-ask st 'discard (census-get s 'B) "--writer" (census-get s 'writer)))))
+    (cons 'batch (seeded (lambda (st x s)
+                           (census-ask st 'batch
+                                       (string-append "((set \"" (census-get s 'E) "\" title \"batched\"))")))))
+    (cons 'split-suggest (seeded (lambda (st x s)
+                                   (let ((in (string-append x "/split-in.sc")))
+                                     (census-write! in "(define (f) 1)\n\n(define (g) 2)\n")
+                                     (census-ask st 'split-suggest in "--output" (string-append x "/split-out.txt"))))))
+    (cons 'import-code (seeded (lambda (st x s)
+                                 (let ((d (string-append x "/code-in")))
+                                   (mkdir-p! d)
+                                   (census-write! (string-append d "/m.py") "def marmoset():\n  pass\n")
+                                   (census-ask st 'import-code d)))))
+    (cons 'export-code (seeded (lambda (st x s) (census-ask st 'export-code (string-append x "/code-out")))))
+    (cons 'def (seeded (lambda (st x s)
+                         (census-ask st 'def "freshname" "--under" (census-get s 'lib) "(define freshname 1)"))))
+    ;; THE DIRECTORY IS MADE FIRST: export-md into one that does not exist
+    ;; yet writes nothing and calls every document's path unusable (F82).
+    (cons 'export-md (seeded (lambda (st x s)
+                               (let ((d (string-append x "/md-out")))
+                                 (mkdir-p! d)
+                                 (census-ask st 'export-md d)))))
+    (cons 'adopt (seeded (lambda (st x s) (census-ask st 'adopt))))
+    (cons 'check (seeded (lambda (st x s) (census-ask st 'check))))
+    (cons 'snapshot (seeded (lambda (st x s) (census-ask st 'snapshot))))
+    (cons 'outline (seeded (lambda (st x s) (census-ask st 'outline))))
+    ;; read's items mode
+    (cons 'read (seeded (lambda (st x s) (census-ask st 'read (census-get s 'B) "--recursive"))))
+    (cons 'refs (seeded (lambda (st x s) (census-ask st 'refs (census-get s 'E)))))
+    (cons 'search (seeded (lambda (st x s) (census-ask st 'search "needle"))))
+    (cons 'grep (seeded (lambda (st x s) (census-ask st 'grep "needle"))))
+    (cons 'whereis (seeded (lambda (st x s) (census-ask st 'whereis "gnarlwick"))))
+    ;; with no arguments log lists every applied event, the seed's among them
+    (cons 'log (seeded (lambda (st x s) (census-ask st 'log))))
+    ;; tag's items mode is the argument-free listing
+    (cons 'tag (seeded (lambda (st x s) (census-ask st 'tag))))
+    (cons 'diff (seeded (lambda (st x s)
+                          (set! census-diff-block (census-get s 'B))
+                          (census-ask st 'diff "t0" "t1"))))
+    (cons 'conflicts (seeded (lambda (st x s) (census-ask st 'conflicts))))
+    ;; RESTORE'S OWN SETUP, never the common seed's: a committed version,
+    ;; then a second record claiming its identity in another writer's
+    ;; stream, which revokes it. Built as test/revoke-restore.sc builds it.
+    (cons 'restore (seeded (lambda (st x s)
+      (let* ((w (census-get s 'writer)) (A (census-get s 'E)))
+        (census-ask st 'write A "the text I wrote" "--writer" w)
+        (let* ((v1 (list-ref (assq 'projection (cdr (census-ask st 'read A "--working-info" "--writer" w))) 4))
+               (cursor (string-append w ":" (number->string
+                                              (cdr (assoc w (reduce-applied-cut (open-and-reduce st)))))))
+               (committed (census-ask st 'commit A "--req" "R1" "--cursor" cursor
+                                      "--working-version" v1 "--writer" w))
+               (plan-ev (find (lambda (e) (eq? 'plan (actor-sub (ev-actor e))))
+                              (store-evidence st (cons w "R1"))))
+               (rival (encode-record 1 1789000000001 (ev-actor plan-ev) '()
+                                     (storable-encode (ev-payload plan-ev)))))
+          (log-publish! st "rivalzzz" 1 rival (segment-sha rival))
+          (census-ask st 'restore v1 "--writer" w))))))
+    ;; PUBLISH'S OWN SETUP: one valid record for a mirror writer.
+    (cons 'publish (seeded (lambda (st x s)
+      (let ((file (string-append x "/mirror.bin")))
+        (census-write! file (encode-record 1 1789000000001 "peer" '()
+                                           (storable-encode '(put ((kind . section) (title . "mirrored"))))))
+        (census-ask st 'publish "mirrorzz" "1" file)))))
+    ;; IMPORT-MD'S OWN SETUP: a fresh store holding one document at seed.md
+    ;; with two sections, exported and imported back. Not the common seed:
+    ;; a deleted document there would be counted as missing by the import
+    ;; and omitted by the export, and the import would answer would-delete.
+    ;; The directory is made first (F82).
+    (cons 'import-md (lambda (st x)
+      (census-ask st 'init)
+      (let ((doc (census-new-id (census-ask st 'insert "--under" "root" "--title" "Seed doc")))
+            (d (string-append x "/md")))
+        (census-ask st 'set doc "kind" "doc")
+        (census-ask st 'set doc "path" "seed.md")
+        (census-ask st 'insert "--under" doc "--title" "One" "--text" "first")
+        (census-ask st 'insert "--under" doc "--title" "Two" "--text" "second")
+        (mkdir-p! d)
+        (census-ask st 'export-md d)
+        (census-ask st 'import-md d))))))
+
+(define (census-name<? a b) (string<? (symbol->string a) (symbol->string b)))
+(define (census-dedup-strings xs)
+  (let loop ((l xs) (acc '()))
+    (if (null? l) acc (loop (cdr l) (if (member (car l) acc) acc (cons (car l) acc))))))
+(define (census-dedup xs)
+  (let loop ((l xs) (acc '()))
+    (if (null? l) (reverse acc) (loop (cdr l) (if (memq (car l) acc) acc (cons (car l) acc))))))
+
+;; -> (class detail), and the answer
+(define (census-classify answer)
+  (cond
+    ((not (rpc-ok? answer))
+     (list 'unexercised
+           (list 'refused (car answer) (and (pair? (cdr answer)) (cadr answer)))))
+    ((and (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+          (eq? (car (cadr answer)) 'items))
+     (let* ((items (cdr (cadr answer)))
+            (tagged? (lambda (x) (and (pair? x) (symbol? (car x)))))
+            (heads (census-dedup (map car (filter tagged? items))))
+            (others (length (filter (lambda (x) (not (tagged? x))) items))))
+       (cond ((null? items) (list 'unexercised '(empty-items)))
+             ((null? heads) (list 'untagged others))
+             (else (list 'tagged (cons (list-sort census-name<? heads) others))))))
+    (else (list 'not-items (car answer)))))
+
+;; (verb class detail answer), one per population member
+(define census
+  (map (lambda (verb)
+         (let ((entry (assq verb census-table)))
+           (if (not entry)
+               (list verb 'unexercised '(no-invocation) #f)
+               (let* ((c (census-case! (symbol->string verb)))
+                      (answer (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e))
+                                                              (condition-message e) e))))
+                                ((cdr entry) (car c) (cdr c)))))
+                 (if (and (pair? answer) (eq? (car answer) 'RAISED))
+                     (list verb 'unexercised (list 'raised (cadr answer)) answer)
+                     (let ((k (census-classify answer)))
+                       (list verb (car k) (cadr k) answer)))))))
+       (rpc-verbs)))
+
+(define (census-class name)
+  (list-sort census-name<? (map car (filter (lambda (r) (eq? (cadr r) name)) census))))
+(define (census-detail name)
+  (list-sort (lambda (a b) (census-name<? (car a) (car b)))
+             (map (lambda (r) (cons (car r) (caddr r)))
+                  (filter (lambda (r) (eq? (cadr r) name)) census))))
+(for-each (lambda (r) (printf "   census ~a: ~a ~s\n" (car r) (cadr r) (caddr r))) census)
+
+;; ---- the rows ----
+
+;; PRINTED AS WELL AS COMPARED: a row that is ok prints no value, and these
+;; two values are readings a delivery cites.
+(define (census-isolation)
+  (let ((distinct (lambda (k) (length (census-dedup-strings (map k census-areas))))))
+    (list (length census-areas) (distinct cadr) (distinct caddr) (distinct cadddr)
+          (length (filter (lambda (a) (list-ref a 4)) census-areas))
+          (length (filter (lambda (a) (not (and (file-exists? (cadr a))
+                                                (pair? (directory-list (cadr a))))))
+                          census-areas)))))
+(printf "   census isolation (cases, homes, stores, outside dirs, pre-existing, empty homes): ~s\n"
+        (census-isolation))
+
+;; CONTROL: EACH VERB HAD ITS OWN HOME, STORE AND OUTSIDE DIRECTORY, none of
+;; them existing before its case began, and each home was written to by its
+;; own case (the machine registry lives there). Read as the number of cases,
+;; the number of distinct homes, stores and outside directories, the number
+;; whose area existed beforehand, and the number of homes left empty.
+(want "F58 CONTROL each case ran in its own fresh home, store and outside directory"
+      (census-isolation)
+      (let ((n (length (rpc-verbs)))) (list n n n n 0 0)))
+
+;; CONTROL: the seed's steps all succeeded in every case that used it. A
+;; failed step would change what the verbs answer, and the rows below would
+;; then be about a store this file did not mean to build.
+(want "F58 CONTROL every seed step answered as a success, in every seeded case"
+      (map car census-seed-failures)
+      '())
+
+;; CONTROL: THE SEED DOES WHAT SECTION 4 OF THE DESIGN ASKS OF IT FOR diff --
+;; one surviving block changed in every field diff compares. Read from the
+;; diff case's own answer: the fields it reports as changed for B.
+(want "F58 CONTROL on the seed, diff reports B changed in title, src, level, parent, ord and links"
+      (let* ((r (assq 'diff census))
+             (a (and r (cadddr r)))
+             (items (if (and (pair? a) (pair? (cdr a)) (pair? (cadr a))) (cdr (cadr a)) '())))
+        (list-sort census-name<?
+                   (map caddr (filter (lambda (i) (and (pair? i) (eq? (car i) 'changed)
+                                                      (equal? (cadr i) census-diff-block)))
+                                      items))))
+      '(level links ord parent src title))
+
+;; PRODUCT ROW: the raw population has no verb twice. rpc-verbs maps the
+;; dispatch table directly (rpc.sc:1368), so a duplicate key there turns this
+;; red.
+(want "F58 the verb table names no verb twice"
+      (let loop ((l (rpc-verbs)) (seen '()) (dup '()))
+        (cond ((null? l) (reverse dup))
+              ((memq (car l) seen) (loop (cdr l) seen (cons (car l) dup)))
+              (else (loop (cdr l) (cons (car l) seen) dup))))
+      '())
+
+;; PRODUCT ROW although it reads this file's table: an entry for a verb the
+;; dispatcher no longer has is red with no edit here.
+(want "F58 every invocation in the table is for a verb the dispatcher has"
+      (filter (lambda (v) (not (memq v (rpc-verbs)))) (map car census-table))
+      '())
+
+(want "F58 these verbs answer with tagged items"
+      (census-class 'tagged)
+      '(commit conflicts def diff drafts grep import-code log refs search tag whereis))
+(want "F58 these verbs answer with items that carry no tag"
+      (census-class 'untagged)
+      '(read))
+(want "F58 these verbs answer with a success that is not items"
+      (census-class 'not-items)
+      '(batch check del describe discard export-code export-md import-md init insert
+        link move outline publish restore set snapshot split-suggest unlink write))
+(want "F58 these verbs are unexercised"
+      (census-class 'unexercised)
+      '(adopt))
+
+;; THE TAGGED MAP: verb -> (sorted heads . count of items that are not
+;; symbol-headed pairs). A head may be `ok` (commit, import-code, def); none
+;; is filtered out as not a real tag.
+(want "F58 each tagged verb's heads, and how many of its items carry none"
+      (census-detail 'tagged)
+      '((commit (ok) . 0) (conflicts (orphan) . 0) (def (ok) . 0)
+        (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
+        (import-code (ok) . 0) (log (entry) . 0) (refs (ref) . 0) (search (hit) . 0)
+        (tag (tag) . 0) (whereis (def export) . 0)))
+(want "F58 each not-items verb's answer head"
+      (census-detail 'not-items)
+      '((batch . batch) (check . check) (del . ok) (describe . ok) (discard . ok)
+        (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
+        (link . ok) (move . ok) (outline . ok) (publish . ok) (restore . ok) (set . ok)
+        (snapshot . ok) (split-suggest . ok) (unlink . ok) (write . ok)))
+
+;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A
+;; refusal is accepted only with the line saying why it is the verb's correct
+;; answer on this seed. Anything else unexercised -- a catch-all, a raise, a
+;; verb with no invocation -- has no such line and is red.
+(define census-allowed
+  (list
+    (list 'adopt '(refused error not-needed)
+          "a healthy store needs no adoption (log.sc:4428)")))
+(want "F58 CONTROL every accepted refusal says why it is correct"
+      (filter (lambda (a) (not (and (string? (caddr a)) (> (string-length (caddr a)) 0))))
+              census-allowed)
+      '())
+(want "F58 the unexercised verbs and their reasons are exactly the justified ones"
+      (census-detail 'unexercised)
+      (list-sort (lambda (a b) (census-name<? (car a) (car b)))
+                 (map (lambda (a) (cons (car a) (cadr a))) census-allowed)))
+
+;; TRIPWIRE, NOT A MEASUREMENT: an answer, at the top level or inside a
+;; batch or import envelope, whose head and reason are one of the catch-alls
+;; known on 2026-09-23. The list is today's and incomplete; the allow-list
+;; above is what closes the gap.
+(define census-catch-alls '((error internal) (error working-unavailable) (error unknown)))
+(define (census-members answer)
+  (if (and (pair? answer) (memq (car answer) '(batch import)) (pair? (cdr answer)) (list? (cadr answer)))
+      (cons answer (cadr answer))
+      (list answer)))
+(define (census-tripwire-hits)
+  (apply append
+             (map (lambda (r)
+                    (let ((hits (filter (lambda (a)
+                                          (and (pair? a) (pair? (cdr a))
+                                               (member (list (car a) (cadr a)) census-catch-alls)))
+                                        (census-members (cadddr r)))))
+                      (if (null? hits) '() (list (car r)))))
+                  census)))
+(printf "   census tripwire hits: ~s\n" (census-tripwire-hits))
+(want "F58 TRIPWIRE no answer is one of the known catch-alls"
+      (census-tripwire-hits)
+      '())
+
+;; CONTROL: one total classification per population member.
+(want "F58 CONTROL the four classes together are the population, each verb once"
+      (let ((all (append (census-class 'tagged) (census-class 'untagged)
+                         (census-class 'not-items) (census-class 'unexercised))))
+        (list (length all) (length (census-dedup all))
+              (equal? (list-sort census-name<? all) (list-sort census-name<? (rpc-verbs)))))
+      (list (length (rpc-verbs)) (length (rpc-verbs)) #t))
+
+;; THE STATIC GATE BECOMES A CROSS-CHECK. Every (verb . tag) the static scan
+;; reads from rpc.sc appears at run time; every verb it could not follow is
+;; tagged or untagged at run time.
+(define census-runtime-pairs
+  (apply append (map (lambda (e) (map (lambda (h) (cons (car e) h)) (cadr e)))
+                     (census-detail 'tagged))))
+(want "F58 every tag the static scan reads is one the verb produces at run time"
+      (filter (lambda (p) (not (member p census-runtime-pairs))) (car items-scan))
+      '())
+(want "F58 every verb the static scan cannot follow answers with items at run time"
+      (filter (lambda (v) (not (or (memq v (census-class 'tagged)) (memq v (census-class 'untagged)))))
+              (census-dedup (map car (cadr items-scan))))
+      '())
+;; PRINTED, NOT COMPARED: what the run shows that the static scan does not.
+(printf "   run-time pairs the static scan does not read: ~s\n"
+        (filter (lambda (p) (not (member p (car items-scan)))) census-runtime-pairs))
+
+(system (string-append "rm -rf '" census-root "'"))
 
 (printf "rows: ~a\n~a failures\nfacade-gate complete\n" rows failures)
 (exit (if (zero? failures) 0 1))
