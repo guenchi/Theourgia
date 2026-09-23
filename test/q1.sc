@@ -359,6 +359,22 @@
     (put! p (apply cat recs))
     p))
 (define (state-of d) (open-and-reduce d))
+;; A POISON RECORD IS PLANTED, NOT PUBLISHED. Publish refuses a record
+;; the reader would refuse, so it can no longer be the way these rows put
+;; one in a store; they write the mirror's one segment and its manifest
+;; entry directly, as bytes arriving from somewhere that did not check.
+;; `planted?` reads both back, and every row that plants asks it first:
+;; a row about how the store treats a poison record says nothing if the
+;; record never got there.
+(define (plant-mirror! d writer bytes)
+  (let ((dir (writer-directory d writer)))
+    (system (string-append "mkdir -p " dir))
+    (put! (string-append dir "/" (segment-file-name 1)) bytes)
+    (write-manifest! d writer (list (list 1 (segment-sha bytes) 1 1)))))
+(define (planted? d writer bytes)
+  (and (equal? (slurp (string-append (writer-directory d writer) "/" (segment-file-name 1)))
+               bytes)
+       (equal? (read-manifest d writer) (list (list 1 (segment-sha bytes) 1 1)))))
 
 (define d1 (fresh-store!))
 (run d1 "init")
@@ -408,14 +424,17 @@
 ;; the store's verdict is `damaged`, which is the word an operator acts
 ;; on.
 (want "a record whose payload is not a form is an integrity error, named and located"
-      (let ((d (fresh-store!)))
+      (let ((d (fresh-store!))
+            (poison (raw-record 1 "()" "hello")))
         (run d "init")
-        (run d "publish" "mirrorzz" "1" (mirror-file "atom.bin" (rec 1 'hello)))
-        (let* ((c (car (lines-of (run d "check"))))
-               (writers (cadr (assq 'writers (cdr c))))
-               (mirror (assoc "mirrorzz" writers)))
-          (list (cadr (assq 'integrity (cdr mirror)))
-                (cadr (assq 'verdict (cdr c))))))
+        (plant-mirror! d "mirrorzz" poison)
+        (if (not (planted? d "mirrorzz" poison))
+            'not-planted
+            (let* ((c (car (lines-of (run d "check"))))
+                   (writers (cadr (assq 'writers (cdr c))))
+                   (mirror (assoc "mirrorzz" writers)))
+              (list (cadr (assq 'integrity (cdr mirror)))
+                    (cadr (assq 'verdict (cdr c)))))))
       (list (list (list 'frame (list 'segment 1) (list 'offset 0)
                         (list 'reason 'payload-not-a-form)))
             'damaged))
@@ -426,15 +445,17 @@
 ;; the reducer's own care about records it cannot apply. The payload
 ;; above is fine; only the envelope is wrong.
 (want "a record whose dependencies are malformed is an integrity error, not a raise"
-      (let ((d (fresh-store!)))
+      (let ((d (fresh-store!))
+            (poison (raw-record 1 "(7)" "(put ((title . \"Bad deps\")))")))
         (run d "init")
-        (run d "publish" "mirrorzz" "1"
-             (mirror-file "baddeps.bin" (raw-record 1 "(7)" "(put ((title . \"Bad deps\")))")))
-        (let* ((c (car (lines-of (run d "check"))))
-               (writers (cadr (assq 'writers (cdr c))))
-               (mirror (assoc "mirrorzz" writers)))
-          (list (cadr (assq 'integrity (cdr mirror)))
-                (length (lines-of (run d "outline"))))))
+        (plant-mirror! d "mirrorzz" poison)
+        (if (not (planted? d "mirrorzz" poison))
+            'not-planted
+            (let* ((c (car (lines-of (run d "check"))))
+                   (writers (cadr (assq 'writers (cdr c))))
+                   (mirror (assoc "mirrorzz" writers)))
+              (list (cadr (assq 'integrity (cdr mirror)))
+                    (length (lines-of (run d "outline")))))))
       (list (list (list 'frame (list 'segment 1) (list 'offset 0)
                         (list 'reason 'deps-malformed)))
             0))
@@ -741,15 +762,18 @@
 ;; by a store that has stopped working -- the exact condition this row
 ;; exists to rule out.
 (want "and the store still reads and still writes with such a record present"
-      (let ((d (fresh-store!)))
+      (let ((d (fresh-store!))
+            (poison (raw-record 1 "()" "hello")))
         (run d "init")
         (run d "insert" "--under" "root" "--title" "Mine")
-        (run d "publish" "mirrorzz" "1" (mirror-file "atom2.bin" (rec 1 'hello)))
-        (let* ((wrote (car (lines-of (run d "insert" "--under" "root" "--title" "After"))))
-               (ls (lines-of (run d "outline"))))
-          (list (and (pair? wrote) (car wrote))
-                (length ls)
-                (and (pair? (car ls)) (eq? (car (car ls)) 'error)))))
+        (plant-mirror! d "mirrorzz" poison)
+        (if (not (planted? d "mirrorzz" poison))
+            'not-planted
+            (let* ((wrote (car (lines-of (run d "insert" "--under" "root" "--title" "After"))))
+                   (ls (lines-of (run d "outline"))))
+              (list (and (pair? wrote) (car wrote))
+                    (length ls)
+                    (and (pair? (car ls)) (eq? (car (car ls)) 'error))))))
       (list 'ok 2 #f))
 ;; AND A SNAPSHOT DOES NOT ERASE THE OBSERVATION. The notes are about
 ;; records the snapshot's cut COVERS, and replay skips everything

@@ -94,7 +94,7 @@
 
 (library (theourgia wire)
   (export storable-encode storable-decode
-          encode-record decode-line
+          encode-record decode-line record-envelope-refusal
           wire-safe-symbol? escape-newlines
           sexpr->string-extended string->sexpr-extended)
   (import (chezscheme)
@@ -434,10 +434,89 @@
                 (or (not plan-event) (event-id? plan-event))
                 (event-id? after)))))
 
-  (define (check-record! who seq ts actor deps)
-    (unless (and (integer? seq) (exact? seq) (>= seq 0))
-      (assertion-violation who "seq must be a non-negative exact integer" seq))
-    (unless (and (integer? ts) (exact? ts) (>= ts 0))
+  ;; ---- the envelope rule ---------------------------------------------------
+
+  ;; A DEPENDENCY IS `(<writer> . <seq>)`, and the scheduler reads both
+  ;; halves of every one of them without asking. This says so once.
+  ;;
+  ;; `list?` IS ASKED BEFORE THE WALK, because it terminates on a circular
+  ;; list and the walk does not. Decoded data is never circular, but the
+  ;; writer hands this its caller's raw values, and a circular dependency
+  ;; list there would otherwise follow cdrs forever.
+  (define (deps-well-formed? deps)
+    (and (list? deps)
+         (for-all (lambda (d)
+                    (and (pair? d)
+                         (string? (car d))
+                         (integer? (cdr d))
+                         (exact? (cdr d))
+                         (>= (cdr d) 0)))
+                  deps)))
+
+  ;; WHAT A RECORD'S ENVELOPE MUST BE, stated in one place. It takes a
+  ;; decoded record, `(ok seq ts actor deps payload)` as `decode-line`
+  ;; answers it, and answers #f when the envelope is acceptable or the
+  ;; reason it is not. The reasons are asked in this order, and the first
+  ;; that applies is the answer.
+  ;;
+  ;; THE READER, PUBLISH AND THE WRITER ALL ASK THIS. The scanner refuses
+  ;; what it refuses and stops the writer there; publish refuses to
+  ;; install a candidate holding such a record, so that a store never
+  ;; answers `published` for bytes its own reader will not read past; the
+  ;; writer asks it before applying its own stricter rules, so that what
+  ;; it writes is a subset of what is read by construction rather than by
+  ;; two lists that happen to agree.
+  ;;
+  ;; THE TYPES ARE CHECKED BEFORE ANY VALUE IS COMPARED. `decode-line`
+  ;; establishes that a line is one datum of five elements; it does not
+  ;; establish that the first is a number. A crafted record such as
+  ;; (oops 1 "a" () (put "x" ())) has the right shape, and comparing its
+  ;; seq raised an ordinary exception that escaped replay entirely --
+  ;; taking every other writer's delivery with it, which is exactly what
+  ;; per-writer scoping exists to prevent.
+  ;;
+  ;; AND THE REST OF THE ENVELOPE, for the same reason. `deps` had the
+  ;; identical problem: a record framed with a correct CRC and `deps` of
+  ;; `(7)` was accepted by `decode-line`, counted by a discovery scan, and
+  ;; then raised `7 is not a pair` inside dependency scheduling -- before
+  ;; the reducer's own refusal to raise could help. The scheduler must
+  ;; only ever be handed a well-formed envelope.
+  ;;
+  ;; AN ACTOR IS A NAME OR A LIST. A record written with no request
+  ;; carries the caller's name as a string; a record belonging to a
+  ;; request carries the whole actor, which is a list. Checking for a
+  ;; string alone rejected every request record -- the envelope check was
+  ;; stricter than the format it was meant to describe. The writer's rule
+  ;; is narrower (a six-element request actor) and is the writer's own.
+  ;;
+  ;; THE INTEGER TESTS ARE NOT A FORMALITY BEHIND THE PARSER. Some values
+  ;; that are not exact integers do decode -- `3/2`, `+inf.0`, and the
+  ;; flonum 1.0 in the codec's own spelling -- and reach this.
+  (define (record-envelope-refusal r)
+    (let ((seq (list-ref r 1))
+          (ts (list-ref r 2))
+          (actor (list-ref r 3))
+          (deps (list-ref r 4))
+          (payload (list-ref r 5)))
+      (cond
+        ((not (and (integer? seq) (exact? seq) (>= seq 0))) 'seq-not-a-number)
+        ((not (and (integer? ts) (exact? ts))) 'ts-not-a-number)
+        ((not (or (string? actor) (pair? actor))) 'actor-malformed)
+        ((not (deps-well-formed? deps)) 'deps-malformed)
+        ((not (pair? payload)) 'payload-not-a-form)
+        (else #f))))
+
+  ;; THE WRITER ASKS THE SHARED RULE FIRST, THEN ITS OWN. Its own rules
+  ;; only narrow: a timestamp is not negative, an actor that is not a
+  ;; name is a six-element request actor, and no symbol in the actor is
+  ;; uninterned.
+  (define (check-record! who seq ts actor deps payload)
+    (let ((reason (record-envelope-refusal (list 'ok seq ts actor deps payload))))
+      ;; THE REASON ALONE IS THE IRRITANT. A refused dependency list may be
+      ;; circular, and a condition carrying it would never finish printing.
+      (when reason
+        (assertion-violation who "the record's envelope is refused" reason)))
+    (unless (>= ts 0)
       (assertion-violation who "ts must be a non-negative exact integer" ts))
     (unless (or (string? actor) (request-actor? actor))
       (assertion-violation who
@@ -460,16 +539,7 @@
     ;; else outside the subset is refused loudly by the codec a moment
     ;; later; the uninterned symbol is the only value that would go to
     ;; disk meaning something other than what it is.
-    (assert-interned-symbols! who actor)
-    (unless (list? deps)
-      (assertion-violation who "deps must be a proper list" deps))
-    (for-each
-      (lambda (d)
-        (unless (and (pair? d)
-                     (string? (car d))
-                     (integer? (cdr d)) (exact? (cdr d)) (>= (cdr d) 0))
-          (assertion-violation who "dep must be (writer-string . seq)" d)))
-      deps))
+    (assert-interned-symbols! who actor))
 
   ;; The record datum is the five elements of section 4.2 and the CRC covers all
   ;; of them -- seq, timestamp, actor and deps included, not just the
@@ -490,7 +560,7 @@
   ;; exposed. Everything else outside the subset (a character, a record
   ;; instance, a procedure) is refused loudly by the codec.
   (define (encode-record seq ts actor deps payload)
-    (check-record! 'encode-record seq ts actor deps)
+    (check-record! 'encode-record seq ts actor deps payload)
     (let* ((text (record-text seq ts actor deps payload))
            (hex (crc32-string-hex text)))
       (string->utf8 (string-append hex " " text "\n"))))

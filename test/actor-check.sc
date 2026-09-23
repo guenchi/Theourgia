@@ -15,8 +15,11 @@
 
 (import (chezscheme) (theourgia wire))
 (define (raises? t) (guard (e (#t #t)) (t) #f))
+;; The payload is a form so that the writer's refusal is the actor's: an
+;; empty payload is refused first, by the envelope rule, before the actor
+;; is asked.
 (printf "gensym actor refused:            ~a\n"
-        (raises? (lambda () (encode-record 0 0 (list (gensym "a") 0 0 0 0) '() '()))))
+        (raises? (lambda () (encode-record 0 0 (list (gensym "a") 0 0 0 0) '() '(a)))))
 ;; THE ACTOR IS NOW TOO CONSTRAINED TO CARRY MOST OF WHAT THESE ROWS
 ;; USED TO OFFER IT. Every slot of the request actor has a shape -- a
 ;; name, a pair of writer and request id, an index or `single`/`plan`, a

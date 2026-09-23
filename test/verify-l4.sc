@@ -41,9 +41,12 @@
         (decode-line (line (bv-append (bytes 239 187 191) (string->utf8 "(0 0 \"a\" () ())")))))
 (printf "4. an LF in the middle of the buffer:\n   ~s\n"
         (decode-line (line (bytes 40 48 10 48 32 34 97 34 32 40 41 32 40 41 41))))
+;; The payload is a pair because the writer refuses any other; the gensym
+;; is its second element, and that element is what is read back.
 (printf "5. gensym payload without storable-encode:\n   ~s\n"
         (let ((g (gensym "a")))
-          (list 'wrote g 'read (list-ref (decode-line (encode-record 0 0 "a" '() g)) 5))))
+          (list 'wrote g 'read
+                (cadr (list-ref (decode-line (encode-record 0 0 "a" '() (list 'x g))) 5)))))
 
 ;; A run that did not reach here is not a pass. The runner requires
 ;; this line AND a zero failure count: they are two propositions.

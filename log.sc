@@ -99,6 +99,7 @@
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia wire)
                 sexpr->string-extended string->sexpr-extended decode-line
+                record-envelope-refusal
                 escape-newlines encode-record storable-encode))
 
   ;; ---- errors -------------------------------------------------------------
@@ -522,21 +523,6 @@
   ;; `deliver` is called per record as (deliver offset seq ts actor deps
   ;; payload) and may return the symbol stop to end the scan early, in
   ;; which case the outcome describes what had been consumed.
-  ;; A DEPENDENCY IS `(<writer> . <seq>)`, and the scheduler reads both
-  ;; halves of every one of them without asking. This says so once.
-  (define (deps-well-formed? deps)
-    (let loop ((ds deps))
-      (cond
-        ((null? ds) #t)
-        ((not (pair? ds)) #f)
-        ((not (and (pair? (car ds))
-                   (string? (car (car ds)))
-                   (integer? (cdr (car ds)))
-                   (exact? (cdr (car ds)))
-                   (>= (cdr (car ds)) 0)))
-         #f)
-        (else (loop (cdr ds))))))
-
   (define (scan-segment bv writer segment expected-seq recoverable-tail? deliver)
     (unless (bytevector? bv)
       (assertion-violation 'scan-segment "not a bytevector" bv))
@@ -562,60 +548,19 @@
                     ((ok)
                      (let ((seq (cadr r)))
                        (cond
-                         ;; THE ENVELOPE'S TYPES ARE CHECKED BEFORE ITS
-                         ;; VALUES ARE COMPARED. decode-line establishes
-                         ;; that a line is one datum of five elements; it
-                         ;; does not establish that the first is a
-                         ;; number. A crafted record such as
-                         ;; (oops 1 "a" () (put "x" ())) has the right
-                         ;; shape, and comparing its seq raised an
-                         ;; ordinary exception that escaped replay
-                         ;; entirely -- taking every other writer's
-                         ;; delivery with it, which is exactly what
-                         ;; per-writer scoping exists to prevent.
-                         ((not (and (integer? seq) (exact? seq) (>= seq 0)))
-                          (list 'integrity
-                                (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'seq-not-a-number))) last-seq start))
-                         ((not (and (integer? (caddr r)) (exact? (caddr r))))
-                          (list 'integrity
-                                (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'ts-not-a-number))) last-seq start))
-                         ;; AND THE REST OF THE ENVELOPE, for the same
-                         ;; reason and one field further along. The two
-                         ;; checks above were added when a bad `seq`
-                         ;; escaped replay; `deps` had the identical
-                         ;; problem and was never checked. A record
-                         ;; framed with a correct CRC and `deps` of `(7)`
-                         ;; was accepted by `decode-line`, counted by a
-                         ;; discovery scan, and then raised `7 is not a
-                         ;; pair` INSIDE dependency scheduling -- before
-                         ;; `interpret!`, so the reducer's own refusal to
-                         ;; raise could not help. The scheduler must only
-                         ;; ever be handed a well-formed envelope.
-                         ;; AN ACTOR IS A NAME OR A SIX-ELEMENT ACTOR.
-                         ;; A record written with no request carries the
-                         ;; caller's name as a string; a record belonging
-                         ;; to a request carries the whole actor, which
-                         ;; is a list. Checking for a string alone
-                         ;; rejected every request record in the suite --
-                         ;; the envelope check was stricter than the
-                         ;; format it was meant to describe.
-                         ((not (or (string? (cadddr r)) (pair? (cadddr r))))
-                          (list 'integrity
-                                (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'actor-malformed)))
-                                last-seq start))
-                         ((not (deps-well-formed? (list-ref r 4)))
-                          (list 'integrity
-                                (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'deps-malformed)))
-                                last-seq start))
-                         ((not (pair? (list-ref r 5)))
-                          (list 'integrity
-                                (make-log-error 'frame writer segment start
-                                                (list (cons 'reason 'payload-not-a-form)))
-                                last-seq start))
+                         ;; THE ENVELOPE IS ASKED BEFORE THE SEQUENCE, and
+                         ;; it is asked of the one rule every party shares
+                         ;; (`record-envelope-refusal`, in wire.sc, where
+                         ;; the reasons for each field are written). The
+                         ;; sequence check below compares seq as a number,
+                         ;; which is only safe once the envelope has said
+                         ;; it is one.
+                         ((record-envelope-refusal r)
+                          => (lambda (reason)
+                               (list 'integrity
+                                     (make-log-error 'frame writer segment start
+                                                     (list (cons 'reason reason)))
+                                     last-seq start)))
                          ((and expect (not (= seq expect)))
                           (list 'integrity
                                 (make-log-error 'seq writer segment start
@@ -3640,6 +3585,23 @@
             (run-barrier! store writer segment 'publish 'publish))
           answer)))
 
+  ;; THE FIRST RECORD WHOSE ENVELOPE IS REFUSED, as (reason . offset), or
+  ;; #f. Only records that decode are asked: one that does not (a bad
+  ;; CRC, a torn tail) keeps the handling it has, so a candidate holding a
+  ;; bad-CRC record and a later envelope-bad one is answered here, at the
+  ;; later one. A record from `segment-records` keeps only its seq, so its
+  ;; line is decoded again to put the whole envelope to the shared rule.
+  (define (first-envelope-refusal rs)
+    (let loop ((rs rs))
+      (if (null? rs)
+          #f
+          (let* ((rec (car rs))
+                 (reason (and (rec-ok? rec)
+                              (record-envelope-refusal (decode-line (cadddr rec))))))
+            (if reason
+                (cons reason (cadr rec))
+                (loop (cdr rs)))))))
+
   (define (publish-validated! store writer segment bytes sha)
     (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
@@ -3674,6 +3636,17 @@
         ;; manifest.
         ((not (string=? sha (segment-sha bytes)))
          (list 'error 'invalid-candidate 'sha-mismatch))
+        ;; A RECORD THE READER WOULD REFUSE IS NOT PUBLISHED. `published`
+        ;; and `idempotent` tell the sender to delete its copy, so neither
+        ;; may be said of bytes this store's own reader will not read past
+        ;; -- including bytes it already holds. The row comes before the
+        ;; sequence is compared, because comparing a seq that is not a
+        ;; number raises. It answers for the first refused record by its
+        ;; byte offset in the candidate, and names no path.
+        ((first-envelope-refusal cand-rs)
+         => (lambda (refused)
+              (list 'error 'invalid-candidate (car refused)
+                    (list 'offset (cdr refused)))))
         ((not (records-contiguous? cand-rs))
          (list 'error 'invalid-candidate 'not-contiguous))
         ;; THE LAYOUT GATE, before the validate/invalid split: several

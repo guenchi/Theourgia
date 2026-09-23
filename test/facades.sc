@@ -245,11 +245,14 @@
                (cdr (caddr form)))))
 (want "D1-04 digest.sc exports exactly what the core uses"
       (exports-of (path-of 'digest)) '(bytevector->hex sha256))
-(want "D1-04 wire.sc exports what it exported before the change"
+;; record-envelope-refusal is the one addition since: the envelope rule the
+;; reader, publish and the writer all ask, exported so that there is one of
+;; it rather than a copy per caller.
+(want "D1-04 wire.sc exports what it exported before the change, and the envelope rule"
       (exports-of (path-of 'wire))
-      '(decode-line encode-record escape-newlines sexpr->string-extended
-        storable-decode storable-encode string->sexpr-extended
-        wire-safe-symbol?))
+      '(decode-line encode-record escape-newlines record-envelope-refusal
+        sexpr->string-extended storable-decode storable-encode
+        string->sexpr-extended wire-safe-symbol?))
 
 (printf "rows: ~a\n~a failures\nfacades complete\n" rows failures)
 (exit (if (zero? failures) 0 1))
