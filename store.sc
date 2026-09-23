@@ -1718,7 +1718,14 @@
            ;; in the same order and a truncated answer is a prefix of the
            ;; whole one rather than an arbitrary sample.
            (ids (map caddr rows))
-           (wanted (if under (subtree-ids rows under) #f))
+           ;; `#f` IS THIS CALLER'S OWN: no `--under`, no filter. The walk
+           ;; never answers it, so a root that names no block filters to
+           ;; itself alone rather than switching the filter off.
+           (wanted (and under
+                        (let ((t (make-hashtable string-hash string=?)))
+                          (for-each (lambda (x) (hashtable-set! t x #t))
+                                    (outline-subtree rows under))
+                          t)))
            (q (fold-preserving (prepare pattern))))
       ;; `unreadable` MEANS HERE WHAT IT MEANS IN A SEARCH ANSWER: how many
       ;; of the blocks THIS scan looked at had text it could not read,
@@ -1772,24 +1779,6 @@
                         (+ unseen (if (and (> count 0) (= take-n 0)) 1 0))
                         (+ scanned 1)
                         (+ unreadable (if block-unreadable 1 0))))))))))
-
-  ;; Every id at or below `root-id`, by the outline's parent links. A block
-  ;; that is its own ancestor cannot happen here -- the outline marks a cycle
-  ;; under root rather than placing it -- so this walk terminates.
-  (define (subtree-ids rows root-id)
-    (let ((children (make-hashtable string-hash string=?))
-          (out (make-hashtable string-hash string=?)))
-      (for-each (lambda (r)
-                  (let ((p (car r)))
-                    (when (string? p)
-                      (hashtable-set! children p
-                                      (cons (caddr r) (hashtable-ref children p (quote ())))))))
-                rows)
-      (let walk ((id root-id))
-        (unless (hashtable-ref out id #f)
-          (hashtable-set! out id #t)
-          (for-each walk (hashtable-ref children id (quote ())))))
-      out))
 
   (define (known? state id) (and (state-read state id) #t))
   ;; ---- evidence for a request ----------------------------------------------

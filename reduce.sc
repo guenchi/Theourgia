@@ -45,7 +45,7 @@
           reduce-applied-cut reduce-trace reduce-gates
           known-kinds kind-known?
           text-field-types value-kind
-          state-read state-outline state-dump state-hash state-datum block-hash
+          state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -1730,6 +1730,46 @@
                  rows)))
 
   (define (format-parent p) (if (symbol? p) (symbol->string p) p))
+
+  ;; EVERY ID AT OR BELOW ROOT, IN THE OUTLINE'S SIBLING ORDER: the root
+  ;; first, then each child followed by everything under it -- the order a
+  ;; document is written in. ROWS are `state-outline`'s, which arrive sorted
+  ;; by parent, ord and id, so collecting children in row order is
+  ;; collecting them in sibling order.
+  ;;
+  ;; THIS ANSWERS ONE QUESTION AND LEAVES TWO TO ITS CALLERS. It does not ask
+  ;; whether the root exists, and it does not stop at any kind of block.
+  ;; `read --recursive` stops at a nested document and `grep --under` does
+  ;; not; a walk that decided either way would change the other's answer, so
+  ;; each caller applies its own rule to what comes back.
+  ;;
+  ;; IT NEVER ANSWERS #f. A root that appears in no row comes back alone.
+  ;; `#f` already means "no such block" to one caller of this and "no filter"
+  ;; to the other; giving it a third meaning is how a missing root would
+  ;; switch a filter off.
+  ;;
+  ;; A block the outline finds in a cycle is listed under `root`, not under
+  ;; its parent, so this walk does not meet one. The visited set is there so
+  ;; that it terminates on rows that did not come from the outline.
+  (define (outline-subtree rows root)
+    (let ((children (make-hashtable string-hash string=?))
+          (seen (make-hashtable string-hash string=?)))
+      (for-each (lambda (r)
+                  (let ((p (car r)))
+                    (when (string? p)
+                      (hashtable-update! children p
+                                         (lambda (cs) (cons (caddr r) cs))
+                                         (quote ())))))
+                rows)
+      (reverse
+        (let walk ((id root) (acc (quote ())))
+          (if (hashtable-ref seen id #f)
+              acc
+              (begin
+                (hashtable-set! seen id #t)
+                (fold-left (lambda (a c) (walk c a))
+                           (cons id acc)
+                           (reverse (hashtable-ref children id (quote ()))))))))))
 
   ;; SORTED THROUGHOUT. A dump that kept the order records happened to
   ;; arrive in is not a function of the state, and two libraries holding

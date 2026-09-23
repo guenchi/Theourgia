@@ -80,9 +80,14 @@
   ;; two of everything.
   (define (subtree rows state id)
     (map (lambda (child) (cons child (subtree rows state child)))
-         (filter (lambda (child)
-                   (not (eq? 'doc (kind-of (state-read state child)))))
+         (filter (lambda (child) (walks-into? state child))
                  (children-of rows id))))
+
+  ;; THE RULE ITSELF, IN ONE PLACE. Both the tree export writes and the flat
+  ;; list `--recursive` answers with stop at a nested document; this is what
+  ;; each of them asks.
+  (define (walks-into? state child)
+    (not (eq? 'doc (kind-of (state-read state child)))))
 
   ;; ---- export --------------------------------------------------------------
 
@@ -161,15 +166,36 @@
           (if recover? (string-append (recovery-comment sid) h) h))
         (text-field sb 'src))))
 
+  ;; THE BLOCK AND EVERYTHING UNDER IT, in document order, stopping at a
+  ;; nested document. The walk is the outline's own (`outline-subtree`),
+  ;; which stops at nothing; the stop is applied here, by dropping every
+  ;; document found under the root together with everything under it. The
+  ;; root is kept whatever its kind.
+  ;;
+  ;; NEVER: THIS WAS A SECOND WALK OF THE SAME TREE. `store.sc` had its own,
+  ;; under the same name, answering a different question -- it does not stop
+  ;; at a nested document, and `grep --under` depends on that. The two now
+  ;; share the walk and differ only in the rule each applies to its result.
+  (define (subtree-with-root state id)
+    (let* ((rows (state-outline state))
+           (all (outline-subtree rows id))
+           (cut (make-hashtable string-hash string=?)))
+      (for-each (lambda (child)
+                  (unless (walks-into? state child)
+                    (for-each (lambda (x) (hashtable-set! cut x #t))
+                              (outline-subtree rows child))))
+                (cdr all))
+      (filter (lambda (x) (not (hashtable-ref cut x #f))) all)))
+
   ;; Every block under this one, in document order and not including it.
   (define (descendant-ids state id)
-    (let ((rows (state-outline state)))
-      (apply append (map flatten (subtree rows state id)))))
+    (cdr (subtree-with-root state id)))
 
   ;; The block and everything under it, which is what `--recursive`
-  ;; answers with.
+  ;; answers with, or #f when there is no such block. `#f` here means that
+  ;; and nothing else; the walk underneath never returns it.
   (define (subtree-ids state id)
-    (and (state-read state id) (cons id (descendant-ids state id))))
+    (and (state-read state id) (subtree-with-root state id)))
 
   ;; THE KINDS THIS PROJECTION WRITES. Not a second opinion about which kinds
   ;; are legal -- `known-kinds` in the reducer is the only thing that decides
