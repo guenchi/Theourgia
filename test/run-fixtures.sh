@@ -13,8 +13,594 @@
 # complete" says it ran to its end; `failures` and `mismatches` are the
 # two counters fixtures use and a non-zero either way is red; and a hard
 # line (FAIL / MISMATCH / Exception) is red whatever the counters say.
+#
+# THE RUNNER'S OWN SIGNAL STATE IS PUT RIGHT FIRST (launcher design L7).
+# A non-interactive sh started with TERM ignored cannot trap TERM (measured
+# on bash 3.2), so a runner started under an ignored or blocked signal
+# would have no working stop. It re-execs itself once through perl with
+# every catchable signal at its default and an empty mask. The marker is
+# its own pid, which exec keeps, and it is removed at once, so a runner
+# started by a fixture puts itself right again.
+if [ "${THEOURGIA_RUNNER_NORMALISED:-}" != "$$" ]; then
+  THEOURGIA_RUNNER_NORMALISED=$$
+  export THEOURGIA_RUNNER_NORMALISED
+  exec perl -e '
+    use POSIX ();
+    require Config;
+    my %s;
+    my @n = split " ", $Config::Config{sig_name};
+    my @v = split " ", $Config::Config{sig_num};
+    for my $i (0 .. $#n) { $s{$n[$i]} = $v[$i] unless exists $s{$n[$i]}; }
+    for my $no (values %s) {
+      next if $no < 1 || $no > 31 || $no == $s{KILL} || $no == $s{STOP};
+      POSIX::sigaction($no, POSIX::SigAction->new("DEFAULT", POSIX::SigSet->new, 0));
+    }
+    POSIX::sigprocmask(POSIX::SIG_SETMASK(), POSIX::SigSet->new);
+    exec { "/bin/sh" } "sh", @ARGV;
+    exit 127;
+  ' "$0" "$@"
+fi
+unset THEOURGIA_RUNNER_NORMALISED
+# EVERY LAUNCH GOES THROUGH launch.pl, beside this file: a helper, not a
+# fixture (no glob below matches .pl). Without it nothing can be launched
+# as the design requires, and the runner does not fall back to launching
+# directly.
+if [ ! -f ./launch.pl ]; then
+  echo "REFUSING: launch.pl is not beside run-fixtures.sh"
+  exit 1
+fi
+# THE TIME LIMIT OF ONE FIXTURE, in seconds: 900 unless a test sets
+# THEOURGIA_FIXTURE_LIMIT to exercise the limit itself.
+fixture_limit=${THEOURGIA_FIXTURE_LIMIT:-900}
+case "$fixture_limit" in
+  ""|*[!0-9]*|0)
+    echo "REFUSING: THEOURGIA_FIXTURE_LIMIT is not a whole number of seconds above 0: $fixture_limit"
+    exit 1
+    ;;
+esac
 out=$1
 mkdir -p "$out"
+
+# ---- one run, two roots, both made here and removed on every exit (F71) -----
+#
+# KEY: EVERY SCRATCH PATH A FIXTURE USES LIVES UNDER ONE OF TWO DIRECTORIES
+# THIS RUN CREATES, AND BOTH ARE REMOVED WHEN THIS RUNNER EXITS, WHATEVER
+# THE RESULT -- a refusal before anything ran as much as a red verdict.
+# Fixtures that wrote under /tmp by name left eight prefixes with 130 to
+# 214 directories each, and two of them went red in a gate because they
+# reused an old run's directory that had the same process id.
+#
+# TWO, BECAUSE A SOCKET PATH MUST BE SHORT. It must fit in sun-path-max,
+# 104 bytes with the NUL on macOS, and a caller's scratch root can be
+# nearly that long by itself. So files and directories go under
+# THEOURGIA_TEST_ROOT, `<base>/run-<token>`, and sockets -- with what the
+# product keeps beside a socket, its lock file and serve.log -- under
+# THEOURGIA_TEST_SOCK, `/tmp/ths.<token>`, at most 20 bytes. It is made
+# first, by mktemp, and its six-character suffix IS the token, so both
+# names say whose they are.
+#
+# NEVER: THIS RUNNER REMOVES ONLY WHAT IT CREATED THIS RUN. Another run may
+# be alive beside it, and its directories look exactly like these.
+sock_root=""
+run_root=""
+snap_dir=""
+made_run_root=0
+keep_roots=0
+keep_reason=""
+remove_roots() {
+  status=$1
+  [ -n "$sock_root" ] || exit "$status"
+  # WHAT CANNOT BE SEEN TO BE FINISHED KEEPS THE ROOTS (launcher design
+  # L6): a group that could not be read, a member that outlived KILL, a
+  # result that could not be read. Nothing is removed, and the run does
+  # not exit 0.
+  if [ "$keep_roots" = 1 ]; then
+    echo "NOT REMOVED: $keep_reason; the roots are left for it: $run_root $sock_root $snap_dir"
+    [ "$status" = 0 ] && status=5
+    exit "$status"
+  fi
+  entries=$(find "$sock_root" 2>/dev/null | wc -l | tr -d " ")
+  gone="$sock_root"
+  if [ "$made_run_root" = 1 ]; then
+    entries=$((entries + $(find "$run_root" 2>/dev/null | wc -l | tr -d " ")))
+    gone="$run_root and $sock_root"
+    chmod -R u+rwx "$run_root" 2>/dev/null
+    rm -rf "$run_root"
+  fi
+  chmod -R u+rwx "$sock_root" 2>/dev/null
+  rm -rf "$sock_root"
+  [ -n "$snap_dir" ] && rm -rf "$snap_dir"
+  echo "removed this run's roots: $gone ($entries entries, the roots among them)"
+  # GONE MEANS SEEN TO BE GONE. `[ -e ]` also answers false when the parent
+  # cannot be searched, and a root behind such a parent is still there; and
+  # it answers false for a dangling symbolic link, which is there too. So a
+  # root counts as removed only when its parent can be searched and nothing
+  # of that name is left; anything else is NOT REMOVED.
+  left=""
+  if [ "$made_run_root" = 1 ]; then
+    if [ ! -x "${run_root%/*}" ] || [ -e "$run_root" ] || [ -L "$run_root" ]; then left="$left $run_root"; fi
+  fi
+  if [ ! -x "${sock_root%/*}" ] || [ -e "$sock_root" ] || [ -L "$sock_root" ]; then left="$left $sock_root"; fi
+  if [ -n "$snap_dir" ]; then
+    if [ ! -x "${snap_dir%/*}" ] || [ -e "$snap_dir" ] || [ -L "$snap_dir" ]; then left="$left $snap_dir"; fi
+  fi
+  if [ -n "$left" ]; then
+    echo "NOT REMOVED:$left"
+    [ "$status" = 0 ] && status=5
+  fi
+  exit "$status"
+}
+# ONE PLACE, ON EXIT: every refusal below, every verdict, and a run sent
+# SIGTERM (bash runs this trap for it). It is set before the socket root
+# is made, so nothing after mktemp can fail or be interrupted outside it;
+# with no socket root yet it removes nothing. It cannot
+# see SIGKILL. Measured: a runner inside a screen session that is quit
+# keeps running and removes both roots; SIGTERM sent at once to the
+# screen process, its login, the shell under it and the runner left both.
+# What is left is the two directories named with the token.
+trap 'remove_roots $?' EXIT
+# ---- launching: every fixture and both preflights, through launch.pl ---------
+#
+# THE LAUNCHER DESIGN (theourgos core/briefs/launcher-design.md, closed at
+# v4.1) is carried out by launch.pl: a watcher outside the fixture's
+# process group owns its time limit, the grace after it returns, the stop,
+# the census of the group, and a result file. The runner starts the
+# watcher, waits for it, and reads the result; it never reads a group
+# itself.
+#
+# NEVER: THE REDIRECTIONS ARE ON THE BACKGROUND COMMAND, NOT ON A CALL. A
+# trap runs with the redirections of the function it interrupted in
+# force: with them on the call, the runner's own SIGNALLED line and its
+# removal line were written into the fixture's output file (measured).
+tracked_w=""
+tracked_name=""
+tracked_id=""
+tracked_result=""
+launch_n=0
+probe_parent=""
+aborted=0
+abort_reason=""
+left_group=0
+# EVERY ps THE RUNNER CALLS IS BOUNDED: an alarm that exec keeps ends a ps
+# that does not return, and the caller reads its failure.
+bps() {
+  perl -e 'alarm shift; exec { "ps" } "ps", @ARGV; exit 127' 5 "$@"
+}
+bpgrep() {
+  perl -e 'alarm shift; exec { "pgrep" } "pgrep", @ARGV; exit 127' 5 "$@"
+}
+# IS PROCESS $1 STILL RUNNING? Gone if `kill -0` fails. A zombie is gone
+# too: it has ended and waits only to be reaped, though `kill -0` says yes
+# to it, so ps is asked. A ps that fails or answers nothing, for a pid
+# that `kill -0` still finds, is taken as "running", so a bounded wait
+# runs to its bound. THE SAME RULE, IN SCHEME, IS test/pid-state.ss, which
+# the fixtures include; the two are the only copies, and a change to one
+# is a change to both.
+alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  al_st=$(bps -o stat= -p "$1" 2>/dev/null)
+  al_rc=$?
+  # ONLY A ps THAT SUCCEEDED AND SAID Z MEANS GONE (codex r8 B1).
+  if [ "$al_rc" = 0 ]; then
+    case "$al_st" in
+      Z*) return 1 ;;
+    esac
+  fi
+  return 0
+}
+# ELAPSED TIME IS READ FROM CLOCK_MONOTONIC (codex r9 A1), the clock
+# launch.pl's deadlines use: a wall-clock step (NTP, a manual set, a resume)
+# would hold a bound open or end it early. The runner reads no wall clock.
+# MILLISECONDS, not whole seconds (codex r10 A1): a whole-second end falls
+# up to 1 s short, and a wait of 2 s measured 1.1 s. About 6 ms a call.
+mono() {
+  perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'printf "%d\n", clock_gettime(CLOCK_MONOTONIC) * 1000'
+}
+# POLL AGAINST AN ABSOLUTE END, NOT A COUNT OF TURNS (codex r8 A3): each
+# alive() can itself take up to 5 s, so a count of turns bounds nothing.
+# wait_gone <pid> <seconds>: returns 0 once the pid is gone, 1 at the end,
+# which is never earlier than <seconds> after the call; the last alive()
+# may finish up to 5 s past it. A clock that cannot be
+# read ends the wait as the end of the bound would: a reading that is not
+# a number must not become a wait with no end.
+wait_gone() {
+  wg_now=$(mono) || return 1
+  case "$wg_now" in ""|*[!0-9]*) return 1 ;; esac
+  wg_end=$((wg_now + $2 * 1000))
+  while alive "$1"; do
+    wg_now=$(mono) || return 1
+    case "$wg_now" in ""|*[!0-9]*) return 1 ;; esac
+    [ "$wg_now" -ge "$wg_end" ] && return 1
+    sleep 0.1
+  done
+  return 0
+}
+# THE RESULT OF ONE LAUNCH (launcher design L6). Accepted only if the file
+# is there, names this launch on its first line and ends with "end";
+# anything else is RESULT NOT READ, which keeps the roots and launches
+# nothing more. A group that was left, or outlived KILL, or could not be
+# read, is said here, at its fixture, while the name still means something.
+read_result() {
+  rr_file=$1
+  rr_id=$2
+  rr_name=$3
+  rr_status=""
+  if [ ! -f "$rr_file" ] || [ "$(sed -n '1p' "$rr_file" 2>/dev/null)" != "id $rr_id" ] \
+     || [ "$(sed -n '$p' "$rr_file" 2>/dev/null)" != "end" ]; then
+    echo "RESULT NOT READ for $rr_name: $rr_file is missing, partial or not this launch's"
+    keep_roots=1
+    keep_reason="the result of $rr_name could not be read"
+    aborted=1
+    abort_reason="the result of $rr_name could not be read"
+    return 1
+  fi
+  rr_status=$(sed -n 's/^status //p' "$rr_file")
+  rr_cleanup=$(sed -n 's/^cleanup //p' "$rr_file")
+  sed -n "s/^note /NOTE $rr_name: /p" "$rr_file"
+  case "$rr_cleanup" in
+    clean) ;;
+    left)
+      sed -n "s/^member /LEFT IN GROUP: $rr_name /p" "$rr_file"
+      left_group=1
+      ;;
+    survivor)
+      sed -n "s/^member /OUTLIVED KILL in the group of $rr_name: /p" "$rr_file"
+      keep_roots=1
+      keep_reason="a process of $rr_name's group outlived KILL"
+      aborted=1
+      abort_reason="a process of $rr_name's group outlived KILL"
+      ;;
+    *)
+      echo "GROUP NOT READ for $rr_name: the members of its group could not be read"
+      keep_roots=1
+      keep_reason="the members of $rr_name's group could not be read"
+      aborted=1
+      abort_reason="the members of $rr_name's group could not be read"
+      ;;
+  esac
+  return 0
+}
+# run_tracked <seconds> <output file> <name> <command> <args>...: one launch.
+# Its status is the fixture's (launcher design L3), taken from the result
+# when the result was read.
+run_tracked() {
+  rt_secs=$1
+  rt_out=$2
+  tracked_name=$3
+  shift 3
+  launch_n=$((launch_n + 1))
+  tracked_id="$token.$launch_n"
+  tracked_result="$snap_dir/result.$launch_n"
+  perl ./launch.pl --limit "$rt_secs" --out "$rt_out" --result "$tracked_result" \
+       --id "$tracked_id" --census-pid "$$" -- "$@" < /dev/null &
+  tracked_w=$!
+  wait "$tracked_w"
+  rt_st=$?
+  tracked_w=""
+  if read_result "$tracked_result" "$tracked_id" "$tracked_name" && [ -n "$rr_status" ]; then
+    rt_st=$rr_status
+  fi
+  return "$rt_st"
+}
+# THE PROBE IS STOPPED THE SAME BOUNDED WAY: TERM, a bounded poll, KILL.
+stop_probe() {
+  [ -n "$probe_parent" ] || return 0
+  kill -TERM "$probe_parent" 2>/dev/null
+  if ! wait_gone "$probe_parent" 5; then
+    kill -KILL "$probe_parent" 2>/dev/null
+    wait_gone "$probe_parent" 2
+  fi
+  # NEVER AN UNBOUNDED WAIT: only a probe seen to be gone is waited for.
+  alive "$probe_parent" || wait "$probe_parent" 2>/dev/null
+  probe_parent=""
+}
+# A SIGNAL TO THE RUNNER (launcher design L7): the running launch is
+# stopped through its watcher, with a bound; the probe is stopped; this
+# run's processes are still counted, so a leaver is reported on this path
+# too; and only then does the runner exit, 128+n, into the removal.
+#
+# THE WAIT FOR W IS W'S OWN STATED BOUND PLUS 5 s. launch.pl's stop path
+# is bounded at 15 s after the request (stop_group, then the anchor's
+# reap); a KILL at 15 s would race W's last phase and lose its result
+# file. A stop request is never followed by a KILL inside W's own bound.
+W_STOP_BOUND=15
+W_STOP_WAIT=$((W_STOP_BOUND + 5))
+on_signal() {
+  trap '' INT TERM HUP
+  echo "SIGNALLED: stopping the running launch and the probe, counting this run's processes, then removing its roots"
+  if [ -n "$tracked_w" ]; then
+    kill -TERM "$tracked_w" 2>/dev/null
+    if ! wait_gone "$tracked_w" "$W_STOP_WAIT"; then
+      kill -KILL "$tracked_w" 2>/dev/null
+      wait_gone "$tracked_w" 2
+      alive "$tracked_w" || wait "$tracked_w" 2>/dev/null
+      echo "GROUP NOT READ for $tracked_name: its watcher did not stop within $W_STOP_WAIT s"
+      keep_roots=1
+      keep_reason="the watcher of $tracked_name did not stop within $W_STOP_WAIT s"
+    else
+      wait "$tracked_w" 2>/dev/null
+      read_result "$tracked_result" "$tracked_id" "$tracked_name"
+    fi
+    tracked_w=""
+  fi
+  stop_probe
+  if type count_leaks > /dev/null 2>&1; then count_leaks; fi
+  exit "$1"
+}
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+sock_root=$(mktemp -d /tmp/ths.XXXXXX) || {
+  echo "REFUSING: mktemp -d /tmp/ths.XXXXXX made no socket root"
+  exit 1
+}
+token=${sock_root#/tmp/ths.}
+base=${THEOURGIA_TEST_ROOT:-/tmp}
+mkdir -p "$base"
+run_root="$base/run-$token"
+if ! mkdir "$run_root" 2>/dev/null; then
+  echo "REFUSING: the scratch root $run_root already exists or cannot be made"
+  exit 1
+fi
+made_run_root=1
+export THEOURGIA_TEST_ROOT="$run_root" THEOURGIA_TEST_SOCK="$sock_root" THEOURGIA_SUITE_TOKEN="$token"
+echo "this run: token $token, scratch root $run_root, socket root $sock_root"
+# WHAT THE CENSUS CANNOT SEE, said once (launcher design, stated limit): on
+# FreeBSD with either of these at 0, a member of a fixture's group whose
+# user or groups stop overlapping the runner's can vanish from the census
+# and from group signalling, and FreeBSD reports the skip as success.
+if [ "$(uname)" = FreeBSD ]; then
+  vis_u=$(sysctl -n security.bsd.see_other_uids 2>/dev/null)
+  vis_g=$(sysctl -n security.bsd.see_other_gids 2>/dev/null)
+  if [ "$vis_u" = 0 ] || [ "$vis_g" = 0 ]; then
+    echo "census cannot see every process of this user's fixtures (security.bsd.see_other_uids=$vis_u see_other_gids=$vis_g)"
+  fi
+fi
+
+# ---- the leak count: this run's processes, by the mark they carry (F70) -----
+#
+# It used to be `pgrep -f "scheme --script"`, which matches command lines
+# machine-wide: it counted the process asking, any shell loop whose own
+# command line held that text, and every other session's scheme. A waiter
+# once waited fifty minutes for itself. Now a process is this run's when its
+# ENVIRONMENT carries THEOURGIA_SUITE_TOKEN=<token> as a whole word --
+# whatever its executable, since a leaked python daemon or shell is a leak
+# too. Every process a fixture starts inherits it; setsid changes the
+# process group, not the environment.
+#
+# NEVER: NOT IN ARGV. A command line may spell the token (a grep for it, a
+# script's arguments); only the environment says a process was started by
+# this run. Three snapshots are taken -- command lines, environments,
+# command lines again -- and the token is looked for only in what the
+# environment snapshot adds after a process's command line. The command
+# line used is the longer of the two that the environment snapshot starts
+# with, so a process born, or re-executed, or given more arguments
+# between the snapshots is still read by its environment and not by its
+# arguments. A process that changes twice inside the few milliseconds the
+# three take is not read.
+#
+# The runner itself and its direct children at the instant of counting --
+# the ps that takes the snapshot is one -- are this run's and are not a
+# leak.
+case "$(uname)" in
+  Darwin) env_flag=-E ;;
+  FreeBSD) env_flag=-e ;;
+  *) env_flag="" ;;
+esac
+# A SNAPSHOT THAT WAS NOT TAKEN SAYS SO. It returns non-zero when any of
+# the three files could not be written or came out empty, because an
+# empty snapshot reads as "nothing carries the token". Measured: with the
+# files under the scratch root, a fixture that made the base unsearchable
+# turned the count into "none left running" beside a live leak.
+snapshot() {
+  [ -n "$snap_dir" ] || return 1
+  bps -A -ww -o pid=,ppid=,command= > "$snap_dir/.ps-argv" 2>/dev/null || return 1
+  if [ -n "$env_flag" ]; then
+    bps -A $env_flag -ww -o pid=,ppid=,command= > "$snap_dir/.ps-env" 2>/dev/null || return 1
+  else
+    : > "$snap_dir/.ps-env" 2>/dev/null || return 1
+  fi
+  bps -A -ww -o pid=,ppid=,command= > "$snap_dir/.ps-argv2" 2>/dev/null || return 1
+  [ -s "$snap_dir/.ps-argv" ] && [ -s "$snap_dir/.ps-argv2" ] || return 1
+  if [ -n "$env_flag" ]; then [ -s "$snap_dir/.ps-env" ] || return 1; fi
+  return 0
+}
+carrying_token() {
+  awk -v self="$$" -v word="THEOURGIA_SUITE_TOKEN=$THEOURGIA_SUITE_TOKEN" '
+    function rest(line) { sub(/^[ ]*[0-9]+[ ]+[0-9]+[ ]/, "", line); return line }
+    function starts(all, cmd) { return (cmd != "" && substr(all, 1, length(cmd)) == cmd) }
+    FILENAME ~ /\.ps-argv$/ { argv1[$1] = rest($0); next }
+    FILENAME ~ /\.ps-argv2$/ { argv2[$1] = rest($0); next }
+    { env[$1] = $0 }
+    END {
+      for (pid in env) {
+        split(env[pid], f, " ")
+        if (pid == self || f[2] == self) continue
+        all = rest(env[pid]); cmd = ""
+        if ((pid in argv1) && starts(all, argv1[pid])) cmd = argv1[pid]
+        if ((pid in argv2) && starts(all, argv2[pid]) && length(argv2[pid]) > length(cmd)) cmd = argv2[pid]
+        if (cmd == "") continue
+        n = split(substr(all, length(cmd) + 1), w, " ")
+        for (i = 1; i <= n; i++) if (w[i] == word) { print pid; break }
+      }
+    }' "$snap_dir/.ps-argv" "$snap_dir/.ps-argv2" "$snap_dir/.ps-env"
+}
+# THE COUNT OF WHAT THIS RUN LEFT, as one function, because it runs at the
+# end of the run and also on the signal path (launcher design L7), where
+# a leaver must be reported too. Before the probe has finished it still
+# counts by token, and says what that cannot see.
+probe_done=0
+run_root_before=""
+count_leaks() {
+  sleep 3
+  leaked=0
+  run_root_after=""
+  [ -n "$run_root_before" ] && run_root_after=$(count_run_root)
+  if [ -z "$run_root_before" ]; then
+    echo "real run root: not counted, the run was stopped before its first count"
+  elif [ "$run_root_after" -gt "$run_root_before" ]; then
+    echo "LEAKED-INTO-REAL-RUN-ROOT: $real_run_root grew from $run_root_before to $run_root_after"
+    echo "  a fixture let the product compute a path and did not set THEOURGIA_RUN"
+    leaked=1
+  else
+    echo "real run root: $run_root_before before, $run_root_after after -- nothing added"
+  fi
+  # THE LEAKED LINE NAMES WHAT IT COUNTED, pids on the line and each command
+  # below it, so a reader can check them rather than trust a number.
+  if [ "$probe_done" != 1 ]; then
+    echo "leak count: by this run's token, before the probe had finished; a process whose environment this platform hides is not counted"
+    if snapshot && found=$(carrying_token); then
+      left_pids=$(printf '%s\n' "$found" | tr '\n' ' ' | sed 's/ *$//')
+      if [ -n "$left_pids" ]; then
+        echo "LEAKED-PROCESSES: $left_pids -- processes carrying this run's token $token are still running"
+        for p in $left_pids; do
+          echo "  $p $(bps -ww -o command= -p "$p" 2>/dev/null)"
+        done
+        leaked=1
+      else
+        echo "processes: none carrying this run's token $token is left running"
+      fi
+    else
+      echo "LEAK COUNT NOT TAKEN: the process snapshots under $snap_dir could not be taken or read; whatever is still running was not looked at"
+      leaked=1
+    fi
+  elif [ "$env_visible" = 1 ]; then
+    if [ "$(uname)" = Darwin ]; then
+      echo "leak count: by this run's token in the environment; macOS does not show the environment of its system binaries (/bin, /usr/bin), so a leaked shell or sleep is not counted"
+    fi
+    counted=1
+    left_pids=""
+    # THE MATCHER'S OWN FAILURE COUNTS. Its status is read before any pipe,
+    # which would otherwise hand on the status of the last command in it --
+    # an awk that could not read a snapshot then read as "none carrying".
+    if snapshot && found=$(carrying_token); then
+      left_pids=$(printf '%s\n' "$found" | tr '\n' ' ' | sed 's/ *$//')
+    else
+      counted=0
+    fi
+    if [ "$counted" = 0 ]; then
+      echo "LEAK COUNT NOT TAKEN: the process snapshots under $snap_dir could not be taken or read; whatever is still running was not looked at"
+      leaked=1
+    elif [ -n "$left_pids" ]; then
+      echo "LEAKED-PROCESSES: $left_pids -- processes carrying this run's token $token are still running"
+      for p in $left_pids; do
+        echo "  $p $(bps -ww -o command= -p "$p" 2>/dev/null)"
+      done
+      leaked=1
+    else
+      echo "processes: none carrying this run's token $token is left running"
+    fi
+  elif [ "$snap_tried" = 1 ] && [ "$snap_worked" = 0 ]; then
+    echo "LEAK COUNT NOT TAKEN: every process snapshot tried while probing failed under $snap_dir; whatever is still running was not looked at"
+    leaked=1
+  else
+    echo "leak count: machine-wide by executable name, this platform does not show environments"
+    schemes_after=$(bpgrep -x scheme 2>/dev/null | wc -l | tr -d " ")
+    if [ "$schemes_after" -gt "$schemes_before" ]; then
+      left_pids=$(bpgrep -x scheme 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')
+      echo "LEAKED-PROCESSES: $left_pids -- scheme processes went from $schemes_before to $schemes_after, by name"
+      for p in $left_pids; do
+        echo "  $p $(bps -ww -o command= -p "$p" 2>/dev/null)"
+      done
+      leaked=1
+    else
+      echo "processes: $schemes_before scheme processes before, $schemes_after after, by name"
+    fi
+  fi
+}
+# A REFUSAL BEFORE THE END STILL COUNTS WHAT THIS RUN LEFT (launcher
+# design L8): the refusal is printed, the count runs, and a leak or a
+# member left in a group -- ranked above the remaining refusals -- decides
+# the status if there was one; otherwise the refusal's own code does.
+early_refuse() {
+  echo "REFUSING: $1"
+  count_leaks
+  if [ "$leaked" != 0 ] || [ "$left_group" != 0 ]; then
+    echo "REFUSING: this run left something behind"
+    exit 3
+  fi
+  exit "$2"
+}
+# THE LEAK COUNT'S OWN FILES LIVE IN A DIRECTORY OF THE RUNNER'S OWN, made
+# by mktemp in TMPDIR (or beside the socket root), mode 700, never exported,
+# and removed with the two roots. Its name carries the token too, so what
+# a run killed outright leaves behind is still recognisably that run's
+# (measured: a SIGKILLed run left an anonymous tmp.* directory). Both
+# roots are handed to fixtures, and a careless fixture that locks or
+# fills what it was handed must not blind the count that judges it.
+# (Measured: with the files under the scratch root, a locked base turned
+# the count into "none left running" beside a live leak; under the socket
+# root, a changed mode on the files did the same.)
+# NOTE: THE TEMPLATE IS EXPLICIT. Measured on macOS 26: `mktemp -d` and
+# `mktemp -d -t` both ignore TMPDIR and use the per-user temporary
+# directory, whatever TMPDIR says. Where TMPDIR is unset the directory
+# goes beside the socket root, the system's own temporary directory.
+snap_parent=${TMPDIR:-${sock_root%/*}}
+snap_dir=$(mktemp -d "${snap_parent%/}/ths-snap.$token.XXXXXX") || {
+  snap_dir=""
+  early_refuse "mktemp -d made no directory for the leak count's snapshots" 1
+}
+chmod 700 "$snap_dir"
+# CAN THIS PLATFORM SHOW A PROCESS'S ENVIRONMENT? Asked of a process that
+# carries the token and is not this runner's direct child: a subshell's
+# own child, a scheme, which is what a fixture leaks. It is looked for
+# once a second until it appears or ten seconds pass. If it does not come
+# back -- or its pid could not be read -- the count cannot be by token,
+# and the output says so.
+#
+# NOTE: THE PROBE IS A SCHEME, NOT A sleep. Measured on macOS 26: `ps -E`
+# shows the environment of scheme and of Homebrew's python, and not of
+# the system's own binaries -- /bin/sleep, /bin/sh, /usr/bin/perl came back
+# without one. A probe made of sleep read "no environments" on a platform
+# that shows the ones that matter.
+env_visible=0
+#
+# NEVER: NO SIGNAL IS AIMED AT A PID READ BACK FROM A FILE. The pid file is
+# only compared with what the count lists. The probe's own subshell stops
+# its child and waits for it when it is sent TERM, and the runner signals
+# and waits only for that subshell, which it started and whose pid it
+# holds. So when the count begins, the probe is gone -- a probe still
+# running would be counted "before" in the fallback and hide one leak.
+# The pid is written to a temporary file and moved into place, so a read
+# sees all of it or none.
+echo "(sleep (make-time 'time-duration 0 30))" > "$run_root/.probe.ss"
+(
+  child=""
+  trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; fi; exit 0' TERM
+  scheme --script "$run_root/.probe.ss" &
+  child=$!
+  echo "$child" > "$run_root/.probe-pid.tmp" && mv "$run_root/.probe-pid.tmp" "$run_root/.probe-pid"
+  wait "$child"
+) &
+probe_parent=$!
+probe_pid=""
+tries=0
+# A SNAPSHOT THAT FAILS IS NOT "NOT VISIBLE YET". Only a probe that could
+# not be seen in snapshots that were taken sends the count to its
+# by-name fallback; if every snapshot or match attempted here failed, the
+# count cannot be taken at all, and the end of the run says so.
+snap_tried=0
+snap_worked=0
+while [ "$tries" -lt 10 ] && [ "$env_visible" = 0 ]; do
+  sleep 1
+  tries=$((tries + 1))
+  probe_pid=$(cat "$run_root/.probe-pid" 2>/dev/null)
+  case "$probe_pid" in
+    ""|*[!0-9]*) continue ;;
+  esac
+  snap_tried=1
+  snapshot || continue
+  found=$(carrying_token) || continue
+  snap_worked=1
+  case " $(printf '%s\n' "$found" | tr '\n' ' ') " in
+    *" $probe_pid "*) env_visible=1 ;;
+  esac
+done
+stop_probe
+probe_done=1
+if [ "$env_visible" = 0 ]; then
+  schemes_before=$(bpgrep -x scheme 2>/dev/null | wc -l | tr -d " ")
+fi
 
 # ---- what this run must not leave behind ------------------------------------
 #
@@ -36,9 +622,7 @@ mkdir -p "$out"
 # what this run is answerable for is the difference it made.
 real_run_root="$HOME/.theourgia/run"
 count_run_root() { ls -d "$real_run_root"/*/ 2>/dev/null | wc -l | tr -d " "; }
-count_schemes() { pgrep -f "scheme --script" 2>/dev/null | wc -l | tr -d " "; }
 run_root_before=$(count_run_root)
-schemes_before=$(count_schemes)
 
 # KEY: AND A FLOOR UNDER ALL OF IT: every fixture this runner starts gets a
 # run root of its own, here, before any of them runs. Six fixtures had to
@@ -103,19 +687,16 @@ if [ -n "$pinned" ]; then
   if [ ! -d "$first/igropyr" ]; then
     echo "LIBRARY PATH: $first holds no igropyr/ -- the core imports (igropyr crypto),"
     echo "  (igropyr sexpr) and (igropyr platform) through its three facades."
-    echo "REFUSING: nothing below this line would be a reading."
-    exit 1
+    early_refuse "nothing below this line would be a reading." 1
   fi
   if [ ! -f "$first/igropyr/crypto.sc" ]; then
     echo "LIBRARY PATH: $first/igropyr has no crypto.sc -- (igropyr crypto) cannot resolve."
-    echo "REFUSING: nothing below this line would be a reading."
-    exit 1
+    early_refuse "nothing below this line would be a reading." 1
   fi
   if ! grep -q "sha256" "$first/igropyr/crypto.sc"; then
     echo "LIBRARY PATH: $first/igropyr/crypto.sc does not mention sha256 -- this is an"
     echo "  igropyr, but not one this core can use."
-    echo "REFUSING: nothing below this line would be a reading."
-    exit 1
+    early_refuse "nothing below this line would be a reading." 1
   fi
   echo "library path: $first holds igropyr/ and theourgia/"
 fi
@@ -128,13 +709,13 @@ if [ "$(cd "$libdir" && pwd)" != "$(pwd)" ] && ls "$libdir"/*.sc > /dev/null 2>&
   done
   if [ -n "$clash" ]; then
     echo "NAME CLASH: fixtures sharing a basename with a library in $(cd "$libdir" && pwd):$clash"
-    echo "REFUSING: a flat delivery cannot hold both copies."
-    exit 1
+    early_refuse "a flat delivery cannot hold both copies." 1
   fi
   echo "fixture/library names: no clash against $(ls "$libdir"/*.sc | wc -l | tr -d " ") libraries"
 else
   echo "fixture/library names: NOT CHECKED -- no separate library directory beside this one"
 fi
+
 # THE CHEAP GATE THAT NAMES A CAUSE RUNS BEFORE THE ONES THAT SHOW A
 # SYMPTOM. This is the same repair as moving the structural gates above
 # the verdict: a check is worth what it is worth AT THE MOMENT IT RUNS.
@@ -172,7 +753,7 @@ fi
 # rather than two: the sentinel, the hard lines, the counters, the
 # status.
 if [ -f expansion-branches.sc ]; then
-  perl -e 'alarm 120; exec @ARGV' scheme --script expansion-branches.sc > "$out/preflight.out" 2>&1
+  run_tracked 120 "$out/preflight.out" preflight scheme --script expansion-branches.sc
   pf_rc=$?
   pf_sent=$(grep -c "^expansion-branches complete" "$out/preflight.out")
   pf_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/preflight.out")
@@ -183,8 +764,7 @@ if [ -f expansion-branches.sc ]; then
     echo "PREFLIGHT RED (rc=$pf_rc sentinel=$pf_sent hard=$pf_hard counters=$pf_cnt)"
     echo "  -- an expansion branch of this tree does not build:"
     sed "s/^/  /" "$out/preflight.out"
-    echo "REFUSING: nothing below this line would be a reading."
-    exit 1
+    early_refuse "nothing below this line would be a reading." 1
   fi
 else
   echo "preflight: NOT CHECKED -- expansion-branches.sc is not in this directory"
@@ -221,8 +801,10 @@ fi
 # with a hole in it that names itself.
 if [ -f structure.py ] && ! command -v python3 > /dev/null 2>&1; then
   echo "preflight: NOT CHECKED -- structure.py is here but no python3 is"
+elif [ -f structure.py ] && [ "$aborted" = 1 ]; then
+  echo "preflight: NOT RUN -- $abort_reason; nothing more is launched"
 elif [ -f structure.py ]; then
-  perl -e 'alarm 120; exec @ARGV' python3 structure.py > "$out/structure.out" 2>&1
+  run_tracked 120 "$out/structure.out" structure python3 structure.py
   st_rc=$?
   st_sent=$(grep -c "^structure complete" "$out/structure.out")
   st_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/structure.out")
@@ -234,8 +816,7 @@ elif [ -f structure.py ]; then
     echo "PREFLIGHT RED (rc=$st_rc sentinel=$st_sent hard=$st_hard counters=$st_cnt)"
     echo "  -- a form in this tree does not close where it looks like it does:"
     sed "s/^/  /" "$out/structure.out"
-    echo "REFUSING: nothing below this line would be a reading."
-    exit 1
+    early_refuse "nothing below this line would be a reading." 1
   fi
 else
   echo "preflight: NOT CHECKED -- structure.py is not in this directory"
@@ -254,8 +835,11 @@ fi
 # NOTE: THE THREE CRITERIA ARE THE SAME for both kinds, and so is the
 # classifier: a sentinel line, no non-zero counter, no hard line. What
 # differs is only the interpreter.
-bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0
+bad=0; ran=0; libs=""; probes=""; helpers=""; pyran=0; pyred=0
 for f in *.sc *.py; do
+  # NOTHING MORE IS LAUNCHED once a launch's group or result could not be
+  # read, or a member of it outlived KILL (launcher design L6).
+  [ "$aborted" = 1 ] && break
   case "$f" in
     *.sc) n=${f%.sc}; runner="scheme --script";;
     *.py) n=${f%.py}; runner="python3";;
@@ -269,7 +853,9 @@ for f in *.sc *.py; do
   # `reduce-hash-check` is a filter `reduce1.sc` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
   # broken fixture looks like, so the list says which it is; and
-  # `import-walk` is the shared walker seven fixtures `load`.
+  # `import-walk` is the shared walker seven fixtures `load`. A fifth
+  # helper, `launch.pl`, starts every fixture; no glob here matches `.pl`,
+  # so it is never classified at all.
   #
   # NEVER: `import-walk` JOINED THIS LIST BECAUSE OF ITS EXTENSION. It was
   # `.scm` and so was never in `*.ss`, which is what the note above the
@@ -293,9 +879,12 @@ for f in *.sc *.py; do
   # NOTE: A FIXTURE THAT NEEDS INPUT MUST HAND IT OVER ITSELF -- a pipe, a
   # here-string, a file -- rather than inheriting whatever is there. What
   # a run measures may not depend on where it was started from.
-  perl -e 'alarm 900; exec @ARGV' $runner "$f" > "$out/$n.out" 2>&1 < /dev/null
+  # IN A GROUP OF ITS OWN, THROUGH run_tracked: so that a signal to the
+  # runner can stop the fixture and everything it started in that group
+  # (see on_signal). A detached daemon leaves the group and is found by
+  # the leak count instead.
+  run_tracked "$fixture_limit" "$out/$n.out" "$n" $runner "$f"
   rc=$?
-  case "$f" in *.py) pyran=$((pyran+1));; esac
   sent=$(grep -c "^$n complete" "$out/$n.out")
   # TWO USAGE SHAPES, BECAUSE THERE ARE TWO KINDS OF CALLER. A probe
   # writes a plain `usage:` line for a person; the CLI answers with one
@@ -328,10 +917,12 @@ for f in *.sc *.py; do
     probes="$probes $n"; continue
   fi
   ran=$((ran+1))
+  case "$f" in *.py) pyran=$((pyran+1));; esac
   cnt=$(grep -E "^[0-9]+ (failures|mismatches)" "$out/$n.out" | grep -vc "^0 ")
   hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/$n.out")
   if [ "$rc" != 0 ] || [ "$sent" = 0 ] || [ "$cnt" != 0 ] || [ "$hard" != 0 ]; then
     bad=$((bad+1))
+    case "$f" in *.py) pyred=$((pyred+1));; esac
     printf "RED %-20s rc=%-3s sentinel=%s counters=%s hard=%s\n" "$n" "$rc" "$sent" "$cnt" "$hard"
   fi
 done
@@ -354,17 +945,25 @@ done
 total=$(ls *.sc *.py | wc -l | tr -d " ")
 nlibs=$(echo $libs | wc -w | tr -d " ")
 nprobes=$(echo $probes | wc -w | tr -d " ")
-echo "fixtures run: $ran   not-green: $bad   (of those, $pyran are python)"
+# THE SUMMARY SAYS WHAT IT COUNTS (F80). It used to print the number of
+# python fixtures RUN inside the parentheses after the reds, where it read
+# as the number of reds that were python: "3 are python" of three reds
+# that were all .sc.
+echo "fixtures run: $ran   not-green: $bad   (python among them: $pyred)"
+echo "python fixtures run: $pyran"
 echo "libraries ($nlibs):$libs"
 echo "probes, printed a usage line ($nprobes):$probes"
 nhelpers=$(echo $helpers | wc -w | tr -d " ")
 echo "helpers, not fixtures ($nhelpers):$helpers"
 sum=$((ran + nlibs + nprobes + nhelpers))
-if [ "$sum" != "$total" ]; then
+if [ "$aborted" = 1 ]; then
+  echo "NOT ALL LAUNCHED: $abort_reason; $sum of $total scripts classified before the run stopped launching"
+elif [ "$sum" != "$total" ]; then
   echo "UNACCOUNTED: $total scripts in the directory, $sum classified"
-  exit 1
+  early_refuse "the directory changed under the run" 1
+else
+  echo "all $total scripts accounted for"
 fi
-echo "all $total scripts accounted for"
 
 # THE TWO STRUCTURAL CHECKS BELOW RUN BEFORE THE REFUSAL, NOT AFTER IT.
 # They were written after it, and this suite has three fixtures that are
@@ -396,7 +995,7 @@ sh row-baseline-check.sh "$out"
 baseline_rc=$?
 if [ "$baseline_rc" = 2 ]; then
   echo "ROW BASELINE CHECK WAS CALLED WRONG -- it needs the output directory"
-  exit 1
+  early_refuse "the row baseline check was called wrong" 1
 fi
 
 baseline_bad=0
@@ -456,24 +1055,7 @@ echo "unguarded by construction ($(echo $byproc | wc -w | tr -d " ") fixtures de
 # NOTE: A SETTLE BEFORE THE SECOND READING. A daemon told to go does not go
 # instantly, and a run that counted the moment its last fixture returned
 # would report its own tidy-up as a leak.
-sleep 3
-run_root_after=$(count_run_root)
-schemes_after=$(count_schemes)
-leaked=0
-if [ "$run_root_after" -gt "$run_root_before" ]; then
-  echo "LEAKED-INTO-REAL-RUN-ROOT: $real_run_root grew from $run_root_before to $run_root_after"
-  echo "  a fixture let the product compute a path and did not set THEOURGIA_RUN"
-  leaked=1
-else
-  echo "real run root: $run_root_before before, $run_root_after after -- nothing added"
-fi
-if [ "$schemes_after" -gt "$schemes_before" ]; then
-  echo "LEAKED-PROCESSES: 'scheme --script' went from $schemes_before to $schemes_after"
-  echo "  a fixture started something and did not take it down"
-  leaked=1
-else
-  echo "processes: $schemes_before before, $schemes_after after -- nothing left running"
-fi
+count_leaks
 
 # ---- one refusal, after everything has been said ----------------------------
 #
@@ -483,9 +1065,13 @@ if [ "$bad" != 0 ]; then
   echo "REFUSING: $bad fixture(s) not green"
   exit 2
 fi
-if [ "$leaked" != 0 ]; then
+if [ "$leaked" != 0 ] || [ "$left_group" != 0 ]; then
   echo "REFUSING: this run left something behind"
   exit 3
+fi
+if [ "$aborted" != 0 ]; then
+  echo "REFUSING: $abort_reason; nothing more was launched"
+  exit 6
 fi
 if [ "$guard_bad" != 0 ]; then
   echo "REFUSING: unguarded fixture(s)"

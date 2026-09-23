@@ -47,12 +47,25 @@
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define here (string-append "/tmp/f3-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/f3-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/f3-" (number->string (get-process-id))))
 (define store (string-append here "/store"))
 ;; NOTE: SHORT: `sun_path` holds 104 bytes and this suite's usual scratch
 ;; path is longer, which makes a daemon report `listener-down` and look
 ;; broken.
-(define socket (string-append "/tmp/f3s-" (number->string (get-process-id)) ".sock"))
+(define socket (string-append socket-base "/f3s-" (number->string (get-process-id)) ".sock"))
 
 (define (file-text path)
   (if (not (file-exists? path)) ""
@@ -244,7 +257,7 @@
                                                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
                                                call "\n"))))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                           "THEOURGIA_RUN=" here "/run "
+                           "THEOURGIA_RUN=" sock-here "/run "
                            "scheme --script ../mcp/server.sc --store " store " < " in " > " out " 2>&1"))
     (file-text out)))
 
@@ -277,7 +290,7 @@
 (printf "   (U6 same answer: ~a characters raw, ~a if escaped)\n"
         (string-length wire-answer) escaped-length)
 
-(system (string-append "rm -rf " here "; rm -f " socket))
+(system (string-append "rm -rf " here " " sock-here "; rm -f " socket))
 ;; NEVER: THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
 ;; run root is and must take down what it started. Before the shell was
 ;; rewritten it dispatched in its own process and started nothing, which

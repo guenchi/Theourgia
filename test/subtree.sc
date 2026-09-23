@@ -66,7 +66,15 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
-(define here (string-append "/tmp/subtree-" (number->string (get-process-id))))
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/subtree-" (number->string (get-process-id))))
 (system (string-append "rm -rf " here "; mkdir -p " here "/store " here "/home"))
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
 (define store (string-append here "/store"))

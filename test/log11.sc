@@ -595,8 +595,17 @@
   (log-end! s))
 (want "an aliased spelling of the same store is seen as the same store"
       alias-seen (list #t #t))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
 (want "CONTROL: a different store is not"
-      (store-operation-active? "/tmp") #f)
+      (store-operation-active? scratch-base) #f)
 
 (printf "== L24(a): the lock file is never replaced ==\n")
 (build!)

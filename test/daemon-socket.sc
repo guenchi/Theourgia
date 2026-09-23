@@ -48,7 +48,20 @@
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define here (string-append "/tmp/dsock-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/dsock-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/dsock-" (number->string (get-process-id))))
 
 (define (file-text path)
   (if (not (file-exists? path)) ""
@@ -61,14 +74,14 @@
             ((string=? (substring text i (+ i n)) needle) #t)
             (else (loop (+ i 1)))))))
 
-(system (string-append "rm -rf " here "; mkdir -p " here "/store"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
 
 ;; ---- the predicate, against all four kinds ------------------------------------
 ;;
 ;; NEVER: ALL FOUR, ON ONE PATH, IN TURN. Asking only about a socket would
 ;; pass for a predicate that answers #t to everything.
 (define (kinds-of name make)
-  (let ((p (string-append here "/" name)))
+  (let ((p (string-append sock-here "/" name)))
     (system (string-append "rm -rf " p))
     (system (make p))
     (list (file-is-socket? p) (file-is-regular? p) (file-is-directory? p))))
@@ -118,7 +131,7 @@
 
 ;; NEVER: A FIFO ON THE PATH IS NOT THIS DAEMON'S TO REMOVE. Before the
 ;; change it was unlinked and the daemon started on top of it.
-(define fifo (string-append "/tmp/dsf-" (number->string (get-process-id))))
+(define fifo (string-append socket-base "/dsf-" (number->string (get-process-id))))
 (system (string-append "rm -f " fifo "; mkfifo " fifo))
 (define fifo-said (serve-onto fifo))
 
@@ -133,7 +146,7 @@
 ;; above is satisfied by a daemon that refuses every path it finds
 ;; occupied -- which would mean a crashed daemon's leftover socket stopped
 ;; the next one for ever.
-(define stale (string-append "/tmp/dss-" (number->string (get-process-id))))
+(define stale (string-append socket-base "/dss-" (number->string (get-process-id))))
 (system (string-append "rm -f " stale))
 (system (string-append "python3 -c \"import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])\" " stale))
 
@@ -146,7 +159,7 @@
 
 ;; NEVER: AND A REGULAR FILE IS STILL REFUSED, which is the case the original
 ;; guard was written for and must not be lost.
-(define plain (string-append "/tmp/dsp-" (number->string (get-process-id))))
+(define plain (string-append socket-base "/dsp-" (number->string (get-process-id))))
 (system (string-append "rm -f " plain "; touch " plain))
 
 (want "DS-2 a regular file on the socket path is refused, and survives"
@@ -180,7 +193,7 @@
 ;; `sun_path` passes every check the daemon makes and then fails in the
 ;; kernel, which is the shape this row needs.
 (define too-long
-  (string-append here "/"
+  (string-append sock-here "/"
                  (let build ((n 120) (out "")) (if (zero? n) out (build (- n 1) (string-append out "d"))))))
 
 (want "DS-3 a start that cannot bind never announces that it is serving"
@@ -192,11 +205,11 @@
 ;; TWIN: without it, "no serving line" is also true of a daemon that
 ;; printed nothing at all, and of a check reading the wrong file.
 (want "DS-3 TWIN: a start that does bind announces it"
-      (let ((said (serve-onto (string-append here "/announced.sock"))))
+      (let ((said (serve-onto (string-append sock-here "/announced.sock"))))
         (if (contains? said "(serving") 'said-it (list 'said said)))
       'said-it)
 
 (system (string-append "rm -f " plain))
-(system (string-append "rm -rf " here))
+(system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\ndaemon-socket complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

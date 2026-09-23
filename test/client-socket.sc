@@ -48,7 +48,20 @@
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define here (string-append "/tmp/csock-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/csock-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/csock-" (number->string (get-process-id))))
 
 (define (file-text path)
   (if (not (file-exists? path)) ""
@@ -67,7 +80,7 @@
             ((string=? (substring text i (+ i n)) needle) #t)
             (else (loop (+ i 1)))))))
 
-(system (string-append "rm -rf " here "; mkdir -p " here "/store " here "/other"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " here "/other " sock-here))
 
 ;; ---- CS-1: one store, several spellings ---------------------------------------
 ;;
@@ -107,7 +120,7 @@
 
 ;; NEVER: THIS FIXTURE'S RUN ROOT IS ITS OWN, from here on. `socket-path`
 ;; reads it every time, and unset it is the user's real one.
-(putenv "THEOURGIA_RUN" (string-append here "/run"))
+(putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
 
 (want "CS-1 a store whose path is not ASCII has a key, and its own"
       (let ((k (store-key wide)))
@@ -118,7 +131,7 @@
 ;; ---- CS-2: the run root decides where, and it is read each time ----------------
 (want "CS-2 the socket is under the run root, and THEOURGIA_RUN moves it"
       (let* ((before (socket-path store))
-             (moved (begin (putenv "THEOURGIA_RUN" (string-append here "/elsewhere"))
+             (moved (begin (putenv "THEOURGIA_RUN" (string-append sock-here "/elsewhere"))
                            (socket-path store))))
         ;; NOTE: RESTORED TO THIS FIXTURE'S OWN RUN ROOT, and the two wrong
         ;; answers are both recorded here because both were tried.
@@ -136,8 +149,8 @@
         ;; lock directory in it. Found by counting what was in there: two
         ;; directories holding nothing but a zero-byte `.socket.lock`,
         ;; whose keys matched no store that still existed.
-        (putenv "THEOURGIA_RUN" (string-append here "/run"))
-        (list (if (contains? moved (string-append here "/elsewhere")) 'moved (list 'said moved))
+        (putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
+        (list (if (contains? moved (string-append sock-here "/elsewhere")) 'moved (list 'said moved))
               (if (string=? before moved) 'IGNORED-THE-VARIABLE 'and-it-was-read)))
       '(moved and-it-was-read))
 
@@ -201,7 +214,7 @@
 ;; daemon is can say so.
 (want "CS-3 an explicit --socket is used instead of the computed one"
       (let ((said (cli (string-append "outline --store " store
-                                      " --socket " here "/nothing-here --wire")
+                                      " --socket " sock-here "/nothing-here --wire")
                        (string-append here "/explicit.txt"))))
         ;; Nothing is listening there, so this must NOT have been answered
         ;; by the daemon above; it falls back to answering locally.
@@ -480,7 +493,7 @@
     (when probe (fd-close probe))
     probe))
 
-(define too-long-path (string-append "/tmp/" (make-string 120 #\x)))
+(define too-long-path (string-append socket-base "/" (make-string 120 #\x)))
 
 (want "CS-8 a refused connect leaves no descriptor behind"
       (let ((before (next-free-fd)))
@@ -631,6 +644,6 @@
       (answer-field '(reply (stdout "x")) 'stdout string?)
       #f)
 
-(system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1; rm -rf " here))
+(system (string-append "kill $(cat " here "/pid) 2>/dev/null; sleep 1; rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-socket complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

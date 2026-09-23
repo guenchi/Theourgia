@@ -203,18 +203,29 @@
 
 (printf "   (F0-2 median ~a ms over 10 runs, budget ~a ms)\n" observed budget-ms)
 
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
 ;; ---- F0-3: and the three paths that DO need them still work -------------------
 ;;
 ;; NEVER: AN IMPLEMENTATION THAT SIMPLY DELETED THE IMPORTS WOULD PASS BOTH
 ;; ROWS ABOVE. These are the rows it fails.
-(define scratch (string-append "/tmp/f0-" (number->string (get-process-id))))
+(define scratch (string-append scratch-base "/f0-" (number->string (get-process-id))))
 (define store (string-append scratch "/store"))
 ;; NOTE: SHORT ON PURPOSE. `sun_path` holds 104 bytes; a socket under this
 ;; suite's usual scratch directory is longer than that, and the daemon
 ;; then reports `listener-down` and exits -- which reads exactly like a
 ;; daemon that cannot start. Measured while writing this file, against
 ;; an UNMODIFIED core, which is how it was told apart from a defect.
-(define socket (string-append "/tmp/f0s-" (number->string (get-process-id)) ".sock"))
+(define socket (string-append socket-base "/f0s-" (number->string (get-process-id)) ".sock"))
 
 (define (file-text path)
   (if (not (file-exists? path)) ""
@@ -362,7 +373,7 @@
           'answered (list 'said (file-text (string-append scratch "/so-eval.txt"))))
       'answered)
 
-(define so-socket (string-append "/tmp/f0so-" (number->string (get-process-id)) ".sock"))
+(define so-socket (string-append socket-base "/f0so-" (number->string (get-process-id)) ".sock"))
 (sh (string-append "rm -f " so-socket))
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
                    "scheme --script " root "/cli.sc serve " so-store " --socket " so-socket

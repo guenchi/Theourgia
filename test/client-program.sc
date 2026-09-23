@@ -42,10 +42,23 @@
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define here (string-append "/tmp/cprog-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/cprog-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/cprog-" (number->string (get-process-id))))
 (define store (string-append here "/store"))
 
-(system (string-append "rm -rf " here "; mkdir -p " store " " here "/home " here "/run"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " store " " here "/home " sock-here "/run"))
 
 ;; NOTE: `THEOURGIA_TRACE=1` IS SET FOR EVERY RUN, INCLUDING THE DAEMON'S.
 ;; The client passes its environment on to the daemon it starts, so this
@@ -54,7 +67,7 @@
 ;; identically on purpose.
 (define (env-prefix extra)
   (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                 "THEOURGIA_HOME=" here "/home THEOURGIA_RUN=" here "/run "
+                 "THEOURGIA_HOME=" here "/home THEOURGIA_RUN=" sock-here "/run "
                  "THEOURGIA_TRACE=1 " extra))
 
 (define (file-text path)
@@ -251,7 +264,7 @@
 ;; matched rather than computed -- computing it here would be this file
 ;; keeping its own copy of the client's rule.
 (define (dispatches)
-  (system (string-append "cat " here "/run/*/serve.log 2>/dev/null"
+  (system (string-append "cat " sock-here "/run/*/serve.log 2>/dev/null"
                          " | grep -c daemon-dispatch > " dispatch-log
                          " 2>/dev/null || echo 0 > " dispatch-log))
   (let ((t (file-text dispatch-log)))
@@ -468,9 +481,10 @@
 ;; and red for the main session.
 ;;
 ;; NOTE: THE RULE IS THE RUNNER'S: every fixture is given `/dev/null`, and a
-;; fixture that wants input hands it over itself. These two rows are the
-;; measurement and the rule -- the first shows a terminal really does hang
-;; this call, the second shows the runner really does redirect.
+;; fixture that wants input hands it over itself. The two rows below are
+;; the measurement -- the first shows a terminal really does hang this call,
+;; the second that /dev/null lets it answer; that the runner supplies
+;; /dev/null is measured by runner-self RS-13 (see the note after them).
 (let* ((probe (string-append here "/pty-probe.sh"))
        (timed (lambda (redirect)
                 (let ((out (string-append here "/pty" (if redirect "-null" "-tty") ".out")))
@@ -500,15 +514,7 @@
         (timed #t)
         'answered))
 
-;; NEVER: AND THE RUNNER IS WHAT SUPPLIES IT. The rows above are about a shell
-;; command; this one is about the suite every fixture is run by, so that
-;; "fixtures get /dev/null" cannot quietly stop being true.
-(want "P-17 the suite runner gives every fixture /dev/null on standard input"
-      (let ((t (file-text "run-fixtures.sh")))
-        (if (contains? t "$runner \"$f\" > \"$out/$n.out\" 2>&1 < /dev/null")
-            'it-redirects
-            'NO-REDIRECT-IN-THE-RUNNER))
-      'it-redirects)
+;; NOTE (2026-09-23): that the runner gives every fixture /dev/null is held by runner-self RS-13, which measures it with a regular file as the runner's stdin; the text match that stood here broke on a change that kept the behaviour.
 
 ;; ---- P-18 the reply's second stream ---------------------------------------
 ;;
@@ -522,7 +528,7 @@
 ;; and the row asks that it came out on the client's own stderr and NOT on
 ;; its stdout -- mixing the two is how a caller that parses the answer
 ;; starts parsing a diagnostic.
-(let* ((esock (string-append here "/stderr.sock"))
+(let* ((esock (string-append sock-here "/stderr.sock"))
        (epeer (string-append here "/stderr.sc")))
   (call-with-output-file epeer
     (lambda (port)
@@ -565,7 +571,7 @@
 ;; and each had its own reader; the rule that says what may be handed to
 ;; `read` now lives once in the library, and these two rows are the two
 ;; programs this fixture can drive.
-(let* ((csock (string-append here "/cyclic.sock"))
+(let* ((csock (string-append sock-here "/cyclic.sock"))
        (cpeer (string-append here "/cyclic.sc")))
   (call-with-output-file cpeer
     (lambda (port)
@@ -617,7 +623,7 @@
 ;; problem with a good one. The client says `unreadable-answer` and leaves
 ;; non-zero, which is what it says about every other envelope it cannot
 ;; act on, NEVER: rather than inventing a status.
-(let* ((esock (string-append here "/exit.sock"))
+(let* ((esock (string-append sock-here "/exit.sock"))
        (epeer (string-append here "/exitpeer.sc"))
        (peer-saying
          (lambda (field)
@@ -727,7 +733,7 @@
   ;; DIFFERENT store, aimed at this daemon's socket, must still be refused.
   (want "P-15 TWIN: a genuinely different store is still refused, and exits non-zero"
         (let* ((out (string-append here "/p15-other.out"))
-               (sock (string-append here "/p15.sock"))
+               (sock (string-append sock-here "/p15.sock"))
                (rc (begin
                      (system (string-append (env-prefix "") " scheme --script ../cli.sc serve "
                                             p15-store " --socket " sock
@@ -844,7 +850,7 @@
 ;; NOTE: THE PEER IS A STAND-IN, not the daemon: the core never answers 37,
 ;; which is the point -- no real verb can produce this number by
 ;; accident, so seeing it proves it came through the envelope.
-(let ((codesock (string-append here "/code.sock"))
+(let ((codesock (string-append sock-here "/code.sock"))
       (codepeer (string-append here "/code.sc")))
   (call-with-output-file codepeer
     (lambda (port)
@@ -882,7 +888,7 @@
 ;; "improperly formed alist" out of the program -- around the refusal that
 ;; exists for exactly this, and out to a caller with no handler. What a
 ;; peer sends is not this program's to assume.
-(let* ((rsock (string-append here "/rot.sock"))
+(let* ((rsock (string-append sock-here "/rot.sock"))
        (rpeer (string-append here "/rot.sc")))
   (call-with-output-file rpeer
     (lambda (port)
@@ -940,7 +946,7 @@
 ;; NOTE: THE PEER COUNTS THE FRAMES IT RECEIVES and writes the count where
 ;; this can read it, because "did it resend" is a fact about what arrived
 ;; at the other end, not about what the client printed.
-(let ((holdsock (string-append here "/hold.sock"))
+(let ((holdsock (string-append sock-here "/hold.sock"))
       (holdpeer (string-append here "/hold.sc"))
       (holdcount (string-append here "/hold.count")))
   (call-with-output-file holdpeer
@@ -1069,6 +1075,6 @@
 
 
 (kill-daemons!)
-(system (string-append "rm -rf " here))
+(system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-program complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

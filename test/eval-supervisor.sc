@@ -55,7 +55,15 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
-(define here (string-append "/tmp/evalsup-" (number->string (get-process-id))))
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/evalsup-" (number->string (get-process-id))))
 (define store (string-append here "/store"))
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))

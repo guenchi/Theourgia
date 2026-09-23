@@ -46,7 +46,20 @@
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
 (define pid-text (number->string (get-process-id)))
-(define here (string-append "/tmp/cliforward-" pid-text))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/cliforward-" pid-text))
+(define sock-here (string-append socket-base "/cliforward-" pid-text))
 ;; NEVER: THE RUN ROOT IS THIS FIXTURE'S OWN. `socket-path` puts a store's
 ;; socket under `THEOURGIA_RUN`, and unset that is `$HOME/.theourgia/run`
 ;; -- the real one. Measured before this line existed: every run of this
@@ -56,7 +69,7 @@
 ;; only one of the two, the fixture and the programs it starts would
 ;; compute different socket paths for the same store -- which is exactly
 ;; the defect the rows about the key are about, recreated by the fixture.
-(putenv "THEOURGIA_RUN" (string-append here "/run"))
+(putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
 
 (define store-a (string-append here "/a"))
 (define store-b (string-append here "/b"))
@@ -87,7 +100,7 @@
 
 (define (env-prefix extra)
   (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                 "THEOURGIA_RUN=" here "/run " extra))
+                 "THEOURGIA_RUN=" sock-here "/run " extra))
 
 ;; Runs a file of Scheme in a process of its own.
 (define (run-scheme! extra script args out)
@@ -105,7 +118,7 @@
 (define serve-b (string-append here "/serve-b.sc"))
 (define serve-a (string-append here "/serve-a.sc"))
 
-(system (string-append "rm -rf " here "; mkdir -p " store-a " " store-b))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " store-a " " store-b " " sock-here))
 
 (write-script! setup
   (list "(import (chezscheme) (theourgia rpc))"
@@ -123,8 +136,47 @@
   (list "(import (chezscheme) (theourgia daemon))"
         (string-append "(serve \"" store-b "\" \"" socket-a "\")")))
 
+;; EVERY BACKGROUND PROCESS THIS FIXTURE STARTS IS WAITED FOR BY ITS PID
+;; after it is told to stop. NEVER: WAITING FOR THE SOCKET IS NOT WAITING FOR
+;; THE PROCESS: a daemon unlinks its socket and then takes a moment to exit,
+;; and in that moment it was still in this fixture's process group when the
+;; fixture ended (measured by the runner's group census, suite12). The
+;; runner now reports such a member as LEFT IN GROUP (launcher design L5).
+;; A process that has ended but is not yet reaped (a zombie) counts as gone.
+;; A BACKGROUND START WHOSE PID IS READ FROM THE SHELL'S OWN OUTPUT through
+;; a process port, not through a file under the scratch root, which a row
+;; that damaged it would lose (codex r8 C2). The command's own output goes
+;; to its log; only `echo $!` reaches the port. #f means the pid could not
+;; be read: that start is registered as unknown, and its stop waits out
+;; the whole bound.
+(define (start-bg! cmd)
+  (guard (e (#t #f))
+    (let* ((p (process (string-append cmd " < /dev/null & echo $!")))
+           (in (car p)))
+      (close-port (cadr p))
+      (let ((n (read in)))
+        (close-port in)
+        (and (integer? n) (> n 0) n)))))
+(include "pid-state.ss")
+(define (wait-gone! pid)
+  (if pid
+      (let wait ((k 0))
+        (unless (or (> k 100) (pid-gone? pid))
+          (system "sleep 0.05")
+          (wait (+ k 1))))
+      (begin
+        (printf "a background start's pid could not be read; waiting out the bound\n")
+        (system "sleep 5"))))
+;; EVERY DAEMON STARTED IS KEPT, not only the latest: two are started
+;; between one stop and the next (codex r7 C2).
+(define daemon-pids '())
+(define (wait-daemons!)
+  (for-each wait-gone! daemon-pids)
+  (set! daemon-pids '()))
+
 (define (start-daemon! script log)
-  (system (string-append (env-prefix "") " scheme --script " script " > " log " 2>&1 &"))
+  (set! daemon-pids (cons (start-bg! (string-append (env-prefix "") " scheme --script " script " > " log " 2>&1"))
+                          daemon-pids))
   (let wait ((k 0))
     (cond ((file-exists? socket-a) 'up)
           ((> k 200) 'never)
@@ -132,10 +184,12 @@
 
 (define (stop-daemon! script)
   (system (string-append "pkill -f " script " 2>/dev/null"))
-  (let wait ((k 0))
-    (cond ((not (file-exists? socket-a)) 'gone)
-          ((> k 40) 'still-there)
-          (else (system "sleep 0.05") (wait (+ k 1))))))
+  (let ((answer (let wait ((k 0))
+                  (cond ((not (file-exists? socket-a)) 'gone)
+                        ((> k 40) 'still-there)
+                        (else (system "sleep 0.05") (wait (+ k 1)))))))
+    (wait-daemons!)
+    answer))
 
 ;; ---- a python3 that shouts if anybody calls it ------------------------------
 ;;
@@ -231,6 +285,7 @@
 (define daemon-again (start-daemon! serve-a (string-append here "/serve-a2.log")))
 (want "F-07 a daemon to kill without letting it tidy up" daemon-again 'up)
 (system (string-append "pkill -9 -f " serve-a " 2>/dev/null"))
+(wait-daemons!)
 (system "sleep 0.5")
 (want "F-08 and it did leave its socket behind"
       (if (file-exists? socket-a) 'left-behind 'no-socket-to-test-with)
@@ -415,8 +470,8 @@
         "               (`(eof ,r) (serve))"
         "               (`#(DOWN ,w ,y) (serve))))))"))
 (system (string-append "rm -f " socket-a))
-(system (string-append (env-prefix "") " scheme --script " silent-peer
-                       " > " here "/silent.log 2>&1 &"))
+(define silent-pid (start-bg! (string-append (env-prefix "") " scheme --script " silent-peer
+                                            " > " here "/silent.log 2>&1")))
 (let wait ((k 0))
   (cond ((file-exists? socket-a) 'up)
         ((> k 200) 'never)
@@ -441,6 +496,7 @@
       '(no-local-open not-in-the-store))
 
 (system (string-append "pkill -f " silent-peer " 2>/dev/null"))
+(wait-gone! silent-pid)
 
 
 ;; ---- F-10 `theourgia serve` is this program ---------------------------------
@@ -454,9 +510,9 @@
 (define serve-log (string-append here "/serve-verb.log"))
 (when (file-exists? marker) (delete-file marker))
 (system (string-append "rm -f " socket-a))
-(system (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH "))
-                       " scheme --script ../cli.sc serve " store-a
-                       " --socket " socket-a " > " serve-log " 2>&1 &"))
+(define serve-verb-pid (start-bg! (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH "))
+                                                " scheme --script ../cli.sc serve " store-a
+                                                " --socket " socket-a " > " serve-log " 2>&1")))
 (define serve-verb-up
   (let wait ((k 0))
     (cond ((file-exists? socket-a) 'up)
@@ -475,7 +531,8 @@
       'no-python)
 
 (system (string-append "pkill -f \"cli.sc serve " store-a "\" 2>/dev/null"))
+(wait-gone! serve-verb-pid)
 
-(system (string-append "rm -rf " here))
+(system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\ncli-forward complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

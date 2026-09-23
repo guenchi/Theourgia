@@ -82,10 +82,16 @@ def scan(text):
             # as a swallowed one. Measured: twenty-four such reports on a
             # tree with nothing wrong with it.
             indent = i - line_start
-            if text.startswith("(define", i):
-                opens.append((line, depth, indent))
-            if text.startswith("(library ", i):
-                library_at_top = True
+            # NEVER: A LINE THAT STARTS INSIDE A STRING OR A COMMENT OPENS
+            # NOTHING. A program written into a string literal put
+            # `(define` at column 0 inside the literal, and this recorded it
+            # as a top-level definition at the string's depth -- which
+            # refused a whole suite at preflight (F84).
+            if not in_string and not in_comment:
+                if text.startswith("(define", i):
+                    opens.append((line, depth, indent))
+                if text.startswith("(library ", i):
+                    library_at_top = True
             at_line_start = False
         if in_comment:
             i += 1

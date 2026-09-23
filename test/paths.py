@@ -235,14 +235,17 @@ def _fits(root, prefix):
 def scratch(prefix):
     """A fresh directory for one fixture, short enough to hold a socket.
 
-    The run's test root is preferred, so a run stays inside the place
-    the caller pinned; when that root is too long for a socket path the
-    system temporary directory is used instead, and the substitution is
-    said on stderr rather than made silently.
+    The runner's socket root is preferred (THEOURGIA_TEST_SOCK, short
+    by construction, F71), then its scratch root, so a run stays inside
+    the places the runner made and removes; when neither is set or short
+    enough for a socket path the system temporary directory is used
+    instead, and the substitution is said on stderr rather than made
+    silently.
     """
-    requested = os.environ.get('THEOURGIA_TEST_ROOT')
+    requested = os.environ.get('THEOURGIA_TEST_SOCK') or os.environ.get('THEOURGIA_TEST_ROOT')
     chosen = None
-    for candidate in (requested, tempfile.gettempdir(), '/tmp'):
+    for candidate in (os.environ.get('THEOURGIA_TEST_SOCK'), os.environ.get('THEOURGIA_TEST_ROOT'),
+                      tempfile.gettempdir(), '/tmp'):
         if candidate and _fits(candidate, prefix):
             chosen = Path(candidate).resolve()
             break
@@ -254,7 +257,7 @@ def scratch(prefix):
     # as strings, a root written with a trailing slash announced that it
     # had been replaced by itself.
     if requested and chosen != Path(requested).resolve():
-        print(f'paths: THEOURGIA_TEST_ROOT ({len(str(Path(requested).resolve()))} bytes resolved) '
+        print(f'paths: the runner root {requested} ({len(str(Path(requested).resolve()))} bytes resolved) '
               f'cannot hold a unix socket path; using {chosen} for {prefix}*',
               file=sys.stderr)
     chosen.mkdir(parents=True, exist_ok=True)

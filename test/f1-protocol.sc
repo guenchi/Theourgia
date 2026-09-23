@@ -43,7 +43,20 @@
 
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
-(define here (string-append "/tmp/f1-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/f1-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/f1-" (number->string (get-process-id))))
 
 (define (file-text path)
   (if (not (file-exists? path)) ""
@@ -115,7 +128,7 @@
 (define ready "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")
 (define listing "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}")
 
-(system (string-append "rm -rf " here "; mkdir -p " here "/store"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
                        "scheme --script ../cli.sc init --store " here "/store --wire > /dev/null 2>&1"))
 
@@ -127,7 +140,7 @@
     (call-with-output-file (string-append here "/in.jsonl")
       (lambda (p) (put-string p (string-append init "\n" ready "\n" listing "\n"))))
     (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                           "THEOURGIA_RUN=" here "/run "
+                           "THEOURGIA_RUN=" sock-here "/run "
                            "scheme --script " shell " --store " here "/store < " here "/in.jsonl > "
                            here "/out.jsonl 2>" here "/err.txt"))
     ;; NEVER: BY THE REQUEST ID, NOT BY THE WORD `tools`. The initialize
@@ -267,7 +280,7 @@
 ;; CONTAINS. A marker that appears in no source file cannot be served
 ;; from a copy: if the shell shows it, it asked, and it used what came
 ;; back.
-(let* ((psock (string-append here "/p3.sock"))
+(let* ((psock (string-append sock-here "/p3.sock"))
        (ppeer (string-append here "/p3.sc"))
        (marker "MARKER-ONLY-THE-PEER-KNOWS")
        (pout (string-append here "/p3.out")))
@@ -299,7 +312,7 @@
           ((> k 300) 'never)
           (else (system "sleep 0.05") (up (+ k 1)))))
   (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                         "THEOURGIA_RUN=" here "/run "
+                         "THEOURGIA_RUN=" sock-here "/run "
                          "scheme --script " shell " --store " here "/store --socket " psock
                          " < " here "/in.jsonl > " pout " 2>/dev/null"))
   (let ((text (file-text pout)))
@@ -314,7 +327,7 @@
           'from-the-server))
   (system (string-append "pkill -f " ppeer " 2>/dev/null")))
 
-(system (string-append "rm -rf " here))
+(system (string-append "rm -rf " here " " sock-here))
 ;; NEVER: THE SHELL STARTS A DAEMON NOW, so this fixture must say where its
 ;; run root is and must take down what it started. Before the shell was
 ;; rewritten it dispatched in its own process and started nothing, which

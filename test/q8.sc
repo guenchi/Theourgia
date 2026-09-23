@@ -5,7 +5,16 @@
 (define (check name value)
   (unless value (set! failures (+ failures 1)))
   (display (if value "PASS " "FAIL ")) (display name) (newline))
-(define root (string-append "/tmp/theourgia-q8-" (number->string (get-process-id))))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define root (string-append scratch-base "/theourgia-q8-" (number->string (get-process-id))))
 (mkdir root)
 (mkdir (string-append root "/machine"))
 (putenv "THEOURGIA_HOME" (string-append root "/machine"))

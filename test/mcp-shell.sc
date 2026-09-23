@@ -46,7 +46,20 @@
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
 (define pid-text (number->string (get-process-id)))
-(define here (string-append "/tmp/mcpshell-" pid-text))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/mcpshell-" pid-text))
+(define sock-here (string-append socket-base "/mcpshell-" pid-text))
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (define shell "../mcp/server.sc")
@@ -54,7 +67,7 @@
 ;; The canonical path of a directory, asked of the shell rather than of
 ;; the library whose answer this file is checking.
 (define (resolved-by-the-shell dir)
-  (let ((out (string-append "/tmp/mcpshell-resolve-" (number->string (get-process-id)) ".txt")))
+  (let ((out (string-append scratch-base "/mcpshell-resolve-" (number->string (get-process-id)) ".txt")))
     (system (string-append "cd " dir " && pwd -P > " out))
     (let ((t (call-with-input-file out get-string-all)))
       (if (and (string? t) (> (string-length t) 0))
@@ -91,7 +104,7 @@
          ;; running when it is done.
          (command (string-append
                     "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                    "THEOURGIA_RUN=" here "/run "
+                    "THEOURGIA_RUN=" sock-here "/run "
                     "scheme --script " shell " --store " store
                     (if socket (string-append " --socket " socket) "")
                     " 2>>" here "/shell.err")))
@@ -153,7 +166,7 @@
 (define (code-of line) (field line "error" "code"))
 (define (id-of line) (field line "id"))
 
-(system (string-append "rm -rf " here "; mkdir -p " here "/store"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
           "scheme --script ../cli.sc init --store " here "/store > /dev/null 2>&1"))
@@ -444,9 +457,9 @@
 ;; path held by a REGULAR FILE is the one that cannot be served at all --
 ;; a daemon cannot bind there -- so it is the one that must come back
 ;; unavailable, and its file must survive.
-(let* ((nothing (string-append here "/no-socket-here"))
-       (regular (string-append here "/a-regular-file"))
-       (folder  (string-append here "/a-directory")))
+(let* ((nothing (string-append sock-here "/no-socket-here"))
+       (regular (string-append sock-here "/a-regular-file"))
+       (folder  (string-append sock-here "/a-directory")))
   (system (string-append "printf keep > " regular "; mkdir -p " folder))
   (let ((answers
           (map (lambda (path)
@@ -499,7 +512,7 @@
     ;; lost" with nothing else in it. Written first with the fault
     ;; injector that parks a request, this row failed for a reason of the
     ;; injector's own and told me nothing about the shell.
-    (let ((lostsock (string-append here "/lost.sock"))
+    (let ((lostsock (string-append sock-here "/lost.sock"))
           (lostpeer (string-append here "/lost.sc")))
       (call-with-output-file lostpeer
         (lambda (port)
@@ -561,7 +574,7 @@
 ;; dispatched, and the SHELL's own trace for the absence of a local
 ;; store open.
 (let* ((dstore (string-append here "/dstore"))
-       (dsock (string-append here "/d.sock"))
+       (dsock (string-append sock-here "/d.sock"))
        (runner (string-append here "/serve.sc"))
        (dlog (string-append here "/daemon.log"))
        (shell-err (string-append here "/shell.err")))
@@ -620,7 +633,7 @@
 ;; `writer-hold` seam parks inside a lock with `sleep-ms`, which yields.
 (define (start-parking-daemon! tag)
   (let* ((dstore (string-append here "/" tag "-store"))
-         (dsock (string-append here "/" tag ".sock"))
+         (dsock (string-append sock-here "/" tag ".sock"))
          (runner (string-append here "/" tag ".sc"))
          (dlog (string-append here "/" tag ".log")))
     (system (string-append "rm -rf " dstore " " dsock "; mkdir -p " dstore))
@@ -711,7 +724,7 @@
 ;; `request-frame`" is a fact about today's source; "both sent these
 ;; bytes" is a fact about the programs. The seed that proves it: give
 ;; `request-frame` an extra field, and both captures must change.
-(let* ((csock (string-append here "/capture.sock"))
+(let* ((csock (string-append sock-here "/capture.sock"))
        (cstore (string-append here "/store"))
        (peer (string-append here "/capture.sc"))
        (seen-cli (string-append here "/seen-cli.txt"))
@@ -918,7 +931,7 @@
 ;;
 ;; NOTE: MC-06 CANNOT SAY THIS: it asks only that no outline result came
 ;; back, which is true of a null-id internal error as well.
-(let* ((badsock (string-append here "/not-a-socket-file"))
+(let* ((badsock (string-append sock-here "/not-a-socket-file"))
        (out (begin
               (system (string-append "printf keep > " badsock))
               (talk (list hello ready
@@ -965,7 +978,7 @@
 ;; NOTE: THE ENVELOPE NOW CARRIES `origin`, and these two rows are the two
 ;; sides of it. A stand-in peer answers, because a real daemon cannot be
 ;; made to produce both on demand.
-(let* ((osock (string-append here "/origin.sock"))
+(let* ((osock (string-append sock-here "/origin.sock"))
        (opeer (string-append here "/origin.sc"))
        (ostore (string-append here "/store")))
   (define (peer-answering body)

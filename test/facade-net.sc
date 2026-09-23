@@ -44,8 +44,19 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
 (define (sock n)
-  (string-append "/tmp/n32-" (number->string (get-process-id)) "-" n ".sock"))
+  (string-append socket-base "/n32-" (number->string (get-process-id)) "-" n ".sock"))
 
 ;; Wait until a counter comes back to `base`, or give up and report what
 ;; it actually reads -- a number, so the failure names the leak's size.
@@ -923,8 +934,8 @@
       ;; NEVER: A row that quietly skipped itself when the variable was unset
       ;; would be the kind of green that means nothing; the child always
       ;; runs, and its absence of output is a failure with a reading.
-      (let* ((src (string-append "/tmp/n19-" (number->string (get-process-id)) ".sc"))
-             (out (string-append "/tmp/n19-" (number->string (get-process-id)) ".out"))
+      (let* ((src (string-append scratch-base "/n19-" (number->string (get-process-id)) ".sc"))
+             (out (string-append scratch-base "/n19-" (number->string (get-process-id)) ".out"))
              (dirs (getenv "CHEZSCHEMELIBDIRS"))
              (exts (getenv "CHEZSCHEMELIBEXTS")))
         (unless (and (string? dirs) (string? exts))
@@ -938,7 +949,8 @@
                 "(import (chezscheme) (theourgia sched) (theourgia net)"
                 "        (only (igropyr tcp) conn-count uv-accept-failure-counts)"
                 "        (only (igropyr inject-control) inject-arm-return!))"
-                "(define sock (string-append \"/tmp/n19s-\" (number->string (get-process-id)) \".sock\"))"
+                (format "(define sock ~s)"
+                        (string-append socket-base "/n19s-" (number->string (get-process-id)) ".sock"))
                 "(define (read-starts) (cdr (assq 'read-start (uv-accept-failure-counts))))"
                 "(start-scheduler"
                 "  (lambda ()"

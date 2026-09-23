@@ -27,7 +27,7 @@
 ;; when that happened two rows written for the leak went green together.
 
 (import (chezscheme) (theourgia sched) (theourgia proc)
-        (only (igropyr tcp) proc-count))
+        (only (igropyr tcp) proc-count proc-pid))
 
 (define bad 0)
 (define rows 0)
@@ -53,15 +53,80 @@
           ((> k 200) (list 'still (- (read) base)))
           (else (sleep-ms 20) (loop (+ k 1))))))
 
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
 ;; What `ps` says about a pid, in kilobytes: a reading from outside this
 ;; tree, so a row about a memory measurement is not checking the tree
 ;; against itself.
 (define (ps-rss-kb pid)
-  (let ((out (string-append "/tmp/p32-ps-" (number->string (get-process-id)))))
+  (let ((out (string-append scratch-base "/p32-ps-" (number->string (get-process-id)))))
     (system (string-append "ps -o rss= -p " (number->string pid) " > " out " 2>/dev/null"))
     (guard (e (#t #f))
       (let ((n (call-with-input-file out read)))
         (and (number? n) (> n 0) n)))))
+
+;; END A PROCESS, AND WHAT IT STARTED, AND SEE THEM GONE, with a bound. A
+;; process that has ended but is not yet reaped (a zombie) counts as gone.
+;; NEVER: A ROW THAT STARTS A CHILD ENDS IT. P-08's workers used to be
+;; closed and left to run out their `sleep 8` in this fixture's process
+;; group after the fixture had ended; the runner now reports such a member
+;; as LEFT IN GROUP (launcher design L5). It is called BEFORE the workers
+;; are closed: closing a worker ends its shell, and the shell's `sleep`,
+;; now without a parent, can no longer be found as its child (measured:
+;; called after the close, both sleeps were still in the group).
+(include "pid-state.ss")
+;; THE CHILDREN OF A PID, read from pgrep's own output through a process
+;; port, not through a file under the scratch root: a row that damaged its
+;; own scratch root would otherwise list no children and wait for none
+;; (codex r8 C1). #f means the list could not be read.
+(define (children-of pid)
+  (guard (e (#t #f))
+    (let* ((p (process (string-append "pgrep -P " (number->string pid) " 2>/dev/null; echo rc $?")))
+           (in (car p)))
+      (close-port (cadr p))
+      ;; pgrep's own status comes last, as `rc N`: 0 is a list and 1 is an
+      ;; empty one; anything else is a pgrep that could not list, and the
+      ;; answer is #f, not "no children" (codex r9 C1).
+      (let loop ((acc '()))
+        (let ((n (read in)))
+          (cond
+            ((eof-object? n) (close-port in) #f)
+            ((eq? n 'rc)
+             (let ((rc (read in)))
+               (close-port in)
+               (and (memv rc '(0 1)) (reverse acc))))
+            (else (loop (if (integer? n) (cons n acc) acc)))))))))
+;; NEVER: A SHELL IS STOPPED BEFORE ITS CHILDREN ARE LISTED, so it cannot
+;; start one between the listing and its own end (codex r7 C1). Every pid
+;; listed is then ended and waited for, by pid, with a bound. A list that
+;; could not be read is said, and the whole bound is waited out.
+;;
+;; A #f AMONG THE PIDS IS A WORKER WHOSE OS PID IS NOT KNOWN (never
+;; started, or already exited and reaped): its children cannot be listed,
+;; so that too is said and the whole bound is waited out (codex r10 C1).
+(define (end-and-wait! maybe-pids)
+  (define pids (filter number? maybe-pids))
+  (define unknown (not (for-all number? maybe-pids)))
+  (when unknown
+    (printf "P-08: a worker has no OS pid in the library; waiting out the bound\n"))
+  (for-each (lambda (pid) (system (string-append "kill -STOP " (number->string pid) " 2>/dev/null"))) pids)
+  (let* ((lists (map children-of pids))
+         (unread (not (for-all list? lists)))
+         (all (append pids (apply append (filter list? lists)))))
+    (when unread
+      (printf "P-08: the children of a worker could not be listed; waiting out the bound\n"))
+    (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null"))) all)
+    (for-each (lambda (pid) (system (string-append "kill -CONT " (number->string pid) " 2>/dev/null"))) pids)
+    (let wait ((k 0))
+      (unless (or (> k 100) (and (not unread) (not unknown) (for-all pid-gone? all)))
+        (system "sleep 0.05")
+        (wait (+ k 1))))))
 
 (define (digits-of t)
   (let* ((n (string-length t))
@@ -317,6 +382,12 @@
                 (want "P-08 TWIN: the child holding forty megabytes reads far larger"
                       (and (number? big-rss) (number? small-rss) (> big-rss (* 10 small-rss)))
                       #t)
+                ;; THE CLEANUP LIST IS THE LIBRARY'S OWN OS PID, not the pid
+                ;; the child printed: a child slow to print it would take
+                ;; itself off the list (codex r10 C1). A ref that never
+                ;; arrived, or has no pid, is #f, and end-and-wait! says so.
+                (end-and-wait! (list (and big-ref (proc-pid (worker-ref-proc big-ref)))
+                                     (and small-ref (proc-pid (worker-ref-proc small-ref)))))
                 (when big-ref (worker-close! big-ref))
                 (when small-ref (worker-close! small-ref)))
               (receive

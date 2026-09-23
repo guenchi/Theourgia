@@ -109,6 +109,14 @@
 (want "FF-03 TWIN: it is not the virtual size"
       (< rss 100000000000) #t)
 
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
 ;; ---- the same reading, on the platform that is not this one ------------
 ;;
 ;; NOTE: THIS ROW ONLY RUNS ON FreeBSD, and it says so rather than passing
@@ -134,7 +142,7 @@
 ;; fails with EPERM when the caller is already a process-group leader,
 ;; and this fixture may or may not be one depending on how it was
 ;; started. A fresh child is never one.
-(define setsid-out (string-append "/tmp/ffi-setsid-" (number->string (get-process-id))))
+(define setsid-out (string-append scratch-base "/ffi-setsid-" (number->string (get-process-id))))
 (define setsid-src (string-append setsid-out ".sc"))
 (call-with-output-file setsid-src
   (lambda (port)
@@ -193,7 +201,7 @@
       ;; KEY: AGAINST `ps`, TAKEN NOW. The offset was found by agreeing with
       ;; ps on two processes; the row that keeps it honest is the same
       ;; agreement, on this one, at this moment.
-      (let* ((out (string-append "/tmp/ffi-ps-" (number->string mine)))
+      (let* ((out (string-append scratch-base "/ffi-ps-" (number->string mine)))
              (_ (system (string-append "ps -o rss= -p " (number->string mine) " > " out)))
              (ps-kib (guard (e (#t #f))
                        (string->number

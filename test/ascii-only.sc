@@ -84,7 +84,7 @@
     ;; The fixture writes a note whose text is deliberately not ASCII, to
     ;; show that a note's bytes survive the round trip unchanged. The
     ;; Chinese is the test datum itself.
-    (cons "test/client-start.sc" 429)))
+    (cons "test/client-start.sc" 441)))
 
 ;; NEVER: THE EXCEPTION IS THE ONE PATH NAMED, NOT ANY PATH THAT ENDS IN IT.
 ;; The first version compared suffixes, and a review found it exempting
@@ -282,7 +282,15 @@
               (if (cleared-floor? (car r)) (quote PASSED-THE-FLOOR) (quote refused))))
       (list #t (quote refused)))
 
-(define here (string-append "/tmp/asciigate-" (number->string (get-process-id))))
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/asciigate-" (number->string (get-process-id))))
 (define (fresh! name)
   (let ((d (string-append here "/" name)))
     (system (string-append "rm -rf " d "; mkdir -p " d))

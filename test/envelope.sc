@@ -54,11 +54,23 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
-(define here (string-append "/tmp/envelope-" (number->string (get-process-id))))
-(system (string-append "rm -rf " here "; mkdir -p " here "/store " here "/home"))
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/envelope-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/envelope-" (number->string (get-process-id))))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " here "/home " sock-here))
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
 (define store (string-append here "/store"))
-(define sock (string-append here "/s.sock"))
+(define sock (string-append sock-here "/s.sock"))
 (define cli "../cli.sc")
 
 (rpc-dispatch store '(init) "test")
@@ -928,6 +940,6 @@
       '(#t #t #t))
 
 (system (string-append "pkill -f 'serve " store "' 2>/dev/null"))
-(system (string-append "sleep 1; rm -rf " here))
+(system (string-append "sleep 1; rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nenvelope complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

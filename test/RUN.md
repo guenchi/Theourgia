@@ -91,7 +91,9 @@ says where things went.
 `THEOURGIA_LIBDIR` pins the library path exactly as it does for the
 Scheme fixtures. `THEOURGIA_TEST_ROOT` is where a run may create stores,
 and where each fixture writes its transcript (`<root>/evidence/`); every
-fixture that writes one prints the path. `THEOURGIA_SCHEME` names the
+fixture that writes one prints the path. Under the runner both it and
+`THEOURGIA_TEST_SOCK` are set to directories the runner made for this
+run (see "One run, two roots" below). `THEOURGIA_SCHEME` names the
 Chez binary if it is not `scheme`.
 
 `THEOURGIA_LIBDIR` is optional in the repository and **required inside a
@@ -104,8 +106,9 @@ found` one row at a time after the fixture has built its store.
 **A unix socket path is shorter than a file path, and that decides where
 a store may go.** `sun_path` holds 104 bytes; four of these fixtures
 connect to `<store>/socket`. `paths.py` therefore prefers
-`THEOURGIA_TEST_ROOT`, falls back to the system temporary directory when
-that root is too long, and says on stderr that it did so. Measured with
+`THEOURGIA_TEST_SOCK`, the runner's socket root and short by construction,
+then `THEOURGIA_TEST_ROOT`, falls back to the system temporary directory
+when neither is set or short enough, and says on stderr that it did so. Measured with
 a 95-character root: `connect` raised `ENAMETOOLONG`, which the
 transport does not treat as "no daemon here", so every call came back
 `(error transport-unavailable)` and the probe then in this directory
@@ -135,12 +138,17 @@ separates them: `core()` is `parents[1]`, `libdir()` is the pin, and
 
 ## A Python fixture may say it moved its scratch, and that is a reading
 
-`paths.scratch()` prefers `THEOURGIA_TEST_ROOT` and falls back to the
-system temporary directory when the pinned root is too long to hold a
-unix socket path, printing the substitution on stderr:
+`paths.scratch()` prefers `THEOURGIA_TEST_SOCK`, then
+`THEOURGIA_TEST_ROOT`, and falls back to the system temporary directory
+when the first of them that is set is too long to hold a unix socket
+path, printing the substitution on stderr:
 
-    paths: THEOURGIA_TEST_ROOT (104 bytes resolved) cannot hold a unix
+    paths: the runner root <path> (104 bytes resolved) cannot hold a unix
     socket path; using /private/var/folders/.../T for mcp-probe-*
+
+Under the runner the socket root is at most 20 bytes, so the line does
+not appear there; it appears when a fixture is run alone with a long
+`THEOURGIA_TEST_ROOT` of its own.
 
 **That line is the fixture working, not failing.** `sun_path` holds 104
 bytes on this platform, and a store at
@@ -190,10 +198,179 @@ from what is there has no way to mention what is not.
 
 The runner prints three lines you should read rather than skim:
 
-    fixtures run: <n>   not-green: <n>
+    fixtures run: <n>   not-green: <n>   (python among them: <k>)
+    python fixtures run: <p>
     libraries (<n>): ...
     probes, printed a usage line (<n>): ...
     all <n> scripts accounted for
+
+**The parenthesis counts reds, and only reds.** `python among them` is
+how many of the not-green fixtures are Python; `python fixtures run`, on
+its own line, is how many Python fixtures ran, probes left out. The old
+line put the number RUN inside the parenthesis after the reds, where it
+read as the number of reds that were Python: "3 are python" of three reds
+that were all `.sc`.
+
+## One run, two roots
+
+Every scratch path a fixture uses lives under one of two directories the
+runner makes before anything else and removes on every exit -- a refusal
+before any fixture ran as much as a red verdict:
+
+    this run: token <t>, scratch root <base>/run-<t>, socket root /tmp/ths.<t>
+    ...
+    removed this run's roots: <base>/run-<t> and /tmp/ths.<t> (<n> entries, the roots among them)
+
+`THEOURGIA_TEST_ROOT` is the scratch root, `<base>/run-<token>`, where
+`<base>` is the caller's `THEOURGIA_TEST_ROOT` if it set one and `/tmp`
+if not. `THEOURGIA_TEST_SOCK` is the socket root, made first with
+`mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes whatever the caller's base,
+because a socket path must fit in `sun_path` (104 bytes with the NUL on
+macOS). The token is its six-character suffix, so both names say whose
+they are, and `THEOURGIA_SUITE_TOKEN` carries it to every process. Files,
+stores, homes, scripts and outputs go under the scratch root; sockets,
+with what the product keeps beside one (its lock file, `serve.log`), go
+under the socket root. A fixture run alone, without the variables, falls
+back to `/tmp` as it always did.
+
+**The runner removes only what it created this run**: another run may be
+alive beside it, and its directories look exactly like these. If either
+root is still there after removal it prints `NOT REMOVED: ...`, and a run
+that would otherwise have passed exits 5. "Still there" includes a root
+the runner cannot see: one whose parent directory cannot be searched is
+counted as not removed, since `-e` answers "absent" for it either way;
+so is a dangling symbolic link left in a root's place. The removal is a trap on EXIT.
+Measured: SIGTERM to the runner, alone or together with a plain shell
+that started it, runs the removal; SIGKILL cannot. On INT, TERM or HUP
+the runner first stops the running launch and the probe (see "Every
+launch goes through launch.pl" below): a TERM to the runner's pid
+reaches none of its children, and a fixture left running once wrote its
+scratch root back two minutes after the removal was reported. A runner inside a
+`screen` session that is quit (`screen -X quit`) keeps running, finishes
+and removes both roots. SIGTERM sent at once to the `screen` process,
+its login, the shell under it and the runner left both roots and printed
+no removal line. What is left is always
+named with that run's token -- the two roots, and the runner's own
+snapshot directory `$TMPDIR/ths-snap.<token>.*` -- so it can be told
+apart from a run that is still going.
+
+`tmp-paths.sc` holds every fixture to this: a string literal that leads
+into `/tmp` is allowed only as the solo fallback of one of the two
+variables, or by an entry in its printed allow-list with a reason.
+
+## Every launch goes through launch.pl
+
+Every fixture, and both preflights, is started by `launch.pl`, which sits
+beside the runner: a helper, not a fixture (no glob of the runner's
+matches `.pl`), and the runner refuses to start without it. It is the
+launcher design in theourgos `core/briefs/launcher-design.md`, closed at
+v4.1. Three processes per launch:
+
+- the WATCHER, which the runner starts and waits for. It stays outside
+  the fixture's process group, so nothing a fixture sends to its own
+  group reaches it. It owns the time limit, the grace after the fixture
+  returns, the stop, the census of the group, and a result file;
+- the ANCHOR, which leads the fixture's group and handles every
+  catchable signal with a handler that does nothing, so the group
+  outlives the signals a fixture sends to it;
+- the COMMAND, the fixture itself: every catchable signal at its default,
+  an empty signal mask, stdin `/dev/null`, and not a group leader, so it
+  may call setsid as when it was started directly.
+
+    perl launch.pl --limit SECONDS --out FILE --result FILE --id ID [--census-pid PID] -- COMMAND ARGS...
+
+Its status is the fixture's: the exit code; 128+n if a signal ended it;
+127 or 126 if the exec failed (ENOENT, or anything else); 142 if the time
+limit ended it (900 s, or `THEOURGIA_FIXTURE_LIMIT` in tests). The result
+file says, separately from that status, what became of the group:
+`clean`; `left`, members that were still live 2 s after the fixture
+returned, which the runner reports as `LEFT IN GROUP: <fixture> <pid>
+<command>` and refuses with 3; `survivor`, members that outlived KILL;
+or `unknown`, a group whose members could not be read. A census counts
+only when ps exited 0 and its table shows both the watcher and the
+runner; the group is quiet only after two such censuses, about 100 ms
+apart, both find it empty. A `survivor`, an `unknown`, or a result file
+that is missing, partial or another launch's (`RESULT NOT READ`) keeps
+all three roots, launches nothing more, and ends the run non-zero
+(`NOT ALL LAUNCHED`, then 6, unless something ranked higher refused).
+
+The runner puts its own signal state right first: it re-execs itself
+once through perl with every catchable signal at its default and an
+empty mask, because a non-interactive sh started with TERM ignored
+cannot trap TERM (measured on bash 3.2). On INT, TERM or HUP it stops
+the running launch through its watcher (whose stop path is bounded at
+15 s; the runner waits 20 s, that bound plus 5, before it sends KILL, so
+a KILL never races the watcher's last phase), stops the probe,
+still counts this run's processes, and exits 128+n. Every ps it calls is
+bounded by an alarm. One order decides the status: a signal (128+n),
+then a red fixture (2), then a leak or a member left in a group (3), then
+the rest as below, and NOT REMOVED gives 5 only when nothing else
+refused.
+
+Every time limit, grace and wait above is counted on CLOCK_MONOTONIC,
+in `launch.pl` and in the runner alike, so a step of the wall clock
+(NTP, a manual set, a resume from sleep) neither holds a bound open nor
+ends it early. Neither reads the wall clock. Whether a process is gone is decided by one rule, written twice:
+`alive()` in the runner and `pid-state.ss`, which the fixtures that wait
+for their own processes include. A pid is gone when `kill -0` fails, or
+when a ps that exited 0 shows it as a zombie; a ps that failed proves
+nothing, and the wait runs to its bound.
+
+STATED LIMITS: a member that forks in the instant between a census and
+the next one can in principle leave a child neither saw; closing that
+needs kernel process tracking, which the runner does not use. On
+FreeBSD, with `security.bsd.see_other_uids` or `see_other_gids` at 0, a
+member whose user or groups stop overlapping the runner's can vanish
+from the census; the runner reads both at start and says so once. POSIX
+gives a background job `/dev/null` for its stdin in any case, so the
+explicit `< /dev/null` is belt and braces; runner-self RS-13 measures
+that fixtures read `/dev/null` whichever of the two provides it.
+
+## The leak count counts this run's processes
+
+    processes: none carrying this run's token <t> is left running
+    LEAKED-PROCESSES: <pid> ... -- processes carrying this run's token <t> are still running
+      <pid> <command>
+
+A process is this run's when its environment carries
+`THEOURGIA_SUITE_TOKEN=<token>` as a whole word, whatever its executable;
+setsid changes the process group, not the environment, so a detached
+daemon is counted. The command line is never searched: the count used to
+be `pgrep -f "scheme --script"`, which counted the process asking, any
+shell loop whose own command line held that text, and every other
+session's scheme -- a waiter once waited fifty minutes for itself. The
+runner and its direct children at the moment of counting are left out.
+The snapshots are written to a directory of the runner's own,
+`$TMPDIR/ths-snap.<token>.*`, mode 700, not exported to any fixture and
+removed with the roots: both roots are handed to fixtures, and a fixture
+that locks or fills one must not blind the count. A snapshot that cannot
+be taken or read -- the matcher's own exit status is checked -- prints
+`LEAK COUNT NOT TAKEN` and the run refuses as if it had leaked.
+The token is looked for only in what `ps` adds after a process's
+command line. Three snapshots are taken, command lines, environments and
+command lines again, and the longer of the two command lines that the
+environment line starts with is the one cut off. So a process born,
+re-executed or given more arguments between the snapshots is read by its
+environment and not by its arguments; one that changes twice within
+those few milliseconds is not read.
+
+Whether environments can be read is asked of a probe, a scheme started
+by a subshell, once a second until it appears or ten seconds pass. A
+probe that never appears, or whose pid cannot be read, means the count
+falls back to counting by name, and the run says so. The probe's own
+subshell stops it and waits for it; the runner signals only that
+subshell and waits for it, so no probe is left to be counted, and no
+signal is sent to a pid read back from a file.
+
+**On macOS the environment of the system's own binaries is not shown**
+(`/bin/sh`, `/bin/sleep`, `/usr/bin/perl` came back without one; scheme and
+Homebrew's python show theirs), so a leaked shell or sleep is not
+counted, and every run on macOS says so in a `leak count:` line. Where
+no environment can be read at all the runner counts scheme processes by
+name before and after, says that instead, and still lists each pid with
+its command when the number grew:
+
+    leak count: machine-wide by executable name, this platform does not show environments
 
 **Every script in the directory is accounted for**, by outcome rather than by a
 hand-written list. A list is silent about the file it forgot; this directory's

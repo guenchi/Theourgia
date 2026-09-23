@@ -56,10 +56,22 @@
   (syntax-rules ()
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
-(define here (string-append "/tmp/cstart-" (number->string (get-process-id))))
-(system (string-append "rm -rf " here "; mkdir -p " here "/store " here "/home " here "/run"))
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/cstart-" (number->string (get-process-id))))
+(define sock-here (string-append socket-base "/cstart-" (number->string (get-process-id))))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " here "/home " sock-here "/run"))
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
-(putenv "THEOURGIA_RUN" (string-append here "/run"))
+(putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
 
 (define store (string-append here "/store"))
 (rpc-dispatch store '(init) "test")
@@ -178,7 +190,7 @@
     (system (string-append "CHEZSCHEMELIBDIRS='" (getenv "CHEZSCHEMELIBDIRS") "' "
                            "CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
                            "THEOURGIA_HOME=" here "/home "
-                           "THEOURGIA_RUN=" here "/run "
+                           "THEOURGIA_RUN=" sock-here "/run "
                            "THEOURGIA_TRACE=1 scheme --script " driver
                            " > /dev/null 2> " err))
     (let* ((text (file-text err))
@@ -206,7 +218,7 @@
 
 ;; ---- CS-3 the refusal comes back ------------------------------------------
 
-(define blocked (string-append here "/blocked.sock"))
+(define blocked (string-append sock-here "/blocked.sock"))
 (system (string-append "echo not-a-socket > " blocked))
 
 (want "CS-3 a socket path held by a file is reported in the daemon's own words"
@@ -263,7 +275,7 @@
 (define ro (string-append here "/ro"))
 (system (string-append "mkdir -p " ro "; chmod 500 " ro))
 (define ro-log (string-append ro "/serve.log"))
-(define ro-sock (string-append here "/ro.sock"))
+(define ro-sock (string-append sock-here "/ro.sock"))
 
 (want "CS-5 a daemon that cannot open its log does not start"
       (let ((answer (ensure-daemon!
@@ -317,7 +329,7 @@
     (system (string-append "CHEZSCHEMELIBDIRS='" (getenv "CHEZSCHEMELIBDIRS") "' "
                            "CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
                            "THEOURGIA_HOME=" here "/home "
-                           "THEOURGIA_RUN=" here "/run "
+                           "THEOURGIA_RUN=" sock-here "/run "
                            "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 "
                            (if fault (string-append "THEOURGIA_FAULT=" fault " ") "")
                            "scheme --script " close-driver
@@ -420,7 +432,7 @@
 ;; reason sat in the file.
 (let* ((noisy-store (string-append here "/noisy"))
        (noisy-log (serve-log-path noisy-store))
-       (occupied (string-append here "/taken.sock")))
+       (occupied (string-append sock-here "/taken.sock")))
   (system (string-append "mkdir -p " noisy-store "/.. 2>/dev/null; mkdir -p "
                          (substring noisy-log 0 (let loop ((i (- (string-length noisy-log) 1)))
                                                   (if (char=? (string-ref noisy-log i) #\/) i (loop (- i 1)))))))
@@ -444,7 +456,7 @@
 ;; a run root that could not be written raised out of `call!` entirely --
 ;; past every outcome this library defines, to a caller with no handler
 ;; for it. It is a start that failed, and is now answered as one.
-(let* ((locked-run (string-append here "/locked"))
+(let* ((locked-run (string-append sock-here "/locked"))
        (locked-store (string-append here "/locked-store")))
   (system (string-append "mkdir -p " locked-run "; chmod 500 " locked-run))
   (let ((answer (guard (e (#t (list 'RAISED-OUT)))
@@ -550,6 +562,6 @@
 ;; measured by the suite's leak gate, which counts processes and is the
 ;; only thing here that was looking.
 (kill-daemon!)
-(system (string-append "rm -rf " here))
+(system (string-append "chmod -R u+rwx " sock-here " 2>/dev/null; rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\nclient-start complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

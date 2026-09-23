@@ -43,10 +43,22 @@
     ((_ label got expect) (want-1 label (caught got) (caught expect)))))
 
 (define pid-text (number->string (get-process-id)))
-(define store (string-append "/tmp/dmn-store-" pid-text))
-(define socket (string-append "/tmp/dmn-" pid-text ".sock"))
-(define runner (string-append "/tmp/dmn-run-" pid-text ".sc"))
-(define log (string-append "/tmp/dmn-log-" pid-text ".txt"))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define store (string-append scratch-base "/dmn-store-" pid-text))
+(define socket (string-append socket-base "/dmn-" pid-text ".sock"))
+(define runner (string-append scratch-base "/dmn-run-" pid-text ".sc"))
+(define log (string-append scratch-base "/dmn-log-" pid-text ".txt"))
 
 (define (line-complete? bv)
   (let loop ((i 0))
@@ -161,17 +173,17 @@
   ;; one runner file -- `call-with-output-file` refuses an existing one,
   ;; and that refusal killed the whole fixture rather than one row.
   (let* ((tag (string-append pid-text "-" suffix))
-         (st (string-append "/tmp/dmn-c" tag))
-         (sk (string-append "/tmp/dmn-c" tag ".sock"))
-         (rn (string-append "/tmp/dmn-c" tag ".sc"))
-         (lg (string-append "/tmp/dmn-c" tag ".log"))
+         (st (string-append scratch-base "/dmn-c" tag))
+         (sk (string-append socket-base "/dmn-c" tag ".sock"))
+         (rn (string-append scratch-base "/dmn-c" tag ".sc"))
+         (lg (string-append scratch-base "/dmn-c" tag ".log"))
          ;; NOTE: THE DAEMON WRITES ITS OWN PID AND THE SHELL WRITES ITS
          ;; EXIT CODE. A row about signals needs to send one to THIS
          ;; daemon -- `pkill -f` would hit any other run's -- and a row
          ;; about shutting down needs the code it left with, which is
          ;; gone by the time anything can ask about it.
-         (pf (string-append "/tmp/dmn-c" tag ".pid"))
-         (rc (string-append "/tmp/dmn-c" tag ".rc")))
+         (pf (string-append scratch-base "/dmn-c" tag ".pid"))
+         (rc (string-append scratch-base "/dmn-c" tag ".rc")))
     (system (string-append "rm -rf " st " " sk " " pf " " rc "; mkdir -p " st))
     (call-with-output-file rn
       (lambda (port)
@@ -337,8 +349,8 @@
 ;; would be competing with the rows for the same green threads, and a
 ;; holder inside the daemon would not be somebody else at all.
 (define (hold-lock! path secs tag)
-  (let ((rn (string-append "/tmp/dmn-hold-" tag ".sc"))
-        (lg (string-append "/tmp/dmn-hold-" tag ".log")))
+  (let ((rn (string-append scratch-base "/dmn-hold-" tag ".sc"))
+        (lg (string-append scratch-base "/dmn-hold-" tag ".log")))
     (system (string-append "rm -f " rn " " lg))
     (call-with-output-file rn
       (lambda (port)
@@ -413,8 +425,8 @@
 ;; Commits to a store the way a CLI does -- another OS process, taking
 ;; the store's lock itself, with no daemon involved.
 (define (commit-from-outside! store title tag)
-  (let ((rn (string-append "/tmp/dmn-out-" tag ".sc"))
-        (lg (string-append "/tmp/dmn-out-" tag ".log")))
+  (let ((rn (string-append scratch-base "/dmn-out-" tag ".sc"))
+        (lg (string-append scratch-base "/dmn-out-" tag ".log")))
     (system (string-append "rm -f " rn " " lg))
     (call-with-output-file rn
       (lambda (port)
@@ -588,8 +600,8 @@
       ;; NEVER: THE LOCK IS THE ONLY ARBITER, and it is the kernel's: no pid
       ;; file, no age check. A second daemon says so and leaves with 75,
       ;; so a client that finds no answer falls back to running locally.
-      (let* ((runner2 (string-append "/tmp/dmn-run2-" pid-text ".sc"))
-             (log2 (string-append "/tmp/dmn-log2-" pid-text ".txt")))
+      (let* ((runner2 (string-append scratch-base "/dmn-run2-" pid-text ".sc"))
+             (log2 (string-append scratch-base "/dmn-log2-" pid-text ".txt")))
         (call-with-output-file runner2
           (lambda (port)
             (for-each (lambda (l) (display l port) (newline port))
@@ -611,9 +623,9 @@
       ;; NEVER: A REGULAR FILE THERE IS SOMEBODY ELSE'S. Removing it to make
       ;; room would be this daemon destroying data it does not own, so it
       ;; refuses -- and the row checks the file is still there afterwards.
-      (let* ((occupied (string-append "/tmp/dmn-occupied-" pid-text))
-             (runner3 (string-append "/tmp/dmn-run3-" pid-text ".sc"))
-             (log3 (string-append "/tmp/dmn-log3-" pid-text ".txt")))
+      (let* ((occupied (string-append socket-base "/dmn-occupied-" pid-text))
+             (runner3 (string-append scratch-base "/dmn-run3-" pid-text ".sc"))
+             (log3 (string-append scratch-base "/dmn-log3-" pid-text ".txt")))
         (system (string-append "printf 'not a socket' > " occupied))
         (call-with-output-file runner3
           (lambda (port)
@@ -844,9 +856,9 @@
       ;; is the whole discrimination: at the same instant on the same
       ;; lock the daemon has already answered `store-busy` and the CLI
       ;; has not answered at all.
-      (let* ((tstore (string-append "/tmp/dmn-cli-" pid-text))
-             (rn (string-append "/tmp/dmn-cli-" pid-text ".sc"))
-             (lg (string-append "/tmp/dmn-cli-" pid-text ".log"))
+      (let* ((tstore (string-append scratch-base "/dmn-cli-" pid-text))
+             (rn (string-append scratch-base "/dmn-cli-" pid-text ".sc"))
+             (lg (string-append scratch-base "/dmn-cli-" pid-text ".log"))
              (env (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                                  " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' ")))
         (system (string-append "rm -rf " tstore " " rn " " lg "; mkdir -p " tstore))
@@ -1331,7 +1343,7 @@
                       ;; write ran is a fact about what is on the disk;
                       ;; the daemon's own output is where it would say so
                       ;; if it chose to, which is not the same question.
-                      (let ((found (string-append "/tmp/dmn-found-" pid-text ".txt")))
+                      (let ((found (string-append scratch-base "/dmn-found-" pid-text ".txt")))
                         (system (string-append "grep -rl AFTER-DRAIN-CANARY "
                                                (tagged-store d) " > " found " 2>/dev/null"))
                         (if (> (string-length (file-text found)) 0) 'IT-RAN 'not-run))
@@ -1914,16 +1926,17 @@
       ;; removed; and by the same pid prefix, so a run going on beside
       ;; this one is not touched.
       (system (string-append "pkill -f 'dmn-run.*" pid-text "' 2>/dev/null"))
-      (system (string-append "pkill -f 'serve /tmp/dmn-store-" pid-text "' 2>/dev/null"))
+      (system (string-append "pkill -f 'serve " scratch-base "/dmn-store-" pid-text "' 2>/dev/null"))
       (system "sleep 1")
-      (system (string-append "rm -rf /tmp/dmn-*" pid-text "* /tmp/dmn-store-" pid-text
-                             " /tmp/dmn-run*-" pid-text ".sc /tmp/dmn-log*-" pid-text ".txt"
-                             " /tmp/dmn-occupied-" pid-text " /tmp/.dmn-*" pid-text "*.lock"
+      (system (string-append "rm -rf " scratch-base "/dmn-*" pid-text "* " socket-base "/dmn-*" pid-text "*"
+                             " " scratch-base "/dmn-store-" pid-text
+                             " " scratch-base "/dmn-run*-" pid-text ".sc " scratch-base "/dmn-log*-" pid-text ".txt"
+                             " " socket-base "/dmn-occupied-" pid-text " " socket-base "/.dmn-*" pid-text "*.lock"
                              " 2>/dev/null"))
       ;; NEVER: AND IT IS ASSERTED, not assumed. "I issued a kill" is not the
       ;; same claim as "nothing is left running", and it is the second
       ;; one the next run depends on.
-      (let ((left (string-append "/tmp/dmn-left-" pid-text ".txt")))
+      (let ((left (string-append scratch-base "/dmn-left-" pid-text ".txt")))
         (system (string-append "pgrep -f 'dmn-run.*" pid-text "' | wc -l | tr -d ' ' > " left))
         (let ((n (guard (e (#t "?"))
                    (let ((t (call-with-input-file left get-string-all)))

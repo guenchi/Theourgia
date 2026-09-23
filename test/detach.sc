@@ -58,7 +58,20 @@
 (define libs (getenv "CHEZSCHEMELIBDIRS"))
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (define pid-text (number->string (get-process-id)))
-(define here (string-append "/tmp/detach-" pid-text))
+
+;; SCRATCH PATHS LIVE UNDER THE RUNNER'S TWO ROOTS (F71): files and
+;; directories under THEOURGIA_TEST_ROOT, socket paths under
+;; THEOURGIA_TEST_SOCK, which is short enough for one. Run alone, without
+;; them, a path falls back to /tmp as it always did.
+(define scratch-base
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(define socket-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+
+(define here (string-append scratch-base "/detach-" pid-text))
+(define sock-here (string-append socket-base "/detach-" pid-text))
 (define store (string-append here "/store"))
 (define cli "../cli.sc")
 
@@ -115,7 +128,7 @@
           ((> i 300) #f)
           (else (system "sleep 0.05") (loop (+ i 1))))))
 
-(system (string-append "rm -rf " here "; mkdir -p " store " " here "/home"))
+(system (string-append "rm -rf " here " " sock-here "; mkdir -p " store " " here "/home " sock-here))
 (system (string-append (env-prefix "") " scheme --script " cli
                        " init --store " store " > /dev/null 2>&1"))
 ;; NOTE: A BLOCK, SO THAT "IT ANSWERED" IS DISTINGUISHABLE FROM "IT SAID
@@ -132,7 +145,7 @@
 (define mine (sid-of pid-text (string-append here "/mine.txt")))
 
 ;; ---- D-1 a detached daemon leaves this session ---------------------------
-(define dt-sock (string-append here "/dt.sock"))
+(define dt-sock (string-append sock-here "/dt.sock"))
 (define dt-pidfile (string-append here "/dt.pid"))
 (system (string-append (env-prefix "") " scheme --script " cli
                        " serve " store " --socket " dt-sock " --detach"
@@ -176,7 +189,7 @@
 (system (string-append "kill " dt-pid " 2>/dev/null; sleep 1"))
 
 ;; ---- D-2 TWIN: a foreground serve stays where it was ---------------------
-(define fg-sock (string-append here "/fg.sock"))
+(define fg-sock (string-append sock-here "/fg.sock"))
 (define fg-pidfile (string-append here "/fg.pid"))
 (system (string-append (env-prefix "") " scheme --script " cli
                        " serve " store " --socket " fg-sock
@@ -206,7 +219,7 @@
 (define nolog-out (string-append here "/nolog.txt"))
 (define nolog-code
   (system (string-append (env-prefix "") " scheme --script " cli
-                         " serve " store " --socket " here "/nolog.sock --detach"
+                         " serve " store " --socket " sock-here "/nolog.sock --detach"
                          " > " nolog-out " 2>&1")))
 ;; NEVER: THE FIRST DATUM ON THAT STREAM IS NOT THE ANSWER. The CLI prints
 ;; `(theourgia machine-home ...)` when it has to create the home directory,
@@ -378,7 +391,7 @@
 (define d3-rc
   (system (string-append (env-prefix "THEOURGIA_TRACE=1 ")
                          " python3 " leader " scheme --script " cli
-                         " serve " store " --socket " here "/d3.sock --detach"
+                         " serve " store " --socket " sock-here "/d3.sock --detach"
                          " --log " here "/d3-serve.log"
                          " > " d3-out " 2>&1")))
 
@@ -412,7 +425,7 @@
 ;; NEVER: AND IT DID NOT GO ON TO SERVE. The refusal would be pointless if
 ;; the process carried on and bound the socket anyway.
 (want "D-3 and no socket was left behind"
-      (if (file-exists? (string-append here "/d3.sock")) 'SERVED-ANYWAY 'did-not-serve)
+      (if (file-exists? (string-append sock-here "/d3.sock")) 'SERVED-ANYWAY 'did-not-serve)
       'did-not-serve)
 
 ;; ---- D-4 detaching with stdio already closed -------------------------------
@@ -441,7 +454,7 @@
             "    os._exit(127)"
             "time.sleep(4)"))))
 
-(define d4-sock (string-append here "/d4.sock"))
+(define d4-sock (string-append sock-here "/d4.sock"))
 (define d4-log (string-append here "/d4-serve.log"))
 
 (system (string-append (env-prefix "") " python3 " closer
@@ -474,6 +487,6 @@
       'answered)
 
 (system (string-append "pkill -f 'serve " store "' 2>/dev/null; sleep 1"))
-(system (string-append "rm -rf " here))
+(system (string-append "rm -rf " here " " sock-here))
 (printf "rows: ~a\n~a failures\ndetach complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

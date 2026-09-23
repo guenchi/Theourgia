@@ -1238,8 +1238,12 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Read only by `test/` |
+| `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
+| `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |
+| `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
 | `THEOURGIA_LIBDIR` | read by `test/env.sh` and `test/paths.py`, not by any library. It is what makes a suite reading a PINNED one |
+| `THEOURGIA_FIXTURE_LIMIT` | the time limit of one fixture under `test/run-fixtures.sh`, in whole seconds; 900 when unset. Set only by tests that exercise the limit itself. Read by the runner, not by any library |
+| `TMPDIR` | the system's temporary directory, not one of ours. `test/run-fixtures.sh` makes its private snapshot directory there (`mktemp -d -t ths-snap.<token>`), and `test/runner-self.sc` reads it to find that directory. Read by no library |
 
 ## KNOWN OPEN
 
