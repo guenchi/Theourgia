@@ -787,23 +787,13 @@
             1 section17 'not-in-any-document 1 0))
 
 
-;; NEVER: THE REACH COUNTS WHAT WAS LOST, NOT WHAT IS UNDERNEATH. A block
-;; below an unwritten one is usually unwritten too, which is why every fixture
-;; here agreed with a reach that simply counted descendants -- a mutation
-;; removing the filter survived all of them. It matters when a WRITTEN block
-;; sits under an unwritten one, and the way that happens is a nested document:
-;; the write route refuses one (`doc-must-be-top-level`), so this record goes
-;; into the log directly, which is how a store written by another version
-;; could hold it. `md-tree` then sees two documents and exports both.
-;;
-;; Break the OUTER document's kind and its file goes; the inner one is still
-;; written, so the outer's reach is the section between them -- one block, not
-;; the two that are under it.
+;; THE WRITE ROUTE REFUSES A DOCUMENT BELOW ANOTHER ONE (`doc-must-be-top-level`).
+;; A nested document can still arrive from history written before that rule or
+;; from another store; what the export does with one is pinned by
+;; one-subtree.sc (F85-3): it is written into its ancestor document's file.
 (define t19 (fresh-case! (list (cons "nineteen.md" "# Outer\nouter body\n"))))
 (define d19 (cdr t19))
 (import-md d19 (car t19) "tester")
-(define out19 (string-append root "/c" (number->string case-n) "/out"))
-(system (string-append "mkdir -p " out19))
 (define outer19 (block-of-kind d19 'doc))
 
 (want "F42 the write route refuses a document below another document"
@@ -815,37 +805,6 @@
                       "tester")))
         (list (car (car answer)) (cadr (car answer))))
       (list 'error 'doc-must-be-top-level))
-
-(define inner19
-  (let* ((sess (log-begin d19 (lambda args 'applied)))
-         (v (session-view sess))
-         (id (block-id (view-writer v) (view-expect-seq v))))
-    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
-                                      (view-expect-seq v) "independent-fixture" '()
-                                      (list 'put (list (cons 'kind 'doc)
-                                                       (cons 'path "inner.md")
-                                                       (cons 'title "Inner")
-                                                       (cons 'parent outer19) (cons 'ord 0)))))
-    (session-commit! sess)
-    (log-end! sess)
-    id))
-
-(want "F42 CONTROL: with both documents readable, both are written"
-      (list (export-md d19 out19)
-            (list-sort string<? (directory-entries out19)))
-      (list '(ok (files 2)) '("inner.md" "nineteen.md")))
-
-(set-kind! d19 outer19 "doc")
-(define out19b (string-append root "/c" (number->string case-n) "/out-b"))
-(system (string-append "mkdir -p " out19b))
-
-(want "F42 a written block under an unwritten one is not counted in its reach"
-      (let* ((answer (export-md d19 out19b))
-             (sk (cdr (assq 'skipped (cddr answer)))))
-        (list (car answer) (cadr answer)
-              (length sk) (car (car sk)) (cadr (assq 'subtree (cddr (car sk))))
-              (list-sort string<? (directory-entries out19b))))
-      (list 'ok '(files 1) 1 outer19 1 '("inner.md")))
 
 
 ;; NEVER: TWO DOCUMENTS WITH ONE PATH ARE NOT TWO FILES. Both used to be
@@ -981,16 +940,13 @@
       (list '(files 1) second22 'path-conflict first22 'the-first-by-id-is-on-disk))
 
 
-;; NEVER: A NESTED DOCUMENT THAT LOSES TAKES ITS SECTIONS WITH IT, AND THE
-;; ANSWER SAYS SO. The written-set walk used to descend into nested documents,
-;; which the RENDERER refuses to do -- so the blocks under a nested document
-;; that lost a path conflict were marked written although nothing wrote them,
-;; and the answer undercounted by two.
+;; A NESTED DOCUMENT WRITTEN THROUGH THE LOG, WITH ITS OWN SECTION, SHARING ITS
+;; ANCESTOR'S PATH. The row below reads that the store holds it where it was
+;; written; the export writes it into the ancestor's file (one-subtree.sc,
+;; F85-3), so the path it carries names no second file.
 (define t23 (fresh-case! (list (cons "twentythree.md" "# Outer\nouter body\n"))))
 (define d23 (cdr t23))
 (import-md d23 (car t23) "tester")
-(define out23 (string-append root "/c" (number->string case-n) "/out"))
-(system (string-append "mkdir -p " out23))
 (define outer23 (block-of-kind d23 'doc))
 (define path23 (text-field-of d23 outer23 'path))
 (define inner23
@@ -1028,17 +984,6 @@
               (parent-of inner23)
               (parent-of under23)))
       (list #t outer23 inner23))
-
-(want "F42 a nested document that loses the path takes its section with it, and both are counted"
-      (let* ((answer (export-md d23 out23))
-             (sk (cdr (assq 'skipped (cddr answer))))
-             (claimed (apply + (map (lambda (e) (+ 1 (cadr (assq 'subtree (cddr e))))) sk))))
-        (list (cadr answer)
-              (length sk)
-              (car (car sk)) (cadr (car sk))
-              (cadr (assq 'subtree (cddr (car sk))))
-              claimed))
-      (list '(files 1) 1 inner23 'path-conflict 1 2))
 
 ;; NEVER: AND THE REACH COUNTS THE SAME BLOCKS THE REASONS DO. A `code` child
 ;; belongs to another projection: it is not this verb's to lose, it gets no

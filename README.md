@@ -105,21 +105,25 @@ bytes — the heading line it was written with, then its body.
 
 A file-level block holds almost nothing of its own: its body is the front matter
 and whatever sits above the first heading, which in most documents is nothing at all.
-`--recursive` asks for the subtree instead — the block and every block under it **up
-to a nested document**, which has its own file and is read on its own, in
-document order. With `--md` as well, that is the document: for a **top-level**
-document, the same text `export-md` writes to the file, from the same renderer, so a
-read and a round trip cannot disagree.
+`--recursive` asks for the subtree instead — the block and every block under it,
+in document order. `grep --under` searches exactly the same blocks: both ask one
+walk of the outline, which stops at nothing. With `--md` as well, that is the
+document: for a **top-level** document, the same text `export-md` writes to the
+file, from the same renderer, so a read and a round trip cannot disagree.
 
-The qualifier is real. A document nested under another document is a shape the
-write path refuses to create — `insert` answers `(error doc-must-be-top-level
-(parent <id>))` — but one can arrive by import or from another machine. When one
-does, `export-md` gives it **its own file**, named by its `path`, and stops the
-ancestor's walk there so its sections are written once rather than twice;
-`conflicts` reports it under `nested-documents`. Read recursively it is still a
-document and keeps its front matter. What is still open is what a nested
-document *means*, not what the renderer does with it: until that is
-settled, only top-level documents round-trip.
+A document is a top-level block of kind `doc`. A block of kind `doc` under another
+block is a shape the write path refuses to create — `insert`, `move` and `set`
+answer `(error doc-must-be-top-level (parent <id>))` — but one can arrive from
+history written before that rule or from another store. When one does, nothing
+treats it specially: `read --recursive`, `grep --under` and `export-md` see a
+block like any other under its parent. `export-md` writes its title and body
+into the file of the top-level document above it when that document is
+written; when there is none, or it is not written, the block goes with it and
+is counted in `skipped` like any other. Two places tell a reader it is there:
+`conflicts` reports it as `nested-document`, and if its body was written and it
+holds front matter, which has nowhere to go in the middle of another document's
+file, the export answer names it under `fields-not-written` (see `export-md`).
+Asked for on its own, `read <it> --md` still gives its front matter.
 
 A section asked for on its own does not carry the document's front matter, which
 belongs to the document. Its body carries the blank line that separated it from
@@ -604,6 +608,15 @@ number of blocks lost, each counted once.
 
 Blocks that belong to another projection, such as `code`, are not listed: they
 were addressed elsewhere, not skipped.
+
+A block that WAS written but held something its file could not carry is named
+in a clause of its own, after `skipped`: `(fields-not-written (<id> front) ...)`,
+one entry per written block whose stored front matter reached no file. Only a
+top-level document's front matter is written, at the top of its file, so this
+names any other written block that holds one: a block of kind `doc` below the
+root (see `read`), or a section whose front was set with `set`. It is not in `skipped`,
+because the block's body was written and the `1 + n` sum over `skipped` counts
+lost blocks only. The clause is absent when there is nothing to name.
 
 ### `import-code <dir> [--allow-delete] [--datum]`
 

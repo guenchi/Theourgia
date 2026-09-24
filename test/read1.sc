@@ -447,17 +447,6 @@
         (append-raw! d3 w next (list 'move inner section3 1))
         (filter (lambda (c) (eq? (car c) 'nested-document)) (store-conflicts d3)))
       (list (list 'nested-document inner)))
-;; AND IT IS STILL READ AS THE DOCUMENT IT IS: a file of its own, front
-;; matter intact, rather than folded into its new ancestor's file as a
-;; section with no title. That is the only one of the two readings that
-;; loses nothing.
-(want "and it is still exported as a file of its own"
-      (let ((out (string-append root "/c3/out")))
-        (system (string-append "rm -rf " out "; mkdir -p " out))
-        (export-md d3 out)
-        (list (slurp (string-append out "/inner.md"))
-              (slurp (string-append out "/outer.md"))))
-      (list "---\nx: y\n---\nintro\n" "# Outer\nouter body\n"))
 
 (printf "\n== the options ==\n")
 ;; NEITHER OPTION TAKES A VALUE, and both are stripped before the id is

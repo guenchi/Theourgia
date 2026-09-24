@@ -1737,11 +1737,13 @@
   ;; by parent, ord and id, so collecting children in row order is
   ;; collecting them in sibling order.
   ;;
-  ;; THIS ANSWERS ONE QUESTION AND LEAVES TWO TO ITS CALLERS. It does not ask
-  ;; whether the root exists, and it does not stop at any kind of block.
-  ;; `read --recursive` stops at a nested document and `grep --under` does
-  ;; not; a walk that decided either way would change the other's answer, so
-  ;; each caller applies its own rule to what comes back.
+  ;; THIS IS THE ONE DEFINITION OF "UNDER" (F85 R1). It does not ask whether
+  ;; the root exists, and it does not stop at any kind of block. `read
+  ;; --recursive`, `grep --under` and the markdown export's files are made
+  ;; from this walk with no rule of their own applied to what comes back, so
+  ;; they cannot disagree about which blocks are under a block. (The export's
+  ;; written/lost accounting walks the same rows through a child map it
+  ;; builds once, for speed, and stops at nothing either.)
   ;;
   ;; IT NEVER ANSWERS #f. A root that appears in no row comes back alone.
   ;; `#f` already means "no such block" to one caller of this and "no filter"
@@ -1956,10 +1958,13 @@
         ;; says what it says, and a reader that silently moved the block
         ;; would be inventing a history nobody wrote.
         ;;
-        ;; What a reader DOES do with it is read it as the document it
-        ;; is -- `md-tree` takes it as a file of its own rather than
-        ;; folding it into an ancestor's, which is the only one of the
-        ;; two readings that loses nothing.
+        ;; IT IS NOTICED WHERE IT IS MADE AND WHERE IT IS SEEN (F85 R3): the
+        ;; three write refusals in store.sc, and this report, which
+        ;; `conflicts` answers as `nested-document` for each, so a malformed
+        ;; store is loud. Readers do not branch on it: to `read --recursive`,
+        ;; `grep --under` and the markdown export it is a block like any other
+        ;; under its parent, written into the file of the top-level document
+        ;; above it when that one is written.
         (cons 'nested-documents
               (list-sort string<?
                          (map car (filter (lambda (e)

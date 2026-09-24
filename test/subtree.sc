@@ -15,14 +15,13 @@
 
 ;; What "under this block" means, asked of the two verbs that ask it.
 ;;
-;; KEY: THE TWO ANSWERS ARE DIFFERENT, AND BOTH ARE PINNED HERE. `read
-;; --recursive` stops at a nested document -- the rule export states for
-;; itself, because a nested document is its own file -- while `grep
-;; --under` searches everything below the block, nested documents
-;; included. Both walk the tree with one procedure, `outline-subtree`,
-;; which stops at nothing; each applies its own rule to the result. A
-;; change that moved either rule into the shared walk would change the
-;; other verb's answer, and one of the first two rows below would say so.
+;; KEY: THERE IS ONE ANSWER (F85 R1). `read --recursive` and `grep --under`
+;; both walk the tree with one procedure, `outline-subtree`, which stops at
+;; nothing, and neither applies a rule of its own to the result, so they
+;; name the same blocks by construction. A nested document is a block like
+;; any other to both. one-subtree.sc reads each of them on this same shape
+;; of tree, and `read`'s answer against the walk's; the rows here read the
+;; walk's edges.
 ;;
 ;; NEVER: `#f` IS NOT AN ANSWER THE WALK GIVES. To `read` it means "no such
 ;; block"; to `grep` it means "no --under was given, do not filter".
@@ -164,25 +163,18 @@
   (let ((s (and (pair? answer) (assq 'scanned (cdr answer)))))
     (and s (let ((b (assq 'blocks (cdr s)))) (and b (cadr b))))))
 
-;; ---- the two answers, one per rule ----------------------------------------------
+;; ---- what is under a block ---------------------------------------------------
 
-;; COMPARED AS AN ORDERED LIST, so this row also holds the order: the root,
-;; then each child followed by what is under it, siblings in the outline's
-;; order. C and D are absent because C is a document.
-(want "S-1 read <doc> --recursive stops at a nested document and everything under it"
-      (ids-of (ask 'read A "--recursive"))
-      (list A B E F))
-
-;; The stop applies to what is found UNDER the root. Asked of the nested
-;; document itself, `read` answers with it and its section.
-(want "S-1 TWIN: read <nested doc> --recursive keeps its own root, whatever its kind"
+;; The root is kept whatever its kind; here it is a block of kind doc below
+;; the root (history this write path would refuse), which is walked like any
+;; other block.
+(want "S-8 read <a block of kind doc below the root> --recursive answers it and everything under it"
       (ids-of (ask 'read C "--recursive"))
       (list C D))
 
-;; D is here and it is not in S-1: the two rows together are the
-;; difference between the verbs. Compared sorted, because the question is
-;; which blocks were searched, and grep's order is the subject of its own
-;; fixtures.
+;; D is here: the walk goes into the nested document C like into any other
+;; block. Compared sorted, because the question is which blocks were
+;; searched, and grep's order is the subject of its own fixtures.
 (want "S-2 grep --under <doc> searches into the nested document"
       (list-sort string<? (match-ids (ask 'grep "needle" "--under" A)))
       (list-sort string<? (list B D E F)))

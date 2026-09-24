@@ -61,41 +61,29 @@
   (define (children-of rows parent)
     (map caddr (filter (lambda (r) (equal? (car r) parent)) rows)))
 
-  ;; EVERY DOCUMENT IS A FILE, WHEREVER IT SITS. The write path refuses to
-  ;; put one under another block, so a nested document arrives only from
-  ;; history written before that rule or from another store -- and the
-  ;; reader's job is to lose nothing, which means giving it the file its
-  ;; `path` names rather than folding it into an ancestor's as a section
-  ;; with no title and no front matter. It is reported as
-  ;; `nested-documents` by the structure rules at the same time.
+  ;; A DOCUMENT IS A TOP-LEVEL BLOCK OF KIND `doc`, AND EACH IS ONE FILE
+  ;; HOLDING ITS WHOLE SUBTREE (F85 R2). The write path refuses to put a
+  ;; document under another block. One that arrives there anyway, from
+  ;; history written before that rule or from another store, is to this
+  ;; projection a block like any other: it is written, under its title, into
+  ;; the file of the top-level document above it when that one is written,
+  ;; and goes with it into `skipped` otherwise. It is reported once, as
+  ;; `nested-documents` by the structure rules and as `nested-document` by
+  ;; `conflicts`, and no reader branches on it (F85 R3).
+  ;;
+  ;; Each entry is the document's id followed by every block under it, in
+  ;; document order: the outline's own walk, the one definition of "under"
+  ;; (F85 R1).
   (define (md-tree state)
     (let ((rows (state-outline state)))
-      (map (lambda (id) (cons id (subtree rows state id)))
-           (filter (lambda (id) (eq? 'doc (kind-of (state-read state id))))
-                   (map caddr rows)))))
-
-  ;; AND A WALK STOPS AT ONE. The nested document has its own file, so
-  ;; its sections belong there and nowhere else; descending into it would
-  ;; write them twice, once in each file, and a re-import would then make
-  ;; two of everything.
-  (define (subtree rows state id)
-    (map (lambda (child) (cons child (subtree rows state child)))
-         (filter (lambda (child) (walks-into? state child))
-                 (children-of rows id))))
-
-  ;; THE RULE ITSELF, IN ONE PLACE. Both the tree export writes and the flat
-  ;; list `--recursive` answers with stop at a nested document; this is what
-  ;; each of them asks.
-  (define (walks-into? state child)
-    (not (eq? 'doc (kind-of (state-read state child)))))
+      (map (lambda (id) (outline-subtree rows id))
+           (map caddr
+                (filter (lambda (r)
+                          (and (eq? (car r) 'root)
+                               (eq? 'doc (kind-of (state-read state (caddr r))))))
+                        rows)))))
 
   ;; ---- export --------------------------------------------------------------
-
-  ;; SECTIONS ARE FLATTENED BACK INTO DOCUMENT ORDER. The tree says which
-  ;; section is under which; the file is a sequence, and a section's
-  ;; children follow its own body -- never interleaved with a sibling's.
-  (define (flatten node)
-    (cons (car node) (apply append (map flatten (cdr node)))))
 
   (define (recovery-comment id) (string-append "<!-- theourgia: " id " -->\n"))
 
@@ -166,26 +154,18 @@
           (if recover? (string-append (recovery-comment sid) h) h))
         (text-field sb 'src))))
 
-  ;; THE BLOCK AND EVERYTHING UNDER IT, in document order, stopping at a
-  ;; nested document. The walk is the outline's own (`outline-subtree`),
-  ;; which stops at nothing; the stop is applied here, by dropping every
-  ;; document found under the root together with everything under it. The
-  ;; root is kept whatever its kind.
+  ;; THE BLOCK AND EVERYTHING UNDER IT, in document order: the outline's own
+  ;; walk (`outline-subtree`) and nothing else, the one definition of
+  ;; "under" (F85 R1). `read --recursive` answers with this and `grep
+  ;; --under` searches `outline-subtree` itself, so the two name the same set
+  ;; of blocks by construction. The root is kept whatever its kind.
   ;;
-  ;; NEVER: THIS WAS A SECOND WALK OF THE SAME TREE. `store.sc` had its own,
-  ;; under the same name, answering a different question -- it does not stop
-  ;; at a nested document, and `grep --under` depends on that. The two now
-  ;; share the walk and differ only in the rule each applies to its result.
+  ;; NEVER: A SECOND RULE ABOUT WHAT IS UNDER A BLOCK. This once dropped every
+  ;; document found below the root, with everything under it, while `grep
+  ;; --under` did not: two answers to one question, differing exactly on the
+  ;; stores that were already malformed.
   (define (subtree-with-root state id)
-    (let* ((rows (state-outline state))
-           (all (outline-subtree rows id))
-           (cut (make-hashtable string-hash string=?)))
-      (for-each (lambda (child)
-                  (unless (walks-into? state child)
-                    (for-each (lambda (x) (hashtable-set! cut x #t))
-                              (outline-subtree rows child))))
-                (cdr all))
-      (filter (lambda (x) (not (hashtable-ref cut x #f))) all)))
+    (outline-subtree (state-outline state) id))
 
   ;; Every block under this one, in document order and not including it.
   (define (descendant-ids state id)
@@ -345,15 +325,10 @@
                                       (cons (caddr r)
                                             (hashtable-ref children (car r) (quote ()))))))
                   rows)
-        ;; NEVER: AND THE WALK STOPS AT A NESTED DOCUMENT, BECAUSE THE
-        ;; RENDERER DOES. `subtree` refuses to descend into a document -- it
-        ;; has its own file, and writing its sections into the parent's file
-        ;; too would duplicate every one of them. A walk that descended anyway
-        ;; marked those blocks written when nothing had written them:
-        ;; measured, a nested document that LOST a path conflict took its
-        ;; section with it and the answer reported neither, undercounting by
-        ;; two. Each winning document is its own starting point, so a nested
-        ;; winner is still reached -- by its own file, which is the truth.
+        ;; THE WALK TAKES EACH WRITTEN DOCUMENT'S WHOLE SUBTREE, because the
+        ;; file holds its whole subtree (F85 R2): a block of kind `doc` below
+        ;; it was written into it like any other, and is marked written here
+        ;; for the same reason.
         ;; NEVER: THE WALK STARTS FROM THE DOCUMENTS THAT GOT A FILE. "Not a
         ;; path loser" is not the same set: a document whose path cannot be
         ;; used is not a loser either, and starting from it marked it and its
@@ -368,9 +343,7 @@
                 ((hashtable-ref written (car ids) #f) (walk (cdr ids)))
                 (else
                   (hashtable-set! written (car ids) #t)
-                  (walk (append (filter (lambda (child)
-                                          (not (eq? 'doc (kind-of (state-read state child)))))
-                                        (hashtable-ref children (car ids) (quote ())))
+                  (walk (append (hashtable-ref children (car ids) (quote ()))
                                 (cdr ids))))))
         (let* ((unwritten? (lambda (id) (not (hashtable-ref written id #f))))
                ;; NEVER: AND THE KIND SAYS WHOSE BLOCK IT IS, NOT WHETHER IT
@@ -394,7 +367,6 @@
                           (fs (and b (assq 'fields b)))
                           (e (and fs (assq 'kind (cdr fs)))))
                      (and b
-                          (unwritten? id)
                           (or (not e)
                               (not (symbol? (cdr e)))
                               (memq (cdr e) md-kinds))
@@ -440,9 +412,13 @@
                ;; doc goes unwritten its whole subtree goes with it, and a doc
                ;; of two hundred blocks would otherwise report two hundred
                ;; lines. The outermost unwritten block is named and carries
-               ;; the number of blocks below it that went unwritten TOO -- a
-               ;; written block underneath is not lost and is not counted,
-               ;; which a nested document is how you see.
+               ;; the number of this projection's blocks below it. Every one
+               ;; of them went unwritten too: a file holds its document's
+               ;; whole subtree (F85 R2), so a block below an unwritten one
+               ;; has no other way into a file. Measured before the filter
+               ;; that asked "unwritten?" here was removed: every export of a
+               ;; full suite run, 626 entries, counted the same with it and
+               ;; without it.
                ;;
                ;; Entries never nest, so `1 + n` summed over them counts each
                ;; lost block exactly once, and a caller can add them up.
@@ -479,10 +455,41 @@
                              acc)))
                      (quote ())
                      (map caddr rows)))))
-          (if (null? skipped)
-              (list 'ok (list 'files (hashtable-size winner)))
-              (list 'ok (list 'files (hashtable-size winner))
-                    (cons 'skipped skipped)))))))
+          ;; NEVER: A WRITTEN BLOCK WHOSE STORED FRONT MATTER IS IN NO FILE IS
+          ;; SAID, NOT LEFT OUT. Only a document that got a file has its
+          ;; front written, at the top of that file. A block of kind `doc`
+          ;; below the root is written into its ancestor's file like any other
+          ;; block (F85 R2) -- heading, title and body -- and its front has
+          ;; nowhere to go. Measured: on the tree before F85 such a front was
+          ;; written into a file of its own; after it, the answer was `ok`
+          ;; and the front was in no file.
+          ;;
+          ;; NOT IN `skipped`: the block's body WAS written, and `1 + n`
+          ;; summed over `skipped` counts exactly the blocks lost. This clause
+          ;; names a written block and the field of it that was not written,
+          ;; `(<id> front)`, and is absent when there is none, so no answer
+          ;; that had nothing to say changes shape.
+          (let* ((file-root (make-hashtable string-hash string=?))
+                 (not-written
+                   (begin
+                     (let-values (((keys ids) (hashtable-entries winner)))
+                       (vector-for-each (lambda (id) (hashtable-set! file-root id #t)) ids))
+                     (fold-right
+                       (lambda (id acc)
+                         (let ((b (state-read state id)))
+                           (if (and b
+                                    (hashtable-ref written id #f)
+                                    (not (hashtable-ref file-root id #f))
+                                    (not (string=? "" (text-field b 'front))))
+                               (cons (list id 'front) acc)
+                               acc)))
+                       (quote ())
+                       (list-sort string<? (map caddr rows))))))
+            (append (list 'ok (list 'files (hashtable-size winner)))
+                    (if (null? skipped) (quote ()) (list (cons 'skipped skipped)))
+                    (if (null? not-written)
+                        (quote ())
+                        (list (cons 'fields-not-written not-written)))))))))
 
   (define (parent-directory path)
     (let loop ((i (string-length path)))
