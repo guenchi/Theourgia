@@ -107,13 +107,24 @@
 ;; ---- the order that is the safety argument ----------------------------------
 
 (define pgid (setsid!))
-(define cpu-status (setrlimit! RLIMIT_CPU cpu-seconds cpu-seconds))
-;; NOTE: SAID OUT LOUD, so a row can see that the ceiling went on before any
-;; source was sent. `EV-CPU-before-input` starts this worker with an
-;; inherited unlimited limit and waits for this line before handing over
-;; the source; without it the row would have to take the ordering on
-;; trust, which is the thing it exists to check.
-(frame! 'diag (string-append "rlimit-cpu " (number->string cpu-seconds)
+;; NOTE: THE CEILING IS ADDED TO THE CPU ALREADY SPENT. RLIMIT_CPU counts
+;; the process's whole life, and the imports above have used some of it
+;; before this line; the supervisor's wall budget for the evaluation starts
+;; at ready, so the CPU budget starts here too, or a start-up that was slow
+;; enough would leave a legal evaluation less CPU than wall time. The
+;; request is that much larger than the argument, so on a host whose
+;; inherited hard limit sits between the two it is refused where the bare
+;; argument would have fit; a refusal leaves the inherited limits in force,
+;; is said in the diag line below, and does not stop ready, as before.
+(define cpu-ceiling (+ cpu-seconds (div (+ (cpu-time) 999) 1000)))
+(define cpu-status (setrlimit! RLIMIT_CPU cpu-ceiling cpu-ceiling))
+;; NOTE: SAID OUT LOUD, so a row can read the ceiling this worker reports
+;; having requested, and that the request came before any source was sent:
+;; it precedes `ready`, and nothing is sent before ready. test/eval-ready.sc
+;; ER-3 starts this worker directly and reads this line; it reads the
+;; report, not the kernel. (An `EV-CPU-before-input` row this comment once
+;; named never existed in the tree.)
+(frame! 'diag (string-append "rlimit-cpu " (number->string cpu-ceiling)
                              (if (= cpu-status 0) "" " (refused)")))
 (say-datum! (list 'ready pgid))
 

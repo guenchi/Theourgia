@@ -29,7 +29,7 @@
 ;;; grandchildren.
 ;;;
 ;;; NOTE: THE DEADLINE IS ABSOLUTE AND IT COVERS THE MAILBOX. It is computed
-;;; once, from the moment `spawn-worker!` returns, and every wait below is
+;;; once, from the moment the worker says ready, and every wait below is
 ;;; `(max 0 (- deadline (now)))` -- a budget recomputed per message is a
 ;;; budget a chatty child can refill.
 
@@ -52,9 +52,24 @@
 
   ;; NOTE: THE TWO CLOCKS ARE DIFFERENT AND BOTH ARE NEEDED. `ready-ms` is
   ;; how long a worker may take to exist; the caller's timeout is how long
-  ;; an evaluation may take once it does. Folding them into one would let
-  ;; a slow start eat the evaluation's budget.
-  (define ready-ms 500)
+  ;; an evaluation may take once it does, and it STARTS WHEN THE WORKER SAYS
+  ;; READY (supervise-eval below). Until this batch the evaluation's
+  ;; deadline was taken before the wait for ready, while this comment
+  ;; already promised otherwise; with a ready budget longer than the default
+  ;; timeout that would have answered eval-limit for an evaluation that had
+  ;; never begun. test/eval-ready.sc pins a two-second start under a
+  ;; one-second timeout.
+  ;; NEVER: A READY BUDGET NEAR THE WORKER'S OWN START-UP. The worker
+  ;; imports the store and the reducer before it says ready, and from
+  ;; source that import alone measured about 650 ms median on an unloaded
+  ;; developer machine; at 500 ms a healthy store answered
+  ;; eval-worker-unavailable in about half the runs beside another job,
+  ;; and in every run at load average 5. This budget is wall clock, so it
+  ;; has to hold the machine's load as well as the worker's work: about
+  ;; eight times the unloaded cost. A worker that never says ready holds
+  ;; its caller for the whole of it. test/eval-ready.sc pins a worker that
+  ;; takes one second to exist.
+  (define ready-ms 5000)
   (define rss-interval-ms 50)
 
   ;; NEVER: SIGKILL, AND TO THE WHOLE GROUP ONCE THERE IS ONE. `worker-kill!`
@@ -106,11 +121,13 @@
                                        (number->string cpu-seconds)
                                        (number->string output-bytes))
                                  '()
-                                 me))
-             (deadline (+ (real-time) timeout-ms)))
-        (wait-for-ready pid me deadline
+                                 me)))
+        ;; THE EVALUATION'S DEADLINE IS TAKEN AT READY, not here: what the
+        ;; caller's timeout measures is the evaluation, and before ready
+        ;; there is none.
+        (wait-for-ready pid me
                         (lambda (ref pgid)
-                          (run ref pgid me deadline source view
+                          (run ref pgid me (+ (real-time) timeout-ms) source view
                                timeout-ms memory-bytes output-bytes))))))
 
   (define (spec-of spec key)
@@ -123,7 +140,7 @@
 
   ;; NEVER: BEFORE READY WE MAY KILL ONLY THE pid. There is no group yet, and
   ;; there is also nothing to escape: the worker has read no source.
-  (define (wait-for-ready pid me deadline continue)
+  (define (wait-for-ready pid me continue)
     (let ((ready-deadline (+ (real-time) ready-ms)))
       (let wait ((ref #f))
         (receive
