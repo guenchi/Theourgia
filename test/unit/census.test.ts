@@ -178,7 +178,12 @@ const AT_LEAST: Array<[string, number]> = [
    * answered as an absence -- the supplier for a shape thirteen review
    * rounds found in twelve places.
    */
-  ['absence.test.ts', 4],
+  /*
+   * RAISED in plugin-r3 item 35, 4 -> 7: an anchor of its own for every
+   * catch; an exemption kept through moved lines and changed whitespace;
+   * and one lost to a rewrite of the statement it guards.
+   */
+  ['absence.test.ts', 7],
   ['ascii-comments.test.ts', 3],
   /*
    * ADDED in plugin-r2: the gate that watches the user's own
