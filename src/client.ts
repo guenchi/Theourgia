@@ -15,11 +15,15 @@
  */
 
 /*
- * One request, one answer -- the client's side of what rpc.ss calls the
+ * One request, one answer -- the client's side of what rpc.sc calls the
  * same thing.
  *
- * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. cli.ss exits 0 when
- * the core's own `rpc-ok?` says the answer is a success, and that
+ * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. The thin client exits
+ * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
+ * the answer is a success (daemon.sc:1571, relayed by `deliver!` in
+ * theourgia.sc); `init`, which the thin client runs in-process through
+ * `core.sc` (`local-verbs`, theourgia.sc:60), exits by the same predicate
+ * there (core.sc:530) -- and that
  * predicate lives in the core precisely so that a shell and a client
  * cannot come to different opinions. So this file never decides success
  * from the head symbol -- `(ok ...)` on a non-zero exit is a core that
@@ -27,8 +31,9 @@
  * edit gets reported as saved when it was not.
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
- * client is forced to hold a second opinion. rpc.ss classifies an answer
- * as text, items or a single datum, and print-answer draws each
+ * client is forced to hold a second opinion. The core says an answer is
+ * text, items or a single datum (rpc.sc:147-153), and `render-human`
+ * (render.sc:57) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it
  * drew. Over a socket the whole `(ok (text ...))` form would arrive and
@@ -60,9 +65,9 @@ export interface Answer {
    * ROUND IT. Measured on the pinned core: a commit answers
    * `(ok (events ...) (cursor ...) (replay #f))` by default and
    * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
-   * with the flag -- and `render-human` (render.ss:53-59) renders only
-   * the `items` clause, so every other clause beside it is lost on the
-   * way out.
+   * with the flag -- and `render-human` (render.sc:57) renders only
+   * the `items` clause and `incomplete`, so every other clause beside them
+   * is lost on the way out.
    *
    * So `answers` goes on holding the item, exactly as before, and the
    * form round it arrives here. Every caller that reads a cursor or an

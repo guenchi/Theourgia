@@ -35,8 +35,9 @@
  * synchronous, so no caller has to be async merely to read an answer.
  *
  * ONE LINE IS ONE DATUM, and that is a fact about the command line
- * rather than about the format: cli.ss prints an `items` answer with one
- * `write` per item and no wrapper around them, and Chez's writer escapes
+ * rather than about the format: `render-human` (render.sc:69-72) prints an
+ * `items` answer with one `write` per item and no wrapper around them, and
+ * Chez's writer escapes
  * a newline inside a string rather than emitting it. A transport that
  * had the whole answer -- the socket one, when it exists -- would not
  * split anything.
@@ -456,7 +457,7 @@ function clause(value: Datum, name: string): Clause {
  * where a list of fields was expected.
  *
  * The caller knows which convention the core used for the thing it is
- * asking about. rpc.ss is where that is written down.
+ * asking about; a reader cannot tell it from the text.
  */
 /*
  * THE TAIL OF A PAIR IN AN ASSOCIATION LIST -- a headless reader, and it

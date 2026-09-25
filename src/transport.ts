@@ -70,12 +70,14 @@ export interface Transport {
 }
 
 /*
- * THE VERB COMES FIRST AND THE OPTIONS COME LAST. cli.ss reads its verb
- * from the first argument and only then scans for `--store` and
- * `--actor`; a store option placed ahead of the verb is taken AS the
- * verb, and the core answers `(error unknown-verb --store ...)`. The
- * order is pinned here in one function so that no caller can arrive at a
- * different one.
+ * THE VERB COMES FIRST AND THE OPTIONS COME LAST. The in-process route
+ * (`main`, core.sc) takes its verb from the first argument, so a store
+ * option placed ahead of the verb is read AS the verb and refused. The thin
+ * client this extension runs (`scan`, theourgia.sc:73) takes `--store` and
+ * `--actor` wherever they stand before a `--` (after it, everything is an
+ * argument: theourgia.sc:89-94) -- so today the order matters on one route
+ * and not the other, and it is pinned here in one function so that both
+ * routes are handed the same list.
  */
 export function buildArgv(config: CoreConfig, verb: string, args: string[]): string[] {
   return [

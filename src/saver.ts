@@ -238,7 +238,7 @@ export interface SaverOptions {
 /*
  * NOTE: AND `transport-unknown` IS THE THIRD, for the same reason and not
  * by analogy. The daemon answers it when the process that owns the
- * store dies while a connection is open (daemon.ss:1097, 1192) -- the
+ * store dies while a connection is open (daemon.sc:1215, 1372) -- the
  * request may already have been applied, and the connection is closed
  * before anything can say. NEVER: It must NOT be classified as a refusal:
  * that path resolves the entry out of the queue and releases its send
@@ -276,15 +276,15 @@ function saysNobodyKnows(datum: Datum): boolean {
  * the same request again, under the SAME id, on the next drain.
  *
  * From the store: `draining` is a daemon that has been asked to stop and
- * is refusing new work while it finishes what it has (daemon.ss:241);
+ * is refusing new work while it finishes what it has (daemon.sc:239);
  * `store-busy` is the store's lock still held by somebody else past the
- * waiting budget (daemon.ss:266).
+ * waiting budget (daemon.sc:264).
  *
  * From the transport, and this is the part with a proof behind it: the
  * thin client answers `not-sent` only when it can show that not one byte
- * left. `client.ss` says so in its own words -- "A REQUEST THAT
+ * left. `client.sc` says so in its own words (client.sc:376) -- "A REQUEST THAT
  * DEMONSTRABLY DID NOT LEAVE IS `not-sent`, AND THE PROOF IS A COUNT" --
- * and `theourgia.ss` relays such an answer unchanged rather than
+ * and `theourgia.sc` (`settle`, theourgia.sc:335) relays such an answer unchanged rather than
  * wrapping it, because wrapping a known outcome in `transport-unknown`
  * would replace a known thing with an unknown one. So `connect-failed`,
  * `write-failed`, `serve-start-failed` and `detach-failed` all mean the
@@ -292,10 +292,10 @@ function saysNobodyKnows(datum: Datum): boolean {
  *
  * NOTE: `write-failed` HAS EXACTLY ONE MEANING AT THIS LAYER, and it is
  * worth saying why, because in the core it has two. A write that fails
- * after bytes have gone out is caught by the guard at client.ss:342-347
- * and becomes `(transport-error <errno>)`, which `theourgia.ss`'s
+ * after bytes have gone out is caught by the guard at client.sc:352-354
+ * and becomes `(transport-error <errno>)`, which `theourgia.sc`'s
  * `settle` turns into `transport-unknown`; only the zero-byte case
- * (client.ss:378-383) arrives here under its own name. NEVER: There is no
+ * (client.sc:385-389, `exchange-on`) arrives here under its own name. NEVER: There is no
  * cell for the two-meaning case because this extension cannot produce
  * that input -- the distinction is made inside the core, and a cell here
  * would be measuring the core's classifier through a keyhole.
@@ -364,7 +364,7 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
  * NOTE: THE SAME RELAY THAT BRINGS `detach-failed` CAN BRING ANY NAME. When
  * a daemon fails to start, the client reads the log it just wrote and
  * answers with the LAST `(error ...)` in it, whatever that is
- * (client.ss:525). So the set of names that can arrive this way is the
+ * (client.sc:555, `last-error-in`). So the set of names that can arrive this way is the
  * set of names the core can write to a startup log -- which is not a
  * list this extension can hold, and a list it held would be wrong the
  * first time the core learned a new one.
@@ -562,8 +562,8 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
   'bad-request': 'refused',
   /*
    * A COMMIT THAT NAMED VERSIONS THE DRAFTS NO LONGER HAVE. `complete-plan!`
-   * (store.ss) recomputes each named version before it runs anything and
-   * answers this when one disagrees; `working-restore!` (working.ss) makes
+   * (store.sc:3315) recomputes each named version before it runs anything and
+   * answers this when one disagrees; `working-restore!` (working.sc:400) makes
    * the same name for the same reason. The extension issues `commit`
    * (saver.ts, extension.ts), so a save can be answered with it: the write
    * did not happen and the caller has to read the drafts again.
@@ -589,7 +589,8 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
    * NOTE: THIS ONE SHOULD BE UNREACHABLE, AND IT IS A VERDICT ROW ANYWAY.
    *
    * The core refuses a draft-space verb whose writer is unbound
-   * (working.ss) so that two agents handed only an actor cannot silently
+   * (working.sc:116, `writer-required`) so that two agents handed only an
+   * actor cannot silently
    * share one draft space. This extension binds a writer on every
    * request -- `THEOURGIA_WRITER`, defaulted to the actor -- so it
    * should never see this. A provenance row would explain the answer
@@ -602,8 +603,8 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (manifest self md5
- * 0229f9fa246b99986564728d18beefce). The reason is the provenance, not a
+ * is made in the pinned core (theourgia 877f0da, the F46 pin; re-read
+ * row by row by plugin-r3 queue item 19). The reason is the provenance, not a
  * guess about intent: if the grep does not find it, the row says so
  * rather than inventing a story.
  *
@@ -623,37 +624,36 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * starts the daemon, and if that start fails what reaches here is the
    * relayed error, not these.
    */
-  'bad-socket-path': 'cli.ss -- refuses an empty `--socket`; this extension never passes one',
+  'bad-socket-path': 'theourgiad.sc:91 -- refuses an empty `--socket`; this extension never passes one',
   'detach-needs-a-log':
-    'cli.ss -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
+    'theourgiad.sc:173 -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
     'client does, and it always names the log',
-  'working-unavailable': 'working.ss: uncertain W storage result; handled by nobodyKnows before settlement',
-  'eval-value': 'eval-worker.ss: local evaluator value serialization',
-  'eval-exception': 'eval-worker.ss: local evaluator exception',
-  'eval-context': 'eval-worker.ss: local evaluator context',
-  'eval-denied': 'eval-worker.ss: local evaluator capability refusal',
-  'launcher-unavailable': 'ffi.ss: local executable launch',
-  'transport-store-mismatch': 'rpc-worker.ss: rejected socket envelope before dispatch',
-  'unknown-tag': 'store.ss: historical query cut lookup',
-  'tag-unsettled': 'store.ss: historical query cut lookup',
-  'cut-unavailable': 'store.ss: historical query cut validation',
-  'already-initialised': 'store-init!, store.ss:2466 -- initialising a store, not writing to one',
-  'foreign-writer': 'store-init!, store.ss:2469 -- as above',
-  'ambiguous-identity': 'match-by-signature, project.ss:579 -- the markdown import path',
-  'position-mismatch': 'match-sections, project.ss:513 -- the markdown import path',
-  'would-delete': 'import-md, project.ss:280 -- the markdown import path',
-  'invalid-candidate': 'publish-validated!, log.ss:3593 -- publication, not a block write',
-  'no-candidate': 'verb-table, rpc.ss:459 -- dispatch, before any verb runs',
-  'unknown-verb': 'rpc-dispatch-parsed, rpc.ss:685 -- dispatch, before any verb runs',
-  'no-such-intent': 'resolve-from, store.ss:2033 -- resolving an intent by name, not writing',
+  'working-unavailable': 'working.sc:220, 423: uncertain W storage result; handled by nobodyKnows before settlement',
+  'eval-value': 'eval-worker.sc:169: local evaluator value serialization',
+  'eval-exception': 'eval-worker.sc:217 (and eval-supervise.sc:381): local evaluator exception',
+  'eval-context': 'eval-worker.sc:224, 231: local evaluator context',
+  'eval-denied': 'eval-worker.sc:234: local evaluator capability refusal',
+  'launcher-unavailable': 'ffi.sc:344: local executable launch',
+  'transport-store-mismatch': 'daemon.sc:1267: rejected socket envelope before dispatch',
+  'unknown-tag': 'resolve-cut, store.sc:2007: historical query cut lookup',
+  'tag-unsettled': 'resolve-cut, store.sc:2009: historical query cut lookup',
+  'cut-unavailable': 'store-diff, store.sc:2026: historical query cut validation',
+  'already-initialised': 'store-init!, store.sc:3996 -- initialising a store, not writing to one',
+  'foreign-writer': 'store-init!, store.sc:3999 -- as above',
+  'ambiguous-identity': 'match-by-signature, project.sc:896 -- the markdown import path',
+  'position-mismatch': 'match-sections, project.sc:830 -- the markdown import path',
+  'would-delete': 'import-md, project.sc:597 -- the markdown import path',
+  'invalid-candidate': 'publish-validated!, log.sc:3965 -- publication, not a block write',
+  'no-candidate': 'verb-table, rpc.sc:1054 -- dispatch, before any verb runs',
+  'unknown-verb': 'dispatch-verb, rpc.sc:1730 -- dispatch, before any verb runs',
+  'no-such-intent': 'resolve-from, store.sc:3561 -- resolving an intent by name, not writing',
   /*
-   * NOTE: READ FROM THE W DELIVERY
-   * (archive/theourgia-code-delivery-w-2026-09-17-r1), not from the core
-   * the md5 above names -- that manifest is an older cut and this kind
-   * does not exist in it.
+   * NOTE: FIRST READ FROM THE W DELIVERY
+   * (archive/theourgia-code-delivery-w-2026-09-17-r1), when the pinned core
+   * did not have this kind yet; the pinned core (877f0da) has it now.
    */
   'unknown-version':
-    'working-restore!, working.ss:331 -- `restore` was asked for a version no plan of this ' +
+    'working-restore!, working.sc:411 -- `restore` was asked for a version no plan of this ' +
     "writer's froze. It is the only site in the core, and `restore` is not a verb this " +
     'extension sends (client.ts lists write, commit, drafts, discard), so no write can be ' +
     'answered with it',
@@ -665,16 +665,16 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * each and what this client does instead of settling it.
    */
   'transport-unknown':
-    'daemon.ss:1097 and 1192 -- the process that owns the store died while this connection was ' +
+    'daemon.sc:1215 and 1372 -- the process that owns the store died while this connection was ' +
     'open, so the request may already have been applied and the connection is closed before ' +
     'anything can say. `saysNobodyKnows` takes it before settlement: the entry is marked ' +
     'pending, keeps its request id and its cursor, and goes again on the next drain',
   draining:
-    'daemon.ss:241 -- the daemon has been asked to stop and is refusing new work while it ' +
+    'daemon.sc:239 -- the daemon has been asked to stop and is refusing new work while it ' +
     'finishes what it has. Taken before settlement as a retryable refusal: the entry stays, ' +
     'under the same request id, and is parked for a person after RETRY_CAP in a row',
   'store-busy':
-    'daemon.ss:266 -- the store lock was still held by somebody else past the waiting budget. ' +
+    'daemon.sc:264 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
     'guarded, rpc.sc:76 -- an entry the verb could not read, anywhere in the verb, including ' +
@@ -685,8 +685,8 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'write and not a verb a save sends',
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
-   * CORE'S BATCH E, read from the core this run is pinned to
-   * (theourgia 3017e45).
+   * CORE'S BATCH E (first read on theourgia 3017e45); the sites below are
+   * re-read on the pinned core, 877f0da.
    *
    * NEVER: THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
    * STRUCTURAL REASON, not because they look unlikely: `eval` is not a
@@ -696,34 +696,35 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * so an `eval` request cannot leave this process at all.
    */
   'eval-worker-unavailable':
-    'eval-worker.ss:123 (handshake) and eval-supervise.ss:134 (no-ready) -- TWO sites, not ' +
+    'eval-worker.sc:143 (handshake) and eval-supervise.sc:172 (no-ready) -- TWO sites, not ' +
     'one: the worker says it when its handshake fails, and the supervisor says it when no ' +
-    "worker became ready inside 500ms. Both answer an `eval`, which this extension cannot send",
+    "worker became ready before its deadline (`ready-ms`, 5000 in the pinned core). Both answer " +
+    'an `eval`, which this extension cannot send',
   'spawn-refused':
-    'eval-supervise.ss:144 -- the worker process could not be started at all. It answers an ' +
-    '`eval`; the same tag also appears in proc.ss:87 as a process DEATH REASON rather than an ' +
+    'eval-supervise.sc:182 -- the worker process could not be started at all. It answers an ' +
+    '`eval`; the same tag also appears in proc.sc:87 as a process DEATH REASON rather than an ' +
     'answer, which is a different thing wearing the same word',
   'eval-limit':
-    'limit-answer, eval-supervise.ss:218 -- an evaluation reached its time, memory or output ' +
+    'limit-answer, eval-supervise.sc:317 -- an evaluation reached its time, memory or output ' +
     'budget. It answers an `eval`, which this extension cannot send',
   'eval-worker-exit':
-    'finish, eval-supervise.ss:230 -- the worker ended without a complete protocol line. It ' +
+    'finish, eval-supervise.sc:329 -- the worker ended without a complete protocol line. It ' +
     'answers an `eval`, which this extension cannot send',
   /*
    * NEVER: AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
-   * daemon's BOOT path, before it can serve: `store-loop` (daemon.ss:727)
+   * daemon's BOOT path, before it can serve: `store-loop` (daemon.sc:788)
    * tries to open the store, and on failure calls `report` --
-   * `(write x) (newline)` to the daemon's own output, daemon.ss:665 --
+   * `(write x) (newline)` to the daemon's own output, daemon.sc:712 --
    * and then re-raises. NOTE: It runs BEFORE `(send main-pid '(ready))`, so
    * at that moment no connection exists for it to be an answer on. A
    * client sees the daemon fail to start, never this datum.
    */
   'store-load-failed':
-    'store-loop, daemon.ss:732 -- printed by the daemon on its boot path when the store ' +
+    'store-loop, daemon.sc:796 -- printed by the daemon on its boot path when the store ' +
     'cannot be opened, before it signals ready and therefore before any connection exists; ' +
     'it is a startup report on the daemon\'s own output, not an answer to a request',
   unknown:
-    'write-outcome->answer, store.ss:1204 -- it IS a write answer, and it is handled before ' +
+    'write-outcome->answer, store.sc:2510 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
     'retried rather than settled at all'
 };
@@ -1673,8 +1674,8 @@ export class Saver {
       /*
        * NOTE: `--wire` IS ASKED FOR HERE AND NOWHERE ELSE YET.
        *
-       * The human rendering drops every clause beside `items`
-       * (render.ss:53-59), and `(behind ...)` -- who else has landed
+       * The human rendering drops every clause beside `items` except
+       * `incomplete` (`render-human`, render.sc:57), and `(behind ...)` -- who else has landed
        * records since this save's baseline -- is one of them. A program
        * should be reading the machine form of everything; this batch
        * changes the one verb whose answer this build is losing

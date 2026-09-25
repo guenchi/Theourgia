@@ -119,6 +119,11 @@ const AT_LEAST: Array<[string, number]> = [
    * `headName` are no longer exported from wire.ts.
    */
   /*
+   * ADDED in plugin-r3 item 19: src/ quotes the core by the names its
+   * files have.
+   */
+  ['core-quotes.test.ts', 1],
+  /*
    * ADDED in plugin-r3 item 15: a damaged store's `check` is an answer, and
    * another writer the core could not read does not stop the local cursor;
    * three more in its r2 (the local writer listed twice, two forms).

@@ -69,7 +69,8 @@ export const LIBRARY_EXTENSIONS =
  * NOTE: THEY CHANGED, AND THIS IS WHERE. The core renamed every library
  * `.ss` to `.sc` (276d9f2) and split its entry points by role (e55b680,
  * 877f0da): `theourgia.sc` the client, `theourgiad.sc` the daemon it
- * starts, `core.sc` the in-process route that `cli.ss` was. Spelling any
+ * starts, `core.sc` the in-process route that the old `cli` entry point
+ * was. Spelling any
  * of these into a fixture or a cell would make that a search across the
  * tree; spelling them here made it an edit here, and one cell pins each
  * name so that the rename was visible in exactly one reading rather than
@@ -100,7 +101,8 @@ export const PRODUCT_EXTENSIONS = '.so::.ss::.sls::.sc::.scm';
  *   - the source list against a product directory: the library is not
  *     found and nothing runs;
  *   - the object list against a source tree holding a stale object: a
- *     `trace.ss` replaced by a line that is not Scheme at all was never
+ *     `trace` source (it was `.ss` then) replaced by a line that is not
+ *     Scheme at all was never
  *     read, the stale `trace.so` ran, and the answer came back looking
  *     perfectly ordinary.
  *
@@ -147,8 +149,9 @@ export function libraryExtensionsFor(form: CoreForm): string {
  * prints what the daemon rendered.
  *
  * NOTE: THE `transport` SETTING WAS DELETED, NOT RENAMED. It chose between
- * this and `cli.ss`, which loaded the whole core for every request and
- * was kept for one version as a way back. The core split `cli.ss` by
+ * this and the old `cli` entry point, which loaded the whole core for
+ * every request and was kept for one version as a way back. The core split
+ * that entry point by
  * role (877f0da): what is left of it is `core.sc`, the in-process route,
  * and nothing here runs that. A setting whose meaning would have changed
  * with no end-to-end cell to see it is removed rather than kept under an
@@ -208,8 +211,9 @@ export function environmentFor(
      *
      * This command line starts the thin client, and the client starts
      * the daemon -- with `THEOURGIA_SCHEME`, or failing that with
-     * whatever `scheme` resolves to on PATH (cli.ss:420, and
-     * theourgia.ss:136 and :336). So a user who set this setting BECAUSE
+     * whatever `scheme` resolves to on PATH (theourgia.sc:137, used at :161
+     * and :358; and core.sc:432 on the in-process route). So a user who set
+     * this setting BECAUSE
      * `scheme` is not on their PATH got a client from the path they gave
      * and a daemon that could not be started at all.
      *
