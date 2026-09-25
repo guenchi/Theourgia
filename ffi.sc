@@ -121,6 +121,11 @@
 ;;;   fsync-fail                fsync reports EIO
 ;;;   no-log-fsync              fsync is SKIPPED and reports success
 ;;;   open-fail                 the open reports the errno it is given
+;;;   stat-fail                 a stat reports EIO, or the errno it is given
+;;;   read-fail-after           a read, once it has produced at least one
+;;;                             byte, reports the errno it is given
+;;;   readdir-fail-after        a listing, once it has produced at least
+;;;                             one entry, reports the errno it is given
 ;;;
 ;;; THE OPEN IS THERE BECAUSE TWO OF ITS FAILURES ARE REACHABLE FROM A
 ;;; FIXTURE AND THE REST ARE NOT. `rm` gives ENOENT and `chmod 000` gives
@@ -145,9 +150,11 @@
 ;;; LAST `:errno=` is the qualifier, so such a path is written by
 ;;; appending a real one.
 ;;;
-;;; AND IT IS READ FOR open-fail AND NOTHING ELSE. Stripping the tail
-;;; from every fault's argument would change where an existing case
-;;; points: `fsync-fail@commit:file=a:errno=b` is a path substring with a
+;;; AND IT IS READ FOR THE FAULTS THAT FAIL WITH AN ERRNO -- open-fail,
+;;; stat-fail, read-fail-after and readdir-fail-after -- AND NOTHING ELSE.
+;;; It is required for all of them but stat-fail, which predates it and
+;;; reports EIO when it is absent. Stripping the tail from every fault's
+;;; argument would change where an existing case points: `fsync-fail@commit:file=a:errno=b` is a path substring with a
 ;;; colon in it, and a parser that helpfully removed the tail would aim
 ;;; that case at `a` instead. A broadened target reads, in a test log,
 ;;; exactly like the case that was written.
@@ -265,6 +272,9 @@
           report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
+          entry-type read-entry list-entries
+          unreadable-entry? unreadable-entry-path unreadable-entry-reason
+          unreadable-entry-errno make-unreadable-entry
           unlink! file-create-exclusive! mkdir-p!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv!
@@ -379,8 +389,11 @@
   ;; fsync are here. Chez provides all five; another host substitutes
   ;; this file and nothing else.
   (define (directory-entries path) (directory-list path))
-  (define (file-is-directory? path) (file-directory? path))
-  (define (file-is-regular? path) (file-regular? path))
+  ;; THE TYPE QUESTIONS ARE ASKED OF entry-type, so a path that cannot be
+  ;; read raises unreadable-entry instead of answering #f -- #f is the
+  ;; answer for a path that is not there, or is something else.
+  (define (file-is-directory? path) (eq? (entry-type path) 'directory))
+  (define (file-is-regular? path) (eq? (entry-type path) 'regular))
 
   ;; Renaming over an existing name is the install step of every atomic
   ;; replacement, and it is NOT R6RS: the standard has delete-file but no
@@ -1189,6 +1202,167 @@
 
   (define (fail! op subject) (raise (fs-err op subject (errno))))
 
+  ;; ---- reading an entry, and saying why it could not be read -------------
+  ;;
+  ;; KEY: ABSENCE IS AN ERRNO RETURNED BY THE OPERATION, NOT A PREDICATE
+  ;; ASKED BEFORE IT. A directory with modes 000, r-- or --x still answers
+  ;; stat, and `file-exists?` on a child of it answers #f -- the same answer
+  ;; as a child that is not there. What fails is the listing or the read
+  ;; that follows. So each of the three operations below does the thing
+  ;; itself and answers `absent` when, and only when, the system said
+  ;; ENOENT or ENOTDIR; every other failure -- permission, i/o, a symlink
+  ;; loop, an overflow -- raises `unreadable-entry`, carrying the path that
+  ;; failed and the system's reason. Nothing here decides that a failure is
+  ;; an absence.
+  ;;
+  ;; A LISTING IS COMPLETE OR IT RAISES, and so is a read: end-of-directory
+  ;; and end-of-file are the only ends. A failure part way is
+  ;; `unreadable-entry` naming the path, never a shorter list or a shorter
+  ;; buffer.
+
+  (define ENOTDIR 20)
+  (define EISDIR 21)
+  (define ELOOP (if (eq? platform-os 'linux) 40 62))
+  (define EOVERFLOW (if (eq? platform-os 'linux) 75 84))
+  (define ENAMETOOLONG (if (eq? platform-os 'linux) 36 63))
+
+  ;; TWO FIELDS, TWO READERS. The REASON is the system's own message, for a
+  ;; person reading `check` -- which file, and why, in the words the system
+  ;; used. The ERRNO is a name when this file knows one and the number
+  ;; otherwise, for code comparing a failure with the one it caused, so
+  ;; that no errno is ever reported as nothing.
+  (define c-strerror (foreign-procedure "strerror" (int) string))
+  (define (errno-reason code)
+    (cond
+      ((eqv? code EACCES) 'EACCES)
+      ((eqv? code EIO) 'EIO)
+      ((eqv? code ELOOP) 'ELOOP)
+      ((eqv? code EOVERFLOW) 'EOVERFLOW)
+      ((eqv? code ENAMETOOLONG) 'ENAMETOOLONG)
+      ((eqv? code EMFILE) 'EMFILE)
+      ((eqv? code EPERM) 'EPERM)
+      ((eqv? code ENOENT) 'ENOENT)
+      ((eqv? code ENOTDIR) 'ENOTDIR)
+      ((eqv? code EISDIR) 'EISDIR)
+      (else code)))
+
+  (define (absence-errno? code) (or (eqv? code ENOENT) (eqv? code ENOTDIR)))
+
+  (define-condition-type &unreadable-entry &error
+    make-unreadable-entry-condition unreadable-entry?
+    (path unreadable-entry-path)
+    (reason unreadable-entry-reason)
+    (errno unreadable-entry-errno))
+
+  ;; THE CONDITION, BUILT IN ONE PLACE: a path and a reason, with a message
+  ;; so that a handler printing conditions has something to print. The log
+  ;; raises the same condition from a discovery that is already a fact.
+  (define (make-unreadable-entry path reason errno)
+    (condition (make-unreadable-entry-condition path reason errno)
+               (make-message-condition "the entry cannot be read")
+               (make-irritants-condition (list path reason))))
+
+  (define (unreadable! path code)
+    (raise (make-unreadable-entry path (c-strerror code) (errno-reason code))))
+
+  ;; -> directory | regular | other | absent
+  ;; The TYPE of what the path names, following symlinks. A type is not a
+  ;; promise that the object can be read; the read says that.
+  (define (entry-type path)
+    (unless (string? path)
+      (assertion-violation 'entry-type "path must be a string" path))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let-values (((rc code)
+                    (if (stat-fault? path)
+                        (values -1 (stat-fault-errno))
+                        (let ((rc (c-stat path buf))) (values rc (and (< rc 0) (errno)))))))
+        (cond
+          ((>= rc 0)
+           (let ((kind (bitwise-and (st-mode-of buf) S_IFMT)))
+             (cond ((= kind S_IFDIR) 'directory)
+                   ((= kind S_IFREG) 'regular)
+                   (else 'other))))
+          ((absence-errno? code) 'absent)
+          (else (unreadable! path code))))))
+
+  ;; -> the file's bytes, or absent
+  (define (read-entry path)
+    (unless (string? path)
+      (assertion-violation 'read-entry "path must be a string" path))
+    (let ((fd (let ((injected (open-fault path)))
+                (if injected
+                    (begin (errno-set! injected) -1)
+                    (c-open path O_RDONLY)))))
+      (cond
+        ((< fd 0)
+         (let ((code (errno)))
+           (if (absence-errno? code) 'absent (unreadable! path code))))
+        (else
+         (let ((chunk (make-bytevector 65536)))
+           (dynamic-wind
+             void
+             (lambda ()
+               (let-values (((out collect) (open-bytevector-output-port)))
+                 (let loop ((produced 0))
+                   (let ((injected (read-fault path produced)))
+                     (when injected (unreadable! path injected)))
+                   (let ((n (c-read fd chunk 65536)))
+                     (cond
+                       ((< n 0)
+                        (let ((code (errno)))
+                          (if (eqv? code EINTR)
+                              (loop produced)
+                              (unreadable! path code))))
+                       ((= n 0) (collect))
+                       (else
+                        (put-bytevector out chunk 0 n)
+                        (loop (+ produced n))))))))
+             (lambda () (c-close fd))))))))
+
+  ;; -> the names in the directory, without "." and "..", or absent
+  (define dirent-name-offset
+    (case platform-os ((macos) 21) ((linux) 19) ((freebsd) 24) (else 19)))
+  (define x86-macos? (and macos? (memq (machine-type) '(a6osx ta6osx)) #t))
+  (define c-opendir
+    (foreign-procedure (if x86-macos? "opendir$INODE64" "opendir") (string) uptr))
+  (define c-readdir
+    (foreign-procedure (if x86-macos? "readdir$INODE64" "readdir") (uptr) uptr))
+  (define c-closedir (foreign-procedure "closedir" (uptr) int))
+  (define (errno-set! code) (foreign-set! 'int (c-errno-location) 0 code))
+
+  (define (dirent-name entry)
+    (let loop ((i 0) (acc '()))
+      (let ((b (foreign-ref 'unsigned-8 entry (+ dirent-name-offset i))))
+        (if (= b 0)
+            (utf8->string (u8-list->bytevector (reverse acc)))
+            (loop (+ i 1) (cons b acc))))))
+
+  (define (list-entries path)
+    (unless (string? path)
+      (assertion-violation 'list-entries "path must be a string" path))
+    (let ((dir (c-opendir path)))
+      (if (= dir 0)
+          (let ((code (errno)))
+            (if (absence-errno? code) 'absent (unreadable! path code)))
+          (dynamic-wind
+            void
+            (lambda ()
+              (let loop ((names '()))
+                (let ((injected (readdir-fault path (length names))))
+                  (when injected (unreadable! path injected)))
+                (errno-set! 0)
+                (let ((entry (c-readdir dir)))
+                  (if (= entry 0)
+                      (let ((code (errno)))
+                        (if (= code 0)
+                            (reverse names)
+                            (unreadable! path code)))
+                      (let ((name (dirent-name entry)))
+                        (loop (if (or (string=? name ".") (string=? name ".."))
+                                  names
+                                  (cons name names))))))))
+            (lambda () (c-closedir dir))))))
+
   ;; ---- what descriptor is that ------------------------------------------
 
   ;; A descriptor number is meaningless in a trace and is reused within a
@@ -1359,6 +1533,7 @@
      (define known-faults
        '(short-write eintr-once write-eio-after-partial write-eio-first
          fsync-fail no-log-fsync stat-fail open-fail report-fail
+         read-fail-after readdir-fail-after
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail))
 
@@ -1390,7 +1565,8 @@
      ;; reason an open can fail the same way, so the reason is part of
      ;; the spec: `open-fail@<stage>:file=<sub>:errno=EMFILE`.
      ;;
-     ;; IT IS READ FOR `open-fail` AND FOR NOTHING ELSE. Stripping it
+     ;; IT IS READ FOR THE FAULTS THAT FAIL WITH AN ERRNO (`errno-faults`)
+     ;; AND FOR NOTHING ELSE. Stripping it
      ;; from every fault's argument would silently change what an
      ;; existing fault points at: `fsync-fail@commit:file=a:errno=b` is a
      ;; path substring with a colon in it, and a parser that helpfully
@@ -1419,8 +1595,13 @@
               (values (substring a 0 k) (substring a (+ k 7) n)))
              (else (loop (- k 1)))))))
 
+     ;; The faults that fail with an errno. stat-fail predates the
+     ;; qualifier and reports EIO without one; the other three require it.
+     (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after))
+     (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
+
      (define-values (fault-arg-head fault-errno-text)
-       (if (eq? fault-name 'open-fail)
+       (if (memq fault-name errno-faults)
            (split-errno fault-arg)
            (values fault-arg #f)))
 
@@ -1434,6 +1615,10 @@
             (cond ((string=? fault-errno-text "EMFILE") EMFILE)
                   ((string=? fault-errno-text "EACCES") EACCES)
                   ((string=? fault-errno-text "ENOENT") ENOENT)
+                  ((string=? fault-errno-text "ENOTDIR") ENOTDIR)
+                  ((string=? fault-errno-text "EIO") EIO)
+                  ((string=? fault-errno-text "ELOOP") ELOOP)
+                  ((string=? fault-errno-text "EOVERFLOW") EOVERFLOW)
                   ;; DECIMAL DIGITS, NOT "whatever `string->number`
                   ;; accepts". That reader takes `24/1` and `#x18` too,
                   ;; and a spec whose grammar is the whole of Scheme's
@@ -1455,10 +1640,15 @@
      ;; ask for, and a run that injects the wrong class reads exactly
      ;; like a run that injected the right one.
      (define fault-errno-checked
-       (when (eq? fault-name 'open-fail)
-         (when (or (not fault-errno) (eq? fault-errno 'unknown))
+       (begin
+         (when (memq fault-name errno-required-faults)
+           (when (or (not fault-errno) (eq? fault-errno 'unknown))
+             (assertion-violation 'theourgia-ffi
+               "this fault needs :errno=<name> (EMFILE EACCES ENOENT ENOTDIR EIO ELOOP EOVERFLOW) or a positive integer"
+               fault-spec)))
+         (when (and (eq? fault-name 'stat-fail) (eq? fault-errno 'unknown))
            (assertion-violation 'theourgia-ffi
-             "open-fail needs :errno=EMFILE|EACCES|ENOENT or a positive integer"
+             "stat-fail's :errno= names no errno this file knows"
              fault-spec))))
 
      (define-values (fault-kind fault-substring) (split-kind fault-arg-head))
@@ -1488,13 +1678,13 @@
      ;; than refusing it: the case reads as aimed at a directory and
      ;; fires on the first ordinary file whose path contains the string.
      (define fault-kind-checked
-       (when (and (eq? fault-name 'open-fail) (eq? fault-kind 'dir))
+       (when (and (memq fault-name errno-required-faults) (eq? fault-kind 'dir))
          (assertion-violation 'theourgia-ffi
-           "open-fail takes file=<substring>; it has no directory to distinguish"
+           "this fault takes file=<substring>; it matches on the path alone"
            fault-spec)))
 
      (define fault-argument-checked
-       (when (memq fault-name '(fsync-fail no-log-fsync open-fail))
+       (when (memq fault-name '(fsync-fail no-log-fsync open-fail read-fail-after readdir-fail-after))
          (unless (and (string? fault-substring) (> (string-length fault-substring) 0))
            (assertion-violation 'theourgia-ffi
                                 "this fault needs a non-empty path substring"
@@ -1608,6 +1798,30 @@
             (eq? fault-name 'close-fail)
             (in-fault-stage?)))
 
+     (define (stat-fault-errno) (or fault-errno EIO))
+
+     ;; -> an errno, or #f. A READ OR A LISTING FAILS PART WAY, which is
+     ;; what these two exist to produce: they fire only once something has
+     ;; been produced, so a caller that answered with what it had so far
+     ;; would be seen doing it. One-shot within the stage, like open-fail.
+     (define (read-fault path produced)
+       (and fault-name
+            (eq? fault-name 'read-fail-after)
+            (in-fault-stage?)
+            (fault-path-match? #f path)
+            (> produced 0)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) fault-errno)))
+
+     (define (readdir-fault path produced)
+       (and fault-name
+            (eq? fault-name 'readdir-fail-after)
+            (in-fault-stage?)
+            (fault-path-match? #f path)
+            (> produced 0)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) fault-errno)))
+
      (define (stat-fault? path)
        (and fault-name
             (eq? fault-name 'stat-fail)
@@ -1694,6 +1908,9 @@
      (define (theourgia-fault) #f)
      (define (theourgia-fault-armed?) #f)
      (define (stat-fault? path) #f)
+     (define (stat-fault-errno) EIO)
+     (define (read-fault path produced) #f)
+     (define (readdir-fault path produced) #f)
      (define (close-fault?) #f)
      (define (report-fault?) #f)
      (define (open-fault path) #f)
@@ -1714,8 +1931,9 @@
     (unless (string? path)
       (assertion-violation 'file-ensure! "path must be a string" path))
     (guard (e ((fs-error? e) (raise e))
+              ((unreadable-entry? e) (raise e))
               (#t (raise (fs-err 'create path #f))))
-      (unless (file-exists? path)
+      (when (eq? (entry-type path) 'absent)
         (close-port
           (open-file-output-port path (file-options no-fail no-truncate)))
         (trace-event! 'create path #f))
@@ -1903,9 +2121,18 @@
   ;; between these platforms and would have to be measured field by
   ;; field, while lseek returns one integer that means the same thing
   ;; everywhere.
+  ;;
+  ;; A FILE THAT IS THERE AND WILL NOT OPEN IS UNREADABLE, NOT A FAILED
+  ;; OPERATION (R1, K12). The open's own errno decides: ENOENT and ENOTDIR
+  ;; stay the durable error they were, anything else -- permission, i/o, a
+  ;; loop -- raises unreadable-entry naming the path, so a caller that asks
+  ;; the size of a segment it cannot read is told which one and why.
   (define (file-size path)
-    (when (stat-fault? path) (fail-with! 'stat path EIO))
-    (let ((fd (fd-open path '(read))))
+    (when (stat-fault? path) (fail-with! 'stat path (stat-fault-errno)))
+    (let ((fd (guard (e ((and (fs-error? e) (fs-error-errno e)
+                              (not (absence-errno? (fs-error-errno e))))
+                         (unreadable! path (fs-error-errno e))))
+                (fd-open path '(read)))))
       (let ((done (box #f)))
         (dynamic-wind
           void
@@ -2111,15 +2338,21 @@
   ;; something it does not own.
   (define S_IFMT   #xF000)
   (define S_IFSOCK #xC000)
+  (define S_IFDIR  #x4000)
+  (define S_IFREG  #x8000)
+
+  ;; st_mode out of a filled stat buffer; the offsets are the ones stated
+  ;; above for each platform.
+  (define (st-mode-of buf)
+    (cond
+      (macos? (bytevector-u16-native-ref buf 4))
+      ((string=? (machine-kind) "linux") (bytevector-u32-native-ref buf 24))
+      (else (bytevector-u16-native-ref buf 24))))
 
   (define (st-mode path)
     (let ((buf (make-bytevector stat-buffer-size 0)))
       (let ((rc (c-stat path buf)))
-        (and (>= rc 0)
-             (cond
-               (macos? (bytevector-u16-native-ref buf 4))
-               ((string=? (machine-kind) "linux") (bytevector-u32-native-ref buf 24))
-               (else (bytevector-u16-native-ref buf 24)))))))
+        (and (>= rc 0) (st-mode-of buf)))))
 
   (define (file-is-socket? path)
     (guard (e (#t #f))

@@ -34,12 +34,13 @@
           (only (theourgia wire) decode-line storable-decode)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (theourgia log)
-                log-open load-deliver! load-commit! load-fingerprint
+                log-open load-deliver! load-commit! load-fingerprint remember-load-unreadable!
+                load-unreadable session-load
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
                 session-snapshot! log-open load-writers load-prefix load-commit! local-writer-of
-                discovery-end-seq discovery-integrity discovery-torn
+                discovery-end-seq discovery-integrity discovery-torn discovery-origin
                 enumerate-segment-files discovery-quarantine discover-prefix
                 manifest-segments read-manifest
                 snapshot-read snapshot-cut-supported? segment-file-number
@@ -140,11 +141,22 @@
   (define (store-resident-cache! enabled?)
     (set! resident-enabled? (and enabled? #t))
     (hashtable-clear! residents))
+  ;; AN UNREADABLE WRITER HAS NO FRONTIER TO BE COMPLETE AT. Its end is not
+  ;; known, so the reduction is not kept; asking for its end raises, and
+  ;; that would fail a read the other writers answer -- only where the
+  ;; resident cache is on, which is the daemon.
+  ;;
+  ;; AND A LOAD THAT COULD NOT READ SOMETHING IS NOT COMPLETE ANYWHERE: a
+  ;; writer stopped by a segment it cannot read keeps its origin and its
+  ;; readable end, but what lies past the stop is unknown (K11).
   (define (complete-frontier? state ls)
-    (for-all (lambda (writer)
-               (let ((p (assoc writer (reduce-applied-cut state))))
-                 (= (if p (cdr p) 0) (discovery-end-seq (load-prefix ls writer)))))
-             (load-writers ls)))
+    (and (null? (load-unreadable ls))
+         (for-all (lambda (writer)
+                    (let ((p (assoc writer (reduce-applied-cut state)))
+                          (prefix (load-prefix ls writer)))
+                      (and (not (eq? (discovery-origin prefix) 'unreadable))
+                           (= (if p (cdr p) 0) (discovery-end-seq prefix)))))
+                  (load-writers ls))))
   (define (replay store cut)
     (let* ((ls (log-open store))
            (key (and resident-enabled? (not cut) (load-fingerprint ls)))
@@ -162,6 +174,10 @@
         ;; Pending history cannot use the completed-frontier fast path.
         (if (complete-frontier? r ls) (hashtable-set! residents store (cons key r))
             (hashtable-delete! residents store)))
+      ;; THE REDUCTION REMEMBERS WHAT ITS LOAD COULD NOT READ, for answers
+      ;; built from it after the load is gone: the daemon answers reads
+      ;; from a reduction it published earlier (K10).
+      (remember-load-unreadable! r ls)
       r))
 
   ;; READING AT A CUT DOES NOT USE THE SNAPSHOT. The snapshot stands at
@@ -1821,14 +1837,6 @@
       (bytevector-copy! bv from o 0 (- to from))
       o))
 
-  (define (read-file-bytes path)
-    (and (file-exists? path)
-         (guard (e (#t #f))
-           (call-with-port (open-file-input-port path)
-             (lambda (in)
-               (let ((b (get-bytevector-all in)))
-                 (if (eof-object? b) (make-bytevector 0) b)))))))
-
   ;; THE DELIVERED CUT IS AN ARGUMENT, NOT SOMETHING THIS COMPUTES. Its
   ;; one caller from outside a session reads the store to get it; its
   ;; caller from INSIDE one already has it, and re-reading the store
@@ -2862,8 +2870,14 @@
   ;; on a second descriptor, which flock refuses to the same process --
   ;; so under a daemon's non-blocking strategy it does not publish a
   ;; wrong value, it fails with `store-busy`.
-  (define (publish-after state thunk)
+  ;; THE PUBLISHED REDUCTION CARRIES WHAT ITS LOAD COULD NOT READ (K10).
+  ;; A read the daemon answers from it later opens no load of its own, so
+  ;; the reduction is the only place left that can say a writer is
+  ;; missing; the session's load at the moment of publishing is the one
+  ;; the state was delivered from.
+  (define (publish-after state s thunk)
     (let ((answers (thunk)))
+      (remember-load-unreadable! state (session-load s))
       (publish-hook state)
       answers))
 
@@ -2910,7 +2924,7 @@
           (lambda () (if #f #f))
           (lambda ()
             (publish-after
-              state
+              state s
               (lambda ()
             ;; A RAISE THAT GOT PAST EVERY INNER GUARD IS STILL AN ANSWER
             ;; WHEN BYTES WERE WRITTEN. `unknown` is a promise the store
@@ -4203,15 +4217,24 @@
     (let* ((ignored #f)
            (writers (load-writers ls))
            (prefixes (map (lambda (w) (cons w (load-prefix ls w))) writers))
+           ;; A WRITER THAT COULD NOT BE READ HAS NO END TO REPORT. Its entry
+           ;; keeps the usual shape and says `unreadable` where the numbers
+           ;; would be; its note, in integrity, names the path and the reason.
+           ;; It is left out of the snapshot coverage rather than counted as 0,
+           ;; which would be read as a writer that published nothing.
+           (unreadable? (lambda (p) (and p (eq? (discovery-origin p) 'unreadable))))
            (coverage (map (lambda (e)
                             (cons (car e) (if (cdr e) (discovery-end-seq (cdr e)) 0)))
-                          prefixes))
+                          (filter (lambda (e) (not (unreadable? (cdr e)))) prefixes)))
            (per-writer
              (map (lambda (e)
                     (let ((p (cdr e)))
                       (list (car e)
-                            (list 'end (if p (discovery-end-seq p) 0))
-                            (list 'torn (and p (discovery-torn p) #t))
+                            (list 'end (cond ((unreadable? p) 'unreadable)
+                                             (p (discovery-end-seq p))
+                                             (else 0)))
+                            (list 'torn (cond ((unreadable? p) 'unreadable)
+                                              (else (and p (discovery-torn p) #t))))
                             (list 'integrity
                                   (if p (map describe-error (discovery-integrity p)) '())))))
                   prefixes))

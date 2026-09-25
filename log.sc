@@ -57,6 +57,8 @@
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired
           discovery-versions discovery-retired-tail discovery-clean?
+          unreadable-entry? unreadable-entry-path unreadable-entry-reason
+          unreadable-entry-errno
           log-clock registry-path machine-lock-path instance-install!
           session-durable-seq session-durable-seq-set! session-commit!
           session-pending-count-set! note-written-for!
@@ -68,6 +70,8 @@
           session-retired? owner-install!
           session-reset-done! session-reject! session-reset-pending
           log-open log-open-in-session load-prefix load-writers load-integrity load-fingerprint
+          load-unreadable load-listener-add! load-listener-remove! load-listener-of
+          remember-load-unreadable! unreadable-behind incomplete-clause merge-unreadable
           local-writer-of
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
@@ -174,7 +178,7 @@
       (when (> tries 64)
         (raise (make-log-error 'temp #f #f #f (list (cons 'path path)))))
       (let ((tmp (temp-name-for path)))
-        (if (file-exists? tmp)
+        (if (not (eq? (entry-type tmp) 'absent))
             (loop (+ tries 1))
             ;; ONLY "IT ALREADY EXISTS" IS A COLLISION. Catching every
             ;; exception here turned an unwritable directory, a read-only
@@ -331,18 +335,21 @@
   ;; forever and block every exclusive operation on the store. A symlink
   ;; to an endless byte source is the same shape. Neither can be
   ;; recovered from by an exception handler, because nothing raises.
+  ;; A listing that fails is not an empty directory: it raises, and so does
+  ;; a segment whose type cannot be read.
   (define (enumerate-segment-files store writer)
-    (let ((dir (writer-directory store writer)))
-      (if (not (file-is-directory? dir))
+    (let* ((dir (writer-directory store writer))
+           (names (list-entries dir)))
+      (if (eq? names 'absent)
           '()
           (list-sort < (filter
                     (lambda (n) n)
                     (map (lambda (name)
                            (let ((n (segment-file-number name)))
                              (and n
-                                  (file-is-regular? (string-append dir "/" name))
+                                  (eq? (entry-type (string-append dir "/" name)) 'regular)
                                   n)))
-                         (directory-entries dir)))))))
+                         names))))))
 
   ;; ---- what this store looked like ----------------------------------------
   ;;
@@ -369,20 +376,36 @@
   ;; or removed (a new segment, a quarantine file appearing), and the
   ;; CURRENT segment's version changes when bytes are appended to it
   ;; without any entry changing. Neither one alone covers the other.
+  ;; KEY: A SNAPSHOT RECORDS, IT DOES NOT RAISE OR SWALLOW. A path that is
+  ;; not there is #f, as before; a path that cannot be read is the marker
+  ;; (unreadable <path> <reason>), which is stable for as long as the
+  ;; failure is unchanged, so two snapshots taken during it compare equal.
+  (define (unreadable-marker e)
+    (list 'unreadable (unreadable-entry-path e) (unreadable-entry-reason e)))
+
   (define (path-snapshot path)
-    (cons path (guard (e (#t #f)) (path-version path))))
+    (cons path
+          (guard (e ((unreadable-entry? e) (unreadable-marker e)))
+            (if (eq? (entry-type path) 'absent)
+                #f
+                (guard (e2 ((fs-error? e2) #f)) (path-version path))))))
 
   (define (directory-snapshot path)
     (cons (path-snapshot path)
-          (map (lambda (name) (path-snapshot (string-append path "/" name)))
-               (guard (e (#t '()))
-                 (if (file-is-directory? path) (directory-entries path) '())))))
+          (guard (e ((unreadable-entry? e) (unreadable-marker e)))
+            (let ((names (list-entries path)))
+              (if (eq? names 'absent)
+                  '()
+                  (map (lambda (name) (path-snapshot (string-append path "/" name)))
+                       names))))))
 
   (define (store-state-snapshot store)
     (cons
       (path-snapshot (string-append store "/writers"))
       (map
         (lambda (writer)
+          ;; A writer that cannot be read is recorded as the marker, whole.
+          (guard (e ((unreadable-entry? e) (unreadable-marker e)))
           (let* ((dir (writer-directory store writer))
                  (segments (enumerate-segment-files store writer))
                  (current (if (null? segments) #f (car (list-sort > segments)))))
@@ -394,7 +417,7 @@
                   (path-snapshot (string-append dir "/" (segment-file-name current)))
                   (cons 'no-segment #f))
               (directory-snapshot (string-append dir "/damaged"))
-              (directory-snapshot (string-append dir "/incoming")))))
+              (directory-snapshot (string-append dir "/incoming"))))))
         (store-writers store))))
 
   ;; ---- the manifest -------------------------------------------------------
@@ -435,10 +458,11 @@
   ;; broken manifest, and which no layer above knows to turn into an
   ;; integrity answer.
   (define (read-manifest store writer)
-    (let ((path (manifest-path store writer)))
-      (and (file-exists? path)
+    (let* ((path (manifest-path store writer))
+           (bytes (read-entry path)))
+      (and (not (eq? bytes 'absent))
            (let* ((text (guard (e (#t (list 'unreadable (unreadable-reason e))))
-                          (utf8->string (read-whole path))))
+                          (utf8->string bytes)))
                   (why (if (pair? text) (cadr text) "unparseable"))
                   (datum (if (pair? text)
                              'bad
@@ -800,9 +824,65 @@
   ;; different promise and a whole extra traversal.
 
   (define-record-type discovery
-    (fields origin end-segment end-offset end-seq segment-ranges
-            physical-current current-buffer torn integrity
-            quarantine retired versions retired-tail))
+    (fields origin
+            (immutable end-segment raw-end-segment)
+            (immutable end-offset raw-end-offset)
+            (immutable end-seq raw-end-seq)
+            (immutable segment-ranges raw-segment-ranges)
+            (immutable physical-current raw-physical-current)
+            (immutable current-buffer raw-current-buffer)
+            (immutable torn raw-torn)
+            integrity quarantine retired versions
+            (immutable retired-tail raw-retired-tail)))
+
+  ;; KEY: AN UNREADABLE DISCOVERY HAS NO COORDINATES. A writer whose
+  ;; directory could not be read has an origin of `unreadable` and one
+  ;; `metadata-unreadable` note, and nothing else about it is known. Its
+  ;; end is not 0 and its ranges are not empty -- those would be read as a
+  ;; writer that has published nothing, which is the defect this exists to
+  ;; stop. So every coordinate accessor RAISES `unreadable-entry`, with the
+  ;; note's path and reason, when the origin is `unreadable`; only the
+  ;; origin and the integrity answer on it. A consumer that wants to go on
+  ;; without that writer asks the origin first, and says so where it does.
+  ;;
+  ;; NEVER: THE RAW ACCESSORS ARE USED ONLY HERE. The record's own accessors
+  ;; are named raw-* and appear nowhere but in the definitions below; a
+  ;; census row in the tests pins that, because one raw use elsewhere is a
+  ;; consumer reading zeros again.
+  (define (unreadable-note p)
+    (let loop ((es (discovery-integrity p)))
+      (cond ((null? es) #f)
+            ((eq? (log-error-kind (car es)) 'metadata-unreadable) (car es))
+            (else (loop (cdr es))))))
+
+  (define (guarded-coordinate raw)
+    (lambda (p)
+      (when (eq? (discovery-origin p) 'unreadable)
+        (let* ((note (unreadable-note p))
+               (detail (if note (log-error-detail note) '()))
+               (field (lambda (k) (let ((e (assq k detail))) (and e (cdr e))))))
+          (raise (make-unreadable-entry (field 'path) (field 'reason) (field 'errno)))))
+      (raw p)))
+
+  (define discovery-end-segment (guarded-coordinate raw-end-segment))
+  (define discovery-end-offset (guarded-coordinate raw-end-offset))
+  (define discovery-end-seq (guarded-coordinate raw-end-seq))
+  (define discovery-segment-ranges (guarded-coordinate raw-segment-ranges))
+  (define discovery-physical-current (guarded-coordinate raw-physical-current))
+  (define discovery-current-buffer (guarded-coordinate raw-current-buffer))
+  (define discovery-torn (guarded-coordinate raw-torn))
+  (define discovery-retired-tail (guarded-coordinate raw-retired-tail))
+
+  ;; THE ONE WAY A DISCOVERY BECOMES `unreadable`: the path that failed, the
+  ;; system's message for it, and its errno, in the note the unreadable
+  ;; manifest row has always used.
+  (define (unreadable-discovery writer path reason errno)
+    (make-discovery 'unreadable #f #f 0 '() #f #f #f
+                    (list (make-log-error 'metadata-unreadable writer #f #f
+                                          (list (cons 'path path)
+                                                (cons 'reason reason)
+                                                (cons 'errno errno))))
+                    #f #f '() #f))
 
   ;; RETIRED-TAIL IS INFORMATION, NOT A DIAGNOSTIC. It is #f, or
   ;; (segment offset): the position at which a retired writer's file goes
@@ -822,10 +902,14 @@
   ;; that is an interrupted publication, and every segment in it is
   ;; ignored -- not delivered, not read as a torn tail -- so the next
   ;; synchronisation can finish what it started.
+  ;;
+  ;; OWNER.SEXP IS READ, NOT ASKED ABOUT: a stat of it succeeds under a
+  ;; directory that cannot be read, and only the read says whether it can
+  ;; be. An unreadable-entry raised here reaches discover-prefix.
   (define (origin-of store writer)
     (cond
-      ((file-exists? (writer-file store writer "owner.sexp")) 'local)
-      ((file-exists? (writer-file store writer "published.sexp")) 'mirrored)
+      ((not (eq? (read-entry (writer-file store writer "owner.sexp")) 'absent)) 'local)
+      ((not (eq? (entry-type (writer-file store writer "published.sexp")) 'absent)) 'mirrored)
       (else 'incomplete-publication)))
 
   (define (writer-file store writer name)
@@ -848,10 +932,10 @@
             (guard (e (#t (if #f #f))) (close-port port)))))))
 
   (define (quarantine-of store writer)
-    (let ((p (writer-file store writer "quarantine.sexp")))
-      (and (file-exists? p)
-           (let* ((bytes (read-whole p))
-                  (version (crc32-hex bytes))
+    (let* ((p (writer-file store writer "quarantine.sexp"))
+           (bytes (read-entry p)))
+      (and (not (eq? bytes 'absent))
+           (let* ((version (crc32-hex bytes))
                   (d (guard (e (#t #f))
                        (string->sexpr-extended (utf8->string bytes)))))
              (list version (and (list? d) (pair? d)
@@ -870,10 +954,10 @@
   ;; wrong answer. A malformed marker is an integrity error, not a
   ;; writer that may be replayed freely.
   (define (retired-of store writer)
-    (let ((p (writer-file store writer "retired.sexp")))
-      (and (file-exists? p)
-           (let* ((bytes (read-whole p))
-                  (version (crc32-hex bytes))
+    (let* ((p (writer-file store writer "retired.sexp"))
+           (bytes (read-entry p)))
+      (and (not (eq? bytes 'absent))
+           (let* ((version (crc32-hex bytes))
                   (d (guard (e (#t 'malformed))
                        (string->sexpr-extended (utf8->string bytes)))))
              (if (eq? d 'malformed)
@@ -904,11 +988,23 @@
   ;; the first-visited writer's damage would make L4's refusal pass for
   ;; the wrong reason. And a failed READ is never reported as an ABSENT
   ;; file.
+  ;; KEY: THE DIRECTORY IS LISTED FIRST, and anything that cannot be read
+  ;; while deciding the origin or reading the metadata makes the answer
+  ;; `unreadable`, with one note naming the path that failed -- the
+  ;; directory itself under 000 and --x, the child under r--. Other writers
+  ;; are unaffected. The early incomplete-publication answer is reached only
+  ;; once the listing has succeeded: a directory that cannot be listed is
+  ;; not a publication that never finished.
   (define (discover-prefix store writer lock-context)
-    (let ((origin (origin-of store writer)))
-      (if (eq? origin 'incomplete-publication)
-          (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f)
-          (validate store writer origin lock-context))))
+    (guard (e ((unreadable-entry? e)
+               (unreadable-discovery writer (unreadable-entry-path e)
+                                     (unreadable-entry-reason e)
+                                     (unreadable-entry-errno e))))
+      (list-entries (writer-directory store writer))
+      (let ((origin (origin-of store writer)))
+        (if (eq? origin 'incomplete-publication)
+            (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f)
+            (validate store writer origin lock-context)))))
 
   (define (validate store writer origin lock-context)
     (let* ((quarantine (quarantine-of store writer))
@@ -935,9 +1031,7 @@
         ;; `check` reports the reason.
         ((unreadable-version? (cdr (assq 'manifest versions)))
          (let ((v (cdr (assq 'manifest versions))))
-           (note! 'metadata-unreadable #f #f
-                  (list (cons 'path (cadr v)) (cons 'reason (caddr v)))))
-         (finish origin 0 '() #f #f errs quarantine retired versions))
+           (unreadable-discovery writer (cadr v) (caddr v) (cadddr v))))
         ((eq? manifest 'malformed)
          (note! 'manifest #f #f '())
          (finish origin 0 '() #f #f errs quarantine retired versions))
@@ -1093,8 +1187,11 @@
                        (bytes (if from-tail (cdr from-tail) (read-segment store writer seg)))
                        (want (manifest-hash manifest seg)))
                   (cond
-                    ((eq? bytes 'unreadable)
-                     (note! 'segment-unreadable seg #f '())
+                    ((unreadable-segment? bytes)
+                     (note! 'segment-unreadable seg #f
+                            (list (cons 'path (list-ref bytes 1))
+                                  (cons 'reason (list-ref bytes 2))
+                                  (cons 'errno (list-ref bytes 3))))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
                                   buffer torn errs quarantine retired versions #f))
@@ -1280,8 +1377,12 @@
 
   ;; ---- the pieces validate leans on ----------------------------------------
 
+  ;; An unreadable manifest is not a malformed one: it goes on to discovery,
+  ;; which states it.
   (define (read-manifest-safely store writer)
-    (guard (e (#t 'malformed)) (read-manifest store writer)))
+    (guard (e ((unreadable-entry? e) (raise e))
+              (#t 'malformed))
+      (read-manifest store writer)))
 
   ;; A METADATA FILE THAT WILL NOT OPEN IS NOT AN ABSENT ONE, and it is
   ;; not a broken tool either. Reading it is how this writer's version is
@@ -1304,22 +1405,42 @@
                   (else (loop (cdr xs) text)))))
         "unreadable"))
 
+  ;; -> #f when there is no manifest, its crc when there is, or
+  ;; (unreadable <path> <reason> <errno>) when it cannot be read: a value,
+  ;; so that a fingerprint can carry it.
   (define (manifest-version store writer)
-    (let ((p (writer-file store writer "published.sexp")))
-      (and (file-exists? p)
-           (guard (e (#t (list 'unreadable p (unreadable-reason e))))
-             (crc32-hex (read-whole p))))))
+    (let* ((p (writer-file store writer "published.sexp"))
+           (r (guard (e ((unreadable-entry? e)
+                         (list 'unreadable p (unreadable-entry-reason e)
+                               (unreadable-entry-errno e))))
+                (read-entry p))))
+      (cond ((eq? r 'absent) #f)
+            ((pair? r) r)
+            (else (crc32-hex r)))))
 
   (define (unreadable-version? v)
     (and (pair? v) (eq? (car v) 'unreadable)))
 
-  ;; A READ FAILURE IS NOT AN ABSENT FILE. Returning 'unreadable keeps
-  ;; the two apart; answering with empty bytes would report a writer as
-  ;; having no history when its history could not be read.
+  ;; A READ FAILURE IS NOT AN ABSENT FILE. Returning a marker keeps the
+  ;; two apart; answering with empty bytes would report a writer as having
+  ;; no history when its history could not be read.
+  ;;
+  ;; THE MARKER CARRIES WHAT FAILED: (unreadable <path> <reason> <errno>),
+  ;; read through read-entry so the reason is the system's message and the
+  ;; errno its name (K11). A segment the listing named and the read then
+  ;; found absent is the same stop, with reason "absent": it went between
+  ;; the two, and its records are not there to deliver.
   (define (read-segment store writer seg)
-    (guard (e (#t 'unreadable))
-      (read-whole (string-append (writer-directory store writer)
-                                 "/" (segment-file-name seg)))))
+    (let ((path (string-append (writer-directory store writer) "/" (segment-file-name seg))))
+      (guard (e ((unreadable-entry? e)
+                 (list 'unreadable path (unreadable-entry-reason e) (unreadable-entry-errno e))))
+        (let ((bytes (read-entry path)))
+          (if (eq? bytes 'absent)
+              (list 'unreadable path "absent" 'absent)
+              bytes)))))
+
+  (define (unreadable-segment? bytes)
+    (and (pair? bytes) (eq? (car bytes) 'unreadable)))
 
   ;; THE SEGMENT SET IS RE-ESTABLISHED INSIDE THE LOCK and the whole
   ;; tail is copied there: enumerating first and then queueing for the
@@ -1340,7 +1461,7 @@
                  (map (lambda (n) (cons n (read-segment store writer n)))
                       (filter (lambda (n) (>= n from-seg)) now)))))
       (for-each (lambda (e)
-                  (unless (eq? (cdr e) 'unreadable)
+                  (unless (unreadable-segment? (cdr e))
                     (trace-event! 'copy
                                   (string-append (writer-directory store writer)
                                                  "/" (segment-file-name (car e)))
@@ -1357,10 +1478,24 @@
     (if (or (not (eq? origin 'local)) retired)
         'no-append-target
         (and highest
-             (list highest
-                   (guard (e (#t 0))
-                     (file-size (string-append (writer-directory store writer)
-                                               "/" (segment-file-name highest))))))))
+             ;; A SIZE THAT CANNOT BE READ IS NOT 0: the type is asked
+             ;; first, so an unreadable segment raises and discovery
+             ;; states it; only a segment that is not there is 0.
+             (let ((path (string-append (writer-directory store writer)
+                                        "/" (segment-file-name highest))))
+               (if (eq? (entry-type path) 'absent)
+                   (list highest 0)
+                   ;; A CURRENT SEGMENT THAT IS THERE AND WILL NOT OPEN
+                   ;; LEAVES THE WRITER WITH NO APPEND TARGET (K12), the
+                   ;; answer a mirror already gets -- not #f, which means
+                   ;; "no segment yet" and would start segment 1 over the
+                   ;; one that cannot be read. The segment is named by its
+                   ;; segment-unreadable note, the readable prefix stands,
+                   ;; and the session gate refuses the writer. Only the
+                   ;; size's unreadable-entry is answered here; the type
+                   ;; question above still raises.
+                   (guard (e ((unreadable-entry? e) 'no-append-target))
+                     (list highest (file-size path))))))))
 
   (define (retirement-ends-here? seg retired)
     (and retired (not (eq? (car retired) 'malformed)) (= seg (car retired))))
@@ -1411,6 +1546,84 @@
     (fields store (mutable lock) (mutable prefixes) (mutable state)
             (mutable outcome) (mutable snapshot) (mutable barriered)))
 
+  ;; THE WRITERS A LOAD COULD NOT READ, as (writer path reason), in the
+  ;; order the load holds them: what an answer built from this load must
+  ;; say it is missing (K10). Two ways to be missing something: the whole
+  ;; writer (origin unreadable, the note naming what failed), or a segment
+  ;; that stopped it where it stands (a segment-unreadable note naming the
+  ;; segment, K11) -- its readable prefix is delivered, the rest is not.
+  (define (load-unreadable ls)
+    (fold-right
+      (lambda (entry out)
+        (let ((p (cdr entry)))
+          (define (named note)
+            (let ((detail (log-error-detail note)))
+              (list (car entry) (cdr (assq 'path detail)) (cdr (assq 'reason detail)))))
+          (if (eq? (discovery-origin p) 'unreadable)
+              (cons (named (unreadable-note p)) out)
+              (append (map named
+                           (filter (lambda (note)
+                                     (and (eq? (log-error-kind note) 'segment-unreadable)
+                                          (pair? (log-error-detail note))
+                                          (assq 'path (log-error-detail note))))
+                                   (discovery-integrity p)))
+                      out))))
+      '()
+      (load-session-prefixes ls)))
+
+  ;; KEY: A LOAD TELLS THE REQUEST IT SERVES WHICH WRITERS IT COULD NOT
+  ;; READ. The dispatcher registers a listener under the store string it
+  ;; hands to the verb -- a copy of its own, so the key is that request's
+  ;; and no other's -- and every load opened with that string reports to it.
+  ;;
+  ;; NEVER: NOT A PARAMETER. Chez parameters are per OS thread, and every
+  ;; green thread on that thread shares them (render.sc, 7.6.36, measured);
+  ;; the daemon answers requests in several processes at once, and a
+  ;; parameter would hand one request's findings to another. The key is an
+  ;; object only the one request holds.
+  ;;
+  ;; NOTE: A LOAD OPENED WITH ANY OTHER STRING -- one rebuilt from the path
+  ;; rather than passed along -- reports to nobody. The census of this is
+  ;; the cells asking each answer for its clause, not this comment.
+  (define load-listeners (make-weak-eq-hashtable))
+  (define (load-listener-add! store proc) (hashtable-set! load-listeners store proc))
+  (define (load-listener-remove! store) (hashtable-delete! load-listeners store))
+  (define (load-listener-of store) (hashtable-ref load-listeners store #f))
+  ;; ONE ENTRY PER WRITER, the first report of it kept, in the order heard.
+  (define (merge-unreadable known found)
+    (fold-left (lambda (acc u) (if (assoc (car u) acc) acc (append acc (list u))))
+               known found))
+
+  ;; THE CLAUSE AN ANSWER CARRIES WHEN WHAT IT WAS BUILT FROM IS MISSING
+  ;; SOMETHING (K10), from a list of (writer path reason); #f when nothing
+  ;; is missing. One spelling, for every route that answers from a load:
+  ;; rpc dispatch and the eval worker (K14).
+  (define (incomplete-clause unreadable)
+    (and (pair? unreadable)
+         (cons 'incomplete
+               (map (lambda (u)
+                      (list 'unreadable (list 'writer (car u))
+                            (list 'path (cadr u)) (list 'reason (caddr u))))
+                    unreadable))))
+
+  ;; A VALUE BUILT FROM A LOAD -- a reduction -- keeps what that load could
+  ;; not read, for whoever answers from it later. Weak, so a value nobody
+  ;; holds takes its entry with it.
+  (define built-from-incomplete (make-weak-eq-hashtable))
+  (define (remember-load-unreadable! value ls)
+    (let ((found (load-unreadable ls)))
+      (if (pair? found)
+          (hashtable-set! built-from-incomplete value found)
+          (hashtable-delete! built-from-incomplete value))))
+  (define (unreadable-behind value)
+    (hashtable-ref built-from-incomplete value '()))
+
+  (define (tell-load-listener! store ls)
+    (let ((listener (load-listener-of store))
+          (found (load-unreadable ls)))
+      (when (and listener (pair? found))
+        (listener found))))
+
   (define (log-open store)
     (trace-event! 'log-open store #f)
     (open-load store 'acquire-shared))
@@ -1442,6 +1655,7 @@
                                   writers)))
               (let ((ls (make-load-session store lock prefixes '() 'open #f '())))
                 (load-session-snapshot-set! ls (select-snapshot store prefixes))
+                (tell-load-listener! store ls)
                 ls)))))))
 
 
@@ -1551,7 +1765,13 @@
             ;; none were, and nothing else in the session distinguishes
             ;; them: the sequence counter moves on a reservation, which
             ;; happens before any byte leaves.
-            start-seq (mutable write-started)))
+            start-seq (mutable write-started)
+            ;; WHY THIS SESSION HAS NO WRITER, WHEN THE REASON IS A WRITER
+            ;; THAT COULD NOT BE READ: (writer-unreadable (path p) (reason r))
+            ;; or #f. A store with no readable local writer and an unreadable
+            ;; one may be looking at its own writer through a directory it
+            ;; cannot read; it does not go on as if it had none.
+            unreadable-refusal))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1561,7 +1781,7 @@
   ;; writer's own unflushed residue is included: it is the most likely
   ;; thing to be unflushed and the least likely to be noticed.
   (define (flush-file! path stage)
-    (when (file-exists? path)
+    (unless (eq? (entry-type path) 'absent)
       (flush-existing! path stage)))
 
   ;; THE SAME FLUSH WITH THE QUESTION LEFT OUT. A caller that already
@@ -1622,7 +1842,20 @@
     (let ((cut (if (pair? rest) (car rest) #f)))
       (takeover-flush-from! store prefixes stage cut)))
 
+  ;; THE BARRIER'S SCOPE IS THE WRITERS WHOSE DISCOVERY IS NOT `unreadable`.
+  ;; An unreadable writer delivered nothing, so nothing of it needs making
+  ;; durable; it is skipped, and the skip is recorded in the trace as
+  ;; (barrier-skipped-unreadable <writer>). Without this a writer whose
+  ;; directory cannot be listed would fail every load here.
   (define (takeover-flush-from! store prefixes stage cut)
+    (for-each
+      (lambda (entry)
+        (if (eq? (discovery-origin (cdr entry)) 'unreadable)
+            (trace-event! 'barrier-skipped-unreadable (car entry) #f)
+            (takeover-flush-writer! store entry stage cut)))
+      prefixes))
+
+  (define (takeover-flush-writer! store entry stage cut)
     (for-each
       (lambda (entry)
         (let* ((writer (car entry))
@@ -1644,7 +1877,7 @@
             ;; writer's first event would otherwise leave a directory
             ;; this loop never visits.
             (fsync-dir! dir stage))))
-      prefixes))
+      (list entry)))
 
   ;; THE LOCAL WRITER IS THE ONE THIS STORE OWNS. owner.sexp is written
   ;; by init and by adopt and never by a mirror, so it is the same fact
@@ -1686,6 +1919,39 @@
   ;; into a store with no writer at all: measured, `log13`'s row for a retired
   ;; writer whose sequence still matches raised `~s is not a string` instead of
   ;; refusing with `retired`.
+  ;; -> (writer-unreadable (path p) (reason r)) for the first writer whose
+  ;; discovery is `unreadable`, or #f. Asked only when no readable local
+  ;; writer was found (R4's session gate).
+  (define (unreadable-writer-refusal ls)
+    (let loop ((es (load-session-prefixes ls)))
+      (cond
+        ((null? es) #f)
+        ((eq? (discovery-origin (cdr (car es))) 'unreadable)
+         (let ((d (log-error-detail (unreadable-note (cdr (car es))))))
+           (list 'writer-unreadable
+                 (list 'path (cdr (assq 'path d)))
+                 (list 'reason (cdr (assq 'reason d))))))
+        (else (loop (cdr es))))))
+
+  ;; A LOCAL WRITER STOPPED BY A SEGMENT IT CANNOT READ IS NOT WRITTEN
+  ;; (K12). Its readable prefix is delivered, but what lies past the stop
+  ;; is unknown, and a record appended after it would be numbered against
+  ;; history this store cannot see. The session refuses it in K9's shape,
+  ;; naming the segment; it does not fall back to another local writer.
+  (define (segment-unreadable-refusal ls writer)
+    (let* ((entry (assoc writer (load-session-prefixes ls)))
+           (note (and entry
+                      (find (lambda (n)
+                              (and (eq? (log-error-kind n) 'segment-unreadable)
+                                   (pair? (log-error-detail n))
+                                   (assq 'path (log-error-detail n))))
+                            (discovery-integrity (cdr entry))))))
+      (and note
+           (let ((d (log-error-detail note)))
+             (list 'writer-unreadable
+                   (list 'path (cdr (assq 'path d)))
+                   (list 'reason (cdr (assq 'reason d))))))))
+
   (define (session-writer-of store ls)
     (let ((locals (filter (lambda (e) (eq? (discovery-origin (cdr e)) 'local))
                           (load-session-prefixes ls))))
@@ -1720,7 +1986,10 @@
               ;; that counts them read differently for no reason the
               ;; store cares about.
               (let ((ls (open-load store 'held-exclusive)))
-                (let* ((local (session-writer-of store ls))
+                (let* ((found (session-writer-of store ls))
+                       (stopped (and found (segment-unreadable-refusal ls found)))
+                       (local (and (not stopped) found))
+                       (refusal (or stopped (and (not local) (unreadable-writer-refusal ls))))
                        (entry (and local (assoc local (load-session-prefixes ls))))
                        (end (and entry (discovery-end-seq (cdr entry))))
                        (s (make-session store lock ls on-deliver local
@@ -1738,7 +2007,8 @@
                                         #f
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
-                                        (and end (+ end 1)) #f)))
+                                        (and end (+ end 1)) #f
+                                        refusal)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -1926,9 +2196,13 @@
            (let ((notes (discovery-integrity (cdr entry))))
              (and (pair? notes) (log-error-kind (car notes)))))))
 
+  ;; An unreadable writer has nothing known to be available: records that
+  ;; depend on it wait. Its origin is asked before its end.
   (define (available-through s writer)
     (let* ((entry (assoc writer (load-session-prefixes (session-load s))))
-           (found (and entry (discovery-end-seq (cdr entry))))
+           (found (and entry
+                       (not (eq? (discovery-origin (cdr entry)) 'unreadable))
+                       (discovery-end-seq (cdr entry))))
            (mine (and (session-writer s) (string=? writer (session-writer s))
                       (session-next-seq s)
                       (- (session-next-seq s) 1))))
@@ -1942,6 +2216,9 @@
   ;; number: read, validated, applied and durable answer different
   ;; questions and the gaps between them are where the interesting
   ;; failures live.
+  ;; An unreadable writer's frontier is not a set of numbers: it is reported
+  ;; as (<writer> (unreadable (path p) (reason r))), and its coordinates are
+  ;; not asked.
   (define (session-frontiers s)
     (check-live! 'session-frontiers s)
     (let ((ls (session-load s)))
@@ -1949,6 +2226,10 @@
              (let* ((writer (car entry))
                     (p (cdr entry))
                     (applied (assoc writer (session-applied s))))
+               (if (eq? (discovery-origin p) 'unreadable)
+                   (let ((d (log-error-detail (unreadable-note p))))
+                     (list writer (list 'unreadable (list 'path (cdr (assq 'path d)))
+                                        (list 'reason (cdr (assq 'reason d))))))
                (list writer
                      ;; THE PHYSICAL CURSOR IS WHERE THE BYTES END, which
                      ;; is not where the validated prefix ends: a torn
@@ -1958,7 +2239,7 @@
                      (cons 'physical (discovery-physical-current p))
                      (cons 'contiguous (discovery-end-seq p))
                      (cons 'applied (if applied (cdr applied) 0))
-                     (cons 'durable (discovery-end-seq p)))))
+                     (cons 'durable (discovery-end-seq p))))))
            (load-session-prefixes ls))))
 
   ;; NO USABLE PREPARATION VIEW UNTIL THE REDUCER HAS CONFIRMED. Between
@@ -2197,11 +2478,17 @@
   ;; metadata file that will not open is a fact about one writer, not an
   ;; exception that should leave a session start or a version comparison
   ;; by the exception path.
+  ;; -> #f when the file is not there, its sha when it is, or
+  ;; (unreadable <path> <reason> <errno>) when it cannot be read.
   (define (file-version store writer name)
-    (let ((p (writer-file store writer name)))
-      (and (file-exists? p)
-           (guard (e (#t (list 'unreadable p (unreadable-reason e))))
-             (segment-sha (read-whole p))))))
+    (let* ((p (writer-file store writer name))
+           (r (guard (e ((unreadable-entry? e)
+                         (list 'unreadable p (unreadable-entry-reason e)
+                               (unreadable-entry-errno e))))
+                (read-entry p))))
+      (cond ((eq? r 'absent) #f)
+            ((pair? r) r)
+            (else (segment-sha r)))))
 
   ;; Which of this writer's metadata files cannot be read, if any.
   (define (unreadable-metadata store writer)
@@ -2270,13 +2557,18 @@
             (deliver-from-cut! s (session-applied s)))
         (session-epoch s))))
 
+  ;; A writer that has become unreadable is one whose applied records can no
+  ;; longer be seen: if any of them was applied, the session is beyond what
+  ;; the load shows, and a reset follows. Its origin is asked before its end.
   (define (applied-beyond? s ls)
     (let loop ((es (session-applied s)))
       (cond
         ((null? es) #f)
         (else
          (let* ((entry (assoc (caar es) (load-session-prefixes ls)))
-                (reach (if entry (discovery-end-seq (cdr entry)) 0)))
+                (reach (cond ((not entry) 0)
+                             ((eq? (discovery-origin (cdr entry)) 'unreadable) 0)
+                             (else (discovery-end-seq (cdr entry))))))
            (if (> (cdar es) reach) #t (loop (cdr es))))))))
 
   (define (versions-changed? s)
@@ -3311,9 +3603,18 @@
   ;; record naming a stretch is a fact about the writer either way, and
   ;; a derivation that returned early would make the two arms disagree
   ;; about what the store knows.
+  ;; DISCOVERY FIRST. For a writer whose discovery is `unreadable` the
+  ;; answer is the conservative (writer 0 #f) and nothing else is read: its
+  ;; retirement record sits in the directory that could not be read, and
+  ;; its coordinates are not there to ask.
   (define (uncertain-derived store writer)
-    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive)))
-          (recorded (retired-uncertain store writer)))
+    (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
+      (if (and p (eq? (discovery-origin p) 'unreadable))
+          (list (list writer 0 #f))
+          (uncertain-derived-readable store writer p))))
+
+  (define (uncertain-derived-readable store writer p)
+    (let ((recorded (retired-uncertain store writer)))
       (cond
         ((not p) (append recorded (list (list writer 0 #f))))
         ((eq? (discovery-origin p) 'incomplete-publication)
@@ -3340,12 +3641,31 @@
   ;; not a list of intervals, otherwise the list. A file that parses into
   ;; something of the wrong shape is unreadable and not empty: an empty
   ;; list is a positive claim that nothing is uncertain.
+  ;; -> #f, the symbol `unreadable`, or a list of intervals: a strict
+  ;; contract, because its persistence callers write the list into a
+  ;; retirement record, which must never hold a derived fallback.
+  ;; `unreadable` is answered when the cache cannot be read AND when the
+  ;; writer's discovery is `unreadable` -- a cache file that is not there
+  ;; says nothing about a writer whose directory could not be read. The
+  ;; path and the reason are not lost behind the bare symbol: they go to
+  ;; the trace, as (uncertain-cache-unreadable (<path> . <reason>)).
   (define (uncertain-cached store writer)
     (let ((path (uncertain-path store writer)))
-      (and (file-exists? path)
-           (let ((d (guard (e (#t 'unreadable))
-                      (string->sexpr-extended (utf8->string (read-whole path))))))
-             (if (and (list? d) (for-all uncertain-interval? d)) d 'unreadable)))))
+      (guard (e ((unreadable-entry? e)
+                 (trace-event! 'uncertain-cache-unreadable
+                               (cons (unreadable-entry-path e) (unreadable-entry-reason e)) #f)
+                 'unreadable))
+        (let ((p (discover-prefix store writer 'held-exclusive)))
+          (if (eq? (discovery-origin p) 'unreadable)
+              (let ((detail (log-error-detail (unreadable-note p))))
+                (trace-event! 'uncertain-cache-unreadable
+                              (cons (cdr (assq 'path detail)) (cdr (assq 'reason detail))) #f)
+                'unreadable)
+              (let ((bytes (read-entry path)))
+                (and (not (eq? bytes 'absent))
+                     (let ((d (guard (e (#t 'unreadable))
+                                (string->sexpr-extended (utf8->string bytes)))))
+                       (if (and (list? d) (for-all uncertain-interval? d)) d 'unreadable)))))))))
 
   ;; `(<intervals> <integrity or #f>)`. The intervals are what a caller
   ;; must test against; the integrity is what the store must report.
@@ -3532,8 +3852,15 @@
         (directory-entry-durable! dir 'publish))))
 
   ;; #f when the manifest reads, or the detail of why it does not.
+  ;; A MANIFEST THAT CANNOT BE READ answers with the path that failed and the
+  ;; system's words for it, whichever form the failure took: a log-error
+  ;; for a manifest that reads and will not parse, unreadable-entry for one
+  ;; that will not read.
   (define (manifest-unreadable store writer)
-    (guard (e ((log-error? e)
+    (guard (e ((unreadable-entry? e)
+               (list (list 'path (unreadable-entry-path e))
+                     (list 'reason (unreadable-entry-reason e))))
+              ((log-error? e)
                (let ((detail (log-error-detail e)))
                  (list (list 'path (cdr (assq 'path detail)))
                        (list 'reason (let ((r (assq 'reason detail)))
@@ -3772,12 +4099,18 @@
     (let ((r (retired-of store writer)))
       (and r (not (eq? (car r) 'malformed)) (eqv? (car r) segment))))
 
+  ;; A LOCAL WRITER WHOSE CURRENT SEGMENT CANNOT BE SIZED MAY BE WRITING
+  ;; ANY OF ITS SEGMENTS (K12): no-append-target here means "which one is
+  ;; current is not known", not "none is", and a repair that replaced the
+  ;; live segment is the thing this check exists to refuse.
   (define (active-current-segment? store writer segment)
     (and (file-exists? (writer-file store writer "owner.sexp"))
          (not (retired-of store writer))
          (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
-           (and p (pair? (discovery-physical-current p))
-                (eqv? (car (discovery-physical-current p)) segment)))))
+           (and p
+                (let ((phys (discovery-physical-current p)))
+                  (or (eq? phys 'no-append-target)
+                      (and (pair? phys) (eqv? (car phys) segment))))))))
 
 ;; ---- generations (section 4.1) ---------------------------------------------
 
@@ -3978,11 +4311,14 @@
   ;; mutation path gets a reader that says `unreadable` instead of
   ;; guessing, and refuses to rewrite a record it could not read.
   (define (retired-uncertain-strict store writer)
-    (let ((p (writer-file store writer "retired.sexp")))
-      (if (not (file-exists? p))
+    (let* ((p (writer-file store writer "retired.sexp"))
+           (bytes (guard (e ((unreadable-entry? e) 'unreadable)) (read-entry p))))
+      (if (eq? bytes 'absent)
           '()
-          (let ((d (guard (e (#t 'unreadable))
-                     (string->sexpr-extended (utf8->string (read-whole p))))))
+          (let ((d (if (eq? bytes 'unreadable)
+                       'unreadable
+                       (guard (e (#t 'unreadable))
+                         (string->sexpr-extended (utf8->string bytes))))))
             (cond
               ((eq? d 'unreadable) 'unreadable)
               ((not (list? d)) 'unreadable)
@@ -4006,12 +4342,16 @@
                           (retired-legacy-uncertain writer d))))
                    (else (loop (cdr xs)))))))))))
 
+  ;; A RECORD THAT CANNOT BE READ IS NOT A MALFORMED ONE: unreadable-entry
+  ;; goes up (uncertain-derived asks discovery before this is reached); a
+  ;; record that reads and will not parse keeps the conservative answer.
   (define (retired-uncertain store writer)
-    (let ((p (writer-file store writer "retired.sexp")))
-      (if (not (file-exists? p))
+    (let* ((p (writer-file store writer "retired.sexp"))
+           (bytes (read-entry p)))
+      (if (eq? bytes 'absent)
           '()
           (let ((d (guard (e (#t #f))
-                     (string->sexpr-extended (utf8->string (read-whole p))))))
+                     (string->sexpr-extended (utf8->string bytes)))))
             (if (not (list? d))
                 (list (list writer 0 #f))
                 (let loop ((xs d))
@@ -4785,6 +5125,10 @@
       ((session-poisoned s) 'writer-stopped)
       ((session-retired? s) 'retired)
       ((session-unconfirmed s) 'not-ready)
+      ;; A WRITER THAT COULD NOT BE READ, WITH NO READABLE LOCAL WRITER
+      ;; BESIDE IT, is not "no local writer": it may be this store's own
+      ;; (R4). The refusal names the path and the reason.
+      ((session-unreadable-refusal s))
       ;; NEVER: NO WRITER AT ALL IS ITS OWN ANSWER, AND IT HAS TO COME FIRST.
       ;; `predecessor-applied?` asks whether this writer's predecessor is in
       ;; the state; with no writer there is no predecessor either, so the
@@ -5338,7 +5682,17 @@
   ;; SUPPORT IS MEASURED FROM THE DISCOVERY RESULT. There is no second
   ;; scan here: coverage is each writer's end-seq, which already has the
   ;; quarantined suffix removed and the retirement boundary applied.
+  ;; A LOAD WITH AN UNREADABLE WRITER TAKES NO SNAPSHOT BASELINE. Choosing
+  ;; one reads every writer's end, and an unreadable writer has none; the
+  ;; load replays instead, and its caller acknowledges or refuses the
+  ;; replay like any other incomplete one. The origin is asked first, so no
+  ;; coordinate of that writer is read here.
   (define (select-snapshot store prefixes)
+    (if (exists (lambda (e) (eq? (discovery-origin (cdr e)) 'unreadable)) prefixes)
+        (list #f #f 'writer-unreadable)
+        (select-readable-snapshot store prefixes)))
+
+  (define (select-readable-snapshot store prefixes)
     (let ((dir (string-append store "/snap"))
           (coverage (map (lambda (e) (cons (car e) (discovery-end-seq (cdr e))))
                          prefixes)))
@@ -5409,14 +5763,22 @@
     (guard (e (#t #f))
       (let ((store (load-session-store ls)))
         (list (metadata-versions store)
+              ;; AN UNREADABLE WRITER CONTRIBUTES WHAT IS KNOWN OF IT -- the
+              ;; path and the reason -- so the fingerprint differs from every
+              ;; one taken while the writer was readable, and no reuse
+              ;; follows; its coordinates are not asked.
               (map (lambda (entry)
                      (let ((writer (car entry)) (p (cdr entry)))
+                       (if (eq? (discovery-origin p) 'unreadable)
+                           (let ((d (log-error-detail (unreadable-note p))))
+                             (list writer 'unreadable (cdr (assq 'path d)) (cdr (assq 'reason d))
+                                   (cdr (assq 'errno d))))
                        (list writer (discovery-origin p) (discovery-end-seq p)
                              (discovery-integrity p) (discovery-quarantine p) (discovery-retired p)
                              (map (lambda (range)
                                     (let ((bytes (read-segment store writer (car range))))
                                       (unless (bytevector? bytes) (raise 'unreadable-resident-source))
-                                      (list range (segment-sha bytes)))) (discovery-segment-ranges p)))))
+                                      (list range (segment-sha bytes)))) (discovery-segment-ranges p))))))
                    (load-session-prefixes ls))))))
 
   (define (load-prefix ls writer)
@@ -5581,7 +5943,15 @@
         ((and (<= (cadr (car rs)) seq) (<= seq (caddr (car rs)))) (caar rs))
         (else (loop (cdr rs))))))
 
+  ;; AN UNREADABLE WRITER DELIVERS NOTHING, and the load goes on to the
+  ;; others; the origin is asked before any coordinate is. Its note is in
+  ;; the load's integrity, where everything that reports the load finds it.
   (define (deliver-writer ls writer p from on-deliver)
+    (if (eq? (discovery-origin p) 'unreadable)
+        'ok
+        (deliver-readable-writer ls writer p from on-deliver)))
+
+  (define (deliver-readable-writer ls writer p from on-deliver)
     (let ((limit (discovery-end-seq p))
           (store (load-session-store ls)))
       (cond
@@ -5603,7 +5973,7 @@
                                       (cdr buf)
                                       (read-segment store writer seg))))
                       (cond
-                        ((eq? bytes 'unreadable) 'failed)
+                        ((unreadable-segment? bytes) 'failed)
                         (else
                          ;; THE SCANNER'S VERDICT IS THE POINT OF CALLING
                          ;; IT. Discarding it meant only a literal

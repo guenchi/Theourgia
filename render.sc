@@ -50,11 +50,25 @@
 
   (define (render-wire value)
     (call-with-string-output-port (lambda (p) (write value p) (newline p))))
+  ;; THE INCOMPLETE CLAUSE IS PRINTED EVEN WHERE THE REST OF THE ANSWER IS
+  ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
+  ;; used to drop every clause after the body; the one saying the answer
+  ;; is missing a writer's records is the one a reader must not lose (K10).
   (define (render-human answer)
-    (cond
-      ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
-            (eq? (caadr answer) 'text)) (cadadr answer))
-      ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
-            (eq? (caadr answer) 'items)) (apply string-append (map render-wire (cdadr answer))))
-      (else (render-wire answer))))
+    (let ((clause (and (pair? answer) (list? answer)
+                       (find (lambda (x) (and (pair? x) (eq? (car x) 'incomplete))) (cdr answer)))))
+      (cond
+        ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+              (eq? (caadr answer) 'text))
+         (let ((text (cadadr answer)))
+           (cond ((not clause) text)
+                 ((or (= 0 (string-length text))
+                      (char=? #\newline (string-ref text (- (string-length text) 1))))
+                  (string-append text (render-wire clause)))
+                 (else (string-append text "\n" (render-wire clause))))))
+        ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+              (eq? (caadr answer) 'items))
+         (string-append (apply string-append (map render-wire (cdadr answer)))
+                        (if clause (render-wire clause) "")))
+        (else (render-wire answer)))))
 )

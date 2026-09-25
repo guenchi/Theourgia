@@ -36,9 +36,18 @@
 ;; go to stderr wrapped in `(out …)` / `(err …)` frames written by this
 ;; file, outside the sandbox. Evaluated code is handed the wrappers, so
 ;; it cannot reach the protocol and cannot forge an answer.
+;;
+;; KEY: THE PROTOCOL IS "READY, THEN ZERO OR MORE (incomplete ...) NOTES, THEN
+;; ONE ANSWER". A note is written by this worker when a load of the store
+;; hears of a writer it could not read, and it is the whole clause heard so
+;; far; the answer is written last and carries none. The supervisor keeps
+;; the last note and appends it to whatever answer it returns, a limit or a
+;; lost worker included (K14; review r4, A1-1). A refusal of the handshake
+;; comes before any load and so carries none.
 
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
         (theourgia eval-context) (theourgia code-project)
+        (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause)
         (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU))
 
 (define args (cdr (command-line)))
@@ -185,6 +194,23 @@
     (cond ((null? ds) #f)
           ((equal? id (car (car ds))) (cadddr (car ds)))
           (else (loop (cdr ds))))))
+
+;; WHAT THE LOADS THIS WORKER OPENS COULD NOT READ is said as a note the
+;; moment a load hears it, and the supervisor appends the last note to the
+;; answer it returns, whatever that answer is (K10, K14): a value computed
+;; without a writer's records and answered plainly would be a quiet absence.
+;; The worker listens the way rpc dispatch does, under the store string it
+;; hands to every load. A note is said only when what was heard grows, so
+;; the last one is the whole of it; an evaluation stopped by a limit after
+;; the load has already said it.
+(define heard '())
+(load-listener-add! store
+  (lambda (found)
+    (let ((merged (merge-unreadable heard found)))
+      (unless (equal? merged heard)
+        (set! heard merged)
+        (let ((clause (incomplete-clause heard)))
+          (when clause (say-datum! clause)))))))
 
 (define (answer)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) e)

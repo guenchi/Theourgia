@@ -538,11 +538,25 @@
 (want "CONTROL: with the manifest readable the writer has its records"
       (begin (build!) (child-says #f 1 (recs 1 3)) (open-and-report))
       (list 3 '()))
+;; THE ORIGIN AND THE NOTE, NOT THE END. An unreadable writer has no end:
+;; asking a discovery whose origin is `unreadable` for its end raises
+;; (F77, R2d), because an end of 0 is the reading of a writer that
+;; published nothing -- the very answer an unreadable directory used to
+;; get. So this row reads what is known of it. The permission is restored
+;; on the way out whatever happens, so the row after it starts readable.
+(define (open-and-report-origin)
+  (let* ((ls (log-open d))
+         (p (load-prefix ls M))
+         (origin (if p (discovery-origin p) 'no-prefix))
+         (kinds (map (lambda (e) (log-error-kind (cdr e))) (load-integrity ls))))
+    (load-abort! ls 'probe)
+    (list origin kinds)))
+
 (want "an unreadable manifest stops that writer, and the open still succeeds"
       (begin (build!) (child-says #f 1 (recs 1 3))
              (unreadable-manifest! M)
-             (let ((r (open-and-report))) (readable-manifest! M) r))
-      (list 0 '(metadata-unreadable)))
+             (dynamic-wind void open-and-report-origin (lambda () (readable-manifest! M))))
+      (list 'unreadable '(metadata-unreadable)))
 (want "TWIN: made readable again, the records are delivered once more"
       (open-and-report)
       (list 3 '()))
@@ -574,7 +588,7 @@
                   (session-append! s (make-frame (view-revision v) (view-epoch v)
                                                  (view-writer v) (view-expect-seq v)
                                                  "agent:claude" '() '(put "w.1" ())))
-                  'no-view)))
+                  (list 'no-view (session-view-refusal s)))))
       (log-end! s)
       (if (pair? r) (list (car r) (cadr r)) r))))
 (define (local-log-size)
@@ -584,16 +598,26 @@
 (want "CONTROL: with its metadata readable the local writer appends"
       (begin (build!) (append-once))
       '(committed 1))
-(want "with its own metadata unreadable the append is refused, and nothing is written"
+;; A NEW SESSION CANNOT TELL ITS OWN WRITER FROM ONE IT CANNOT READ. With
+;; its only local writer's metadata unreadable, this store has no readable
+;; local writer and one it cannot read, which may be its own: the session
+;; gets no view, and the reason it gives is writer-unreadable (F77, R4 as
+;; ruled in K9). It used to be refused only at the append, as
+;; metadata-unreadable; the append is no longer reached.
+(want "with its own metadata unreadable the session is refused, and nothing is written"
       (begin (build!)
              (put! (string-append d "/writers/" W "/published.sexp") (string->utf8 "()\n"))
              (append-once)
              (let ((before (local-log-size)))
                (system (string-append "chmod 000 " d "/writers/" W "/published.sexp"))
-               (let ((answer (append-once)))
-                 (system (string-append "chmod 644 " d "/writers/" W "/published.sexp"))
-                 (list answer (= before (local-log-size))))))
-      (list '(refused-before-reserve metadata-unreadable) #t))
+               (let ((answer (dynamic-wind void append-once
+                               (lambda ()
+                                 (system (string-append "chmod 644 " d "/writers/" W "/published.sexp"))))))
+                 (list (if (and (pair? answer) (pair? (cdr answer)) (pair? (cadr answer)))
+                           (list (car answer) (car (cadr answer)))
+                           answer)
+                       (= before (local-log-size))))))
+      (list '(no-view writer-unreadable) #t))
 (want "TWIN: readable again, the next append commits"
       (append-once)
       '(committed 2))

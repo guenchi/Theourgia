@@ -69,6 +69,13 @@
 
   (define (guarded thunk)
     (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
+              ;; AN ENTRY THAT COULD NOT BE READ IS NAMED, NOT CALLED
+              ;; INTERNAL: the path and the system's reason, so the caller
+              ;; knows which file and why (F77, K1).
+              ((unreadable-entry? e)
+               (list 'error 'unreadable
+                     (list 'path (unreadable-entry-path e))
+                     (list 'reason (unreadable-entry-reason e))))
               ((log-error? e) (describe-log-error e))
               ;; A THROWN VALUE NEED NOT BE A CONDITION. The sexpr layer
               ;; raises `#(sexpr-error <message> <position>)`, a vector,
@@ -1614,7 +1621,50 @@
   ;; after `--` -- suppressed the default and was then refused for
   ;; having no writer. The envelope's writer now arrives here, beside
   ;; the actor, and the arguments are passed through untouched.
+  ;;
+  ;; KEY: AN ANSWER BUILT FROM AN INCOMPLETE REDUCTION SAYS SO, AND IT SAYS
+  ;; SO HERE, ONCE, NOT IN EACH VERB (K10). A writer this store could not
+  ;; read is left out of every reduction, and a read that answered without
+  ;; it would be answering "these records are not there" about records it
+  ;; could not see -- the quiet absence F77 exists to remove. So every
+  ;; answer, ok or refusal, whose loads found an unreadable writer ends in
+  ;;   (incomplete (unreadable (writer w) (path p) (reason r)) ...)
+  ;; and an answer from a healthy store is exactly what it was.
+  ;;
+  ;; What was found comes from two places: the loads this request opened,
+  ;; which report to a listener registered under this request's own copy
+  ;; of the store string (log.sc, load-listener-add!), and the reduction
+  ;; the caller handed in, which remembers its load (log.sc,
+  ;; unreadable-behind). A dispatch nested inside another reuses the
+  ;; outer one's key, so its loads are heard by the answer that goes out.
+  ;;
+  ;; NOTE: AN ANSWER THAT LEAVES AS A RAISE HAS NO TAIL TO CARRY THE CLAUSE.
+  ;; The daemon's answer-for turns such a raise into an answer after this
+  ;; point; that answer does not carry it.
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
+    (let* ((own? (and (string? store) (not (load-listener-of store))))
+           (key (if own? (string-copy store) store))
+           (heard '())
+           (hear! (lambda (found) (set! heard (merge-unreadable heard found)))))
+      (let ((answer (if own?
+                        (dynamic-wind
+                          (lambda () (load-listener-add! key hear!))
+                          (lambda () (apply dispatch-verb key verb nodes actor rest))
+                          (lambda () (load-listener-remove! key)))
+                        (apply dispatch-verb key verb nodes actor rest))))
+        (with-incomplete-clause
+          answer
+          (merge-unreadable heard
+                            (let ((state (and (pair? rest) (car rest))))
+                              (if state (unreadable-behind state) '())))))))
+
+  (define (with-incomplete-clause answer unreadable)
+    (let ((clause (incomplete-clause unreadable)))
+      (if (and clause (pair? answer) (list? answer))
+          (append answer (list clause))
+          answer)))
+
+  (define (dispatch-verb store verb nodes actor . rest)
     (let* ((state (and (pair? rest) (car rest)))
            (default-writer (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
            ;; NEVER: WHAT THE CALLER PIPED IN, AND WHERE THE CALLER WAS. Both

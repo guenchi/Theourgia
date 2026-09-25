@@ -40,7 +40,8 @@
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
-                spawn-detached! trace-event! fs-error? fs-error-errno)
+                spawn-detached! trace-event! fs-error? fs-error-errno
+                unreadable-entry? unreadable-entry-path unreadable-entry-reason)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
 
@@ -488,9 +489,33 @@
 
   (define (start-one! argv store socket)
     (let* ((log-path (serve-log-path store))
-           (before (log-length log-path)))
+           ;; NEVER: A LOG THAT IS THERE AND CANNOT BE OPENED DOES NOT LEAVE
+           ;; THIS FUNCTION. Its size is read before the guard below, and
+           ;; since R1 file-size raises unreadable-entry for a file it cannot
+           ;; open; that went past every outcome this library defines (review
+           ;; r2, B1). It is the same failed start as the run directory
+           ;; below, and it is answered the same way. Only unreadable-entry is
+           ;; caught here: any other failure of this read leaves as it always
+           ;; did.
+           (before (guard (e ((unreadable-entry? e) e))
+                     (log-length log-path))))
+      (if (unreadable-entry? before)
+          (list 'error 'serve-start-failed
+                (list 'unreadable
+                      (list 'path (unreadable-entry-path before))
+                      (list 'reason (unreadable-entry-reason before))))
       (guard (e ((fs-error? e) (list 'error 'serve-start-failed
-                                     (list 'spawn (fs-error-errno e)))))
+                                     (list 'spawn (fs-error-errno e))))
+                ;; AND A DIRECTORY ON THE WAY THAT CANNOT BE SEARCHED IS THE
+                ;; SAME FAILED START. mkdir-p! asks the type of each level,
+                ;; and since R1 a level it cannot search raises
+                ;; unreadable-entry rather than answering "not a directory";
+                ;; caught only as fs-error, that left this function exactly
+                ;; the way the note below says it must not.
+                ((unreadable-entry? e) (list 'error 'serve-start-failed
+                                             (list 'unreadable
+                                                   (list 'path (unreadable-entry-path e))
+                                                   (list 'reason (unreadable-entry-reason e))))))
         ;; NEVER: MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE. It sat
         ;; outside this guard, so a run root that could not be written to
         ;; raised out of `call!` entirely -- past every outcome this
@@ -512,7 +537,7 @@
               ((>= (wall-clock-ms) deadline) (start-failure log-path before))
               (else
                (sleep (make-time 'time-duration 50000000 0))
-               (wait))))))))
+               (wait)))))))))
 
   (define (connects? socket)
     (guard (e ((fs-error? e) #f))

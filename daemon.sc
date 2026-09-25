@@ -64,7 +64,8 @@
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
           (only (theourgia store) open-and-reduce store-publish-hook!)
-          (only (theourgia log) store-state-snapshot)
+          (only (theourgia log) store-state-snapshot
+                unreadable-entry? unreadable-entry-path unreadable-entry-reason)
           (only (theourgia arguments) parse-arguments argument-option)
           ;; KEY: THE SAME LEXICAL RULE GUARDS BOTH DIRECTIONS. A request and
           ;; a reply are read by the same reader, and what that reader must
@@ -841,6 +842,12 @@
   ;; is applied by the dispatcher rather than restated here.
   (define (answer-for store parsed actor state writer piped cwd)
     (guard (e ((and (pair? e) (eq? 'error (car e))) e)
+              ;; As rpc's guarded: an unreadable entry is named, never
+              ;; answered as internal (F77, K1).
+              ((unreadable-entry? e)
+               (list 'error 'unreadable
+                     (list 'path (unreadable-entry-path e))
+                     (list 'reason (unreadable-entry-reason e))))
               (#t (list 'error 'internal (list 'reason (condition-text e)))))
       (rpc-dispatch store parsed actor state writer
                     (and (string? piped) (lambda () piped))
