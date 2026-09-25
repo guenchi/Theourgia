@@ -182,6 +182,24 @@ function windowOn(answers: Record<string, StoreVerdict>): {
   };
 }
 
+/*
+ * A THROWN VALUE, NAMED FOR A FAILURE MESSAGE, without anything that can
+ * throw itself: `String` refuses an object with no prototype, and
+ * `JSON.stringify` a BigInt.
+ */
+function describeValue(value: unknown): string {
+  if (typeof value === 'bigint') {
+    return `${value.toString()}n`;
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.getPrototypeOf(value) === null ? '(an object with no prototype)' : '(an object)';
+  }
+  if (Object.is(value, -0)) {
+    return '-0';
+  }
+  return String(value);
+}
+
 const DAMAGED: StoreVerdict = { known: true, verdict: 'damaged' };
 const SOUND: StoreVerdict = { known: true, verdict: 'ok' };
 
@@ -250,6 +268,35 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
   });
 
   /*
+   * AND THE MARKS ARE NOT A WINDOW OF THE LAST FEW. (queue item 17) A watch
+   * that cleared its marks once it held two passed the cell above -- A, B, A,
+   * B never lets two be forgotten before they are asked again -- and one that
+   * cleared them at three passed this cell's first version, A, B, C, A (review
+   * r1). So the first store is followed by thirty-two others: a watch that
+   * forgets past any number up to that asks it again. Past thirty-two is not
+   * measured.
+   */
+  it('keeps every store it told about, however many others it tells about after', async () => {
+    const others = Array.from({ length: 32 }, (_, i) => `/stores/other-${i}`);
+    const answers: Record<string, StoreVerdict> = { '/stores/A': DAMAGED };
+    others.forEach((store) => {
+      answers[store] = DAMAGED;
+    });
+    const w = windowOn(answers);
+    const watch = new IntegrityWatch();
+    for (const store of ['/stores/A', ...others, '/stores/A']) {
+      await watch.check(w.question(store));
+    }
+    assert.strictEqual(w.shown.length, 33, `${w.shown.length} stores were reported where 33 were damaged`);
+    assert.strictEqual(w.asked['/stores/A'], 1, 'the first store was asked again after two others were reported');
+    assert.strictEqual(
+      w.shown.filter((n) => n.text.includes('/stores/A')).length,
+      1,
+      'the first store was reported again after two others were'
+    );
+  });
+
+  /*
    * KEY: AN ANSWER FOR A WINDOW THAT HAS MOVED ON IS DROPPED, and the store
    * it was about is not marked, so it is asked again. The same cell also
    * lets an answer through when nothing moved: a guard turned around would
@@ -287,10 +334,33 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
    */
   it('keeps a store unmarked when its warning could not be shown, and shows it next time', async () => {
     /*
-     * An Error and a bare string: what `show` throws is not this watch's to
-     * choose, and the mark must not depend on its shape.
+     * What `show` throws is not this watch's to choose, and the mark must not
+     * depend on its shape. AND EVERY FALSY VALUE (queue item 17): a watch that
+     * took the mark back only `if (e)` passed with an Error and a string, and
+     * one that did so only `if (e !== null)` passed with those plus
+     * `undefined`, `0` and `''` (review r1). All eight falsy values, and four
+     * that are not.
+     *
+     * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT, for the half that says
+     * the check rejects: `assert.rejects` pins that a throwing `show` escapes
+     * `check`, which is today's behaviour and not a decision -- queue item 18
+     * decides it and will change this line. The half that is measured is the
+     * mark: unmarked after the throw, shown on the next check.
      */
-    const thrown: unknown[] = [new Error('the editor could not show it'), 'the editor could not show it'];
+    const thrown: unknown[] = [
+      new Error('the editor could not show it'),
+      'the editor could not show it',
+      7,
+      Object.create(null),
+      undefined,
+      null,
+      false,
+      0,
+      -0,
+      NaN,
+      '',
+      BigInt(0)
+    ];
     for (const value of thrown) {
       const w = windowOn({ '/stores/A': DAMAGED });
       const watch = new IntegrityWatch();
@@ -300,9 +370,9 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
           throw value;
         }
       };
-      await assert.rejects(watch.check(failing), (e: unknown) => e === value);
+      await assert.rejects(watch.check(failing), (e: unknown) => Object.is(e, value));
       await watch.check(w.question('/stores/A'));
-      const what = typeof value;
+      const what = `${typeof value} ${describeValue(value)}`;
       assert.strictEqual(w.asked['/stores/A'], 2, `(${what}) a store whose warning was never shown was not asked again`);
       assert.strictEqual(w.shown.length, 1, `(${what}) the warning that could not be shown was not shown the next time`);
     }
@@ -336,6 +406,32 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
       await watch.check(w.question('/stores/A'));
       assert.strictEqual(w.asked['/stores/A'], 1, `(${what}) a store that could not be asked was not asked again`);
       assert.strictEqual(w.shown.length, 1, `(${what}) a store that could not be asked was not reported once it answered`);
+    }
+  });
+
+  /*
+   * AND AN `ask` THAT THROWS BEFORE IT RETURNS A PROMISE. (queue item 17)
+   * Every failing `ask` above rejects; a watch that called `ask` outside its
+   * `try` and awaited the promise inside passed all of them, and lets this
+   * one out of a call nobody waits for. And whatever it throws (review r1: a
+   * catch that handled only `Error` passed with an Error alone).
+   */
+  it('treats an ask that throws at once as one that failed', async () => {
+    const thrown: unknown[] = [new Error('the question could not be put'), 'failed', 7, Object.create(null), undefined, null, 0, ''];
+    for (const value of thrown) {
+      const w = windowOn({ '/stores/A': DAMAGED });
+      const watch = new IntegrityWatch();
+      const failing: IntegrityQuestion = {
+        ...w.question('/stores/A'),
+        ask: () => {
+          throw value;
+        }
+      };
+      const what = `${typeof value} ${describeValue(value)}`;
+      await watch.check(failing);
+      assert.strictEqual(w.shown.length, 0, `(${what}) something was said about a store that could not be asked`);
+      await watch.check(w.question('/stores/A'));
+      assert.strictEqual(w.shown.length, 1, `(${what}) a store whose question threw was not asked again and reported`);
     }
   });
 });

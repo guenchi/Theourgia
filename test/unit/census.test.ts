@@ -184,9 +184,11 @@ const AT_LEAST: Array<[string, number]> = [
   /*
    * ADDED in plugin-r3: what `check` says about a store's condition, read
    * whatever its exit code, and the one sentence said about it; then the
-   * eight that drive `IntegrityWatch`, when to ask and when to tell.
+   * eight that drive `IntegrityWatch`, when to ask and when to tell. RAISED
+   * in item 17, 13 -> 15: marks kept past two other stores, and an `ask`
+   * that throws at once.
    */
-  ['integrity.test.ts', 13],
+  ['integrity.test.ts', 15],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
    * what a search does, and the envelope --wire puts round a commit.
