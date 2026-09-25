@@ -262,6 +262,10 @@ export interface Searcher {
 export type SearchOutcome =
   | { did: 'nothing'; because: 'cancelled' | 'empty-query' | 'no-store' }
   | { did: 'nothing'; because: 'no-hits'; query: string }
+  /*
+   * NOTE: `of` IS HOW MANY WERE OFFERED, not how many match -- for the
+   * reason written at the picker below.
+   */
   | { did: 'opened'; id: string; query: string; of: number }
   | { did: 'failed'; query: string; because: string };
 
@@ -312,7 +316,30 @@ export async function runSearch(
     await editor.open(hits[0].id);
     return { did: 'opened', id: hits[0].id, query, of: 1 };
   }
-  const chosen = await editor.pick(hits, `${hits.length} blocks match "${query}"`);
+  /*
+   * NEVER: THE PLACEHOLDER SAYS HOW MANY IT IS SHOWING, NOT HOW MANY MATCH.
+   *
+   * It read `${hits.length} blocks match "${query}"`. From the core's C2
+   * on, `search` answers the best ten by default, and the number cut off
+   * is reported only by `(truncated (hits n))` under `--wire` -- which
+   * this client does not ask for on a search. So the sentence would tell
+   * a user that ten blocks match when forty-seven do, with no way here to
+   * know better: what arrived, described as what exists.
+   *
+   * KEY: When a number's provenance is "how many I was handed", the
+   * sentence may only say how many it is showing. "10 shown" is true on
+   * every core; "10 match" and "found 10" are true only on a core that
+   * does not cut.
+   *
+   * NOTE: AND THE REMEDY IS NOT TO FETCH EVERYTHING. `--all` would make the
+   * old sentence true by asking for every hit so that a count can be
+   * printed, which is the cost running the wrong way and gets worse as a
+   * store grows. The total becomes available when this client asks for
+   * `--wire` on a search -- and that is one change together with the
+   * ruling that `hitsOf` does not open envelopes, not a special case for
+   * one number. Ruled by the main session, 2026-09-21.
+   */
+  const chosen = await editor.pick(hits, `${hits.length} shown for "${query}", most relevant first`);
   if (chosen === undefined) {
     return { did: 'nothing', because: 'cancelled' };
   }

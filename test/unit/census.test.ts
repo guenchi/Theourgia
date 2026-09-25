@@ -89,9 +89,11 @@ const AT_LEAST: Array<[string, number]> = [
   /*
    * ADDED in round 35: the AST census over every wait in the extension
    * host, after a review traced a takeover into the queue the window had
-   * just stopped using.
+   * just stopped using. RAISED in plugin-r3 to the ten it registers: the
+   * cell that turns a generation guard around, and the two that read how
+   * the integrity watch is wired.
    */
-  ['awaiting.test.ts', 6],
+  ['awaiting.test.ts', 10],
   ['blocks.test.ts', 20],
   /*
    * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
@@ -142,6 +144,12 @@ const AT_LEAST: Array<[string, number]> = [
    * keep the gate honest.
    */
   ['run-root.test.ts', 9],
+  /*
+   * ADDED in plugin-r3: what `check` says about a store's condition, read
+   * whatever its exit code, and the one sentence said about it; then the
+   * eight that drive `IntegrityWatch`, when to ask and when to tell.
+   */
+  ['integrity.test.ts', 13],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
    * what a search does, and the envelope --wire puts round a commit.

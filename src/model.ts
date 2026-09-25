@@ -77,6 +77,45 @@ export type StructuralMark = keyof typeof STRUCTURAL_MARKS;
  */
 export const ROOT_MARKS: StructuralMark[] = ['cycle', 'unplaced', 'orphan'];
 
+/*
+ * A STORE'S CONDITION, AS `check` STATES IT, or why it could not be read.
+ */
+export type StoreVerdict =
+  | { known: true; verdict: string }
+  | { known: false; because: string };
+
+/*
+ * THE VERDICT OUT OF A `check` ANSWER.
+ *
+ * NEVER: THE EXIT CODE IS NOT ASKED. The core's `rpc-ok?` makes `check` a
+ * failure exactly when its verdict is not `ok`, so a damaged store answers
+ * with a non-zero exit AND a complete `(check ... (verdict damaged))` --
+ * measured in the pinned core's `rpc.ss`. A reader that required `ok`
+ * would read "could not ask" on precisely the occasion it exists for.
+ * The form's head is what says whether this is an answer at all.
+ *
+ * The verdict is one symbol, read through the counted clause reader: no
+ * `verdict` clause, two of them, or one that is not a symbol is a named
+ * unknown, never a verdict this client made up.
+ */
+export function verdictOf(answers: Datum[]): StoreVerdict {
+  if (answers.length !== 1) {
+    return { known: false, because: `check answered with ${answers.length} data where one was expected` };
+  }
+  const form = answerOf(answers[0], 'check');
+  if (form === null) {
+    return { known: false, because: 'check did not answer with a check form' };
+  }
+  const stated = form.value('verdict');
+  if (!stated.read) {
+    return { known: false, because: `the check answer's verdict is ${stated.because}` };
+  }
+  if (!isSym(stated.value)) {
+    return { known: false, because: 'the check answer states its verdict as something other than a name' };
+  }
+  return { known: true, verdict: (stated.value as { name: string }).name };
+}
+
 export interface ChildListing {
   nodes: Node[];
   marksKnown: boolean;
@@ -673,6 +712,27 @@ export class StoreModel {
     } catch (e) {
       return null;
     }
+  }
+
+  /*
+   * WHAT THE STORE SAYS ABOUT ITS OWN CONDITION, asked once when a session
+   * starts on it. See `verdictOf` for how the answer is read.
+   *
+   * NOTE: IT DOES NOT THROW. A `check` that could not be put is a named
+   * unknown here, not an exception: the caller's whole policy is "say it
+   * once when the store is not sound", and a store whose condition could
+   * not be asked is reported by the conflict count beside it, which runs
+   * at the same moment and puts the core's own sentence on the status
+   * bar. Nothing here draws that unknown as "sound".
+   */
+  public async storeVerdict(): Promise<StoreVerdict> {
+    let answer;
+    try {
+      answer = await this.client.request('check', []);
+    } catch (e) {
+      return { known: false, because: e instanceof Error ? e.message : String(e) };
+    }
+    return verdictOf(answer.answers);
   }
 
   public async conflictCount(): Promise<number> {

@@ -51,6 +51,7 @@ import {
 } from './commands';
 import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
 import { Hit, runSearch } from './search';
+import { IntegrityWatch } from './integrity';
 import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
 import { Tombstones } from './tombstones';
@@ -502,6 +503,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     provider.use(model);
     paint();
     /*
+     * plugin-r3 item 14: WHAT THE STORE SAYS ABOUT ITS OWN CONDITION, asked
+     * when a session starts on it. Scheduled, not awaited, for the reason
+     * the drain below gives; whether to ask and whether to say anything is
+     * `IntegrityWatch`, and what is said is `integrityNotice`.
+     */
+    checkIntegrity();
+    /*
      * NOTE: AND THE QUEUE IS DRAINED, because nothing else was going to.
      *
      * A window that starts with entries already on disk -- a save that
@@ -578,6 +586,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       ? new vscode.ThemeColor('statusBarItem.warningBackground')
       : undefined;
     status.show();
+  }
+
+  /*
+   * ONCE PER STORE PER SESSION, decided by `IntegrityWatch`; this only
+   * hands it the window's store, model and generation. One watch for the
+   * whole session, so that what it was told survives every rebuild.
+   */
+  const integrity = new IntegrityWatch();
+
+  function checkIntegrity(): void {
+    if (model === null) {
+      return;
+    }
+    const asking = model;
+    void integrity.check({
+      store: config.store,
+      ask: () => asking.storeVerdict(),
+      show,
+      generation: () => generation
+    });
   }
 
   /*

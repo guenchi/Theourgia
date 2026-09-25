@@ -72,7 +72,7 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers TRUE -- "this file may hold work". A document with no marker was written by ' +
     'something this version does not know about, and the safe answer is the one that stops it ' +
     'being overwritten.',
-  'extension.ts:196':
+  'extension.ts:197':
     'answers an empty list to the TREE, and reports through `failed` -- except when the store ' +
     'changed under it, which is the one case that skips the report. The reporting call is ' +
     'conditional, so the rule no longer exempts it; the condition is `asked === generation()`, ' +
@@ -85,7 +85,7 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers FALSE for "the core directory holds this file". A directory this process may not ' +
     'search then reads as neither form, which `problemsWith` refuses by name -- so the failure ' +
     'reaches the user as a refusal about the setting rather than as a wrong extension list.',
-  'model.ts:673':
+  'model.ts:712':
     'answers NULL, which `verbs` documents as "I could not find out" and which its caller must ' +
     'tell apart from a core with no verbs. The absence has a name here.',
   'ownership.ts:111':

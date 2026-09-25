@@ -251,8 +251,17 @@ function guardsIn(
       return false;
     }
     const sides = [test.left, test.right];
+    /*
+     * NOTE: A GENERATION GUARD LEAVES WHEN THE GENERATION MOVED, so its
+     * comparison is `!==`. The census used to accept `===` as well, and a
+     * reviewer turned `checkIntegrity`'s guard around -- `asked ===
+     * generation` then `return` -- which drops every current answer and
+     * acts on every stale one, and this census went on calling it checked.
+     * No guard in the tree was written with `===`, so the other operator
+     * was never a shape anybody needed; it was only a way through.
+     */
     if (sides.some((side) => /\bgeneration\b/.test(side.getText(src)))) {
-      return generationTaken;
+      return generationTaken && test.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
     }
     /*
      * The identity form: both sides are plain names, and one of them was
@@ -533,6 +542,82 @@ describe('the block being opened is published under the store it was read from',
   });
 });
 
+/*
+ * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT.
+ *
+ * `IntegrityWatch` decides when a store's condition is asked and told, and
+ * its own cells drive it (integrity.test.ts). What they cannot reach is the
+ * wiring in `activate`, which needs the editor host: a review showed that
+ * the call could be switched off, or the watch rebuilt on every call -- so
+ * that "once per session" means once per rebuild -- with every unit cell
+ * green. Both are properties of the source's shape, so the shape is read,
+ * with the same instrument as the openBlock cell above.
+ *
+ * What this does NOT hold: that the generation handed to the watch is the
+ * live one. `generation: () => 0` has the same shape as the right answer,
+ * and the delivery note says so rather than a scanner being written for it.
+ *
+ * NOTE: AND WHERE READING SHAPE GOES WRONG, both ways, found in review:
+ *   - it can go red on correct code. `const make = () => new
+ *     IntegrityWatch()` in activate still builds one watch for the session,
+ *     but the constructor's enclosing function is then `make`. If a
+ *     refactor does that, rewrite this cell against the new shape rather
+ *     than deleting it.
+ *   - it can stay green on wrong code. `if (false) { checkIntegrity(); }`
+ *     is a call in rebuild's syntax that never runs; nothing here judges
+ *     whether a call is reached.
+ */
+describe('the integrity watch is built once for the session and asked on every rebuild', () => {
+  const src = ts.createSourceFile('extension.ts', extensionText(), ts.ScriptTarget.ES2022, true);
+  const functionNamed = (name: string): ts.Node | undefined => {
+    let found: ts.Node | undefined;
+    const find = (n: ts.Node): void => {
+      if (ts.isFunctionDeclaration(n) && n.name?.getText(src) === name) {
+        found = n;
+      }
+      ts.forEachChild(n, find);
+    };
+    find(src);
+    return found;
+  };
+  const enclosingFunction = (n: ts.Node): ts.Node | undefined => {
+    let at = n.parent;
+    while (at !== undefined && !isFunction(at)) {
+      at = at.parent;
+    }
+    return at;
+  };
+
+  it('builds one IntegrityWatch, in activate and not in checkIntegrity', () => {
+    const built: ts.NewExpression[] = [];
+    const walk = (n: ts.Node): void => {
+      if (ts.isNewExpression(n) && n.expression.getText(src) === 'IntegrityWatch') {
+        built.push(n);
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(src);
+    assert.strictEqual(built.length, 1, `extension.ts builds ${built.length} IntegrityWatch objects`);
+    const home = enclosingFunction(built[0]);
+    assert.ok(home !== undefined, 'the IntegrityWatch is built outside any function');
+    assert.strictEqual(
+      nameOf(home, src),
+      'activate',
+      `the IntegrityWatch is built in ${nameOf(home, src)}, so it does not last the whole session`
+    );
+  });
+
+  it('calls checkIntegrity from rebuild', () => {
+    const rebuild = functionNamed('rebuild');
+    assert.ok(rebuild !== undefined, 'there is no rebuild in extension.ts any more');
+    const calls = within(
+      rebuild,
+      (n): n is ts.CallExpression => ts.isCallExpression(n) && n.expression.getText(src) === 'checkIntegrity'
+    );
+    assert.strictEqual(calls.length, 1, `rebuild calls checkIntegrity ${calls.length} times`);
+  });
+});
+
 describe('every wait in the extension host knows what may have changed under it', () => {
   const waiting = survey();
 
@@ -613,6 +698,44 @@ describe('every wait in the extension host knows what may have changed under it'
       false,
       'the census still calls the drain checked with its only guard deleted, so it is ' +
         'recognising the function rather than the guard'
+    );
+  });
+
+  /*
+   * NOTE: AND A GUARD TURNED AROUND IS NOT A GUARD. `asked === generation`
+   * followed by `return` leaves exactly when nothing moved, so it throws
+   * away the current answer and keeps the stale one -- while having the
+   * shape of the guard in every other respect. Same instrument as the drain
+   * cell above: the shipping file, one operator changed, the census asked
+   * again.
+   */
+  it('stops calling refreshConflicts checked once its guard is turned around', () => {
+    const text = extensionText();
+    const guard = 'if (asked !== generation) {\n      return;\n    }\n    conflicts = found;';
+    assert.ok(
+      text.includes(guard),
+      'refreshConflicts no longer holds the guard this cell turns around; if it was rewritten, ' +
+        'rewrite this cell against the new shape rather than deleting it'
+    );
+    const refreshIn = (over: Waiting[]): Waiting | undefined =>
+      over.find((w) => w.name === 'refreshConflicts');
+
+    const asShipped = refreshIn(survey(text));
+    assert.ok(asShipped !== undefined, 'the census did not find refreshConflicts in the shipping file');
+    assert.strictEqual(asShipped.checked, true, 'the census does not recognise refreshConflicts\' guard');
+
+    const turned = refreshIn(
+      survey(text.replace(guard, guard.replace('asked !== generation', 'asked === generation')))
+    );
+    assert.ok(
+      turned !== undefined,
+      'the census lost sight of refreshConflicts altogether when its guard was turned around'
+    );
+    assert.strictEqual(
+      turned.checked,
+      false,
+      'the census still calls refreshConflicts checked with its guard turned around, so it is ' +
+        'counting a comparison rather than one that leaves when the generation moved'
     );
   });
 

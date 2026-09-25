@@ -32,7 +32,7 @@
 import { RECONCILE_BLOCK, RETRY_OUTBOX } from './commands';
 import { Datum, answerOf, asInteger, cdrOf, isDotted, isList, readEvent } from './wire';
 import { TakeoverLedger } from './sessions';
-import { StructuralMark } from './model';
+import { StoreVerdict, StructuralMark } from './model';
 import { Unrecorded } from './saving';
 
 export interface StatusFacts {
@@ -282,6 +282,43 @@ function writerOfCursor(answer: Datum): string | null {
   }
   const event = readEvent(rest.items[0]);
   return event === null ? null : event.writer;
+}
+
+/*
+ * plugin-r3 item 14: THE STORE SAYS IT IS NOT SOUND, AND THE USER IS TOLD
+ * ONCE.
+ *
+ * Asked once when a session starts on a store -- by `check`, which
+ * exists for exactly this and carries more than a single word: the
+ * verdict, and `integrity` and `torn` per writer. A clause that the core
+ * plans to attach to every `--wire` answer (its F59) was considered and
+ * set aside: the decision here is made once per session, so a signal that
+ * arrives on every answer is the wrong cadence -- and this client asks
+ * for `--wire` only when committing, so a session that only reads would
+ * never have seen it.
+ *
+ * NOTE: WHAT THE SENTENCE DOES NOT SAY. It does not promise that saving
+ * still works: on a store whose queue has no cursor yet, the bootstrap
+ * asks `check` too and reads a non-zero exit as a failure, so a save can
+ * be held back there. Reading and writing a damaged store is legal and
+ * useful, and nothing here blocks either -- but a sentence that said so
+ * would be a claim this function cannot check.
+ *
+ * Null for a sound store and for a verdict that could not be read: the
+ * second is not drawn as "sound", it is left to the status bar, where
+ * the conflict count asked at the same moment reports an unreachable
+ * store in the core's own words.
+ */
+export function integrityNotice(store: string, verdict: StoreVerdict): Notice | null {
+  if (!verdict.known || verdict.verdict === 'ok') {
+    return null;
+  }
+  return {
+    level: 'warning',
+    text:
+      `the store at ${store} reports its condition as "${verdict.verdict}". ` +
+      "Run the core's `check` in that store to see what it found."
+  };
 }
 
 export function saveNotice(

@@ -384,12 +384,14 @@ function editorThat(
   said: string[];
   levels: string[];
   offered: Hit[][];
+  placeholders: string[];
   asked: string[];
 } {
   const record = {
     opened: [] as string[],
     said: [] as string[],
     offered: [] as Hit[][],
+    placeholders: [] as string[],
     levels: [] as string[],
     /*
      * EVERY PROMPT THE FLOW PUT UP. A cell that says "nothing was asked"
@@ -402,8 +404,9 @@ function editorThat(
       record.asked.push(prompt);
       return typed;
     },
-    pick: async (hits: Hit[]): Promise<Hit | undefined> => {
+    pick: async (hits: Hit[], placeHolder: string): Promise<Hit | undefined> => {
       record.offered.push(hits);
+      record.placeholders.push(placeHolder);
       return picks(hits);
     },
     /*
@@ -559,6 +562,32 @@ describe('plugin-r2 T5 what a search does', function () {
    * in it produces -- so the two are kept apart by never showing an
    * empty list, and by this cell.
    */
+  /*
+   * plugin-r3 item 11: the picker says how many it shows, not how many
+   * match.
+   *
+   * The core answers the best ten by default from its C2 on, and says how
+   * many it cut only under `--wire`, which this client does not ask for
+   * on a search. A sentence that states a total would therefore state
+   * one it does not have.
+   *
+   * KEY: TWO ASSERTIONS WITH DIFFERENT JOBS. The first pins the wording
+   * that was ruled. The second is the criterion, and it is what survives
+   * a rewording: whatever the sentence becomes, it may not say that
+   * something "matches" or was "found", because the count under it is
+   * how many arrived.
+   */
+  it('says how many it is showing, and claims no total', async () => {
+    const editor = editorThat('two words', () => undefined);
+    const searcher = searcherFor(HITS('w.1', 'w.2', 'w.3'));
+    await runSearch(searcher, editor);
+    assert.deepStrictEqual(editor.placeholders, ['3 shown for "two words", most relevant first']);
+    assert.ok(
+      !/match|found|total|\bof\b/i.test(editor.placeholders[0]),
+      `the picker states a count as though it were the number that exist: ${editor.placeholders[0]}`
+    );
+  });
+
   it('opens nothing when the list is dismissed', async () => {
     const editor = editorThat('two words', () => undefined);
     const searcher = searcherFor(HITS('w.1', 'w.2'));
