@@ -272,6 +272,37 @@ bytes cannot be verified against committed/W data stop migration. Multiple unpro
 old drafts remain intact for manual handling; the command never overwrites them into one
 working slot. Re-run on the original selected path to resume an interrupted archive step.
 
+## Packaging, and the gate that checks a package
+
+Package with dependency detection on:
+
+```
+npx vsce package --allow-missing-repository
+```
+
+**Not with `--no-dependencies`.** That flag leaves out every file under `node_modules`,
+the s-expression reader included, whatever `.vscodeignore` re-includes -- and
+`activate()` loads the reader before anything else, so a package built that way installs
+and never starts. (A package built on 2026-09-19 did exactly that.)
+
+`node scripts/package-gate.js` (with `THEOURGIA_CORE` and `THEOURGIA_LIBDIRS` set, as for
+the real-core cells) builds a package the way above and reports, without judging:
+whether the files the extension needs to start are in it, and whether they would be with
+`--no-dependencies`; the install into an editor that is not yours (the one
+`@vscode/test-electron` keeps in `.vscode-test/`, with a profile and an extensions
+directory of its own, or the editor `THEOURGIA_TEST_CODE` names); the activation line in that editor's `exthost.log`; and one save
+made through the installed extension to a temporary store -- the store's log for the
+block before and after, and whether the saved line is in the store. What it makes for the
+run -- the package, the editor's profile and extensions, the store, the core's run and
+home directories -- is under one temporary directory, removed at the end with the count
+said. Two things it leaves, as any build does: the repository's `out/`, which it compiles,
+and the editor `@vscode/test-electron` downloads into `.vscode-test/` if it is not there
+yet. It removes every `VSCODE_*` and `ELECTRON_*` variable from its environment first --
+the editor would otherwise take its profile from `VSCODE_APPDATA` or `VSCODE_PORTABLE`
+before `--user-data-dir` -- and says which it removed. Lines it
+prints start with `[gate]`; the rest is the editor's own output. It exits non-zero only
+when a reading could not be taken.
+
 ## Native lock build
 
 The current native lock build supports macOS and Linux. `npm run compile` requires a C

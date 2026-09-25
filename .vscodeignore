@@ -5,6 +5,9 @@ node_modules/**
 !node_modules/goeteia/LICENSE
 out/test/**
 src/**
+scripts/**
+native/**
+.gitignore
 test/**
 tsconfig.json
 **/*.map
