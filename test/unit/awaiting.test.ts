@@ -261,7 +261,47 @@ function guardsIn(
      * was never a shape anybody needed; it was only a way through.
      */
     if (sides.some((side) => /\bgeneration\b/.test(side.getText(src)))) {
-      return generationTaken && test.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+      /*
+       * NOTE: AND IT COMPARES THE COPY WITH THE COUNTER, NOTHING ELSE. (queue
+       * item 16) Mentioning `generation` was enough, so `asked + 1 !==
+       * generation` passed: it leaves after every rebuild but one, and acts
+       * on the answer that one rebuild made stale. A side has to be a plain
+       * name bound before the wait, and the other the counter itself -- the
+       * identifier `generation`, or `this.generation()` with no arguments (the
+       * shape `getChildren` uses). Review r1 of item 16 found the first
+       * version of this too wide one way and too narrow the other: any
+       * zero-argument call named `.generation` was a counter, so
+       * `({ generation: () => generation - 1 }).generation()` was one; and a
+       * parenthesised side, `(asked)`, was not a copy. The receiver is now
+       * `this`, and parentheses are looked through.
+       */
+      const bare = (side: ts.Expression): ts.Expression => {
+        let at = side;
+        while (ts.isParenthesizedExpression(at)) {
+          at = at.expression;
+        }
+        return at;
+      };
+      const isCounter = (side: ts.Expression): boolean => {
+        const at = bare(side);
+        return (
+          (ts.isIdentifier(at) && at.text === 'generation') ||
+          (ts.isCallExpression(at) &&
+            at.arguments.length === 0 &&
+            ts.isPropertyAccessExpression(at.expression) &&
+            at.expression.name.text === 'generation' &&
+            at.expression.expression.kind === ts.SyntaxKind.ThisKeyword)
+        );
+      };
+      const isCopy = (side: ts.Expression): boolean => {
+        const at = bare(side);
+        return ts.isIdentifier(at) && captured.has(at.text);
+      };
+      return (
+        generationTaken &&
+        test.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        ((isCounter(test.left) && isCopy(test.right)) || (isCounter(test.right) && isCopy(test.left)))
+      );
     }
     /*
      * The identity form: both sides are plain names, and one of them was
@@ -789,6 +829,66 @@ describe('every wait in the extension host knows what may have changed under it'
       'the census still calls refreshConflicts checked with its guard turned around, so it is ' +
         'counting a comparison rather than one that leaves when the generation moved'
     );
+  });
+
+  /*
+   * NOTE: AND A GUARD THAT COMPARES SOMETHING ELSE IS NOT A GUARD. (queue
+   * item 16) `asked + 1 !== generation` then `return` has the operator, the
+   * word and the leaving branch, and acts on the answer exactly one rebuild
+   * made stale. The shipping file, that one comparison changed, the census
+   * asked again. The twin: `getChildren`'s `asked !== this.generation()` is
+   * the counter read through a method, and still a guard.
+   */
+  it('stops calling refreshConflicts checked once its guard compares the copy plus one', () => {
+    const text = extensionText();
+    const guard = 'if (asked !== generation) {\n      return;\n    }\n    conflicts = found;';
+    assert.ok(text.includes(guard), 'refreshConflicts no longer holds the guard this cell rewrites');
+    const named = (over: Waiting[], name: string): Waiting | undefined => over.find((w) => w.name === name);
+    const shifted = named(
+      survey(text.replace(guard, guard.replace('asked !== generation', 'asked + 1 !== generation'))),
+      'refreshConflicts'
+    );
+    assert.ok(shifted !== undefined, 'the census lost sight of refreshConflicts');
+    assert.strictEqual(
+      shifted.checked,
+      false,
+      'the census still calls refreshConflicts checked when its guard compares the copy plus one'
+    );
+    const children = named(survey(text), 'getChildren');
+    assert.ok(children !== undefined, 'the census did not find getChildren');
+    assert.ok(
+      text.includes('asked !== this.generation()'),
+      'getChildren no longer compares through this.generation(); rewrite this twin against its shape'
+    );
+    assert.strictEqual(children.checked, true, 'a guard reading the counter through a method is no longer seen');
+  });
+
+  /*
+   * NOTE: THE SHAPES AROUND IT. (review r1 of item 16) The same guard,
+   * rewritten one way at a time and the census asked again: parentheses are
+   * looked through, a guard with its sides the other way round is held to the
+   * same rule, a counter read from anything but `this` is not the counter, and
+   * a `generation` call with an argument is not the counter either.
+   */
+  it('reads a guard by what it compares, however it is written around', () => {
+    const text = extensionText();
+    const guard = 'if (asked !== generation) {\n      return;\n    }\n    conflicts = found;';
+    assert.ok(text.includes(guard), 'refreshConflicts no longer holds the guard this cell rewrites');
+    const judged = (comparison: string): boolean | undefined =>
+      survey(text.replace(guard, guard.replace('asked !== generation', comparison))).find(
+        (w) => w.name === 'refreshConflicts'
+      )?.checked;
+    const cases: Array<[string, boolean]> = [
+      ['(asked) !== generation', true],
+      ['generation !== (asked)', true],
+      ['generation !== asked', true],
+      ['generation !== asked + 1', false],
+      ['asked !== ({ generation: () => generation - 1 }).generation()', false],
+      ['asked !== this.generation(1)', false]
+    ];
+    for (const [comparison, checked] of cases) {
+      assert.strictEqual(judged(comparison), checked, `\`${comparison}\` read as ${checked ? 'not ' : ''}checked`);
+    }
   });
 
   /*

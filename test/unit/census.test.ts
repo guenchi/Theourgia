@@ -92,9 +92,11 @@ const AT_LEAST: Array<[string, number]> = [
    * just stopped using. RAISED in plugin-r3 to the ten it registers: the
    * cell that turns a generation guard around, and the two that read how
    * the integrity watch is wired. And in item 7, 10 -> 11: the one that
-   * reads that the retry command calls `retryParked`.
+   * reads that the retry command calls `retryParked`. And in item 16,
+   * 11 -> 12: a guard that compares the copy plus one is not a guard; and
+   * 12 -> 13 in its r2: the shapes written around a guard.
    */
-  ['awaiting.test.ts', 11],
+  ['awaiting.test.ts', 13],
   ['blocks.test.ts', 20],
   /*
    * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
