@@ -1271,6 +1271,7 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
 | `THEOURGIA_LIBDIR` | read by `test/env.sh` and `test/paths.py`, not by any library. It is what makes a suite reading a PINNED one |
 | `THEOURGIA_FIXTURE_LIMIT` | the time limit of one fixture under `test/run-fixtures.sh`, in whole seconds; 900 when unset. Set only by tests that exercise the limit itself. Read by the runner, not by any library |
+| `THEOURGIA_RUNNER_NORMALISED` | `test/run-fixtures.sh`'s own marker: the runner sets it to its pid and re-execs itself once through perl with signals 1 to 31, KILL and STOP aside, at their defaults and an empty mask, and unsets it as soon as it is back, so a runner started from inside a fixture does the same. Never set by hand. Read by the runner, not by any library |
 | `TMPDIR` | the system's temporary directory, not one of ours. `test/run-fixtures.sh` makes its private snapshot directory there (`mktemp -d -t ths-snap.<token>`), and `test/runner-self.sc` reads it to find that directory. Read by no library |
 
 ## KNOWN OPEN

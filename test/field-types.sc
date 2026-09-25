@@ -513,6 +513,13 @@
 (define nested-store (fresh-store!))
 (define nested-id (new-id (cadr (run nested-store "insert" "--title" "a nested carrier"))))
 (define nested-neighbour (new-id (cadr (run nested-store "insert" "--title" "quandel neighbour"))))
+;; THE CONSTRUCTION, BY THE FORGED WRITER'S NAME, so F87-1 can build it
+;; again with the name on the other side of the store's own.
+(define (forge-nested! store id forged-writer)
+  (forge-record! store
+    (string-append "(set \"" id "\" keywords (conflict ((\"tinvor\" \"x\" 1) (\"pesgul\" \"y\" 1))))"))
+  (forge-writer-record! store forged-writer
+    (string-append "(set \"" id "\" keywords \"plainword\")")))
 ;; TWO WRITERS, for the same reason as the row above: the first version used
 ;; two records from one writer, which is an ordered history -- the second
 ;; write simply replaced the first and there was no nesting at all. The row
@@ -520,20 +527,72 @@
 ;; a nested conflict to. A mutation that made the candidate loop assume
 ;; strings was what showed it: that mutation should have made this row
 ;; raise, and it survived.
-(forge-record! nested-store
-  (string-append "(set \"" nested-id "\" keywords (conflict ((\"tinvor\" \"x\" 1) (\"pesgul\" \"y\" 1))))"))
-(forge-writer-record! nested-store "zznested"
-  (string-append "(set \"" nested-id "\" keywords \"plainword\")"))
+(forge-nested! nested-store nested-id "zznested")
+
+;; A candidate is `(<value> <writer> <seq>)`, so a candidate whose VALUE is
+;; itself a conflict is one whose car is `(conflict ...)`.
+;;
+;; NEVER: THE NESTED CANDIDATE IS LOOKED FOR WHEREVER IT SITS (F87). The
+;; candidates come in event order, which takes the writer name, and the
+;; store's own writer is 8 random base36 characters: the forged "zznested"
+;; sorted before it about once in 3706 runs, the nested candidate came
+;; second, and a pattern that wanted it first went red on a construction
+;; that was working. The field is read as data and the candidates searched.
+(define (nested-reading store id)
+  (let* ((r (run store "read" id))
+         (text (text-of out-path))
+         (at (let loop ((i 0))
+               (cond ((> (+ i 19) (string-length text)) #f)
+                     ((string=? (substring text i (+ i 19)) "(keywords conflict ") i)
+                     (else (loop (+ i 1))))))
+         (field (and at (guard (e (#t #f))
+                          (read (open-string-input-port (substring text at (string-length text)))))))
+         (candidates (and (list? field) (= (length field) 3) (list? (caddr field)) (caddr field))))
+    (list (car r) candidates)))
+(define (nested-candidate? c)
+  (and (pair? c) (pair? (car c)) (eq? (caar c) 'conflict)))
+(define (nested-verdict store id)
+  (let* ((reading (nested-reading store id))
+         (candidates (cadr reading))
+         (verdict (list (car reading) (and candidates (exists nested-candidate? candidates) #t))))
+    ;; WHEN IT IS RED, THE WRITER NAMES ARE THE FIRST THING TO KNOW: they
+    ;; decide the order the candidates come in.
+    (unless (equal? verdict (list 0 #t))
+      (printf "   candidates' writers: ~s\n"
+              (if candidates
+                  (map (lambda (c) (and (pair? c) (pair? (cdr c)) (cadr c))) candidates)
+                  'NO-CONFLICT-FIELD-READ)))
+    verdict))
 
 (want "FT-33 CONTROL: the field really holds a conflict whose candidate is itself a conflict"
-      ;; THREE OPEN PARENS, NOT TWO. A candidate is `(<value> <writer> <seq>)`,
-      ;; so a candidate whose VALUE is itself a conflict reads as
-      ;; `(conflict (((conflict ...) "w" 3) ("plainword" "zznested" 1)))`.
-      ;; The first version of this pattern looked for two and failed while
-      ;; the construction was working perfectly.
-      (let ((r (run nested-store "read" nested-id)))
-        (list (car r) (holds? (text-of out-path) "(keywords conflict (((conflict")))
+      (nested-verdict nested-store nested-id)
       (list 0 #t))
+
+;; F87-1: THE SAME CONSTRUCTION WITH THE FORGED WRITER FIRST. A writer id
+;; is 8 characters of [0-9a-z], so "00000000" sorts at or before every one
+;; the store can generate for itself: the nested candidate comes second,
+;; the order that once failed FT-33. The row asserts that order too, so it
+;; cannot pass by building the other one. ("00nested", the first choice,
+;; left a local writer such as "00abcdef" before it.)
+;;
+;; NOTE: A NAMED RED AT 36^-8. If the store's own writer IS "00000000", a
+;; forged writer of that name writes into the store's own log instead of
+;; being a second writer, and the construction cannot be built. The row
+;; reads the store's writer first and then answers local-writer-is-00000000
+;; rather than a confusing verdict: red, and saying why.
+(let* ((store (fresh-store!))
+       (id (new-id (cadr (run store "insert" "--title" "a nested carrier, forged first"))))
+       (own (directory-list (string-append store "/writers"))))
+  (want "F87-1 with the forged writer's candidate first, the nested candidate is still found"
+        (if (member "00000000" own)
+            'local-writer-is-00000000
+            (begin
+              (forge-nested! store id "00000000")
+              (let ((candidates (cadr (nested-reading store id))))
+                (append (nested-verdict store id)
+                        (list (and (pair? candidates) (pair? (car candidates)) (pair? (cdar candidates))
+                                   (equal? (cadar candidates) "00000000")))))))
+        (list 0 #t #t)))
 
 (want "FT-34 a conflict nested inside a conflict does not raise, has no text, and is not counted"
       (let* ((before (text-decode-skipped-count))

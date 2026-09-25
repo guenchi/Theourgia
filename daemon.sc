@@ -789,11 +789,21 @@
     (unless (store-here? store)
       (report (list 'error 'store-not-found (list 'store store)))
       (raise (list 'error 'store-not-found (list 'store store))))
+    ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED AT START-UP TOO (F79), in
+    ;; the shape `answer-for` gives it once the daemon is serving: the path
+    ;; and the system's reason. `store-load-failed` carries only a
+    ;; condition's message, which for an unlistable writers/ said "the entry
+    ;; cannot be read" and named neither the entry nor the reason. The start
+    ;; still fails the same way: the failure is raised after the report.
     (let ((failure (guard (e (#t e)) (publish! store (open-and-reduce store)) #f)))
       (when failure
-        (report (if (and (pair? failure) (eq? 'error (car failure)))
-                    failure
-                    (list 'error 'store-load-failed (list 'reason (condition-text failure)))))
+        (report (cond
+                  ((and (pair? failure) (eq? 'error (car failure))) failure)
+                  ((unreadable-entry? failure)
+                   (list 'error 'unreadable
+                         (list 'path (unreadable-entry-path failure))
+                         (list 'reason (unreadable-entry-reason failure))))
+                  (else (list 'error 'store-load-failed (list 'reason (condition-text failure))))))
         (raise failure)))
     (send main-pid (list 'ready))
     (let loop ()

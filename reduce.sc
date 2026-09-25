@@ -1684,20 +1684,32 @@
   ;; a reader who cannot see the block cannot act on them. Design 9.2
   ;; says these appear under root and marked, so that is what comes back:
   ;; a fourth element naming why, absent on an ordinary row.
-  ;; WHAT IS ORDERED HERE IS SIBLINGS, AND NOT THE LIST. Rows are returned
-  ;; in whatever order the blocks come out of the reduction, which follows
-  ;; the writer name and so differs between two stores holding the same
-  ;; tree: measured over six fresh stores built from one identical file,
-  ;; the `doc` row came first in three of them and the `section` row first
-  ;; in the other three. THE ORDER OF THE LIST IS NOT PART OF WHAT THIS
-  ;; PROMISES. What is promised is the pair above: rows sharing a parent
-  ;; carry `(ord, block-id)`, and every caller that wants an order filters
-  ;; to one parent and sorts by that -- which is what `outline`, `refs`
-  ;; and the code projection do, and why the `outline` verb's text is
-  ;; identical across those same six stores. A caller that wants the whole
-  ;; tree uses the rows as a SET (the markdown projection does). Anything
-  ;; that takes `(car ...)` of this list is choosing a block by tossing a
-  ;; coin -- a fixture did, and went red one run in five.
+  ;; KEY: THE LIST IS SORTED BY (parent, ord, block-id), AND CALLERS RELY ON
+  ;; IT. The parent compares as a string (`root` by its name, a block by its
+  ;; id), so the rows sharing a parent are adjacent and in sibling order.
+  ;; Callers that take their order from this list, each filtering it and all
+  ;; but the last without sorting again: rpc.sc's code-title fallback, which
+  ;; numbers a block among its siblings, and its `outline-text`, which draws
+  ;; children in row order; `store-grep`, which answers and truncates in
+  ;; outline order; `outline-subtree` below, which collects children in row
+  ;; order and from which `md-tree` and `subtree-with-root` read document
+  ;; order; project.sc's `doc-sections-of`, which walks the rows with its own
+  ;; `children-of`; code-project.sc's `code-children`, whose order
+  ;; `export-code` writes the source in; and store.sc's `siblings`, whose
+  ;; sort by ord alone is stable and so keeps this list's id order among
+  ;; equal ords. A caller that filters to one parent gets that parent's rows
+  ;; already in order.
+  ;;
+  ;; NOTE: SORTED IS NOT THE SAME AS EQUAL ACROSS STORES. Block ids carry the
+  ;; writer's name, so two stores built from one file hold different ids,
+  ;; and a block's id can sort before or after `root`. The rows are a
+  ;; function of one store's state, not of the file it was built from.
+  ;;
+  ;; HISTORY: before this sort the rows came in reduction order, which
+  ;; follows the writer name. Over six fresh stores built from one file the
+  ;; `doc` row came first in three and the `section` row in the other
+  ;; three, and a fixture that took `(car ...)` of the list went red one run
+  ;; in five.
   (define (state-outline r)
     (let* ((structure (state-structure r))
            (cyclic (cdr (assq 'conflicts structure)))

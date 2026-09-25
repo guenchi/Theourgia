@@ -13,6 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+# THE ENVIRONMENT THIS FILE READS, DECLARED (F89), for docs-check.sc's
+# DOC-3 and its TWIN, as in run-fixtures.sh: it reads no THEOURGIA_* name,
+# and names none.
+# ENVIRONMENT READ:
+# ENVIRONMENT NAMED, NOT READ:
+#
 # ONE LAUNCH, AND THE WHOLE OF ITS PROCESS GROUP (the launcher design,
 # theourgos core/briefs/launcher-design.md, closed at v4.1):
 #

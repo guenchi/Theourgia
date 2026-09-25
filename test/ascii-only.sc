@@ -79,18 +79,27 @@
 
 ;; NEVER: EXCEPTIONS ARE NAMED, ONE LINE EACH, WITH A REASON. Adding one is
 ;; an edit somebody makes on purpose.
+;;
+;; KEY: AN EXCEPTION IS A FILE AND THE EXACT TEXT OF ONE LINE, NOT A LINE
+;; NUMBER (F86). Keyed by number, any line inserted above the datum moved
+;; it off the excepted number and turned ASCII-2 red, and a renumbering
+;; was never checked against what the line says. Keyed by content, the
+;; line may move anywhere in its file and stays excepted; if its text
+;; changes by one character it is refused like any other. The CJK
+;; character is written as an escape so that this file stays ASCII.
 (define exceptions
   (list
     ;; The fixture writes a note whose text is deliberately not ASCII, to
     ;; show that a note's bytes survive the round trip unchanged. The
     ;; Chinese is the test datum itself.
-    (cons "test/client-start.sc" 441)))
+    (cons "test/client-start.sc"
+          "    (lambda (port) (display \"(note \x5B58;)\\n\" port)))")))
 
 ;; NEVER: THE EXCEPTION IS THE ONE PATH NAMED, NOT ANY PATH THAT ENDS IN IT.
 ;; The first version compared suffixes, and a review found it exempting
 ;; vendor/test/client-start.sc and contest/client-start.sc as well: anyone
-;; adding a path whose last characters happened to match inherited line 429's
-;; permission to hold Chinese. The walk is rooted at ".." so a path arrives
+;; adding a path whose last characters happened to match inherited the
+;; excepted line's permission to hold Chinese. The walk is rooted at ".." so a path arrives
 ;; as "../test/client-start.sc"; that one prefix is stripped, and what is
 ;; left must equal the named path exactly.
 (define (root-relative path)
@@ -98,11 +107,11 @@
       (substring path 3 (string-length path))
       path))
 
-(define (excepted? path line)
+(define (excepted? path text)
   (let ((rel (root-relative path)))
     (let loop ((xs exceptions))
       (and (pair? xs)
-           (or (and (= line (cdr (car xs))) (string=? rel (car (car xs))))
+           (or (and (string=? text (cdr (car xs))) (string=? rel (car (car xs))))
                (loop (cdr xs)))))))
 
 ;; NOTE: BLOCKS ARE NAMED SO THAT ADDING ONE IS A DECISION, and every block
@@ -225,14 +234,21 @@
             ((eq? t (quote unreadable)) (set! unreadable (cons path unreadable)))
             (else
              (set! scanned (+ scanned 1))
-             (let loop ((ls (split-lines t)) (n 1))
+             ;; NEVER: ONE EXCEPTION EXCUSES ONE LINE. Keyed by content, an
+             ;; exception would otherwise pass every copy of its line in
+             ;; the file; the line-number key allowed exactly one. The
+             ;; first occurrence is excepted and every later copy is
+             ;; refused like any other CJK line.
+             (let loop ((ls (split-lines t)) (n 1) (used (quote ())))
                (unless (null? ls)
                  (when (any-char? emoji-char? (car ls))
                    (set! emoji (cons (cons path n) emoji)))
-                 (when (and (any-char? cjk-script? (car ls))
-                            (not (excepted? path n)))
-                   (set! cjk (cons (cons path n) cjk)))
-                 (loop (cdr ls) (+ n 1)))))))))
+                 (let* ((cjk? (any-char? cjk-script? (car ls)))
+                        (free? (and cjk? (excepted? path (car ls))
+                                    (not (member (car ls) used)))))
+                   (when (and cjk? (not free?))
+                     (set! cjk (cons (cons path n) cjk)))
+                   (loop (cdr ls) (+ n 1) (if free? (cons (car ls) used) used))))))))))
     (list scanned emoji cjk unreadable)))
 
 (define (scan root) (scan-with walk root))
@@ -373,37 +389,87 @@
           (list (car r) (map car (cadr r))))
         (list 1 (list (string-append d "/sub/__pycache__")))))
 
+;; NEVER: A SPECIMEN FOR THE EXCEPTION IS SCANNED AS THE TREE IS SCANNED,
+;; from a directory one level down with the root "..", so a path arrives as
+;; "../test/client-start.sc" exactly as in the production walk. Scanned
+;; from its absolute name, no specimen can ever match the named path: a
+;; row that should be refused for its text is then refused for its path,
+;; and stays green with the text rule removed (measured), while a row
+;; that should pass is red for a reason that has nothing to do with the
+;; line.
+(define (scan-as-tree d)
+  (system (string-append "mkdir -p " d "/scan-from"))
+  (parameterize ((current-directory (string-append d "/scan-from")))
+    (scan "..")))
+
 ;; NEVER: THE EXEMPTION BELONGS TO ONE PATH. A review replaced the exact
-;; comparison with a suffix one and with a bare line-number test, and the
-;; round that was supposed to cover the exception could not tell: it only
-;; ever asked about the named file. These two ask about paths that END in
-;; the named one and about an unrelated file at the same line -- both must
-;; be refused, so either mutation turns this row red.
+;; comparison with a suffix one and with a bare line test, and the round
+;; that was supposed to cover the exception could not tell: it only ever
+;; asked about the named file. These ask about paths that END in the named
+;; one and about an unrelated file -- all must be refused, so either
+;; mutation turns this row red.
+;;
+;; KEY: EACH SPECIMEN CARRIES THE EXCEPTED CONTENT. The exemption is keyed
+;; by the line's text (F86), so a specimen holding some other CJK line
+;; would be refused under both mutations and could not tell them apart:
+;; the row has to ask its question where the answer differs. (When the key
+;; was a line number the same rule put the CJK on that number.)
+(define excepted-text (cdr (car exceptions)))
+(define (filler n)
+  (let loop ((i 0) (out (quote ())))
+    (if (= i n) (apply string-append out) (loop (+ i 1) (cons ";; filler\n" out)))))
 (let ((d (fresh! "exception-neighbours")))
   (system (string-append "mkdir -p " d "/vendor/test " d "/contest"))
-  ;; KEY: THE CHINESE GOES ON LINE 429, the excepted line number. Written
-  ;; with it on line 11 this row passed under BOTH mutations, because at
-  ;; line 11 no exemption exists to inherit and all three files were refused
-  ;; either way. The row has to ask its question where the answer differs.
-  (let ((filler (let loop ((i 0) (out (quote ())))
-                  (if (= i 428) (apply string-append out)
-                      (loop (+ i 1) (cons ";; filler\n" out))))))
-    (put! (string-append d "/vendor/test/client-start.sc") (string-append filler ";; \x4E2D;\n"))
-    (put! (string-append d "/contest/client-start.sc") (string-append filler ";; \x4E2D;\n"))
-    (put! (string-append d "/unrelated.sc") (string-append filler ";; \x4E2D;\n")))
-  (want "ASCII-2 TWIN: at the excepted LINE, a path merely ending in the excepted one is still refused"
-        (length (caddr (scan d))) 3))
+  (for-each (lambda (rel) (put! (string-append d "/" rel)
+                                (string-append (filler 16) excepted-text "\n")))
+            (quote ("vendor/test/client-start.sc" "contest/client-start.sc" "unrelated.sc")))
+  (want "ASCII-2 TWIN: the excepted line's content, in a path merely ending in the excepted one, is still refused"
+        (length (caddr (scan-as-tree d))) 3))
+
 
 ;; NEVER: AND A NAMED EXCEPTION IS THE ONLY WAY A CJK LINE PASSES.
 (let ((d (fresh! "exception")))
   (system (string-append "mkdir -p " d "/test"))
   (put! (string-append d "/test/client-start.sc")
-        (string-append (apply string-append
-                              (map (lambda (i) ";; filler\n")
-                                   (quote (1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))))
-                       ";; \x4E2D;\n"))
-  (want "ASCII-2 TWIN: a CJK line at a line number that is NOT excepted is refused"
-        (length (caddr (scan d))) 1))
+        (string-append (filler 16) ";; \x4E2D;\n"))
+  (want "ASCII-2 TWIN: a CJK line in the excepted file whose content is not the excepted line is refused"
+        (length (caddr (scan-as-tree d))) 1))
+
+;; F86: THE EXCEPTION FOLLOWS ITS LINE, AND NOTHING ELSE. Both rows start
+;; from the real client-start.sc, so they ask about the line as it is.
+;;
+(define client-start-text
+  (call-with-input-file "client-start.sc" get-string-all))
+(define (replace-first text old new)
+  (let ((n (string-length old)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) #f)
+            ((string=? (substring text i (+ i n)) old)
+             (string-append (substring text 0 i) new (substring text (+ i n) m)))
+            (else (loop (+ i 1)))))))
+(let ((d (fresh! "exception-moved")))
+  (system (string-append "mkdir -p " d "/test"))
+  (put! (string-append d "/test/client-start.sc")
+        (string-append ";; one line inserted above everything\n" client-start-text))
+  (want "F86-1 client-start.sc with one line inserted above the datum still passes: the exception moved with its line"
+        (let ((r (scan-as-tree d))) (list (car r) (caddr r)))
+        (list 1 (quote ()))))
+(let ((d (fresh! "exception-copied")))
+  (system (string-append "mkdir -p " d "/test"))
+  (put! (string-append d "/test/client-start.sc")
+        (string-append client-start-text excepted-text "\n"))
+  (want "F86-3 a second copy of the excepted line in client-start.sc is refused: the exception excuses one line"
+        (map (lambda (h) (root-relative (car h))) (caddr (scan-as-tree d)))
+        (list "test/client-start.sc")))
+(let ((d (fresh! "exception-changed")))
+  (system (string-append "mkdir -p " d "/test"))
+  (put! (string-append d "/test/client-start.sc")
+        (or (replace-first client-start-text excepted-text
+                           (or (replace-first excepted-text "\x5B58;" "\x5728;") "NO-CJK-IN-THE-EXCEPTION"))
+            "NO-EXCEPTED-LINE-IN-CLIENT-START"))
+  (want "F86-2 client-start.sc whose excepted line's content changes by one character fails, naming the file"
+        (map (lambda (h) (root-relative (car h))) (caddr (scan-as-tree d)))
+        (list "test/client-start.sc")))
 
 (let ((d (fresh! "unreadable")))
   (put! (string-append d "/locked.sc") ";; ordinary\n")

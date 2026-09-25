@@ -27,6 +27,7 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs hashtables)
           (rnrs unicode)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
+          (only (rnrs exceptions) raise)
           (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?
                 real-path path-case-sensitive?)
           ;; NEVER: THE RULE IS SHARED, NOT COPIED. `code-safe-path?` is
@@ -243,7 +244,23 @@
                     (string-downcase full)
                     full)))))
 
+  ;; NEVER: A DIRECTORY THAT IS NOT THERE IS REFUSED BY NAME, before anything
+  ;; is read or written (F82, F83), in the tree's own words for a directory
+  ;; input that is not one (code-project.sc's not-a-directory), with the
+  ;; directory named. Export used to answer (ok (files 0)) with every
+  ;; document's path marked unusable, because each file's key could not be
+  ;; resolved under a directory that did not exist; import raised a bare
+  ;; condition from the listing, answered (error internal ...). Neither
+  ;; creates the directory: a mistyped path is the likelier cause, and a
+  ;; directory made for it would be a second mistake.
+  (define (require-md-directory dir)
+    (unless (file-is-directory? dir)
+      (raise (list 'error 'projection-invalid
+                   (list 'reason 'not-a-directory)
+                   (list 'dir dir)))))
+
   (define (export-md store dir . opts)
+    (require-md-directory dir)
     (let* ((recover? (and (pair? opts) (car opts)))
            (state (open-and-reduce store))
            (docs (md-tree state))
@@ -580,6 +597,7 @@
   ;; and a tombstone is permanent. So absence is reported by default and
   ;; acted on only when the caller says to.
   (define (import-md store dir . opts)
+    (require-md-directory dir)
     (let* ((actor (if (pair? opts) (car opts) "unknown"))
            (allow-delete? (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
            (files (md-files dir)))

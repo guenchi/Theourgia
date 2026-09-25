@@ -281,12 +281,16 @@
 ;; mis-parse out of the set -- without it this gate read its own source,
 ;; which contains the literal "(getenv ", and produced a "variable" whose
 ;; name began with a close parenthesis and a newline.
+;; NOTE: DIGITS COUNT AFTER THE FIRST CHARACTER (F89). A declared name such
+;; as THEOURGIA_X2 must be findable in the README, or documenting it could
+;; never satisfy DOC-3.
 (define (upper-token? s)
   (and (>= (string-length s) 4)
+       (let ((c0 (string-ref s 0))) (or (char-upper-case? c0) (char=? c0 #\_)))
        (let loop ((i 0))
          (or (>= i (string-length s))
              (and (let ((c (string-ref s i)))
-                    (or (char-upper-case? c) (char=? c #\_)))
+                    (or (char-upper-case? c) (char=? c #\_) (and (> i 0) (char<=? #\0 c #\9))))
                   (loop (+ i 1)))))))
 
 (define (upper-tokens text)
@@ -296,7 +300,7 @@
        (let ((t (list->string (reverse acc))))
          (if (upper-token? t) (add-unique t out) out)))
       ((let ((c (string-ref text i)))
-         (or (char-upper-case? c) (char=? c #\_)))
+         (or (char-upper-case? c) (char=? c #\_) (and (pair? acc) (char<=? #\0 c #\9))))
        (loop (+ i 1) (cons (string-ref text i) acc) out))
       (else
        (let ((t (list->string (reverse acc))))
@@ -369,6 +373,59 @@
                                (loop j (if (upper-token? t) (add-unique t out) out))))
                             (else (scan (+ j 1) (cons (string-ref text j) acc))))))))))))) 
 
+;; NEVER: THE RUNNER AND THE LAUNCHER DECLARE WHAT THEY READ (F89). They are
+;; not Scheme, so no `getenv` finds what they read, and the runner's
+;; `${THEOURGIA_RUNNER_NORMALISED:-}` went undocumented while this row was
+;; green. Each carries one line `# ENVIRONMENT READ: <names>` and one line
+;; `# ENVIRONMENT NAMED, NOT READ: <names>`; DOC-3 takes the first.
+;;
+;; KEY: DECLARED, NOT PARSED. Two review rounds of this batch read the files'
+;; text for expansions, and each round found the next idiom the scanner got
+;; wrong -- a comment after code, a write split over two lines, a `#` line
+;; inside a double-quoted string. Ending that takes a shell lexer and a perl
+;; lexer. The declaration is a person's decision, written once; what stays
+;; mechanical is only the TWIN below, a coarse count that cannot be fooled
+;; by syntax: every THEOURGIA_* token anywhere in the file, comments and
+;; strings included, must be on one of the two lines. The text scanners of
+;; those rounds are gone, not kept beside this: two readers of one fact is
+;; the shape that failed.
+;; NEVER: THE ALPHABET IS ASCII, [A-Z0-9_]. Chez's char-upper-case? and
+;; char-numeric? are Unicode: with them "THEOURGIA_RUN" followed by an
+;; accented capital read as one undeclared name, and a name after one read
+;; as no name at all (review round 3, measured).
+(define (ascii-name-char? c)
+  (or (char<=? #\A c #\Z) (char<=? #\0 c #\9) (char=? c #\_)))
+(define (theourgia-tokens text)
+  (let ((n (string-length text)) (prefix "THEOURGIA_"))
+    (let loop ((i 0) (out '()))
+      (cond
+        ((> (+ i (string-length prefix)) n) (reverse out))
+        ((and (string=? (substring text i (+ i (string-length prefix))) prefix)
+              (or (= i 0) (not (ascii-name-char? (string-ref text (- i 1))))))
+         (let scan ((j (+ i (string-length prefix))))
+           (if (and (< j n) (ascii-name-char? (string-ref text j)))
+               (scan (+ j 1))
+               ;; THE PREFIX ALONE IS NOT A NAME: prose says "THEOURGIA_*".
+               (loop j (if (> j (+ i (string-length prefix)))
+                           (add-unique (substring text i j) out)
+                           out)))))
+        (else (loop (+ i 1) out))))))
+(define (declared-line text label)
+  (let ((head (string-append "# " label ":")))
+    (let loop ((ls (lines-of text)))
+      (cond ((null? ls) #f)
+            ((starts-with? (car ls) head)
+             (theourgia-tokens (substring (car ls) (string-length head) (string-length (car ls)))))
+            (else (loop (cdr ls)))))))
+(define (declared-read text) (declared-line text "ENVIRONMENT READ"))
+(define (declared-named text) (declared-line text "ENVIRONMENT NAMED, NOT READ"))
+(define (undeclared-tokens text)
+  (let ((known (append (or (declared-read text) '()) (or (declared-named text) '()))))
+    (filter (lambda (t) (not (member t known))) (theourgia-tokens text))))
+(define declaring-files '("run-fixtures.sh" "launch.pl"))
+(define runner-and-launcher-names
+  (apply append (map (lambda (f) (or (declared-read (file-text f)) '())) declaring-files)))
+
 (define call-site-names
   (sorted-strings
     (fold-left (lambda (acc n) (add-unique n acc)) '()
@@ -376,16 +433,59 @@
         (fold-left (lambda (acc f) (append (getenv-names-in (file-text f)) acc)) '()
                    (append (scheme-sources "..") (scheme-sources ".")))
         (shell-env-names (file-text "env.sh"))
-        (python-env-names (file-text "paths.py"))))))
+        (python-env-names (file-text "paths.py"))
+        runner-and-launcher-names))))
 
-(define readme-env-names
-  (sorted-strings
-    (fold-left (lambda (acc n) (if (member n call-site-names) (add-unique n acc) acc))
-               '() (upper-tokens readme))))
+;; ONE PLACE COMPUTES WHAT A README LEAVES OUT, so the row and its negative
+;; self-test below ask the same function.
+(define (env-names-missing-from readme-text)
+  (let ((listed (fold-left (lambda (acc n) (if (member n call-site-names) (add-unique n acc) acc))
+                           '() (upper-tokens readme-text))))
+    (filter (lambda (n) (not (member n listed))) call-site-names)))
 
 (want "DOC-3 the README lists every environment variable the tree reads"
-      (filter (lambda (n) (not (member n readme-env-names))) call-site-names)
+      (env-names-missing-from readme)
       '())
+
+;; F89: THE RUNNER'S NAME IS READ, AND ITS ABSENCE FROM THE README IS RED.
+(want "F89-1 DOC-3 reads THEOURGIA_RUNNER_NORMALISED from run-fixtures.sh, as a name the tree reads"
+      (list (and (member "THEOURGIA_RUNNER_NORMALISED" runner-and-launcher-names) #t)
+            (and (member "THEOURGIA_RUNNER_NORMALISED" call-site-names) #t))
+      '(#t #t))
+(want "F89-1 TWIN: the runner and the launcher each carry both declared lines"
+      (map (lambda (f) (list f (and (declared-read (file-text f)) #t) (and (declared-named (file-text f)) #t)))
+           declaring-files)
+      (map (lambda (f) (list f #t #t)) declaring-files))
+(want "F89-1 TWIN: every THEOURGIA_* token in the runner and the launcher, comments and strings included, is on a declared line"
+      (map (lambda (f) (cons f (undeclared-tokens (file-text f)))) declaring-files)
+      (map (lambda (f) (list f)) declaring-files))
+;; THE INJECTED NAME IS ONE THE RUNNER DOES NOT ALREADY HOLD: a fixed name that
+;; someone later declared would make this row red on a correct file (review
+;; round 3). The first THEOURGIA_UNDECLARED<n> absent from the file is used,
+;; and it must come back alone.
+(define runner-text (file-text "run-fixtures.sh"))
+(define fresh-name
+  (let loop ((k 1))
+    (let ((name (string-append "THEOURGIA_UNDECLARED" (number->string k))))
+      (if (member name (theourgia-tokens runner-text)) (loop (+ k 1)) name))))
+(want "F89-1 TWIN NEGATIVE: a copy of the runner holding one name it did not hold, in a comment, is red naming it"
+      ;; ON A LINE OF ITS OWN: a file whose last line has no newline would
+      ;; otherwise take the comment into that line (review round 4).
+      (undeclared-tokens (string-append runner-text "\n# see " fresh-name " here\n"))
+      (list fresh-name))
+(want "F89-1 TWIN NEGATIVE: the alphabet is ASCII: an accented capital ends a name, and a name after one is still read"
+      ;; A SPECIMEN OF ITS OWN, NOT THE RUNNER: the names in it are in no
+      ;; file, so no declaration, renaming or other token of the runner can
+      ;; answer for them (review round 4).
+      (theourgia-tokens "# THEOURGIA_ASCIIA\x00C9; and \x00C9;THEOURGIA_ASCIIB9 end\n")
+      '("THEOURGIA_ASCIIA" "THEOURGIA_ASCIIB9"))
+(want "F89-2 a README copy without the THEOURGIA_RUNNER_NORMALISED line is red, naming it"
+      (env-names-missing-from
+        (let loop ((ls (lines-of readme)) (out '()))
+          (cond ((null? ls) (apply string-append (reverse out)))
+                ((contains? (car ls) "THEOURGIA_RUNNER_NORMALISED") (loop (cdr ls) out))
+                (else (loop (cdr ls) (cons (string-append (car ls) "\n") out))))))
+      '("THEOURGIA_RUNNER_NORMALISED"))
 
 ;; ---- the instrument -----------------------------------------------------------
 ;;

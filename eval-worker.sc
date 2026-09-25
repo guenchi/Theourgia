@@ -47,7 +47,8 @@
 
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
         (theourgia eval-context) (theourgia code-project)
-        (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause)
+        (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause
+              unreadable-entry? unreadable-entry-path unreadable-entry-reason)
         (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU))
 
 (define args (cdr (command-line)))
@@ -213,7 +214,15 @@
           (when clause (say-datum! clause)))))))
 
 (define (answer)
+  ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED, BEFORE THE CATCH-ALL (F79),
+  ;; as every route of K1 names it: a writers/ directory this process
+  ;; cannot list fails the load before any incomplete note can be heard,
+  ;; and the catch-all would call it an exception the evaluation raised.
   (guard (e ((and (pair? e) (eq? (car e) 'error)) e)
+            ((unreadable-entry? e)
+             (list 'error 'unreadable
+                   (list 'path (unreadable-entry-path e))
+                   (list 'reason (unreadable-entry-reason e))))
             (#t '(error eval-exception (kind raised) (message "Evaluation raised an exception"))))
     (let* ((forms (datum-source-read (string->utf8 source)))
            (cut (and (not (string=? cut-text ""))

@@ -323,11 +323,17 @@
                  (and (or (char<=? #\0 c #\9) (char<=? #\a c #\z))
                       (loop (+ i 1))))))))
 
+  ;; NEVER: writers/ ITSELF IS LISTED THE WAY EACH writers/<w>/ IS (F79),
+  ;; by the one listing operation: absent (ENOENT, ENOTDIR) is no writers,
+  ;; and any other failure raises unreadable-entry naming writers/. A
+  ;; directory-type pre-check followed by a raw listing let a writers/ that
+  ;; could be stat'ed but not listed escape as a bare condition, answered
+  ;; (error internal ...).
   (define (store-writers store)
-    (let ((dir (string-append store "/writers")))
-      (if (not (file-is-directory? dir))
+    (let ((names (list-entries (string-append store "/writers"))))
+      (if (eq? names 'absent)
           '()
-          (list-sort string<? (filter writer-id? (directory-entries dir))))))
+          (list-sort string<? (filter writer-id? names)))))
 
   ;; A SEGMENT MUST BE A REGULAR FILE. The name check alone accepts a
   ;; fifo called 000002.sexp, and opening one for reading blocks until a

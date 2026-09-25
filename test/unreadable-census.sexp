@@ -50,7 +50,6 @@
   ("ffi.sc" (mkdir-one!) file-is-directory? 1 convert a "generic helper mkdir-one!: the predicate is now entry-type and raises on an unreadable path (R1)")
   ("ffi.sc" (rss-linux) file-exists? 1 keep a "not writer layout: /proc on linux")
   ("ffi.sc" (path-version) file-is-regular? 1 convert a "generic helper path-version: the predicate is now entry-type and raises on an unreadable path (R1)")
-  ("log.sc" (store-writers) file-is-directory? 1 out-of-scope - "store-writers lists writers/ itself: R5, queued F79")
   ("log.sc" (snapshot-read) file-exists? 1 keep a "not writer layout: snapshot file under snap/")
   ("log.sc" (open-load) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("log.sc" (metadata-flush!) file-exists? 1 convert b "metadata-flush!: the delivery barrier (R1a)")
@@ -87,6 +86,7 @@
   ("project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("project.sc" (nearest-existing) file-exists? 1 keep a "not writer layout: export-md output dir")
   ("project.sc" (md-files) file-is-directory? 1 keep a "not writer layout: import-md input dir")
+  ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
   ("rpc.sc" (no-store?) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("rpc.sc" (verb-table) file-exists? 1 convert b "publish candidate path (R1a: absent = no-candidate, else candidate-unreadable)")
   ("store.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -294,10 +294,10 @@
    "eval"
    (e (#t #f)))
   ("eval-worker.sc" (answer) 1 guard
-   ((and (pair? e) (eq? (car e) (quote error))) #t)
-   unrelated a
-   "eval"
-   (e ((and (pair? e) (eq? (car e) (quote error))) e) (#t (quote (error eval-exception (kind raised) (message "Evaluation raised an exception"))))))
+   ((and (pair? e) (eq? (car e) (quote error))) (unreadable-entry? e) #t)
+   refuse a
+   "eval: an entry the worker's load could not read -- writers/ itself included (F79) -- answers (error unreadable (path p) (reason r)) before the catch-all, as K1's routes do; a raised pair headed error passes through as before, and any other raise is still eval-exception"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) (#t (quote (error eval-exception (kind raised) (message "Evaluation raised an exception"))))))
   ("evidence-index.sc" (load-checkpoint) 1 guard
    (#t)
    unrelated c

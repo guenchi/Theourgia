@@ -30,6 +30,13 @@
 ;; matters, because a row that passes for a different reason than its
 ;; name says is a row nobody is reading correctly.
 ;;
+;; NOTE: THESE ROWS CANNOT TELL THE SHAPE RULE FROM THE INTERN CHECK. A
+;; gensym fails both, so either rule alone keeps them refused. The row
+;; that tells them apart is test/sb2.sc F81-1: an actor whose symbols are
+;; all interned but whose shape is illegal (a symbol where the pair of
+;; writer and request id must be, or a sub slot that is neither an index
+;; nor `single`/`plan`) is refused, which only the shape rule can do.
+;;
 ;; The protection those rows were written for has not gone anywhere: an
 ;; uninterned symbol or a cycle in the PAYLOAD is still refused, by
 ;; storable-encode, and that is where they are checked now.

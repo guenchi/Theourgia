@@ -181,5 +181,48 @@
           (list (head-of a) (incomplete-dirs a))
           (list '(error eval-worker-exit) (list dir)))))
 
+;; ---- F79: writers/ itself unlistable, on the two routes that load at start --
+(printf "== F79: a writers/ directory that cannot be listed, at eval and at a daemon's start ==\n")
+;; Both routes load the store before anything can be heard, so the failure
+;; reaches their catch-alls: eval-worker's answered (error eval-exception
+;; ...), the daemon's start (error store-load-failed (reason "failed for
+;; ~a: ~(~a~)")). Each now names the entry and the reason, as K1's routes do.
+(define (writers-of store) (string-append store "/writers"))
+(define (names-writers? a store)
+  (and (pair? a) (eq? (car a) 'error) (pair? (cdr a)) (eq? (cadr a) 'unreadable)
+       (let ((p (assq 'path (cddr a))))
+         (and p (equal? (cadr p) (writers-of store))))))
+(let ((s (fresh-store!)))
+  (let ((healthy (eval-answer s "(+ 1 2)")))
+    (chmod! "000" (writers-of s))
+    (let ((a (eval-answer s "(+ 1 2)")))
+      (chmod! "700" (writers-of s))
+      (want "CONTROL F79-2 on the same store, readable, eval answers ok"
+            (and (pair? healthy) (car healthy))
+            'ok)
+      (want "F79-2 eval on a store whose writers/ cannot be listed answers unreadable, naming writers/"
+            (list (head-of a) (names-writers? a s))
+            (list '(error unreadable) #t)))))
+(define sock-base
+  (let ((v (getenv "THEOURGIA_TEST_SOCK")))
+    (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+(let* ((s (fresh-store!))
+       (sock (string-append sock-base "/ur-" (number->string (get-process-id)) ".sock"))
+       (out (string-append root "/start.out")))
+  (chmod! "000" (writers-of s))
+  (let* ((rc (system (string-append "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgiad.sc serve "
+                                    s " --socket " sock " > " out " 2> /dev/null < /dev/null")))
+         (said (guard (e (#t '()))
+                 (call-with-port (open-input-file out)
+                   (lambda (p) (let loop ((acc '()))
+                                 (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
+    (chmod! "700" (writers-of s))
+    (want "F79-3 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket"
+          (list (and (pair? said) (names-writers? (car said) s))
+                (and (pair? said) (pair? (cdr said)) (cadr said))
+                rc
+                (file-exists? sock))
+          (list #t '(exiting (reason store-actor-down)) 75 #f))))
+
 (system (string-append "chmod -R u+rwx " root " 2>/dev/null; rm -rf " root))
 (printf "\n~a failures\nrows: ~a\nunreadable-routes complete\n" bad rows)

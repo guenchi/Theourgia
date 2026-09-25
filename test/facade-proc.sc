@@ -123,10 +123,61 @@
       (printf "P-08: the children of a worker could not be listed; waiting out the bound\n"))
     (for-each (lambda (pid) (system (string-append "kill -TERM " (number->string pid) " 2>/dev/null"))) all)
     (for-each (lambda (pid) (system (string-append "kill -CONT " (number->string pid) " 2>/dev/null"))) pids)
-    (let wait ((k 0))
-      (unless (or (> k 100) (and (not unread) (not unknown) (for-all pid-gone? all)))
-        (system "sleep 0.05")
-        (wait (+ k 1))))))
+    ;; NEVER: ROUNDS THAT RUN OUT ARE SAID (F90). The loop used to end in
+    ;; silence with a process still there, and only the runner's LEFT IN
+    ;; GROUP, after the fixture, said anything; that stays the guard, and
+    ;; this line names the pid here, at the step that failed to end it.
+    ;; NEVER: let*, NOT let. `left` must be read after the rounds; under
+    ;; `let` the two are evaluated in no promised order, and a pid read
+    ;; before the wait is reported although it ended during it.
+    (let* ((rounds (let wait ((k 0))
+                    (if (or (> k 100) (and (not unread) (not unknown) (for-all pid-gone? all)))
+                        k
+                        (begin (system "sleep 0.05") (wait (+ k 1))))))
+          (left (filter (lambda (pid) (not (pid-gone? pid))) all)))
+      (when (pair? left)
+        (printf "P-08: still running after TERM and ~a rounds of 50 ms: ~a\n"
+                rounds
+                (apply string-append
+                       (map (lambda (pid) (string-append " " (number->string pid))) left)))))))
+
+;; F90-2: THE LINE APPEARS WHEN A CHILD OUTLASTS THE ROUNDS. A shell that
+;; ignores TERM and execs `sleep` keeps the disposition across the exec, so
+;; the pid stays through every round; the row reads what end-and-wait!
+;; printed, then ends the child with KILL itself.
+(let* ((f (string-append scratch-base "/f90-ignorer-" (number->string (get-process-id)) ".pid"))
+       (in? (lambda (text needle)
+              (let ((n (string-length needle)) (m (string-length text)))
+                (let loop ((i 0))
+                  (cond ((> (+ i n) m) #f)
+                        ((string=? (substring text i (+ i n)) needle) #t)
+                        (else (loop (+ i 1)))))))))
+  ;; NEVER: THE CHILD SAYS IT IS READY ONLY AFTER ITS TRAP. A child stopped
+  ;; and sent TERM before its trap has run dies on CONT with the default
+  ;; disposition, and the row is red for a race of its own. The first
+  ;; version, with no ready file, read (#t #f #f) once under the launcher
+  ;; and green three times after; this race is the reading of that red, not
+  ;; a reproduction of it.
+  (system (string-append "sh -c 'trap \"\" TERM; echo 1 > " f ".ready; exec sleep 30' > /dev/null 2>&1 & echo $! > " f))
+  (let wait ((k 0))
+    (unless (or (file-exists? (string-append f ".ready")) (> k 200))
+      (system "sleep 0.05")
+      (wait (+ k 1))))
+  (let* ((ready (file-exists? (string-append f ".ready")))
+         (pid (guard (e (#t #f)) (call-with-input-file f read)))
+         (said (if (integer? pid)
+                   (with-output-to-string (lambda () (end-and-wait! (list pid))))
+                   "")))
+    (when (integer? pid) (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))
+    (system (string-append "rm -f " f " " f ".ready"))
+    (unless (in? said "still running after TERM")
+      (printf "   F90-2: end-and-wait! said ~s for pid ~s\n" said pid))
+    (want "F90-2 the child said it was ready, and end-and-wait! names it still running after TERM when its rounds run out"
+          (list ready
+                (integer? pid)
+                (in? said "still running after TERM")
+                (and (integer? pid) (in? said (string-append " " (number->string pid)))))
+          '(#t #t #t #t))))
 
 (define (digits-of t)
   (let* ((n (string-length t))

@@ -1036,6 +1036,47 @@
         (when (and r (starts-with? (car r) (string-append (cadr c) "/run-"))) (sh "rm -rf " (car r)))
         (when (and r (starts-with? (cadr r) "/tmp/ths.") (<= (string-length (cadr r)) 20)) (sh "rm -rf " (cadr r)))))))
 
+(printf "== F90-1: a clock that cannot be read while stopping a launch is named ==\n")
+;; A `perl` on PATH that answers the monotonic clock's reading with a word
+;; that is not a number, once armed, and passes every other use through --
+;; the runner's re-exec, launch.pl, the probe. It is armed by this row after
+;; the fixture has started and before TERM, so the only clock reads it
+;; fails are the ones the signal path makes: the wait for the watcher.
+(let* ((c (inner! '("ok.py" "wait.sc")))
+       (shim (string-append root "/shim-perl"))
+       (real (begin (sh "command -v perl > " root "/real-perl")
+                    (let ((t (slurp (string-append root "/real-perl"))))
+                      (if (and (> (string-length t) 0)
+                               (char=? #\newline (string-ref t (- (string-length t) 1))))
+                          (substring t 0 (- (string-length t) 1))
+                          t)))))
+  (sh "mkdir -p " shim)
+  (spit! (string-append shim "/perl")
+         (string-append "#!/bin/sh\n"
+                        "if [ -f clock-armed ]; then case \"$1\" in *CLOCK_MONOTONIC*) echo not-a-number; exit 0;; esac; fi\n"
+                        "exec " real " \"$@\"\n"))
+  (sh "chmod +x " shim "/perl")
+  (start! c #f #f shim)
+  (let* ((started (await (string-append (car c) "/started") 60))
+         (runner (read-datum (string-append (car c) "/runner.pid"))))
+    (spit! (string-append (car c) "/clock-armed") "1")
+    (when (and (integer? runner) (> runner 1)) (sh "kill -TERM " (number->string runner)))
+    (let ((done (finished? c 30)))
+      (go! c)
+      (stop-pid! (string-append (car c) "/wait.pid"))
+      (let ((r (roots-of c)))
+        (want "CONTROL F90-1 the real perl was found, the run started, the clock was armed, and TERM was sent"
+              (list (> (string-length real) 0) started
+                    (file-exists? (string-append (car c) "/clock-armed")) (integer? runner))
+              '(#t #t #t #t))
+        (want "F90-1 a clock that cannot be read while stopping the watcher is named as the clock, not as a watcher that did not stop"
+              (list done (rc-of c)
+                    (and (line-with c "GROUP NOT READ" "wait" "CLOCK NOT READ") #t)
+                    (and (line-with c "did not stop within") #t))
+              '(#t 143 #t #f))
+        (when (and r (starts-with? (car r) (string-append (cadr c) "/run-"))) (sh "rm -rf " (car r)))
+        (when (and r (starts-with? (cadr r) "/tmp/ths.") (<= (string-length (cadr r)) 20)) (sh "rm -rf " (cadr r)))))))
+
 (printf "== RS-16: the runner's marker does not reach its fixtures ==\n")
 (let ((c (inner! '("ok.py" "marker.sc"))))
   (start! c)

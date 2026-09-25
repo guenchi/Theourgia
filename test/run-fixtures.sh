@@ -1,4 +1,13 @@
 #!/bin/sh
+# THE ENVIRONMENT THIS FILE READS, DECLARED (F89). docs-check.sc's DOC-3
+# takes the runner's names from the READ line below and requires the README
+# to document each; its TWIN requires every THEOURGIA_* name anywhere in this
+# file, comments and strings included, to be on one of the two lines. READ
+# is what the runner takes from the environment it was started with; NAMED,
+# NOT READ is every other name here (set by the runner itself, or only
+# mentioned). A new name nobody classified turns that TWIN red.
+# ENVIRONMENT READ: THEOURGIA_FIXTURE_LIMIT THEOURGIA_LIBDIR THEOURGIA_RUNNER_NORMALISED THEOURGIA_TEST_ROOT
+# ENVIRONMENT NAMED, NOT READ: THEOURGIA_INJECT THEOURGIA_RUN THEOURGIA_SUITE_TOKEN THEOURGIA_TEST_SOCK
 # EVERY SCRIPT IN THE DIRECTORY IS RUN, AND EVERY OUTCOME IS PRINTED BY
 # NAME. A hand-written list is silent about the file it forgot, and this
 # directory's list had forgotten smoke-wire -- red for days, because it
@@ -200,16 +209,19 @@ mono() {
 # alive() can itself take up to 5 s, so a count of turns bounds nothing.
 # wait_gone <pid> <seconds>: returns 0 once the pid is gone, 1 at the end,
 # which is never earlier than <seconds> after the call; the last alive()
-# may finish up to 5 s past it. A clock that cannot be
-# read ends the wait as the end of the bound would: a reading that is not
-# a number must not become a wait with no end.
+# may finish up to 5 s past it. A clock that cannot be read ends the wait
+# at once, returning 2: a reading that is not a number must not become a
+# wait with no end.
+# NEVER: THE CLOCK'S FAILURE IS ITS OWN RETURN (F90). It used to return 1,
+# the same as a bound that ran out, so a caller could only report "did not
+# stop within N s" for a wait that never started counting.
 wait_gone() {
-  wg_now=$(mono) || return 1
-  case "$wg_now" in ""|*[!0-9]*) return 1 ;; esac
+  wg_now=$(mono) || return 2
+  case "$wg_now" in ""|*[!0-9]*) return 2 ;; esac
   wg_end=$((wg_now + $2 * 1000))
   while alive "$1"; do
-    wg_now=$(mono) || return 1
-    case "$wg_now" in ""|*[!0-9]*) return 1 ;; esac
+    wg_now=$(mono) || return 2
+    case "$wg_now" in ""|*[!0-9]*) return 2 ;; esac
     [ "$wg_now" -ge "$wg_end" ] && return 1
     sleep 0.1
   done
@@ -305,22 +317,37 @@ stop_probe() {
 # file. A stop request is never followed by a KILL inside W's own bound.
 W_STOP_BOUND=15
 W_STOP_WAIT=$((W_STOP_BOUND + 5))
+# stop_watcher: the running launch's watcher is asked to stop and waited
+# for; one that is not seen to stop is killed and its group is not read,
+# and the roots are kept. TWO CAUSES, TWO MESSAGES (F90): a watcher that
+# outlived the bound, and a monotonic clock that could not be read, so the
+# wait never counted at all.
+stop_watcher() {
+  kill -TERM "$tracked_w" 2>/dev/null
+  wait_gone "$tracked_w" "$W_STOP_WAIT"
+  sw_rc=$?
+  if [ "$sw_rc" = 0 ]; then
+    wait "$tracked_w" 2>/dev/null
+    read_result "$tracked_result" "$tracked_id" "$tracked_name"
+    return 0
+  fi
+  kill -KILL "$tracked_w" 2>/dev/null
+  wait_gone "$tracked_w" 2
+  alive "$tracked_w" || wait "$tracked_w" 2>/dev/null
+  keep_roots=1
+  if [ "$sw_rc" = 2 ]; then
+    echo "GROUP NOT READ for $tracked_name: CLOCK NOT READ -- the monotonic clock gave no number while waiting for its watcher to stop, so the wait could not be bounded and the watcher was killed"
+    keep_reason="the monotonic clock could not be read while stopping the watcher of $tracked_name"
+  else
+    echo "GROUP NOT READ for $tracked_name: its watcher did not stop within $W_STOP_WAIT s"
+    keep_reason="the watcher of $tracked_name did not stop within $W_STOP_WAIT s"
+  fi
+}
 on_signal() {
   trap '' INT TERM HUP
   echo "SIGNALLED: stopping the running launch and the probe, counting this run's processes, then removing its roots"
   if [ -n "$tracked_w" ]; then
-    kill -TERM "$tracked_w" 2>/dev/null
-    if ! wait_gone "$tracked_w" "$W_STOP_WAIT"; then
-      kill -KILL "$tracked_w" 2>/dev/null
-      wait_gone "$tracked_w" 2
-      alive "$tracked_w" || wait "$tracked_w" 2>/dev/null
-      echo "GROUP NOT READ for $tracked_name: its watcher did not stop within $W_STOP_WAIT s"
-      keep_roots=1
-      keep_reason="the watcher of $tracked_name did not stop within $W_STOP_WAIT s"
-    else
-      wait "$tracked_w" 2>/dev/null
-      read_result "$tracked_result" "$tracked_id" "$tracked_name"
-    fi
+    stop_watcher
     tracked_w=""
   fi
   stop_probe
