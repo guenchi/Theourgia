@@ -281,10 +281,15 @@
    "eval"
    (e (#t #f)))
   ("eval-worker.sc" (answer) 1 guard
-   ((and (pair? e) (eq? (car e) (quote error))) (unreadable-entry? e) #t)
+   ((worker-refusal? e) (unreadable-entry? e) (condition? e) #t)
    refuse a
-   "eval: an entry the worker's load could not read -- writers/ itself included (F79) -- answers (error unreadable (path p) (reason r)) before the catch-all, as K1's routes do; a raised pair headed error passes through as before, and any other raise is still eval-exception"
-   (e ((and (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) (#t (quote (error eval-exception (kind raised) (message "Evaluation raised an exception"))))))
+   "eval: an entry the worker's load could not read -- writers/ itself included (F79) -- answers (error unreadable (path p) (reason r)) before the catch-all, as K1's routes do; the worker's own refusals are a private record answered as they are (F92), a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
+   (e ((worker-refusal? e) (worker-refusal-answer e)) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
+  ("eval-worker.sc" (worker-step) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))) (or (worker-refusal? e) (unreadable-entry? e) (condition? e)) #t)
+   propagate a
+   "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers as before F92: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (F92 review r1, S)"
+   (e ((and (pair? e) (eq? (car e) (quote error))) (refuse! e)) ((or (worker-refusal? e) (unreadable-entry? e) (condition? e)) (raise e)) (#t (refuse! (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))))))
   ("evidence-index.sc" (load-checkpoint) 1 guard
    (#t)
    unrelated c

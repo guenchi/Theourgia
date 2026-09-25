@@ -44,6 +44,24 @@
 ;; the last note and appends it to whatever answer it returns, a limit or a
 ;; lost worker included (K14; review r4, A1-1). A refusal of the handshake
 ;; comes before any load and so carries none.
+;;
+;; KEY: AN ANSWER'S SHAPE IS NEVER THE SOURCE'S (F92, F93). An eval answer is
+;; `(ok ...)` or an `(error <name> ...)` of this worker's or the
+;; supervisor's. The worker's own refusals (bad-source, eval-context,
+;; eval-denied, eval-value) are raised as a private record, `worker-refusal`,
+;; which no source can build, and a list headed `error` that a library raises
+;; during the worker's own steps -- reading the source and the cut, loading
+;; the store -- is made one (`worker-step`), so a malformed source is refused
+;; as before; anything else those steps raise, except an unreadable entry or
+;; a condition, answers the fixed message, as before. A condition the source raises keeps the fixed-message answer,
+;; `(error eval-exception (kind raised) (message "..."))`. Any other value
+;; the source raises while it is evaluated is carried as data inside
+;; `(error eval-exception (kind raised) ...)`: as `(value <v>)` when
+;; it can be written and read back, `(error ...)`-shaped lists included, and
+;; as `(reason unwritable-value) (type <t>)` otherwise, t one of procedure,
+;; port, cycle, too-large, or unsupported (a value `write` cannot give back,
+;; such as a record or a hashtable), so a raise never puts a line on the
+;; protocol that the supervisor cannot read.
 
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
         (theourgia eval-context) (theourgia code-project)
@@ -165,26 +183,79 @@
     (rnrs exceptions) (rnrs conditions) (rnrs mutable-pairs)
     (rnrs mutable-strings) (rnrs unicode) (rnrs bytevectors)))
 
-(define (limited-value? value index)
+;; ---- the worker's own refusals (F92, F93) -------------------------------------
+;;
+;; NEVER: THE WORKER'S OWN REFUSALS ARE A PRIVATE TYPE, NOT A LIST (R1). The
+;; answer guard used to pass any raised pair headed `error` through as the
+;; answer, because these refusals were raised as such lists -- so a source
+;; that raised one forged the answer's shape: an improper pair on the wire,
+;; or a procedure the supervisor could not read back and reported as a dead
+;; worker. A refusal is now this record, which no source can make, and it
+;; carries the answer it stands for.
+(define-record-type worker-refusal (fields answer))
+(define (refuse! answer) (raise (make-worker-refusal answer)))
+
+;; NEVER: WHAT THE WORKER'S OWN STEPS RAISE IS NEVER THE SOURCE'S VALUE. Only
+;; what the source raises while it is evaluated is data; a malformed source
+;; raises nothing, it is refused. The three branches answer as before F92:
+;;   - a list headed `error` is the refusal of a library the worker called
+;;     -- `(error bad-source (reason unbalanced) ...)` from the reader -- and
+;;     is answered as itself;
+;;   - the worker's own refusal (`refuse!` is called inside these steps), an
+;;     unreadable entry or a condition goes on to `answer`'s own clauses;
+;;   - anything else -- the store's load raises `log-error`, a record, and
+;;     one path a bare symbol -- answers the fixed message. Passed on, it
+;;     would reach `raised-answer` and be reported as a value the source
+;;     raised.
+(define (worker-step thunk)
+  (guard (e ((and (pair? e) (eq? (car e) 'error)) (refuse! e))
+            ((or (worker-refusal? e) (unreadable-entry? e) (condition? e)) (raise e))
+            (#t (refuse! '(error eval-exception (kind raised) (message "Evaluation raised an exception")))))
+    (thunk)))
+
+;; -> #f when the value can be written back as data, or the kind of problem:
+;; procedure, port, cycle, size, unsupported. One rule for what the worker
+;; returns and for what the source raises.
+(define (value-problem value)
   (let ((active (make-eq-hashtable)) (count 0))
-    (define (refuse kind) (raise (list 'error 'eval-value (list 'kind kind) (list 'index index))))
-    (define (visit x depth)
-      (set! count (+ count 1))
-      (when (or (> count output-limit) (> depth 256)) (refuse 'size))
-      (cond
-        ((procedure? x) (refuse 'procedure))
-        ((port? x) (refuse 'port))
-        ((or (pair? x) (vector? x))
-         (when (hashtable-ref active x #f) (refuse 'cycle))
-         (hashtable-set! active x #t)
-         (if (pair? x) (begin (visit (car x) (+ depth 1)) (visit (cdr x) (+ depth 1)))
-             (vector-for-each (lambda (v) (visit v (+ depth 1))) x))
-         (hashtable-delete! active x))
-        ((string? x) (when (> (string-length x) output-limit) (refuse 'size)))
-        ((bytevector? x) (when (> (bytevector-length x) output-limit) (refuse 'size)))
-        ((or (null? x) (boolean? x) (number? x) (char? x) (symbol? x)) (values))
-        (else (refuse 'unsupported))))
-    (visit value 0)))
+    (call/cc
+      (lambda (k)
+        (define (refuse kind) (k kind))
+        (define (visit x depth)
+          (set! count (+ count 1))
+          (when (or (> count output-limit) (> depth 256)) (refuse 'size))
+          (cond
+            ((procedure? x) (refuse 'procedure))
+            ((port? x) (refuse 'port))
+            ((or (pair? x) (vector? x))
+             (when (hashtable-ref active x #f) (refuse 'cycle))
+             (hashtable-set! active x #t)
+             (if (pair? x) (begin (visit (car x) (+ depth 1)) (visit (cdr x) (+ depth 1)))
+                 (vector-for-each (lambda (v) (visit v (+ depth 1))) x))
+             (hashtable-delete! active x))
+            ((string? x) (when (> (string-length x) output-limit) (refuse 'size)))
+            ((bytevector? x) (when (> (bytevector-length x) output-limit) (refuse 'size)))
+            ((or (null? x) (boolean? x) (number? x) (char? x) (symbol? x)) (values))
+            (else (refuse 'unsupported))))
+        (visit value 0)
+        #f))))
+
+(define (limited-value? value index)
+  (let ((problem (value-problem value)))
+    (when problem
+      (refuse! (list 'error 'eval-value (list 'kind problem) (list 'index index))))))
+
+;; WHAT THE SOURCE RAISED, AS DATA (R2): whatever it looks like -- an
+;; `(error ...)` list included -- it is carried inside eval-exception and
+;; never becomes the answer's shape. A value that cannot be written back is
+;; named by its kind instead of reaching the protocol, where the supervisor
+;; could not read it and would report a worker that died.
+(define (raised-answer v)
+  (let ((problem (value-problem v)))
+    (if problem
+        (list 'error 'eval-exception (list 'kind 'raised) (list 'reason 'unwritable-value)
+              (list 'type (if (eq? problem 'size) 'too-large problem)))
+        (list 'error 'eval-exception (list 'kind 'raised) (list 'value v)))))
 
 ;; NEVER: THE OVERLAY IS THE SAME RULE `working-read` USES: a block with a live
 ;; draft reads as that draft, everything else as what is committed. The
@@ -218,42 +289,52 @@
   ;; as every route of K1 names it: a writers/ directory this process
   ;; cannot list fails the load before any incomplete note can be heard,
   ;; and the catch-all would call it an exception the evaluation raised.
-  (guard (e ((and (pair? e) (eq? (car e) 'error)) e)
+  (guard (e ((worker-refusal? e) (worker-refusal-answer e))
             ((unreadable-entry? e)
              (list 'error 'unreadable
                    (list 'path (unreadable-entry-path e))
                    (list 'reason (unreadable-entry-reason e))))
-            (#t '(error eval-exception (kind raised) (message "Evaluation raised an exception"))))
-    (let* ((forms (datum-source-read (string->utf8 source)))
-           (cut (and (not (string=? cut-text ""))
-                     (let ((v (datum-source-read (string->utf8 cut-text))))
-                       (unless (= (length v) 1) (raise '(error bad-source (reason expected-one-cut)))) (caar v))))
-           (state (if cut (open-and-reduce store cut) (open-and-reduce store))))
-      (unless (= (length forms) 1) (raise '(error bad-source (reason expected-one-form))))
-      (unless (reduction? state) (raise '(error eval-context (reason unavailable-cut))))
-      (eval-context! state drafts)
-      (let* ((body (caar forms))
-             (body
-               (if (string=? under "") body
-                   (begin
-                     (unless (and (eq? 'library (code-field state under 'kind)) (eq? 'datum (code-field state under 'mode)))
-                       (raise '(error eval-context (reason library-required))))
-                     (unless (for-all (lambda (spec) (or (equal? spec '(rnrs)) (member spec allowed-libraries)))
-                                      (code-field state under 'imports))
-                       (raise '(error eval-denied (operation library-import))))
-                     (cons 'let (cons '() (append (map (lambda (id)
-                                                         (or (overlay-for id) (code-field state id 'body)))
-                                                       (code-children state under))
-                                                  (list body)))))))
-             (env (apply environment
-                    (append allowed-libraries
-                            '((only (theourgia eval-context) store-cut blocks block display write newline open-string-input-port current-error-port flush-output-port)))))
-             (vs (call-with-values
-                   (lambda ()
-                     (parameterize ((current-output-port user-out)
-                                    (current-error-port user-err))
-                       (eval body env)))
-                   list)))
+            ;; A CONDITION -- (car '()), an assertion -- keeps today's answer.
+            ((condition? e) '(error eval-exception (kind raised) (message "Evaluation raised an exception")))
+            (#t (raised-answer e)))
+    (let-values
+        (((state body env)
+          ;; THE WORKER'S OWN STEPS: reading the source and the cut, loading
+          ;; the store, the library the source is evaluated under. What they
+          ;; raise is the worker's refusal, never the source's value (F92).
+          (worker-step
+            (lambda ()
+              (let* ((forms (datum-source-read (string->utf8 source)))
+                     (cut (and (not (string=? cut-text ""))
+                               (let ((v (datum-source-read (string->utf8 cut-text))))
+                                 (unless (= (length v) 1) (refuse! '(error bad-source (reason expected-one-cut)))) (caar v))))
+                     (state (if cut (open-and-reduce store cut) (open-and-reduce store))))
+                (unless (= (length forms) 1) (refuse! '(error bad-source (reason expected-one-form))))
+                (unless (reduction? state) (refuse! '(error eval-context (reason unavailable-cut))))
+                (eval-context! state drafts)
+                (let* ((body (caar forms))
+                       (body
+                         (if (string=? under "") body
+                             (begin
+                               (unless (and (eq? 'library (code-field state under 'kind)) (eq? 'datum (code-field state under 'mode)))
+                                 (refuse! '(error eval-context (reason library-required))))
+                               (unless (for-all (lambda (spec) (or (equal? spec '(rnrs)) (member spec allowed-libraries)))
+                                                (code-field state under 'imports))
+                                 (refuse! '(error eval-denied (operation library-import))))
+                               (cons 'let (cons '() (append (map (lambda (id)
+                                                                   (or (overlay-for id) (code-field state id 'body)))
+                                                                 (code-children state under))
+                                                            (list body)))))))
+                       (env (apply environment
+                              (append allowed-libraries
+                                      '((only (theourgia eval-context) store-cut blocks block display write newline open-string-input-port current-error-port flush-output-port))))))
+                    (values state body env)))))))
+      (let ((vs (call-with-values
+                  (lambda ()
+                    (parameterize ((current-output-port user-out)
+                                   (current-error-port user-err))
+                      (eval body env)))
+                  list)))
         (do ((xs vs (cdr xs)) (i 0 (+ i 1))) ((null? xs)) (limited-value? (car xs) i))
         ;; NEVER: THE CUT POSITION CARRIES THE CUT THIS EVALUATION ACTUALLY
         ;; USED, NEVER: never #f. It is the coordinate that makes the run

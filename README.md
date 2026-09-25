@@ -1139,11 +1139,22 @@ the committed store except by reading it.
         (stdout "...") (stderr "..."))
     (error eval-limit (resource time|memory|output) (limit <n>) (stdout "..."))
     (error eval-exception (kind raised) (message "..."))
+    (error eval-exception (kind raised) (value <v>))
+    (error eval-exception (kind raised) (reason unwritable-value) (type <t>))
     (error bad-request (reason ...) (usage (eval ...)))
 
 NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
 never be mistaken for the answer itself.
+
+NEVER: **So is what the source raises.** An answer is `(ok ...)` or an
+`(error <name> ...)` of the worker's or the supervisor's, and nothing the
+source does changes that shape. A raised condition is answered as above,
+with a fixed message. Any other raised value arrives inside `(value <v>)`, an
+`(error ...)`-shaped list included, when it can be written and read back;
+otherwise the answer says `(reason unwritable-value)` and a `<t>` of
+`procedure`, `port`, `cycle`, `too-large` or `unsupported`, and the value
+itself is not sent.
 
 **The limits, and their bounds**: `--timeout-ms` 1..60000 (default 3000),
 `--memory-bytes` 1 MiB..2 GiB (default 256 MiB), `--output-bytes`
@@ -1179,7 +1190,18 @@ Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 The program is `theourgiad.sc`; it takes this verb and no other, and
 answers any other with `(error bad-request (reason not-a-daemon-verb)
-(usage ...))`, this usage inside the error, exit 1.
+(usage ...))`, this usage inside the error, exit 1. It reads `--store`,
+`--socket`, `--detach` and `--log`, and refuses any other option,
+`--wire` and the other verbs' shared options included, with `(error
+bad-request (reason unknown-option) (option "<the option>") (usage ...))`,
+exit 1, before anything is opened or bound. A shared option given without
+its value, or given twice, is refused first by the argument parser, as
+for every verb: `(error bad-request missing-option-value "<the option>")`
+or `(error bad-request duplicate-option "<the option>")`, followed by the
+usage on its own line, exit 1. A store whose name starts
+with `--` is given as `--store <store>` or after `--`; the clients that
+start a daemon pass a store that starts with `-` as `--store <store>`,
+and any other store as the positional.
 
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or

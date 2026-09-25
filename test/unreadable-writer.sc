@@ -840,10 +840,13 @@
   ;; clause only to a proper list (:235); an improper pair from the evaluated
   ;; source therefore lost the clause. The source below spells the pair
   ;; without quote characters because it travels through a shell.
+  ;; Since F92 a raised value is never the answer's shape: the pair is
+  ;; carried as data inside eval-exception, a proper list. The CONTROL
+  ;; below reads that wrap; on a839eb1 the answer was the pair itself.
   (let ((improper "(raise (cons (string->symbol \"error\") (string->symbol \"custom\")))"))
-    (want "CONTROL K14 a source that raises an improper error pair: on a healthy store the answer is that pair, as on a839eb1"
+    (want "CONTROL K14 a source that raises an improper error pair: on a healthy store the answer carries it as data inside eval-exception (F92)"
           (eval-answer s improper)
-          '(error . custom))
+          '(error eval-exception (kind raised) (value (error . custom))))
     (chmod! "100" dir)
     (let ((a (eval-answer s improper)))
       (chmod! "700" dir)

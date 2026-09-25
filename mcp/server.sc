@@ -406,12 +406,22 @@
 ;; NEVER: AND A LOST ANSWER IS NOT AN EMPTY ONE. Once the frame has gone out
 ;; the request may have been carried out, so it is never re-sent and
 ;; never reported as not having happened.
+;;
+;; NEVER: A STORE THAT STARTS WITH "-" GOES AS `--store <store>`. The daemon
+;; refuses a token spelled like an option that it does not read (F94), and a
+;; store is passed verbatim, so a store named `--x` given as a positional was
+;; refused where the client meant a store; the value after `--store` is taken
+;; whatever its spelling. Every other store keeps the positional, so its
+;; daemon's command line is the one it always was (`serve <store> ...`),
+;; which is what anything that finds a daemon by its command line matches.
 (define (server-argv store socket)
-  (list (or (getenv "THEOURGIA_SCHEME") "scheme")
-        "--script" (beside-this-program "theourgiad.sc")
-        "serve" store
-        "--socket" socket
-        "--detach" "--log" (serve-log-path store)))
+  (append (list (or (getenv "THEOURGIA_SCHEME") "scheme")
+                "--script" (beside-this-program "theourgiad.sc") "serve")
+          (if (and (> (string-length store) 0) (char=? (string-ref store 0) #\-))
+              (list "--store" store)
+              (list store))
+          (list "--socket" socket
+                "--detach" "--log" (serve-log-path store))))
 
 ;; NOTE: `theourgiad.sc`, THE DAEMON THIS SHELL STARTS (F46), SITS ONE LEVEL
 ;; UP: this program lives in `mcp/`.

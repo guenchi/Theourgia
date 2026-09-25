@@ -168,18 +168,23 @@
 ;; worker then writes; the supervisor answers eval-worker-exit, as on
 ;; a338bcd. The clause is the supervisor's, from the note the worker said
 ;; at its load, so it is appended to that answer too.
+;;
+;; Since F93 a raised value is carried as data and never written as the
+;; answer's shape, so this source answers (error eval-exception (kind
+;; raised) (reason unwritable-value) (type procedure)) from the worker, and
+;; the clause is appended to it; on 86db404 both rows read eval-worker-exit.
 (define unwritable-source "(raise (cons (string->symbol \"error\") (lambda () #f)))")
 (let* ((s (fresh-store!))
        (dir (writer-directory s M)))
-  (want "CONTROL on a healthy store a raised pair holding a procedure answers eval-worker-exit with no clause"
+  (want "CONTROL on a healthy store a raised pair holding a procedure answers eval-exception with no clause (F93)"
         (let ((a (eval-answer s unwritable-source))) (list (head-of a) (incomplete-dirs a)))
-        '((error eval-worker-exit) no-clause))
+        '((error eval-exception) no-clause))
   (chmod! "000" dir)
   (let ((a (eval-answer s unwritable-source)))
     (chmod! "700" dir)
-    (want "the same source after the worker's load met the unreadable mirror answers eval-worker-exit and names the mirror"
+    (want "the same source after the worker's load met the unreadable mirror answers eval-exception and names the mirror (F93)"
           (list (head-of a) (incomplete-dirs a))
-          (list '(error eval-worker-exit) (list dir)))))
+          (list '(error eval-exception) (list dir)))))
 
 ;; ---- F79: writers/ itself unlistable, on the two routes that load at start --
 (printf "== F79: a writers/ directory that cannot be listed, at eval and at a daemon's start ==\n")

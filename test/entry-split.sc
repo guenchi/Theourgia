@@ -160,6 +160,26 @@
                     (and (contains? (out-of r) "(error store-not-found (store \"d\"))")
                          (contains? (out-of r) "(exiting (reason store-actor-down))")))))
         (list 75 #t)))
+;; AN OPTION serve DOES NOT KNOW IS REFUSED (F94), as every other verb
+;; refuses one; before it, `serve d --bogus` served in the foreground.
+(let ((d (row-dir!)))
+  (system (string-append "mkdir -p " d "/cwd/d"))
+  (run-in d "core.sc" "init --store d")
+  (want "F46-9 TWIN: serve with an option it does not know answers bad-request unknown-option naming it, with the usage, exit 1, and leaves no socket"
+        (if (not (program-exists? "theourgiad.sc"))
+            'no-such-program
+            (let* ((r (run-in d "theourgiad.sc" "serve d --bogus" 8))
+                   (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read)))
+                   (sockets (string-append d "/sockets")))
+              (system (string-append "find " sock-base "/es-" pid-text "-" (number->string row-n) " -name socket 2>/dev/null | wc -l | tr -d ' ' > " sockets))
+              (list (rc-of r)
+                    (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
+                    (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'reason))) (cdr a))))) (and f (cadr f)))
+                    (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'option))) (cdr a))))) (and f (cadr f)))
+                    (and (pair? a) (list? a) (and (find (lambda (x) (and (pair? x) (eq? (car x) 'usage))) (cdr a)) #t))
+                    (let ((t (file-text sockets))) (substring t 0 (max 0 (- (string-length t) 1)))))))
+        (list 1 '(error bad-request) 'unknown-option "--bogus" #t "0")))
+
 ;; THE REFUSALS COME BEFORE THE DAEMON LIBRARY LOADS, as they did in the
 ;; base: igropyr reads IGROPYR_INJECT when a library that uses injection is
 ;; expanded, so a program that imported (theourgia daemon) statically would
@@ -232,6 +252,27 @@
     (want "F46-1 TWIN: the daemon stopped on TERM and left no process for the store"
           (length (daemon-lines store))
           0)))
+
+;; THE CLIENT'S OWN SPAWN IS NEVER REFUSED BY THE DAEMON'S OPTION TABLE (F94
+;; review, ruled). A store whose name starts with "--" reached the daemon as
+;; a bare positional, which serve now refuses as an unknown option; the
+;; spawn names it with --store, so the daemon gets the store the client
+;; means. The store is relative, in the row's cwd, and carries this run's
+;; pid so the ps filter finds only this row's daemon.
+(let* ((d (row-dir!))
+       (store (string-append "--dash-" pid-text)))
+  (system (string-append "mkdir -p " d "/cwd/" store))
+  (run-in d "theourgia.sc" (string-append "init --store " store))
+  (let* ((forwarded (run-in d "theourgia.sc" (string-append "outline --store " store " --wire") 30))
+         (lines (daemon-lines store))
+         (pids (map pid-of lines)))
+    (want "F46-9 TWIN: the thin client with a store spelled --dash-<pid> starts its daemon and is answered ok"
+          (list (rc-of forwarded) (and (> (string-length (out-of forwarded)) 4) (substring (out-of forwarded) 0 4)) (length lines))
+          '(0 "(ok " 1))
+    (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p) " 2>/dev/null"))) pids)
+    (let wait ((n 0))
+      (when (and (< n 100) (not (null? (daemon-lines store))))
+        (system "sleep 0.1") (wait (+ n 1))))))
 
 ;; ---- F46-10: eval through core.sc -------------------------------------------
 (printf "== F46-10: eval through core.sc ==\n")

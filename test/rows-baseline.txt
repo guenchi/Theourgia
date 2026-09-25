@@ -27,9 +27,10 @@ devino - 1 a1db0a6c54d26163970627cc4119c32f
 doc-predicate 5 8 9c5b38e8f9786fd30a6212a739c6f7b6
 docs-check 15 18 98127f478e914a5da06896f210ba2eb4
 empty-plan - 16 d57ea26f7094ce4415bd09f2798bd8ff
-entry-split 20 33 0d995273acdfd259923a668fdcf1a392
+entry-split 22 35 f93316a5f90a8e5819217d723f173d3d
 envelope 76 80 e5bfff3f3a07c9e02b1eaf9e5b470f23
 eval-local 27 30 501bd4e113bd406549fa84e9b8d9034b
+eval-raise 9 16 c1bd69da20f18afd5458b3e317c1ee9b
 eval-ready 5 12 ff6ae8c0583f3ad1e20c2a6934bdc44a
 eval-supervisor 3 6 1985256f9a64f129c92eb4a67099dcea
 eval-working 14 17 4063d4465a3d9b963ed66fe6480b1066
@@ -116,8 +117,8 @@ unreadable-adopt 34 47 0c0174935a6731998868a16b89d2a2be
 unreadable-census 23 28 992ff82d02289cc294af8301ff86f939
 unreadable-drafts 16 24 629bbd6c81e9d9af8af1fe25ff47c1ec
 unreadable-publish 12 20 6b80679017bfaea17e88094291717766
-unreadable-routes 12 19 6adaa1a225e3402eda6200a0e684b9a6
-unreadable-writer 77 105 a2705290cd30563601d94f4d4fef6f9e
+unreadable-routes 12 19 5855b44f36f1e862dbdae71282a97528
+unreadable-writer 77 105 c541b1a493a64cb8a29fc1caa6fb777b
 unscoped-lock 2 11 0bc39c12567c9dde5dff75237df153c7
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9

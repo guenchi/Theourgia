@@ -64,38 +64,67 @@
 ;; it. NEVER: The parsing is `parse-arguments`, the same reader every other
 ;; verb uses: a second one here would be a second place that knows what
 ;; `--socket` means.
+;;
+;; NEVER: AN OPTION SERVE DOES NOT READ IS REFUSED, BEFORE ANYTHING IS
+;; OPENED OR BOUND. The shared parser reads the options every verb shares
+;; (`--actor`, `--req`, `--cursor`, `--wire`) and turns a token it does not
+;; know into a positional, so `serve d --bogus` used to serve the store
+;; `d` and drop the rest. Serve reads exactly the four below; anything
+;; else spelled as an option is named back with the usage. A positional
+;; after `--` is a literal, as for every verb, and is not an option.
+(define serve-options '("--store" "--socket" "--detach" "--log"))
+
+(define (serve-unknown-option nodes)
+  (let loop ((ns nodes))
+    (cond
+      ((null? ns) #f)
+      ((eq? (caar ns) 'end) #f)
+      ((and (memq (caar ns) '(option flag))
+            (not (member (cadar ns) serve-options)))
+       (cadar ns))
+      ((and (eq? (caar ns) 'pos)
+            (let ((s (cadar ns)))
+              (and (>= (string-length s) 2) (string=? (substring s 0 2) "--"))))
+       (cadar ns))
+      (else (loop (cdr ns))))))
+
 (define (serve-and-exit! argv)
   (let ((nodes (parse-arguments 'serve (cdr argv))))
-    (if (and (pair? nodes) (eq? (car nodes) 'error))
-        (begin (say nodes) (say (list 'usage serve-usage)) (exit 1))
-        (let* ((positional (argument-positionals nodes))
-               (store (or (argument-option nodes "--store")
-                          (and (pair? positional) (car positional))
-                          (getenv "THEOURGIA_STORE")
-                          "."))
-               ;; NEVER: THE SHARED RULE, NOT A SECOND ONE. This used to
-               ;; default to `<store>/socket`, which bypassed the
-               ;; daemon's own function entirely -- so the rule the
-               ;; README documented was never the rule that ran.
-               (socket (or (argument-option nodes "--socket")
-                           (socket-path store))))
-          ;; NEVER: AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
-          ;; not a path, and every layer below treats it as one: the
-          ;; daemon derives its lock file from it, and for a path with no
-          ;; directory in it that lock is created IN THE CURRENT
-          ;; DIRECTORY -- an empty path produced a file called `..lock`
-          ;; in whatever directory the process happened to be in, which
-          ;; is how this was found, in the source tree. The bind then
-          ;; fails and the daemon leaves.
-          (when (and socket (string=? socket ""))
-            (say '(error bad-socket-path (reason empty)))
-            (exit 2))
-          (when (argument-option nodes "--detach")
-            (detach! (argument-option nodes "--log")))
-          ;; Does not return: the daemon runs until it is told to go, or
-          ;; until it finds a reason to leave and reports it.
-          ((later '(theourgia daemon) 'serve) store socket)
-          (exit 0)))))
+    (when (and (pair? nodes) (eq? (car nodes) 'error))
+      (say nodes) (say (list 'usage serve-usage)) (exit 1))
+    (let ((unknown (serve-unknown-option nodes)))
+      (when unknown
+        (say (list 'error 'bad-request '(reason unknown-option)
+                   (list 'option unknown) (list 'usage serve-usage)))
+        (exit 1)))
+    (let* ((positional (argument-positionals nodes))
+           (store (or (argument-option nodes "--store")
+                      (and (pair? positional) (car positional))
+                      (getenv "THEOURGIA_STORE")
+                      "."))
+           ;; NEVER: THE SHARED RULE, NOT A SECOND ONE. This used to
+           ;; default to `<store>/socket`, which bypassed the
+           ;; daemon's own function entirely -- so the rule the
+           ;; README documented was never the rule that ran.
+           (socket (or (argument-option nodes "--socket")
+                       (socket-path store))))
+      ;; NEVER: AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
+      ;; not a path, and every layer below treats it as one: the
+      ;; daemon derives its lock file from it, and for a path with no
+      ;; directory in it that lock is created IN THE CURRENT
+      ;; DIRECTORY -- an empty path produced a file called `..lock`
+      ;; in whatever directory the process happened to be in, which
+      ;; is how this was found, in the source tree. The bind then
+      ;; fails and the daemon leaves.
+      (when (and socket (string=? socket ""))
+        (say '(error bad-socket-path (reason empty)))
+        (exit 2))
+      (when (argument-option nodes "--detach")
+        (detach! (argument-option nodes "--log")))
+      ;; Does not return: the daemon runs until it is told to go, or
+      ;; until it finds a reason to leave and reports it.
+      ((later '(theourgia daemon) 'serve) store socket)
+      (exit 0))))
 
 ;; ---- leaving the caller behind ------------------------------------------
 ;;
