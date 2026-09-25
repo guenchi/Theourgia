@@ -616,11 +616,43 @@ describe('C13 a takeover only ever happens because someone asked for one', () =>
    * the entries arrive -- and it would send another window's saves
    * without anybody deciding to.
    */
+  /*
+   * NOTE: AND THERE IS SOMETHING TO TAKE. (queue item 4) The cell used to
+   * start up in an empty directory, so a startup sweep had nothing to sweep
+   * and passed it. A dead session with a queued request is laid down first;
+   * after startup its queue file must be exactly as it was.
+   */
   it('imports nothing and sends nothing when a session merely starts up', async () => {
     const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const deadQueue = path.join(storage, 'sessions', 'S-dead', 'store-a', 'outbox.json');
+    fs.mkdirSync(path.dirname(deadQueue), { recursive: true });
+    fs.writeFileSync(
+      deadQueue,
+      JSON.stringify({
+        cursor: null,
+        entries: [
+          {
+            req: 'r1',
+            cursor: 'w:1',
+            id: 'a.1',
+            field: 'src',
+            payload: 'another window\'s unsent work',
+            state: 'queued',
+            createdAt: 0,
+            lastError: null,
+            importedBy: null
+          }
+        ]
+      }),
+      'utf8'
+    );
+    const before = fs.readFileSync(deadQueue, 'utf8');
     const files = new RecordingFs();
     const sessions = new Sessions(files, storage);
     sessions.begin('S-new', ['/stores/one']);
+    assert.ok(fs.existsSync(deadQueue), 'starting up moved the dead session\'s queue away');
+    assert.strictEqual(fs.readFileSync(deadQueue, 'utf8'), before, 'starting up changed the dead session\'s queue');
     const others = await sessions.others();
     assert.ok(Array.isArray(others), 'starting up did not even list the other sessions');
     /*
@@ -1761,6 +1793,15 @@ describe('the takeover ledger accounts for everything it saw', () => {
   /*
    * AND IT ADDS UP FOR EACH SHAPE ON ITS OWN, so a failure names which
    * one rather than only that the total moved.
+   *
+   * NOTE: AND THE BUCKETS SAY WHERE EACH THING WENT, not only that they sum.
+   * (queue item 4) Every one of these cells compared the total with
+   * `observed` and nothing else, so an importer that observed and imported
+   * nothing -- `() => emptyLedger()`, measured -- passed all sixteen with
+   * 0 equal to 0. Each now states its buckets: the readable store's request
+   * is imported, and a queue in a shape this build cannot read is counted as
+   * unreadable. One of the sixteen cannot say more than zero and says so
+   * below: an empty queue being taken is, correctly, a ledger of zeroes.
    */
   for (const [what, text] of [
     ['a file that will not parse', '{ not json'],
@@ -1783,6 +1824,12 @@ describe('the takeover ledger accounts for everything it saw', () => {
         led.observed,
         `${what} is not accounted for: ${JSON.stringify(led)}`
       );
+      assert.strictEqual(led.imported, 1, `the readable store's request did not move: ${JSON.stringify(led)}`);
+      assert.strictEqual(
+        led.unreadableQueue,
+        what === 'an empty queue' ? 0 : 1,
+        `${what} was not counted where it belongs: ${JSON.stringify(led)}`
+      );
     });
 
     it(`adds up when the queue being taken is ${what}`, async () => {
@@ -1794,6 +1841,17 @@ describe('the takeover ledger accounts for everything it saw', () => {
         ledgerTotal(led),
         led.observed,
         `${what} is not accounted for when it is the one being taken: ${JSON.stringify(led)}`
+      );
+      /*
+       * NOTE: THE EMPTY QUEUE IS THE ONE SHAPE WHOSE RIGHT ANSWER IS ALL
+       * ZEROES, and so the one this cell cannot tell from an importer that
+       * did nothing. Stated rather than padded with an assertion that could
+       * not fail.
+       */
+      assert.strictEqual(
+        led.unreadableQueue,
+        what === 'an empty queue' ? 0 : 1,
+        `${what} was not counted as unreadable when it is the one being taken: ${JSON.stringify(led)}`
       );
     });
   }

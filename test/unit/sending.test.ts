@@ -420,8 +420,16 @@ describe('R2 the record is the queue entry', () => {
    * queue hands back from `entries` and from `find`, and the same
    * entries after a reload from disk -- and then asks what was sent.
    */
+  /*
+   * NOTE: AND THE ROUTES THROUGH A RELOAD HAVE TO HAVE SOMETHING ON THEM.
+   * (queue item 4) The store used to answer this save, so it was settled
+   * and dequeued before the reload: both reloaded routes handed `shove`
+   * `undefined`, which it ignores, and a reader that returned an unfrozen
+   * record was never exercised. The store now says nothing, the entry
+   * stays, and the cell first asserts that the reload holds it.
+   */
   it('refuses every route to changing the record after it is accepted', async () => {
-    const r = rig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }]);
+    const r = rig([{ match: ['set'], stdout: '', rc: 1 }]);
     core = r.core;
     const record = recordFor(parts());
     const body = record.intent.body;
@@ -452,8 +460,18 @@ describe('R2 the record is the queue entry', () => {
     await r.saver.submit(record);
     const reloaded = new Outbox(r.queuePath);
     reloaded.load();
-    shove(reloaded.entries[0]?.record);
-    shove(reloaded.find(record.req)?.record);
+    const fromEntries = reloaded.entries.find((e) => e.req === record.req)?.record;
+    const fromFind = reloaded.find(record.req)?.record;
+    assert.ok(
+      fromEntries !== undefined && fromFind !== undefined,
+      'the reload holds no record for this save, so the routes through it were not tried'
+    );
+    shove(fromEntries);
+    shove(fromFind);
+    assert.strictEqual(fromEntries.store, '/tmp/store-a', 'the record read back from disk was changed');
+    assert.strictEqual(fromEntries.intent.body, body, 'the bytes in the record read back from disk were changed');
+    assert.strictEqual(fromFind.store, '/tmp/store-a', 'the record find hands back was changed');
+    assert.strictEqual(fromFind.intent.body, body, 'the bytes in the record find hands back were changed');
 
     assert.strictEqual(record.store, '/tmp/store-a', 'the record the caller holds was changed');
     assert.strictEqual(record.intent.body, body, 'the bytes inside the record were changed');
@@ -605,8 +623,19 @@ describe('R3 the request id is made when the save is accepted, not when it is se
    * one: a second Saver, built over the same queue file with nothing in
    * memory, retries and settles from the entry alone.
    */
+  /*
+   * NOTE: AND IT DOES RETRY AND SETTLE. (queue item 4) Until then this cell
+   * stopped at reading the entry back: nothing retried and nothing settled,
+   * so a `retry` that did nothing passed it. The store now answers the
+   * second send, and the reborn Saver -- a new object over the same file,
+   * nothing carried in memory -- must send it again under the same request
+   * id and settle it out of the queue.
+   */
   it('retries and settles from the entry alone after a restart', async () => {
-    const first = rig([{ match: ['set'], stdout: '', rc: 7 }]);
+    const first = rig([
+      { match: ['set'], stdout: '', rc: 7, once: true },
+      { match: ['set'], stdout: wroteAnswer(8), rc: 0 }
+    ]);
     core = first.core;
     const record = recordFor(parts());
     await first.saver.submit(record);
@@ -626,6 +655,20 @@ describe('R3 the request id is made when the save is accepted, not when it is se
       'the entry read back after a restart does not carry the record, so the answer would have ' +
         'to be matched against something reconstructed'
     );
+
+    const client = new Client(new CliTransport(core.config(), core.env()));
+    const rebornSaver = new Saver(client, reborn, settling(reborn, parts().storeHash));
+    const outcomes = await rebornSaver.retry();
+    const sent = sentCalls(core);
+    assert.strictEqual(sent.length, 2, `the restarted saver did not send it again: ${sent.length} sends`);
+    assert.strictEqual(sent[1][sent[1].indexOf('--req') + 1], record.req, 'it went again under another request id');
+    assert.ok(
+      outcomes.some((o) => o.req === record.req && o.status === 'saved'),
+      `the retry did not settle it: ${JSON.stringify(outcomes.map((o) => o.status))}`
+    );
+    const after = new Outbox(first.queuePath);
+    after.load();
+    assert.strictEqual(after.find(record.req), undefined, 'the settled send is still in the queue file');
   });
 });
 

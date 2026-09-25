@@ -1470,13 +1470,31 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
   });
   afterEach(() => core?.dispose());
 
+  /*
+   * NOTE: AND IT DOES RETRY. (queue item 4) The cell used to stop at the
+   * kept entry, so a `retry` that did nothing passed it. The transport now
+   * connects on the second attempt, and the retry must send the same
+   * request again and settle it.
+   */
   it('keeps the entry and retries when nothing was sent', async () => {
-    const r = rig([{ match: ['set'], stdout: '(error connect-failed (errno 2) (carried-out no))\n', rc: 75 }]);
+    const r = rig([
+      { match: ['set'], stdout: '(error connect-failed (errno 2) (carried-out no))\n', rc: 75, once: true },
+      { match: ['set'], stdout: wrote(8), rc: 0 }
+    ]);
     core = r.core;
     const outcome = await r.saver.save('a.2', 'src', 'body2\n');
     assert.strictEqual(outcome.status, 'pending');
     assert.strictEqual(r.outbox.entries.length, 1, 'a send that never left settled the entry');
     assert.strictEqual(r.outbox.entries[0].req, outcome.req, 'the retry would go under a new id');
+    const retried = await r.saver.retry();
+    const sent = setCalls(core);
+    assert.strictEqual(sent.length, 2, `the kept entry was not sent again: ${sent.length} sends`);
+    assert.strictEqual(sent[1][sent[1].indexOf('--req') + 1], outcome.req, 'the retry went under a new id');
+    assert.ok(
+      retried.some((o) => o.req === outcome.req && o.status === 'saved'),
+      `the retry did not settle it: ${JSON.stringify(retried.map((o) => o.status))}`
+    );
+    assert.strictEqual(r.outbox.entries.length, 0, 'the settled entry is still in the queue');
   });
 
   /*

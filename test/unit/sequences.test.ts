@@ -229,7 +229,20 @@ describe('C11/S3 a save cannot install an older reading', () => {
     const older = place(dir, '1.md', oldText, sidecar({ written: digestOf(oldText) }));
     place(dir, '2.md', '## Two\nnewer\n', sidecar({ written: digestOf('## Two\nnewer\n') }));
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    publisher.acknowledge(older, digestOf(oldText), digestOf('old\n'), 'w:7');
+    const answer = publisher.acknowledge(older, digestOf(oldText), digestOf('old\n'), 'w:7');
+    /*
+     * NOTE: AND IT IS RECORDED WHERE IT BELONGS. (queue item 4) This cell used
+     * to assert only that 2.md was not marked, so an `acknowledge` that
+     * recorded nothing anywhere passed it -- measured with it replaced by
+     * `() => ({recorded: true})`. The version the answer is for must carry
+     * it.
+     */
+    assert.deepStrictEqual(answer, { recorded: true }, 'the acknowledgement was not recorded');
+    assert.strictEqual(
+      publisher.sidecarOf(older)?.acknowledgedRaw,
+      digestOf(oldText),
+      'the version the answer is for was not marked as sent'
+    );
     assert.strictEqual(
       publisher.sidecarOf(path.join(dir, '2.md'))?.acknowledgedRaw,
       null,
@@ -244,27 +257,52 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
    * was confirmed and the file marked committed, and the open's older
    * answer then arrived and rewrote the file.
    *
-   * WHAT ANSWERS IT NOW: a reading never rewrites a file. It publishes
-   * the next version, and the version the user saved from stays exactly
-   * as it was.
+   * RETIRED (queue item 4, ruled 2026-09-25): "publishes the late reading as
+   * a new version and leaves the saved file untouched". Its fixture was a
+   * `1.md`, which today's `publishInto` refuses as `migration-required`
+   * before looking at anything (publication.ts, the `^\d+\.md` check), so
+   * the cell never published at all and passed with a publish that always
+   * refused -- measured. And the model it described is gone: a block has one
+   * `current.md`, not numbered versions, so there is no "new version" for a
+   * late reading to become.
+   *
+   * WHAT ANSWERS IT NOW, IN TWO HALVES, and only one of them is here:
+   *   - a save written but NOT YET RECORDED: `current.md`'s bytes differ
+   *     from the sidecar's `written`, and a late publication is refused as
+   *     `digest-moved`, leaving the file alone. That is `Publisher`'s own
+   *     guarantee and the cell below holds it.
+   *   - a save ALREADY RECORDED: `recordWorking` moves `written` to the
+   *     saved bytes, and at the `Publisher` level a publication of an older
+   *     reading would then pass and overwrite the file. What prevents it is
+   *     order: the extension takes the reading inside `chain.run`, after
+   *     the save, so an older reading cannot arrive there. No cell pins that
+   *     order today -- queue item 24.
    */
-  it('publishes the late reading as a new version and leaves the saved file untouched', async () => {
+  it('refuses a late reading over a save not yet recorded, and leaves the saved file untouched', async () => {
     const dir = scratch();
-    const saved = '## Two\nwhat the user saved\n';
-    const file = place(dir, '1.md', saved, sidecar({ written: digestOf(saved), acknowledgedRaw: digestOf(saved) }));
     const files = new RecordingFs();
-    await new Publisher(files, nothingOpen()).publish({
+    const publisher = new Publisher(files, nothingOpen());
+    const reading = {
       directory: dir,
       storeId: 's1',
       blockId: 'a.2',
       prefix: '## Two\n',
-      text: '## Two\nthe older reading\n',
       cursor: null
-    });
-    assert.strictEqual(fs.readFileSync(file, 'utf8'), saved, 'a late reading overwrote a saved file');
-    assert.strictEqual(files.countOf('unlink', file), 0);
+    };
+    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n' });
+    assert.ok(first.published, `the first reading was not published, so there is nothing to save over: ${JSON.stringify(first)}`);
+    const saved = '## Two\nwhat the user saved\n';
+    fs.writeFileSync(first.file, saved, 'utf8');
+    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n' });
+    assert.deepStrictEqual(
+      late.published ? 'published' : late.because,
+      'digest-moved',
+      'a late reading was not refused over a save the sidecar does not yet know about'
+    );
+    assert.strictEqual(fs.readFileSync(first.file, 'utf8'), saved, 'a late reading overwrote a saved file');
   });
 });
+
 
 describe('C11/S5 one save’s answer cannot mark another save’s bytes as sent', () => {
   /*
@@ -450,6 +488,17 @@ describe('C12 the display ticket takes no part in what is written', () => {
   it('writes the same versions whether the tickets run in order or reversed', async () => {
     const inOrder = await publishTwice(scratch(), [1, 2]);
     const reversed = await publishTwice(scratch(), [2, 1]);
+    /*
+     * NOTE: AND SOMETHING WAS WRITTEN. (queue item 4) Two runs that both
+     * wrote nothing are equal, so a publish that always refused passed this
+     * cell -- measured. What the in-order run writes is stated first, and
+     * only then is the reversed run compared with it.
+     */
+    assert.deepStrictEqual(
+      inOrder,
+      ['1:## Two\nfirst\n', '1:## Two\nsecond\n'],
+      'the in-order run did not write both readings, so the order had nothing to change'
+    );
     assert.deepStrictEqual(
       reversed,
       inOrder,
