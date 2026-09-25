@@ -1919,12 +1919,16 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
 
   /*
    * AND THE LISTING'S SENTENCE CLAIMS NOTHING IT CANNOT KNOW. Here both
-   * writers are named and only LOCAL's end is unreadable: their number is
-   * known, so a sentence saying it is not would be false (review r2 of this
-   * item).
+   * entries are there and one has no name this build can read: their number
+   * is known, so a sentence saying it is not would be false (review r2 of
+   * this item). CHANGED in item 15: this cell used LOCAL's own end made
+   * unreadable, and since item 15 that is its own case with its own sentence
+   * -- the listing reads, the local writer's position does not
+   * (`damaged-check.test.ts`) -- so the listing is made unreadable here by
+   * the one thing that still makes it so when the local writer is named.
    */
   it('says the listing could not be read in full when it is the listing, and claims no count', async () => {
-    const r = over(TWO.replace('(end 3)', '(end "three")'), [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
+    const r = over(TWO.replace('("w" (end 7)', '(7 (end 7)'), [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
     core = r.core;
     const outcome = await r.saver.save('a.2', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'blocked');

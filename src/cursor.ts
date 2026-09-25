@@ -56,7 +56,24 @@ export interface WriterEnd {
   end: number;
 }
 
-export function writersFromCheck(answer: Datum): WriterEnd[] | null {
+/*
+ * A WRITER IN THE LISTING, WITH ITS END IF IT COULD BE READ. `end` is null
+ * when the entry does not state one this build can read -- the core writes
+ * `(end unreadable)` for a writer whose directory it could not read (F77),
+ * and a shape nobody here knows is no better. The NAME is never optional:
+ * an entry whose name cannot be read might be the local writer's.
+ */
+export interface ListedWriter {
+  writer: string;
+  end: number | null;
+}
+
+/*
+ * THE LISTING, ENTRY BY ENTRY. Null when there is no listing to read at all:
+ * not a `check`, no `writers` clause or two of them, or an entry with no
+ * name. Which ends may be missing is the caller's question, not this one's.
+ */
+function listingFromCheck(answer: Datum): ListedWriter[] | null {
   /*
    * NEVER: AND THE FORM HAS TO BE A `check`. `(garbage (writers (("local"
    * (end 7)))))` answered a cursor, and `(error ...)` carrying the same
@@ -87,19 +104,7 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
   if (!writers.read || writers.items.length !== 1 || !isList(writers.items[0])) {
     return null;
   }
-  /*
-   * NEVER: AN ENTRY THAT CANNOT BE READ IS NOT AN ENTRY THAT IS NOT THERE,
-   * and here the count is the whole decision.
-   *
-   * Skipping the unreadable ones made `(check (writers (("local" (end 7))
-   * ("other" (end "bad")))))` count ONE writer, and one writer is what
-   * lets this client pick a cursor and write. The refusal that stands
-   * behind a multi-writer store -- the core does not say which writer is
-   * local, so do not guess -- was defeated by an entry nobody could
-   * parse. Measured in an eleventh review round. An unreadable listing
-   * refuses, and the caller reports that it could not be read.
-   */
-  const out: WriterEnd[] = [];
+  const out: ListedWriter[] = [];
   for (const entry of writers.items[0]) {
     if (!isList(entry) || entry.length < 1 || typeof entry[0] !== 'string') {
       return null;
@@ -112,28 +117,43 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
      */
     /*
      * NOTE: AND `end` IS ASKED FOR THROUGH THE COUNTED READER, so a writer
-     * entry naming its end twice refuses the listing rather than
-     * supplying the first of them.
+     * entry naming its end twice has no end this build can read, rather
+     * than supplying the first of them -- and what that costs is decided
+     * by the caller, as for `(end unreadable)`.
      */
     const stated = recordValue(entry, 'end');
-    if (!stated.read) {
-      return null;
-    }
-    const end = asInteger(stated.value);
-    if (end === null) {
-      return null;
-    }
-    out.push({ writer: entry[0], end });
+    out.push({ writer: entry[0], end: stated.read ? asInteger(stated.value) : null });
   }
   return out;
+}
+
+export function writersFromCheck(answer: Datum): WriterEnd[] | null {
+  const listing = listingFromCheck(answer);
+  /*
+   * NEVER: AN ENTRY THAT CANNOT BE READ IS NOT AN ENTRY THAT IS NOT THERE,
+   * and where the count is the whole decision, one unreadable end refuses
+   * the listing.
+   *
+   * Skipping the unreadable ones made `(check (writers (("local" (end 7))
+   * ("other" (end "bad")))))` count ONE writer, and one writer is what
+   * lets this client pick a cursor and write. The refusal that stands
+   * behind a multi-writer store -- the core does not say which writer is
+   * local, so do not guess -- was defeated by an entry nobody could
+   * parse. Measured in an eleventh review round. An unreadable listing
+   * refuses, and the caller reports that it could not be read.
+   */
+  if (listing === null || listing.some((w) => w.end === null)) {
+    return null;
+  }
+  return listing as WriterEnd[];
 }
 
 export type FirstCursor =
   | { ok: true; cursor: string }
   | {
       ok: false;
-      reason: 'no-writer' | 'many-writers' | 'unreadable' | 'local-writer-not-listed';
-      writers: WriterEnd[];
+      reason: 'no-writer' | 'many-writers' | 'unreadable' | 'local-writer-not-listed' | 'local-writer-twice';
+      writers: ListedWriter[];
       local?: string;
       /*
        * WHICH PART COULD NOT BE READ, when the reason is `unreadable`. The
@@ -142,11 +162,11 @@ export type FirstCursor =
        * review r1 of item 2 measured "how many writers it has is not
        * known" about a listing that read perfectly well.
        */
-      unreadable?: 'listing' | 'local-writer';
+      unreadable?: 'listing' | 'local-writer' | 'local-end';
     };
 
 export function firstCursorFromCheck(answer: Datum): FirstCursor {
-  const writers = writersFromCheck(answer);
+  const writers = listingFromCheck(answer);
   if (writers === null) {
     return { ok: false, reason: 'unreadable', writers: [], unreadable: 'listing' };
   }
@@ -176,14 +196,39 @@ export function firstCursorFromCheck(answer: Datum): FirstCursor {
     if (!local.read || typeof local.value !== 'string') {
       return { ok: false, reason: 'unreadable', writers, unreadable: 'local-writer' };
     }
-    const own = writers.find((w) => w.writer === local.value);
-    if (own === undefined) {
+    const named = writers.filter((w) => w.writer === local.value);
+    if (named.length === 0) {
       return { ok: false, reason: 'local-writer-not-listed', writers, local: local.value };
+    }
+    /*
+     * NEVER: THE LOCAL WRITER LISTED TWICE. Two entries for one writer are
+     * two answers to "where does it end", and taking the first is choosing
+     * between them (review r1 of item 15: `(("w1" (end 7)) ("w1" (end
+     * unreadable)))` gave `w1:7`, where the whole-listing rule before this
+     * item refused). Refused, whatever the second entry says.
+     */
+    if (named.length > 1) {
+      return { ok: false, reason: 'local-writer-twice', writers, local: local.value };
+    }
+    const own = named[0];
+    /*
+     * KEY: WHEN THE CORE NAMES THE LOCAL WRITER, ONLY THAT WRITER'S END HAS
+     * TO BE READ. (queue item 15, ruled 2026-09-25) The cursor is that
+     * writer's end and nothing else in the listing enters it, so another
+     * writer the core could not read -- `(end unreadable)`, F77 -- does not
+     * stop it. The whole-listing rule below stays for the absent clause,
+     * where the COUNT decides and an unread entry would change it.
+     */
+    if (own.end === null) {
+      return { ok: false, reason: 'unreadable', writers, local: own.writer, unreadable: 'local-end' };
     }
     return { ok: true, cursor: formatCursor({ writer: own.writer, seq: own.end }) };
   }
+  if (writers.some((w) => w.end === null)) {
+    return { ok: false, reason: 'unreadable', writers, unreadable: 'listing' };
+  }
   if (writers.length === 1) {
-    return { ok: true, cursor: formatCursor({ writer: writers[0].writer, seq: writers[0].end }) };
+    return { ok: true, cursor: formatCursor({ writer: writers[0].writer, seq: writers[0].end as number }) };
   }
   if (writers.length === 0) {
     return { ok: false, reason: 'no-writer', writers };

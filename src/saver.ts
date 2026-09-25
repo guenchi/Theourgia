@@ -1425,7 +1425,30 @@ export class Saver {
       return known;
     }
     const answer = await this.client.request('check', []);
-    if (!answer.ok || answer.answers.length === 0) {
+    /*
+     * NEVER: THE EXIT CODE IS NOT ASKED. (queue item 15) The core makes
+     * `check` exit non-zero exactly when its verdict is not `ok`, so a
+     * damaged store answers with exit 1 AND a complete `check` form --
+     * writers, local writer, verdict. Asking `answer.ok` here told the user
+     * "the store did not answer" about a store that had answered in full.
+     * Whether there is an answer is whether there is a `check` form; what is
+     * in it is `firstCursorFromCheck`'s to read, and the store's condition
+     * is a fact about the store, not a failure of the question.
+     */
+    /*
+     * NEVER: MORE THAN ONE FORM IS NOT AN ANSWER TO READ THE FIRST OF. The
+     * client checks that a `check` carries one datum only when the exit is
+     * zero; on a non-zero exit it hands on whatever arrived, and reading the
+     * first form let `(check ...)` followed by `(error ...)` supply a cursor
+     * (review r1 of item 15). One form, and it is a `check`, or no cursor.
+     */
+    if (answer.answers.length > 1) {
+      this.bootstrapProblem =
+        `the store answered \`check\` with ${answer.answers.length} forms where one was expected, so ` +
+        'which of them is its answer is not known and nothing is written against a guess';
+      return null;
+    }
+    if (answer.answers.length === 0 || answerOf(answer.answers[0], 'check') === null) {
       this.bootstrapProblem = 'the store did not answer `check`, so this client has no cursor to write against';
       return null;
     }
@@ -1436,6 +1459,9 @@ export class Saver {
           ? `this store has ${first.writers.length} writers and the core did not say which of them is ` +
             'local, so nothing is written from here. A core with `local-writer` in its `check` ' +
             'answer (theourgia F45 and later) says it; one older than that cannot'
+          : first.reason === 'unreadable' && first.unreadable === 'local-end'
+            ? `the store answered \`check\` naming its local writer (${first.local ?? '?'}) without a ` +
+              'position this build could read for it, so there is no cursor to write against'
           : first.reason === 'unreadable' && first.unreadable === 'local-writer'
             ? 'the store answered `check` naming its local writer in a form this build could not ' +
               'read, so which writer is this store\'s own is not known and nothing may be written ' +
@@ -1453,6 +1479,9 @@ export class Saver {
             ? 'the store answered `check` with a writer listing this build could not read in ' +
               'full, so no writer\'s position in it can be trusted and nothing may be written ' +
               'against a guess'
+            : first.reason === 'local-writer-twice'
+              ? `the store's answer to \`check\` lists its local writer (${first.local ?? '?'}) more than ` +
+                'once, so where that writer ends is not one answer and nothing is written against a guess'
             : first.reason === 'local-writer-not-listed'
               ? `the store's answer to \`check\` contradicts itself: the local writer it names ` +
                 `(${first.local ?? '?'}) is not among its writers, so nothing is written from here ` +
