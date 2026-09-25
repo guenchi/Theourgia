@@ -47,6 +47,76 @@ export interface IntegrityQuestion {
   ask: () => Promise<StoreVerdict>;
   show: (notice: Notice) => void;
   generation: () => number;
+  /*
+   * WHERE A WARNING THAT COULD NOT BE SHOWN IS WRITTEN DOWN: the extension's
+   * output channel. Not another message -- what just failed is showing one.
+   */
+  record: (line: string) => void;
+}
+
+/*
+ * A THROWN VALUE, NAMED, AND NAMING IT NEVER THROWS. A name that could throw
+ * inside the catch that is writing it down would lose the line it was for.
+ * Review r1 of item 18 measured three values the first version threw on: a
+ * proxy whose `getPrototypeOf` trap throws, a revoked proxy, and a function
+ * whose `Symbol.toPrimitive` throws. So the whole of it is in a `try`, and a
+ * value nothing can be read from is named as such.
+ *
+ * An Error is named by its `name` and `message`, each read on its own, since
+ * either can be a getter that throws; only when neither can be read is it
+ * named like any other object.
+ */
+const UNNAMEABLE = '(a value that could not be named)';
+
+function errorText(value: object): string | null {
+  const parts: string[] = [];
+  try {
+    const name: unknown = (value as { name?: unknown }).name;
+    if (typeof name === 'string' && name.length > 0) {
+      parts.push(name);
+    }
+  } catch {
+    /*
+     * NOTE: the name could not be read; the message may still be.
+     */
+  }
+  try {
+    const message: unknown = (value as { message?: unknown }).message;
+    if (typeof message === 'string' && message.length > 0) {
+      parts.push(message);
+    }
+  } catch {
+    /*
+     * NOTE: the message could not be read; the name, if read, stands alone.
+     */
+  }
+  return parts.length > 0 ? parts.join(': ') : null;
+}
+
+export function describeValue(value: unknown): string {
+  try {
+    if (typeof value === 'bigint') {
+      return `${value.toString()}n`;
+    }
+    if (typeof value === 'function') {
+      return '(a function)';
+    }
+    if (typeof value === 'object' && value !== null) {
+      if (value instanceof Error) {
+        const text = errorText(value);
+        if (text !== null) {
+          return text;
+        }
+      }
+      return Object.getPrototypeOf(value) === null ? '(an object with no prototype)' : '(an object)';
+    }
+    if (Object.is(value, -0)) {
+      return '-0';
+    }
+    return String(value);
+  } catch {
+    return UNNAMEABLE;
+  }
 }
 
 export class IntegrityWatch {
@@ -104,8 +174,30 @@ export class IntegrityWatch {
      * SHOWN, THEN MARKED. A `show` that throws has told nobody, and a mark
      * written before it would keep the store from being asked again for
      * the rest of the session.
+     *
+     * KEY: AND A `show` THAT THROWS DOES NOT ESCAPE. (queue item 18, ruled
+     * 2026-09-25) Nobody waits for this call -- the extension discards its
+     * promise -- so a throw here was an unhandled rejection. It is written
+     * down on the output channel, the store is left unmarked so the next
+     * check tells the user, and the check resolves. If writing it down
+     * throws too, there is nowhere left to say it, and that is swallowed.
      */
-    on.show(notice);
+    try {
+      on.show(notice);
+    } catch (thrown) {
+      try {
+        on.record(
+          `theourgia: the warning about ${on.store} could not be shown (${describeValue(thrown)}) ` +
+            `at ${new Date().toISOString()}`
+        );
+      } catch {
+        /*
+         * NOTE: NOTHING. The line could not be written either; the store is
+         * left unmarked all the same, which is what brings the warning back.
+         */
+      }
+      return;
+    }
     this.told.add(on.store);
   }
 }

@@ -634,6 +634,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * whole session, so that what it was told survives every rebuild.
    */
   const integrity = new IntegrityWatch();
+  /*
+   * THE EXTENSION'S OUTPUT CHANNEL, named as the extension is shown. It
+   * holds what could not be said any other way: a warning about a store
+   * that the editor failed to show (queue item 18).
+   */
+  const channel = vscode.window.createOutputChannel('theourgia');
+  context.subscriptions.push(channel);
 
   function checkIntegrity(): void {
     if (model === null) {
@@ -644,7 +651,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       store: config.store,
       ask: () => asking.storeVerdict(),
       show,
-      generation: () => generation
+      generation: () => generation,
+      record: (line) => channel.appendLine(line)
     });
   }
 

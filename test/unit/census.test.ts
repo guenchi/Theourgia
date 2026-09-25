@@ -186,9 +186,12 @@ const AT_LEAST: Array<[string, number]> = [
    * whatever its exit code, and the one sentence said about it; then the
    * eight that drive `IntegrityWatch`, when to ask and when to tell. RAISED
    * in item 17, 13 -> 15: marks kept past two other stores, and an `ask`
-   * that throws at once.
+   * that throws at once. And in item 18, 15 -> 17: an output channel that
+   * throws too, and nothing written for a warning that was shown; in its r2,
+   * 17 -> 19: an Error named by what it says, and a value that cannot be
+   * named still written down.
    */
-  ['integrity.test.ts', 15],
+  ['integrity.test.ts', 19],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
    * what a search does, and the envelope --wire puts round a commit.

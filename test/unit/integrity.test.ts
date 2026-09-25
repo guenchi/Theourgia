@@ -35,7 +35,7 @@
 import * as assert from 'assert';
 import { Client } from '../../src/client';
 import { StoreVerdict, StoreModel, verdictOf } from '../../src/model';
-import { IntegrityQuestion, IntegrityWatch } from '../../src/integrity';
+import { IntegrityQuestion, IntegrityWatch, describeValue } from '../../src/integrity';
 import { Notice, integrityNotice } from '../../src/status';
 import { CliTransport } from '../../src/transport';
 import { initWire, parseAnswers } from '../../src/wire';
@@ -129,7 +129,8 @@ describe('plugin-r3 a store that says it is not sound', () => {
 /*
  * A window as `IntegrityWatch` sees it: which store is configured, what
  * `check` answers for each store, what the user was shown, and how many
- * times each store was asked. `hold` keeps answers back until `release`
+ * times each store was asked, and what was written to the output channel
+ * (`recorded`). `hold` keeps answers back until `release`
  * is called, so that a cell can move the window, or start a second check,
  * while they wait.
  */
@@ -137,12 +138,14 @@ function windowOn(answers: Record<string, StoreVerdict>): {
   question: (store: string) => IntegrityQuestion;
   asked: Record<string, number>;
   shown: Notice[];
+  recorded: string[];
   moveOn: () => void;
   hold: () => void;
   release: () => void;
 } {
   const asked: Record<string, number> = {};
   const shown: Notice[] = [];
+  const recorded: string[] = [];
   let generation = 0;
   let held: Array<() => void> = [];
   let holding = false;
@@ -162,10 +165,14 @@ function windowOn(answers: Record<string, StoreVerdict>): {
       show: (notice) => {
         shown.push(notice);
       },
-      generation: () => generation
+      generation: () => generation,
+      record: (line) => {
+        recorded.push(line);
+      }
     }),
     asked,
     shown,
+    recorded,
     moveOn: () => {
       generation += 1;
     },
@@ -180,24 +187,6 @@ function windowOn(answers: Record<string, StoreVerdict>): {
       go.forEach((answer) => answer());
     }
   };
-}
-
-/*
- * A THROWN VALUE, NAMED FOR A FAILURE MESSAGE, without anything that can
- * throw itself: `String` refuses an object with no prototype, and
- * `JSON.stringify` a BigInt.
- */
-function describeValue(value: unknown): string {
-  if (typeof value === 'bigint') {
-    return `${value.toString()}n`;
-  }
-  if (typeof value === 'object' && value !== null) {
-    return Object.getPrototypeOf(value) === null ? '(an object with no prototype)' : '(an object)';
-  }
-  if (Object.is(value, -0)) {
-    return '-0';
-  }
-  return String(value);
 }
 
 const DAMAGED: StoreVerdict = { known: true, verdict: 'damaged' };
@@ -341,11 +330,11 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
      * `undefined`, `0` and `''` (review r1). All eight falsy values, and four
      * that are not.
      *
-     * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT, for the half that says
-     * the check rejects: `assert.rejects` pins that a throwing `show` escapes
-     * `check`, which is today's behaviour and not a decision -- queue item 18
-     * decides it and will change this line. The half that is measured is the
-     * mark: unmarked after the throw, shown on the next check.
+     * KEY: AND THE CHECK RESOLVES. (queue item 18, ruled 2026-09-25) This
+     * cell used to assert that it rejected -- today's behaviour then, marked as
+     * a tripwire. Now: nothing escapes, nothing is shown, exactly one line is
+     * written to the output channel naming the store and the value, and the
+     * next check tells the user.
      */
     const thrown: unknown[] = [
       new Error('the editor could not show it'),
@@ -359,7 +348,8 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
       -0,
       NaN,
       '',
-      BigInt(0)
+      BigInt(0),
+      Symbol('show failed')
     ];
     for (const value of thrown) {
       const w = windowOn({ '/stores/A': DAMAGED });
@@ -370,11 +360,163 @@ describe('plugin-r3 when the user is told that a store is not sound', () => {
           throw value;
         }
       };
-      await assert.rejects(watch.check(failing), (e: unknown) => Object.is(e, value));
-      await watch.check(w.question('/stores/A'));
       const what = `${typeof value} ${describeValue(value)}`;
+      await watch.check(failing);
+      assert.strictEqual(w.shown.length, 0, `(${what}) a warning that threw was counted as shown`);
+      assert.strictEqual(w.recorded.length, 1, `(${what}) ${w.recorded.length} lines were written for one failed warning`);
+      assert.ok(w.recorded[0].includes('/stores/A'), `(${what}) the line does not name the store: ${w.recorded[0]}`);
+      assert.ok(w.recorded[0].includes(`(${describeValue(value)})`), `(${what}) the line does not name the value: ${w.recorded[0]}`);
+      assert.match(w.recorded[0], / at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `(${what}) the line carries no time`);
+      await watch.check(w.question('/stores/A'));
       assert.strictEqual(w.asked['/stores/A'], 2, `(${what}) a store whose warning was never shown was not asked again`);
       assert.strictEqual(w.shown.length, 1, `(${what}) the warning that could not be shown was not shown the next time`);
+    }
+  });
+
+  /*
+   * AND WHEN THE LINE CANNOT BE WRITTEN EITHER, the check still resolves and
+   * the store is still unmarked: there is nowhere left to say it, and the
+   * unmarked store is what brings the warning back. (queue item 18)
+   */
+  it('resolves and leaves the store unmarked when the output channel throws too', async () => {
+    /*
+     * An object with no prototype and an Error (review r1 of item 18: a guard
+     * that rethrew Errors passed with the first alone).
+     */
+    for (const channelThrows of [Object.create(null), new Error('channel failure')] as unknown[]) {
+      const w = windowOn({ '/stores/A': DAMAGED });
+      const watch = new IntegrityWatch();
+      const failing: IntegrityQuestion = {
+        ...w.question('/stores/A'),
+        show: () => {
+          throw new Error('the editor could not show it');
+        },
+        record: () => {
+          throw channelThrows;
+        }
+      };
+      /*
+       * NOTE: WHAT ESCAPES IS CAUGHT HERE, NOT BY THE RUNNER. The value thrown
+       * may be an object with no prototype, and a runner that is handed one as
+       * a failure cannot print it: measured on this cell's first version, with
+       * the inner `try` removed, mocha stopped in the middle of the suite and
+       * exited 0 with no summary -- a failure that read as a pass.
+       */
+      let escaped = false;
+      try {
+        await watch.check(failing);
+      } catch {
+        escaped = true;
+      }
+      const what = describeValue(channelThrows);
+      assert.strictEqual(escaped, false, `(${what}) a throw from the output channel escaped the check`);
+      await watch.check(w.question('/stores/A'));
+      assert.strictEqual(w.asked['/stores/A'], 2, `(${what}) a store whose warning and whose line both failed was not asked again`);
+      assert.strictEqual(w.shown.length, 1, `(${what}) the warning was not shown the next time`);
+    }
+  });
+
+  /*
+   * AN ERROR IS NAMED BY WHAT IT SAYS. (review r1 of item 18) The most common
+   * thing a `show` throws is an Error, and a line reading "(an object)" tells
+   * the reader nothing; its name and message are read, each on its own, since
+   * either can be a getter that throws.
+   */
+  it('names an Error in the line by its name and message, whichever can be read', async () => {
+    const noMessage = new RangeError('unread');
+    Object.defineProperty(noMessage, 'message', {
+      get() {
+        throw new Error('no message for you');
+      }
+    });
+    const cases: Array<[unknown, string]> = [
+      [new TypeError('the editor is gone'), '(TypeError: the editor is gone)'],
+      [noMessage, '(RangeError)']
+    ];
+    for (const [value, expected] of cases) {
+      const w = windowOn({ '/stores/A': DAMAGED });
+      const failing: IntegrityQuestion = {
+        ...w.question('/stores/A'),
+        show: () => {
+          throw value;
+        }
+      };
+      await new IntegrityWatch().check(failing);
+      assert.strictEqual(w.recorded.length, 1, `${expected}: ${w.recorded.length} lines`);
+      assert.ok(w.recorded[0].includes(expected), `the line does not carry ${expected}: ${w.recorded[0]}`);
+    }
+  });
+
+  /*
+   * AND A VALUE NOTHING CAN BE READ FROM STILL GETS ITS LINE. (review r1 of
+   * item 18) Naming these threw, inside the guarded `record`, so the line was
+   * lost: a proxy whose `getPrototypeOf` trap throws, a revoked proxy, a
+   * function whose `Symbol.toPrimitive` throws.
+   */
+  it('writes the line for a value that cannot be named', async () => {
+    const revoked = Proxy.revocable({}, {});
+    revoked.revoke();
+    const primitive = function (): void {
+      return undefined;
+    };
+    Object.defineProperty(primitive, Symbol.toPrimitive, {
+      value: () => {
+        throw new Error('no primitive');
+      }
+    });
+    const values: unknown[] = [
+      new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error('no prototype for you');
+          }
+        }
+      ),
+      revoked.proxy,
+      primitive
+    ];
+    for (const value of values) {
+      const w = windowOn({ '/stores/A': DAMAGED });
+      const failing: IntegrityQuestion = {
+        ...w.question('/stores/A'),
+        show: () => {
+          throw value;
+        }
+      };
+      let escaped = false;
+      try {
+        await new IntegrityWatch().check(failing);
+      } catch {
+        escaped = true;
+      }
+      assert.strictEqual(escaped, false, 'a value that cannot be named escaped the check');
+      assert.strictEqual(w.recorded.length, 1, `no line was written for ${describeValue(value)}`);
+    }
+  });
+
+  /*
+   * THE TWIN: a warning that WAS shown writes nothing on the channel. Without
+   * it a watch that wrote every warning down would pass the cells above.
+   */
+  it('writes nothing on the output channel when the warning was shown', async () => {
+    /*
+     * EVERY SHAPE OF VERDICT (review r1 of item 18): a known one the core
+     * writes (`damaged`, `ok`), a known one this client has never heard of,
+     * and one that could not be read. Only the first and third are said.
+     */
+    const verdicts: Array<[StoreVerdict, number]> = [
+      [DAMAGED, 1],
+      [SOUND, 0],
+      [{ known: true, verdict: 'corrupt' }, 1],
+      [{ known: false, because: 'could not ask' }, 0]
+    ];
+    for (const [verdict, said] of verdicts) {
+      const w = windowOn({ '/stores/A': verdict });
+      await new IntegrityWatch().check(w.question('/stores/A'));
+      const what = JSON.stringify(verdict);
+      assert.strictEqual(w.shown.length, said, `${what}: shown ${w.shown.length} times`);
+      assert.deepStrictEqual(w.recorded, [], `${what}: something was written for a warning that was shown`);
     }
   });
 

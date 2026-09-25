@@ -31,7 +31,7 @@ const vs = {
  TreeItem:class{constructor(label){this.label=label;}},ThemeIcon:class{},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
  languages:{setTextDocumentLanguage:async d=>d},
- window:{createStatusBarItem:()=>({show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
+ window:{createStatusBarItem:()=>({show(){},dispose(){}}),createOutputChannel:()=>({appendLine(){},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
   // no cell could tell a warning from an alarm. The other editor double was
