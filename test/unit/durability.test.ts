@@ -173,8 +173,7 @@ describe('a timeout the timer cannot honour is refused where it is read', () => 
     libDirs: [],
     store: '/store',
     actor: 'someone',
-    writer: '',
-    transport: 'cli' as const
+    writer: ''
   };
 
   /*

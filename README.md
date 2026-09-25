@@ -48,7 +48,9 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
   its adapter; a second implementation of that envelope in TypeScript would be a
   third packer of the same bytes, kept in step by hand. The unimplemented adapter
   that used to sit here has been removed along with its cell -- when the
-  `transport` setting stopped offering `socket`, nothing could reach either.
+  `transport` setting stopped offering `socket`, nothing could reach either. The
+  setting itself is gone too: its other value ran `cli.ss`, which the core has split
+  by role, and the thin client is now the only program this extension runs.
 * Working drafts retain their original block hash and causal cut. Commit refuses a
   stale baseline; accepting a new baseline is an explicit reconcile/rebase action.
 * No cache. Every view asks the core.
@@ -87,14 +89,14 @@ of them is a decision rather than an oversight:
 | `theourgia.writer` | The draft space this window writes into. Defaults to the actor. See *One agent, one writer id*. |
 | `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
-| `theourgia.transport` | `client` (the default) runs the thin client; `cli` runs `cli.ss` directly and is kept for one version as a way back. |
 
 ### A checkout or a product directory
 
 `theourgia.corePath` may be either a checkout of the core -- the library sources beside
-`cli.ss` and `theourgia.ss` -- or a directory the core's `build.ss` produced, holding
-the compiled libraries beside the same two scripts. **The extension reads the directory
-and decides**: a `client.ss` in it means sources, a `client.so` means products, and the
+its programs `theourgia.sc`, `theourgiad.sc` and `core.sc` -- or a directory the core's
+`build.ss` produced, holding the compiled libraries beside the same programs. **The
+extension reads the directory and decides**: a `client.sc` in it means sources, a
+`client.so` means products, and the
 extension sets `CHEZSCHEMELIBEXTS` accordingly. A directory with neither is refused by
 name rather than left to fail inside Chez with a message about a library.
 
@@ -117,20 +119,21 @@ everywhere would turn ordinary requests into usage lines.
 
 ## How a request is made
 
-This extension runs the core's **thin client**, `theourgia.ss`. The thin client finds
-the daemon for the store, or starts one, and sends it the request; the extension holds
+This extension runs the core's **thin client**, `theourgia.sc`, and nothing else. The
+thin client finds the daemon for the store, or starts one (`theourgiad.sc`, which it
+launches itself), and sends it the request; the extension holds
 no socket code and no envelope of its own. Starting, stopping, the exit codes and the
 words a failure is reported in all belong to the client, and the extension relays them.
 
 The command line takes its verb from the first argument and only then scans for options,
 so the argument vector is
 
-    <scheme> --script <corePath>/theourgia.ss <verb> <args...> --store <store> --actor <actor>
+    <scheme> --script <corePath>/theourgia.sc <verb> <args...> --store <store> --actor <actor>
 
 An option placed before the verb is taken *as* the verb, and the core answers
 `(error unknown-verb ...)`.
 
-`cli.ss` prints three kinds of answer and marks none of them: an `(ok (text ...))` answer
+The core prints three kinds of answer and marks none of them: an `(ok (text ...))` answer
 is printed as its own bytes, an `(ok (items ...))` answer as one datum per line with no
 wrapper, and everything else as one datum. So this extension keeps a table of which verb
 answers which way (`src/client.ts`), and that table is the one place where it holds an
@@ -418,7 +421,7 @@ outbox is built on that feature, so against such a core every save is refused. A
 can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is reported but not shown.** The core lists one under `conflicts`, and
-its recursive walk stops at a doc-kind child — `project.ss` says "a walk stops at one",
+its recursive walk stops at a doc-kind child — `project.sc` says "a walk stops at one",
 because a nested document has its own file and descending would write its sections twice. It
 is therefore absent from its parent's expansion, and `nested-document` is not a mark that
 puts a block in the root listing either — so while its parent is alive, the only sign of one

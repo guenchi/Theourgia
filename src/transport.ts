@@ -27,7 +27,7 @@
  */
 
 import { ChildProcess, spawn } from 'child_process';
-import { CoreConfig, environmentFor, programFor } from './config';
+import { CoreConfig, clientPath, environmentFor } from './config';
 import { coreDirectoryAt } from './fsops';
 
 /*
@@ -81,7 +81,7 @@ export function buildArgv(config: CoreConfig, verb: string, args: string[]): str
   return [
     config.scheme,
     '--script',
-    programFor(config),
+    clientPath(config),
     verb,
     ...args,
     '--store',

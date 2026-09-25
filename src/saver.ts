@@ -237,6 +237,17 @@ export interface SaverOptions {
  * number, which would record "the store declined this" about a write
  * that may have landed.
  */
+/*
+ * NOTE: AND A BARE `unreadable` IS THE FOURTH, ruled by the main session
+ * from the core's semantics on 2026-09-25. `(error unreadable (path ...)
+ * (reason ...))` is what the core's catch-all guard (rpc.sc:76) makes of
+ * an entry it could not read, WHEREVER in the verb that happened -- and
+ * that includes reads after the append, for the answer, the frontier or
+ * a snapshot. The answer carries no position, so it does not say whether
+ * the write landed. The refusals that do say so have their own heads
+ * (`refused-before-reserve`, `(refused writer-unreadable ...)`) and are
+ * not this one.
+ */
 function saysNobodyKnows(datum: Datum): boolean {
   return (
     answerOf(datum, 'error') !== null &&
@@ -244,7 +255,8 @@ function saysNobodyKnows(datum: Datum): boolean {
     datum.length >= 2 &&
     (isSym(datum[1], 'unknown') ||
       isSym(datum[1], 'working-unavailable') ||
-      isSym(datum[1], 'transport-unknown'))
+      isSym(datum[1], 'transport-unknown') ||
+      isSym(datum[1], 'unreadable'))
   );
 }
 
@@ -589,6 +601,13 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'store-busy':
     'daemon.ss:266 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
+  unreadable:
+    'guarded, rpc.sc:76 -- an entry the verb could not read, anywhere in the verb, including ' +
+    'after the append; the answer does not say where. `saysNobodyKnows` takes it before ' +
+    'settlement, exactly as `transport-unknown`: pending, same request id, sent again',
+  'unknown-name':
+    'whereis, rpc.sc:1216 -- a read verb naming the nearest names it could place; not a ' +
+    'write and not a verb a save sends',
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
    * CORE'S BATCH E, read from the core this run is pinned to

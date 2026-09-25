@@ -278,14 +278,7 @@ export class RealStore {
       store: path.join(root, 'store'),
       actor,
       writer: '',
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-      /*
-       * NOTE: THE SHIPPING PATH, NOT THE FALLBACK. These cells exist to run
-       * against a real core, and what ships runs the thin client and
-       * talks to a daemon. Leaving them on `cli` would measure a path
-       * users are not on and would never meet the daemon at all.
-       */
-      transport: 'client'
+      timeoutMs: DEFAULT_TIMEOUT_MS
     };
     const store = new RealStore(root, config, runRoot, ownRoot);
     /*

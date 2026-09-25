@@ -96,7 +96,7 @@
         "theourgia.corePath": {
           "type": "string",
           "default": "",
-          "description": "Directory holding the core. Either a checkout (the library sources beside cli.ss and theourgia.ss) or a directory built by the core's build.ss (the compiled libraries beside the same two scripts). Which one it is decides how the libraries are looked up, and the extension reads the directory to find out rather than asking you."
+          "description": "Directory holding the core. Either a checkout (the library sources beside theourgia.sc) or a directory built by the core's build.ss (the compiled libraries beside the same scripts). Which one it is decides how the libraries are looked up, and the extension reads the directory to find out rather than asking you."
         },
         "theourgia.libDirs": {
           "type": "array",
@@ -130,15 +130,6 @@
           "type": "number",
           "default": 30000,
           "description": "How long to wait for one request before killing the child process."
-        },
-        "theourgia.transport": {
-          "type": "string",
-          "enum": [
-            "client",
-            "cli"
-          ],
-          "default": "client",
-          "description": "How requests reach the core. \"client\" runs theourgia.ss, which finds or starts the store’s daemon and is the fast path. \"cli\" runs cli.ss, which loads the whole core for every request; it is kept for one version as a fallback."
         }
       }
     }

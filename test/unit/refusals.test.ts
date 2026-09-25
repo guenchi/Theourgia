@@ -79,11 +79,16 @@ function coreSources(): { directory: string; files: string[] } {
    *     here still passed, because each one asks about the kinds it
    *     found.
    *
-   * Top level only, as before: the libraries live beside `cli.ss`, and
-   * `test/` holds fixtures rather than core sources.
+   * Top level only, as before: the libraries live beside `theourgia.sc`,
+   * and `test/` holds fixtures rather than core sources.
+   *
+   * NOTE: `.sc` AND `.ss` BOTH. The core renamed its sources to `.sc`
+   * (276d9f2) and kept `build.ss` a script; a filter on one extension
+   * read a renamed core as having no refusals at all -- measured on the
+   * F46 pin, 0 kinds, which the first cell below turns red.
    */
   const files = readdirSync(directory as string, {withFileTypes: true})
-    .filter(entry => entry.isFile() && entry.name.endsWith('.ss'))
+    .filter(entry => entry.isFile() && (entry.name.endsWith('.sc') || entry.name.endsWith('.ss')))
     .map(entry => entry.name)
     .sort()
     .map(name => path.join(directory as string, name));

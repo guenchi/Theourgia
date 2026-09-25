@@ -1416,6 +1416,40 @@ describe('S-unknown an answer nobody can act on stops the queue and keeps the id
     assert.ok(sent.length >= 3, 'the save queued behind it must go out once the unknown is settled');
     assert.notStrictEqual(idOf(sent[2]), held, 'and it is a different request, with its own id');
   });
+
+  /*
+   * KEY: A BARE `unreadable` DOES NOT SAY WHETHER THE WRITE LANDED. The
+   * core's guard makes it of an entry it could not read anywhere in the
+   * verb, after the append included, and gives no position (ruled
+   * 2026-09-25). Settling it as a refusal would release the send's number
+   * and record "the store declined this" about a write that may be in
+   * the log.
+   */
+  it('keeps a save answered unreadable pending under its own id, and settles it by replay', async () => {
+    const r = rig([
+      {
+        match: ['set'],
+        stdout: '(error unreadable (path "writers/w/log") (reason "permission denied"))\n',
+        rc: 1,
+        once: true
+      },
+      { match: ['set'], stdout: '(ok (events (("w" . 9))) (state (("a.2" . "hhh"))) (cursor ("w" . 9)) (replay #t))\n', rc: 0 }
+    ]);
+    core = r.core;
+    const first = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(first.status, 'pending', `an unreadable answer was settled as ${first.status}`);
+    assert.strictEqual(r.outbox.entries.length, 1, 'the entry left the queue on an answer that knows nothing');
+    const held = r.outbox.entries[0].req;
+    await r.saver.save('a.2', 'src', 'body3\n');
+    const sent = setCalls(core);
+    const idOf = (call: string[]): string => call[call.indexOf('--req') + 1];
+    assert.ok(sent.length >= 2, `the held entry must have gone out again: ${sent.length} sends`);
+    assert.strictEqual(idOf(sent[1]), held, 'the retry must wear the id the queue was holding');
+    assert.ok(
+      r.outbox.entries.every((e) => e.req !== held),
+      'once the core answers the replay, the held entry is settled and leaves the queue'
+    );
+  });
 });
 
 /*

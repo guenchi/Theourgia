@@ -36,7 +36,7 @@ import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
 import { Client } from './client';
-import { CoreConfig, DEFAULT_TIMEOUT_MS, TransportKind, defaultActor, problemsWith } from './config';
+import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
@@ -87,8 +87,7 @@ function readConfig(): CoreConfig {
     store: settings.get<string>('store', ''),
     actor: actor.length > 0 ? actor : defaultActor(),
     writer: settings.get<string>('writer', ''),
-    timeoutMs: settings.get<number>('timeoutMs', DEFAULT_TIMEOUT_MS),
-    transport: settings.get<TransportKind>('transport', 'client')
+    timeoutMs: settings.get<number>('timeoutMs', DEFAULT_TIMEOUT_MS)
   };
 }
 

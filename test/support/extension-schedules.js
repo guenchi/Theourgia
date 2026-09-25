@@ -13,7 +13,7 @@ const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-sched
 // core.
 const corePath = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-schedule-core-'));
 fs.writeFileSync(path.join(corePath, require(path.join(out, 'config.js')).WITNESS_SOURCE), ';; stand-in\n', 'utf8');
-const settings = {store:'/stores/A',corePath,scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000,transport:'cli'};
+const settings = {store:'/stores/A',corePath,scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000};
 let provider, configChanged, savedHandler, core, pickGate = null, requestGate = null, failWrite=false;
 // NEVER: `channels` ALONE CANNOT SAY WHICH MESSAGE WAS WHICH. A scenario that
 // shows several notices satisfies "an error was raised" with an unrelated one:

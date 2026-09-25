@@ -120,7 +120,13 @@ const AT_LEAST: Array<[string, number]> = [
   ['outline.test.ts', 48],
   ['ownership.test.ts', 18],
   ['publication.test.ts', 67],
-  ['recovery.test.ts', 34],
+  /*
+   * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
+   * theourgia.transport changed under it and the store did not" went with
+   * the setting. Its cells are one per setting in package.json, so the
+   * row goes when the setting goes; there is nothing left for it to cover.
+   */
+  ['recovery.test.ts', 33],
   ['real-core.test.ts', 19],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
@@ -155,7 +161,11 @@ const AT_LEAST: Array<[string, number]> = [
    * what a search does, and the envelope --wire puts round a commit.
    */
   ['search.test.ts', 70],
-  ['saver.test.ts', 54],
+  /*
+   * RAISED in plugin-r3 item 1, 54 -> 55: a bare `unreadable` answer to a
+   * save is kept pending under its own id, like `transport-unknown`.
+   */
+  ['saver.test.ts', 55],
   ['saving.test.ts', 34],
   ['sending.test.ts', 20],
   ['sequences.test.ts', 15],

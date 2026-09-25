@@ -26,8 +26,6 @@
 import * as os from 'os';
 import * as path from 'path';
 
-export type TransportKind = 'client' | 'cli';
-
 export interface CoreConfig {
   scheme: string;
   corePath: string;
@@ -41,7 +39,6 @@ export interface CoreConfig {
    */
   writer: string;
   timeoutMs: number;
-  transport: TransportKind;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30000;
@@ -69,21 +66,18 @@ export const LIBRARY_EXTENSIONS =
  * THE FILE NAMES THIS EXTENSION EXPECTS IN A CORE DIRECTORY, in one
  * place.
  *
- * NOTE: THEY ARE GOING TO CHANGE. The core has ruled two renamings: every
- * library `.ss` becomes `.sc`, and the entry points split so that
- * `cli.ss` goes away. Spelling any of these into a fixture or a cell
- * would make that a search across the tree; spelling them here makes it
- * an edit here, and one cell below pins each name so that the rename is
- * visible in exactly one reading rather than quietly followed.
+ * NOTE: THEY CHANGED, AND THIS IS WHERE. The core renamed every library
+ * `.ss` to `.sc` (276d9f2) and split its entry points by role (e55b680,
+ * 877f0da): `theourgia.sc` the client, `theourgiad.sc` the daemon it
+ * starts, `core.sc` the in-process route that `cli.ss` was. Spelling any
+ * of these into a fixture or a cell would make that a search across the
+ * tree; spelling them here made it an edit here, and one cell pins each
+ * name so that the rename was visible in exactly one reading rather than
+ * quietly followed.
  */
-export const CLIENT_PROGRAM = 'theourgia.ss';
-export const FALLBACK_PROGRAM = 'cli.ss';
-export const WITNESS_SOURCE = 'client.ss';
+export const CLIENT_PROGRAM = 'theourgia.sc';
+export const WITNESS_SOURCE = 'client.sc';
 export const WITNESS_PRODUCT = 'client.so';
-
-export function cliPath(config: CoreConfig): string {
-  return path.join(config.corePath, FALLBACK_PROGRAM);
-}
 
 /*
  * THE SECOND EXTENSION LIST: OBJECTS FIRST, FOR A DIRECTORY THAT HOLDS
@@ -147,18 +141,21 @@ export function libraryExtensionsFor(form: CoreForm): string {
 }
 
 /*
- * THE PROGRAM THE EXTENSION RUNS. `theourgia.ss` is the thin client: it
- * knows the transport and nothing else, finds or starts the daemon, and
- * prints what the daemon rendered. `cli.ss` loads the whole core into a
- * fresh process for every request and stays for one version as the
- * fallback the `transport` setting can still choose.
+ * THE PROGRAM THE EXTENSION RUNS, and there is one. `theourgia.sc` is the
+ * thin client: it knows the transport and nothing else, finds or starts
+ * the store's daemon (`theourgiad.sc`, which it launches itself), and
+ * prints what the daemon rendered.
+ *
+ * NOTE: THE `transport` SETTING WAS DELETED, NOT RENAMED. It chose between
+ * this and `cli.ss`, which loaded the whole core for every request and
+ * was kept for one version as a way back. The core split `cli.ss` by
+ * role (877f0da): what is left of it is `core.sc`, the in-process route,
+ * and nothing here runs that. A setting whose meaning would have changed
+ * with no end-to-end cell to see it is removed rather than kept under an
+ * old name.
  */
 export function clientPath(config: CoreConfig): string {
   return path.join(config.corePath, CLIENT_PROGRAM);
-}
-
-export function programFor(config: CoreConfig): string {
-  return config.transport === 'cli' ? cliPath(config) : clientPath(config);
 }
 
 /*
@@ -273,8 +270,9 @@ export function problemsWith(
     out.push({
       setting: 'theourgia.corePath',
       message:
-        'corePath holds neither sources nor products: there is no client.ss and no client.so ' +
-        'in it. Point it at a checkout of the core, or at a directory built by its build.ss.'
+        `corePath holds neither sources nor products: there is no ${WITNESS_SOURCE} and no ` +
+        `${WITNESS_PRODUCT} in it. Point it at a checkout of the core, or at a directory built ` +
+        'by its build.ss.'
     });
   }
   if (config.store.length === 0) {

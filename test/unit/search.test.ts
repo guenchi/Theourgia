@@ -1151,8 +1151,7 @@ describe('plugin-r2 T5 what a search does', function () {
         store: '/store',
         actor: 'a',
         writer: '',
-        timeoutMs: 1000,
-        transport: 'client'
+        timeoutMs: 1000
       },
       {},
       { has: () => true }
@@ -1178,8 +1177,7 @@ describe('plugin-r2 T5 what a search does', function () {
       store: '/store',
       actor: 'a',
       writer: '',
-      timeoutMs: 1000,
-      transport: 'client'
+      timeoutMs: 1000
     };
     const found = problemsWith(config, { has: () => false });
     assert.ok(

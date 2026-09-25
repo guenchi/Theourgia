@@ -23,7 +23,6 @@ import * as path from 'path';
 import { Client, appendsARecord } from '../../src/client';
 import {
   CLIENT_PROGRAM,
-  FALLBACK_PROGRAM,
   LIBRARY_EXTENSIONS,
   PRODUCT_EXTENSIONS,
   WITNESS_PRODUCT,
@@ -315,17 +314,21 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
   /*
    * KEY: THIS IS THE ONE CELL THAT SPELLS THE NAMES, and it is meant to.
    *
-   * The core has ruled two renamings -- every library `.ss` becomes
-   * `.sc`, and the entry points split so that `cli.ss` goes away -- so
-   * the names live in `src/config.ts` and everything else in this tree
-   * reads them from there. A rename then edits one file and turns this
-   * cell red, which is a reading somebody has to look at, rather than
-   * being followed silently everywhere at once.
+   * The core ruled two renamings -- every library `.ss` became `.sc`
+   * (276d9f2), and the entry points split so that `cli.ss` went away
+   * (e55b680, 877f0da) -- so the names live in `src/config.ts` and
+   * everything else in this tree reads them from there. A rename then
+   * edits one file and turns this cell red, which is a reading somebody
+   * has to look at, rather than being followed silently everywhere at
+   * once. It went red twice on 2026-09-25 and both were read: for the
+   * renaming, `'theourgia.sc'` where `'theourgia.ss'` was expected; for
+   * the deletion of the `transport` setting, a compile error naming
+   * `FALLBACK_PROGRAM` here and in `test/support/fake.ts`. There is no
+   * second program any more, so the cell names one.
    */
-  it('runs theourgia.ss rather than cli.ss', async () => {
-    assert.strictEqual(CLIENT_PROGRAM, 'theourgia.ss');
-    assert.strictEqual(FALLBACK_PROGRAM, 'cli.ss');
-    assert.strictEqual(WITNESS_SOURCE, 'client.ss');
+  it('runs theourgia.sc, and nothing else', async () => {
+    assert.strictEqual(CLIENT_PROGRAM, 'theourgia.sc');
+    assert.strictEqual(WITNESS_SOURCE, 'client.sc');
     assert.strictEqual(WITNESS_PRODUCT, 'client.so');
     core = new FakeCore([{ match: ['outline'], stdout: '- a.1  One\n', rc: 0 }]);
     const config = core.config();
@@ -396,20 +399,20 @@ describe('plugin-r2 T1 the extension list is chosen from what the core directory
   const held = (...names: string[]) => ({ has: (n: string) => names.includes(n) });
 
   it('calls a directory of sources a source directory', () => {
-    assert.deepStrictEqual(coreFormOf(held(WITNESS_SOURCE, FALLBACK_PROGRAM, CLIENT_PROGRAM)), { form: 'source' });
+    assert.deepStrictEqual(coreFormOf(held(WITNESS_SOURCE, CLIENT_PROGRAM)), { form: 'source' });
     assert.strictEqual(libraryExtensionsFor({ form: 'source' }), LIBRARY_EXTENSIONS);
     assert.ok(!LIBRARY_EXTENSIONS.includes('.so'));
   });
 
   it('calls a directory of objects a product directory', () => {
-    assert.deepStrictEqual(coreFormOf(held(WITNESS_PRODUCT, FALLBACK_PROGRAM, CLIENT_PROGRAM)), { form: 'product' });
+    assert.deepStrictEqual(coreFormOf(held(WITNESS_PRODUCT, CLIENT_PROGRAM)), { form: 'product' });
     assert.strictEqual(libraryExtensionsFor({ form: 'product' }), PRODUCT_EXTENSIONS);
     assert.ok(PRODUCT_EXTENSIONS.startsWith('.so'));
   });
 
   it('prefers the source when a stale object is lying beside it', () => {
     assert.deepStrictEqual(
-      coreFormOf(held(WITNESS_SOURCE, WITNESS_PRODUCT, FALLBACK_PROGRAM, CLIENT_PROGRAM)),
+      coreFormOf(held(WITNESS_SOURCE, WITNESS_PRODUCT, CLIENT_PROGRAM)),
       { form: 'source' },
       'the object would be loaded in preference to the source it no longer matches'
     );

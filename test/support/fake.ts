@@ -30,7 +30,6 @@ import {
   CLIENT_PROGRAM,
   CoreConfig,
   DEFAULT_TIMEOUT_MS,
-  FALLBACK_PROGRAM,
   WITNESS_SOURCE
 } from '../../src/config';
 
@@ -94,16 +93,10 @@ export class FakeCore {
     fs.mkdirSync(this.corePath, { recursive: true });
     fs.mkdirSync(this.store, { recursive: true });
     /*
-     * The stand-in never reads it, but the client composes a path to it
-     * and a cell pins that path; a file that is not there would make the
-     * pin pass for the wrong reason.
-     */
-    fs.writeFileSync(path.join(this.corePath, FALLBACK_PROGRAM), ';; stand-in\n', 'utf8');
-    /*
      * NOTE: AND THE STAND-IN CORE LOOKS LIKE A CORE. The client composes
-     * the path to `theourgia.ss` and pins it, and it READS this
+     * the path to `theourgia.sc` and pins it, and it READS this
      * directory to decide which extension list the child gets: a
-     * directory with neither `client.ss` nor `client.so` is neither
+     * directory with neither `client.sc` nor `client.so` is neither
      * form, and every cell here would be running against a refusal
      * about the setting rather than against the core.
      */
@@ -121,7 +114,6 @@ export class FakeCore {
       actor: 'cell',
       writer: '',
       timeoutMs: DEFAULT_TIMEOUT_MS,
-      transport: 'client',
       ...overrides
     };
   }
