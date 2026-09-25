@@ -73,7 +73,7 @@
 (define here (string-append scratch-base "/detach-" pid-text))
 (define sock-here (string-append socket-base "/detach-" pid-text))
 (define store (string-append here "/store"))
-(define cli "../cli.sc")
+(define cli "../core.sc")
 
 (define (env-prefix extra)
   (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
@@ -311,7 +311,7 @@
             '(usage (serve)) #f))
 
 ;; AND THE USAGE CLAUSE IS THE WHOLE FORM -- compared against the one this
-;; program keeps, read out of `cli.sc`.
+;; program keeps, read out of `core.sc`.
 ;;
 ;; NEVER: THE FIRST VERSION OF THIS ROW WAS TITLED "is serve's own form" AND
 ;; DID NOT COMPARE IT. It checked that the clause's head was `serve` and that
@@ -339,7 +339,7 @@
 ;; CONTROL: the form was found in the source at all. Without this, a failure
 ;; to read it would make the comparison below compare `#f` with `#f` on some
 ;; future day when the refusal also stopped carrying one.
-(want "D-2b CONTROL: serve-usage was read out of cli.sc and is a serve form"
+(want "D-2b CONTROL: serve-usage was read out of core.sc and is a serve form"
       (list (and (pair? serve-usage-in-source) #t)
             (and (pair? serve-usage-in-source) (car serve-usage-in-source)))
       (list #t 'serve))

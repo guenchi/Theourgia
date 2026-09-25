@@ -21,7 +21,7 @@
 ;; already has one.
 ;;
 ;; NEVER: AND IT WAS WRITTEN TWICE, WITH THE COPIES DISAGREEING. Until this
-;; batch `cli.sc` and `mcp/server.sc` defaulted to `<store>/socket` while
+;; batch `core.sc` and `mcp/server.sc` defaulted to `<store>/socket` while
 ;; `daemon.sc` had a run-root rule that nothing reached -- so the rule the
 ;; README described was never the rule that ran.
 
@@ -170,14 +170,14 @@
   (system (string-append
             (if (pair? env) (car env) "")
             " CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-            "scheme --script ../cli.sc " args " > " out-file " 2>&1"))
+            "scheme --script ../core.sc " args " > " out-file " 2>&1"))
   (file-text out-file))
 
 (cli (string-append "init --store " store " --wire") (string-append here "/init.txt")
      "THEOURGIA_LOCAL=1")
 
 (system (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../cli.sc serve " store
+                       "scheme --script ../core.sc serve " store
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/pid )"))
 (system "sleep 5")
 
@@ -538,7 +538,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
+    (if (file-exists? (string-append up "/core.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.sc"))
 
 (define import-graph

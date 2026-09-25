@@ -44,7 +44,7 @@ and ships as compiled objects. Anything that resolves a library at RUN
 time rather than by a static import behaves differently in the two, and
 a reading taken in one says nothing about the other.
 
-`cli.sc` is the case that produced the rule: it reaches
+`core.sc` is the case that produced the rule: it reaches
 `(theourgia daemon)`, `(theourgia eval-supervise)`, `(theourgia sched)`
 and `(theourgia net)` through `(environment ...)` when a `serve`, an
 `eval` or a forwarded call asks for them. From source that resolves to a
@@ -168,7 +168,7 @@ holding only `theourgia/` resolves nothing past the first import, so a
 fixture that stages one has to link the dependency in beside it. The
 comment where this was first written down used to say the opposite --
 correctly, for the tree it was written against -- and the fixture failed
-with `cli.sc init` exiting 255 when that stopped being true. A comment
+with `core.sc init` exiting 255 when that stopped being true. A comment
 asserting the current state of a tree decays silently, and that one did.
 
 ## One file in this directory is a tool, not a fixture

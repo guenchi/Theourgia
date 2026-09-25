@@ -667,7 +667,7 @@ mkdir -p "$THEOURGIA_RUN"
 # happened -- so this prints that it did not run instead of printing
 # nothing, which would read as a pass.
 # WHAT COUNTS AS A LIBRARY DIRECTORY IS "IT HOLDS SOURCES", not "it
-# holds cli.sc". Keying the whole comparison on one filename meant a
+# holds core.sc". Keying the whole comparison on one filename meant a
 # parent full of libraries with that one file missing or renamed took
 # the NOT CHECKED branch and the run continued.
 # THE LIBRARY DIRECTORY IS CHECKED BEFORE ANYTHING RUNS. The core reaches

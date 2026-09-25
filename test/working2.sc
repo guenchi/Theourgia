@@ -358,7 +358,7 @@
 ;; `working-fault-child.sc` decides whether an injected durability fault
 ;; fired by looking for exactly `working-unavailable`, so an unnamed
 ;; writer and a failed flush were the same answer. Both are reachable
-;; from `cli.sc` (`eval --working` with no `--writer`).
+;; from `core.sc` (`eval --working` with no `--writer`).
 ;;
 ;; So there is a row per door, and they are not redundant: each one is
 ;; the only row that would go red if its own door lost the branch.

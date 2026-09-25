@@ -66,7 +66,7 @@
   (let ((out (string-append here "/out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc "
+              "scheme --script ../core.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " store " --wire > " out " 2>&1"))
     (file-text out)))
@@ -75,7 +75,7 @@
   (let ((out (string-append here "/plain.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc "
+              "scheme --script ../core.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " store " > " out " 2>&1"))
     (file-text out)))
@@ -260,7 +260,7 @@
   (let ((out (string-append here "/old.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc "
+              "scheme --script ../core.sc "
               (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
               "--store " old-store " > " out " 2>&1"))
     (file-text out)))

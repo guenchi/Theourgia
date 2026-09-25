@@ -84,7 +84,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
+    (if (file-exists? (string-append up "/core.sc")) up script-dir)))
 
 ;; Measured at bc5547a, between the two markers. See the note above on
 ;; why this is not the markers' own list.

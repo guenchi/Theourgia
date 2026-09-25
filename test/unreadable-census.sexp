@@ -26,7 +26,7 @@
   ("build.ss" (libraries) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-exists? 2 keep a "build.ss: build output and source paths, not writer layout")
-  ("cli.sc" (main) file-exists? 1 keep a "not writer layout: daemon socket path")
+  ("core.sc" (main) file-exists? 1 keep a "not writer layout: daemon socket path")
   ("client.sc" () file-exists? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("client.sc" (nearest-existing) file-exists? 1 keep a "not writer layout: client path search")
   ("client.sc" (log-length) file-exists? 1 keep a "not writer layout: daemon log file")
@@ -113,12 +113,12 @@
    unrelated a
    "build.ss: build failure bookkeeping"
    (e (#t (sweep (cdr fs) (cons (car fs) deferred) built (cons (cons (name-of (car fs)) (if (and (condition? e) (message-condition? e)) (condition-message e) "?")) errs)))))
-  ("cli.sc" (forward-then-exit!) 1 guard
+  ("core.sc" (forward-then-exit!) 1 guard
    (#t)
    unrelated a
    "socket forwarding"
    (e (#t (quote unreadable))))
-  ("cli.sc" (detach-step) 1 guard
+  ("core.sc" (detach-step) 1 guard
    (#t)
    unrelated a
    "detach errno"

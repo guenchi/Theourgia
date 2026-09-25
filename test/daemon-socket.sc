@@ -119,7 +119,7 @@
     ;; said nothing", which looks like a daemon that failed to start.
     (system (string-append
               "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../cli.sc serve " here "/store --socket " path
+              "scheme --script ../core.sc serve " here "/store --socket " path
               " > " out " 2>&1 & echo $! > " here "/pid )"))
     (system "sleep 4")
     (let ((said (file-text out)))
@@ -127,7 +127,7 @@
       said)))
 
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-                       "scheme --script ../cli.sc init --store " here "/store --wire > /dev/null 2>&1"))
+                       "scheme --script ../core.sc init --store " here "/store --wire > /dev/null 2>&1"))
 
 ;; NEVER: A FIFO ON THE PATH IS NOT THIS DAEMON'S TO REMOVE. Before the
 ;; change it was unlinked and the daemon started on top of it.

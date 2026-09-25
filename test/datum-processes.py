@@ -13,7 +13,7 @@ source.mkdir()
 (source / 'library.sc').write_text('(library (process-fixture) (export x) (import (rnrs))\n;; preserved docs\n(define x #\\space))\n')
 env = dict(os.environ, CHEZSCHEMELIBDIRS=str(lib), CHEZSCHEMELIBEXTS='.sc::.no-obj', THEOURGIA_HOME=str(area / 'home'))
 def run(*args):
-    r = subprocess.run(['scheme', '--script', str(core / 'cli.sc'), *args, '--store', str(store)], env=env, capture_output=True, timeout=20,stdin=subprocess.DEVNULL)
+    r = subprocess.run(['scheme', '--script', str(core / 'core.sc'), *args, '--store', str(store)], env=env, capture_output=True, timeout=20,stdin=subprocess.DEVNULL)
     assert r.returncode == 0, (r.stdout, r.stderr)
     return r.stdout
 run('init')

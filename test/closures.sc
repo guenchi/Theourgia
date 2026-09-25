@@ -76,7 +76,7 @@
     (if cut (substring self 0 cut) ".")))
 (define root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
+    (if (file-exists? (string-append up "/core.sc")) up script-dir)))
 
 (load (string-append script-dir "/import-walk.sc"))
 

@@ -130,7 +130,7 @@
 
 (system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-                       "scheme --script ../cli.sc init --store " here "/store --wire > /dev/null 2>&1"))
+                       "scheme --script ../core.sc init --store " here "/store --wire > /dev/null 2>&1"))
 
 ;; NOTE: THE REAL HANDSHAKE. `tools/list` before `notifications/initialized`
 ;; is refused by the shell, deliberately -- so a row that skipped it

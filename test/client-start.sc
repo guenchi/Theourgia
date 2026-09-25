@@ -79,7 +79,7 @@
 
 (define sock (socket-path store))
 (define log (serve-log-path store))
-(define cli "../cli.sc")
+(define cli "../core.sc")
 
 ;; NEVER: THE ARGV IS BUILT ONCE AND THE SOCKET IS ITS ONLY VARIABLE, so the
 ;; rows below differ in the thing they are about and in nothing else.
@@ -494,7 +494,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
+    (if (file-exists? (string-append up "/core.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.sc"))
 
 (define import-graph

@@ -16,7 +16,7 @@
 ;; What the command line loads before it knows what it was asked to do.
 ;;
 ;; KEY: EVERY `read` USED TO LOAD THE ACTOR SYSTEM, for the benefit of
-;; three verbs that were not being run. `cli.sc` imported
+;; three verbs that were not being run. `core.sc` imported
 ;; `(theourgia sched)`, `(theourgia net)`, `(theourgia daemon)` and
 ;; `(theourgia eval-supervise)` unconditionally; measured against the
 ;; same libraries, that was 652ms to start against 452ms without them,
@@ -98,7 +98,7 @@
 
 (define heavy '("sched.sc" "net.sc" "daemon.sc" "eval-supervise.sc"))
 
-(define cli-closure (map basename (closure-of (string-append root "/cli.sc"))))
+(define cli-closure (map basename (closure-of (string-append root "/core.sc"))))
 
 (want "F0-1 the command line's static closure holds none of the four heavy libraries"
       (filter (lambda (h) (member h cli-closure)) heavy)
@@ -189,7 +189,7 @@
     (system (string-append
               "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
               " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-              "scheme --script " root "/cli.sc no-such-verb --wire > /dev/null 2>&1"))
+              "scheme --script " root "/core.sc no-such-verb --wire > /dev/null 2>&1"))
     (- (real-time) start)))
 
 (define timings (let loop ((n 10) (out '())) (if (zero? n) out (loop (- n 1) (cons (one-call-ms) out)))))
@@ -237,7 +237,7 @@
         (if (pair? env) (car env) "")
         " CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
         " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-        "scheme --script " root "/cli.sc " args " > " out-file " 2>&1"))
+        "scheme --script " root "/core.sc " args " > " out-file " 2>&1"))
   (let ((t (call-with-input-file out-file get-string-all))) (if (string? t) t "")))
 
 (define (contains? text needle)
@@ -263,7 +263,7 @@
 ;; produces the same bytes, deliberately.
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                    " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-                   "scheme --script " root "/cli.sc serve " store " --socket " socket
+                   "scheme --script " root "/core.sc serve " store " --socket " socket
                    " > " scratch "/serve.txt 2>&1 & echo $! > " scratch "/serve.pid )"))
 (sh "sleep 5")
 
@@ -300,7 +300,7 @@
 ;; USER RUNS. Development runs `--script` against `.sc`; a user gets
 ;; compiled objects. The difference matters twice over.
 ;;
-;; **First, lazy loading has to still work.** `cli.sc` resolves
+;; **First, lazy loading has to still work.** `core.sc` resolves
 ;; `(theourgia daemon)` at RUN time, and whether that works depends on
 ;; the library being findable -- which it is as a `.so` on the library
 ;; path. NEVER: It would NOT be inside a whole-program package that dropped
@@ -308,7 +308,7 @@
 ;; reading here. These rows cover the `.so` form only, and say so.
 ;;
 ;; **Second, the saving is much smaller there.** Same machine, same
-;; objects, only `cli.sc` differing:
+;; objects, only `core.sc` differing:
 ;;
 ;;     source form   static imports 623 ms   on demand 435 ms   -188 ms
 ;;     .so form      static imports  51 ms   on demand  42 ms   -9 ms
@@ -346,7 +346,7 @@
   (sh (string-append
         (if (pair? env) (car env) "")
         " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-        "scheme --script " root "/cli.sc " args " > " out-file " 2>&1"))
+        "scheme --script " root "/core.sc " args " > " out-file " 2>&1"))
   (file-text out-file))
 
 (define so-store (string-append scratch "/so-store"))
@@ -376,7 +376,7 @@
 (define so-socket (string-append socket-base "/f0so-" (number->string (get-process-id)) ".sock"))
 (sh (string-append "rm -f " so-socket))
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-                   "scheme --script " root "/cli.sc serve " so-store " --socket " so-socket
+                   "scheme --script " root "/core.sc serve " so-store " --socket " so-socket
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
 (sh "sleep 5")
 
@@ -404,7 +404,7 @@
 ;;
 ;; KEY: EVERY ROW ABOVE RUNS THE PROGRAM FROM THE SOURCE TREE. They put only
 ;; objects on the library path, which is what proves the LIBRARIES resolve
-;; from objects -- but the thing they invoke is `root/cli.sc`, a source
+;; from objects -- but the thing they invoke is `root/core.sc`, a source
 ;; file. So none of them can say whether the output directory would work
 ;; on a machine that has no source tree, which is the only machine a user
 ;; has.
@@ -412,15 +412,15 @@
 ;; Measured before `build.ss` copied the programs, with the output alone on
 ;; the path: `Exception in load: failed for <out>/theourgia/theourgia.sc: no
 ;; such file or directory`, rc=255. Putting only the thin client there moved
-;; the same failure one step along to `cli.sc`. The programs are found BESIDE
+;; the same failure one step along to `core.sc`. The programs are found BESIDE
 ;; THE PROGRAM, by path, so no quantity of `.so` substitutes for them.
 
 (define (product-file rel) (string-append objects "/theourgia/" rel))
 
 (want "F18 the build left every program in the output directory"
       (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'MISSING)))
-           '("theourgia.sc" "cli.sc" "eval-worker.sc" "mcp/server.sc"))
-      '(("theourgia.sc" . there) ("cli.sc" . there)
+           '("theourgia.sc" "core.sc" "eval-worker.sc" "mcp/server.sc"))
+      '(("theourgia.sc" . there) ("core.sc" . there)
         ("eval-worker.sc" . there) ("mcp/server.sc" . there)))
 
 ;; NEVER: THE LIBRARY PATH HOLDS THE OUTPUT AND NOTHING ELSE. With the source
@@ -448,14 +448,14 @@
 ;; NEVER: AND THE ROW ABOVE HAS TO BE ABOUT THE COPIED PROGRAMS. Moving one
 ;; away and putting it back is the only thing here that shows the row is
 ;; reading them rather than something else that happens to be true.
-(define f18-hidden (string-append scratch "/cli.sc.hidden"))
-(sh (string-append "mv " (product-file "cli.sc") " " f18-hidden))
+(define f18-hidden (string-append scratch "/core.sc.hidden"))
+(sh (string-append "mv " (product-file "core.sc") " " f18-hidden))
 (define f18-without (product-client "describe --wire" (string-append scratch "/f18-without.txt")))
-(sh (string-append "mv " f18-hidden " " (product-file "cli.sc")))
+(sh (string-append "mv " f18-hidden " " (product-file "core.sc")))
 
 (want "F18 TWIN: with one program taken out of the output, the same call fails"
       (list (if (contains? f18-without "(ok (verbs (init ") 'STILL-ANSWERED 'refused)
-            (if (contains? f18-without "cli.sc") 'and-names-the-missing-file 'SAID-SOMETHING-ELSE))
+            (if (contains? f18-without "core.sc") 'and-names-the-missing-file 'SAID-SOMETHING-ELSE))
       '(refused and-names-the-missing-file))
 
 (want "F18 TWIN: and putting it back restores the answer"

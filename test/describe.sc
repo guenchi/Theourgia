@@ -165,7 +165,7 @@
     (system (string-append "CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                            " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
                            "THEOURGIA_HOME=" here "/home THEOURGIA_TRACE=1 "
-                           "scheme --script ../cli.sc " verb " --store " store
+                           "scheme --script ../core.sc " verb " --store " store
                            " --wire > /dev/null 2> " out))
     (let* ((text (call-with-input-file out get-string-all))
            (n (string-length text)))

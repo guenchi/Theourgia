@@ -40,7 +40,7 @@
 ;; and hands `load` an absolute path.
 
 ;; EVERY FORM IN THE FILE, not just the first. A library is one form; a
-;; top-level program (`cli.sc`, `eval-worker.sc`) is a
+;; top-level program (`core.sc`, `eval-worker.sc`) is a
 ;; bare `(import ...)` followed by many, and its import is as much a use
 ;; of a dependency as a library's.
 (define (forms-of path)

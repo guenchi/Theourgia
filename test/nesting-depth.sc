@@ -81,7 +81,7 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1)))))))
     (if cut (substring self 0 cut) ".")))
-(define cli (string-append script-dir "/../cli.sc"))
+(define cli (string-append script-dir "/../core.sc"))
 
 (define scratch (string-append (or (getenv "THEOURGIA_TEST_ROOT") "/tmp")
                                "/nesting-depth-" (number->string (get-process-id))))

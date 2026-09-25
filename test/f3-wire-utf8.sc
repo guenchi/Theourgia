@@ -83,7 +83,7 @@
 (define (cli-to out . args)
   (system (string-append
             "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-            "scheme --script ../cli.sc "
+            "scheme --script ../core.sc "
             (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
             "--store " store " --wire > " out " 2>&1"))
   (file-text out))
@@ -220,7 +220,7 @@
 ;; that these are the same bytes; a change made in the CLI alone would
 ;; leave the daemon and the shell spelling `\x6C49;`.
 (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../cli.sc serve " store " --socket " socket
+                       "scheme --script ../core.sc serve " store " --socket " socket
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/serve.pid )"))
 (system "sleep 5")
 
@@ -228,7 +228,7 @@
   (let ((out (string-append here "/daemon.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../cli.sc search " (quoted cjk)
+              "scheme --script ../core.sc search " (quoted cjk)
               " --store " store " --socket " socket " --wire > " out " 2>&1"))
     (file-text out)))
 

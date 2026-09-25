@@ -34,7 +34,7 @@ def check(name, ok):
 def call(s, args, data=None, fault=None, actor='review'):
     e = dict(env, THEOURGIA_HOME=str(s.parent/'machine'))
     if fault: e['THEOURGIA_FAULT'] = fault
-    argv = ['scheme','--script',str(lib/'theourgia/cli.sc'),args[0],'--store',str(s)]
+    argv = ['scheme','--script',str(lib/'theourgia/core.sc'),args[0],'--store',str(s)]
     if actor is not None: argv += ['--actor',actor]
     # `input=None` INHERITS THIS PROCESS'S STDIN, it does not close it.
     # Most calls here pass no payload, and a verb that reads standard

@@ -71,7 +71,7 @@
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
 (define store (string-append here "/store"))
 (define sock (string-append sock-here "/s.sock"))
-(define cli "../cli.sc")
+(define cli "../core.sc")
 
 (rpc-dispatch store '(init) "test")
 (define block

@@ -221,11 +221,11 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1))))))
          (dir (if cut (substring self 0 cut) "."))
-         (beside (string-append dir "/cli.sc"))
-         (above (string-append dir "/../cli.sc")))
+         (beside (string-append dir "/core.sc"))
+         (above (string-append dir "/../core.sc")))
     (cond ((file-exists? beside) beside)
           ((file-exists? above) above)
-          (else (assertion-violation 'field-types "cli.sc is nowhere beside this fixture"
+          (else (assertion-violation 'field-types "core.sc is nowhere beside this fixture"
                                      (list beside above))))))
 
 (define here

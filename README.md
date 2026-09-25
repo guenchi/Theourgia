@@ -11,14 +11,14 @@ Design documents are maintained separately; this repository holds the implementa
 **One set of prerequisites: Chez Scheme, and igropyr.** There is no
 Python anywhere in this, and no build step -- the verbs run from source:
 
-    scheme --script cli.sc <verb> [...]
+    scheme --script core.sc <verb> [...]
 
 Chez finds the libraries through its own two variables, which must name a
 directory holding both `theourgia/` and `igropyr/`:
 
     export CHEZSCHEMELIBDIRS=/path/to/that/directory
     export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
-    scheme --script cli.sc init --store /path/to/store
+    scheme --script core.sc init --store /path/to/store
 
 **Running it compiled.** `build.ss` compiles every library -- this tree
 and its dependency -- into a directory of objects:
@@ -1235,12 +1235,12 @@ the transport's tag rather than on the answer's text.
 | variable | read by | what it does |
 |---|---|---|
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. Not read by any source file here. |
-| `THEOURGIA_STORE` | `cli.sc` | the store to use when `--store` is absent. Falls back to `.` |
-| `THEOURGIA_ACTOR` | `cli.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
+| `THEOURGIA_STORE` | `core.sc` | the store to use when `--store` is absent. Falls back to `.` |
+| `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
-| `THEOURGIA_LOCAL` | `cli.sc` | `1` answers in process even when a daemon's socket is there |
-| `THEOURGIA_SCHEME` | `cli.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
+| `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
 **Test-only, and two of them do not exist in an ordinary build.**

@@ -9,7 +9,7 @@ from `Path(__file__).resolve().parents[2]`, which in the tree these
 fixtures were written in held `theourgia/`, `igropyr/` and
 `implementation/` side by side:
 
-  * the CORE sources -- `cli.sc`, `daemon.sc`, `mcp/server.sc`. That is
+  * the CORE sources -- `core.sc`, `daemon.sc`, `mcp/server.sc`. That is
     `parents[1]`, always, and it does not depend on what sits beside the
     repository.
   * the LIBRARY PATH handed to Chez. `THEOURGIA_LIBDIR` when the caller
@@ -35,7 +35,7 @@ _here = Path(__file__).resolve().parent
 
 
 def core():
-    """The directory holding cli.sc, daemon.sc and mcp/."""
+    """The directory holding core.sc, daemon.sc and mcp/."""
     return _here.parent
 
 
@@ -87,7 +87,7 @@ def _holds_libraries(directory):
     if not here.is_dir():
         return False
     # IT ASKS FOR THE LIBRARY THE CORE IMPORTS FIRST, BY NAME AND SIZE.
-    # `cli.sc` imports `(theourgia rpc)` before anything else, so a
+    # `core.sc` imports `(theourgia rpc)` before anything else, so a
     # directory without a non-empty `rpc` source cannot start a run
     # whatever else is in it. `is_file()` matters: a DIRECTORY named
     # `rpc.sc` has the suffix too.
@@ -177,7 +177,7 @@ def igropyr():
     core imports no such library any more, so leaving one there would
     let a reintroduced dependency resolve and go unremarked" -- true of
     the tree it was written against, false since the copies became
-    forwards, and the fixture failed with `cli.sc init` exiting 255.
+    forwards, and the fixture failed with `core.sc init` exiting 255.
     """
     for candidate in _source_dirs(libdir()):
         if _igropyr_in(candidate):

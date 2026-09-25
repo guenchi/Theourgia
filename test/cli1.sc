@@ -14,7 +14,7 @@
 ;; limitations under the License.
 
 ;; P1, P3's rendering, P6, P7 and P8 through real processes. Every row
-;; here runs `scheme --script cli.sc ...` and judges stdout, stderr and
+;; here runs `scheme --script core.sc ...` and judges stdout, stderr and
 ;; the exit code -- the three things an agent or a shell actually sees.
 ;; The library-level half of the same criteria is store1.sc.
 (import (chezscheme) (theourgia store) (theourgia reduce) (theourgia log)
@@ -173,8 +173,8 @@
        e0))))
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.sc sit side by side; in the
-;; repository the fixtures are under test/ and cli.sc is at the root.
+;; delivery directory the fixture and core.sc sit side by side; in the
+;; repository the fixtures are under test/ and core.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
@@ -187,18 +187,18 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1))))))
          (dir (if cut (substring self 0 cut) "."))
-         (beside (string-append dir "/cli.sc"))
-         (above (string-append dir "/../cli.sc")))
+         (beside (string-append dir "/core.sc"))
+         (above (string-append dir "/../core.sc")))
     (cond
       ((file-exists? beside) beside)
       ((file-exists? above) above)
       (else (assertion-violation 'cli1
-              "cli.sc is neither beside this fixture nor one level up"
+              "core.sc is neither beside this fixture nor one level up"
               (list beside above))))))
 
 ;; AND THE READING SAYS WHICH PROGRAM IT MEASURED. The locator is right
 ;; -- each layout has exactly one answer -- but the answer never appeared
-;; in the output, so a copy of cli.sc sitting beside this fixture was
+;; in the output, so a copy of core.sc sitting beside this fixture was
 ;; being tested instead of the working tree for a day before anyone
 ;; noticed, and every row read green the whole time. A run that names its
 ;; subject shows the drift on its first line.
@@ -228,7 +228,7 @@
 ;;
 ;; THE CHILD INHERITS THE WHOLE SUITE'S ENVIRONMENT, not the one this
 ;; file set up. The suite runner exports THEOURGIA_INJECT=on for the
-;; fault cases, every `scheme --script cli.sc` started here inherits it,
+;; fault cases, every `scheme --script core.sc` started here inherits it,
 ;; and the expansion-time banner then puts a SECOND line on stderr --
 ;; so the stderr rows below passed when run by hand and failed under
 ;; run-all. `env -u` removes it for the ordinary runs; a row that wants

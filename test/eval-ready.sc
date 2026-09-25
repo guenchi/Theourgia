@@ -107,7 +107,7 @@
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
               "THEOURGIA_SCHEME=" interpreter " "
-              "scheme --script ../cli.sc eval '" source "' --store " store " --wire "
+              "scheme --script ../core.sc eval '" source "' --store " store " --wire "
               (apply string-append (map (lambda (f) (string-append f " ")) flags))
               "> " out " 2>&1"))
     ;; THE ANSWER IS THE LAST DATUM: with a fresh THEOURGIA_HOME the command
@@ -127,7 +127,7 @@
     (and r (pair? (cdr r)) (cadr r))))
 
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-                       "scheme --script ../cli.sc init --store " store " > /dev/null 2>&1"))
+                       "scheme --script ../core.sc init --store " store " > /dev/null 2>&1"))
 
 (define (now-ms) (let ((t (current-time 'time-monotonic)))
                    (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))

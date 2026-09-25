@@ -183,16 +183,16 @@
 
 
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.sc sit side by side; in the
-;; repository the fixtures are under test/ and cli.sc is at the root.
+;; delivery directory the fixture and core.sc sit side by side; in the
+;; repository the fixtures are under test/ and core.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
 ;; AND IF NEITHER EXISTS IT SAYS SO AT ONCE, rather than letting each
 ;; row discover it separately.
 ;; THE PROGRAM UNDER TEST IS FOUND IN BOTH LAYOUTS IT LIVES IN. In a
-;; delivery directory the fixture and cli.sc sit side by side; in the
-;; repository the fixtures are under test/ and cli.sc is at the root.
+;; delivery directory the fixture and core.sc sit side by side; in the
+;; repository the fixtures are under test/ and core.sc is at the root.
 ;; Looking only beside itself, this fixture started no child at all in
 ;; the repository -- and every row then read the empty output of a
 ;; process that never ran.
@@ -205,18 +205,18 @@
                       ((char=? (string-ref self i) #\/) i)
                       (else (loop (- i 1))))))
          (dir (if cut (substring self 0 cut) "."))
-         (beside (string-append dir "/cli.sc"))
-         (above (string-append dir "/../cli.sc")))
+         (beside (string-append dir "/core.sc"))
+         (above (string-append dir "/../core.sc")))
     (cond
       ((file-exists? beside) beside)
       ((file-exists? above) above)
       (else (assertion-violation 'cli2
-              "cli.sc is neither beside this fixture nor one level up"
+              "core.sc is neither beside this fixture nor one level up"
               (list beside above))))))
 
 ;; AND THE READING SAYS WHICH PROGRAM IT MEASURED. The locator is right
 ;; -- each layout has exactly one answer -- but the answer never appeared
-;; in the output, so a copy of cli.sc sitting beside this fixture was
+;; in the output, so a copy of core.sc sitting beside this fixture was
 ;; being tested instead of the working tree for a day before anyone
 ;; noticed, and every row read green the whole time. A run that names its
 ;; subject shows the drift on its first line.

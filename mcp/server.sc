@@ -408,12 +408,12 @@
 ;; never reported as not having happened.
 (define (server-argv store socket)
   (list (or (getenv "THEOURGIA_SCHEME") "scheme")
-        "--script" (beside-this-program "cli.sc")
+        "--script" (beside-this-program "core.sc")
         "serve" store
         "--socket" socket
         "--detach" "--log" (serve-log-path store)))
 
-;; NOTE: `cli.sc` SITS ONE LEVEL UP: this program lives in `mcp/`.
+;; NOTE: `core.sc` SITS ONE LEVEL UP: this program lives in `mcp/`.
 (define (beside-this-program name)
   (let* ((argv0 (car (command-line)))
          (cut (let loop ((i (- (string-length argv0) 1)))

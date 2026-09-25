@@ -802,13 +802,13 @@
           '(error serve-start-failed #t #t nothing-spawned))))
 
 (printf "== K14: the eval route says what its view could not see ==\n")
-;; cli.sc eval runs through eval-supervise and a worker, not rpc dispatch;
+;; core.sc eval runs through eval-supervise and a worker, not rpc dispatch;
 ;; it is driven the way test/eval-local.sc drives it, with stdout read as
 ;; the answer and stderr kept apart.
 (define (eval-answer store source . flags)
   (let ((out (string-append root "/eval.out"))
         (err (string-append root "/eval.err")))
-    (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../cli.sc eval '" source "' --store " store
+    (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval '" source "' --store " store
                            " --wire " (apply string-append (map (lambda (f) (string-append f " ")) flags))
                            "> " out " 2> " err))
     (let ((d (guard (e (#t (eof-object))) (call-with-port (open-input-file out) read))))

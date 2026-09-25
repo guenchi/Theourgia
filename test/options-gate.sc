@@ -122,7 +122,7 @@
 ;; is ONE datum holding every definition it has, so reading only a file's
 ;; top level would give every site in `rpc.sc` the same label and the keys
 ;; would all collide. Measured: `rpc.sc` and `store.sc` have one top-level
-;; datum each; `cli.sc` has 29 and `mcp/server.sc` 58. This descends
+;; datum each; `core.sc` has 29 and `mcp/server.sc` 58. This descends
 ;; through `library` and `begin` to reach the definitions.
 (define (definition-name form)
   (and (pair? form)
@@ -191,11 +191,11 @@
 (system (string-append "rm -rf " scratch "; mkdir -p " scratch "/store"))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-          "scheme --script ../cli.sc init --store " scratch "/store > /dev/null 2>&1"))
+          "scheme --script ../core.sc init --store " scratch "/store > /dev/null 2>&1"))
 
 (define arguments-data (read-data "../arguments.sc"))
 (define rpc-data (read-data "../rpc.sc"))
-(define cli-data (read-data "../cli.sc"))
+(define cli-data (read-data "../core.sc"))
 
 ;; EVERY OPTION SPELLING THE TABLE KNOWS, as data. This is the set the
 ;; probe sweeps; it is read from the table because the table is where a
@@ -278,7 +278,7 @@
 ;;
 ;; THE LIST IS STILL A LITERAL, and that is a hole with a name: `rpc-verbs`
 ;; is derived from the dispatcher's own table, while these two are typed
-;; here by hand. `cli.sc` dispatches them with a `string=?` per verb and
+;; here by hand. `core.sc` dispatches them with a `string=?` per verb and
 ;; keeps no table, so a third one added there joins no list, is compared
 ;; against nothing, and turns no row red. That is F64, and the paragraph at
 ;; the partition row says what the partition does and does not promise.
@@ -362,7 +362,7 @@
   (let ((out (string-append scratch "/link.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc link a b c d --store " scratch "/store --wire > "
+              "scheme --script ../core.sc link a b c d --store " scratch "/store --wire > "
               out " 2>&1"))
     (file-text out)))
 
@@ -458,7 +458,7 @@
             (else (scan (+ j 1)))))))
 
 (define rpc-text (call-with-input-file "../rpc.sc" get-string-all))
-(define cli-text (call-with-input-file "../cli.sc" get-string-all))
+(define cli-text (call-with-input-file "../core.sc" get-string-all))
 
 ;; NEVER: SCOPED TO THE VERB TABLE, NOT TO THE FILE. A scan for `(cons '`
 ;; across the whole of `rpc.sc` also matches `(cons 'items ...)` and
@@ -535,7 +535,7 @@
 
 ;; NOTE: `eval` IS NOT IN THAT TABLE -- it is the CLI's own verb -- and it
 ;; is the reason this row exists: its handler read `--timeout-ms` while
-;; the option table had no `eval` entry at all. `cli.sc` is scanned as
+;; the option table had no `eval` entry at all. `core.sc` is scanned as
 ;; one handler, and only the spellings `eval` itself takes are attributed
 ;; to it, because that file also reads options on behalf of other verbs.
 (define cli-reads
@@ -627,7 +627,7 @@
 ;; NEVER: AND THE CLAIM IS NEGATIVE, BECAUSE THAT IS THE ONE THAT WAS
 ;; MEASURED. An earlier wording said "every reader receives the form as
 ;; DATA". That is false: `mcp/server.sc` receives a tagged TEXT answer and
-;; parses it with `read`, and `cli.sc` copies an envelope's stdout string
+;; parses it with `read`, and `core.sc` copies an envelope's stdout string
 ;; straight out. What is true, and what those two do not disturb, is that
 ;; the text they receive was produced by `render.sc` with `write`.
 ;;
@@ -758,7 +758,7 @@
 ;; ---- the files this gate reads -------------------------------------------
 ;;
 ;; NEVER: AND IT IS NOT JUST TWO OF THEM. A spelling in any shipped source
-;; was entirely outside the comparison while this read `rpc.sc` and `cli.sc`
+;; was entirely outside the comparison while this read `rpc.sc` and `core.sc`
 ;; alone. The list is taken from the directory rather than typed here, so a
 ;; new source file joins it by existing; the row below pins how many there
 ;; are, because a list taken from a directory can also SHRINK.
@@ -1073,7 +1073,7 @@
   (let ((out (string-append scratch "/rt-" (symbol->string verb) ".txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc " (symbol->string verb)
+              "scheme --script ../core.sc " (symbol->string verb)
               " a b c d --store " scratch "/store --wire > " out " 2>&1"))
     (let ((answer (caught (with-input-from-file out read))))
       (and (pair? answer)
@@ -1187,13 +1187,13 @@
 ;; NEVER: AND HERE IS WHAT THE TOTAL DOES NOT PROMISE. It says the three
 ;; lists PARTITION `verbs-to-cover`. It does not say `verbs-to-cover` covers
 ;; the program. `rpc-verbs` is derived from the dispatcher's table, but the
-;; CLI's own two are a hand-written literal, and `cli.sc` dispatches them
+;; CLI's own two are a hand-written literal, and `core.sc` dispatches them
 ;; with one `string=?` apiece and keeps no table: a third verb added there
 ;; would be in no list, compared against nothing, and the total would still
 ;; balance, because both sides of it are taken from the same list.
 ;;
 ;; So this row closes one way out and not the other. Deriving the CLI's
-;; verbs from `cli.sc` the way `catalogue-places` derives from `rpc.sc` is
+;; verbs from `core.sc` the way `catalogue-places` derives from `rpc.sc` is
 ;; F64. Written here because a row asserting a total reads like "every verb
 ;; has been accounted for", and this one accounts for every verb THIS GATE
 ;; KNOWS ABOUT.
@@ -1263,11 +1263,11 @@
 ;;     `commit-usage` is never passed to `usage` at all -- `commit` appends
 ;;     it to whatever refusal came back -- which is why it has no call site,
 ;;     and is not why it has one place.
-;;   eval     cli.sc:361  `eval-usage`
-;;   serve    cli.sc:370  `serve-usage`
+;;   eval     core.sc:361  `eval-usage`
+;;   serve    core.sc:370  `serve-usage`
 ;;     The CLI's own verbs; they never reach the dispatcher's catalogue.
 ;;     `serve` was in this list for a round with the wrong reason: a second
-;;     spelling in `cli.sc` gave a partial form in which `--detach` was not
+;;     spelling in `core.sc` gave a partial form in which `--detach` was not
 ;;     bracketed, so it read as required rather than optional -- a false
 ;;     statement about the verb rather than a fragment of a true one. That
 ;;     refusal names `serve-usage` now.
@@ -1310,7 +1310,7 @@
 ;; exemptions. Closing one of these turns the row red until its entry is
 ;; deleted, and a NEW shape the gate cannot read turns it red as well.
 ;;
-;;   ../cli.sc  (theourgia <verb> ...)
+;;   ../core.sc  (theourgia <verb> ...)
 ;;     The program's own top-level usage, printed when no verb was given.
 ;;     `theourgia` is the PROGRAM, not a verb, so it is not in the verb
 ;;     census and there is no second spelling of it to compare against.
@@ -1337,7 +1337,7 @@
 ;; comparing equal while the exemption had quietly changed what it covered.
 ;; The middle field is the definition the site sits in.
 (define spellings-this-gate-does-not-interpret
-  (list (list "../cli.sc" 'main
+  (list (list "../core.sc" 'main
               (list 'unrecognised-spelling '(theourgia <verb> ...)))
         (list "../rpc.sc" 'parse-edge
               (list 'unrecognised-spelling
@@ -1353,7 +1353,7 @@
 ;;
 ;; NEVER: SIX ROWS IN THIS FILE CANNOT BE TURNED RED BY ANY CHANGE TO THE
 ;; PROGRAM, and only one of them said so. A reader counting the rows here
-;; counts them among the ones watching `rpc.sc` and `cli.sc`, and five of them
+;; counts them among the ones watching `rpc.sc` and `core.sc`, and five of them
 ;; are not: their subject is THIS FILE's own scanner, or nothing but this
 ;; file. They are not empty -- each was turned red by a variant applied to the
 ;; collectors -- but a row that can only be moved by editing the instrument
@@ -1516,7 +1516,7 @@
 ;; it applies to the instrument as much as to the subject.
 ;;
 ;; THE EXPECTATION COMES FROM THE RULE, NOT FROM A RUN. The rule is: every
-;; `.sc` beside `cli.sc`, plus the MCP server's own directory -- the shipped
+;; `.sc` beside `core.sc`, plus the MCP server's own directory -- the shipped
 ;; sources a usage form could be written in. A file appearing or vanishing
 ;; turns this red, and the answer is to decide whether the rule should have
 ;; included it, not to paste the new list in.
@@ -1612,8 +1612,8 @@
                                  (substring f (+ i 1) (string-length f)))
                                 (else (loop (- i 1))))))
                       source-file-list))
-      '("admission.sc" "arguments.sc" "baseline.sc" "cli.sc" "client.sc"
-        "code-markers.sc" "code-project.sc" "code-suggest.sc" "crc32.sc"
+      '("admission.sc" "arguments.sc" "baseline.sc" "client.sc"
+        "code-markers.sc" "code-project.sc" "code-suggest.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "digest.sc" "eval-context.sc" "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "ffi.sc" "json.sc"
@@ -1650,7 +1650,7 @@
 
 ;; A FUNCTION OF: synthetic only. Both rows below feed made-up places to
 ;; `places-of-in`, which is defined in this file. No value derived from the
-;; program takes part, so nothing in `rpc.sc` or `cli.sc` can move them. They
+;; program takes part, so nothing in `rpc.sc` or `core.sc` can move them. They
 ;; are unit tests of this file's own deduplication rule, and they are here
 ;; because that rule is the one an earlier round got wrong.
 (want "GATE-C two spellings written separately are two places even when identical today"

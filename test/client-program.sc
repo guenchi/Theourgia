@@ -107,7 +107,7 @@
     (list rc (file-text out) (file-text err))))
 
 (define (client extra args) (run! "../theourgia.sc" extra args))
-(define (server extra args) (run! "../cli.sc" extra args))
+(define (server extra args) (run! "../core.sc" extra args))
 
 (define (rc-of r) (car r))
 (define (out-of r) (cadr r))
@@ -605,7 +605,7 @@
           (answered "../theourgia.sc")
           '(named-it non-zero))
     (want "P-16 and by the command line, which reads the same reply"
-          (answered "../cli.sc")
+          (answered "../core.sc")
           '(named-it non-zero)))
   (system (string-append "pkill -f " cpeer " 2>/dev/null")))
 
@@ -735,7 +735,7 @@
         (let* ((out (string-append here "/p15-other.out"))
                (sock (string-append sock-here "/p15.sock"))
                (rc (begin
-                     (system (string-append (env-prefix "") " scheme --script ../cli.sc serve "
+                     (system (string-append (env-prefix "") " scheme --script ../core.sc serve "
                                             p15-store " --socket " sock
                                             " > /dev/null 2>&1 &"))
                      (let up ((k 0))
@@ -931,7 +931,7 @@
   ;; in the library. NOTE: The command line forwards to a daemon only when a
   ;; socket is there to forward to, which `--socket` provides here.
   (want "P-14 and the command line, reading the same envelope, refuses it too"
-        (asked-through "../cli.sc")
+        (asked-through "../core.sc")
         '(named-it non-zero)))
   (system (string-append "pkill -f " rpeer " 2>/dev/null")))
 
@@ -1012,7 +1012,7 @@
     (if cut (substring self 0 cut) ".")))
 (define tree-root
   (let ((up (string-append script-dir "/..")))
-    (if (file-exists? (string-append up "/cli.sc")) up script-dir)))
+    (if (file-exists? (string-append up "/core.sc")) up script-dir)))
 (load (string-append script-dir "/import-walk.sc"))
 
 (define import-graph

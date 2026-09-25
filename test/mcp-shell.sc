@@ -169,10 +169,10 @@
 (system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-          "scheme --script ../cli.sc init --store " here "/store > /dev/null 2>&1"))
+          "scheme --script ../core.sc init --store " here "/store > /dev/null 2>&1"))
 (system (string-append
           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-          "THEOURGIA_LOCAL=1 scheme --script ../cli.sc insert --title MC-CANARY --store "
+          "THEOURGIA_LOCAL=1 scheme --script ../core.sc insert --title MC-CANARY --store "
           here "/store > /dev/null 2>&1"))
 
 ;; ---- MC-lifecycle ------------------------------------------------------------
@@ -335,7 +335,7 @@
   (let ((out (string-append here "/cli-out2.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../cli.sc " (car argv)
+              "scheme --script ../core.sc " (car argv)
               (apply string-append (map (lambda (a) (string-append " " (shell-quote a))) (cdr argv)))
               " --store " store " --socket " socket " --wire > " out " 2>&1"))
     (file-text out)))
@@ -344,7 +344,7 @@
   (let ((out (string-append here "/cli-out.txt")))
     (system (string-append
               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' THEOURGIA_LOCAL=1 "
-              "scheme --script ../cli.sc " (car argv)
+              "scheme --script ../core.sc " (car argv)
               (apply string-append
                      (map (lambda (a) (string-append " " (shell-quote a))) (cdr argv)))
               " --store " store " --wire > " out " 2>&1"))
@@ -371,7 +371,7 @@
     (lambda (st)
       (system (string-append "rm -rf " st "; mkdir -p " st))
       (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                             "scheme --script ../cli.sc init --store " st " > /dev/null 2>&1")))
+                             "scheme --script ../core.sc init --store " st " > /dev/null 2>&1")))
     (list store2 store3))
   ;; KEY: `read <arg>` ON A FRESH STORE ECHOES THE ARGUMENT AND NOTHING
   ;; ELSE: `(error unknown-id "<arg>" (nearest ()))`. No writer name, no
@@ -803,7 +803,7 @@
 
   (start-capture! seen-cli)
   (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                         "scheme --script ../cli.sc read x.1 --wire --store " cstore
+                         "scheme --script ../core.sc read x.1 --wire --store " cstore
                          " --socket " csock " > /dev/null 2>&1"))
   (system (string-append "pkill -f " peer " 2>/dev/null"))
   (start-capture! seen-mcp)
@@ -1173,7 +1173,7 @@
 ;; five runs, each holding a socket and a log.
 ;;
 ;; NOTE: THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
-;; process's pid. A pattern like `serve` or `cli.sc` would also match the
+;; process's pid. A pattern like `serve` or `core.sc` would also match the
 ;; daemons of a suite running beside this one, and of another session
 ;; entirely.
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))

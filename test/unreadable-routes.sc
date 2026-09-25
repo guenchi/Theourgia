@@ -132,12 +132,12 @@
 (store-publish-hook! (lambda (state) (if #f #f)))
 
 (printf "== the eval worker's refusals after its load ==\n")
-;; cli.sc eval runs through eval-supervise and a worker; driven as
+;; core.sc eval runs through eval-supervise and a worker; driven as
 ;; test/eval-local.sc drives it, stdout read as the answer, stderr apart.
 (define (eval-answer store . args)
   (let ((out (string-append root "/eval.out"))
         (err (string-append root "/eval.err")))
-    (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../cli.sc eval "
+    (system (string-append "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval "
                            (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
                            "--store " store " --wire > " out " 2> " err))
     (let ((d (guard (e (#t (eof-object))) (call-with-port (open-input-file out) read))))
