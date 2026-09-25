@@ -232,8 +232,10 @@
        (local (begin (ask s 'insert "--under" "root" "--title" "A") (local-writer s)))
        (owner (string-append (wdir s local) "/owner.sexp")))
   (chmod! "000" owner)
-  (let ((v (caught (verify-instance s)))
-        (w (caught (ask s 'insert "--under" "root" "--title" "B"))))
+  ;; let*: the verify question is asked BEFORE the write, whose refusal is
+  ;; the second question; in one let the order was unspecified.
+  (let* ((v (caught (verify-instance s)))
+         (w (caught (ask s 'insert "--under" "root" "--title" "B"))))
     (chmod! "600" owner)
     (want "U8d verify-instance answers owner-unreadable"
           (if (and (pair? v) (pair? (cdr v))) (list (car v) (cadr v)) v)

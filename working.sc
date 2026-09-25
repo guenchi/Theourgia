@@ -26,7 +26,18 @@
           (only (theourgia log) store-writers writer-directory atomic-write!
                 directory-entry-durable!)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
-                process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!))
+                process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
+                entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
+                unreadable-entry-reason fs-error? fs-error-op fs-error-errno))
+
+  ;; NEVER: A DRAFT OR A DIRECTORY THIS PROCESS CANNOT READ IS NOT ONE THAT IS
+  ;; NOT THERE (U10, F77b). Presence is R1's question: absence (ENOENT,
+  ;; ENOTDIR) is #f, and any other failure raises unreadable-entry naming
+  ;; the path, which `problem` answers as working-unavailable with the path
+  ;; and the system's reason. Chez's file-exists? answered #f for a draft
+  ;; under an unreadable working/, so read --working gave the committed
+  ;; text and commit gave no-draft.
+  (define (present? p) (not (eq? (entry-type p) 'absent)))
 
   (define counter 0)
   (define (fresh-id)
@@ -35,9 +46,6 @@
                    (number->string (wall-clock-ms)) "-" (number->string counter)))
   (define (encode x)
     (string->utf8 (sexpr->string-extended (storable-encode x))))
-  (define (decode-file path)
-    (call-with-port (open-file-input-port path)
-      (lambda (p) (storable-decode (string->sexpr-extended (utf8->string (get-bytevector-all p)))))))
   (define (digest x) (bytevector->hex (sha256 (encode x))))
 
   ;; ---- the version is the content's name -----------------------------------
@@ -198,10 +206,15 @@
          (safe-id? (list-ref x 2)) (safe-id? (list-ref x 3))
          (string? (list-ref x 4)) (string? (list-ref x 5))
          (list? (list-ref x 6)) (bytevector? (list-ref x 7))))
+  ;; THE DRAFT'S BYTES ARE READ WITH R1's READ, then decoded (F77b review 1):
+  ;; a draft file this process cannot open raises unreadable-entry naming
+  ;; it, where Chez's open-file-input-port raised an i/o condition that the
+  ;; commit read as "no draft".
   (define (entry-at store writer id)
-    (let ((p (path-for store writer id)))
-      (and (file-exists? p)
-           (let ((x (decode-file p)))
+    (let* ((p (path-for store writer id))
+           (bytes (read-entry p)))
+      (and (not (eq? bytes 'absent))
+           (let ((x (storable-decode (string->sexpr-extended (utf8->string bytes)))))
              (unless (and (entry? x) (equal? writer (list-ref x 2)) (equal? id (list-ref x 3)))
                (assertion-violation 'working "Corrupt working envelope" p))
              ;; NEVER: RAISED, NOT RETURNED, so that every reader of an
@@ -218,6 +231,7 @@
   (define (problem thunk)
     (guard (e ((and (pair? e) (eq? 'working-error (car e)))
                (list 'error 'working-unavailable (list 'reason (cadr e))))
+              ((unreadable-entry? e) (unreadable-answer e))
               (#t (list 'error 'working-unavailable
                         (list 'message (if (message-condition? e) (condition-message e) "Working storage failed")))))
       (thunk)))
@@ -237,12 +251,19 @@
   (define (consumed? store state entry)
     (state-consumed? state (list-ref entry 2) (list-ref entry 4)))
 
+  (define (unreadable-answer e)
+    (list 'error 'working-unavailable
+          (list 'path (unreadable-entry-path e))
+          (list 'reason (unreadable-entry-reason e))))
+
+  ;; R1's listing: no working/ (absent, or not a directory) is no drafts, as
+  ;; before; one that cannot be listed raises unreadable-entry (U10).
   (define (active-entries store writer state)
-    (let ((dir (area store writer "working")))
-      (if (not (file-is-directory? dir)) '()
+    (let ((names (list-entries (area store writer "working"))))
+      (if (eq? names 'absent) '()
           (filter (lambda (e) (not (consumed? store state e)))
             (map (lambda (id) (entry-at store writer id))
-                 (filter block-name? (list-sort string<? (directory-entries dir))))))))
+                 (filter block-name? (list-sort string<? names)))))))
 
   ;; ONE CUT COVERS ANOTHER when it has reached at least as far along
   ;; every writer the other names. Two cuts that neither covers are
@@ -427,6 +448,11 @@
                   (let ((entry (list 'working 1 writer id version based-on cut body)))
                     (with-draft-lock store writer
                       (lambda ()
+                        ;; THE SLOT IS READ BEFORE IT IS WRITTEN (F77b review 2):
+                        ;; a draft there that cannot be read raises
+                        ;; unreadable-entry, and nothing replaces it unseen. A
+                        ;; readable one is replaced, as before.
+                        (read-entry (path-for store writer id))
                         (atomic-write! (path-for store writer id) (encode entry) 'working)))
                     (list 'ok (list 'restored id) (list 'writer writer)
                           (list 'version version) (list 'based-on based-on)))))))))))))) 
@@ -470,8 +496,11 @@
               ;; A DRAFT IS NAMED BY A BLOCK, and `block-name?` is what
               ;; says so -- `safe-id?` admits names no block can have.
               ((not (block-name? id)) '(error bad-request invalid-block-id))
+              ;; READ, NOT ONLY STATTED (F77b review 2): a draft this process
+              ;; cannot read raises unreadable-entry, and is not deleted unseen.
               (else (let ((p (path-for store writer id)))
-                      (when (file-exists? p) (unlink! p) (directory-entry-durable! p 'working))
+                      (unless (eq? (read-entry p) 'absent)
+                        (unlink! p) (directory-entry-durable! p 'working))
                       (list 'ok (list 'discarded id)))))))))))
 
   ;; "NOTHING TO COMMIT" IS READ, NOT STORED.
@@ -595,7 +624,7 @@
                              (list 'based-on (caddr item))
                              (list 'plan-event (cadr r)))))
                    (filter (lambda (r)
-                             (not (file-exists? (path-for store writer (car (car r))))))
+                             (not (present? (path-for store writer (car (car r))))))
                            (state-revoked state writer))))))))))))))
 
   ;; THE (block . version) PAIRS THIS REQUEST IS ABOUT.
@@ -750,7 +779,7 @@
         (and (pair? moved)
              (list 'behind (list-sort (lambda (a b) (string<? (car a) (car b))) moved))))))
 
-  (define (retire! store writer entries versions)
+  (define (retire! store writer entries versions landed?)
     ;; KEY: A PLACE TO STOP IN THE GAP THE COMPARISON BELOW IS FOR. The
     ;; envelopes were read at the top of the commit, and the store's
     ;; write session is already released by the time this runs -- so
@@ -762,24 +791,78 @@
     ;; agreed, with the lock already held, so nothing can get in. Armed
     ;; from here, a build that deletes whatever is in the slot and a
     ;; build that compares first stop being indistinguishable.
+    ;;
+    ;; NEVER: A COMMIT THAT LANDED KEEPS ITS ANSWER (U10, F77b; review 2).
+    ;; When something landed -- records, or an empty plan -- a cleanup that
+    ;; fails does not replace the answer: this returns #f or the first
+    ;; failure as (cleanup-failed (path p) (reason r)), and the commit adds
+    ;; it. When nothing landed, retiring runs as on the base: a lock that
+    ;; cannot be taken is the answer, and a draft that cannot be retired is
+    ;; not reported.
     (barrier! 'before-retire)
-    (with-draft-lock store writer
-      (lambda ()
-        (for-each (lambda (e)
-                    (guard (failure (#t #f))
-                      (when (and (member (cons (list-ref e 3) (list-ref e 4)) versions)
-                                 (equal? e (entry-at store writer (list-ref e 3))))
-                        ;; A STEP NOTHING CAN ARM READS LIKE A STEP THAT
-                        ;; PASSED. The whole point of the lock is that a
-                        ;; concurrent `write` WAITS here; without a place
-                        ;; to stop, a lockless build and this one are
-                        ;; indistinguishable from outside.
-                        (barrier! 'retire-locked)
-                        (let ((p (path-for store writer (list-ref e 3))))
-                          (when (file-exists? p)
-                            (unlink! p)
-                            (directory-entry-durable! p 'working))))))
-                  entries))))
+    (if landed?
+        (guard (failure (#t (cleanup-failed (lock-path store writer) failure)))
+          (with-draft-lock store writer
+            (lambda ()
+              (let loop ((es entries) (first #f))
+                (if (null? es)
+                    first
+                    (let ((failed (guard (failure (#t (cleanup-failed
+                                                        (path-for store writer (list-ref (car es) 3))
+                                                        failure)))
+                                    (retire-one! store writer (car es) versions))))
+                      (loop (cdr es) (or first failed))))))))
+        (with-draft-lock store writer
+          (lambda ()
+            (for-each (lambda (e) (guard (failure (#t #f)) (retire-one! store writer e versions)))
+                      entries)
+            #f))))
+
+  ;; -> #f, or (cleanup-failed ...) for a draft still there after its unlink.
+  (define (retire-one! store writer e versions)
+    (let ((p (path-for store writer (list-ref e 3))))
+      (if (and (member (cons (list-ref e 3) (list-ref e 4)) versions)
+               (equal? e (entry-at store writer (list-ref e 3))))
+          (begin
+            ;; A STEP NOTHING CAN ARM READS LIKE A STEP THAT PASSED. The whole
+            ;; point of the lock is that a concurrent `write` WAITS here;
+            ;; without a place to stop, a lockless build and this one are
+            ;; indistinguishable from outside.
+            (barrier! 'retire-locked)
+            (if (present? p)
+                (begin
+                  (unlink! p)
+                  ;; NEVER: ASKED AGAIN, NOT ASSUMED. unlink! is Chez's
+                  ;; delete-file, which answers #f and raises nothing when it
+                  ;; cannot delete (queued as F99: ffi's reach is every
+                  ;; caller); a draft still there after it is a cleanup that
+                  ;; failed.
+                  (if (present? p)
+                      (list 'cleanup-failed (list 'path p)
+                            (list 'reason "the draft file is still there after it was unlinked"))
+                      (begin (directory-entry-durable! p 'working) #f)))
+                #f))
+          #f)))
+
+  (define (cleanup-failed path failure)
+    (list 'cleanup-failed
+          (list 'path (if (unreadable-entry? failure) (unreadable-entry-path failure) path))
+          (list 'reason
+                (cond ((unreadable-entry? failure) (unreadable-entry-reason failure))
+                      ((fs-error? failure)
+                       (let ((op (fs-error-op failure)) (n (fs-error-errno failure)))
+                         (string-append (cond ((symbol? op) (symbol->string op))
+                                              ((string? op) op)
+                                              (else "an operation"))
+                                        " failed, errno "
+                                        (if (number? n) (number->string n) "unknown"))))
+                      ((and (condition? failure) (message-condition? failure))
+                       (condition-message failure))
+                      (else "the cleanup failed")))))
+
+  ;; An answer with the cleanup clause, when there is one, at its end.
+  (define (with-cleanup answer failed)
+    (if (and failed (pair? answer) (list? answer)) (append answer (list failed)) answer))
 
   (define (working-commit! store supplied ids actor supplied-req . rest)
     (needing-writer supplied (lambda ()
@@ -839,8 +922,17 @@
                                      (named (map car named))
                                      (else '())))
                     (read-failure #f)
+                    ;; A DRAFT THIS PROCESS COULD NOT READ, as opposed to one
+                    ;; that read and is damaged (U10, F77b): without --req the
+                    ;; first is answered before `no-draft`, because the draft
+                    ;; may be there. A damaged draft keeps its answers.
+                    (unreadable-failure #f)
                     (entries
-                      (guard (e (#t (set! read-failure
+                      (guard (e ((unreadable-entry? e)
+                                 (set! read-failure (unreadable-answer e))
+                                 (set! unreadable-failure #t)
+                                 '())
+                                (#t (set! read-failure
                                           (if (and (pair? e) (eq? 'working-error (car e)))
                                               (list 'error 'working-unavailable (list 'reason (cadr e)))
                                               (list 'error 'working-unavailable
@@ -1003,6 +1095,7 @@
                     ((and supplied-req (pair? ids) (pair? (versions-missing ids pairs)))
                      (list 'error 'bad-request 'req-needs-versions
                            (cons 'blocks (versions-missing ids pairs))))
+                    ((and (not supplied-req) unreadable-failure) read-failure)
                     ((and (not supplied-req) (pair? missing))
                      (list 'error 'no-draft (cons 'blocks missing)))
                     ;; NOTHING TO DO AND NO IDENTITY TO REMEMBER IT BY.
@@ -1038,10 +1131,9 @@
                      ;; the person is owed the same fact. Nothing was
                      ;; appended, so the cut this verb opened with is the
                      ;; current one.
-                     (begin
-                       (retire! store writer entries pairs)
-                       (let ((behind (behind-item (reduce-applied-cut state) writer entries)))
-                         (if behind (list 'ok '(items) behind) '(ok (items))))))
+                     (let* ((failed (retire! store writer entries pairs #f))
+                            (behind (behind-item (reduce-applied-cut state) writer entries)))
+                       (with-cleanup (if behind (list 'ok '(items) behind) '(ok (items))) failed)))
                     ((and (not supplied-req) read-failure) read-failure)
                     (else
                      ;; WHAT THIS COMMIT CONSUMES, SAID IN THE RECORD.
@@ -1072,7 +1164,15 @@
                              ;; "v2 text" until the retry arrived.
                              (let ((replay? (exists (lambda (a) (equal? '(replay #t) (assq 'replay (cdr a))))
                                                     answers)))
-                               (unless replay? (retire! store writer entries pairs))
+                               ;; A DRAFT THAT COULD NOT BE READ COULD NOT BE RETIRED
+                               ;; (F77b review 3). Its read failure emptied `entries`,
+                               ;; so retire! has nothing to report; when the commit
+                               ;; landed -- a completion bypasses the preflight -- that
+                               ;; failure is the cleanup clause, with its path and reason.
+                               (let ((failed (and (not replay?)
+                                                  (or (retire! store writer entries pairs #t)
+                                                      (and unreadable-failure
+                                                           (cons 'cleanup-failed (cddr read-failure)))))))
                                ;; KEY: THE CUT IS THE ONE THE WRITE PRODUCED, not the
                                ;; one this verb opened with. They differ, and the
                                ;; difference is the whole answer: appending this
@@ -1095,8 +1195,10 @@
                                                   live
                                                   (behind-item (reduce-applied-cut live)
                                                                writer entries))))
-                                 (if behind
-                                     (list 'ok (cons 'items answers) behind)
-                                     (list 'ok (cons 'items answers))))))
+                                 (with-cleanup
+                                   (if behind
+                                       (list 'ok (cons 'items answers) behind)
+                                       (list 'ok (cons 'items answers)))
+                                   failed)))))
                            (if (= (length answers) 1) (car answers) (batch-answer answers))))))))))))))))
 )

@@ -54,23 +54,16 @@
   ("log.sc" (open-load) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("log.sc" (metadata-flush!) file-exists? 1 convert b "metadata-flush!: the delivery barrier (R1a)")
   ("log.sc" (read-instance) file-exists? 1 keep a "not writer layout: store instance.sexp")
-  ("log.sc" (owner-nonce) file-exists? 1 convert b "owner-nonce reads the local writer owner.sexp (R2g)")
   ("log.sc" (machine-id) file-exists? 2 keep a "not writer layout: machine home machine-id")
   ("log.sc" (ensure-machine-home!) file-is-directory? 1 keep a "not writer layout: machine home")
-  ("log.sc" (read-registry) file-exists? 1 keep a "not writer layout: machine registry (R2h: non-upgrading read is b)")
   ("log.sc" (registry-inside-store?) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("log.sc" (local-writer-name) file-exists? 1 convert b "local-writer-name scans owner.sexp (R2g)")
-  ("log.sc" (writer-history) file-exists? 1 convert b "writer-history reads segments (publish)")
   ("log.sc" (segment-range) file-exists? 1 convert b "segment-range (publish)")
   ("log.sc" (ensure-directory!) file-is-directory? 1 convert b "ensure-directory! under the writer (incoming/quarantine)")
   ("log.sc" (overwrite-segment!) file-exists? 1 convert b "overwrite-segment! target")
   ("log.sc" (evidence-path) file-exists? 1 convert b "evidence-path under incoming/")
-  ("log.sc" (quarantine!) file-exists? 1 convert b "quarantine! target")
-  ("log.sc" (kept-content-ok?) file-exists? 1 convert b "kept-content-ok?: retained candidate (R1a hard case)")
-  ("log.sc" (keep-incoming!) file-exists? 1 convert b "keep-incoming! marker")
   ("log.sc" (barrier-artefacts) file-exists? 1 convert b "barrier-artefacts: recovery barrier inventory (Implementation checks)")
   ("log.sc" (ensure-writer-directory!) file-is-directory? 1 convert b "ensure-writer-directory! (publish)")
-  ("log.sc" (publish-validated!) file-exists? 1 convert b "publish-validated! local segment")
   ("log.sc" (active-current-segment?) file-exists? 1 convert b "active-current-segment? owner.sexp (R2d, publish)")
   ("log.sc" (generation-present?) file-exists? 1 convert b "generation-present? (adopt)")
   ("log.sc" (retired-put-clause!) file-exists? 1 convert b "retired-put-clause! (adopt)")
@@ -88,18 +81,12 @@
   ("project.sc" (md-files) file-is-directory? 1 keep a "not writer layout: import-md input dir")
   ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
   ("rpc.sc" (no-store?) file-exists? 1 keep a "not writer layout: store meta.sexp")
-  ("rpc.sc" (verb-table) file-exists? 1 convert b "publish candidate path (R1a: absent = no-candidate, else candidate-unreadable)")
   ("store.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("store.sc" (foreign-writer) file-exists? 1 convert b "foreign-writer scans owner.sexp at init")
   ("store.sc" (store-init!) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("store.sc" (check-snapshots) file-exists? 1 keep a "not writer layout: snapshot dir in check (check is a)")
   ("working.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("working.sc" (writer-for) file-exists? 2 convert b "writer-for owner.sexp and retired.sexp")
-  ("working.sc" (entry-at) file-exists? 1 convert b "entry-at draft file")
-  ("working.sc" (active-entries) file-is-directory? 1 convert b "active-entries PROPAGATES (R1a)")
-  ("working.sc" (working-discard!) file-exists? 1 convert b "working-discard! draft file")
-  ("working.sc" (working-list) file-exists? 1 convert b "working-list draft path")
-  ("working.sc" (retire!) file-exists? 1 convert b "retire!: post-commit cleanup (R1a FACT)")
   )
 
 (handlers
@@ -513,10 +500,40 @@
    unrelated a
    "store instance.sexp"
    (e (#t (quote malformed))))
+  ("log.sc" (owner-nonce-or-refusal) 1 guard
+   ((unreadable-entry? e))
+   refuse b
+   "verify-instance's owner read: an owner.sexp that cannot be read is an owner-unreadable record, which verify-instance answers as (refused owner-unreadable (path p) (reason r)) (R2i, U8d, F77b)"
+   (e ((unreadable-entry? e) (make-owner-unreadable (unreadable-entry-path e) (unreadable-entry-reason e)))))
+  ("log.sc" (inventory-read-failure) 1 guard
+   ((unreadable-entry? e) #t)
+   propagate b
+   "adopt's inventory asks each discovery only for read failures: unreadable-entry propagates to the refusal; any other condition from a readable file is left to adopt's own path, as on the base (F77b review 2)"
+   (e ((unreadable-entry? e) (raise e)) (#t #f)))
+  ("log.sc" (adopt-preflight) 1 guard
+   ((unreadable-entry? e))
+   refuse b
+   "adopt's whole-store inventory: a read that fails refuses by name (registry-unreadable or metadata-unreadable) before any write (R2h, K13, F77b review 1)"
+   (e ((unreadable-entry? e) (unreadable-refusal (if (equal? (unreadable-entry-path e) (registry-path)) (quote registry-unreadable) (quote metadata-unreadable)) e))))
+  ("log.sc" (unreadable-metadata) 1 guard
+   ((unreadable-entry? e))
+   refuse b
+   "the append gate lists the writer's directory first, and names it when it cannot be listed (R4, U2b, F77b)"
+   (e ((unreadable-entry? e) (list (unreadable-entry-path e) (unreadable-entry-reason e)))))
+  ("log.sc" (metadata-flush!) 1 guard
+   ((unreadable-entry? e))
+   fact b
+   "the metadata barrier skips a writer whose directory cannot be listed, traced as barrier-skipped-unreadable, as the delivery barrier does (K9; U2c mode 100, F77b)"
+   (e ((unreadable-entry? e) #f)))
+  ("rpc.sc" (verb-table) 1 guard
+   ((unreadable-entry? e))
+   refuse b
+   "publish's candidate: absent is no-candidate, any other failure is candidate-unreadable with the path and reason (U9, F77b)"
+   (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (owner-nonce) 1 guard
    (#t)
-   refuse b
-   "owner-nonce (R2g/R2i)"
+   fact b
+   "owner-nonce: a file that was read and does not parse answers #f, as it did; the read itself is R1's and outside this guard (F77b review 1)"
    (e (#t #f)))
   ("log.sc" (machine-id) 1 guard
    (#t)
@@ -533,10 +550,10 @@
    unrelated a
    "store id"
    (e (#t #f)))
-  ("log.sc" (read-registry) 1 guard
+  ("log.sc" (registry-as-read) 1 guard
    (#t)
    unrelated b
-   "read-registry parses the machine registry (machine home)"
+   "registry-as-read parses the machine registry (machine home); read-registry upgrades what it reads"
    (e (#t (quote malformed))))
   ("log.sc" (with-machine-lock) 1 guard
    (#t)
@@ -589,11 +606,16 @@
    "quarantine!: an existing marker that will not read refuses before any write (an assertion today; becomes the typed refusal)"
    (e (#t (quote unreadable))))
   ("log.sc" (kept-content-ok?) 1 guard
-   (#t)
+   ((unreadable-entry? e))
    refuse b
-   "kept-content-ok? (R1a hard case)"
-   (e (#t #f)))
+   "kept-content-ok?: a retained candidate that cannot be read is answered as (unreadable path reason), and keep-incoming! refuses kept-unreadable with no rename over it (U9, F77b)"
+   (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
   ("log.sc" (keep-incoming!) 1 guard
+   ((unreadable-entry? e))
+   refuse b
+   "keep-incoming! asks the .ok marker's presence (entry-type) before any staging -- existence, as the base; only a stat that fails refuses kept-unreadable, with nothing written (F77b reviews 1-3)"
+   (e ((unreadable-entry? e) (list (quote unreadable) (unreadable-entry-path e) (unreadable-entry-reason e)))))
+  ("log.sc" (keep-incoming!) 2 guard
    (#t)
    unrelated a
    "cleanup"
@@ -924,10 +946,10 @@
    "line parse"
    (e (#t parse-failed)))
   ("working.sc" (problem) 1 guard
-   ((and (pair? e) (eq? (quote working-error) (car e))) #t)
+   ((and (pair? e) (eq? (quote working-error) (car e))) (unreadable-entry? e) #t)
    fact b
-   "working-unavailable with the reason"
-   (e ((and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e)))) (#t (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))))))
+   "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10, F77b)"
+   (e ((and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e)))) ((unreadable-entry? e) (unreadable-answer e)) (#t (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))))))
   ("working.sc" (working-write!) 1 guard
    (#t)
    propagate b
@@ -951,13 +973,23 @@
   ("working.sc" (retire!) 1 guard
    (#t)
    fact b
-   "retire!: cleanup-failed clause (R1a)"
-   (failure (#t #f)))
-  ("working.sc" (working-commit!) 1 guard
+   "retire!: the draft lock cannot be taken -- the commit keeps its answer and carries (cleanup-failed (path draft.lock) (reason r)) (U10, F77b)"
+   (failure (#t (cleanup-failed (lock-path store writer) failure))))
+  ("working.sc" (retire!) 2 guard
    (#t)
    fact b
-   "DEFERRED FACT to preflight (R1a)"
-   (e (#t (set! read-failure (if (and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "A draft could not be read"))))) (quote ()))))
+   "retire!, a commit that landed: one draft could not be retired -- the first such failure is the commit's (cleanup-failed (path p) (reason r)) clause (U10, F77b; review 2)"
+   (failure (#t (cleanup-failed (path-for store writer (list-ref (car es) 3)) failure))))
+  ("working.sc" (retire!) 3 guard
+   (#t)
+   fact b
+   "retire!, a commit that landed nothing: a draft that could not be retired is not reported, as on the base (F77b review 2)"
+   (failure (#t #f)))
+  ("working.sc" (working-commit!) 1 guard
+   ((unreadable-entry? e) #t)
+   fact b
+   "DEFERRED FACT to preflight (R1a); an unreadable-entry is also marked, so a commit without --req answers working-unavailable before no-draft (U10, F77b)"
+   (e ((unreadable-entry? e) (set! read-failure (unreadable-answer e)) (set! unreadable-failure #t) (quote ())) (#t (set! read-failure (if (and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "A draft could not be read"))))) (quote ()))))
   ("working.sc" (working-commit!) 2 guard
    (#t)
    fact b

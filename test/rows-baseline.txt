@@ -112,9 +112,12 @@ store1 51 66 60ea5b7c1022ea51ccbdb9acef1bc037
 structure-strings 4 8 e9948e0441eac7da9f6d41a47b75406a
 subtree 15 19 f89a5a8b5fda310b52497f5543d14aa4
 tmp-paths 47 93 55d4b73ba5810cf5606833e3b7d4a0c5
+unreadable-adopt 34 47 0c0174935a6731998868a16b89d2a2be
 unreadable-census 23 28 992ff82d02289cc294af8301ff86f939
+unreadable-drafts 16 24 629bbd6c81e9d9af8af1fe25ff47c1ec
+unreadable-publish 12 20 6b80679017bfaea17e88094291717766
 unreadable-routes 12 19 6adaa1a225e3402eda6200a0e684b9a6
-unreadable-writer 77 105 16b02d1635c8ce09e5843655b69beff7
+unreadable-writer 77 105 a2705290cd30563601d94f4d4fef6f9e
 unscoped-lock 2 11 0bc39c12567c9dde5dff75237df153c7
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9

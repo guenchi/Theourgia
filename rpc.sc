@@ -48,6 +48,7 @@
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
           (only (theourgia datum-code) datum-source-read)
+          (only (theourgia ffi) read-entry)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -1042,16 +1043,24 @@
                           (usage form)
                           (guarded
                             (lambda ()
+                              ;; NEVER: A CANDIDATE THAT CANNOT BE READ IS NOT A
+                              ;; CANDIDATE THAT IS NOT THERE (U9, F77b). R1's read:
+                              ;; ENOENT and ENOTDIR are no-candidate as before,
+                              ;; and any other failure is candidate-unreadable
+                              ;; with the path and the system's reason.
                               (let* ((path (caddr args))
-                                     (bytes (and (file-exists? path)
-                                                 (call-with-port (open-file-input-port path)
-                                                   (lambda (in)
-                                                     (let ((b (get-bytevector-all in)))
-                                                       (if (eof-object? b)
-                                                           (make-bytevector 0)
-                                                           b)))))))
-                                (if (not bytes)
-                                    (list 'error 'no-candidate (list 'path path))
+                                     (bytes (guard (e ((unreadable-entry? e)
+                                                       (list 'unreadable (unreadable-entry-path e)
+                                                             (unreadable-entry-reason e))))
+                                              (let ((b (read-entry path)))
+                                                (and (not (eq? b 'absent)) b)))))
+                                (cond
+                                  ((not bytes)
+                                   (list 'error 'no-candidate (list 'path path)))
+                                  ((pair? bytes)
+                                   (list 'error 'candidate-unreadable
+                                         (list 'path (cadr bytes)) (list 'reason (caddr bytes))))
+                                  (else
                                     (let* ((sha (if (= 4 (length args))
                                                     (cadddr args)
                                                     (segment-sha bytes)))
@@ -1059,7 +1068,7 @@
                                       (if (publish-durable? a)
                                           (cons 'ok (list a))
                                           (cons 'error
-                                                (if (eq? (car a) 'error) (cdr a) (list a)))))))))))))))
+                                                (if (eq? (car a) 'error) (cdr a) (list a))))))))))))))))
       (cons 'outline
             (lambda (store actor args req options state writer cwd)
               (let ((depth (argument-option options "--depth")) (rest args))

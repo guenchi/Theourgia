@@ -2413,32 +2413,43 @@
     (let ((any (vector #f)))
       (for-each
         (lambda (w)
-          (let ((dir (writer-directory store w))
-                (touched (vector #f)))
-            (for-each
-              (lambda (name)
-                ;; A FILE THAT WILL NOT OPEN IS NOT FLUSHED HERE. Trying
-                ;; would raise out of a barrier that every session start
-                ;; runs, taking the whole store down for one writer's
-                ;; unreadable metadata. It is already recorded as
-                ;; unreadable where that fact belongs -- the reading side
-                ;; stops that writer, the writing side refuses its next
-                ;; append -- and neither of those can happen if this
-                ;; raises first.
-                (let ((version (file-version store w name)))
-                  (when (and version
-                             (not (unreadable-version? version))
-                             (not (equal? version (remembered w name))))
-                    (flush-file! (writer-file store w name) stage)
-                    (remember! w name version)
-                    (vector-set! touched 0 #t))))
-              metadata-files)
-            ;; The namespace entry as well as the contents: a version
-            ;; whose file is flushed but whose name is not is a version
-            ;; that can vanish whole.
-            (when (vector-ref touched 0)
-              (fsync-dir! dir stage)
-              (vector-set! any 0 #t))))
+          ;; NEVER: A WRITER WHOSE DIRECTORY CANNOT BE LISTED IS SKIPPED, as
+          ;; the delivery barrier skips it (K9), and traced the same way.
+          ;; Searchable but not readable (--x), its files still read, so
+          ;; they were flushed and then the directory itself was opened to
+          ;; fsync it -- which needs read permission, and raised
+          ;; durable-error out of every write beside such a mirror (F77b,
+          ;; U2c mode 100). Its discovery already reports it unreadable.
+          (if (guard (e ((unreadable-entry? e) #f))
+                (list-entries (writer-directory store w))
+                #t)
+              (let ((dir (writer-directory store w))
+                    (touched (vector #f)))
+                (for-each
+                  (lambda (name)
+                    ;; A FILE THAT WILL NOT OPEN IS NOT FLUSHED HERE. Trying
+                    ;; would raise out of a barrier that every session
+                    ;; start runs, taking the whole store down for one
+                    ;; writer's unreadable metadata. It is already recorded
+                    ;; as unreadable where that fact belongs -- the reading
+                    ;; side stops that writer, the writing side refuses its
+                    ;; next append -- and neither of those can happen if
+                    ;; this raises first.
+                    (let ((version (file-version store w name)))
+                      (when (and version
+                                 (not (unreadable-version? version))
+                                 (not (equal? version (remembered w name))))
+                        (flush-file! (writer-file store w name) stage)
+                        (remember! w name version)
+                        (vector-set! touched 0 #t))))
+                  metadata-files)
+                ;; The namespace entry as well as the contents: a version
+                ;; whose file is flushed but whose name is not is a version
+                ;; that can vanish whole.
+                (when (vector-ref touched 0)
+                  (fsync-dir! dir stage)
+                  (vector-set! any 0 #t)))
+              (trace-event! 'barrier-skipped-unreadable w #f)))
         (store-writers store))
       ;; P1: THE WRITERS DIRECTORY ITSELF. A writer directory that
       ;; appeared mid-session has its own entry in writers/, and flushing
@@ -2497,7 +2508,19 @@
             (else (segment-sha r)))))
 
   ;; Which of this writer's metadata files cannot be read, if any.
+  ;; NEVER: THE DIRECTORY IS LISTED FIRST, as R1's listing (R4; F77b). A
+  ;; directory whose permission was lost after the session opened fails
+  ;; every file below it, and each file's read names the file, not the
+  ;; directory that is the cause. Listing it names the directory and its
+  ;; reason; absence is left to the reads below, as before.
   (define (unreadable-metadata store writer)
+    (or (guard (e ((unreadable-entry? e)
+                   (list (unreadable-entry-path e) (unreadable-entry-reason e))))
+          (list-entries (writer-directory store writer))
+          #f)
+        (unreadable-metadata-file store writer)))
+
+  (define (unreadable-metadata-file store writer)
     (let loop ((names metadata-files))
       (cond
         ((null? names) #f)
@@ -2676,6 +2699,7 @@
         (else (loop (cdr xs))))))
 
   ;; -> ok | (mismatch field) | absent | malformed
+  ;;    | (refused owner-unreadable (path p) (reason r))
   (define (verify-instance store)
     (let ((d (read-instance store)))
       (cond
@@ -2696,10 +2720,30 @@
                ;; refused a restored log is simply not found. owner.sexp
                ;; records which instance the writer belongs to; the two
                ;; must agree.
-               ((let ((owned (owner-nonce store)))
-                  (and owned (not (equal? owned (alist-ref d 'nonce)))))
-                (list 'mismatch 'nonce))
-               (else 'ok))))))))
+               (else
+                (let ((owned (owner-nonce-or-refusal store)))
+                  (cond
+                    ((owner-unreadable? owned)
+                     (list 'refused 'owner-unreadable
+                           (list 'path (owner-unreadable-path owned))
+                           (list 'reason (owner-unreadable-reason owned))))
+                    ((and owned (not (equal? owned (alist-ref d 'nonce))))
+                     (list 'mismatch 'nonce))
+                    (else 'ok)))))))))))
+
+  ;; -> the owner's nonce, #f, or an owner-unreadable record. "Is this
+  ;; instance's ownership assertion intact?" cannot be answered yes or no
+  ;; when the assertion cannot be read (R2i), so verify-instance answers
+  ;; (refused owner-unreadable (path p) (reason r)) itself, and each of its
+  ;; callers gives that as its own answer.
+  ;; NEVER: THE REFUSAL IS A RECORD, NOT A LIST (F77b review 1). A nonce is
+  ;; whatever datum owner.sexp holds, and a list headed `refused` made a
+  ;; readable owner whose nonce was such a list answer as a refusal.
+  (define-record-type owner-unreadable (fields path reason))
+  (define (owner-nonce-or-refusal store)
+    (guard (e ((unreadable-entry? e)
+               (make-owner-unreadable (unreadable-entry-path e) (unreadable-entry-reason e))))
+      (owner-nonce store)))
 
 ;; THE HEAD'S OWNER, not whichever writer happens to sort first. After
   ;; an identity-mismatch adopt the store holds owners from two
@@ -2709,13 +2753,19 @@
   ;; had just adopted failing its own identity check forever, because
   ;; the answer came from a generation that had been superseded.
   ;; "Which writer is this machine's" has one supplier.
+  ;; NEVER: AN OWNER THAT CANNOT BE READ IS NOT AN OWNER THAT IS NOT THERE
+  ;; (R2g, R2i; F77b). The read is the R1 operation: absence answers #f as
+  ;; before, and any other failure raises unreadable-entry naming
+  ;; owner.sexp, which verify-instance answers as owner-unreadable. Only a
+  ;; file that was read and does not parse still answers #f, as it did.
   (define (owner-nonce store)
     (let ((head (local-writer-name store)))
       (and head
            (let* ((path (writer-file store head "owner.sexp"))
-                  (d (and (file-exists? path)
+                  (bytes (read-entry path))
+                  (d (and (not (eq? bytes 'absent))
                           (guard (e (#t #f))
-                            (string->sexpr-extended (utf8->string (read-whole path)))))))
+                            (string->sexpr-extended (utf8->string bytes))))))
              (and d (alist-ref d 'instance))))))
 
   ;; The machine's own identity: a name plus a nonce minted once and kept
@@ -2854,17 +2904,28 @@
   ;; EVERY CALLER HOLDS THE MACHINE LOCK, which is what lets this upgrade
   ;; an old registry in place rather than teach every reader two shapes.
   (define (read-registry)
-    (let ((path (registry-path)))
-      (trace-event! 'registry-check path #f)
-      (if (not (file-exists? path))
+    (upgraded-registry (registry-as-read)))
+
+  ;; THE REGISTRY AS IT IS ON DISK, NOT UPGRADED AND NEVER WRITTEN (R2h,
+  ;; F77b). A read that upgrades a legacy registry writes it,
+  ;; and a preflight must not write: adopt and its continuation decide on
+  ;; this reading, and the upgrade happens, if at all, through
+  ;; read-registry after every read has passed.
+  ;; R1's read (F77b review 1): absent is the empty registry, as before, and
+  ;; a registry this process cannot read raises unreadable-entry naming it;
+  ;; only one that was read and does not parse is registry-malformed.
+  (define (registry-as-read)
+    (let* ((path (registry-path))
+           (bytes (begin (trace-event! 'registry-check path #f) (read-entry path))))
+      (if (eq? bytes 'absent)
           '()
           (let ((d (guard (e (#t 'malformed))
-                     (string->sexpr-extended (utf8->string (read-whole path))))))
+                     (string->sexpr-extended (utf8->string bytes)))))
             (cond
               ((eq? d 'malformed)
                (raise (make-log-error 'registry-malformed #f #f #f
                                       (list (cons 'path path)))))
-              ((list? d) (upgraded-registry d))
+              ((list? d) d)
               (else
                (raise (make-log-error 'registry-malformed #f #f #f
                                       (list (cons 'path path))))))))))
@@ -3190,7 +3251,9 @@
           out
           (let* ((path (string-append (writer-directory store writer)
                                       "/" (segment-file-name (car ns))))
-                 (rs (if (file-exists? path) (segment-records (read-whole path)) '())))
+                 ;; R1's read (F77b review 2): a sibling segment this store
+                 ;; cannot read raises unreadable-entry naming it.
+                 (rs (let ((b (read-entry path))) (if (eq? b 'absent) '() (segment-records b)))))
             (loop (cdr ns)
                   (append out
                           (map (lambda (r) (cons (rec-seq r) (rec-bytes r)))
@@ -3488,12 +3551,16 @@
   ;; fork exists and is not known, and nothing may be written over it.
   (define (quarantine! store writer seq theirs ours)
     (let* ((path (writer-file store writer "quarantine.sexp"))
+           ;; R1's read (F77b review 2): a quarantine.sexp that cannot be
+           ;; read raises unreadable-entry naming it; one that reads and does
+           ;; not parse keeps the assertion below, as on the base.
+           (bytes (read-entry path))
            (existing
-             (if (not (file-exists? path))
+             (if (eq? bytes 'absent)
                  'absent
                  (let ((d (guard (e (#t 'unreadable))
                             (string->sexpr-extended
-                              (utf8->string (read-whole path))))))
+                              (utf8->string bytes)))))
                    (if (list? d)
                        (let ((f (alist-ref d 'fork)))
                          (if (integer? f) f 'unreadable))
@@ -3523,10 +3590,20 @@
   ;; a truncation is the likely damage and a length check would catch it,
   ;; but a file of the right length and the wrong content is the damage
   ;; that a length check reads as healthy.
+  ;; -> #t, #f, or (unreadable <path> <reason>).
+  ;; NEVER: A RETAINED CANDIDATE THAT CANNOT BE READ IS NOT ONE THAT IS NOT
+  ;; THERE (U9, F77b). Read with a catch-all, it answered #f and the keep
+  ;; wrote a new file and renamed it over the one it could not read --
+  ;; replacing evidence nobody had looked at. The read is R1's: absence is
+  ;; #f, and any other failure is answered, so the keep can refuse.
   (define (kept-content-ok? path sha)
-    (and (file-exists? path)
-         (let ((held (guard (e (#t #f)) (read-whole path))))
-           (and held (string=? sha (segment-sha held))))))
+    (let ((held (guard (e ((unreadable-entry? e)
+                           (list 'unreadable (unreadable-entry-path e)
+                                 (unreadable-entry-reason e))))
+                  (read-entry path))))
+      (cond ((eq? held 'absent) #f)
+            ((pair? held) held)
+            (else (string=? sha (segment-sha held))))))
 
   (define (keep-incoming! store writer segment bytes sha why)
     (let* ((dir (string-append (writer-directory store writer) "/incoming"))
@@ -3545,21 +3622,36 @@
       ;; overwriting leaves neither the old bytes nor the new ones. The
       ;; candidate is staged under a temporary name, flushed, and renamed
       ;; over -- so the name only ever appears with whole content.
-      (unless (kept-content-ok? kept sha)
-        (let ((tmp (temp-name-for kept)))
-          (let ((fd (fd-open tmp '(write create))))
-            (dynamic-wind void
-              (lambda ()
-                (parameterize ((theourgia-stage 'publish))
-                  (write-all! fd bytes tmp)
-                  (fsync! fd tmp 'publish)))
-              (lambda () (guard (e (#t (void))) (fd-close fd)))))
-          (rename-over! tmp kept))
-        ;; the candidate is durable, file and name, BEFORE the verdict
-        (directory-entry-durable! kept 'publish))
-      (unless (file-exists? marker)
-        (atomic-write! marker (make-bytevector 0) 'publish))
-      (list why (list 'kept kept) (list 'writer writer) (list 'segment segment))))
+      ;; EVERY READ BEFORE ANY WRITE (F77b review 1): the marker's status is
+      ;; read here, not after the candidate has been replaced, so a marker
+      ;; this store cannot read refuses before anything is staged.
+      ;; THE MARKER'S MEANING IS ITS EXISTENCE, so it is asked with R1's
+      ;; type question, not read (review 2): present in any form is present,
+      ;; as the base's file-exists? said; only a stat that fails refuses.
+      (let* ((marker-state (guard (e ((unreadable-entry? e)
+                                      (list 'unreadable (unreadable-entry-path e)
+                                            (unreadable-entry-reason e))))
+                             (entry-type marker)))
+             (status (if (pair? marker-state) marker-state (kept-content-ok? kept sha))))
+        (if (pair? status)
+            (list 'refused 'kept-unreadable
+                  (list 'path (cadr status)) (list 'reason (caddr status)))
+            (begin
+              (unless status
+                (let ((tmp (temp-name-for kept)))
+                  (let ((fd (fd-open tmp '(write create))))
+                    (dynamic-wind void
+                      (lambda ()
+                        (parameterize ((theourgia-stage 'publish))
+                          (write-all! fd bytes tmp)
+                          (fsync! fd tmp 'publish)))
+                      (lambda () (guard (e (#t (void))) (fd-close fd)))))
+                  (rename-over! tmp kept))
+                ;; the candidate is durable, file and name, BEFORE the verdict
+                (directory-entry-durable! kept 'publish))
+              (when (eq? marker-state 'absent)
+                (atomic-write! marker (make-bytevector 0) 'publish))
+              (list why (list 'kept kept) (list 'writer writer) (list 'segment segment)))))))
 
   ;; ---- uncertain intervals (section 7.3) ------------------------------------
 
@@ -3939,7 +4031,10 @@
     (ensure-writer-directory! store writer)
     (let* ((dir (writer-directory store writer))
            (target (string-append dir "/" (segment-file-name segment)))
-           (local-bytes (and (file-exists? target) (read-whole target)))
+           ;; R1's read (F77b): a local copy this store cannot read raises
+           ;; unreadable-entry naming it, which every route answers by
+           ;; name; it is not a missing copy, and not an internal error.
+           (local-bytes (let ((b (read-entry target))) (and (not (eq? b 'absent)) b)))
            (local-rs (if local-bytes (segment-records local-bytes) '()))
            (cand-rs (segment-records bytes))
            (history (writer-history store writer)))
@@ -4632,7 +4727,18 @@
 
   ;; CONTINUATION IS AUTOMATIC AND NEEDS NOBODY. Every crash state maps
   ;; to one action; the gate runs first.
+  ;; NEVER: THE CONTINUATION READS THE WHOLE STORE BEFORE ITS FIRST WRITE,
+  ;; ACROSS THE WHOLE CALL (R2h, F77b). A per-generation check would cancel
+  ;; an earlier generation -- a registry write -- before refusing at a later
+  ;; one, and reading the registry the ordinary way upgrades a legacy one,
+  ;; which writes. It asks adopt-inventory, as adopt does: a refusal from
+  ;; verify-instance or a discovery is its answer, and a read that fails
+  ;; raises unreadable-entry naming the file, with nothing written.
   (define (continue-adopt! store)
+    (or (adopt-inventory store)
+        (continue-adopt-read! store)))
+
+  (define (continue-adopt-read! store)
     (let* ((store-id (store-id-of store))
            (instance (instance-nonce store))
            (reg (with-machine-lock (lambda () (read-registry))))
@@ -4768,7 +4874,102 @@
         (release-store! store)
         answer)))
 
+  ;; ---- reading before writing (R2h, K13; F77b) --------------------------------
+  ;;
+  ;; NEVER: EVERY READ ADOPT DEPENDS ON HAPPENS BEFORE ITS FIRST WRITE, and a
+  ;; read that fails refuses by name before anything is touched. adopt-needed?
+  ;; reads the registry (a legacy one is upgraded, which writes), an identity
+  ;; mismatch installs a new instance.sexp, and the retirement is written
+  ;; before the cache is read -- each of those came before a refusal that
+  ;; could only then find it could not read something.
+  ;;
+  ;; KEY: UNREADABLE IS NOT DAMAGED (K13). A segment or metadata file this
+  ;; process cannot read leaves a read-failure note on the local writer's
+  ;; discovery, and adopt-needed? would read that as damage and retire the
+  ;; writer at its readable prefix -- permanently discarding a history that
+  ;; is intact and returns with the permission. Adopt refuses such a writer.
+
+  ;; -> #f, or the refusal adopt answers: (refused <kind> (path p) (reason r)),
+  ;; kind owner-unreadable (verify-instance's own answer), segment-unreadable
+  ;; or metadata-unreadable.
+  (define (adopt-preflight store)
+    (guard (e ((unreadable-entry? e)
+               (unreadable-refusal (if (equal? (unreadable-entry-path e) (registry-path))
+                                       'registry-unreadable
+                                       'metadata-unreadable)
+                                   e)))
+      (adopt-inventory store)))
+
+  ;; KEY: THE WHOLE STORE IS READ, NOT A LIST OF WHAT ADOPT IS THOUGHT TO
+  ;; REACH (F77b review 1). A list of the head's files missed the registry,
+  ;; a predecessor's retirement, a successor's owner, and the continuation's
+  ;; discovery -- each a read that an adopt path makes after a write. So:
+  ;; verify-instance (its refusal is the answer), the registry with R1's
+  ;; read and no upgrade, and every writer's discovery read failures and its
+  ;; owner, uncertainty and retirement files with R1's read. A writer that
+  ;; is only a mirror is read too: the chain, imported-history? and
+  ;; resume-uncertain! read other writers' files on their way, so an adopt
+  ;; that cannot read them cannot know its writes are safe.
+  ;; A discovery is asked only for READ failures (F77b review 2): an
+  ;; unreadable-entry propagates and a read-failure note refuses, but any
+  ;; other condition -- a readable file that does not parse, say a mirror's
+  ;; quarantine.sexp holding ((fork bad)) -- is not a read failure, and is
+  ;; left to adopt's own path, as on the base, which never read mirrors.
+  (define (inventory-read-failure store writer)
+    (let ((p (guard (e ((unreadable-entry? e) (raise e)) (#t #f))
+               (discover-prefix store writer 'held-exclusive))))
+      (and p (read-failure-refusal p))))
+
+  ;; -> #f, a refusal answer, or a raised unreadable-entry naming the file.
+  (define (adopt-inventory store)
+    (let ((v (verify-instance store)))
+      (if (and (pair? v) (eq? (car v) 'refused))
+          v
+          (begin
+            (with-machine-lock (lambda () (registry-as-read)))
+            (let loop ((ws (store-writers store)))
+              (cond
+                ((null? ws) #f)
+                ((inventory-read-failure store (car ws)))
+                (else
+                 (read-entry (writer-file store (car ws) "owner.sexp"))
+                 (adopt-reads! store (car ws))
+                 (loop (cdr ws)))))))))
+
+  (define (unreadable-refusal kind e)
+    (list 'refused kind
+          (list 'path (unreadable-entry-path e))
+          (list 'reason (unreadable-entry-reason e))))
+
+  ;; The first note on a discovery that is a READ failure, as a refusal. A
+  ;; CRC, torn or framing note is damage and is not answered here: that is
+  ;; what adopt exists for.
+  (define (read-failure-refusal p)
+    (let loop ((es (discovery-integrity p)))
+      (cond
+        ((null? es) #f)
+        ((memq (log-error-kind (car es)) '(segment-unreadable metadata-unreadable))
+         (let* ((detail (log-error-detail (car es)))
+                (path (assq 'path detail))
+                (reason (assq 'reason detail)))
+           (list 'refused (log-error-kind (car es))
+                 (list 'path (and path (cdr path)))
+                 (list 'reason (and reason (cdr reason))))))
+        (else (loop (cdr es))))))
+
+  ;; The writer's uncertainty cache and retirement record, read with the R1
+  ;; operation: absence is fine, and any other failure raises unreadable-entry
+  ;; naming the file. What they hold is read again, as before, by the step
+  ;; that uses it.
+  (define (adopt-reads! store writer)
+    (read-entry (uncertain-path store writer))
+    (read-entry (writer-file store writer "retired.sexp")))
+
   (define (adopt-locked! store)
+    (or (adopt-preflight store)
+        (adopt-decided! store)))
+
+  (define (adopt-decided! store)
     (let ((why (adopt-needed? store)))
       (if (not why)
           (list 'refused 'not-needed
@@ -5342,6 +5543,8 @@
         ;; catch.
         ((eq? identity 'absent)
          (list 'refused-before-reserve 'no-instance))
+        ((and (pair? identity) (eq? (car identity) 'refused))
+         (cons 'refused-before-reserve (cdr identity)))
         ((pair? identity)
          (list 'refused-before-reserve (list 'instance (cadr identity))))
         ;; A SEQUENCE INSIDE THIS REQUEST'S AUTHORISATION IS ALREADY
