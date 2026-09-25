@@ -1209,6 +1209,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (outcome.behind !== undefined) {
       show({ level: 'information', text: outcome.behind });
     }
+    /*
+     * NOTE: AND WHAT THE QUEUE COULD NOT PROMISE, ON THE SAME ROAD. (queue
+     * item 3) The save stands -- its entry was written -- but the
+     * directory could not be flushed, so the entry may not survive a power
+     * cut. That asks nothing of the save, so it follows the save's notice
+     * as `behind` does; it is a warning, because it is about the user's
+     * work being at risk rather than about somebody else's.
+     */
+    if (outcome.durability !== undefined) {
+      show({ level: 'warning', text: outcome.durability });
+    }
     paint();
   }
 

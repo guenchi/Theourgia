@@ -62,6 +62,7 @@ const CHECK =
 const WROTE =
   '(ok (events (("w" . 8))) (state (("a.2" . "hhh"))) (cursor ("w" . 8)) (replay #f))\n';
 import { idleProcess } from '../support/host';
+import { receiptFor } from '../support/receipts';
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-recovery-'));
@@ -212,6 +213,7 @@ function destination(storeHash = 'h'): {
           has: (req: string) => held.some((e) => e.req === req),
           adopt: (entry: OutboxEntry) => {
             held.push(entry);
+            return receiptFor(entry);
           }
         });
       }
@@ -803,6 +805,7 @@ describe('review 34 a destination that has stopped being this window’s queue',
             has: (req: string) => held.some((e) => e.req === req),
             adopt: (entry: OutboxEntry) => {
               held.push(entry);
+              return receiptFor(entry);
             }
           });
         }

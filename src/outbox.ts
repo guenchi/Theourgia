@@ -137,6 +137,28 @@ export class OutboxWriteError extends Error {
 }
 
 /*
+ * THE MARK ONLY `enqueue` CAN PUT ON A RECEIPT. Not exported, so nothing
+ * outside this file can make a value that has it; a census in
+ * test/unit/receipts.test.ts goes red if it is ever exported, or if any
+ * other file in src builds an object carrying it.
+ */
+const WRITTEN: unique symbol = Symbol('written into the queue file');
+
+/*
+ * PROOF THAT ONE ENTRY IS IN THE QUEUE FILE, issued by the enqueue that
+ * put it there. `req` is what it answers for: a receipt is this entry's
+ * or it is nobody's here, and whoever receives one from elsewhere
+ * compares it with the entry it holds. `durability` is null when the
+ * directory was flushed after the rename, and a sentence when it was not
+ * -- the entry exists either way (see `Outbox.write`).
+ */
+export interface Receipt {
+  readonly req: string;
+  readonly durability: string | null;
+  readonly [WRITTEN]: true;
+}
+
+/*
  * WHAT A PERSON CAN DO ABOUT IT. Refusing to touch a queue this build
  * cannot read is the right thing to do with it -- but it also means no
  * save will go out until something changes, and a message that stops at
@@ -355,14 +377,19 @@ export class Outbox {
     }
   }
 
-  private commit(next: OutboxFile): void {
+  /*
+   * NOTE: IT RETURNS WHAT `write` SAYS ABOUT DURABILITY, and only
+   * `enqueue` has somewhere to put it -- see `write`.
+   */
+  private commit(next: OutboxFile, durability: 'report' | 'throw' = 'throw'): string | null {
     if (!this.readable) {
       throw new OutboxWriteError(
         `the outbox at ${this.file} has not been read successfully, so it will not be written`
       );
     }
-    this.write(next);
+    const warning = this.write(next, durability);
     this.data = next;
+    return warning;
   }
 
   private copy(): OutboxFile {
@@ -377,13 +404,36 @@ export class Outbox {
    * THE ENTRY IS ON DISK BEFORE THIS RETURNS. Every caller treats the
    * return as permission to send, so a failure here has to be a throw
    * and not a logged warning.
+   *
+   * AND WHAT IT RETURNS IS THE PROOF. (queue item 3, the enqueue receipt,
+   * approved 2026-09-22)
+   *
+   * "Was this entry ever in the queue file?" is asked by whoever took a
+   * sequence number for it, because the number must be given back if the
+   * entry never landed and must NOT be if it did. Five answers were tried
+   * before this one, and every one was an account of something else: the
+   * source's shape, which statements ran, the file read at a moment when
+   * a drain may already have emptied it, the file read after the lock was
+   * released. There is no moment outside this function at which the file
+   * answers the question stably. Only the operation that did the thing
+   * can say whether it did it.
+   *
+   * So the receipt is made HERE: inside `withQueueExclusive`, after
+   * `commit` has returned. Its brand is a symbol this module does not
+   * export, so a receipt can only have come from an enqueue that
+   * completed; and it names the request it answers for, because a
+   * receipt that is valid but for another entry is the failure an
+   * unforgeable credential does not prevent. (Both are held by censuses in
+   * test/unit/receipts.test.ts, because where a statement sits is not
+   * something a running cell can see.)
    */
-  public enqueue(entry: OutboxEntry): void {
-    return withQueueExclusive(this.file, (): void => {
+  public enqueue(entry: OutboxEntry): Receipt {
+    return withQueueExclusive(this.file, (): Receipt => {
     this.refresh();
     const next = this.copy();
     next.entries.push({ ...entry });
-    this.commit(next);
+    const durability = this.commit(next, 'report');
+    return { req: entry.req, durability, [WRITTEN]: true as const };
 
     });
   }
@@ -641,7 +691,34 @@ export class Outbox {
    * because the file's bytes and the name that reaches them are two
    * different things to lose.
    */
-  private write(next: OutboxFile): void {
+  /*
+   * THE RENAME IS THE EXISTENCE FACT; THE DIRECTORY SYNC IS DURABILITY.
+   * (queue item 3, ruled 2026-09-22)
+   *
+   * A rename that returned has put the new queue where every reader looks.
+   * A directory sync that then fails does not un-put it -- the entry
+   * exists, and the question a caller asks next is "was it written", not
+   * "will it survive a power cut". So for `enqueue` a failed sync is a
+   * WARNING, handed back and carried in the receipt, and the entry counts
+   * as queued. This is the same rule the core keeps: an answer is a
+   * result, and failing to close the connection cannot cancel it. One
+   * rule, two places -- change one and look at the other.
+   *
+   * NOTE: TWO RULES LIVE HERE AT ONCE, ON PURPOSE. Only `enqueue` has
+   * somewhere to put the warning: its receipt goes back to the save that
+   * asked, and from there onto the save's outcome, beside `behind`. Every
+   * other mutator (`markParked`, `resolve`, `unparkAll`, ...) still throws
+   * `OutboxWriteError` when the sync fails after the rename landed, which
+   * says "not written" about a queue that was. Whether they should follow
+   * the same rule, and where their warning would be shown, is queue item
+   * 22 -- a design to make first, not a change to slip in here.
+   *
+   * NOTE: AND THE QUEUE IS NOT ATOMIC WITH ANYTHING ELSE. The sidecar
+   * beside a document and this queue are two files with no transaction
+   * between them; the receipt makes one caller's answer about THIS file
+   * correct, and makes the pair no more atomic than it was.
+   */
+  private write(next: OutboxFile, durability: 'report' | 'throw'): string | null {
     const directory = path.dirname(this.file);
     try {
       this.files.makeDirectory(directory);
@@ -652,7 +729,6 @@ export class Outbox {
     try {
       this.files.writeDurably(temporary, `${JSON.stringify(next, null, 2)}\n`);
       this.files.rename(temporary, this.file);
-      this.files.syncDirectory(directory);
     } catch (e) {
       try {
         this.files.unlink(temporary);
@@ -665,6 +741,34 @@ export class Outbox {
       }
       throw new OutboxWriteError(`the outbox at ${this.file} could not be written: ${String(e)}`);
     }
+    /*
+     * NOTE: A FLUSH THAT FAILED IS SAID BY THE RETURN VALUE, and a thrown one
+     * is read too. The shipping `syncDirectory` used to swallow a failed
+     * fsync and now returns why (review r1 of item 3 found the warning
+     * above could never fire in production); a stand-in may still throw.
+     * In `'throw'` mode a RETURNED reason is ignored -- every other mutator
+     * was silent about it before, through the swallowing, and stays exactly
+     * so -- while a THROWN one throws as it always did.
+     */
+    let reason: string | null;
+    try {
+      reason = this.files.syncDirectory(directory);
+    } catch (e) {
+      const thrown =
+        `the queue at ${this.file} was written, but its directory could not be flushed ` +
+        `(${String(e)}), so it may not survive the machine losing power`;
+      if (durability === 'report') {
+        return thrown;
+      }
+      throw new OutboxWriteError(thrown);
+    }
+    if (reason === null || durability === 'throw') {
+      return null;
+    }
+    return (
+      `the queue at ${this.file} was written, but its directory could not be flushed ` +
+      `(${reason}), so it may not survive the machine losing power`
+    );
   }
 }
 

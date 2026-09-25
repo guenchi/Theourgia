@@ -77,11 +77,12 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'changed under it, which is the one case that skips the report. The reporting call is ' +
     'conditional, so the rule no longer exempts it; the condition is `asked === generation()`, ' +
     'and when that is false nothing this listing drew is on the screen to be wrong about.',
-  'fsops.ts:138':
-    'the directory flush. Some filesystems refuse it and the bytes are already down by then, so ' +
-    'a failure here is indistinguishable from a refusal and neither stops the save. Said at the ' +
-    'site and in the README.',
-  'fsops.ts:296':
+  'fsops.ts:149':
+    'answers NULL for a directory that will not open for flushing. Some filesystems refuse to ' +
+    'open a directory for reading, and a warning on every write there would teach people to ' +
+    'ignore warnings; said at the site and in the README. A flush that is attempted and fails ' +
+    'is not this catch: it returns its reason (queue item 3, review r1).',
+  'fsops.ts:313':
     'answers FALSE for "the core directory holds this file". A directory this process may not ' +
     'search then reads as neither form, which `problemsWith` refuses by name -- so the failure ' +
     'reaches the user as a refusal about the setting rather than as a wrong extension list.',
@@ -94,15 +95,15 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
   'sessions.ts:68':
     'answers NULL for a start time that cannot be read, and the identity that uses it is then ' +
     'undecidable rather than matching. Named absence.',
-  'sessions.ts:1316':
+  'sessions.ts:1324':
     'answers nothing, and writes `unreadableQueue` into the takeover ledger first. The ledger ' +
     'is the survey\'s whole output, so the failure is not lost -- it is the finding. A throw ' +
     'here would end a survey of every OTHER window over one file that will not read.',
-  'sessions.ts:1351':
+  'sessions.ts:1359':
     'as sessions.ts:1316, on the import rather than the survey: `unreadableQueue` is counted ' +
     'and the file is left untouched, because the queue holds the only copy of that window\'s ' +
     'unsent work and a takeover that repaired it would write over what it came to rescue.',
-  'sessions.ts:893':
+  'sessions.ts:901':
     'answers TRUE -- "a relevant send may be in flight". A migration is refused rather than ' +
     'permitted over work nobody could read.',
   'saving.ts:389':

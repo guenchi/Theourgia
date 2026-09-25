@@ -62,7 +62,18 @@ export interface FileOps {
    * would still not be able to say whether the pair happened.
    */
   writeDurably(file: string, text: string): void;
-  syncDirectory(directory: string): void;
+  /*
+   * FLUSH A DIRECTORY, AND SAY WHY NOT WHEN IT COULD NOT. Null when it was
+   * flushed, and also when the directory would not even open for reading
+   * -- some file systems refuse that, the README says so, and reporting it
+   * would warn on every write there. A sentence when the flush itself
+   * failed: until queue item 3 that was swallowed here too, because a
+   * failure then could only turn a completed write into a failed one. Now
+   * the caller decides -- `Outbox.enqueue` carries it as a durability
+   * warning; every other caller ignores the value and is silent exactly as
+   * before.
+   */
+  syncDirectory(directory: string): string | null;
   exists(file: string): boolean;
   /*
    * NOTE: THE HONEST FORM OF `exists`, FOR THE CALLER THAT REPORTS WHAT IT
@@ -136,12 +147,18 @@ export const nodeFileOps: FileOps = {
     try {
       handle = fs.openSync(directory, 'r');
     } catch (e) {
-      return;
+      return null;
     }
     try {
       fs.fsyncSync(handle);
+      return null;
     } catch (e) {
-      /* as above */
+      /*
+       * THE FLUSH FAILED, AND THAT IS SAID, NOT SWALLOWED. The rename has
+       * happened either way; what this returns is only what could not be
+       * promised about surviving a power cut.
+       */
+      return e instanceof Error ? e.message : String(e);
     } finally {
       fs.closeSync(handle);
     }

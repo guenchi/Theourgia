@@ -47,7 +47,7 @@
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { Client } from './client';
-import { Outbox, OutboxEntry } from './outbox';
+import { Outbox, OutboxEntry, Receipt } from './outbox';
 import { behindNotice } from './status';
 import { SendRecord } from './record';
 import { ImportTarget } from './sessions';
@@ -182,6 +182,13 @@ export interface SaveOutcome {
    * noise with nothing behind it.
    */
   behind?: string;
+  /*
+   * WHAT THE QUEUE COULD NOT PROMISE, as a sentence: the entry was written
+   * but its directory could not be flushed, so it may not survive a power
+   * cut. It rides on the save like `behind` does, and is shown after the
+   * save's own notice, because the save itself stands (queue item 3).
+   */
+  durability?: string;
 }
 
 export interface SaverOptions {
@@ -1060,18 +1067,23 @@ export class Saver {
         lastError: null,
         importedBy: null
       };
-      this.outbox.enqueue(entry);
+      /*
+       * NOTE: THIS PATH HAS NO NUMBER TO GIVE BACK, so the receipt answers
+       * only one question here: whether the queue could promise the entry
+       * survives a power cut. That is carried on the outcome, as `submit`
+       * carries it.
+       */
+      const receipt = this.outbox.enqueue(entry);
       const outcomes = await this.drain();
       const mine = outcomes.find((o) => o.req === entry.req);
-      return (
-        mine ?? {
-          status: 'pending' as const,
-          req: entry.req,
-          id,
-          message: 'the save is queued behind an earlier one whose outcome is unknown',
-          answer: null
-        }
-      );
+      const outcome: SaveOutcome = mine ?? {
+        status: 'pending' as const,
+        req: entry.req,
+        id,
+        message: 'the save is queued behind an earlier one whose outcome is unknown',
+        answer: null
+      };
+      return receipt.durability === null ? outcome : { ...outcome, durability: receipt.durability };
     });
   }
 
@@ -1117,13 +1129,23 @@ export class Saver {
      * a failure after a successful transmission read as "never queued"
      * and released the number for a send that had gone out.
      *
-     * "Was this entry ever queued" is a fact about a MOMENT, and the
-     * only moment the file can answer it is immediately after the
-     * enqueue. So that is when it is read, once, and the answer is what
-     * every later failure consults. Not being able to read the file then
-     * is not permission to release the number.
+     * Round twenty-one's answer read the file at the enqueue and kept
+     * that -- and round twenty-one showed the lock already released when
+     * the read happens: `withQueueExclusive` is held inside
+     * `Outbox.enqueue`, so every reader afterwards races every other
+     * window. Five answers, each an account of something other than the
+     * enqueue: the source's shape, which statements ran, the file at the
+     * wrong moment, the file without the lock.
+     *
+     * KEY: SO THE ENQUEUE ANSWERS IT. (queue item 3, the enqueue receipt)
+     * `Outbox.enqueue` returns a `Receipt`, made inside the lock after the
+     * commit returned, that nothing else can make. Holding one is the
+     * fact; not holding one -- the enqueue threw before the rename landed
+     * -- is the other fact. A rename that landed with a directory flush
+     * that failed IS a receipt, with a durability warning in it: the entry
+     * exists, and the number must not be given back (ruled 2026-09-22).
      */
-    let queued = false;
+    let receipt: Receipt | null = null;
     return this.serialise(async () => {
       /*
        * NOTE: THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
@@ -1235,22 +1257,8 @@ export class Saver {
         record
       };
       try {
-        this.outbox.enqueue(entry);
-        queued = true;
+        receipt = this.outbox.enqueue(entry);
       } catch (e) {
-        /*
-         * THE ONE MOMENT THE FILE CAN ANSWER. `Outbox.write` renames the
-         * new file into place and THEN syncs the directory, so an
-         * enqueue that threw may have landed; nothing later can tell,
-         * because a drain removes a settled entry and the file then
-         * looks the same as one that was never written.
-         */
-        try {
-          this.outbox.load();
-          queued = this.outbox.entries.some((held) => held.req === entry.req);
-        } catch {
-          queued = true;
-        }
         /*
          * NOTE: AND THIS ONE IS RE-RAISED RATHER THAN ANSWERED HERE.
          *
@@ -1264,17 +1272,28 @@ export class Saver {
           `the save could not be written to the queue at ${this.outbox.path}: ${String(e)}`
         );
       }
+      /*
+       * NOTE: NO CHECK HERE THAT `receipt.req` IS `record.req`, and the
+       * absence is deliberate (condition 4 of the approved design). The
+       * receipt is issued by the line above and consumed in this function;
+       * it crosses no boundary, so there is no case in which it could be
+       * another entry's, and a check with no case behind it would be the
+       * kind of guard this tree has deleted before. A receipt that TRAVELS
+       * is checked where it arrives -- `Sessions.importFrom`, which is
+       * handed one per imported entry. The day this function receives a
+       * receipt from outside, this sentence is the reminder.
+       */
+      const held = receipt;
       const outcomes = await this.drain();
       const mine = outcomes.find((o) => o.req === entry.req);
-      return (
-        mine ?? {
-          status: 'pending' as const,
-          req: entry.req,
-          id: record.blockId,
-          message: 'the save is queued behind an earlier one whose outcome is unknown',
-          answer: null
-        }
-      );
+      const outcome: SaveOutcome = mine ?? {
+        status: 'pending' as const,
+        req: entry.req,
+        id: record.blockId,
+        message: 'the save is queued behind an earlier one whose outcome is unknown',
+        answer: null
+      };
+      return held.durability === null ? outcome : { ...outcome, durability: held.durability };
     }).catch((e) => {
       /*
        * THE ANSWER RECORDED AT THE ENQUEUE, not a second reading taken
@@ -1287,7 +1306,7 @@ export class Saver {
        * with the store. Reading the file HERE would answer a different
        * question, because by now a drain may have removed the entry.
        */
-      if (queued) {
+      if (receipt !== null) {
         throw e;
       }
       return {

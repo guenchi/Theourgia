@@ -110,9 +110,9 @@ export class RecordingFs implements FileOps {
     this.inner.writeDurably(file, text);
   }
 
-  public syncDirectory(directory: string): void {
+  public syncDirectory(directory: string): string | null {
     this.record('syncDirectory', directory);
-    this.inner.syncDirectory(directory);
+    return this.inner.syncDirectory(directory);
   }
 
   public exists(file: string): boolean {

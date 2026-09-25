@@ -9,6 +9,7 @@ import {Outbox} from '../../src/outbox';
 import {Owners} from '../../src/ownership';
 import {Publisher} from '../../src/publication';
 import {Saving} from '../../src/saving';
+import {strangersReceipt} from '../support/receipts';
 const helper=path.join(__dirname,'../support/shared-state.js');
 const scratch=()=>fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-shared-state-'));
 function run(...args:string[]):any {
@@ -69,7 +70,7 @@ describe('XL actual shared sidecar, process identity and takeover boundaries',fu
     try {
       assert.strictEqual((await a.next()).kind,'held');let adopted=0;
       assert.throws(()=>core.sessions.importFrom({deadSessionId:'old',file:claim.token,sequence:claim.sequence},
-        {has:()=>false,adopt:()=>{adopted++;}},'store'),/source session or its claim changed/);
+        {has:()=>false,adopt:()=>{adopted++;return strangersReceipt();}},'store'),/source session or its claim changed/);
       assert.strictEqual(adopted,0);assert.strictEqual(fs.readFileSync(source.path,'hex'),before);
     } finally {a.child.kill('SIGKILL');await a.exit;}
   });

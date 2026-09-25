@@ -50,7 +50,7 @@ import { Outbox } from '../../src/outbox';
 import { RecordParts, SendRecord, recordFor } from '../../src/record';
 import { SaveOutcome, Saver, Settle } from '../../src/saver';
 import { CliTransport, TransportError } from '../../src/transport';
-import { nodeFileOps } from '../../src/fsops';
+import { FileOps, nodeFileOps } from '../../src/fsops';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { wroteAnswer } from '../support/answers';
@@ -1061,10 +1061,9 @@ describe('R4 a send whose queue write did not land', () => {
     let failing = false;
     const failsAfterTheRename = {
       ...nodeFileOps,
-      syncDirectory(directory: string): void {
+      syncDirectory(directory: string): string | null {
         if (!failing) {
-          nodeFileOps.syncDirectory(directory);
-          return;
+          return nodeFileOps.syncDirectory(directory);
         }
         syncs += 1;
         throw new Error('the directory could not be synced after the rename');
@@ -1137,10 +1136,9 @@ describe('R4 a send whose queue write did not land', () => {
     let sent = false;
     const failsOnceTheSendHasLanded = {
       ...nodeFileOps,
-      syncDirectory(directory: string): void {
+      syncDirectory(directory: string): string | null {
         if (!sent) {
-          nodeFileOps.syncDirectory(directory);
-          return;
+          return nodeFileOps.syncDirectory(directory);
         }
         throw new Error('the directory could not be synced after the entry was dequeued');
       }
@@ -1196,10 +1194,9 @@ describe('R4 a send whose queue write did not land', () => {
     let threw = false;
     const failsBothWays = {
       ...nodeFileOps,
-      syncDirectory(directory: string): void {
+      syncDirectory(directory: string): string | null {
         if (!blind) {
-          nodeFileOps.syncDirectory(directory);
-          return;
+          return nodeFileOps.syncDirectory(directory);
         }
         /*
          * THE WRITE FAILS AFTER THE RENAME, and from that moment the
@@ -1388,134 +1385,78 @@ describe('plugin-r3 submit records whether the entry was queued', () => {
    * behavioural cell for yet; it is not evidence that the program is
    * right.
    */
-  it('decides from a fact recorded at the enqueue, in two places and no others', () => {
+  /*
+   * REWRITTEN FOR THE RECEIPT (queue item 3, approved 2026-09-22). Everything
+   * above describes the flag this census used to hold: one variable, three
+   * writes, one of them a read of the file. The design that replaced it is
+   * that the enqueue answers the question itself -- `Outbox.enqueue` returns a
+   * receipt nothing else can make -- so what is read now is that `submit`
+   * decides from THAT: one `Receipt | null`, starting null, written once, from
+   * the enqueue's return, and the catch re-raises under it alone. The same
+   * limit applies as before: this is a tripwire for the shape, and the
+   * behavioural cells in test/unit/receipts.test.ts are what say the program
+   * is right.
+   */
+  it('decides from the receipt the enqueue returned, in one place and no other', () => {
     const { node, source } = submitOf();
     const declared: ts.VariableDeclaration[] = [];
     const writes: ts.BinaryExpression[] = [];
+    let rereads = 0;
     every(node, (inner) => {
-      if (ts.isVariableDeclaration(inner) && inner.name.getText(source) === 'queued') {
+      if (ts.isVariableDeclaration(inner) && inner.name.getText(source) === 'receipt') {
         declared.push(inner);
       }
       if (
         ts.isBinaryExpression(inner) &&
         inner.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        inner.left.getText(source) === 'queued'
+        inner.left.getText(source) === 'receipt'
       ) {
         writes.push(inner);
       }
+      if (ts.isCallExpression(inner) && /\.outbox\.load$/.test(inner.expression.getText(source))) {
+        rereads += 1;
+      }
     });
     assert.strictEqual(declared.length, 1, 'the decision is not held in one variable');
+    assert.strictEqual(declared[0].type?.getText(source), 'Receipt | null', 'the decision is not a receipt');
     assert.strictEqual(
       declared[0].initializer?.getText(source),
-      'false',
-      'it starts as something other than false, so a failure before anything happened reads as a ' +
+      'null',
+      'it starts as something other than null, so a failure before anything happened reads as a ' +
         'save that was queued and the number is never given back'
     );
-    assert.strictEqual(
-      writes.length,
-      3,
-      `it is written in ${writes.length} places; the design has exactly three -- the enqueue ` +
-        'that returned, the read of the file where it threw, and the read that could not be made'
-    );
-    /*
-     * TWO WRITES ARE `true` AND ONE IS A READ OF THE FILE. A census that
-     * accepted any three writes would accept three constants -- and one
-     * of those `true`s is the answer to "I could not read the file",
-     * which must be the safe side: cannot-tell is not permission to
-     * release the number.
-     */
-    const spellings = writes.map((write) => write.right.getText(source));
-    assert.strictEqual(
-      spellings.filter((text) => text === 'true').length,
-      2,
-      `the two plain answers are not both there: ${JSON.stringify(spellings)}`
-    );
-    const cannotTell = writes.find(
-      (write) =>
-        write.right.getText(source) === 'true' &&
-        (() => {
-          for (let at: ts.Node | undefined = write; at !== undefined; at = at.parent) {
-            if (ts.isCatchClause(at)) {
-              return true;
-            }
-            if (at === node) {
-              return false;
-            }
-          }
-          return false;
-        })()
-    );
+    assert.strictEqual(writes.length, 1, `it is written in ${writes.length} places; the design has one`);
+    const right = writes[0].right;
     assert.ok(
-      cannotTell !== undefined,
-      'no write says what happens when the file could not be read, so a reload that fails leaves ' +
-        'the decision at whatever it was -- which is false, and releases the number'
+      ts.isCallExpression(right) && /\.enqueue$/.test(right.expression.getText(source)),
+      `the one write is not the enqueue's return: ${right.getText(source)}`
     );
     assert.strictEqual(
-      spellings.filter((text) => /\.entries\b/.test(text) && /\breq\b/.test(text)).length,
-      1,
-      `no write reads the file for this request: ${JSON.stringify(spellings)}`
+      rereads,
+      0,
+      'submit reads the queue file again, which is the answer this design replaced: the file at a ' +
+        'moment when a drain, or another window, may already have changed it'
     );
     /*
-     * NEVER: AND NEITHER WRITE IS GUARDED BY AN EXPRESSION THAT CAN SKIP
-     * IT. `false && (queued = true)` is an expression statement in the
-     * right place that never runs -- measured in a twentieth review
-     * round against the version of this census that checked positions.
+     * NEVER: AND THE WRITE IS NOT BEHIND AN EXPRESSION THAT CAN SKIP IT --
+     * the same trap as before (`false && (receipt = ...)`).
      */
-    for (const write of writes) {
-      let at: ts.Node = write;
-      while (at.parent !== undefined && !ts.isBlock(at.parent)) {
-        if (
-          ts.isBinaryExpression(at.parent) &&
+    let at: ts.Node = writes[0];
+    while (at.parent !== undefined && !ts.isBlock(at.parent)) {
+      if (
+        (ts.isBinaryExpression(at.parent) &&
           (at.parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
             at.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
-            at.parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
-        ) {
-          assert.fail(
-            `a write of the decision is behind \`${at.parent.getText(source).slice(0, 60)}\`, ` +
-              'which can skip it while leaving a statement that looks like it'
-          );
-        }
-        if (ts.isConditionalExpression(at.parent)) {
-          assert.fail('a write of the decision is inside a conditional expression');
-        }
-        at = at.parent;
+            at.parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)) ||
+        ts.isConditionalExpression(at.parent)
+      ) {
+        assert.fail(`the receipt's write is behind \`${at.parent.getText(source).slice(0, 60)}\``);
       }
+      at = at.parent;
     }
-    /*
-     * AND THE ENQUEUE IS THE UNCONDITIONAL STATEMENT BEFORE THE FIRST
-     * WRITE, so the `true` really does mean "it returned".
-     */
-    const statementOf = (from: ts.Node): ts.Statement => {
-      let at: ts.Node = from;
-      while (at.parent !== undefined && !ts.isBlock(at.parent)) {
-        at = at.parent;
-      }
-      return at as ts.Statement;
-    };
-    let enqueue: ts.CallExpression | undefined;
-    every(node, (inner) => {
-      if (ts.isCallExpression(inner) && /\.enqueue$/.test(inner.expression.getText(source))) {
-        enqueue = inner;
-      }
-    });
-    assert.ok(enqueue !== undefined, 'submit no longer queues anything');
-    const queues = statementOf(enqueue as ts.CallExpression);
-    assert.ok(
-      ts.isExpressionStatement(queues) &&
-        queues.expression === enqueue,
-      'the enqueue is not a statement of its own, so something can decide whether it happens'
-    );
-    const plain = writes.find((write) => write.right.getText(source) === 'true');
-    const after = statementOf(plain as ts.BinaryExpression);
-    assert.strictEqual(after.parent, queues.parent);
-    assert.strictEqual(
-      (after.parent as ts.Block).statements.indexOf(after),
-      (after.parent as ts.Block).statements.indexOf(queues) + 1,
-      'the write that means "the enqueue returned" is not the statement after the enqueue'
-    );
   });
 
-  it('consults that fact, and nothing else, when a failure reaches the caller', () => {
+  it('consults the receipt, and nothing else, when a failure reaches the caller', () => {
     const { node, source } = submitOf();
     let decides = false;
     every(node, (inner) => {
@@ -1523,16 +1464,14 @@ describe('plugin-r3 submit records whether the entry was queued', () => {
         return;
       }
       /*
-       * THE CATCH RE-RAISES UNDER `if (queued)` AND NOTHING ELSE. A
-       * census that asked whether the name APPEARS accepted
-       * `if (queued && false)`; what is asked is that the condition IS
-       * the identifier and that its consequence throws.
+       * THE CATCH RE-RAISES UNDER `if (receipt !== null)` AND NOTHING ELSE:
+       * the condition IS that comparison, and its consequence throws.
        */
       const walk = (at: ts.Node): void => {
         if (
           ts.isIfStatement(at) &&
-          ts.isIdentifier(at.expression) &&
-          at.expression.text === 'queued'
+          ts.isBinaryExpression(at.expression) &&
+          at.expression.getText(source) === 'receipt !== null'
         ) {
           const body = at.thenStatement;
           const throws =
@@ -1548,9 +1487,207 @@ describe('plugin-r3 submit records whether the entry was queued', () => {
     });
     assert.ok(
       decides,
-      "submit's catch does not re-raise under the recorded fact alone. Anything else there -- a " +
-        'second reading of the file, a condition with another term in it -- decides the release ' +
-        'of a sequence number by something other than whether the entry was ever queued.'
+      "submit's catch does not re-raise under the receipt alone. Anything else there -- a second " +
+        'reading of the file, a condition with another term in it -- decides the release of a ' +
+        'sequence number by something other than whether the enqueue issued a receipt.'
     );
+  });
+});
+
+/*
+ * plugin-r3 item 3: THE ENQUEUE RECEIPT DECIDES WHETHER THE NUMBER GOES BACK.
+ *
+ * `submit` took a sequence number for the save before anything was queued;
+ * it must give it back (`notQueued`) exactly when the entry never reached
+ * the queue file, and never when it did. Since the approved design
+ * (2026-09-22) that is decided by the receipt `Outbox.enqueue` returns --
+ * made inside the lock, after the commit, by nothing else. These are the
+ * design's runtime cells (3, 4, 5 both ways, 6); cells 1 and 2 and the two
+ * call-site censuses are source censuses in test/unit/receipts.test.ts,
+ * because where a statement sits is not something a running cell can see.
+ *
+ * "The number goes back" is read as the outcome carrying `notQueued`,
+ * which is what the save handler releases it on; "kept" is a rejection or
+ * an outcome without it. "The entry is there" is asked of a FRESH reader
+ * of the queue file, not of the Outbox the Saver holds.
+ */
+describe('plugin-r3 3 the enqueue receipt decides whether the number goes back', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  /*
+   * A FILE SYSTEM THAT FAILS ONE OPERATION ONCE, AT THE ENQUEUE, and behaves
+   * otherwise. "The first time it is asked" was the first version, and it
+   * measured the wrong thing: `submit` writes the cursor it bootstraps
+   * BEFORE it enqueues, so the first directory flush belonged to that write
+   * and the save was answered as never queued for a reason that had nothing
+   * to do with the enqueue. So the failure is armed by what is being
+   * written: the queue file with this request in it, or, for the flush,
+   * the directory once the queue file holds the request.
+   */
+  function failingAtTheEnqueue(operation: 'writeDurably' | 'rename' | 'syncDirectory', req: string, queuePath: () => string): FileOps {
+    let failed = false;
+    const files: FileOps = { ...nodeFileOps };
+    const original = nodeFileOps[operation] as (...args: unknown[]) => void;
+    const carries = (args: unknown[]): boolean => {
+      if (operation === 'syncDirectory') {
+        return fs.existsSync(queuePath()) && fs.readFileSync(queuePath(), 'utf8').includes(req);
+      }
+      if (operation === 'writeDurably') {
+        return typeof args[1] === 'string' && args[1].includes(req);
+      }
+      const from = String(args[0]);
+      return fs.existsSync(from) && fs.readFileSync(from, 'utf8').includes(req);
+    };
+    (files as unknown as Record<string, (...args: unknown[]) => void>)[operation] = (...args: unknown[]) => {
+      if (!failed && carries(args)) {
+        failed = true;
+        throw new Error(`${operation} failed on purpose`);
+      }
+      return original.apply(nodeFileOps, args);
+    };
+    return files;
+  }
+
+  function over(
+    files: FileOps | ((queuePath: () => string) => FileOps),
+    calls: ScriptedCall[],
+    settle?: (outbox: Outbox) => Settle
+  ): Rig {
+    const made = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }, ...calls]);
+    const queuePath = made.outboxFile();
+    const outbox = new Outbox(queuePath, typeof files === 'function' ? files(() => queuePath) : files);
+    outbox.load();
+    const client = new Client(new CliTransport(made.config(), made.env()));
+    const settler = settle === undefined ? settling(outbox, parts().storeHash) : settle(outbox);
+    return { core: made, outbox, queuePath, saver: new Saver(client, outbox, settler) };
+  }
+
+  function freshlyRead(queuePath: string): string[] {
+    const reader = new Outbox(queuePath);
+    reader.load();
+    return reader.entries.map((e) => e.req);
+  }
+
+  const NOTHING_SAID: ScriptedCall = { match: ['set'], stdout: '', rc: 1 };
+
+  it('3: gives the number back when the enqueue failed before anything landed', async () => {
+    const r = over((at) => failingAtTheEnqueue('writeDurably', parts().req, at), [NOTHING_SAID]);
+    core = r.core;
+    const outcome = await r.saver.submit(recordFor(parts()));
+    assert.strictEqual(outcome.notQueued, true, `the number was kept for an entry that never landed: ${outcome.message}`);
+    assert.match(outcome.message, /could not be written to the queue/, `the failure was not the enqueue's: ${outcome.message}`);
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [], 'the queue file holds the entry after all');
+    assert.strictEqual(sentCalls(core).length, 0);
+  });
+
+  /*
+   * KEY: THE CASE THAT DECIDES THE DESIGN, BOTH WAYS (ruled 2026-09-22):
+   * the rename is the existence fact, the directory flush is durability.
+   * Each cell fails on the other's fixture -- a rename that did not land
+   * leaves no entry and must give the number back; one that landed leaves
+   * the entry, keeps the number and says what it could not promise.
+   */
+  it('5a: keeps the number when the rename landed and the flush failed, and says so', async () => {
+    const r = over((at) => failingAtTheEnqueue('syncDirectory', parts().req, at), [NOTHING_SAID]);
+    core = r.core;
+    const record = recordFor(parts());
+    const outcome = await r.saver.submit(record);
+    assert.notStrictEqual(outcome.notQueued, true, 'the number was given back for an entry that is on disk');
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [record.req], 'the entry is not in the queue file');
+    assert.ok(
+      outcome.durability !== undefined && /could not be flushed/.test(outcome.durability),
+      `the durability warning was not carried on the outcome: ${JSON.stringify(outcome.durability)}`
+    );
+  });
+
+  /*
+   * AND THROUGH THE SHIPPING FILE OPERATIONS, NOT A STAND-IN. (review r1 of
+   * item 3) 5a injects above `syncDirectory`, and the shipping one used to
+   * swallow a failed flush -- so 5a was green while the warning could never
+   * fire in production. Here the Outbox is given `nodeFileOps` itself, and
+   * the failure is injected BELOW it: Node's own `fs.fsyncSync` is replaced
+   * for the length of this cell by one that throws EIO when it is asked to
+   * flush a directory while the queue file already holds this request --
+   * that is, the flush that follows the enqueue's rename -- and is restored
+   * in `finally`. Replacing the module's property works because the
+   * compiled product reads `fs.fsyncSync` through the module object at each
+   * call.
+   */
+  it('5c: carries the warning through the shipping file operations when the directory flush fails', async () => {
+    const nodeFs = require('fs') as typeof import('fs');
+    const original = nodeFs.fsyncSync;
+    let injected = 0;
+    const r = over({ ...nodeFileOps }, [NOTHING_SAID]);
+    core = r.core;
+    const record = recordFor(parts());
+    nodeFs.fsyncSync = ((handle: number): void => {
+      if (
+        injected === 0 &&
+        nodeFs.fstatSync(handle).isDirectory() &&
+        nodeFs.existsSync(r.queuePath) &&
+        nodeFs.readFileSync(r.queuePath, 'utf8').includes(record.req)
+      ) {
+        injected += 1;
+        const failure = new Error('EIO: i/o error, fsync') as NodeJS.ErrnoException;
+        failure.code = 'EIO';
+        throw failure;
+      }
+      original(handle);
+    }) as typeof nodeFs.fsyncSync;
+    let outcome: SaveOutcome;
+    try {
+      outcome = await r.saver.submit(record);
+    } finally {
+      nodeFs.fsyncSync = original;
+    }
+    assert.strictEqual(injected, 1, 'the directory flush after the enqueue was never reached, so this cell measured nothing');
+    assert.notStrictEqual(outcome.notQueued, true, 'the number was given back for an entry that is on disk');
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [record.req], 'the entry is not in the queue file');
+    assert.ok(
+      outcome.durability !== undefined && /could not be flushed/.test(outcome.durability) && /EIO/.test(outcome.durability),
+      `the shipping file operations did not carry the failed flush: ${JSON.stringify(outcome.durability)}`
+    );
+  });
+
+  it('5b: gives the number back when the rename did not land', async () => {
+    const r = over((at) => failingAtTheEnqueue('rename', parts().req, at), [NOTHING_SAID]);
+    core = r.core;
+    const outcome = await r.saver.submit(recordFor(parts()));
+    assert.strictEqual(outcome.notQueued, true, `the number was kept for an entry that never landed: ${outcome.message}`);
+    assert.match(outcome.message, /could not be written to the queue/, `the failure was not the enqueue's: ${outcome.message}`);
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [], 'the queue file holds the entry after all');
+    assert.strictEqual(outcome.durability, undefined, 'a durability warning for an entry that was never written');
+  });
+
+  it('4: keeps the number when something fails after the enqueue, and the entry is there', async () => {
+    const r = over({ ...nodeFileOps }, [{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }], () => () => {
+      throw new Error('the settlement fell over');
+    });
+    core = r.core;
+    const record = recordFor(parts());
+    await assert.rejects(r.saver.submit(record), /fell over/, 'a failure after the enqueue was answered as not queued');
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [record.req], 'the entry is not in the queue file');
+  });
+
+  /*
+   * KEY: THE CASE THAT DEFEATED THE PREVIOUS ANSWER. The entry is queued,
+   * sent, settled and removed -- and THEN something fails. The file no
+   * longer holds it, so any answer that reads the file says "never
+   * queued" and gives the number back for a send that went out.
+   */
+  it('6: keeps the number when the entry was settled and removed before the failure', async () => {
+    const r = over({ ...nodeFileOps }, [{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }], (outbox) => (req, settlement) => {
+      outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+      throw new Error('fell over after settling');
+    });
+    core = r.core;
+    const record = recordFor(parts());
+    await assert.rejects(r.saver.submit(record), /fell over after settling/, 'the failure was answered as not queued');
+    assert.deepStrictEqual(freshlyRead(r.queuePath), [], 'the fixture did not remove the entry, so this is cell 4');
+    assert.strictEqual(sentCalls(core).length, 1);
   });
 });

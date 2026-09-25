@@ -46,9 +46,10 @@ import {
   systemStartTime
 } from '../../src/sessions';
 import { idleProcess } from '../support/host';
-import { Outbox, OutboxEntry } from '../../src/outbox';
+import { Outbox, OutboxEntry, Receipt } from '../../src/outbox';
 import { Publisher } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
+import { receiptFor, strangersReceipt } from '../support/receipts';
 
 /*
  * A CONTROL CHARACTER, named rather than typed, so that the source of
@@ -70,6 +71,7 @@ function keeping(): ImportTarget {
     has: (req) => held.includes(req),
     adopt: (entry) => {
       held.push(entry.req);
+      return receiptFor(entry);
     }
   };
 }
@@ -387,6 +389,7 @@ describe('C8 taking over a dead session’s queue', () => {
       has: (req: string) => taken.some((e) => e.req === req),
       adopt: (e: OutboxEntry) => {
         taken.push(e);
+        return receiptFor(e);
       }
     };
 
@@ -1694,6 +1697,7 @@ describe('the takeover ledger accounts for everything it saw', () => {
                 throw new Error('this window will not take that one');
               }
               held.push(entry.req);
+              return receiptFor(entry);
             }
           },
           'store-a'
@@ -1967,7 +1971,13 @@ describe('review 27 a request that arrived is not a request that did not', () =>
     const led = won.claimed
       ? sessions.importFrom(
           { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
-          { has: (req) => landed.includes(req), adopt: (entry) => landed.push(entry.req) },
+          {
+            has: (req) => landed.includes(req),
+            adopt: (entry) => {
+              landed.push(entry.req);
+              return receiptFor(entry);
+            }
+          },
           'store-a'
         )
       : emptyLedger();
@@ -2105,6 +2115,58 @@ describe('review 28 the destination is asked where the entry ended up', () => {
   }
 
   /*
+   * KEY: A RECEIPT MUST BE THIS ENTRY'S, NOT MERELY A REAL ONE. (queue item
+   * 3, condition 3: the addressing cell lives on the import path, where
+   * receipts multiply -- one per entry of the dead window's queue.) This
+   * destination stores both entries but answers every `adopt` with the FIRST
+   * receipt it ever issued: authentic, and about something else. The second
+   * entry must be counted as not moved, and the source must go on offering
+   * it rather than be marked as having handed it over.
+   */
+  it('counts an entry answered with another entry\'s receipt as not moved, and leaves it offered', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    const dir = path.join(storage, 'sessions', 'S-dead', 'store-a');
+    fs.mkdirSync(dir, { recursive: true });
+    const entry = (req: string): Record<string, unknown> => ({
+      req,
+      cursor: 'w:1',
+      id: 'a.1',
+      field: 'src',
+      payload: req,
+      state: 'queued',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
+    fs.writeFileSync(
+      path.join(dir, 'outbox.json'),
+      JSON.stringify({ cursor: null, entries: [entry('r1'), entry('r2')] }),
+      'utf8'
+    );
+    const held: string[] = [];
+    let first: Receipt | undefined;
+    const led = await ledgerWith(storage, {
+      has: (req) => held.includes(req),
+      adopt: (taken) => {
+        held.push(taken.req);
+        const issued = receiptFor(taken);
+        first = first ?? issued;
+        return first;
+      }
+    });
+    assert.deepStrictEqual(held, ['r1', 'r2'], 'the destination was not offered both entries');
+    assert.strictEqual(led.imported, 1, `the stale receipt was believed: ${JSON.stringify(led)}`);
+    assert.strictEqual(led.failedToMove, 1, JSON.stringify(led));
+    assert.strictEqual(ledgerTotal(led), led.observed);
+    const queue = JSON.parse(fs.readFileSync(path.join(dir, 'outbox.json'), 'utf8')) as {
+      entries: Array<{ req: string; importedBy: unknown }>;
+    };
+    const marked = Object.fromEntries(queue.entries.map((e) => [e.req, e.importedBy !== null]));
+    assert.deepStrictEqual(marked, { r1: true, r2: false }, 'the source was marked for an entry whose receipt was not its own');
+  });
+
+  /*
    * A DESTINATION THAT TOOK IT AND THEN THREW. It has the entry. The old
    * rule called that "could not be moved", and a user acting on it goes
    * looking for work that is already here.
@@ -2151,10 +2213,16 @@ describe('review 28 the destination is asked where the entry ended up', () => {
      * the report wrong AND the other window's copy saying the work was
      * rescued. The import asks before it marks now, so this ends as a
      * request that did not move and the source is left offering it.
+     *
+     * NOTE: WRITTEN AS A RECEIPT FOR ANOTHER REQUEST since queue item 3.
+     * `adopt` returns a receipt and one cannot be forged, so "kept
+     * nothing" can no longer be `undefined`; what a destination can still
+     * do is answer with a receipt that is not this entry's, and that is
+     * what the import now reads.
      */
     const led = await ledgerWith(storage, {
       has: () => false,
-      adopt: () => undefined
+      adopt: () => strangersReceipt()
     });
     assert.strictEqual(
       led.failedToMove,
@@ -2175,7 +2243,7 @@ describe('review 28 the destination is asked where the entry ended up', () => {
     const storage = scratch();
     makeSession(storage, 'S-dead');
     oneRequest(storage, 'S-dead', 'store-a');
-    await ledgerWith(storage, { has: () => false, adopt: () => undefined });
+    await ledgerWith(storage, { has: () => false, adopt: () => strangersReceipt() });
     const queue = JSON.parse(
       fs.readFileSync(path.join(storage, 'sessions', 'S-dead', 'store-a', 'outbox.json'), 'utf8')
     ) as { entries: Array<{ importedBy: unknown }> };
@@ -2596,6 +2664,7 @@ describe('review 29 an entry that was already there is not one that arrived', ()
             },
             adopt: () => {
               adopted += 1;
+              return strangersReceipt();
             }
           },
           'store-a'

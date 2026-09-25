@@ -38,7 +38,7 @@ import * as path from 'path';
 import { checkOneComponent } from './paths';
 import { FileOps, withExclusive } from './fsops';
 import {cleanupTemporary, cleanupFailure} from './temporary';
-import { Outbox, OutboxEntry, readQueueFile } from './outbox';
+import { Outbox, OutboxEntry, Receipt, readQueueFile } from './outbox';
 import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publication';
 
 /*
@@ -192,9 +192,17 @@ export type ClaimOutcome =
  * extension, a plain `Outbox` in a cell -- so that an import cannot race
  * a save that is already in flight. (section 12.11.3, P1-1)
  */
+/*
+ * NOTE: `adopt` RETURNS THE RECEIPT OF THE ENQUEUE THAT TOOK THE ENTRY.
+ * (queue item 3, the SECOND interface change of that design, judged on its
+ * own: it has its own call-site census in test/unit/receipts.test.ts.) A
+ * destination cannot make one without having enqueued something, and the
+ * receipt names the request it answers for -- so what the import loop
+ * holds after `adopt` is evidence about THIS entry, not about the call.
+ */
 export interface ImportTarget {
   has(req: string): boolean;
-  adopt(entry: OutboxEntry): void;
+  adopt(entry: OutboxEntry): Receipt;
 }
 
 export interface ClaimToken {
@@ -1417,27 +1425,45 @@ export class Sessions {
           continue;
         }
         step = 'moving';
-        into.adopt({ ...entry });
+        const receipt = into.adopt({ ...entry });
         /*
-         * NOTE: THE DESTINATION IS ASKED BEFORE THE SOURCE IS MARKED.
+         * NOTE: THE RECEIPT IS THE EVIDENCE, AND IT HAS TO BE THIS ENTRY'S.
          *
-         * On the path where nothing throws, `imported` was counted from
-         * `adopt` having been called -- so a destination that silently
-         * kept nothing was reported as having the request, and the
-         * source was marked as having handed it over. That is the worst
-         * order of the two mistakes: the report is wrong AND the other
-         * window's copy now says the work was rescued. Reproduced in
-         * review.
+         * THE STORY, kept because the fix is only load-bearing if you know
+         * it. The first version counted `imported` from `adopt` having been
+         * called: the sentence it rested on was "adopt was called, so the
+         * destination has it". A destination that silently kept nothing was
+         * then reported as having the request, and the source was marked as
+         * having handed it over -- the worst order of the two mistakes: the
+         * report is wrong AND the other window's copy says the work was
+         * rescued. Reproduced in review. The repair asked the destination
+         * afterwards (`into.has(entry.req)`), one question per entry --
+         * which is a reading of the destination, not of what this call did.
          *
-         * Asking first costs one question per entry and makes
-         * `imported` mean what it says. If the answer is no, the source
-         * is NOT marked -- the request stays offered, which is the
-         * recoverable direction.
+         * Now `adopt` returns the receipt of the enqueue that took the
+         * entry, and nothing but a completed enqueue can make one. What
+         * remains to check is the address: a receipt is valid and still
+         * wrong if it answers for another entry -- a destination handing
+         * back the previous entry's receipt passes every test of
+         * authenticity. Taking over a dead window's queue is where receipts
+         * multiply, one per entry in this loop, so this is where the
+         * address is compared. If it is not this entry's, the entry did not
+         * move and the source is NOT marked: the request stays offered,
+         * which is the recoverable direction.
          */
-        if (!into.has(entry.req)) {
+        if (receipt.req !== entry.req) {
           ledger.failedToMove += 1;
           continue;
         }
+        /*
+         * NOTE: AND ITS DURABILITY WARNING IS NOT SHOWN TO ANYBODY. A receipt
+         * whose queue write landed but whose directory could not be flushed
+         * carries `durability`, and a save shows it after its own notice;
+         * a takeover has no such road -- the ledger counts moves, and nothing
+         * that reads it renders a sentence per entry. Said here rather than
+         * left to be found (condition 5 of the receipt design), and queued
+         * with the other queue writes that cannot show theirs: item 22.
+         */
         source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
         ledger.imported += 1;
       } catch (e) {

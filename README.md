@@ -165,6 +165,9 @@ elsewhere and had a segment of its log published back. The notice says so.
 A save first becomes a durable W draft. The outbox then records request id, cursor,
 block, body and selected working namespace/version **before** commit is sent. Then:
 
+* The queue file written but its directory not flushed: the save stands -- the entry is
+  there and is sent -- and a warning follows the save's notice, saying the entry may not
+  survive the machine losing power.
 * `ok` naming the record it wrote: the entry is dropped and the cursor moves.
 * `ok` naming **no** record: the entry is **kept** and this is reported as a defect. Every
   write the core accepts says which record it appended, and an answer with neither a
@@ -193,9 +196,10 @@ adopted, because a queue that changed in memory and not on disk is worse than on
 changed in neither — the next call sees the new state, believes it was recorded, and acts
 on it. The file is written, flushed, renamed and the directory flushed, so that what
 survives a machine losing power is, as far as this client can arrange it, what the user was
-told had been recorded. That is an effort, not a guarantee: the directory flush is allowed
-to fail silently, because some file systems refuse it and the bytes are already down by
-then — so a failure there is indistinguishable from a refusal, and neither stops the save. And only a
+told had been recorded. That is an effort, not a guarantee. A directory that will not open for
+flushing is passed over silently, because some file systems refuse it and the bytes are
+already down by then. A flush that is attempted and fails does not stop the save either, but
+it is no longer silent when a save is queued: the save stands and a warning follows it. And only a
 file that is *not there* is an empty queue: every other reason a read can fail leaves open
 the question of what was recorded, so the outbox refuses to be written to at all rather
 than replacing a file it could not read.

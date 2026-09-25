@@ -133,6 +133,12 @@ const AT_LEAST: Array<[string, number]> = [
    * row goes when the setting goes; there is nothing left for it to cover.
    */
   ['recovery.test.ts', 33],
+  /*
+   * ADDED in plugin-r3 item 3: the four source censuses of the enqueue
+   * receipt -- the brand, where it is issued, and the two call-site
+   * censuses, one per interface change.
+   */
+  ['receipts.test.ts', 4],
   ['real-core.test.ts', 19],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
@@ -181,7 +187,12 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['saver.test.ts', 67],
   ['saving.test.ts', 34],
-  ['sending.test.ts', 20],
+  /*
+   * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five
+   * runtime cells of the enqueue receipt (design cells 3, 4, 5a, 5b, 6);
+   * 36 -> 37 in its review r1, 5c, through the shipping file operations.
+   */
+  ['sending.test.ts', 37],
   ['sequences.test.ts', 15],
   /*
    * ADDED in round 36: the settler moved out of `extension.ts` into
@@ -189,7 +200,11 @@ const AT_LEAST: Array<[string, number]> = [
    * driven by a cell at all.
    */
   ['settling.test.ts', 23],
-  ['sessions.test.ts', 100],
+  /*
+   * RAISED in plugin-r3 item 3 to the hundred and five it registers, with
+   * the addressed-receipt cell on the import path.
+   */
+  ['sessions.test.ts', 105],
   ['shapes.test.ts', 68],
   ['tombstones.test.ts', 11],
   /*
