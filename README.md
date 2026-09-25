@@ -13,6 +13,24 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 * **Opening a block**: `read <id>` gives the block, and its `heading-src` and `src`
   fields are put in a markdown buffer, in that order. One file per (store, block), so
   opening a block twice reaches the same document.
+* **Opening a subtree as one document**: right-click a node in the outline and choose
+  `theourgia: Open as Document`. It asks `read <id> --recursive --wire` and composes
+  the block and everything under it into one markdown document. **It is a read-only,
+  composed view** under its own scheme, `theourgia-document` -- not a projection file,
+  not on disk, and never written back: it cannot be edited or saved in place. (VS Code's
+  Save As still writes a copy to a file you name; a copy saved over a block's projection
+  file changes that file like any other edit would.) To change a block, open that block
+  from the outline and edit its projection. Each block's heading
+  level is its depth under the opened block (`#` for the block itself), the headings in
+  a block's own body move down by the same depth (not inside fenced code), and anything
+  past `######` stays at `######`. A line
+  `<!-- theourgia block <id> depth <n> -->` in front of each block marks where it starts:
+  a rendered preview hides it, the editor shows it, and it carries the depth that the
+  heading cannot past six levels. Headings written with an underline (`===`, `---`) are
+  not moved. If any block in the subtree cannot be placed -- deleted, an unsettled
+  position, a parent missing from the answer, a title or body that is not text -- the
+  document is not opened, and the message names those blocks. Opening it again reads the
+  store again.
 * **Saving**: `write` stores the body in this window's working namespace. A verified
   readback supplies the immutable version selected by `commit`, carrying a request id
   and cursor through an outbox written before transmission.
@@ -228,8 +246,11 @@ guessing.
 
 ## The file a block is edited in
 
-The current layout is `sessions/<session>/<store>/<block>/current.md` with
-`current.md.meta`. Refresh installs one complete temporary by rename; it does not add a
+The current layout is `sessions/<session>/<store>/<block>/<slug>-<block>.md` with its
+sidecar `<slug>-<block>.md.meta`, where the slug comes from the block's title when it is
+first published (`<block>.md` when the title leaves none) and is never changed after. A
+directory is read by its sidecar, not by its name, so one an older build left as
+`current.md` is still read. Refresh installs one complete temporary by rename; it does not add a
 numbered version. Owner records and replacement temporaries live in sibling control
 directories. History belongs to the core log and exported Git projections.
 

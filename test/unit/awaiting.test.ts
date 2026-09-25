@@ -341,6 +341,11 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
     'outside review caught the false premise. What survives is the argument above, which is ' +
     'about WHICH store the writing goes to rather than about whether there is any. The source ' +
     'asks for a failing cell before a check is added back',
+  openAsDocument:
+    'the waits after the guard open and show a document whose address carries the store it was ' +
+    'composed from, captured before the first wait; they write nothing, and the text they show ' +
+    'is the one composed from that store. A settings change during them leaves a tab that names ' +
+    'the store it came from (queue item 6)',
   reconcileBlock:
     'XR-01 activation schedules bind both waits to the selected file directory and preserve ' +
     'the other store on real disk; XR-03 protects the offered bytes, XR-05 makes owner denial ' +

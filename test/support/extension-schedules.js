@@ -44,6 +44,7 @@ const vs = {
   showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>d},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
+  registerTextDocumentContentProvider:()=>disposable,onDidCloseTextDocument:()=>disposable,
   openTextDocument:async uri=>({uri,isDirty:false,getText:()=>fs.readFileSync(uri.fsPath,'utf8')})},
  commands:{registerCommand:(n,f)=>{commands.set(n,f);return disposable;}}
 };

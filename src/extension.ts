@@ -40,7 +40,10 @@ import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './co
 import { Node, StoreModel } from './model';
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
+import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
+import { projectionNameFor } from './projection-name';
 import {
+  OPEN_AS_DOCUMENT,
   OPEN_BLOCK,
   OTHER_SESSIONS,
   RECONCILE_BLOCK,
@@ -119,6 +122,15 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
 
   public refresh(): void {
     this.changed.fire(undefined);
+  }
+
+  /*
+   * THE SETTINGS A NODE WAS LISTED UNDER, for a command that is handed the
+   * node itself -- a context-menu entry -- rather than the arguments the
+   * row's own command carries.
+   */
+  public generationOf(node: Node): number | undefined {
+    return this.nodeGenerations.get(node);
   }
 
   public getTreeItem(node: Node): vscode.TreeItem {
@@ -245,6 +257,35 @@ function firstLine(text: string): string {
   const line = text.split('\n', 1)[0].replace(/\r$/, '');
   const head = line.length > 80 ? line.slice(0, 80) : line;
   return head === text ? head : `${head}...`;
+}
+
+/*
+ * THE READ-ONLY DOCUMENTS OF `src/document-view.ts`, served under their own
+ * scheme. NOTE: READ-ONLY IS THE SCHEME'S, NOT A REQUEST: the editor does
+ * not let a document a content provider serves be edited or saved in place.
+ * It does offer Save As, which writes a copy to a file the user names -- a
+ * copy saved over a block's projection file is that file changed like any
+ * other. What text an address gets is decided in `DocumentTexts`, where a
+ * cell can ask.
+ */
+class DocumentViews implements vscode.TextDocumentContentProvider {
+  private readonly changed = new vscode.EventEmitter<vscode.Uri>();
+  public readonly onDidChange = this.changed.event;
+
+  constructor(private readonly texts: DocumentTexts) {}
+
+  public show(uri: vscode.Uri, text: string): void {
+    this.texts.hold(uri.toString(), text);
+    this.changed.fire(uri);
+  }
+
+  public forget(uri: vscode.Uri): void {
+    this.texts.forget(uri.toString());
+  }
+
+  public provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
+    return this.texts.textFor(uri.toString(), uri.query);
+  }
 }
 
 function reportFailure(e: unknown): void {
@@ -640,6 +681,56 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     conflicts = found;
     unreachable = because;
     paint();
+  }
+
+  const views = new DocumentViews(
+    new DocumentTexts(() => (client === null ? null : { client, store: config.store }))
+  );
+
+  /*
+   * THE SUBTREE UNDER A NODE, AS ONE READ-ONLY DOCUMENT (queue item 6). It
+   * is composed before anything is opened, so a refusal is said as a
+   * message rather than as an editor that could not load; opening it again
+   * composes it again.
+   */
+  async function openAsDocument(node?: Node): Promise<void> {
+    if (node === undefined) {
+      return;
+    }
+    const listed = provider.generationOf(node);
+    if (listed !== undefined && listed !== generation) {
+      vscode.window.showWarningMessage('theourgia: the store changed after this outline item was created. Refresh the outline and select the block again.');
+      return;
+    }
+    if (client === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const asked = generation;
+    const store = config.store;
+    let composed: Composed;
+    try {
+      composed = await documentOf(client, node.id);
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    if (asked !== generation) {
+      vscode.window.showWarningMessage('theourgia: the store changed while the document was being read. Select the block again.');
+      return;
+    }
+    if (!composed.ok) {
+      vscode.window.showErrorMessage(`theourgia: ${refusalOf(composed)}`);
+      return;
+    }
+    const uri = vscode.Uri.from({
+      scheme: DOCUMENT_SCHEME,
+      path: `/${projectionNameFor(composed.title, node.id)}`,
+      query: documentQuery(store, node.id)
+    });
+    views.show(uri, composed.text);
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(document, { preview: false });
   }
 
   async function openBlock(id: string, sourceGeneration?: number): Promise<void> {
@@ -1233,6 +1324,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await refreshConflicts();
     }),
     vscode.commands.registerCommand(OPEN_BLOCK.id, openBlock),
+    vscode.workspace.registerTextDocumentContentProvider(DOCUMENT_SCHEME, views),
+    vscode.workspace.onDidCloseTextDocument((closed) => {
+      if (closed.uri.scheme === DOCUMENT_SCHEME) {
+        views.forget(closed.uri);
+      }
+    }),
+    vscode.commands.registerCommand(OPEN_AS_DOCUMENT.id, openAsDocument),
     vscode.commands.registerCommand(RECONCILE_BLOCK.id, reconcileBlock),
     /*
      * NOTE: THE HANDLER IS ONE LINE ON PURPOSE. Everything this command

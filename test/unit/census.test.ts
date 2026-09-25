@@ -118,6 +118,12 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['decoding.test.ts', 12],
   ['dependency-sexpr.test.ts', 15],
+  /*
+   * ADDED in plugin-r3 item 6: a subtree composed as one read-only
+   * document -- fifteen cells on the composition, five on the text behind
+   * a document's address, four against a real store.
+   */
+  ['document-view.test.ts', 24],
   ['documents.test.ts', 8],
   ['durability.test.ts', 33],
   ['fsops.test.ts', 11],

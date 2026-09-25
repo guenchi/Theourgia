@@ -90,7 +90,18 @@ export const SEARCH_BLOCKS: CommandName = {
   title: 'theourgia: Search Blocks'
 };
 
+/*
+ * A SUBTREE AS ONE READ-ONLY DOCUMENT (queue item 6). See
+ * `src/document-view.ts`: a view composed from the store, not a projection,
+ * and never written back.
+ */
+export const OPEN_AS_DOCUMENT: CommandName = {
+  id: 'theourgia.openAsDocument',
+  title: 'theourgia: Open as Document'
+};
+
 export const COMMANDS: CommandName[] = [
+  OPEN_AS_DOCUMENT,
   SEARCH_BLOCKS,
   MIGRATE_BLOCK,
   REFRESH_OUTLINE,

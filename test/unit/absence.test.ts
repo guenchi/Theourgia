@@ -72,7 +72,7 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers TRUE -- "this file may hold work". A document with no marker was written by ' +
     'something this version does not know about, and the safe answer is the one that stops it ' +
     'being overwritten.',
-  'extension.ts:196':
+  'extension.ts:208':
     'answers an empty list to the TREE, and reports through `failed` -- except when the store ' +
     'changed under it, which is the one case that skips the report. The reporting call is ' +
     'conditional, so the rule no longer exempts it; the condition is `asked === generation()`, ' +

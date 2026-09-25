@@ -36,6 +36,10 @@
     },
     "commands": [
       {
+        "command": "theourgia.openAsDocument",
+        "title": "theourgia: Open as Document"
+      },
+      {
         "command": "theourgia.search",
         "title": "theourgia: Search Blocks",
         "icon": "$(search)"
@@ -83,9 +87,19 @@
           "group": "navigation"
         }
       ],
+      "view/item/context": [
+        {
+          "command": "theourgia.openAsDocument",
+          "when": "view == theourgiaOutline && viewItem == theourgia.block"
+        }
+      ],
       "commandPalette": [
         {
           "command": "theourgia.openBlock",
+          "when": "false"
+        },
+        {
+          "command": "theourgia.openAsDocument",
           "when": "false"
         }
       ]
