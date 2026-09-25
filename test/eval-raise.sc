@@ -148,8 +148,9 @@
   (let ((r (cli-eval "(+ 1 2)")))
     (call-with-output-file meta (lambda (p) (put-string p saved)) 'truncate)
     (want "ER-I a store whose meta.sexp does not parse answers the worker's fixed message, not a value the source raised"
-          (list (rc-of r) (head2 (answer-of r)) (field (answer-of r) 'message) (field (answer-of r) 'reason))
-          '(1 (error eval-exception) "Evaluation raised an exception" #f))))
+          (list (rc-of r) (head2 (answer-of r)) (field (answer-of r) 'kind) (field (answer-of r) 'message)
+                (field (answer-of r) 'reason) (field (answer-of r) 'value))
+          '(1 (error eval-exception) raised "Evaluation raised an exception" #f #f))))
 
 (system (string-append "chmod -R u+rwx " here " 2>/dev/null; rm -rf " here))
 (printf "\n~a failures\nrows: ~a\neval-raise complete\n" bad rows)

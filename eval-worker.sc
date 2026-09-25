@@ -203,10 +203,12 @@
 ;;     is answered as itself;
 ;;   - the worker's own refusal (`refuse!` is called inside these steps), an
 ;;     unreadable entry or a condition goes on to `answer`'s own clauses;
-;;   - anything else -- the store's load raises `log-error`, a record, and
-;;     one path a bare symbol -- answers the fixed message. Passed on, it
-;;     would reach `raised-answer` and be reported as a value the source
-;;     raised.
+;;   - anything else -- the store's load raises `log-error`, a record --
+;;     answers the fixed message. Passed on, it would reach `raised-answer`
+;;     and be reported as a value the source raised. (log.sc's one bare
+;;     symbol raise, 'unreadable-resident-source, never gets here: it is
+;;     inside load-fingerprint, whose whole body is `(guard (e (#t #f))
+;;     ...)`, and replay calls that only with the resident cache on.)
 (define (worker-step thunk)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) (refuse! e))
             ((or (worker-refusal? e) (unreadable-entry? e) (condition? e)) (raise e))
