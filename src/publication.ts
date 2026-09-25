@@ -33,6 +33,7 @@ import { createHash, randomUUID } from 'crypto';
 import * as path from 'path';
 import { FileOps } from './fsops';
 import {cleanupFailure, cleanupTemporary, replaceText, temporaryFor} from './temporary';
+import { projectionFileIn, projectionNameFor, titleOfPrefix } from './projection-name';
 import { Owners } from './ownership';
 
 /*
@@ -324,6 +325,11 @@ export type PublishOutcome =
        */
       because: 'document-open' | 'dirty-document' | 'digest-moved' | 'not-ours' | 'projection-incomplete' | 'migration-required' | 'unknown-file';
       file: string | null;
+      /*
+       * THE NAMES SEEN, when a block directory holds more than one projection
+       * and nothing here can say which is the block's (queue item 5).
+       */
+      seen?: string[];
     };
 
 /*
@@ -1054,9 +1060,15 @@ export class Publisher {
     return sidecarPathOf(file);
   }
 
+  /*
+   * THE DIRECTORY'S PROJECTION, found rather than spelled (queue item 5). One
+   * `.md` with a sidecar, whatever it is called -- `current.md` in a directory
+   * made before names carried titles. None, or more than one, is null: this
+   * reader has nothing it can call the block's.
+   */
   public latestIn(directory: string): string | null {
-    const file = path.join(directory, 'current.md');
-    return this.files.exists(file) || this.files.exists(this.metaOf(file)) ? file : null;
+    const found = projectionFileIn(this.files, directory);
+    return found.found === 'one' ? found.file : null;
   }
 
   private write(file: string, sidecar: Sidecar): void {
@@ -1097,7 +1109,20 @@ export class Publisher {
   private publishInto(directory: string, what: Omit<PublishRequest,'directory'|'cursor'>,
       baseline: {cursor:string|null} | null, explicit: boolean, expectedRaw?:string): PublishOutcome {
     return withExclusive(directory, (): PublishOutcome => {
-    const file = path.join(directory, 'current.md');
+    /*
+     * THE FILE IS THE ONE ALREADY HERE, OR A NEW NAME. (queue item 5) A block
+     * published before keeps the name it was given, `current.md` included;
+     * a first publication names the file after the title it has now, and that
+     * name then stays. Two projections in one directory are not chosen
+     * between: the publication is refused, naming both.
+     */
+    const found = projectionFileIn(this.files, directory);
+    if (found.found === 'unknown') {
+      return {published:false,because:'unknown-file',file:null,seen:found.names};
+    }
+    const file = found.found === 'one'
+      ? found.file
+      : path.join(directory, projectionNameFor(titleOfPrefix(what.prefix), what.blockId));
     const refuse = (because: Extract<PublishOutcome,{published:false}>['because']): PublishOutcome => ({published:false,because,file});
     if (this.documents.isDirty?.(file)) return refuse('dirty-document');
     if (this.files.list(directory).some(n => /^\d+\.md(?:\.meta)?$/.test(n))) return refuse('migration-required');

@@ -1,10 +1,17 @@
 import {FileOps} from './fsops';
 import * as path from 'path';
 import {randomUUID} from 'crypto';
+import {isProjectionPath} from './projection-name';
 
 export function temporaryFor(files: FileOps, target: string): string {
   const directory = path.dirname(target);
-  const staging = path.basename(target).startsWith('current.md')
+  /*
+   * A projection and its sidecar are staged OUTSIDE their block directory,
+   * so that no temporary ever sits where `projectionFileIn` looks. Which files
+   * those are is asked of their name's form (queue item 5); it used to be
+   * whether the name began with `current.md`.
+   */
+  const staging = isProjectionPath(target)
     ? path.join(path.dirname(directory), '.projection-io', path.basename(directory)) : directory;
   files.makeDirectory(staging);
   return path.join(staging, `${path.basename(target)}.${process.pid}.${randomUUID()}.tmp`);

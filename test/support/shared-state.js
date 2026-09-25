@@ -15,7 +15,8 @@ try {
   } else if(operation==='owner') {
     report({kind:'result',status:'ok',outcome:new Owners().take(directory,sessionId,[])});
   } else {
-    const file=path.join(directory,'current.md');let paused=false;
+    // The block's projection, found as the product finds it (queue item 5).
+    const file=new Publisher(nodeFileOps,{isOpen:()=>false}).latestIn(directory)||path.join(directory,'a.1.md');let paused=false;
     const files={...nodeFileOps,readText(p){const result=nodeFileOps.readText(p);if(p===file+'.meta'&&!paused){paused=true;pause();}return result;}};
     const publisher=new Publisher(files,{isOpen:()=>false},{owners:new Owners(files),sessionId});
     report({kind:'result',status:'ok',seq:publisher.takeSequence(file,'held-R')});

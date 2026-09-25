@@ -61,7 +61,8 @@ describe('XU real cleanup observations',()=>{
       const root=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-block-cleanup-')),directory=path.join(root,'block');
       const request={directory,storeId:'A',blockId:'a.1',prefix:'',text:'old whole body',cursor:null};
       const initial=new Publisher(nodeFileOps,{isOpen:()=>false});await initial.publish(request);
-      const current=path.join(directory,'current.md');let parent='',temporary='',original:unknown,removed:unknown;
+      // An empty prefix in block `a.1` is published as `a.1.md` (queue item 5).
+      const current=path.join(directory,'a.1.md');let parent='',temporary='',original:unknown,removed:unknown;
       const probes:unknown[]=[];
       const files:FileOps={...nodeFileOps,
         rename(from,to){

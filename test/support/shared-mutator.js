@@ -5,7 +5,10 @@ const {Publisher,digestOfBytes}=require('../../src/publication');
 const {Owners}=require('../../src/ownership');
 const {Saving}=require('../../src/saving');
 const [directory,operation,hold]=process.argv.slice(2);
-const file=path.join(directory,operation.includes('Legacy')?'1.md':'current.md');
+// The block's projection, found as the product finds it; with none yet, the name a first
+// publication with an empty prefix gives block `a.1` (queue item 5).
+const file=operation.includes('Legacy')?path.join(directory,'1.md')
+  :(new Publisher(nodeFileOps,{isOpen:()=>false}).latestIn(directory)||path.join(directory,'a.1.md'));
 const initial=new Publisher(nodeFileOps,{isOpen:()=>false}).sidecarOf(file);
 const owner=new Owners().ownerOf(directory);
 const report=value=>fs.writeSync(1,JSON.stringify(value)+'\n');

@@ -90,8 +90,9 @@ export async function migrateLegacy(parts: {
     if (!files.exists(plan.archive)) continue;
     return withExclusive(directory, (): MigrationOutcome => {
     if (!parts.sourceStillSafe() || parts.pending()) return {migrated:false,because:'active-source-or-pending',retained};
-    const current=path.join(directory,'current.md'),held=parts.publisher.sidecarOf(current);
-    if (parts.isDirty(current)) return {migrated:false,because:'dirty-document',retained};
+    // The projection an earlier attempt may have left, found rather than spelled (queue item 5).
+    const current=parts.publisher.latestIn(directory),held=current===null?null:parts.publisher.sidecarOf(current);
+    if (current!==null && parts.isDirty(current)) return {migrated:false,because:'dirty-document',retained};
     if (held && held.projection?.id!==plan.selected.source.id) return {migrated:false,because:'projection-changed',retained};
     for (const original of plan.originals) {
       const archived=path.join(plan.archive,path.basename(original.file));
@@ -99,7 +100,7 @@ export async function migrateLegacy(parts: {
     }
     try {
       if (!parts.claimDestination()) return {migrated:false,because:'not-ours',retained};
-      if (held?.phase==='publishing') parts.publisher.recoverCurrent(current,{source:plan.selected.source,text:plan.selected.text});
+      if (current!==null && held?.phase==='publishing') parts.publisher.recoverCurrent(current,{source:plan.selected.source,text:plan.selected.text});
       const result=parts.publisher.publishNow({directory,storeId:parts.storeId,blockId:parts.blockId,
         prefix:plan.selected.prefix,text:plan.selected.text,projection:plan.selected.source,cursor:null});
       if (!result.published) return {migrated:false,because:result.because,retained};

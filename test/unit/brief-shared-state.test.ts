@@ -45,7 +45,7 @@ describe('XL actual shared sidecar, process identity and takeover boundaries',fu
       assert.strictEqual(fs.statSync(lock).ino,inode,'handoff did not replace the stable lock inode');
       assert.throws(()=>new Saving(nodeFileOps,{owners:new Owners(),sessionId:'A'}).releaseSend(first.file,1),/ownership|owner/i);
       assert.strictEqual(fs.readFileSync(first.file+'.meta','hex'),before,'late owner wrote the new owner sidecar');
-      assert.deepStrictEqual(fs.readdirSync(directory).sort(),['current.md','current.md.meta']);
+      assert.deepStrictEqual(fs.readdirSync(directory).sort(),[path.basename(first.file),path.basename(first.file)+'.meta']);
     } finally {a.child.kill('SIGCONT');a.child.kill('SIGKILL');}
   });
   it('XL-05 two real activations cannot reuse a live session namespace',async()=>{

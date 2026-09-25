@@ -90,7 +90,7 @@ describe('C1 two windows keep one block in two files', function () {
       steps: [
         { beginSession: { sessionId: 'S-a', stores: ['/stores/one'] } },
         publishStep('S-a', 'no heading at all\n', ''),
-        { save: { sessionId: 'S-a', blockId: 'a.2', name: 'current.md', text: 'no heading at all\n' } }
+        { save: { sessionId: 'S-a', blockId: 'a.2', text: 'no heading at all\n' } }
       ]
     });
     const b = await runHost({
@@ -98,7 +98,7 @@ describe('C1 two windows keep one block in two files', function () {
       steps: [
         { beginSession: { sessionId: 'S-b', stores: ['/stores/one'] } },
         publishStep('S-b', '## Grown A Heading\nbody\n', '## Grown A Heading\n'),
-        { save: { sessionId: 'S-b', blockId: 'a.2', name: 'current.md', text: '## Grown A Heading\nbody\n' } }
+        { save: { sessionId: 'S-b', blockId: 'a.2', text: '## Grown A Heading\nbody\n' } }
       ]
     });
 
@@ -303,7 +303,7 @@ describe('C3 a publication interrupted for real', function () {
   async function standingAfter(storage: string): Promise<{ kind?: string; complete?: boolean }> {
     const after = await runHost({
       storage,
-      steps: [{ standingOf: { sessionId: 'S-a', blockId: 'a.2', name: 'current.md' } }]
+      steps: [{ standingOf: { sessionId: 'S-a', blockId: 'a.2' } }]
     });
     return (after.steps.find((s) => s.step === 'standingOf')?.standing ?? {}) as {
       kind?: string;

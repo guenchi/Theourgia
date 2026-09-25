@@ -82,9 +82,10 @@ function crashingOps(inner, afterWrites) {
   const wrap=name=>(...args)=>{
     if(afterWrites===0 && (name==='writeText'||name==='writeDurably'))stop('before-preparation',args[0]);
     const result=inner[name](...args);
-    if(name==='rename' && args[1].endsWith('current.md.meta') && afterWrites===1 &&
+    // A projection and its sidecar by their suffix: the name is chosen at the first publication (queue item 5).
+    if(name==='rename' && args[1].endsWith('.md.meta') && afterWrites===1 &&
        JSON.parse(inner.readText(args[1])).phase==='publishing')stop('after-prepared',args[1]);
-    if(name==='rename' && args[1].endsWith('current.md') && afterWrites===2)stop('after-body-rename',args[1]);
+    if(name==='rename' && args[1].endsWith('.md') && afterWrites===2)stop('after-body-rename',args[1]);
     return result;
   };
   return Object.fromEntries(Object.keys(inner).map(name=>[name,typeof inner[name]==='function'?wrap(name):inner[name]]));
@@ -172,13 +173,13 @@ async function main() {
           const p = load();
           const publisher = new p.publication.Publisher(p.fsops.nodeFileOps, { isOpen: () => false });
           const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const dir = typeof argument === 'string' ? null
+            : sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId);
+          // Without a name, the block's projection is found as the product finds it (queue item 5).
           const where =
             typeof argument === 'string'
               ? path.join(storage, argument)
-              : path.join(
-                  sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
-                  argument.name
-                );
+              : argument.name ? path.join(dir, argument.name) : (publisher.latestIn(dir) || path.join(dir, 'no-projection.md'));
           report({ step: 'standingOf', standing: publisher.standingOf(where) });
           break;
         }
@@ -236,11 +237,10 @@ async function main() {
           const p = load();
           const saving = new p.saving.Saving(p.fsops.nodeFileOps);
           const sessions2 = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
-          const file = path.join(
-            sessions2.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
-            argument.name
-          );
           const publisher = new p.publication.Publisher(p.fsops.nodeFileOps, { isOpen: () => false });
+          const dir = sessions2.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId);
+          // Without a name, the block's projection is found as the product finds it (queue item 5).
+          const file = argument.name ? path.join(dir, argument.name) : (publisher.latestIn(dir) || path.join(dir, 'no-projection.md'));
           const decision = saving.decide(
             { file, isDirty: false, getText: () => argument.text },
             publisher.sidecarOf(file)

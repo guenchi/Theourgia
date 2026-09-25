@@ -23,7 +23,7 @@ describe('XC-05/06 actual process death at every projection write boundary',func
       const completed=run(good,'replace',newText);
       for(let stop=1;stop<=completed.trace.length;stop++){
         const crashed=fs.mkdtempSync(path.join(base,'first-'));fs.cpSync(seed,crashed,{recursive:true});run(crashed,'replace',newText,stop);firstDeaths++;
-        const before=fs.readFileSync(path.join(crashed,'block','current.md'),'utf8');
+        const before=fs.readFileSync(path.join(crashed,'block','a-a.1.md'),'utf8');
         assert.ok(before===oldText||before===newText,'first death has a whole body');
         const inspect=fs.mkdtempSync(path.join(base,'inspect-'));fs.cpSync(crashed,inspect,{recursive:true});
         const recovered=run(inspect,'recover','');

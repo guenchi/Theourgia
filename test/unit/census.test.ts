@@ -127,6 +127,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['ownership.test.ts', 18],
   ['publication.test.ts', 67],
   /*
+   * ADDED in plugin-r3 item 5: the slug of a title, and how a block's
+   * projection is named once and found again by its sidecar.
+   */
+  ['projection-name.test.ts', 12],
+  /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
    * the setting. Its cells are one per setting in package.json, so the

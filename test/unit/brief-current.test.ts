@@ -8,6 +8,8 @@ import {Saving} from '../../src/saving';
 import {digestOfBytes} from '../../src/publication';
 const scratch=()=>fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-current-'));
 const request=(directory:string,text:string)=>({directory,storeId:'/stores/A',blockId:'a.1',prefix:'# A\n',text,cursor:null});
+// The projection's name for the heading `# A` and block `a.1`, chosen at the first publication (queue item 5).
+const CANON='a-a.1.md';
 describe('XC v20 current projection replaces C2 immutable publication',()=>{
   it('XC-01/02 same canonical path holds every successful clean update',async()=>{
     const directory=scratch(),files=new RecordingFs(),publisher=new Publisher(files,{isOpen:()=>true,isDirty:()=>false});
@@ -15,9 +17,9 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
       const text='# A\n'+'value'.repeat(n+1);
       const answer=await publisher.publish(request(directory,text));
       assert.strictEqual(answer.published,true,'clean updates');
-      assert.strictEqual(answer.file,path.join(directory,'current.md'),'canonical path');
+      assert.strictEqual(answer.file,path.join(directory,CANON),'canonical path');
       assert.strictEqual(fs.readFileSync(answer.file as string,'utf8'),text,'updated bytes');
-      assert.deepStrictEqual(fs.readdirSync(directory).sort(),['current.md','current.md.meta'],'canonical list');
+      assert.deepStrictEqual(fs.readdirSync(directory).sort(),[CANON,`${CANON}.meta`],'canonical list');
     }
   });
   it('XC-03 dirty documents retain both disk and metadata',async()=>{
@@ -35,7 +37,7 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
     await publisher.publish(request(directory,'# A\nlong old contents'));
     files.entries.length=0;
     const answer=await publisher.publish(request(directory,'# A\nx'));
-    assert.strictEqual(answer.file,path.join(directory,'current.md'));
+    assert.strictEqual(answer.file,path.join(directory,CANON));
     assert.strictEqual(files.countOf('writeText',answer.file as string),0,'current writeText');
     assert.strictEqual(files.countOf('writeDurably',answer.file as string),0,'current truncate');
     assert.strictEqual(files.countOf('rename',answer.file as string),1,'current commit rename');

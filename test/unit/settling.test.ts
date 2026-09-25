@@ -69,6 +69,17 @@ interface Rig {
   said: Notice[];
 }
 
+/*
+ * THE BLOCK'S PROJECTION IN A DIRECTORY, found as the product finds it
+ * (queue item 5): its name is chosen at the first publication, so it is not
+ * spelled here.
+ */
+function projectionIn(r: Rig, directory: string): string {
+  const file = r.publisher.latestIn(directory);
+  assert.ok(file !== null, `no projection was published in ${directory}`);
+  return file;
+}
+
 function rig(): Rig {
   const storage = scratch();
   const sessions = new Sessions(nodeFileOps, storage);
@@ -358,7 +369,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * its digests, its block -- the same block id, which is the whole
      * reason it collides.
      */
-    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), 'current.md');
+    const bFile = projectionIn(r, r.sessions.directoryFor('S-mine', B, 'a.2'));
     const bRecord = r.publisher.sidecarOf(bFile);
     assert.ok(bRecord !== null, 'the fixture did not publish store B’s version');
 
@@ -433,7 +444,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const { req } = await queuedBeforeWeStarted(r, A, 'a.2', same);
     await queuedBeforeWeStarted(r, B, 'a.2', same);
 
-    const bFile = path.join(r.sessions.directoryFor('S-mine', B, 'a.2'), 'current.md');
+    const bFile = projectionIn(r, r.sessions.directoryFor('S-mine', B, 'a.2'));
     /*
      * STORE B'S CONTEXT, AND ITS DIGEST IS THE RIGHT ONE FOR STORE A'S
      * REQUEST TOO -- that is the whole point: the bytes are identical,
@@ -713,7 +724,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      * what separates "recorded this answer" from "did not" is the
      * CURSOR, which a settlement moves and nothing else does.
      */
-    const file = path.join(r.sessions.directoryFor('S-mine', A, 'a.2'), 'current.md');
+    const file = projectionIn(r, r.sessions.directoryFor('S-mine', A, 'a.2'));
     const record = r.publisher.sidecarOf(file);
     assert.ok(record !== null);
     assert.notStrictEqual(

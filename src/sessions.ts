@@ -37,6 +37,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { checkOneComponent } from './paths';
 import { FileOps, withExclusive } from './fsops';
+import { projectionFileIn } from './projection-name';
 import {cleanupTemporary, cleanupFailure} from './temporary';
 import { Outbox, OutboxEntry, Receipt, readQueueFile } from './outbox';
 import { Publisher, QueueView, sidecarFromDisk, sidecarPathOf } from './publication';
@@ -870,7 +871,13 @@ export class Sessions {
         const state=this.livenessOfSessionNow(owner.record.sessionId);
         if (!('alive' in state) || state.alive) return false;
       }
-      return owners.take(directory,this.mine,[path.join(directory,'current.md.meta')]).held;
+      /*
+       * THE SIDECAR THE PREVIOUS OWNER OWES, found rather than spelled (queue
+       * item 5). A directory with no projection yet has no sidecar anybody
+       * could owe; it used to be named here anyway, as `current.md.meta`.
+       */
+      const found=projectionFileIn(this.files,directory);
+      return owners.take(directory,this.mine,found.found==='one'?[`${found.file}.meta`]:[]).held;
     });
   }
 

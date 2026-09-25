@@ -92,18 +92,18 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
   'ownership.ts:111':
     'answers NULL for an owner record that will not parse, and the caller turns that into ' +
     '`{known: false}` one level up -- "I do not know who owns this", never "nobody does".',
-  'sessions.ts:68':
+  'sessions.ts:69':
     'answers NULL for a start time that cannot be read, and the identity that uses it is then ' +
     'undecidable rather than matching. Named absence.',
-  'sessions.ts:1324':
+  'sessions.ts:1331':
     'answers nothing, and writes `unreadableQueue` into the takeover ledger first. The ledger ' +
     'is the survey\'s whole output, so the failure is not lost -- it is the finding. A throw ' +
     'here would end a survey of every OTHER window over one file that will not read.',
-  'sessions.ts:1359':
+  'sessions.ts:1366':
     'as sessions.ts:1316, on the import rather than the survey: `unreadableQueue` is counted ' +
     'and the file is left untouched, because the queue holds the only copy of that window\'s ' +
     'unsent work and a takeover that repaired it would write over what it came to rescue.',
-  'sessions.ts:901':
+  'sessions.ts:908':
     'answers TRUE -- "a relevant send may be in flight". A migration is refused rather than ' +
     'permitted over work nobody could read.',
   'saving.ts:389':

@@ -680,6 +680,8 @@ describe('D6 the mark an old-format send leaves on a block', () => {
 
 // C2 is replaced by v20 XC-01..04; each old safety axis remains executable here.
 describe('C2 to XC current publication handoff', () => {
+  // The name the first publication gives `## Two` in block `a.2` (queue item 5).
+  const CANON = 'two-a.2.md';
   it('uses one canonical path for successive readings', async () => {
     const dir=scratch(),publisher=new Publisher(new RecordingFs(),nothingOpen());
     const first=await publisher.publish(request(dir,'## Two\none\n'));
@@ -687,12 +689,12 @@ describe('C2 to XC current publication handoff', () => {
     assert.ok(first.published&&second.published);
     assert.strictEqual(first.file,second.file);
     assert.strictEqual(fs.readFileSync(second.file as string,'utf8'),'## Two\ntwo\n');
-    assert.deepStrictEqual(fs.readdirSync(dir).sort(),['current.md','current.md.meta']);
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(),[CANON,`${CANON}.meta`]);
   });
   it('never opens the canonical body for a truncating write', async () => {
     const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
     for(const body of ['long long body','x','third'])assert.ok((await publisher.publish(request(dir,'## Two\n'+body))).published);
-    const file=path.join(dir,'current.md');
+    const file=path.join(dir,CANON);
     assert.strictEqual(files.countOf('writeText',file)+files.countOf('writeDurably',file),0);
     assert.strictEqual(files.countOf('rename',file),3);
     assert.strictEqual(fs.readFileSync(file,'utf8'),'## Two\nthird');
@@ -701,18 +703,18 @@ describe('C2 to XC current publication handoff', () => {
     const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
     await publisher.publish(request(dir,'## Two\none'));
     await publisher.publish(request(dir,'## Two\ntwo'));
-    assert.strictEqual(files.countOf('unlink',path.join(dir,'current.md')),0);
-    assert.strictEqual(files.countOf('rename',path.join(dir,'current.md')),2);
+    assert.strictEqual(files.countOf('unlink',path.join(dir,CANON)),0);
+    assert.strictEqual(files.countOf('rename',path.join(dir,CANON)),2);
   });
   it('replaces the record through a temporary file rather than truncating it', async () => {
     const dir=scratch(),files=new RecordingFs();
     await new Publisher(files,nothingOpen()).publish(request(dir,'## Two\none'));
-    const meta=path.join(dir,'current.md.meta');
+    const meta=path.join(dir,`${CANON}.meta`);
     assert.ok(files.countOf('rename',meta)>=2);
     assert.strictEqual(files.countOf('writeText',meta)+files.countOf('writeDurably',meta),0);
   });
   it('preserves disk and sidecar when the current editor is dirty', async () => {
-    const dir=scratch(),file=path.join(dir,'current.md');
+    const dir=scratch(),file=path.join(dir,CANON);
     await new Publisher(new RecordingFs(),nothingOpen()).publish(request(dir,'## Two\none'));
     const before=[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),files=new RecordingFs();
     const refused=await new Publisher(files,openOn(file)).publish(request(dir,'## Two\ntwo'));

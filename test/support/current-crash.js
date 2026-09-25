@@ -4,7 +4,8 @@ const product=path.join(__dirname,'../../src');
 const {nodeFileOps}=require(path.join(product,'fsops'));
 const {Publisher}=require(path.join(product,'publication'));
 const {Saving}=require(path.join(product,'saving'));
-const [root,mode,body,stop]=process.argv.slice(2),directory=path.join(root,'block'),file=path.join(directory,'current.md');
+// `# A` in block `a.1` is published as `a-a.1.md` (queue item 5).
+const [root,mode,body,stop]=process.argv.slice(2),directory=path.join(root,'block'),file=path.join(directory,'a-a.1.md');
 const trace=[];let boundary=0;
 function point(op,phase,args){
   trace.push({op,phase,args});boundary++;

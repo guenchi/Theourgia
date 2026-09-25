@@ -24,7 +24,8 @@ describe('XC-10/11/12/13/15 legacy migration preserves every original',()=>{
   it('the third draft is selected from verified W and all originals have a named archive',async()=>{
     const {directory,sources}=setup(),before=bytes(directory);
     const result=await migrateLegacy(args(directory,sources));assert.ok(result.migrated);
-    assert.deepStrictEqual(fs.readdirSync(directory).sort(),['current.md','current.md.meta']);
+    // A migrated block gets a first publication's name: `# A` and `a.1` (queue item 5).
+    assert.deepStrictEqual(fs.readdirSync(directory).sort(),['a-a.1.md','a-a.1.md.meta']);
     assert.strictEqual(fs.readFileSync(result.file,'utf8'),'# A\ndraft');
     assert.deepStrictEqual(bytes(result.archive),before);
   });

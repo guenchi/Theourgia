@@ -724,7 +724,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (!outcome.published) {
       vscode.window.showWarningMessage(outcome.because==='dirty-document'
         ? 'The store has newer content. Your unsaved edits are preserved; save or resolve them before updating.'
-        : `The current file was not updated (${outcome.because}). Keep the file and resolve its working or migration state before retrying.`);
+        : outcome.seen !== undefined
+          ? `The block's file was not updated: its folder holds ${outcome.seen.join(', ')}, and this extension cannot tell which one is the block's. Keep them, and remove or move the ones that are not.`
+          : `The current file was not updated (${outcome.because}). Keep the file and resolve its working or migration state before retrying.`);
       if (outcome.file !== null && !files.exists(outcome.file)) return;
       /*
        * The editor holds the path this would have written. Showing what
