@@ -53,7 +53,8 @@ import { SendRecord } from './record';
 import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
-import { Datum, answerOf, formatCursor, isSym } from './wire';
+import { RETRY_OUTBOX } from './commands';
+import { Datum, answerOf, formatCursor, isList, isSym, wire } from './wire';
 
 /*
  * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
@@ -329,8 +330,15 @@ export const RETRYABLE_REFUSALS = [
  *
  * So the entry is parked at once, with a sentence naming what to change
  * -- and the way back is the change itself: a configuration change makes
- * this extension try each parked entry once more. There is no recovery
- * command to teach, because editing the setting IS the recovery.
+ * this extension try each parked entry once more.
+ *
+ * NOTE: AND THE RETRY COMMAND (`RETRY_OUTBOX`) DOES THE SAME, because not
+ * every member of this family is answered by a setting. An instance
+ * mismatch (below) is repaired outside the editor -- the daemon restarted
+ * under the right home, or the store adopted -- and nothing about that
+ * reaches `onDidChangeConfiguration`. This file used to say there was no
+ * recovery command to teach; with that member there has to be one, and it
+ * is the command the user already has (`Saver.retryParked`).
  */
 export const SETTINGS_REFUSALS: Record<string, string> = {
   'store-not-found':
@@ -395,7 +403,67 @@ function whichSettingsRefusal(datum: Datum): { kind: string; message: string } |
       return { kind, message: SETTINGS_REFUSALS[kind] };
     }
   }
+  const instance = instanceMismatchOf(datum);
+  if (instance !== null) {
+    return { kind: 'instance', message: instanceMessage(instance) };
+  }
   return null;
+}
+
+/*
+ * AN INSTANCE MISMATCH IS NAMED AT POSITION 2, NOT POSITION 1. (queue 7)
+ *
+ * The core answers `(error refused (instance machine))` -- quoted from
+ * 877f0da by the main session on 2026-09-25: `verify-instance` found the
+ * store's recorded identity (machine, device, inode or nonce) different
+ * from where it is being written, `reserve-then-write!` refused before
+ * the append, and `write-outcome->answer` put the reason after the word
+ * `refused`. So the name alone says "the store declined this", which is
+ * true, and would settle the save as a permanent refusal -- for a
+ * condition a person fixes by restarting a daemon. It is read by the
+ * clause at position 2, and joins the settings family: kept, parked, and
+ * sent again when the person says so.
+ *
+ * NOTE: THE OTHER REASONS AT POSITION 2 ARE LEFT WHERE THEY WERE. `refused`
+ * carries sixteen of them in 877f0da (integrity, registry-ahead,
+ * no-instance, ...); only this family was ruled into the settings
+ * family, and the rest stay refusals whose detail now reaches the
+ * sentence (`describeRefusal`). Which of them should also be kept for a
+ * person is the main session's next ruling, not a guess made here.
+ *
+ * KEY: WHEN THE CORE RENAMES THIS (its F31: `(error instance-mismatch
+ * (what machine))`), THIS SHAPE STAYS RECOGNISED. `theourgia.corePath` can
+ * always name an older core, and a reader that dropped the old shape would
+ * turn every older core's instance mismatch back into a permanent refusal.
+ */
+function instanceMismatchOf(datum: Datum): string | null {
+  const form = answerOf(datum, 'error', { at: 1, is: 'refused' });
+  if (form === null || !isList(datum) || datum.length < 3) {
+    return null;
+  }
+  const at = datum[2];
+  if (!isList(at) || !isSym(at[0], 'instance')) {
+    return null;
+  }
+  const what = form.value('instance');
+  return what.read && isSym(what.value) ? what.value.name : null;
+}
+
+function instanceMessage(what: string): string {
+  const where =
+    what === 'machine'
+      ? 'the store was created under another machine identity -- another THEOURGIA_HOME, or ' +
+        'another computer -- than the one its daemon is running under'
+      : what === 'device' || what === 'inode'
+        ? 'the store directory is not the one the store was created in: it was moved or copied'
+        : what === 'nonce'
+          ? "the store's instance record does not match its owner: it was restored or copied"
+          : `the store's recorded identity does not match where it is being written (${what})`;
+  return (
+    `the core refused the write: refused (instance ${what}). ${where}. Run the store's daemon ` +
+    "under the THEOURGIA_HOME the store was created in, or adopt the store with the core's " +
+    `\`adopt\`. The save is kept; once that is done, run "${RETRY_OUTBOX.title}"`
+  );
 }
 
 /*
@@ -779,11 +847,82 @@ function describeRefusal(datum: Datum): string {
    * clause through the decoder says so in the code rather than in a
    * comment.
    */
-  const current = answerOf(datum, 'error')?.value('current');
+  const form = answerOf(datum, 'error');
+  /*
+   * WHAT THE CORE SAID AFTER THE NAME REACHES THE SENTENCE. (queue 7b)
+   *
+   * This read `datum[1]` and stopped, so `(error refused (instance
+   * machine))` reached the screen as "the core refused the write:
+   * refused", `(error malformed-intent (field-value-not-text (field
+   * title) ...))` without saying which field, and `(error bad-request
+   * kind-not-known (kind "X") ...)` without the kind. Three parts of the
+   * core, one defect: the reason is at position 2 and later, and the
+   * sentence was built from position 1. The rest is printed as the core
+   * wrote it, and a `(remedy ...)` clause is said in words, because it
+   * is the core naming what to do.
+   *
+   * NOTE: A REMEDY IS LEFT OUT OF THE PRINTED REST ONLY WHEN IT WAS SAID.
+   * The first version left the clause out whenever the decoder found it,
+   * and said it only when its value was a name or a string -- so `(remedy
+   * (adopt))` or `(remedy)` vanished from the sentence altogether. Review
+   * r1 of this item measured it. A clause this client cannot put into
+   * words is printed as the core wrote it.
+   */
+  const remedy = form?.value('remedy');
+  const said =
+    remedy !== undefined && remedy.read && (isSym(remedy.value) || typeof remedy.value === 'string')
+      ? isSym(remedy.value)
+        ? remedy.value.name
+        : remedy.value
+      : null;
+  const remedyClause = form?.whole('remedy');
+  const detail = refusalDetail(
+    datum.slice(2),
+    said !== null && remedyClause !== undefined && remedyClause.read ? remedyClause.items : null
+  );
+  const rest =
+    (detail.length > 0 ? ` ${detail}` : '') +
+    (said !== null ? `. The core names the remedy: ${said}` : '');
+  /*
+   * NOTE: AND THE ONE SENTENCE WRITTEN FOR A NAME CARRIES THE REST TOO.
+   * `changed` has a sentence of its own because "refused: changed" says
+   * nothing a person can use; it used to stop there and drop `(current
+   * ...)`, against the rule above. Review r1 of this item measured it.
+   */
+  const current = form?.value('current');
   if (name === 'changed' && current !== undefined && current.read) {
-    return 'the block changed in the store since it was opened';
+    return `the block changed in the store since it was opened${rest}`;
   }
-  return `the core refused the write: ${name}`;
+  return `the core refused the write: ${name}${rest}`;
+}
+
+/*
+ * THE CLAUSES AFTER A REFUSAL'S NAME, AS TEXT, without the remedy clause
+ * (said in words above; the decoder found it, and it is left out by
+ * identity rather than by comparing names a second time) and cut at a
+ * length a notification can carry.
+ *
+ * NOTE: THIS IS ON THE PATH THAT REPORTS A FAILURE, so it does not throw.
+ * The printer is goeteia's and has a depth limit; an answer that got this
+ * far was read under the same limit and should print. If it does not, the
+ * sentence SAYS so rather than going out as though there were nothing
+ * after the name -- a detail that could not be printed is not an absent
+ * one.
+ */
+const DETAIL_LIMIT = 400;
+
+function refusalDetail(rest: Datum[], remedy: Datum | null): string {
+  const shown = rest.filter((item) => item !== remedy);
+  if (shown.length === 0) {
+    return '';
+  }
+  let text: string;
+  try {
+    text = shown.map((item) => wire().write(item)).join(' ');
+  } catch {
+    return '(with a detail this client could not print)';
+  }
+  return text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT)} ...` : text;
 }
 
 /*
@@ -1165,6 +1304,30 @@ export class Saver {
 
   public retry(): Promise<SaveOutcome[]> {
     return this.serialise(() => this.drain());
+  }
+
+  /*
+   * THE RETRY A PERSON ASKS FOR: PARKED ENTRIES GO BACK FIRST. (queue 7)
+   *
+   * A parked entry is stepped over by the drain, and so is every later
+   * save of its block. Until now only a settings change released them,
+   * which answered the settings family and nothing else -- an instance
+   * mismatch is repaired outside the editor, and a save parked for it had
+   * no way back. So the command releases them before it drains. One that
+   * is still not answerable is parked again on the same attempt, by the
+   * same rule that parked it, so this adds a way out and takes nothing
+   * away.
+   *
+   * NOTE: `retry` ITSELF IS UNCHANGED, because it is also the drain the
+   * extension schedules when a window starts. Releasing there would send
+   * every save parked after RETRY_CAP five more times on each start,
+   * which nobody asked for.
+   */
+  public retryParked(): Promise<SaveOutcome[]> {
+    return this.serialise(async () => {
+      this.outbox.unparkAll();
+      return this.drain();
+    });
   }
 
   /*

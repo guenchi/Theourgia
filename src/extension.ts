@@ -1312,7 +1312,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       let outcomes: SaveOutcome[] | null = null;
       let failure: unknown = null;
       try {
-        outcomes = await active.retry();
+        outcomes = await active.retryParked();
       } catch (e) {
         failure = e;
       }

@@ -91,9 +91,10 @@ const AT_LEAST: Array<[string, number]> = [
    * host, after a review traced a takeover into the queue the window had
    * just stopped using. RAISED in plugin-r3 to the ten it registers: the
    * cell that turns a generation guard around, and the two that read how
-   * the integrity watch is wired.
+   * the integrity watch is wired. And in item 7, 10 -> 11: the one that
+   * reads that the retry command calls `retryParked`.
    */
-  ['awaiting.test.ts', 10],
+  ['awaiting.test.ts', 11],
   ['blocks.test.ts', 20],
   /*
    * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
@@ -163,9 +164,13 @@ const AT_LEAST: Array<[string, number]> = [
   ['search.test.ts', 70],
   /*
    * RAISED in plugin-r3 item 1, 54 -> 55: a bare `unreadable` answer to a
-   * save is kept pending under its own id, like `transport-unknown`.
+   * save is kept pending under its own id, like `transport-unknown`. And
+   * in item 7, 55 -> 61: a refusal's detail and remedy reach the
+   * sentence, an instance mismatch is kept and parked, and the retry
+   * command's way back, both halves; 61 -> 63 in its review r1: a remedy
+   * that cannot be said is printed, and `changed` keeps its clauses.
    */
-  ['saver.test.ts', 55],
+  ['saver.test.ts', 63],
   ['saving.test.ts', 34],
   ['sending.test.ts', 20],
   ['sequences.test.ts', 15],

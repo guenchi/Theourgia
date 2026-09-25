@@ -565,13 +565,16 @@ export class Outbox {
   /*
    * PUT EVERY PARKED ENTRY BACK IN THE QUEUE, AND SAY HOW MANY.
    *
-   * NOTE: NOT A TIMER AND NOT A RETRY BUTTON. An entry is parked because
-   * nothing it can wait for will change the answer -- the store
-   * directory does not exist, the socket path is longer than a unix
-   * socket name may be, a person has to look at a mismatch. What
-   * releases it is the event that could have changed the answer: a
-   * configuration change. If it did not, the same rule parks it again
-   * on the same attempt, which is why "once" needs no counter here.
+   * NOTE: NOT A TIMER. An entry is parked because nothing it can wait for
+   * will change the answer -- the store directory does not exist, the
+   * socket path is longer than a unix socket name may be, a person has to
+   * look at a mismatch. What releases it is an event that could have
+   * changed the answer: a configuration change, or a person running the
+   * retry command (`RETRY_OUTBOX`, `Saver.retryParked`) after fixing
+   * something outside the editor -- an instance mismatch is repaired
+   * there, and used to have no way back. If nothing was fixed, the same
+   * rule parks it again on the same attempt, which is why "once" needs no
+   * counter here.
    *
    * NOTE: THE REASON STAYS ON THE ENTRY. It is what a person reads to find
    * out what was wrong, and the state is what decides whether it goes

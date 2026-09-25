@@ -166,11 +166,18 @@ block, body and selected working namespace/version **before** commit is sent. Th
 * `ok` naming **no** record: the entry is **kept** and this is reported as a defect. Every
   write the core accepts says which record it appended, and an answer with neither a
   `cursor` nor an `event` leaves the next save with nothing to be composed against.
-* `(error unknown <why>)`, a timeout, or a core that printed nothing: the entry is
-  **kept**. The store may hold the record; asking again with the same request id is the
+* `(error unknown <why>)`, a bare `(error unreadable ...)`, a timeout, or a core that
+  printed nothing: the entry is **kept**. The store may hold the record; asking again with the same request id is the
   only way to find out. "theourgia: Retry Pending Saves" sends the same bytes again —
   the same id, the same cursor, the same body, not whatever the buffer now holds.
-* Any other refusal: the entry is dropped and the refusal is shown, because retrying
+* A refusal only a person can answer -- the store directory is missing, the socket path
+  is too long, or `(error refused (instance ...))`, a store created under another
+  `THEOURGIA_HOME` or moved since: the entry is **kept and parked**, and later saves of
+  the same block wait behind it. Changing a setting sends it again, and so does
+  "theourgia: Retry Pending Saves" once the cause is fixed outside the editor; if it is
+  not fixed, it is parked again.
+* Any other refusal: the entry is dropped and the refusal is shown, with everything the
+  core said after its name (and in words, the remedy the core names), because retrying
   cannot change it.
 
 Saves are sent one at a time, and an entry nobody can resolve holds the ones behind it

@@ -618,6 +618,53 @@ describe('the integrity watch is built once for the session and asked on every r
   });
 });
 
+/*
+ * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT. (queue item 7, ruled (A))
+ *
+ * The retry command releases parked saves before it drains -- that is how a
+ * save parked for an instance mismatch, which is repaired outside the
+ * editor, ever goes again. It does so by calling `Saver.retryParked`, and
+ * `Saver.retry` is the one the window's start-up drain calls. The two are
+ * one identifier apart at the one place the command is registered, and the
+ * unit cells drive the Saver, not the command: a review measured that
+ * changing the call back to `retry` leaves every unit cell green. So the
+ * shape of that call is read, as the integrity wiring above is.
+ *
+ * It reads shape, so it shares the blind spots written above: a call that
+ * never runs would pass it, and a correct refactor that moves the call into
+ * a helper would turn it red -- rewrite it against the new shape then.
+ */
+describe('the retry command releases parked saves', () => {
+  it('calls retryParked, not retry, where RETRY_OUTBOX is registered', () => {
+    const src = ts.createSourceFile('extension.ts', extensionText(), ts.ScriptTarget.ES2022, true);
+    const registrations: ts.CallExpression[] = [];
+    const walk = (n: ts.Node): void => {
+      if (
+        ts.isCallExpression(n) &&
+        n.expression.getText(src) === 'vscode.commands.registerCommand' &&
+        n.arguments[0]?.getText(src) === 'RETRY_OUTBOX.id'
+      ) {
+        registrations.push(n);
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(src);
+    assert.strictEqual(registrations.length, 1, `RETRY_OUTBOX is registered ${registrations.length} times`);
+    const handler = registrations[0].arguments[1];
+    assert.ok(handler !== undefined && isFunction(handler), 'the RETRY_OUTBOX handler is not a function here');
+    const named = (method: string): ts.CallExpression[] =>
+      within(
+        handler,
+        (n): n is ts.CallExpression =>
+          ts.isCallExpression(n) &&
+          ts.isPropertyAccessExpression(n.expression) &&
+          n.expression.name.text === method
+      );
+    assert.strictEqual(named('retryParked').length, 1, 'the retry command does not call retryParked');
+    assert.strictEqual(named('retry').length, 0, 'the retry command calls retry, which leaves parked saves parked');
+  });
+});
+
 describe('every wait in the extension host knows what may have changed under it', () => {
   const waiting = survey();
 

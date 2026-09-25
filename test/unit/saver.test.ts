@@ -1635,3 +1635,201 @@ describe('plugin-r2 S-settings a configuration change releases what only a setti
     assert.strictEqual(r.outbox.unparkAll(), 0);
   });
 });
+
+/*
+ * plugin-r3 items 7, 7b and 7c: what a refusal carries after its name.
+ *
+ * The answers are quoted, not restated. `(error refused (instance
+ * machine))` is 877f0da's answer to a `set` on a store created under
+ * another THEOURGIA_HOME, measured by the main session on 2026-09-25;
+ * the other two are the shapes queue item 7b quotes from the core's B2a.
+ */
+describe('plugin-r3 7 a refusal says what the core said after its name', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const INSTANCE = (what: string): string => `(error refused (instance ${what}))\n`;
+
+  it('carries the clauses after the name into the sentence', async () => {
+    const answers: Array<[string, RegExp[]]> = [
+      [
+        '(error malformed-intent (field-value-not-text (field title) (kind symbol) (allowed (string))))\n',
+        [/malformed-intent/, /field-value-not-text/, /\(field title\)/, /\(kind symbol\)/, /\(allowed \(string\)\)/]
+      ],
+      [
+        '(error bad-request kind-not-known (kind "X") (known (a b)))\n',
+        [/bad-request/, /kind-not-known/, /\(kind "X"\)/, /\(known \(a b\)\)/]
+      ]
+    ];
+    for (const [answer, says] of answers) {
+      const r = rig([{ match: ['set'], stdout: answer, rc: 1 }]);
+      core = r.core;
+      const outcome = await r.saver.save('a.2', 'src', 'body\n');
+      assert.strictEqual(outcome.status, 'refused', `${answer.trim()} was not a refusal`);
+      for (const pattern of says) {
+        assert.match(outcome.message, pattern, `the sentence lost part of ${answer.trim()}: ${outcome.message}`);
+      }
+      core.dispose();
+    }
+  });
+
+  it('says the remedy the core names in words, and does not print it twice', async () => {
+    const r = rig([{ match: ['set'], stdout: '(error refused integrity (remedy adopt))\n', rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'refused');
+    assert.match(outcome.message, /refused integrity/);
+    assert.match(outcome.message, /The core names the remedy: adopt/);
+    assert.doesNotMatch(outcome.message, /\(remedy adopt\)/, 'the remedy clause was printed as well as said');
+    core.dispose();
+    /*
+     * AND IT SAYS THE REMEDY IT WAS GIVEN, not one it knows: 877f0da's
+     * `remedy-for` names another one for a registry inside the store
+     * (store.sc:2473).
+     */
+    const other = rig([
+      {
+        match: ['set'],
+        stdout: '(error refused registry-inside-store (remedy move-the-registry-outside-the-store))\n',
+        rc: 1
+      }
+    ]);
+    core = other.core;
+    const moved = await other.saver.save('a.2', 'src', 'body\n');
+    assert.match(moved.message, /The core names the remedy: move-the-registry-outside-the-store/);
+  });
+
+  /*
+   * KEY: A REMEDY THIS CLIENT CANNOT PUT INTO WORDS IS PRINTED, NOT DROPPED.
+   * No such shape comes from 877f0da; the rule is that nothing after the
+   * name disappears, and this is the case where the first version broke it.
+   */
+  it('prints a remedy it cannot put into words, rather than dropping it', async () => {
+    for (const remedy of ['(remedy (adopt))', '(remedy)', '(remedy 0)']) {
+      const r = rig([{ match: ['set'], stdout: `(error refused integrity ${remedy})\n`, rc: 1 }]);
+      core = r.core;
+      const outcome = await r.saver.save('a.2', 'src', 'body\n');
+      assert.ok(
+        outcome.message.includes(remedy),
+        `${remedy} is neither said nor printed: ${outcome.message}`
+      );
+      assert.doesNotMatch(outcome.message, /The core names the remedy/, `${remedy} was said as though it were a name`);
+      core.dispose();
+    }
+  });
+
+  /*
+   * KEY: THE ONE SENTENCE WRITTEN FOR A NAME CARRIES THE REST AS WELL.
+   * `(error changed (current ...))` is what store.sc makes of a stale
+   * expectation (store.sc:2324 in 877f0da).
+   */
+  it('carries what follows changed into the sentence written for it', async () => {
+    const r = rig([{ match: ['set'], stdout: '(error changed (current "hhh"))\n', rc: 1 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.match(outcome.message, /the block changed in the store since it was opened/);
+    assert.match(outcome.message, /\(current "hhh"\)/, `the clause after changed was dropped: ${outcome.message}`);
+  });
+
+  /*
+   * KEY: AN INSTANCE MISMATCH IS KEPT, NOT SETTLED. A person fixes it by
+   * restarting a daemon or adopting the store; a permanent refusal would
+   * release the request and leave the text a draft nothing sends again.
+   */
+  it('keeps a save refused for an instance mismatch, parked, and says how to send it again', async () => {
+    for (const what of ['machine', 'device', 'inode', 'nonce']) {
+      const r = rig([{ match: ['set'], stdout: INSTANCE(what), rc: 1 }]);
+      core = r.core;
+      const outcome = await r.saver.save('a.2', 'src', 'body\n');
+      assert.strictEqual(outcome.status, 'refused', `(${what}) status`);
+      assert.strictEqual(
+        (outcome as { keptForAPerson?: true }).keptForAPerson,
+        true,
+        `(${what}) an instance mismatch was settled as a permanent refusal`
+      );
+      assert.deepStrictEqual(
+        r.outbox.entries.map((e) => e.state),
+        ['parked'],
+        `(${what}) the save did not stay in the queue, parked`
+      );
+      assert.match(outcome.message, new RegExp(`\\(instance ${what}\\)`), `(${what}) the sentence lost the clause`);
+      assert.match(outcome.message, /theourgia: Retry Pending Saves/, `(${what}) the sentence does not say how to go on`);
+      assert.match(outcome.message, /THEOURGIA_HOME/, `(${what}) the sentence does not name the home to run under`);
+      assert.match(outcome.message, /`adopt`/, `(${what}) the sentence does not name adopt`);
+      core.dispose();
+    }
+  });
+
+  it('settles a reason at position 2 that is not an instance clause as it always did', async () => {
+    /*
+     * Three of the other reasons 877f0da puts after `refused`, the first
+     * two a symbol that merely begins like the family (log.sc:5332, 5338).
+     */
+    for (const reason of ['instance-malformed', 'no-instance', 'integrity']) {
+      const r = rig([{ match: ['set'], stdout: `(error refused ${reason})\n`, rc: 1 }]);
+      core = r.core;
+      const outcome = await r.saver.save('a.2', 'src', 'body\n');
+      assert.strictEqual(outcome.status, 'refused', `(${reason}) status`);
+      assert.notStrictEqual((outcome as { keptForAPerson?: true }).keptForAPerson, true, `(${reason}) kept`);
+      assert.strictEqual(r.outbox.entries.length, 0, `(${reason}) a reason nobody ruled into the settings family was kept`);
+      assert.match(outcome.message, new RegExp(`refused ${reason}`));
+      core.dispose();
+    }
+  });
+
+  /*
+   * THE WAY BACK, BOTH HALVES (ruled 2026-09-25). Once the store's
+   * environment is fixed, the command sends the parked save and it
+   * settles; while it is not, the command leaves it parked, and a later
+   * save of the same block waits behind it rather than being lost or sent
+   * around it.
+   */
+  it('sends a parked instance save once the environment is fixed, and settles it', async () => {
+    const r = rig([
+      { match: ['set'], stdout: INSTANCE('machine'), rc: 1, once: true },
+      { match: ['set'], stdout: wrote(8), rc: 0 }
+    ]);
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'body\n');
+    const held = r.outbox.entries[0].req;
+    const outcomes = await r.saver.retryParked();
+    const sent = setCalls(core);
+    assert.strictEqual(sent.length, 2, 'the parked save was not sent again');
+    assert.strictEqual(sent[1][sent[1].indexOf('--req') + 1], held, 'it went again under another request id');
+    assert.ok(outcomes.some((o) => o.status === 'saved'), `nothing settled: ${JSON.stringify(outcomes.map((o) => o.status))}`);
+    assert.strictEqual(r.outbox.entries.length, 0, 'the settled save stayed in the queue');
+    /*
+     * AND IT SETTLED AS CONFIRMED: the store's record became the cursor the
+     * next save is composed against. A save settled any other way leaves
+     * the queue just the same, so the next send is what tells them apart.
+     */
+    await r.saver.save('a.2', 'src', 'after\n');
+    const next = setCalls(core);
+    assert.strictEqual(next[2][next[2].indexOf('--cursor') + 1], 'w:8', 'the retried save did not move the cursor');
+  });
+
+  it('leaves it parked while the environment is not fixed, with the next save of the block waiting', async () => {
+    const r = rig([{ match: ['set'], stdout: INSTANCE('machine'), rc: 1 }]);
+    core = r.core;
+    await r.saver.save('a.2', 'src', 'first\n');
+    await r.saver.save('a.2', 'src', 'second\n');
+    assert.strictEqual(setCalls(core).length, 1, 'the second save went around the parked first one');
+    await r.saver.retryParked();
+    const sent = setCalls(core);
+    assert.strictEqual(sent.length, 2, `expected the parked save to be tried once more: ${sent.length} sends`);
+    assert.strictEqual(sent[1][3], 'first\n', 'the retry sent the later save before the parked one');
+    assert.deepStrictEqual(
+      r.outbox.entries.map((e) => e.state),
+      ['parked', 'queued'],
+      'a save was lost, or the block\'s second save was sent around the first'
+    );
+    assert.deepStrictEqual(
+      r.outbox.entries.map((e) => e.payload),
+      ['first\n', 'second\n'],
+      'the two saves no longer hold their own bodies'
+    );
+  });
+});

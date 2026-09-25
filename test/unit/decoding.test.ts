@@ -652,6 +652,10 @@ describe('plugin-r3 no sixth route into a clause', function () {
    * adds to it.
    */
   const NOT_LOOKING_FOR_A_CLAUSE: Record<string, string> = {
+    'saver.ts:instanceMismatchOf':
+      'asks what sits at POSITION 2 of an `(error refused ...)`, because the ruling classifies ' +
+      'an instance mismatch by position 2 (queue item 7). The clause found there is then read ' +
+      'through `form.value`, which counts.',
     'wire.ts:answerOf':
       "compares a name given by the caller's `expect` argument against a POSITION the caller " +
       'named -- `(error unknown-id "a.1")`. It is not a search for a clause.',
