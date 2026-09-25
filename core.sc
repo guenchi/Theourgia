@@ -38,9 +38,7 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
               verb-spelling-error)
-        (only (theourgia ffi)
-              env-or setsid! redirect-stdio! trace-event!
-              fs-error? fs-error-errno)
+        (only (theourgia ffi) env-or)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce))
 
@@ -64,7 +62,9 @@
 ;; A user runs objects and saves about 9ms a call -- 18% of startup,
 ;; worth having, and NEVER: not the 200ms figure that a source-form reading
 ;; alone would have suggested. The structural point does not depend on
-;; either number: a `read` has no business loading the daemon.
+;; either number: a `read` has no business loading the daemon. Since F46 it
+;; cannot: `serve` is `theourgiad.sc`'s, and this program no longer reaches
+;; `(theourgia daemon)` at all.
 ;;
 ;; NOTE: AND THE COST IS ONE COST, NOT FOUR. `sched` alone is +164ms; `net`,
 ;; `daemon` and `eval-supervise` each depend on it and add about 36ms
@@ -351,15 +351,16 @@
             ;; same way any other bad request is answered.
             (list 'working #f cut '())))))
 
-;; NEVER: THE SPELLING IS ADVERTISED WHERE IT IS REFUSED. These two verbs are
-;; the CLI's own -- they are not in `rpc-verbs`, so the dispatcher's
-;; usage forms say nothing about them -- and until this batch a caller
+;; NEVER: THE SPELLING IS ADVERTISED WHERE IT IS REFUSED. `eval` is this
+;; program's own verb -- it is not in `rpc-verbs`, so the dispatcher's
+;; usage forms say nothing about it -- and until this batch a caller
 ;; who misspelled an option got a refusal that named no alternative.
-;; `options-gate.sc` reads these two forms as data and checks every
-;; option in them against `parse-arguments`, in both directions, which
-;; is what makes them a claim rather than a comment: the bug that
-;; prompted the gate was `eval --timeout-ms` parsing as a positional
-;; because the option table had no `eval` entry at all.
+;; `serve` is the other such verb; its form, `serve-usage`, is in
+;; `theourgiad.sc` since F46. `options-gate.sc` reads both forms as data
+;; and checks every option in them against `parse-arguments`, in both
+;; directions, which is what makes them a claim rather than a comment: the
+;; bug that prompted the gate was `eval --timeout-ms` parsing as a
+;; positional because the option table had no `eval` entry at all.
 ;;
 ;; NOTE: ONLY VERB-SPECIFIC OPTIONS BELONG HERE. `--store`, `--wire`,
 ;; `--actor`, `--req`, `--cursor` and `--socket` are accepted for every
@@ -369,14 +370,6 @@
   '(eval ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
          ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
          ["--output-bytes" <n>] <source>))
-
-;; NOTE: `--detach` IS FOR A LAUNCHER, NOT FOR A PERSON. It leaves the
-;; caller's session and replaces stdio; it does NOT fork. Typed at a
-;; prompt it stops there, silently, because the output it would have
-;; shown has already been redirected to the log.
-(define serve-usage
-  '(serve [<store>] ["--socket" <path>]
-          ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]))
 
 (define (eval-and-exit! argv)
   (let ((nodes (parse-arguments 'eval (cdr argv))))
@@ -446,149 +439,6 @@
                       (else (loop (- i 1)))))))
     (if cut (string-append (substring argv0 0 cut) "/" name) name)))
 
-;; ---- serve -----------------------------------------------------------------
-;;
-;; `theourgia serve [<store>] [--socket <path>]`. NOTE: The store may be
-;; given as a positional, because that is how the command has always been
-;; spelled, or as `--store`, because that is how every other verb spells
-;; it. NEVER: The parsing is `parse-arguments`, the same reader every other
-;; verb uses: a second one here would be a second place that knows what
-;; `--socket` means.
-(define (serve-and-exit! argv)
-  (let ((nodes (parse-arguments 'serve (cdr argv))))
-    (if (and (pair? nodes) (eq? (car nodes) 'error))
-        (begin (say nodes) (say (list 'usage serve-usage)) (exit 1))
-        (let* ((positional (argument-positionals nodes))
-               (store (or (argument-option nodes "--store")
-                          (and (pair? positional) (car positional))
-                          (getenv "THEOURGIA_STORE")
-                          "."))
-               ;; NEVER: THE SHARED RULE, NOT A SECOND ONE. This used to
-               ;; default to `<store>/socket`, which bypassed the
-               ;; daemon's own function entirely -- so the rule the
-               ;; README documented was never the rule that ran.
-               (socket (or (argument-option nodes "--socket")
-                           (socket-path store))))
-          ;; NEVER: AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
-          ;; not a path, and every layer below treats it as one: the
-          ;; daemon derives its lock file from it, and for a path with no
-          ;; directory in it that lock is created IN THE CURRENT
-          ;; DIRECTORY -- an empty path produced a file called `..lock`
-          ;; in whatever directory the process happened to be in, which
-          ;; is how this was found, in the source tree. The bind then
-          ;; fails and the daemon leaves.
-          (when (and socket (string=? socket ""))
-            (say '(error bad-socket-path (reason empty)))
-            (exit 2))
-          (when (argument-option nodes "--detach")
-            (detach! (argument-option nodes "--log")))
-          ;; Does not return: the daemon runs until it is told to go, or
-          ;; until it finds a reason to leave and reports it.
-          ((later '(theourgia daemon) 'serve) store socket)
-          (exit 0)))))
-
-;; ---- leaving the caller behind ------------------------------------------
-;;
-;; KEY: THE ORDER IS THE POINT, and it is: new session, then stdio, then
-;; the daemon's own work -- the lock and the socket, which `serve` does
-;; next. Taking the lock first would mean a process that then failed to
-;; detach had to give it back, and the window in which it held it is one
-;; where a second client saw "somebody is already starting" and waited
-;; for a daemon that was about to exit.
-;;
-;; NEVER: AND ONLY UNDER `--detach`. A `serve` run from a terminal keeps its
-;; session and its output, because that is how it is read; making this
-;; unconditional would take the output away from the one caller who
-;; wants it, and would fail for that caller besides (see below).
-;;
-;; NOTE: `setsid` FAILS WHEN THE CALLER IS ALREADY A PROCESS GROUP LEADER,
-;; which is the normal state of a process started from an interactive
-;; shell: it answers EPERM. That is NOT swallowed. A process that could
-;; not leave its session would die with the terminal that started it,
-;; and a daemon that dies when a shell closes is worse than one that
-;; never started -- the client waiting for it would have connected once,
-;; been answered, and then found it gone.
-;;
-;; NOTE: THE WINDOW IS REAL AND IS NOT CLOSED HERE. Between the spawn and
-;; the `setsid!` below, the child is still in the client's process group,
-;; so a ctrl-C aimed at the client takes it too. The consequence is
-;; bounded: the client's readiness test is a successful connection, so it
-;; simply never becomes ready and reports that the daemon would not
-;; start; the lock is a descriptor and closes with the process, so
-;; nothing is left holding it. Closing the window needs the spawn itself
-;; to set the session, which is `POSIX_SPAWN_SETSID` -- and that did not
-;; exist on FreeBSD 15 as of 2026-09-18, when this was measured, which is
-;; one of the two platforms this ships to. So the window stays, described,
-;; rather than being closed on one platform and not the other.
-;;
-;; NOTE: THAT LAST SENTENCE IS AN OBSERVATION ABOUT A PLATFORM ON A DATE,
-;; not a property of this program, and nothing here re-checks it. A later
-;; FreeBSD can grow the flag without anything in this tree noticing. What
-;; a row can and does check is the consequence: `test/detach.sc` asserts
-;; the child ends up in its own session.
-(define (detach-errno e)
-  ;; NOTE: TWO SHAPES, BECAUSE THE TWO STEPS FAIL DIFFERENTLY. `setsid!`
-  ;; raises an assertion violation carrying the errno as an irritant;
-  ;; opening the log raises the file layer's own durable-error, which
-  ;; holds it in a field. Reading only the first reported `unknown` for
-  ;; every unwritable log directory -- a real case, measured -- while the
-  ;; row asserting "it names the errno" still passed, because it was the
-  ;; OTHER step that it exercised.
-  ;;
-  ;; NEVER: Not guessed: a detach that failed for a reason nobody recorded is
-  ;; a daemon that will not start and will not say why.
-  (cond
-    ((fs-error? e) (fs-error-errno e))
-    ((and (condition? e) (irritants-condition? e) (pair? (condition-irritants e)))
-     (car (condition-irritants e)))
-    (else 'unknown)))
-
-(define (detach! log-path)
-  ;; NEVER: NO LOG, NO DAEMON. A detached daemon with nowhere to write is one
-  ;; whose every startup refusal is lost, and the client that started it
-  ;; could then only report that it did not come up. Refusing here, while
-  ;; the caller's stderr is still attached, is the last moment at which
-  ;; anything can be said at all.
-  (unless log-path
-    ;; NEVER: AND THE USAGE CLAUSE NAMES THE ONE FORM, it does not write a
-    ;; second one. This said `(usage (serve "--detach" "--log" <path>))`,
-    ;; which is not a fragment of `serve-usage` but a different statement in
-    ;; the same notation: `serve-usage` has `--detach` in brackets, meaning
-    ;; optional, and that spelling had it bare, meaning required. It read as
-    ;; "serve needs --detach --log <path>", which is false.
-    ;;
-    ;; Two clauses, two jobs: the tag says what went wrong here, and `usage`
-    ;; says what the verb accepts. A partial form is the tag doing its work
-    ;; in a notation that can say something untrue.
-    (say (list 'error 'detach-needs-a-log (list 'usage serve-usage)))
-    (exit 71))
-  ;; NOTE: TWO STEPS, NAMED SEPARATELY. Both fail into the same exit and the
-  ;; same tag, and written as one guard the answer could not say which
-  ;; had happened -- "could not leave the session" and "could not open
-  ;; the log" need different things done about them, and the caller is
-  ;; usually a program.
-  ;;
-  ;; NOTE: THE `step` IS WHAT TELLS THEM APART, and both can carry an
-  ;; errno. An earlier version of this comment said only `setsid` had one,
-  ;; because the log was opened through the port layer; it is not any
-  ;; more. `redirect-stdio!` opens with `fd-open` and raises `fs-err` with
-  ;; `(errno)` on a failed `dup2`, and the handler above pulls that out
-  ;; with `fs-error-errno`. What the field says is now the same question
-  ;; on both steps: an errno if the failure had one, `unknown` if not.
-  (detach-step 'setsid log-path (lambda () (setsid!)))
-  (detach-step 'log log-path (lambda () (redirect-stdio! log-path))))
-
-(define (detach-step step log-path thunk)
-  (guard (e (#t
-             (let ((code (detach-errno e)))
-               (trace-event! 'detach-failed code #f)
-               (say (list 'error 'detach-failed
-                          (list 'step step)
-                          (list 'path log-path)
-                          (list 'errno code))))
-             (exit 71)))
-    (thunk)))
-
 (define (main argv)
   ;; NEVER: ONCE, BEFORE ANYTHING IS PRINTED. Every answer this program gives
   ;; -- local, forwarded, wire or human -- goes through `render-wire`,
@@ -597,16 +447,17 @@
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))
-  ;; NEVER: BOTH OF THESE ARE THIS PROGRAM NOW. `serve` used to exec a Python
-  ;; daemon and `eval` a Python supervisor; neither exists. There is no
-  ;; second implementation of either to keep in step.
+  ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which
+  ;; no longer exists; there is no second implementation to keep in step.
+  ;; `serve` is not this program's any more: the daemon is `theourgiad.sc`
+  ;; (F46), and `serve` here is a verb like any other the dispatcher does not
+  ;; know.
   ;;
   ;; NEVER: AND `eval` NEVER GOES THROUGH A DAEMON. It is intercepted here,
   ;; before the forwarding below, so it always runs in this process --
   ;; and a request naming `eval` that reaches a daemon meets a dispatcher
   ;; that has no such verb, which is the same answer any unknown verb
   ;; gets. Those two facts are the whole of E1-6.
-  (when (string=? (car argv) "serve") (serve-and-exit! argv))
   (when (string=? (car argv) "eval") (eval-and-exit! argv))
   ;; NEVER: THE SPELLING IS JUDGED FIRST, BEFORE THE ARGUMENTS ARE PARSED.
   ;; The order is CHOSEN so that the two programs share one, and this is

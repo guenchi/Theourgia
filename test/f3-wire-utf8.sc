@@ -220,7 +220,7 @@
 ;; that these are the same bytes; a change made in the CLI alone would
 ;; leave the daemon and the shell spelling `\x6C49;`.
 (system (string-append "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../core.sc serve " store " --socket " socket
+                       "scheme --script ../theourgiad.sc serve " store " --socket " socket
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/serve.pid )"))
 (system "sleep 5")
 

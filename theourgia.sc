@@ -151,10 +151,20 @@
 ;; The writer travels in the environment instead, where this process
 ;; already found it, and `core.sc` reads it as the dispatcher's default.
 ;; `exec` keeps the environment, so there is nothing to pass on.
+;;
+;; KEY: THE PROGRAM IS CHOSEN BY ROLE (F46). `serve` is the daemon, and the
+;; daemon is `theourgiad.sc`; every other request answered here -- `init`,
+;; `eval`, anything under THEOURGIA_LOCAL -- is `core.sc`'s. One program for
+;; all of them would send `init` to the daemon, which refuses every verb but
+;; `serve`.
 (define (run-server-here! argv)
   (exec-server! (cons (scheme-binary)
                       (cons "--script"
-                            (cons (beside-this-program "core.sc") argv)))))
+                            (cons (beside-this-program
+                                    (if (and (pair? argv) (string=? (car argv) "serve"))
+                                        "theourgiad.sc"
+                                        "core.sc"))
+                                  argv)))))
 
 (define (exec-server! args)
   (let* ((width (foreign-sizeof 'void*))
@@ -345,7 +355,7 @@
 ;; that file afterwards to say why a start failed, so it is the one that
 ;; names it.
 (define (server-argv store socket)
-  (list (scheme-binary) "--script" (beside-this-program "core.sc")
+  (list (scheme-binary) "--script" (beside-this-program "theourgiad.sc")
         "serve" store
         "--socket" socket
         "--detach" "--log" (serve-log-path store)))

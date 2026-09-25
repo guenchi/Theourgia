@@ -263,7 +263,7 @@
 ;; produces the same bytes, deliberately.
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" (getenv "CHEZSCHEMELIBDIRS")
                    " CHEZSCHEMELIBEXTS='" (getenv "CHEZSCHEMELIBEXTS") "' "
-                   "scheme --script " root "/core.sc serve " store " --socket " socket
+                   "scheme --script " root "/theourgiad.sc serve " store " --socket " socket
                    " > " scratch "/serve.txt 2>&1 & echo $! > " scratch "/serve.pid )"))
 (sh "sleep 5")
 
@@ -300,9 +300,11 @@
 ;; USER RUNS. Development runs `--script` against `.sc`; a user gets
 ;; compiled objects. The difference matters twice over.
 ;;
-;; **First, lazy loading has to still work.** `core.sc` resolves
-;; `(theourgia daemon)` at RUN time, and whether that works depends on
-;; the library being findable -- which it is as a `.so` on the library
+;; **First, lazy loading has to still work.** `theourgiad.sc` resolves
+;; `(theourgia daemon)` at RUN time, once its arguments are checked, and
+;; `core.sc` resolves `(theourgia eval-supervise)`, `(theourgia sched)` and
+;; `(theourgia net)` the same way; whether that works depends on the
+;; library being findable -- which it is as a `.so` on the library
 ;; path. NEVER: It would NOT be inside a whole-program package that dropped
 ;; it for being statically unreferenced; that form is F13 and has no
 ;; reading here. These rows cover the `.so` form only, and say so.
@@ -376,7 +378,7 @@
 (define so-socket (string-append socket-base "/f0so-" (number->string (get-process-id)) ".sock"))
 (sh (string-append "rm -f " so-socket))
 (sh (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
-                   "scheme --script " root "/core.sc serve " so-store " --socket " so-socket
+                   "scheme --script " root "/theourgiad.sc serve " so-store " --socket " so-socket
                    " > " scratch "/so-serve.txt 2>&1 & echo $! > " scratch "/so-serve.pid )"))
 (sh "sleep 5")
 
@@ -412,15 +414,16 @@
 ;; Measured before `build.ss` copied the programs, with the output alone on
 ;; the path: `Exception in load: failed for <out>/theourgia/theourgia.sc: no
 ;; such file or directory`, rc=255. Putting only the thin client there moved
-;; the same failure one step along to `core.sc`. The programs are found BESIDE
+;; the same failure one step along to the program it starts (then `core.sc`;
+;; since F46 also `theourgiad.sc`). The programs are found BESIDE
 ;; THE PROGRAM, by path, so no quantity of `.so` substitutes for them.
 
 (define (product-file rel) (string-append objects "/theourgia/" rel))
 
 (want "F18 the build left every program in the output directory"
       (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'MISSING)))
-           '("theourgia.sc" "core.sc" "eval-worker.sc" "mcp/server.sc"))
-      '(("theourgia.sc" . there) ("core.sc" . there)
+           '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "mcp/server.sc"))
+      '(("theourgia.sc" . there) ("core.sc" . there) ("theourgiad.sc" . there)
         ("eval-worker.sc" . there) ("mcp/server.sc" . there)))
 
 ;; NEVER: THE LIBRARY PATH HOLDS THE OUTPUT AND NOTHING ELSE. With the source
@@ -465,7 +468,60 @@
           (list 'said (file-text (string-append scratch "/f18-again.txt"))))
       'answered)
 
-(sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch "; rm -f " socket))
+;; ---- F46: the daemon program is copied, and the thin client starts it ------
+;;
+;; NEVER: THE OLD NAME IS GONE FROM THE OUTPUT, not merely joined by the new
+;; ones. A build that copied `theourgiad.sc` and `core.sc` and left a stale
+;; copy of the program they replaced beside them would pass the row above.
+;; The old name is assembled, not spelled: entry-split.sc's F46-6 greps the
+;; tree for it.
+(let ((old (string-append "cli" ".sc")))
+  (want "F18 the output directory holds theourgiad.sc and core.sc and not the program they replaced"
+        (map (lambda (rel) (cons rel (if (file-exists? (product-file rel)) 'there 'absent)))
+             (list "theourgiad.sc" "core.sc" old))
+        (list '("theourgiad.sc" . there) '("core.sc" . there) (cons old 'absent))))
+
+;; A REQUEST THAT FORWARDS starts the daemon program from beside the thin
+;; client, which is the measurement F46-5's build.ss tripwire stands in for.
+;; `init` is answered locally; `outline` then finds no daemon, and the thin
+;; client starts `<output>/theourgiad.sc serve ...` and asks again. The run
+;; root is under the socket base, short enough for a socket path.
+(define f18-run (string-append socket-base "/f18r-" (number->string (get-process-id))))
+(define f18-store (string-append scratch "/f18store"))
+(define (product-client-forwarding args out-file)
+  (sh (string-append
+        "THEOURGIA_HOME=" scratch "/f18home THEOURGIA_RUN=" f18-run
+        " CHEZSCHEMELIBDIRS=" objects " CHEZSCHEMELIBEXTS='.so' "
+        "scheme --script " (product-file "theourgia.sc") " " args
+        " < /dev/null > " out-file " 2>&1"))
+  (file-text out-file))
+(sh (string-append "mkdir -p " f18-run " " f18-store))
+(product-client-forwarding (string-append "init --store " f18-store " --wire")
+                           (string-append scratch "/f18-init.txt"))
+(define f18-outline
+  (product-client-forwarding (string-append "outline --store " f18-store " --wire")
+                             (string-append scratch "/f18-outline.txt")))
+;; The daemon's pid, found by the output directory's own path, which carries
+;; this process's pid, so no other run's daemon can match it.
+(define f18-daemon-pids
+  (let* ((out (string-append scratch "/f18-ps.txt")))
+    (sh (string-append "ps -axo pid=,command= | grep -F '" (product-file "theourgiad.sc") " serve '"
+                       " | grep -v grep | awk '{print $1}' > " out))
+    (let ((t (file-text out)))
+      (let loop ((p (open-string-input-port t)) (acc '()))
+        (let ((x (read p)))
+          (if (eof-object? x) (reverse acc) (loop p (if (integer? x) (cons x acc) acc))))))))
+
+(want "F18 a forwarding call from the output directory starts theourgiad.sc from beside the thin client, and is answered"
+      (list (if (contains? f18-outline "(ok ") 'answered (list 'said f18-outline))
+            (length f18-daemon-pids))
+      '(answered 1))
+
+;; Stopped by the pid read above, and waited for.
+(for-each (lambda (pid) (sh (string-append "kill " (number->string pid) " 2>/dev/null"))) f18-daemon-pids)
+(sh "sleep 1")
+
+(sh (string-append "kill $(cat " scratch "/serve.pid) 2>/dev/null; sleep 1; rm -rf " scratch " " f18-run "; rm -f " socket))
 
 (printf "rows: ~a\n~a failures\nf0-ondemand complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

@@ -25,8 +25,10 @@
 ;;
 ;; KEY: THIS IS THE FORM THE THING SHIPS IN. Development runs from source;
 ;; a user gets compiled objects. Those differ in one way that matters
-;; here: `core.sc` finds `(theourgia daemon)` at RUN TIME, when a `serve`
-;; is asked for, and whether that works depends on the library being
+;; here: `core.sc` finds `(theourgia eval-supervise)`, `(theourgia sched)` and
+;; `(theourgia net)` at RUN TIME, when an `eval` or a forwarded call asks for
+;; them, and `theourgiad.sc` finds `(theourgia daemon)` the same way once its
+;; arguments are checked; whether that works depends on the library being
 ;; FINDABLE -- which it is as a `.so` on the library path, and is not
 ;; inside a whole-program package that left it out for being statically
 ;; unreferenced.
@@ -64,7 +66,8 @@
               (unless (file-directory? d) (mkdir d))))
           packages)
 
-;; NOTE: A LIBRARY, NOT EVERY SOURCE. `core.sc` and `build.ss` are programs --
+;; NOTE: A LIBRARY, NOT EVERY SOURCE. `core.sc`, `theourgiad.sc` and `build.ss`
+;; are programs --
 ;; they have no library form and `compile-library` refuses them. The test
 ;; is the file's own first form.
 (define (declares-a-library? path)
@@ -170,8 +173,10 @@
 
 ;; NEVER: THE PROGRAMS ARE NOT LIBRARIES AND SO ARE NOT COMPILED, BUT THE
 ;; OUTPUT DIRECTORY IS USELESS WITHOUT THEM. `theourgia.sc` is the thin
-;; client a user runs; it starts `core.sc` BESIDE ITSELF, `core.sc` starts
-;; `eval-worker.sc` the same way, and `mcp/server.sc` is the MCP shell.
+;; client a user runs; it starts `theourgiad.sc` (the daemon) and `core.sc`
+;; (every other role) BESIDE ITSELF, `core.sc` starts `eval-worker.sc` the same
+;; way, and `mcp/server.sc` is the MCP shell, which starts `theourgiad.sc` one
+;; level up.
 ;; Measured on an output directory built before this: with the source tree
 ;; off the library path -- which is the whole point of shipping objects --
 ;; running the thin client from the output gives
@@ -180,13 +185,14 @@
 ;;     no such file or directory
 ;;
 ;; and putting only the thin client there moves the same failure one step
-;; along, to `core.sc`. They are found by path beside the program, not by
-;; the library path, so no amount of `.so` makes up for their absence.
+;; along, to the program it starts. They are found by path beside the
+;; program, not by the library path, so no amount of `.so` makes up for their
+;; absence.
 ;;
 ;; NOTE: THE RELATIVE LAYOUT IS PART OF IT. `mcp/server.sc` has to land in
 ;; a `mcp/` directory under the package, because that is where its own
 ;; `beside-this-program` arithmetic expects to start from.
-(define programs '("theourgia.sc" "core.sc" "eval-worker.sc" "mcp/server.sc"))
+(define programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "mcp/server.sc"))
 
 (define (copy-file! from to)
   (let ((in (open-file-input-port from))

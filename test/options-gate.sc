@@ -196,6 +196,7 @@
 (define arguments-data (read-data "../arguments.sc"))
 (define rpc-data (read-data "../rpc.sc"))
 (define cli-data (read-data "../core.sc"))
+(define daemon-data (read-data "../theourgiad.sc"))
 
 ;; EVERY OPTION SPELLING THE TABLE KNOWS, as data. This is the set the
 ;; probe sweeps; it is read from the table because the table is where a
@@ -278,9 +279,14 @@
 ;;
 ;; THE LIST IS STILL A LITERAL, and that is a hole with a name: `rpc-verbs`
 ;; is derived from the dispatcher's own table, while these two are typed
-;; here by hand. `core.sc` dispatches them with a `string=?` per verb and
-;; keeps no table, so a third one added there joins no list, is compared
-;; against nothing, and turns no row red. That is F64, and the paragraph at
+;; here by hand. `core.sc` dispatches `eval` and `theourgiad.sc` dispatches
+;; `serve`, each with a `string=?` and no table, so a third one added to
+;; either joins no list, is compared against nothing, and turns no row red.
+;;
+;; NEVER: EACH VERB'S FORM IS LOOKED FOR IN THE PROGRAM THAT ANSWERS IT.
+;; Since F46 `serve-usage` is `theourgiad.sc`'s, and with `core.sc` the only
+;; program read here, `serve` read as a verb with no usage form: GATE-A and
+;; GATE-B2 went red on the split's own tree. That is F64, and the paragraph at
 ;; the partition row says what the partition does and does not promise.
 (define cli-own-verbs '(eval serve))
 
@@ -290,7 +296,8 @@
         out
         (let* ((name (string->symbol (string-append (symbol->string (car vs)) "-usage")))
                (found (or (find-quoted-define name rpc-data)
-                          (find-quoted-define name cli-data))))
+                          (find-quoted-define name cli-data)
+                          (find-quoted-define name daemon-data))))
           (loop (cdr vs) (if found (cons found out) out))))))
 
 (define usage-forms (append rpc-usage named-usage-forms))
@@ -1263,9 +1270,10 @@
 ;;     `commit-usage` is never passed to `usage` at all -- `commit` appends
 ;;     it to whatever refusal came back -- which is why it has no call site,
 ;;     and is not why it has one place.
-;;   eval     core.sc:361  `eval-usage`
-;;   serve    core.sc:370  `serve-usage`
-;;     The CLI's own verbs; they never reach the dispatcher's catalogue.
+;;   eval     core.sc:369       `eval-usage`
+;;   serve    theourgiad.sc:55  `serve-usage`
+;;     The programs' own verbs; they never reach the dispatcher's catalogue.
+;;     Since F46 `serve` is the daemon program's, `theourgiad.sc`.
 ;;     `serve` was in this list for a round with the wrong reason: a second
 ;;     spelling in `core.sc` gave a partial form in which `--detach` was not
 ;;     bracketed, so it read as required rather than optional -- a false
@@ -1620,7 +1628,7 @@
         "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"
         "operation-packet.sc" "proc.sc" "project.sc" "reduce.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
-        "source-lex.sc" "store.sc" "text-code.sc" "theourgia.sc" "trace.sc"
+        "source-lex.sc" "store.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"
         "view.sc" "wire.sc" "working.sc"))
 
 ;; ---- the two halves of "a place is where it is written", each with a case --

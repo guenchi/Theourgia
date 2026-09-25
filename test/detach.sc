@@ -74,6 +74,8 @@
 (define sock-here (string-append socket-base "/detach-" pid-text))
 (define store (string-append here "/store"))
 (define cli "../core.sc")
+;; The daemon program since F46: `serve` is its verb and no other program's.
+(define daemon "../theourgiad.sc")
 
 (define (env-prefix extra)
   (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
@@ -147,7 +149,7 @@
 ;; ---- D-1 a detached daemon leaves this session ---------------------------
 (define dt-sock (string-append sock-here "/dt.sock"))
 (define dt-pidfile (string-append here "/dt.pid"))
-(system (string-append (env-prefix "") " scheme --script " cli
+(system (string-append (env-prefix "") " scheme --script " daemon
                        " serve " store " --socket " dt-sock " --detach"
                        " --log " here "/serve.log"
                        " > " here "/dt.log 2>&1 & echo $! > " dt-pidfile))
@@ -191,7 +193,7 @@
 ;; ---- D-2 TWIN: a foreground serve stays where it was ---------------------
 (define fg-sock (string-append sock-here "/fg.sock"))
 (define fg-pidfile (string-append here "/fg.pid"))
-(system (string-append (env-prefix "") " scheme --script " cli
+(system (string-append (env-prefix "") " scheme --script " daemon
                        " serve " store " --socket " fg-sock
                        " > " here "/fg.log 2>&1 & echo $! > " fg-pidfile))
 (wait-for fg-sock)
@@ -218,7 +220,7 @@
 ;; noticed the false one either: this row is the missing half.
 (define nolog-out (string-append here "/nolog.txt"))
 (define nolog-code
-  (system (string-append (env-prefix "") " scheme --script " cli
+  (system (string-append (env-prefix "") " scheme --script " daemon
                          " serve " store " --socket " sock-here "/nolog.sock --detach"
                          " > " nolog-out " 2>&1")))
 ;; NEVER: THE FIRST DATUM ON THAT STREAM IS NOT THE ANSWER. The CLI prints
@@ -311,7 +313,7 @@
             '(usage (serve)) #f))
 
 ;; AND THE USAGE CLAUSE IS THE WHOLE FORM -- compared against the one this
-;; program keeps, read out of `core.sc`.
+;; program keeps, read out of `theourgiad.sc`.
 ;;
 ;; NEVER: THE FIRST VERSION OF THIS ROW WAS TITLED "is serve's own form" AND
 ;; DID NOT COMPARE IT. It checked that the clause's head was `serve` and that
@@ -321,7 +323,7 @@
 ;; head and the right bracketing and a missing option would pass.
 (define serve-usage-in-source
   (let ((data (guard (e (#t '()))
-                (with-input-from-file cli
+                (with-input-from-file daemon
                   (lambda ()
                     (let loop ((acc '()))
                       (let ((x (read)))
@@ -339,7 +341,7 @@
 ;; CONTROL: the form was found in the source at all. Without this, a failure
 ;; to read it would make the comparison below compare `#f` with `#f` on some
 ;; future day when the refusal also stopped carrying one.
-(want "D-2b CONTROL: serve-usage was read out of core.sc and is a serve form"
+(want "D-2b CONTROL: serve-usage was read out of theourgiad.sc and is a serve form"
       (list (and (pair? serve-usage-in-source) #t)
             (and (pair? serve-usage-in-source) (car serve-usage-in-source)))
       (list #t 'serve))
@@ -390,7 +392,7 @@
 (define d3-out (string-append here "/d3.txt"))
 (define d3-rc
   (system (string-append (env-prefix "THEOURGIA_TRACE=1 ")
-                         " python3 " leader " scheme --script " cli
+                         " python3 " leader " scheme --script " daemon
                          " serve " store " --socket " sock-here "/d3.sock --detach"
                          " --log " here "/d3-serve.log"
                          " > " d3-out " 2>&1")))
@@ -458,7 +460,7 @@
 (define d4-log (string-append here "/d4-serve.log"))
 
 (system (string-append (env-prefix "") " python3 " closer
-                       " scheme --script " cli " serve " store
+                       " scheme --script " daemon " serve " store
                        " --socket " d4-sock " --detach --log " d4-log
                        " > /dev/null 2>&1"))
 

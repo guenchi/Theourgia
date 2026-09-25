@@ -79,12 +79,12 @@
 
 (define sock (socket-path store))
 (define log (serve-log-path store))
-(define cli "../core.sc")
+(define daemon "../theourgiad.sc")
 
 ;; NEVER: THE ARGV IS BUILT ONCE AND THE SOCKET IS ITS ONLY VARIABLE, so the
 ;; rows below differ in the thing they are about and in nothing else.
 (define (argv-for socket)
-  (list "scheme" "--script" cli "serve" store
+  (list "scheme" "--script" daemon "serve" store
         "--detach" "--log" log "--socket" socket))
 
 (define (contains? text needle)
@@ -180,7 +180,7 @@
             (string-append "(define sock \"" sock "\")")
             (string-append "(define log \"" log "\")")
             "(define argv"
-            (string-append "  (list \"scheme\" \"--script\" \"" cli "\" \"serve\" store")
+            (string-append "  (list \"scheme\" \"--script\" \"" daemon "\" \"serve\" store")
             "        \"--detach\" \"--log\" log \"--socket\" sock))"
             "(write (ensure-daemon! argv store sock))"
             "(newline)"))))
@@ -279,7 +279,7 @@
 
 (want "CS-5 a daemon that cannot open its log does not start"
       (let ((answer (ensure-daemon!
-                      (list "scheme" "--script" cli "serve" store
+                      (list "scheme" "--script" daemon "serve" store
                             "--detach" "--log" ro-log "--socket" ro-sock)
                       store ro-sock)))
         (list (if (and (pair? answer) (eq? 'error (car answer))) (cadr answer) answer)
@@ -311,7 +311,7 @@
             (string-append "(define sock \"" sock "\")")
             (string-append "(define log \"" log "\")")
             "(define argv"
-            (string-append "  (list \"scheme\" \"--script\" \"" cli "\" \"serve\" store")
+            (string-append "  (list \"scheme\" \"--script\" \"" daemon "\" \"serve\" store")
             "        \"--detach\" \"--log\" log \"--socket\" sock))"
             ;; The exchange under test needs something to exchange with,
             ;; and starting it is not the step being measured: the fault
@@ -441,7 +441,7 @@
     (lambda (port) (display "(note 存)\n" port)))
   (system (string-append "printf x > " occupied))
   (let ((answer (ensure-daemon!
-                  (list "scheme" "--script" cli "serve" noisy-store
+                  (list "scheme" "--script" daemon "serve" noisy-store
                         "--detach" "--log" noisy-log "--socket" occupied)
                   noisy-store occupied)))
     (want "CS-7 a refusal written after non-ASCII in the log is relayed whole"
@@ -464,7 +464,7 @@
                     (let ((old (getenv "THEOURGIA_RUN")))
                       (putenv "THEOURGIA_RUN" locked-run)
                       (let ((r (ensure-daemon!
-                                 (list "scheme" "--script" cli "serve" locked-store)
+                                 (list "scheme" "--script" daemon "serve" locked-store)
                                  locked-store (string-append locked-run "/s.sock"))))
                         (putenv "THEOURGIA_RUN" (or old ""))
                         r))))))

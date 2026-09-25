@@ -119,7 +119,7 @@
     ;; said nothing", which looks like a daemon that failed to start.
     (system (string-append
               "( CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-              "scheme --script ../core.sc serve " here "/store --socket " path
+              "scheme --script ../theourgiad.sc serve " here "/store --socket " path
               " > " out " 2>&1 & echo $! > " here "/pid )"))
     (system "sleep 4")
     (let ((said (file-text out)))

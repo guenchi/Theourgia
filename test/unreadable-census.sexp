@@ -118,7 +118,7 @@
    unrelated a
    "socket forwarding"
    (e (#t (quote unreadable))))
-  ("core.sc" (detach-step) 1 guard
+  ("theourgiad.sc" (detach-step) 1 guard
    (#t)
    unrelated a
    "detach errno"

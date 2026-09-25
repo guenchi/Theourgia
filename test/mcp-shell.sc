@@ -1173,7 +1173,7 @@
 ;; five runs, each holding a socket and a log.
 ;;
 ;; NOTE: THE PATTERN IS THIS RUN'S OWN DIRECTORY, which carries this
-;; process's pid. A pattern like `serve` or `core.sc` would also match the
+;; process's pid. A pattern like `serve` or `theourgiad.sc` would also match the
 ;; daemons of a suite running beside this one, and of another session
 ;; entirely.
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))

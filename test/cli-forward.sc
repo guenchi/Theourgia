@@ -511,7 +511,7 @@
 (when (file-exists? marker) (delete-file marker))
 (system (string-append "rm -f " socket-a))
 (define serve-verb-pid (start-bg! (string-append (env-prefix (string-append "PATH=" fake-bin ":$PATH "))
-                                                " scheme --script ../core.sc serve " store-a
+                                                " scheme --script ../theourgiad.sc serve " store-a
                                                 " --socket " socket-a " > " serve-log " 2>&1")))
 (define serve-verb-up
   (let wait ((k 0))
@@ -530,7 +530,7 @@
       (if (file-exists? marker) (list 'called-python (file-text marker)) 'no-python)
       'no-python)
 
-(system (string-append "pkill -f \"core.sc serve " store-a "\" 2>/dev/null"))
+(system (string-append "pkill -f \"theourgiad.sc serve " store-a "\" 2>/dev/null"))
 (wait-gone! serve-verb-pid)
 
 (system (string-append "rm -rf " here " " sock-here))

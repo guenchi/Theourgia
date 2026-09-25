@@ -177,7 +177,7 @@
      "THEOURGIA_LOCAL=1")
 
 (system (string-append "( THEOURGIA_TRACE=1 CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                       "scheme --script ../core.sc serve " store
+                       "scheme --script ../theourgiad.sc serve " store
                        " > " here "/serve.txt 2>&1 & echo $! > " here "/pid )"))
 (system "sleep 5")
 

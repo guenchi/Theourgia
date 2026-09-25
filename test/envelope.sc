@@ -71,7 +71,7 @@
 (putenv "THEOURGIA_HOME" (string-append here "/home"))
 (define store (string-append here "/store"))
 (define sock (string-append sock-here "/s.sock"))
-(define cli "../core.sc")
+(define daemon "../theourgiad.sc")
 
 (rpc-dispatch store '(init) "test")
 (define block
@@ -83,7 +83,7 @@
 (define exts (getenv "CHEZSCHEMELIBEXTS"))
 (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
                        "THEOURGIA_HOME=" here "/home "
-                       "scheme --script " cli " serve " store " --socket " sock
+                       "scheme --script " daemon " serve " store " --socket " sock
                        " > " here "/serve.log 2>&1 &"))
 (let wait ((i 0))
   (cond ((file-exists? sock) 'up)

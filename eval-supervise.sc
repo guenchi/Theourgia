@@ -111,7 +111,7 @@
   ;; ---- one evaluation --------------------------------------------------------
 
 ;; KEY: THIS MAILBOX IS THIS EVALUATION'S OWN. supervise-eval has one caller,
-  ;; core.sc's eval verb (core.sc:411-423), which starts a fresh scheduler whose
+  ;; core.sc's eval verb (its eval-and-exit!), which starts a fresh scheduler whose
   ;; only actor calls it once, prints the answer and exits; so every worker-*
   ;; message and every DOWN this process receives belongs to this evaluation.
   ;; `collect` has matched every worker-out without comparing its ref since

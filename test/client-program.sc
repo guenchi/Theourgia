@@ -735,7 +735,7 @@
         (let* ((out (string-append here "/p15-other.out"))
                (sock (string-append sock-here "/p15.sock"))
                (rc (begin
-                     (system (string-append (env-prefix "") " scheme --script ../core.sc serve "
+                     (system (string-append (env-prefix "") " scheme --script ../theourgiad.sc serve "
                                             p15-store " --socket " sock
                                             " > /dev/null 2>&1 &"))
                      (let up ((k 0))

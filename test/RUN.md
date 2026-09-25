@@ -45,9 +45,11 @@ time rather than by a static import behaves differently in the two, and
 a reading taken in one says nothing about the other.
 
 `core.sc` is the case that produced the rule: it reaches
-`(theourgia daemon)`, `(theourgia eval-supervise)`, `(theourgia sched)`
-and `(theourgia net)` through `(environment ...)` when a `serve`, an
-`eval` or a forwarded call asks for them. From source that resolves to a
+`(theourgia eval-supervise)`, `(theourgia sched)` and `(theourgia net)`
+through `(environment ...)` when an `eval` or a forwarded call asks for
+them. `theourgiad.sc`, the daemon program since F46, reaches
+`(theourgia daemon)` the same way once its arguments are checked. From
+source that resolves to a
 `.sc`; from objects to a `.so`; inside a whole-program package it would
 not resolve at all, because nothing references those libraries
 statically. `f0-ondemand.sc` carries both readings -- F0-1 to F0-3 from

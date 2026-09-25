@@ -11,14 +11,22 @@ Design documents are maintained separately; this repository holds the implementa
 **One set of prerequisites: Chez Scheme, and igropyr.** There is no
 Python anywhere in this, and no build step -- the verbs run from source:
 
-    scheme --script core.sc <verb> [...]
+    scheme --script theourgia.sc <verb> [...]
+
+**Three programs, one per role.** `theourgia.sc` is the command you run.
+It answers through a daemon, and starts the daemon program,
+`theourgiad.sc`, beside itself when none is running; `init`, `eval` and
+any request under `THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc`
+answers one request in its own process -- the in-process route, which
+forwards to a running daemon unless `THEOURGIA_LOCAL=1`. `theourgiad.sc`
+takes only `serve`.
 
 Chez finds the libraries through its own two variables, which must name a
 directory holding both `theourgia/` and `igropyr/`:
 
     export CHEZSCHEMELIBDIRS=/path/to/that/directory
     export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
-    scheme --script core.sc init --store /path/to/store
+    scheme --script theourgia.sc init --store /path/to/store
 
 **Running it compiled.** `build.ss` compiles every library -- this tree
 and its dependency -- into a directory of objects:
@@ -35,10 +43,12 @@ beside a `.sc` is resolved in preference to it, so a tree holding both
 can be running code nobody has edited for a week.
 
 NOTE: **Packaging the whole program into one file is not done yet.** That
-form would drop a library nothing statically references -- and `serve`,
-`eval` and forwarding are reached at run time by name, so they would
-stop resolving. It is recorded as F13; until then the shipped form is a
-directory of objects, which those three verbs do work in.
+form would drop a library nothing statically references -- and `eval`
+and forwarding are reached at run time by name, so they would stop
+resolving; so would the daemon, which `theourgiad.sc` loads by name once
+its arguments are checked.
+It is recorded as F13; until then the shipped form is a directory of
+objects, which those routes do work in.
 
 ## Two ways to run
 
@@ -46,11 +56,13 @@ directory of objects, which those three verbs do work in.
 is left running, and two commands that overlap are two processes taking
 the store's lock in turn.
 
-**With a daemon.** `theourgia serve <store>` holds the store open and
+**With a daemon.** `theourgia serve <store>`, which runs the daemon program
+`theourgiad.sc serve <store>`, holds the store open and
 answers over a unix socket. A client finds that socket by the same rule
-the daemon used to create it, so nothing needs to be told where it is --
-running an ordinary verb reaches the daemon automatically when one is
-there, and runs locally when one is not.
+the daemon used to create it, so nothing needs to be told where it is.
+`theourgia.sc` sends an ordinary verb to the daemon when one is there,
+and starts one and asks again when none is; `core.sc` sends it to the
+daemon when one is there and answers it in its own process when none is.
 
 NEVER: **The daemon's answer is the CLI's answer, byte for byte.** Both call
 the same dispatcher; no verb, answer or error shape exists in one and not
@@ -1165,6 +1177,9 @@ spellings silently do nothing.
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
+The program is `theourgiad.sc`; it takes this verb and no other, and
+answers any other with `(error bad-request (reason not-a-daemon-verb)
+(usage ...))`, this usage inside the error, exit 1.
 
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or
@@ -1235,7 +1250,7 @@ the transport's tag rather than on the answer's text.
 | variable | read by | what it does |
 |---|---|---|
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. Not read by any source file here. |
-| `THEOURGIA_STORE` | `core.sc` | the store to use when `--store` is absent. Falls back to `.` |
+| `THEOURGIA_STORE` | `core.sc`, `theourgiad.sc` | the store to use when `--store` is absent. Falls back to `.` |
 | `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
