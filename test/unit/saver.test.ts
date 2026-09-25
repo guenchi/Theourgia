@@ -1833,3 +1833,85 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
     );
   });
 });
+
+/*
+ * plugin-r3 item 2, end to end through a Saver: the core's F45 `local-writer`
+ * decides the first cursor of a store with more than one writer -- the case
+ * this client refused until now -- and an answer that contradicts itself is
+ * refused in words, with nothing sent.
+ */
+describe('plugin-r3 2 a store with several writers, when the core names the local one', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const TWO =
+    '(check (store "s") (local-writer "LOCAL") (writers (("w" (end 7) (torn #f) (integrity ())) ' +
+    '("LOCAL" (end 3) (torn #f) (integrity ())))) (snapshots ()) (registry outside-store) (verdict ok))\n';
+
+  function over(check: string, calls: ScriptedCall[]): Rig {
+    const made = new FakeCore([{ match: ['check'], stdout: check, rc: 0 }, ...calls]);
+    const outbox = new Outbox(made.outboxFile());
+    outbox.load();
+    const client = new Client(new CliTransport(made.config(), made.env()));
+    return { core: made, outbox, saver: new Saver(client, outbox, settling(outbox)) };
+  }
+
+  it('saves against the named local writer of a store with two writers', async () => {
+    const r = over(TWO, [
+      { match: ['set'], stdout: '(ok (events (("LOCAL" . 4))) (state (("a.2" . "hhh"))) (cursor ("LOCAL" . 4)) (replay #f))\n', rc: 0 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'saved', outcome.message);
+    const sent = setCalls(core);
+    assert.strictEqual(sent.length, 1);
+    assert.strictEqual(sent[0][sent[0].indexOf('--cursor') + 1], 'LOCAL:3', 'the save was not composed against the local writer');
+  });
+
+  it('sends nothing and says why when the named local writer is not among the writers', async () => {
+    const r = over(TWO.replace('(local-writer "LOCAL")', '(local-writer "stranger")'), [
+      { match: ['set'], stdout: wrote(8), rc: 0 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'blocked');
+    assert.match(outcome.message, /contradicts itself/);
+    assert.match(outcome.message, /stranger/);
+    assert.strictEqual(setCalls(core).length, 0, 'a save was sent against an answer that contradicts itself');
+  });
+
+  /*
+   * KEY: TWO THINGS THAT CANNOT BE READ, TWO SENTENCES, EACH TRUE. Review r1
+   * of this item measured an unreadable `local-writer` clause reported as an
+   * unreadable writer LISTING with an unknown count -- about a listing that
+   * had read, one writer.
+   */
+  it('says it could not read which writer is local, not that the listing could not be read', async () => {
+    const r = over(TWO.replace('(local-writer "LOCAL")', '(local-writer #f)'), [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'blocked');
+    assert.match(outcome.message, /naming its local writer in a form this build could not read/);
+    assert.doesNotMatch(outcome.message, /writer listing/, 'the sentence blamed the listing');
+    assert.strictEqual(setCalls(core).length, 0);
+  });
+
+  /*
+   * AND THE LISTING'S SENTENCE CLAIMS NOTHING IT CANNOT KNOW. Here both
+   * writers are named and only LOCAL's end is unreadable: their number is
+   * known, so a sentence saying it is not would be false (review r2 of this
+   * item).
+   */
+  it('says the listing could not be read in full when it is the listing, and claims no count', async () => {
+    const r = over(TWO.replace('(end 3)', '(end "three")'), [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body\n');
+    assert.strictEqual(outcome.status, 'blocked');
+    assert.match(outcome.message, /a writer listing this build could not read in full/);
+    assert.doesNotMatch(outcome.message, /how many writers/, 'the sentence claimed the count was unknown');
+    assert.doesNotMatch(outcome.message, /naming its local writer/, 'the sentence blamed the clause');
+  });
+});

@@ -104,7 +104,12 @@ const AT_LEAST: Array<[string, number]> = [
   ['census.test.ts', 17],
   ['chain.test.ts', 6],
   ['commands.test.ts', 8],
-  ['cursor.test.ts', 8],
+  /*
+   * RAISED in plugin-r3 item 2 to the fourteen it registers: the five that
+   * read the core's `local-writer`; 14 -> 15 in its review r1, the named
+   * writer first and in the middle of the listing.
+   */
+  ['cursor.test.ts', 15],
   /*
    * ADDED in plugin-r2: the decoder's own cells, and the census over the
    * two readers that have no head to name. The other half of that
@@ -168,9 +173,13 @@ const AT_LEAST: Array<[string, number]> = [
    * in item 7, 55 -> 61: a refusal's detail and remedy reach the
    * sentence, an instance mismatch is kept and parked, and the retry
    * command's way back, both halves; 61 -> 63 in its review r1: a remedy
-   * that cannot be said is printed, and `changed` keeps its clauses.
+   * that cannot be said is printed, and `changed` keeps its clauses. And
+   * in item 2, 63 -> 65: a store with two writers saved against the one
+   * the core names, and a contradicting answer refused with nothing sent;
+   * 65 -> 67 in its review r1, one true sentence for each thing that could
+   * not be read.
    */
-  ['saver.test.ts', 63],
+  ['saver.test.ts', 67],
   ['saving.test.ts', 34],
   ['sending.test.ts', 20],
   ['sequences.test.ts', 15],

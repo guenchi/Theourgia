@@ -130,12 +130,57 @@ export function writersFromCheck(answer: Datum): WriterEnd[] | null {
 
 export type FirstCursor =
   | { ok: true; cursor: string }
-  | { ok: false; reason: 'no-writer' | 'many-writers' | 'unreadable'; writers: WriterEnd[] };
+  | {
+      ok: false;
+      reason: 'no-writer' | 'many-writers' | 'unreadable' | 'local-writer-not-listed';
+      writers: WriterEnd[];
+      local?: string;
+      /*
+       * WHICH PART COULD NOT BE READ, when the reason is `unreadable`. The
+       * listing and the `local-writer` clause are two different failures,
+       * and a sentence about one told of the other says something false:
+       * review r1 of item 2 measured "how many writers it has is not
+       * known" about a listing that read perfectly well.
+       */
+      unreadable?: 'listing' | 'local-writer';
+    };
 
 export function firstCursorFromCheck(answer: Datum): FirstCursor {
   const writers = writersFromCheck(answer);
   if (writers === null) {
-    return { ok: false, reason: 'unreadable', writers: [] };
+    return { ok: false, reason: 'unreadable', writers: [], unreadable: 'listing' };
+  }
+  /*
+   * WHICH WRITER IS THIS STORE'S OWN, WHEN THE CORE SAYS. (queue item 2, the
+   * core's F45)
+   *
+   * A `check` from a core that knows names it: `(local-writer "<id>")`,
+   * a clause of its own beside `writers`, taken by name (its position is
+   * not promised). When it is there, the cursor is that writer's end,
+   * however many writers the store has -- which is what a store with a
+   * second writer, adopted elsewhere and published back, was waiting for.
+   *
+   * NOTE: THREE REFUSALS, AND THEY STAY THREE. A `local-writer` clause
+   * that is there twice, or is not a string, is an answer this build
+   * cannot read -- the same refusal as an unreadable listing. One that
+   * names a writer the listing does not hold is the answer contradicting
+   * itself, and it is refused with that reason rather than by picking
+   * either half: two suppliers of one fact disagreeing is not a thing to
+   * guess about. (The core has a cell pinning that this cannot happen;
+   * this one pins that nothing is guessed if it does anyway.) And the
+   * clause being absent is the third case, below.
+   */
+  const check = answerOf(answer, 'check');
+  const local = check === null ? null : check.value('local-writer');
+  if (local !== null && !(!local.read && local.because === 'absent')) {
+    if (!local.read || typeof local.value !== 'string') {
+      return { ok: false, reason: 'unreadable', writers, unreadable: 'local-writer' };
+    }
+    const own = writers.find((w) => w.writer === local.value);
+    if (own === undefined) {
+      return { ok: false, reason: 'local-writer-not-listed', writers, local: local.value };
+    }
+    return { ok: true, cursor: formatCursor({ writer: own.writer, seq: own.end }) };
   }
   if (writers.length === 1) {
     return { ok: true, cursor: formatCursor({ writer: writers[0].writer, seq: writers[0].end }) };

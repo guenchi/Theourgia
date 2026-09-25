@@ -184,5 +184,108 @@ describe('Q3 the first cursor, before any answer has been heard', () => {
     const first = firstCursorFromCheck(wire().read('(check (store "s") (writers ()) (verdict ok))'));
     assert.strictEqual(first.ok, false);
     assert.strictEqual((first as { reason: string }).reason, 'no-writer');
+  });});
+
+/*
+ * plugin-r3 item 2: the core's F45 names the local writer.
+ *
+ * The shape, quoted from the main session (2026-09-19): `(check (store "...")
+ * (local-writer "xihfjyym") (writers (("xihfjyym" ...))) ...)` -- a top-level
+ * clause beside `writers`, position not promised, taken by name; absent
+ * altogether when there is none. Measured present in 877f0da
+ * (store.sc:4279).
+ */
+describe('plugin-r3 2 the local writer, when the core names it', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const withLocal = (clause: string, listing: string = CHECK_TWO_WRITERS): string =>
+    listing.replace('(check (store "tasul7cl") ', `(check (store "tasul7cl") ${clause} `);
+
+  it('writes as the writer the core names, however many writers the store has', () => {
+    assert.deepStrictEqual(firstCursorFromCheck(wire().read(withLocal('(local-writer "other123")'))), {
+      ok: true,
+      cursor: 'other123:2'
+    });
+    assert.deepStrictEqual(
+      firstCursorFromCheck(wire().read(withLocal('(local-writer "fsu7hd1k")', CHECK_ONE_WRITER))),
+      { ok: true, cursor: 'fsu7hd1k:7' }
+    );
+  });
+
+  /*
+   * THE NAMED ONE, NOT A POSITION IN THE LISTING. Review r1 of this item
+   * measured that both fixtures above put the named writer last, so taking
+   * the last writer passed them. Here it is first, then in the middle.
+   */
+  it('writes as the named writer wherever it stands in the listing', () => {
+    const three =
+      '(check (store "tasul7cl") (writers (("aaaa" (end 1) (torn #f) (integrity ())) ' +
+      '("bbbb" (end 2) (torn #f) (integrity ())) ("cccc" (end 3) (torn #f) (integrity ())))) ' +
+      '(snapshots ()) (registry outside-store) (verdict ok))';
+    for (const [named, cursor] of [['aaaa', 'aaaa:1'], ['bbbb', 'bbbb:2']]) {
+      assert.deepStrictEqual(
+        firstCursorFromCheck(wire().read(withLocal(`(local-writer "${named}")`, three))),
+        { ok: true, cursor },
+        `named ${named}`
+      );
+    }
+  });
+
+  it('reads the clause wherever it stands', () => {
+    const after = CHECK_TWO_WRITERS.replace('(snapshots ())', '(snapshots ()) (local-writer "other123")');
+    assert.deepStrictEqual(firstCursorFromCheck(wire().read(after)), { ok: true, cursor: 'other123:2' });
+    const last = CHECK_TWO_WRITERS.replace('(verdict ok))', '(verdict ok) (local-writer "fsu7hd1k"))');
+    assert.deepStrictEqual(firstCursorFromCheck(wire().read(last)), { ok: true, cursor: 'fsu7hd1k:7' }, 'the clause standing last');
+  });
+
+  /*
+   * KEY: THE ANSWER CONTRADICTING ITSELF IS REFUSED, NOT RESOLVED. Neither
+   * half is picked -- not the named writer, not the only writer listed.
+   */
+  it('refuses an answer whose local writer is not among its writers, and names it', () => {
+    const none = '(check (store "tasul7cl") (writers ()) (snapshots ()) (registry outside-store) (verdict ok))';
+    for (const listing of [CHECK_ONE_WRITER, CHECK_TWO_WRITERS, none]) {
+      const first = firstCursorFromCheck(wire().read(withLocal('(local-writer "stranger")', listing)));
+      assert.strictEqual(first.ok, false, 'a contradicting answer supplied a cursor');
+      assert.strictEqual((first as { reason: string }).reason, 'local-writer-not-listed');
+      assert.strictEqual((first as { local?: string }).local, 'stranger');
+    }
+  });
+
+  it('refuses a local-writer clause it cannot read, rather than falling back', () => {
+    for (const clause of [
+      '(local-writer "fsu7hd1k") (local-writer "other123")',
+      '(local-writer fsu7hd1k)',
+      '(local-writer)',
+      '(local-writer "fsu7hd1k" "other123")',
+      '(local-writer #f)'
+    ]) {
+      const first = firstCursorFromCheck(wire().read(withLocal(clause, CHECK_ONE_WRITER)));
+      assert.strictEqual(first.ok, false, `${clause} supplied a cursor`);
+      assert.strictEqual((first as { reason: string }).reason, 'unreadable', `${clause}`);
+      assert.strictEqual((first as { unreadable?: string }).unreadable, 'local-writer', `${clause} blamed the listing`);
+    }
+  });
+
+  /*
+   * NOTE: AND WITHOUT THE CLAUSE, AS BEFORE (ruled (b), 2026-09-25). A core
+   * older than F45 never sends it and a received copy on 877f0da does not
+   * either; the two cannot be told apart from the answer. The older rule
+   * stands: one writer is used, several are refused. Where that is wrong --
+   * a copy whose only writer is not this machine's -- the core refuses the
+   * write itself with `(error refused (instance machine))`, measured by the
+   * main session on 877f0da, and item 7 parks that save with its way out.
+   */
+  it('keeps the older rule when the core does not name one', () => {
+    assert.deepStrictEqual(firstCursorFromCheck(wire().read(CHECK_ONE_WRITER)), { ok: true, cursor: 'fsu7hd1k:7' });
+    const many = firstCursorFromCheck(wire().read(CHECK_TWO_WRITERS));
+    assert.strictEqual((many as { reason: string }).reason, 'many-writers');
+    const three = CHECK_TWO_WRITERS.replace(
+      '("other123" (end 2) (torn #f) (integrity ()))',
+      '("other123" (end 2) (torn #f) (integrity ())) ("third456" (end 5) (torn #f) (integrity ()))'
+    );
+    assert.strictEqual((firstCursorFromCheck(wire().read(three)) as { reason: string }).reason, 'many-writers', 'three writers');
   });
 });

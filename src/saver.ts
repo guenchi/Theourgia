@@ -1414,12 +1414,31 @@ export class Saver {
     if (!first.ok) {
       this.bootstrapProblem =
         first.reason === 'many-writers'
-          ? `this store has ${first.writers.length} writers and the core does not yet say which is local; ` +
-            'writing from here is not supported in this batch'
-          : first.reason === 'unreadable'
-            ? 'the store answered `check` with a writer listing this build could not read, so ' +
-              'how many writers it has is not known and nothing may be written against a guess'
-            : 'this store reports no writer, so there is nothing to write against';
+          ? `this store has ${first.writers.length} writers and the core did not say which of them is ` +
+            'local, so nothing is written from here. A core with `local-writer` in its `check` ' +
+            'answer (theourgia F45 and later) says it; one older than that cannot'
+          : first.reason === 'unreadable' && first.unreadable === 'local-writer'
+            ? 'the store answered `check` naming its local writer in a form this build could not ' +
+              'read, so which writer is this store\'s own is not known and nothing may be written ' +
+              'against a guess'
+          : /*
+             * NOTE: THE LISTING'S SENTENCE CLAIMS NO COUNT. It said "how many
+             * writers it has is not known", which is false when every writer is
+             * named and only one entry's end cannot be read -- review r2 of item
+             * 2 found it, and it was measured: two writers listed, the sentence
+             * saying their number was unknown. What is always true of an
+             * unreadable listing is that it could not be read in full, so no
+             * position in it can be trusted.
+             */
+            first.reason === 'unreadable'
+            ? 'the store answered `check` with a writer listing this build could not read in ' +
+              'full, so no writer\'s position in it can be trusted and nothing may be written ' +
+              'against a guess'
+            : first.reason === 'local-writer-not-listed'
+              ? `the store's answer to \`check\` contradicts itself: the local writer it names ` +
+                `(${first.local ?? '?'}) is not among its writers, so nothing is written from here ` +
+                'until the store says one thing'
+              : 'this store reports no writer, so there is nothing to write against';
       return null;
     }
     /*

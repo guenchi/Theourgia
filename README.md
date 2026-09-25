@@ -38,11 +38,14 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
   implemented", this extension asks the core what it can do -- `describe` returns the
   catalogue -- so the entry will appear when the verb does. Nothing needs removing when
   it lands.
-* **A store that more than one instance has written to cannot be written to by a window
-  that meets it afterwards.** A store gets a second log writer when a copy of it is
-  adopted elsewhere and a segment published back; the core does not yet say which of
-  them is local, so a window with no cursor of its own is told so and refuses to write
-  rather than guess. A window that was already writing keeps its cursor and carries on.
+* **A store that more than one instance has written to needs a core that names its local
+  writer.** A store gets a second log writer when a copy of it is adopted elsewhere and a
+  segment published back. A core from F45 on says which writer is local
+  (`(local-writer "<id>")` in its `check` answer), and a window writes as that one. With an
+  older core, which does not say, a window with no cursor of its own is told so and refuses
+  to write rather than guess; one that was already writing keeps its cursor and carries on.
+  An answer naming a local writer its own listing does not hold is refused as contradicting
+  itself.
 * This extension has no direct socket adapter of its own, and does not want one.
   The socket belongs to the core's `(theourgia client)`, and the thin client is
   its adapter; a second implementation of that envelope in TypeScript would be a
