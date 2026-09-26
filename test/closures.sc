@@ -237,6 +237,13 @@
 ;; `(rnrs base)` and `(rnrs lists)`: it reaches neither the dispatcher,
 ;; nor the scheduler, nor the networking library, which is what this file
 ;; exists to keep true.
+;;
+;; KEY: `answers` IS ALLOWED HERE TOO. F100b point 4: the program's main
+;; turns a filesystem failure into the one table answer that every other
+;; point gives, rather than keeping a second copy of the table.
+;; `(theourgia answers)` imports `(chezscheme)` and names from
+;; `(theourgia ffi)`, which the closure already holds, and does no
+;; filesystem work of its own: it adds no edge to the server.
 (define program-imports
   (map cadr (filter (lambda (r) (pair? (cdr r)))
                     (imports-of-file 'theourgia (string-append root "/theourgia.sc")))))
@@ -251,7 +258,7 @@
 
 (want "C-2 and the client program's closure is exactly what it should be"
       (closure-of-all program-imports)
-      '(arguments client digest ffi render trace))
+      '(answers arguments client digest ffi render trace))
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

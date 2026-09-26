@@ -48,7 +48,8 @@
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
           (only (theourgia datum-code) datum-source-read)
-          (only (theourgia ffi) read-entry entry-type)
+          (only (theourgia ffi) read-entry entry-type fs-error? with-mutation-record mutation-record)
+          (only (theourgia answers) classify-failure)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -70,13 +71,14 @@
 
   (define (guarded thunk)
     (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
-              ;; AN ENTRY THAT COULD NOT BE READ IS NAMED, NOT CALLED
-              ;; INTERNAL: the path and the system's reason, so the caller
-              ;; knows which file and why (F77, K1).
-              ((unreadable-entry? e)
-               (list 'error 'unreadable
-                     (list 'path (unreadable-entry-path e))
-                     (list 'reason (unreadable-entry-reason e))))
+              ;; A FILESYSTEM FAILURE IS NOT ANSWERED HERE (F100b, D7): it
+              ;; goes on to the whole dispatch's table in
+              ;; rpc-dispatch-parsed, which answers it with the dispatch's
+              ;; mutation record -- what this verb had already changed.
+              ;; Answered here it lost that record, and a durable-error
+              ;; (a vector, not a condition) fell to `internal` below.
+              ((unreadable-entry? e) (raise e))
+              ((fs-error? e) (raise e))
               ((log-error? e) (describe-log-error e))
               ;; A THROWN VALUE NEED NOT BE A CONDITION. The sexpr layer
               ;; raises `#(sexpr-error <message> <position>)`, a vector,
@@ -1654,16 +1656,30 @@
   ;; NOTE: AN ANSWER THAT LEAVES AS A RAISE HAS NO TAIL TO CARRY THE CLAUSE.
   ;; The daemon's answer-for turns such a raise into an answer after this
   ;; point; that answer does not carry it.
+  ;;
+  ;; THE TRANSLATION POINT (F100b point 1). The outermost dispatch -- the one
+  ;; that owns the load listener, `own?` -- opens its own mutation-record
+  ;; scope around the whole of dispatch-verb, and a filesystem condition
+  ;; that leaves it is answered by (theourgia answers)' table with that
+  ;; scope's record: `unwritable`/`unreadable`/`absent` when nothing had
+  ;; been changed, `incomplete` with what had. A NESTED dispatch opens no
+  ;; scope of its own: its changes are part of the outer one's record, and
+  ;; a scope of its own would hide them from the outer answer (scopes do
+  ;; not pass their entries outward). What the table does not classify
+  ;; leaves as it did, to the caller's own backstop.
   (define (rpc-dispatch-parsed store verb nodes actor . rest)
     (let* ((own? (and (string? store) (not (load-listener-of store))))
            (key (if own? (string-copy store) store))
            (heard '())
            (hear! (lambda (found) (set! heard (merge-unreadable heard found)))))
       (let ((answer (if own?
-                        (dynamic-wind
-                          (lambda () (load-listener-add! key hear!))
-                          (lambda () (apply dispatch-verb key verb nodes actor rest))
-                          (lambda () (load-listener-remove! key)))
+                        (with-mutation-record
+                          (lambda ()
+                            (guard (e ((classify-failure e (mutation-record)) => (lambda (a) a)))
+                              (dynamic-wind
+                                (lambda () (load-listener-add! key hear!))
+                                (lambda () (apply dispatch-verb key verb nodes actor rest))
+                                (lambda () (load-listener-remove! key))))))
                         (apply dispatch-verb key verb nodes actor rest))))
         (with-incomplete-clause
           answer

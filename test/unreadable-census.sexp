@@ -152,10 +152,10 @@
    "split-suggest input"
    (e (#t #f)))
   ("daemon.sc" (device-inode) 1 guard
-   (#t)
-   unrelated a
-   "socket device/inode"
-   (e (#t #f)))
+   ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))))
+   fact a
+   "socket device/inode: only an absent entry (ENOENT, ENOTDIR) is no inode; any other unreadable-entry, and anything else, propagates to the caller's table (F100b P2b; the other callers are M2's)"
+   (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #f)))
   ("daemon.sc" (main) 1 guard
    (#t)
    unrelated a
@@ -257,15 +257,15 @@
    "eval"
    (e (#t #f)))
   ("eval-worker.sc" (answer) 1 guard
-   ((worker-refusal? e) (unreadable-entry? e) (condition? e) #t)
+   ((worker-refusal? e) (classify-failure e (mutation-record)) (condition? e) #t)
    refuse a
-   "eval: an entry the worker's load could not read -- writers/ itself included (F79) -- answers (error unreadable (path p) (reason r)) before the catch-all, as K1's routes do; the worker's own refusals are a private record answered as they are (F92), a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
-   (e ((worker-refusal? e) (worker-refusal-answer e)) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
+   "eval: the worker's own refusals are a private record answered as they are (F92); a filesystem failure -- an entry the worker's load could not read, writers/ itself included (F79), or a durable-error -- answers by the one table with the worker's record (F100b point 5); a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
+   (e ((worker-refusal? e) (worker-refusal-answer e)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
   ("eval-worker.sc" (worker-step) 1 guard
-   ((and (pair? e) (eq? (car e) (quote error))) (or (worker-refusal? e) (unreadable-entry? e) (condition? e)) #t)
+   ((and (pair? e) (eq? (car e) (quote error))) (or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) #t)
    propagate a
-   "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers as before F92: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (F92 review r1, S)"
-   (e ((and (pair? e) (eq? (car e) (quote error))) (refuse! e)) ((or (worker-refusal? e) (unreadable-entry? e) (condition? e)) (raise e)) (#t (refuse! (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))))))
+   "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers as before F92: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry, a durable-error (F100b) or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (F92 review r1, S)"
+   (e ((and (pair? e) (eq? (car e) (quote error))) (refuse! e)) ((or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) (raise e)) (#t (refuse! (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))))))
   ("evidence-index.sc" (load-checkpoint) 1 guard
    (#t)
    unrelated c
@@ -447,10 +447,10 @@
    "physical-of: a current segment that is there and will not open leaves the writer no-append-target, the answer a mirror gets; the segment-unreadable note names it and the session gate refuses the writer (K12)"
    (e ((unreadable-entry? e) (quote no-append-target))))
   ("log.sc" (open-load) 1 guard
-   (#t)
-   unrelated c
-   "open-load parses the store meta.sexp, not a writer file"
-   (e (#t #f)))
+   ((unreadable-entry? e) #t)
+   propagate a
+   "open-load parses the store meta.sexp: an unreadable meta.sexp is raised to the answering point's table (F100b PRE-1/P5); a parse failure is #f as before"
+   (e ((unreadable-entry? e) (raise e)) (#t #f)))
   ("log.sc" (open-load) 2 guard
    (#t)
    propagate c
@@ -777,10 +777,10 @@
    "membership"
    (ex (#t (quote invalid))))
   ("rpc.sc" (guarded) 1 guard
-   ((and (list? e) (pair? e) (eq? (car e) (quote error))) (unreadable-entry? e) (log-error? e) #t)
+   ((and (list? e) (pair? e) (eq? (car e) (quote error))) (unreadable-entry? e) (fs-error? e) (log-error? e) #t)
    refuse c
-   "K1: as daemon.sc answer-for: the unreadable-entry branch is F77a, the incomplete-reduction branch F77c"
-   (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))) ((log-error? e) (describe-log-error e)) (#t (list (quote error) (quote internal) (list (quote condition) (cond ((and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) (quote sexpr-error))) (vector-ref e 1)) ((message-condition? e) (condition-message e)) (else "unexpected failure")))))))
+   "K1, a mixed handler: refuse/c names its non-filesystem branches (a thrown refusal, log-error, the internal fallback); its filesystem branches PROPAGATE -- an unreadable-entry or a durable-error is raised to rpc-dispatch-parsed's table (F100b point 1; the unreadable-entry branch was answered here from F77a); the incomplete-reduction branch is F77c"
+   (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (raise e)) ((fs-error? e) (raise e)) ((log-error? e) (describe-log-error e)) (#t (list (quote error) (quote internal) (list (quote condition) (cond ((and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) (quote sexpr-error))) (vector-ref e 1)) ((message-condition? e) (condition-message e)) (else "unexpected failure")))))))
   ("rpc.sc" (parse-batch) 1 guard
    (#t)
    unrelated a
@@ -834,8 +834,8 @@
   ("store.sc" (with-store-write) 3 guard
    (#t)
    fact b
-   "replay barrier: (error unknown (replay-barrier-failed ...))"
-   (e (#t (list (quote error) (quote unknown) (list (quote replay-barrier-failed) (failure-text e))))))
+   "replay barrier: (error unknown (replay-barrier-failed ...)), with the record through with-written (F100b; replay creates nothing before the barrier, so NO2 reads it unchanged)"
+   (e (#t (with-written (list (quote error) (quote unknown) (list (quote replay-barrier-failed) (failure-text e))) (mutation-record)))))
   ("store.sc" (with-store-write) 4 guard
    (#t)
    unrelated b
@@ -924,8 +924,8 @@
   ("working.sc" (problem) 1 guard
    ((and (pair? e) (eq? (quote working-error) (car e))) (unreadable-entry? e) #t)
    fact b
-   "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10, F77b)"
-   (e ((and (pair? e) (eq? (quote working-error) (car e))) (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e)))) ((unreadable-entry? e) (unreadable-answer e)) (#t (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))))))
+   "working-unavailable with the reason; an unreadable-entry with its path and the system's reason (U10, F77b); each answer carries the working record through with-written (F100b NO1)"
+   (e ((and (pair? e) (eq? (quote working-error) (car e))) (with-written (list (quote error) (quote working-unavailable) (list (quote reason) (cadr e))) (mutation-record))) ((unreadable-entry? e) (with-written (unreadable-answer e) (mutation-record))) (#t (with-written (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "Working storage failed"))) (mutation-record)))))
   ("working.sc" (working-write!) 1 guard
    (#t)
    propagate b
@@ -971,6 +971,31 @@
    fact b
    "deferred read failure (R1a)"
    (e (#t (unless read-failure (set! read-failure (list (quote error) (quote working-unavailable) (list (quote message) (if (message-condition? e) (condition-message e) "A draft could not be read"))))) (quote ()))))
+  ("core.sc" (eval-and-exit!) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 3, the boot: a filesystem failure inside the scheduler answers by the one table with the boot's record (the pre-scheduler record handed in as its initial entries, AG-b-1/AG-b-2); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire?)))))
+  ("core.sc" (main) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 3: a filesystem failure before the scheduler answers by the one table with main's record (P3-a); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag)))))
+  ("daemon.sc" (dispatch-frame) 1 guard
+   ((classify-failure e (quote ())))
+   refuse a
+   "F100b point 2b: the store check's stat failing answers the table's kind with an empty record, as the transport's refusal (P2b); anything else propagates"
+   (e ((classify-failure e (quote ())) => (lambda (a) a))))
+  ("rpc.sc" (rpc-dispatch-parsed) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a nested dispatch opens no scope; anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (a) a))))
+  ("theourgia.sc" (main) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 4: the thin client answers a filesystem failure by the one table and exits 75 through refuse (P4); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => refuse)))
   )
 
 (raw-accessors

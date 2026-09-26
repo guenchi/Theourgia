@@ -41,7 +41,12 @@
         ;; neither the dispatcher, nor the scheduler, nor the network. It
         ;; is imported so that "does this verb read standard input" can be
         ;; asked of the tables that answer it everywhere else.
-        (only (theourgia arguments) parse-arguments argument-wants-stdin?))
+        (only (theourgia arguments) parse-arguments argument-wants-stdin?)
+        ;; THE TABLE AND THE RECORD (F100b point 4). (theourgia client)
+        ;; already brings ffi into this program's closure; (theourgia
+        ;; answers) is one small library that does no filesystem work.
+        (only (theourgia ffi) with-mutation-record mutation-record)
+        (only (theourgia answers) classify-failure))
 
 ;; ---- what the client itself understands ---------------------------------
 ;;
@@ -267,6 +272,13 @@
   (call! socket frame 30000))
 
 (define (main argv)
+  ;; THE TRANSLATION POINT (F100b point 4): the whole run -- the socket
+  ;; derivation, the frame, the start of a daemon -- in this process's
+  ;; mutation-record scope; a filesystem condition that leaves it is the
+  ;; table's answer on stdout with exit 75 (`refuse`), where it was an
+  ;; uncaught exception, exit 255.
+  (with-mutation-record (lambda ()
+  (guard (e ((classify-failure e (mutation-record)) => refuse))
   (let* ((scanned (scan argv))
          (verb (car scanned))
          (args (cadr scanned))
@@ -319,7 +331,7 @@
                 (let ((started (ensure-daemon! (server-argv store socket) store socket)))
                   (if (eq? started 'ready)
                       (settle (send-once socket frame) #f)
-                      (refuse started))))))))
+                      (refuse started)))))))))))
 
 ;; KEY: ONE CLASSIFICATION, WHICHEVER SEND PRODUCED THE OUTCOME. The second
 ;; send used to fold every non-answer into `transport-unknown`, so a

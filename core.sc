@@ -38,7 +38,8 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
               verb-spelling-error)
-        (only (theourgia ffi) env-or entry-type)
+        (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record)
+        (only (theourgia answers) classify-failure combine-report)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce))
 
@@ -323,12 +324,18 @@
        "")
       (else
        (let ((answer (working-baseline store #f (argument-option nodes "--writer"))))
-         (if (and (pair? answer) (eq? 'ok (car answer)) (pair? (caddr answer)))
-             (cut->text (caddr answer))
-             ;; A writer that cannot be resolved, or one with no drafts:
-             ;; the refusal belongs to the view, which is built next and
-             ;; carries it, so the cut is simply the current state.
-             ""))))))
+         (cond
+           ((and (pair? answer) (eq? 'ok (car answer)) (pair? (caddr answer)))
+            (cut->text (caddr answer)))
+           ;; A REFUSAL IS THE EVAL'S ANSWER (F100b, D19): it was discarded
+           ;; here, the view below met the same refusal and discarded it
+           ;; too, and the source ran against an empty view -- `(ok ...)`
+           ;; for a draft lock nobody could open. The caller answers it
+           ;; with `(during cut)`.
+           ((and (pair? answer) (eq? 'error (car answer)))
+            (list 'refused answer))
+           ;; A writer with no drafts: the current state.
+           (else "")))))))
 
 ;; NOTE: THE SAME SPELLING `--cut` IS READ IN. `parse-cut` accepts
 ;; `(("writer" . 3))`, which is what `write` produces for the alist a
@@ -346,10 +353,10 @@
              (answer (working-snapshot store state (argument-option nodes "--writer"))))
         (if (and (pair? answer) (eq? 'ok (car answer)))
             (list 'working (cadr answer) cut (caddr answer))
-            ;; A writer that cannot be resolved is the core's refusal, and
-            ;; it is carried as an empty view so the worker answers it the
-            ;; same way any other bad request is answered.
-            (list 'working #f cut '())))))
+            ;; A REFUSAL IS THE EVAL'S ANSWER (F100b, D19), answered by the
+            ;; caller with `(during view)`; it was carried as an empty view
+            ;; and the source ran against nothing.
+            (list 'refused answer)))))
 
 ;; NEVER: THE SPELLING IS ADVERTISED WHERE IT IS REFUSED. `eval` is this
 ;; program's own verb -- it is not in `rpc-verbs`, so the dispatcher's
@@ -398,23 +405,52 @@
              (finish (list 'error 'bad-request '(reason eval-arguments)
                            (list 'usage eval-usage))
                      wire?))
+            ((and (pair? cut) (eq? (car cut) 'refused))
+             (finish (append (cadr cut) '((during cut))) wire?))
             (else
              (let ((source (read-source nodes)))
                (if (> (string-length source) 1048576)
                    (finish '(error bad-source (reason input-limit)) wire?)
-                   ((later '(theourgia sched) 'start-scheduler)
-                     (lambda ()
-                       (finish
-                         ((later '(theourgia eval-supervise) 'supervise-eval)
-                           (list (cons 'store store) (cons 'cut cut) (cons 'under under)
-                                 (cons 'source source)
-                                 (cons 'timeout-ms timeout)
-                                 (cons 'memory-bytes memory)
-                                 (cons 'output-bytes output)
-                                 (cons 'view (eval-view nodes store cut))
-                                 (cons 'scheme (scheme-binary))
-                                 (cons 'worker (beside-this-program "eval-worker.sc"))))
-                         wire?)))))))))))
+                   ;; THE RECORD CROSSES INTO THE SCHEDULER (F100b point 3):
+                   ;; what this process changed before it -- the cut's draft
+                   ;; lock, say -- is handed to the boot actor as its
+                   ;; scope's initial entries, the boot adds its own (the
+                   ;; view's creations), and the worker's answer is
+                   ;; combined with the whole of it at `finish` (the
+                   ;; aggregation rule, point (b)).
+                   (let ((before-scheduler (mutation-record)))
+                     ((later '(theourgia sched) 'start-scheduler)
+                       (lambda ()
+                         (with-mutation-record
+                           (lambda ()
+                             (guard (e ((classify-failure e (mutation-record))
+                                        => (lambda (a) (finish a wire?))))
+                               (let ((view (eval-view nodes store cut)))
+                                 (if (and (pair? view) (eq? (car view) 'refused))
+                                     (finish (append (cadr view) '((during view))) wire?)
+                                     ;; TRIPWIRE, NOT A MEASUREMENT (AG-b, D22): of the
+                                     ;; aggregation rule, only the attachment to a named
+                                     ;; outcome has a production case here (P3-d,
+                                     ;; AG-b-2). The PROMOTION of absent/unreadable/
+                                     ;; unwritable to incomplete has none: the boot
+                                     ;; creates nothing without --working, and with it
+                                     ;; the boot's own load precedes the worker's
+                                     ;; (PR-08/09). H2 in test/facade-record.sc carries
+                                     ;; that rule.
+                                     (finish
+                                       (combine-report
+                                         ((later '(theourgia eval-supervise) 'supervise-eval)
+                                           (list (cons 'store store) (cons 'cut cut) (cons 'under under)
+                                                 (cons 'source source)
+                                                 (cons 'timeout-ms timeout)
+                                                 (cons 'memory-bytes memory)
+                                                 (cons 'output-bytes output)
+                                                 (cons 'view view)
+                                                 (cons 'scheme (scheme-binary))
+                                                 (cons 'worker (beside-this-program "eval-worker.sc"))))
+                                         (mutation-record))
+                                       wire?)))))
+                           before-scheduler))))))))))))
 
 ;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
 ;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS
@@ -463,6 +499,14 @@
   (when (null? argv)
     (say '(usage (theourgia <verb> ...)))
     (exit 1))
+  ;; THE TRANSLATION POINT (F100b point 3): everything below -- the eval
+  ;; path, the socket derivation, the forward, the local dispatch -- runs in
+  ;; this process's mutation-record scope, and a filesystem condition that
+  ;; leaves it is answered by (theourgia answers)' table with that record,
+  ;; on stdout, exit 1; before, it left as an uncaught exception, exit 255.
+  (let ((wire-flag (and (member "--wire" argv) #t)))
+  (with-mutation-record (lambda ()
+  (guard (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag))))
   ;; NEVER: `eval` IS THIS PROGRAM. It used to exec a Python supervisor, which
   ;; no longer exists; there is no second implementation to keep in step.
   ;; `serve` is not this program's any more: the daemon is `theourgiad.sc`
@@ -544,6 +588,6 @@
                                        (argument-option nodes "--wire")))
                  (rpc-dispatch-parsed store verb resolved actor #f (environment-writer))))))
     (print-answer answer (and (list? nodes) (not (and (pair? nodes) (eq? (car nodes) 'error))) (argument-option nodes "--wire")))
-    (exit (if (rpc-ok? answer) 0 1))))
+    (exit (if (rpc-ok? answer) 0 1))))))))
 
 (main (cdr (command-line)))

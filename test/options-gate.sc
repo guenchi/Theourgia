@@ -1673,7 +1673,7 @@
                                  (substring f (+ i 1) (string-length f)))
                                 (else (loop (- i 1))))))
                       source-file-list))
-      '("admission.sc" "arguments.sc" "baseline.sc" "client.sc"
+      '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
         "datum-project.sc" "digest.sc" "eval-context.sc" "eval-supervise.sc"

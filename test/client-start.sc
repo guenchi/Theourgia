@@ -540,6 +540,8 @@
 ;; `arguments` is allowed and the reason is written in `closures.sc`: the
 ;; program asks that table whether a verb reads standard input rather than
 ;; keeping a second copy of it, and the table reaches nothing else.
+;; `answers` is allowed for a reason also written there: the program turns
+;; a filesystem failure into the one table answer (F100b point 4).
 (want "IMPORTS and the client program's closure is exactly what it should be"
       (let ((program-imports
               (map cadr (filter (lambda (r) (pair? (cdr r)))
@@ -553,7 +555,7 @@
             (else
              (let ((edges (cond ((assq (car todo) import-graph) => cdr) (else '()))))
                (loop (append edges (cdr todo)) (cons (car todo) seen)))))))
-      '(arguments client digest ffi render trace))
+      '(answers arguments client digest ffi render trace))
 
 
 (system (string-append "chmod 700 " ro))

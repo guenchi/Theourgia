@@ -24,7 +24,7 @@
 ;;       scope inside that actor, handing it the entries so far
 ;;       (`with-mutation-record`'s optional second argument), and reads the
 ;;       combined record back.
-(import (chezscheme) (theourgia ffi) (theourgia sched))
+(import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers))
 
 (define bad 0)
 (define rows 0)
@@ -76,6 +76,88 @@
 ;; answer rather than waiting out a timeout for a reply that never comes.
 (define (raised-as e)
   (list 'raised (if (and (condition? e) (message-condition? e)) (condition-message e) e)))
+
+;; ---- F100b H1, H2: the table and the aggregation rule (pure) -----------------
+;;
+;; (theourgia answers)' two helpers on fixed conditions and records, one row
+;; per cell of the brief. The durable-error is ffi's vector
+;; #(durable-error op (path . errno)); the unreadable-entry is ffi's own
+;; constructor. Errnos: names for unreadable-entry, the numbers through ffi's
+;; exported constants for durable-error (ruling D1).
+(define (unreadable-at p errno-name reason) (make-unreadable-entry p reason errno-name))
+(define (durable op p errno) (vector 'durable-error op (cons p errno)))
+(define h-record '((mkdir "/a") (create "/a/b")))
+(define no-such "No such file or directory")
+(define denied "Permission denied")
+(want "H1 unreadable-entry ENOENT, empty record -> absent"
+      (classify-failure (unreadable-at "/p" 'ENOENT no-such) '())
+      (list 'error 'absent '(path "/p") (list 'reason no-such) '(errno ENOENT)))
+(want "H1 unreadable-entry ENOTDIR, empty record -> absent with ENOTDIR"
+      (classify-failure (unreadable-at "/p" 'ENOTDIR "Not a directory") '())
+      '(error absent (path "/p") (reason "Not a directory") (errno ENOTDIR)))
+(want "H1 unreadable-entry EACCES, empty record -> unreadable"
+      (classify-failure (unreadable-at "/p" 'EACCES denied) '())
+      (list 'error 'unreadable '(path "/p") (list 'reason denied) '(errno EACCES)))
+(want "H1 durable-error mkdir 13, empty record -> unwritable with op, the reason strerror's"
+      (classify-failure (durable 'mkdir "/p" EACCES) '())
+      (list 'error 'unwritable '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES)))
+(want "H1 durable-error dir-fsync 5, empty record -> unwritable (op dir-fsync)"
+      (classify-failure (durable 'dir-fsync "/d" EIO) '())
+      (list 'error 'unwritable '(op dir-fsync) '(path "/d") (list 'reason "Input/output error") (list 'errno EIO)))
+(for-each
+  (lambda (c)
+    (let ((failure (car c)) (clauses (cdr c)))
+      (want (string-append "H1 " (car clauses) " with a record -> incomplete, its clauses under failed, the record as written")
+            (classify-failure failure h-record)
+            (list 'error 'incomplete (cons 'failed (cdr clauses)) (list 'written h-record)))))
+  (list (list (unreadable-at "/p" 'ENOENT no-such) "ENOENT" '(path "/p") (list 'reason no-such) '(errno ENOENT))
+        (list (unreadable-at "/p" 'ENOTDIR "Not a directory") "ENOTDIR" '(path "/p") '(reason "Not a directory") '(errno ENOTDIR))
+        (list (unreadable-at "/p" 'EACCES denied) "EACCES" '(path "/p") (list 'reason denied) '(errno EACCES))
+        (list (durable 'mkdir "/p" EACCES) "durable mkdir" '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES))
+        (list (durable 'dir-fsync "/d" EIO) "durable dir-fsync" '(op dir-fsync) '(path "/d") '(reason "Input/output error") (list 'errno EIO))))
+(want "H1 what the table does not classify answers #f (the caller keeps its own answer)"
+      (list (classify-failure (make-message-condition "x") '()) (classify-failure 'boom h-record))
+      '(#f #f))
+(define h-entries '((create "/l")))
+;; Each input is the table's own shape for its kind: unwritable carries
+;; its op, so a promotion that dropped a clause would show (F100b M1
+;; review r1, F2).
+(for-each
+  (lambda (answer)
+    (want (string-append "H2 " (symbol->string (cadr answer)) " with an empty record plus entries -> incomplete, every clause under failed")
+          (combine-report answer h-entries)
+          (list 'error 'incomplete (cons 'failed (cddr answer)) (list 'written h-entries))))
+  (list '(error absent (path "/p") (reason "No such file or directory") (errno ENOENT))
+        '(error unreadable (path "/p") (reason "r") (errno EACCES))
+        (list 'error 'unwritable '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES))))
+(want "H2 incomplete with written W plus entries E -> written W then E"
+      (combine-report '(error incomplete (failed (path "/p")) (written ((mkdir "/a")))) h-entries)
+      '(error incomplete (failed (path "/p")) (written ((mkdir "/a") (create "/l")))))
+(want "H2 any answer plus no entries is unchanged, and its written text identical"
+      (let* ((a '(error unreadable (path "/p") (reason "r") (errno EACCES)))
+             (b (combine-report a '())))
+        (list (equal? a b) (string=? (format "~s" a) (format "~s" b))))
+      '(#t #t))
+;; A named outcome may carry atoms after its kind: store.sc answers
+;; (error not-written reserved-not-written (sequence n)) (F100b M1 review
+;; r1, F1: a lookup by assq raised on it).
+(want "H2 a named outcome carrying an atom after its kind gains (written E) and keeps every clause"
+      (list (with-written '(error not-written reserved-not-written (sequence 2)) h-entries)
+            (combine-report '(error not-written reserved-not-written (sequence 2)) h-entries))
+      (let ((a (list 'error 'not-written 'reserved-not-written '(sequence 2) (list 'written h-entries))))
+        (list a a)))
+(want "H2 a named outcome gains (written E) appended and keeps its name"
+      (combine-report '(error eval-exception (kind raised) (message "m")) h-entries)
+      (list 'error 'eval-exception '(kind raised) '(message "m") (list 'written h-entries)))
+(want "H2 an answer already carrying written, plus no entries, is unchanged"
+      (combine-report '(error working-unavailable (message "m") (written ((create "/w")))) '())
+      '(error working-unavailable (message "m") (written ((create "/w")))))
+(want "H2 a named outcome already carrying (written W) plus non-empty E -> ONE written clause holding W then E"
+      (combine-report '(error working-unavailable (message "m") (written ((create "/w")))) h-entries)
+      '(error working-unavailable (message "m") (written ((create "/w") (create "/l")))))
+(want "H2 a success answer is never given a written clause"
+      (combine-report '(ok (values (3))) h-entries)
+      '(ok (values (3))))
 
 (define scope-exits '(normal raise escape))
 (define scope-enclosings '(none outer))

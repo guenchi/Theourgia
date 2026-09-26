@@ -78,7 +78,8 @@
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
                 mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode
-                entry-type))
+                entry-type unreadable-entry? unreadable-entry-errno)
+          (only (theourgia answers) classify-failure))
 
   ;; ---- where a daemon lives ---------------------------------------------
   ;;
@@ -95,8 +96,13 @@
   ;; conn process is that process's death, which its adapter reports as
   ;; a closed connection. So the symptom was a client getting EOF and no
   ;; answer, nowhere near the arity mistake that caused it.
+  ;;
+  ;; ONLY ABSENCE IS #f (F100b, D5): a path that is not there answers #f, as
+  ;; it always did; one that cannot be read -- a parent this process may
+  ;; not search -- raises its unreadable-entry, so the caller's answer
+  ;; names it instead of treating it as absent. Anything else raises too.
   (define (device-inode p)
-    (guard (e (#t #f))
+    (guard (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) '(ENOENT ENOTDIR))) #f))
       (let-values (((dev ino) (path-device-inode p))) (cons dev ino))))
 
   (define (lock-path-for socket)
@@ -666,9 +672,11 @@
   ;; NOTE: TWO NAMES FOR ONE STORE ARE ONE STORE. A client may reach it
   ;; through a symlink; comparing the text alone would refuse a request
   ;; that is for exactly this library.
+  ;; NOTE: THE ASKED SPELLING FIRST (F100b, D18): let*, so when the asked
+  ;; path cannot be read its unreadable-entry is the one that leaves.
   (define (same-store? asked serving)
     (or (string=? asked serving)
-        (let ((a (device-inode asked)) (b (device-inode serving)))
+        (let* ((a (device-inode asked)) (b (device-inode serving)))
           (and a b (equal? a b)))))
 
   (define (directory-of p)
@@ -1277,10 +1285,17 @@
         ;; NEVER: A REQUEST FOR ANOTHER STORE IS REFUSED, NOT EXECUTED. This
         ;; daemon serves one store; running somebody else's verb against
         ;; it would write to the wrong library, silently.
-        ((not (same-store? (frame-field 'store parsed) (ctx-store ctx)))
-         (answer-and-close ref (list 'error 'transport-store-mismatch
-                                     (list 'serving (ctx-store ctx))
-                                     (list 'asked (frame-field 'store parsed)))))
+        ;; THE STORE CHECK CAN FAIL TO READ (F100b point 2b): a spelling whose
+        ;; parent this daemon may not search is neither this store nor
+        ;; another, and the transport refuses it with the table's answer
+        ;; (no scope: the check changes nothing, so the record is empty).
+        ((guard (e ((classify-failure e '()) => (lambda (a) a)))
+           (if (same-store? (frame-field 'store parsed) (ctx-store ctx))
+               #f
+               (list 'error 'transport-store-mismatch
+                     (list 'serving (ctx-store ctx))
+                     (list 'asked (frame-field 'store parsed)))))
+         => (lambda (refusal) (answer-and-close ref refusal)))
         ;; NEVER: WELL-FORMED BEFORE DRAINING, on this side too (§7.6.50's
         ;; four layers). A request whose arguments do not parse used to be
         ;; answered `draining` while the daemon was going -- telling the

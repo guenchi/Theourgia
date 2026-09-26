@@ -168,6 +168,10 @@
 ;;;                       classed (it asks about the volume, not an entry)
 ;;;   EIO ENOENT EACCES ENOTDIR EBADF     the errno numbers, as
 ;;;                                       durable-error carries them
+;;;   errno-text          strerror        the system's message for an errno
+;;;                                       number; no filesystem access (the
+;;;                                       reason (theourgia answers) gives a
+;;;                                       durable-error, F100b)
 ;;;
 ;;; A read's descriptor, never written, is closed on the normal path with
 ;;; its failure raised as unreadable-entry (close-fail reaches it where the
@@ -356,7 +360,7 @@
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
           path-device-inode path-version real-path
-          fs-error? fs-error-op fs-error-target fs-error-errno
+          fs-error? fs-error-op fs-error-target fs-error-errno errno-text
           theourgia-fault theourgia-fault-armed? theourgia-stage known-stages
           report-fault?
           trace-enabled? trace-enable! trace-event!
@@ -1485,6 +1489,9 @@
   ;; otherwise, for code comparing a failure with the one it caused, so
   ;; that no errno is ever reported as nothing.
   (define c-strerror (foreign-procedure "strerror" (int) string))
+  ;; THE REASON A durable-error IS ANSWERED WITH (F100b): the same text an
+  ;; unreadable-entry already carries for the same errno.
+  (define (errno-text code) (c-strerror code))
   (define (errno-reason code)
     (cond
       ((eqv? code EACCES) 'EACCES)

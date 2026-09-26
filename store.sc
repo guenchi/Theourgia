@@ -53,6 +53,8 @@
                 session-write-started? session-written-events
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
+          (only (theourgia answers) with-written)
+          (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!)
           (only (theourgia digest) sha256 bytevector->hex)
@@ -3003,9 +3005,16 @@
                     ;; failing to make it good is `unknown` and not an
                     ;; internal error. The two paths answered differently
                     ;; for one fault.
-                    (list (guard (e (#t (list 'error 'unknown
-                                              (list 'replay-barrier-failed
-                                                    (failure-text e)))))
+                    ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5).
+                    ;; TRIPWIRE, NOT A MEASUREMENT: replay creates nothing
+                    ;; before its barrier (the F100b probe's PR-15 reading),
+                    ;; so the record here is empty today and the answer is
+                    ;; byte-identical; the call is here for when it is not.
+                    (list (guard (e (#t (with-written
+                                          (list 'error 'unknown
+                                                (list 'replay-barrier-failed
+                                                      (failure-text e)))
+                                          (mutation-record))))
                             (request-answer s store verdict)))
                     (commit-then s
                       (lambda ()
@@ -3422,8 +3431,10 @@
             ;; exactly the combination the answer vocabulary exists to
             ;; prevent. The translation is the one `one-intent!` uses,
             ;; because it is the same question about the same disk.
+            ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5, NO3): the
+            ;; partial write's own entry is in it.
             (if (not (eq? (car outcome) 'committed))
-                (write-outcome->answer outcome seq)
+                (with-written (write-outcome->answer outcome seq) (mutation-record))
                 ;; AND IT IS APPLIED BEFORE THE NEXT APPEND. A session
                 ;; holds one unconfirmed record at a time: until the
                 ;; reducer has taken this one the view is not ready, and
@@ -3924,17 +3935,23 @@
                           ;; that says the log is untouched; the record
                           ;; does not exist and the answers given so far
                           ;; are the exact committed prefix.
-                          ;; `written-fsync-failed` and `partial-write`
-                          ;; leave bytes that a later replay may well
-                          ;; read back as a committed record. Answering
+                          ;; `partial-write` leaves bytes that a later
+                          ;; replay may well read back as a committed
+                          ;; record. (`written-fsync-failed` was named
+                          ;; here too; no append path produces it on
+                          ;; this tree -- the F100b probe's PR-15
+                          ;; reading -- so only partial-write reaches
+                          ;; this branch today.) Answering
                           ;; those as a plain error claims a prefix that
                           ;; replay then contradicts -- the caller is
                           ;; told intent k failed and finds it applied.
                           ;; They get their own answer, and it says the
                           ;; outcome is not known rather than known to
                           ;; be nothing.
+                          ;; A NAMED OUTCOME CARRIES THE RECORD (F100b
+                          ;; item 5, NO3).
                           (if (not (eq? (car outcome) 'committed))
-                              (write-outcome->answer outcome seq)
+                              (with-written (write-outcome->answer outcome seq) (mutation-record))
                               (begin
                                 ;; THE ACTOR GOES IN HERE TOO -- see the
                                 ;; note in `append-payload!`.

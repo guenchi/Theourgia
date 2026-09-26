@@ -67,7 +67,8 @@
         (theourgia eval-context) (theourgia code-project)
         (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause
               unreadable-entry? unreadable-entry-path unreadable-entry-reason)
-        (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU))
+        (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU fs-error? with-mutation-record mutation-record)
+        (only (theourgia answers) classify-failure))
 
 (define args (cdr (command-line)))
 (define store (car args))
@@ -211,7 +212,7 @@
 ;;     ...)`, and replay calls that only with the resident cache on.)
 (define (worker-step thunk)
   (guard (e ((and (pair? e) (eq? (car e) 'error)) (refuse! e))
-            ((or (worker-refusal? e) (unreadable-entry? e) (condition? e)) (raise e))
+            ((or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) (raise e))
             (#t (refuse! '(error eval-exception (kind raised) (message "Evaluation raised an exception")))))
     (thunk)))
 
@@ -291,11 +292,14 @@
   ;; as every route of K1 names it: a writers/ directory this process
   ;; cannot list fails the load before any incomplete note can be heard,
   ;; and the catch-all would call it an exception the evaluation raised.
+  ;; THE TABLE (F100b point 5): a filesystem condition is answered by
+  ;; (theourgia answers) with this worker's own record. TRIPWIRE, NOT A
+  ;; MEASUREMENT, for durable-error: the worker mutates nothing, so no
+  ;; durable-error and no non-empty record reach here today; the table
+  ;; answers them the day one does.
+  (with-mutation-record (lambda ()
   (guard (e ((worker-refusal? e) (worker-refusal-answer e))
-            ((unreadable-entry? e)
-             (list 'error 'unreadable
-                   (list 'path (unreadable-entry-path e))
-                   (list 'reason (unreadable-entry-reason e))))
+            ((classify-failure e (mutation-record)) => (lambda (a) a))
             ;; A CONDITION -- (car '()), an assertion -- keeps today's answer.
             ((condition? e) '(error eval-exception (kind raised) (message "Evaluation raised an exception")))
             (#t (raised-answer e)))
@@ -346,7 +350,7 @@
         ;; input; this is what the store resolved it to.
         (list 'ok (list 'values vs)
               (list 'working-view working-writer (reduce-applied-cut state)
-                    (map (lambda (d) (cons (car d) (cadr d))) drafts)))))))
+                    (map (lambda (d) (cons (car d) (cadr d))) drafts)))))))))
 
 (say-datum! (answer))
 (flush-output-port user-out)

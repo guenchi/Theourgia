@@ -1652,7 +1652,12 @@
     (let ((meta-path (string-append store "/meta.sexp")))
       (unless (entry-present? meta-path)
         (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
-      (let ((meta (guard (e (#t #f))
+      ;; A meta.sexp THAT CANNOT BE READ IS NOT A MALFORMED ONE (F100b, a
+      ;; prerequisite propagation): its unreadable-entry leaves, so the
+      ;; point that answers names the file and the errno; only a datum
+      ;; that does not parse is `log-error 'meta` below.
+      (let ((meta (guard (e ((unreadable-entry? e) (raise e))
+                            (#t #f))
                     (string->sexpr-extended (utf8->string (read-whole meta-path))))))
         (unless (and meta (list? meta) (format-1? meta))
           (raise (make-log-error 'meta #f #f #f

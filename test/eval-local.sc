@@ -453,6 +453,217 @@
         (if (contains? out "(values (42))") 'sees-the-old (list 'said out)))
       'sees-the-old)
 
+;; ---- F100b M1: eval's answers at the translation points ---------------------
+;;
+;; Brief rows PRE-1/P5, P3-b, P3-c, P3-d (AG-b-1), AG-b-2 and eval's F row. Each
+;; on a fresh store of its own under `here`; stdout read as ONE datum, stderr
+;; apart; the exit code kept. Programs as the brief names them: core.sc with
+;; THEOURGIA_LOCAL=1, and the thin client (eval runs locally there too).
+(define m1-n 0)
+(define (m1-store!)
+  (set! m1-n (+ m1-n 1))
+  (let ((d (string-append here "/m1-" (number->string m1-n) "/store")))
+    (system (string-append "mkdir -p " d))
+    (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "init" "--store" d "--wire"))
+    d))
+;; -> (rc datum): the program's exit code and the first datum on its stdout
+;; (or (no-answer <stderr tail>) when stdout holds none).
+(define (m1-run env program args)
+  (let ((out (string-append here "/m1.out"))
+        (err (string-append here "/m1.err")))
+    (let ((rc (system (string-append
+                        "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' " env " "
+                        "scheme --script " program " "
+                        (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                        "> " out " 2> " err " < /dev/null"))))
+      (list rc
+            (let ((d (guard (e (#t (eof-object))) (call-with-input-file out read))))
+              (if (eof-object? d)
+                  (list 'no-answer (let ((t (file-text err))) (substring t (max 0 (- (string-length t) 300)) (string-length t))))
+                  d))))))
+;; The store's one writer (init makes it) and its directory.
+(define (m1-writer store)
+  (let ((ws (directory-list (string-append store "/writers"))))
+    (and (pair? ws) (car ws))))
+(define (m1-writer-dir store) (string-append store "/writers/" (m1-writer store)))
+(define denied "Permission denied")
+
+(let ((s (m1-store!)))
+  (system (string-append "chmod 000 " s "/meta.sexp"))
+  (let ((local (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--store" s "(+ 1 2)")))
+        (thin (m1-run "" "../theourgia.sc" (list "eval" "--store" s "(+ 1 2)"))))
+    (system (string-append "chmod 644 " s "/meta.sexp"))
+    (let ((want-answer (list 'error 'unreadable (list 'path (string-append s "/meta.sexp"))
+                             (list 'reason denied) '(errno EACCES))))
+      (want "PRE-1/P5 eval with meta.sexp at 000, through core.sc local: the table's unreadable with its errno, rc 1"
+            local (list 1 want-answer))
+      (want "PRE-1/P5 the same through the thin client"
+            thin (list 1 want-answer)))))
+
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s))
+       (lock (string-append wd "/draft.lock")))
+  (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))
+  (let ((made (file-exists? lock)))
+    (system (string-append "chmod 000 " lock))
+    (let ((cut (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)")))
+          (view (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)"))))
+      (system (string-append "chmod 644 " lock))
+      (want "CONTROL P3-b/c the setup's eval --working made draft.lock"
+            made #t)
+      (want "P3-b eval --working with draft.lock at 000: eval-cut's refusal is the answer, (during cut), rc 1"
+            cut (list 1 (list 'error 'working-unavailable (list 'path lock) (list 'reason denied) '(during cut))))
+      (want "P3-c eval --working --latest with draft.lock at 000: eval-view's refusal is the answer, (during view), rc 1"
+            view (list 1 (list 'error 'working-unavailable (list 'path lock) (list 'reason denied) '(during view)))))))
+
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s)))
+  (want "P3-d/AG-b-1 a fresh writer's eval --working of a raising source: eval-exception carrying the pre-scheduler creations handed to the boot, rc 1"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(car '())"))
+        (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
+                      (list 'written (list (list 'mkdir (string-append wd "/working"))
+                                           (list 'create (string-append wd "/draft.lock"))))))))
+
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s)))
+  (want "AG-b-2 the same with --latest: the creations happen inside the scheduler, the boot's own record carries them"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))
+        (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
+                      (list 'written (list (list 'mkdir (string-append wd "/working"))
+                                           (list 'create (string-append wd "/draft.lock"))))))))
+
+;; An answer's clause of the given head, or #f (an answer may hold atoms,
+;; so it is searched, not assq'd).
+(define (clause-of answer head)
+  (and (pair? answer) (list? answer)
+       (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr answer))))
+
+;; P3-e (F100b M1 review r1, F5): the boot's own translation. With
+;; --latest, eval-cut reads nothing and eval-view opens the store inside
+;; the scheduler, so a meta.sexp that cannot be read raises into the
+;; boot's guard -- the table's unreadable, the boot's record empty.
+(let* ((s (m1-store!))
+       (w (m1-writer s)))
+  (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))
+  (system (string-append "chmod 000 " s "/meta.sexp"))
+  (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)"))))
+    (system (string-append "chmod 644 " s "/meta.sexp"))
+    (want "P3-e eval --working --latest with meta.sexp at 000: the boot answers the table's unreadable, rc 1"
+          r (list 1 (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))))))
+
+;; P3-f and P3-g (F100b M1 review r1, F6): working.sc `problem`'s first two
+;; branches with a record that is not empty. P3-f: a writer with no
+;; working/ and a draft.lock at 000 -- working/ is made, then the lock
+;; cannot be opened (the unreadable-entry branch). P3-g: a draft whose
+;; envelope names a version its bytes do not hash to, and no draft.lock --
+;; the lock is made, then the envelope is refused (the working-error
+;; branch).
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s))
+       (lock (string-append wd "/draft.lock")))
+  (system (string-append "touch " lock " && chmod 000 " lock))
+  (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))))
+    (system (string-append "chmod 644 " lock))
+    (want "P3-f eval --working, no working/ and draft.lock at 000: the unreadable refusal carries the mkdir of working/, (during cut)"
+          r (list 1 (list 'error 'working-unavailable (list 'path lock) (list 'reason denied)
+                          (list 'written (list (list 'mkdir (string-append wd "/working"))))
+                          '(during cut))))))
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s))
+       ;; A writer's first insert is block <writer>.1.
+       (a (string-append w ".1")))
+  (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "insert" "--under" "root" "--title" "A" "--text" "old" "--store" s))
+  (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "write" a "the text I wrote" "--writer" w "--store" s))
+  (let* ((files (filter (lambda (n) (not (string=? n "draft.lock"))) (directory-list (string-append wd "/working"))))
+         (envelope (and (pair? files) (string-append wd "/working/" (car files))))
+         (text (if envelope (call-with-input-file envelope get-string-all) ""))
+         ;; The envelope's version is its first quoted 64-hex string (the
+         ;; writer and block ids before it are shorter; based-on follows).
+         (hex? (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f))))
+         (at (let loop ((i 0))
+               (cond ((> (+ i 66) (string-length text)) #f)
+                     ((and (char=? (string-ref text i) #\")
+                           (char=? (string-ref text (+ i 65)) #\")
+                           (for-all hex? (string->list (substring text (+ i 1) (+ i 65)))))
+                      (+ i 1))
+                     (else (loop (+ i 1))))))
+         (last (and at (string-ref text (+ at 63)))))
+    (when at
+      (call-with-output-file envelope
+        (lambda (o) (put-string o (string-append (substring text 0 (+ at 63)) (if (char=? last #\0) "1" "0")
+                                                 (substring text (+ at 64) (string-length text)))))
+        'truncate))
+    (when (file-exists? (string-append wd "/draft.lock")) (delete-file (string-append wd "/draft.lock")))
+    (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)"))))
+      (want "CONTROL P3-g the envelope was found and its version changed"
+            (and envelope at #t) #t)
+      (want "P3-g eval --working over an envelope whose version does not hash, no draft.lock: the working-error refusal carries the lock's creation, (during cut)"
+            r (list 1 (list 'error 'working-unavailable '(reason version-mismatch)
+                            (list 'written (list (list 'create (string-append wd "/draft.lock"))))
+                            '(during cut)))))))
+
+;; P3-h and P3-i (F100b M1 review r1, F7): eval-cut's other refusals are
+;; the answer too, not only working-unavailable: no --writer, and a
+;; writer id that is not well formed.
+(let ((s (m1-store!)))
+  (want "P3-h eval --working with no --writer: writer-required is the answer, (during cut), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--store" s "(+ 1 2)"))
+        '(1 (error writer-required (during cut))))
+  ;; A well-formed id the store does not have is a writer with no drafts
+  ;; (its view is empty and the eval answers ok); the refusal is for an id
+  ;; that is not one -- working.sc safe-id? admits [a-z0-9._-] only.
+  (want "P3-i eval --working naming a writer id that is not one (upper case): invalid-working-writer is the answer, (during cut), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" "BAD" "--store" s "(+ 1 2)"))
+        '(1 (error bad-request invalid-working-writer (during cut))))
+  ;; The same two refusals met by eval-view (--latest reads no cut), so a
+  ;; view that dropped them would show (F100b M1 review r2, F2).
+  (want "P3-h-view eval --working --latest with no --writer: writer-required is the answer, (during view), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--store" s "(+ 1 2)"))
+        '(1 (error writer-required (during view))))
+  (want "P3-i-view eval --working --latest naming a writer id that is not one: invalid-working-writer is the answer, (during view), rc 1"
+        (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" "BAD" "--store" s "(+ 1 2)"))
+        '(1 (error bad-request invalid-working-writer (during view)))))
+
+;; F: a success carries neither written nor client-written (F100b M1 review
+;; r2, F3). Each on a FRESH writer (review r2, F4): its cut or view makes
+;; working/ and draft.lock, so the record is not empty -- the case where a
+;; success that wrongly reported its record would show.
+(define (success-reading r)
+  (list (car r) (and (pair? (cadr r)) (car (cadr r)))
+        (and (or (clause-of (cadr r) 'written) (clause-of (cadr r) 'client-written)) #t)))
+;; F on the ordinary eval route, no --working (F100b M1 review r4, F1): the
+;; route PRE-1/P5 refuses on, through core.sc and through the thin client.
+(let ((s (m1-store!)))
+  (want "F eval (no --working) through core.sc local: ok, rc 0, and no record clause"
+        (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--store" s "(+ 1 2)")))
+        '(0 ok #f))
+  (want "F eval (no --working) through the thin client: ok, rc 0, and no record clause"
+        (success-reading (m1-run "" "../theourgia.sc" (list "eval" "--store" s "(+ 1 2)")))
+        '(0 ok #f)))
+(let* ((s (m1-store!))
+       (w (m1-writer s)))
+  (want "F eval: a fresh writer's successful eval --working answers ok and carries no written or client-written clause"
+        (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--writer" w "--store" s "(+ 1 2)")))
+        '(0 ok #f))
+  (want "F eval --latest: the same writer's successful eval --working --latest answers ok and carries no record clause"
+        (success-reading (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)")))
+        '(0 ok #f)))
+(let* ((s (m1-store!))
+       (w (m1-writer s))
+       (wd (m1-writer-dir s)))
+  (let ((r (m1-run "THEOURGIA_LOCAL=1" "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(+ 1 2)"))))
+    (want "CONTROL F eval --latest fresh: the boot made working/ and draft.lock (its record was not empty)"
+          (list (file-directory? (string-append wd "/working")) (file-exists? (string-append wd "/draft.lock")))
+          '(#t #t))
+    (want "F eval --latest on a FRESH writer: the successful answer is ok and carries no record clause, though the boot's record is not empty"
+          (success-reading r)
+          '(0 ok #f))))
+
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\neval-local complete\n" rows bad)
 (exit (if (zero? bad) 0 1))

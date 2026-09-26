@@ -25,6 +25,8 @@
           (theourgia wire) (theourgia digest)
           (only (theourgia log) store-writers writer-directory atomic-write!
                 directory-entry-durable! present-or-unreadable-skip?)
+          (only (theourgia answers) with-written)
+          (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
                 entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
@@ -231,12 +233,18 @@
     (let* ((b (state-read state id)) (fs (and b (assq 'fields b)))
            (v (and fs (assq name (cdr fs)))))
       (and v (cdr v))))
+  ;; A NAMED OUTCOME CARRIES THE RECORD (F100b item 5, NO1): whatever the
+  ;; enclosing point's scope had changed when the failure left is appended
+  ;; as `(written ...)`; an empty record leaves the answer as it was.
   (define (problem thunk)
     (guard (e ((and (pair? e) (eq? 'working-error (car e)))
-               (list 'error 'working-unavailable (list 'reason (cadr e))))
-              ((unreadable-entry? e) (unreadable-answer e))
-              (#t (list 'error 'working-unavailable
-                        (list 'message (if (message-condition? e) (condition-message e) "Working storage failed")))))
+               (with-written (list 'error 'working-unavailable (list 'reason (cadr e)))
+                             (mutation-record)))
+              ((unreadable-entry? e) (with-written (unreadable-answer e) (mutation-record)))
+              (#t (with-written
+                    (list 'error 'working-unavailable
+                          (list 'message (if (message-condition? e) (condition-message e) "Working storage failed")))
+                    (mutation-record))))
       (thunk)))
   (define (invalid-writer) '(error bad-request invalid-working-writer))
 
