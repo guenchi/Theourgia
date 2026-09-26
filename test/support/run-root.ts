@@ -32,7 +32,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /*
- * SPELLED THE WAY THE CORE SPELLS IT (client.ss:60-62). NEVER: Not read from
+ * SPELLED THE WAY THE CORE SPELLS IT (`run-root`, client.sc:67-69). NEVER: Not read from
  * `THEOURGIA_RUN`: a process that has one set would then be measuring
  * some scratch directory against itself, and this could never fail.
  */

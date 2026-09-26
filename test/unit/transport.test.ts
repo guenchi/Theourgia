@@ -288,12 +288,13 @@ describe('T4 the argument vector and the environment are what the core expects',
  * T1 OF plugin-r2: THE PROGRAM IS THE THIN CLIENT, AND WHO WE ARE
  * TRAVELS IN THE ENVIRONMENT. (design 7.6.50, 7.6.53)
  *
- * The extension used to run `cli.ss`, which loads the whole core into a
- * fresh process for every request. `theourgia.ss` is the thin client:
+ * The extension used to run the old `cli` entry point, which loaded the
+ * whole core into a fresh process for every request. `theourgia.sc` is the
+ * thin client:
  * it knows the transport and nothing else, finds or starts the daemon,
  * and prints what the daemon rendered. Measured on this machine against
- * the g-r5 core, one `outline`: 618 ms through `cli.ss` from source,
- * 56 ms through `cli.ss` from a product directory, 35 ms through the
+ * the g-r5 core, one `outline`: 618 ms through `cli` from source,
+ * 56 ms through `cli` from a product directory, 35 ms through the
  * thin client and a daemon.
  *
  * NOTE: THE IDENTITIES GO IN THE ENVIRONMENT, NOT IN THE ARGUMENT VECTOR.
@@ -315,13 +316,13 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
    * KEY: THIS IS THE ONE CELL THAT SPELLS THE NAMES, and it is meant to.
    *
    * The core ruled two renamings -- every library `.ss` became `.sc`
-   * (276d9f2), and the entry points split so that `cli.ss` went away
+   * (276d9f2), and the entry points split so that the `cli` entry point went away
    * (e55b680, 877f0da) -- so the names live in `src/config.ts` and
    * everything else in this tree reads them from there. A rename then
    * edits one file and turns this cell red, which is a reading somebody
    * has to look at, rather than being followed silently everywhere at
    * once. It went red twice on 2026-09-25 and both were read: for the
-   * renaming, `'theourgia.sc'` where `'theourgia.ss'` was expected; for
+   * renaming, `'theourgia.sc'` where the old `.ss` name was expected; for
    * the deletion of the `transport` setting, a compile error naming
    * `FALLBACK_PROGRAM` here and in `test/support/fake.ts`. There is no
    * second program any more, so the cell names one.
@@ -384,7 +385,7 @@ describe('plugin-r2 T1 the thin client is the program, and identity is bound by 
  *     `Exception: library (theourgia client) not found` -- so "corePath
  *     may be a product directory" is unreachable under it;
  *   - `.so` first against a source tree holding a stale object: a
- *     `trace.ss` replaced by a line that is not Scheme at all was
+ *     `trace` source (a `.ss` file then) replaced by a line that is not Scheme at all was
  *     ignored, the stale `trace.so` ran, and `outline` answered
  *     normally. The hazard the no-object list was written for is real
  *     and it is silent.

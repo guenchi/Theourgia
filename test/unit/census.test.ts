@@ -125,7 +125,7 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED in plugin-r3 item 19: src/ quotes the core by the names its
    * files have.
    */
-  ['core-quotes.test.ts', 1],
+  ['core-quotes.test.ts', 2],
   /*
    * ADDED in plugin-r3 item 15: a damaged store's `check` is an answer, and
    * another writer the core could not read does not stop the local cursor;

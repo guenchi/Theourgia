@@ -34,6 +34,28 @@ import * as path from 'path';
  */
 const STILL_SS = new Set(['build.ss']);
 
+/*
+ * AND IN test/ (queue item 37), TWO MORE THAT ARE NOT QUOTATIONS OF A CORE FILE,
+ * and one that is owned by another item:
+ *
+ *   - `core-refusals.ss` is a file of THIS repository (test/support/), a
+ *     script the refusal census runs with `--script`; its name is its own.
+ *   - outline.test.ts's sentence quoting the old `project` source pins an older core's
+ *     behaviour (a recursive walk stopping at a nested document) that the
+ *     pinned core no longer has (F85 R1-R3); queue item 48 rewrites those
+ *     cells, and this exception goes with it. It is keyed by the sentence,
+ *     not by its line, so an edit above it does not move it; an exception
+ *     that matches nothing is itself a failure, so it cannot outlive item 48.
+ */
+const REPOSITORY_SS = new Set(['core-refusals.ss']);
+const OWNED_ELSEWHERE: Array<{ file: string; text: string; owner: string }> = [
+  /*
+   * The text is put together so that this file does not itself spell the name
+   * this cell looks for.
+   */
+  { file: 'unit/outline.test.ts', text: 'project' + '.ss says "a walk stops at one"', owner: 'queue item 48' }
+];
+
 describe('plugin-r3 19 the core is quoted by the names its files have', () => {
   /*
    * KEY: ONE NUMBER, AND IT IS ZERO. Sixty-seven quotations were re-read
@@ -55,5 +77,44 @@ describe('plugin-r3 19 the core is quoted by the names its files have', () => {
     }
     assert.ok(fs.readdirSync(src).some((f) => f.endsWith('.ts')), 'no source file was read');
     assert.deepStrictEqual(found, [], `${found.length} quotations name a core file as .ss`);
+  });
+
+  /*
+   * queue item 37: THE SAME RULE OVER test/. Twenty-nine quotations were left
+   * there by item 19's scope; each was re-read against the pinned core (the
+   * address table is in item 37's NOTES), not given a new suffix.
+   */
+  it('quotes no core file as `.ss` in test/, except the named ones', () => {
+    const test = path.join(__dirname, '..', '..', '..', 'test');
+    const found: string[] = [];
+    const used = new Set<number>();
+    let read = 0;
+    for (const folder of ['unit', 'support', 'integration']) {
+      for (const name of fs.readdirSync(path.join(test, folder)).filter((f) => f.endsWith('.ts')).sort()) {
+        read += 1;
+        const file = `${folder}/${name}`;
+        const lines = fs.readFileSync(path.join(test, folder, name), 'utf8').split('\n');
+        lines.forEach((line, i) => {
+          for (const match of line.matchAll(/[A-Za-z][\w-]*\.ss\b/g)) {
+            if (STILL_SS.has(match[0]) || REPOSITORY_SS.has(match[0])) {
+              continue;
+            }
+            const owned = OWNED_ELSEWHERE.findIndex((o) => o.file === file && line.includes(o.text));
+            if (owned >= 0) {
+              used.add(owned);
+              continue;
+            }
+            found.push(`${file}:${i + 1} ${match[0]}`);
+          }
+        });
+      }
+    }
+    assert.ok(read > 0, 'no test file was read');
+    assert.deepStrictEqual(found, [], `${found.length} quotations in test/ name a core file as .ss`);
+    assert.deepStrictEqual(
+      OWNED_ELSEWHERE.filter((_, i) => !used.has(i)).map((o) => `${o.file}: ${o.text} (${o.owner})`),
+      [],
+      'an exception owned by another item matches nothing any more; remove it'
+    );
   });
 });

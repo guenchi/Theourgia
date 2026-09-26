@@ -1147,8 +1147,9 @@ describe('what the status reports when the settings are unusable', function () {
  * runs a daemon.
  *
  * WHAT CHANGED AND WHY IT NEEDS CELLS HERE. This extension used to run
- * `cli.ss` -- a fresh interpreter, loading the whole core, for every
- * request. It now runs `theourgia.ss`, which finds or starts a daemon
+ * the old `cli` entry point -- a fresh interpreter, loading the whole
+ * core, for every request. It now runs `theourgia.sc`, which finds or
+ * starts a daemon
  * and sends it the request. Measured on the pinned core: about 460 ms a
  * request from source, about 40 to 50 from a product directory, about 30
  * through the daemon (design section 7.6.53). None of that is visible
@@ -1391,9 +1392,11 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
      * It listed `serve-path-occupied|serve-start-failed` and a run
      * answered `serve-busy` instead: with a directory sitting where the
      * socket goes, which of the core's names comes back depends on how
-     * far the start got before it gave up -- the path may fail to bind
-     * (client.ss), or a server may start and find it cannot take the
-     * lock (daemon.ss:304). All of them carry the path. Naming one of
+     * far the start got before it gave up -- the start may fail
+     * (`serve-start-failed`, client.sc:503-556), the path may be held by
+     * something that is not a socket (`serve-path-occupied`, daemon.sc:306-307),
+     * or a server may start and find it cannot take the lock
+     * (`serve-busy`, daemon.sc:305). All of them carry the path. Naming one of
      * them made this cell about which branch the core happened to take,
      * which is not what it is for; the twin below is what keeps the
      * assertion from being vacuous.

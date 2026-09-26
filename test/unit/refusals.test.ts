@@ -72,7 +72,7 @@ function coreSources(): { directory: string; files: string[] } {
    *   * a core that IS a git checkout, with one library file added to
    *     the directory but not yet to the index, answers WITHOUT it, and
    *     that is the worse of the two because nothing goes red. Measured
-   *     with `working.ss` left untracked: the inventory fell from 47
+   *     with the `working` source (a `.ss` file then) left untracked: the inventory fell from 47
    *     refusal kinds to 43, losing `invalid-working-baseline`,
    *     `no-draft`, `working-unavailable` and `working-version-changed`
    *     -- four refusals a save can actually receive -- and every cell

@@ -236,13 +236,13 @@ function countRealRunRoot(): number {
  * lists carry `--standard-schemes=`.
  *
  * The second is the one that would have hurt. The core spells the
- * interpreter as `THEOURGIA_SCHEME` or `scheme` (cli.ss:420), so on a
+ * interpreter as `THEOURGIA_SCHEME` or `scheme` (`scheme-binary`, theourgia.sc:137), so on a
  * machine where that variable names `chez` this filter would exclude the
  * daemon it exists to find -- and the gate would print a clean
  * `0 still running` while the process it was written to catch went on
  * running. What is matched instead is what the core itself puts in the
  * daemon's argument list: `--socket <run root>/<key>/socket`
- * (theourgia.ss:335-339).
+ * (`server-argv`, theourgia.sc:357-361).
  *
  * NEVER: AND THE MARKER IS REQUIRED. It was optional, and the branch that
  * dropped it -- every `scheme` on the machine, killed -- was reachable

@@ -59,7 +59,7 @@ export interface CoreLocation {
  * going on in it. That is not a hypothetical: a run of these cells once
  * reported `the core exited 255 without an answer`, and a probe built to
  * fish for it caught `Exception: variable t is not bound` at the exact
- * second another session wrote `store.ss`. Neither was a defect in the
+ * second another session wrote the `store` source (a `.ss` file then). Neither was a defect in the
  * core -- both were a half-written file being read.
  *
  * SO THE DIGEST IS TAKEN AT THE START AND CHECKED AT THE END. A failure
@@ -158,10 +158,11 @@ export function checkCorePin(pinned: CorePin | undefined): void {
 export function locateCore(): CoreLocation {
   const corePath = process.env[CORE_PATH_ENV];
   /*
-   * NOTE: `theourgia.ss` IS THE ONE THAT MUST BE THERE. Both forms of a
+   * NOTE: `theourgia.sc` (CLIENT_PROGRAM) IS THE ONE THAT MUST BE THERE. Both forms of a
    * core directory hold it -- a checkout beside its library sources, a
    * product directory beside the compiled ones -- and it is what the
-   * shipping transport runs. Asking only for `cli.ss` let a directory
+   * shipping transport runs (build.ss copies it into a product directory,
+   * :175-195). Asking only for the old `cli` entry point let a directory
    * with no thin client in it pass this check and fail later, inside
    * Chez, about a library.
    */
@@ -401,14 +402,14 @@ export class RealStore {
  *
  * NEVER: AND IT IS NOT THE WORD "scheme" FOR A SECOND REASON, which is the
  * one that would have hurt: the core spells the interpreter as
- * `THEOURGIA_SCHEME` or `scheme` (cli.ss:420), so on a machine that
+ * `THEOURGIA_SCHEME` or `scheme` (`scheme-binary`, theourgia.sc:137), so on a machine that
  * sets that variable to `chez` this filter would exclude the daemon it
  * exists to find and the teardown would quietly do nothing -- and
  * report a clean nought processes left while doing it.
  *
  * What is matched instead is what the core actually writes into the
  * daemon's argument list: `--socket <run root>/<store key>/socket`
- * (theourgia.ss:335-339). Both parts are required, because the run
+ * (`server-argv`, theourgia.sc:357-361). Both parts are required, because the run
  * root on its own would also match the client process that is asking
  * for one on the rare occasion the paths are spelled out.
  */
@@ -465,14 +466,14 @@ export function daemonsUnder(runRoot: string): number[] {
  * everything under the root would then have one store's teardown killing
  * another store's daemon, which is a defect this line would then spend a
  * morning on. The store path is in the daemon's own argument list
- * (`serve <store>`, theourgia.ss:335-339) and is unique per fixture.
+ * (`serve <store>`, `server-argv` at theourgia.sc:357-361) and is unique per fixture.
  */
 /*
  * THE SOCKET PATH A RUNNING DAEMON WAS GIVEN, read off its own argument
  * list rather than composed here.
  *
  * NOTE: THE NAME UNDER THE RUN ROOT IS A DIGEST OF THE STORE'S REAL PATH
- * (client.ss:63-80) -- resolved through symlinks, with the components
+ * (the rule at client.sc:71, `store-key` at :220) -- resolved through symlinks, with the components
  * below the longest existing prefix appended. A cell that worked it out
  * for itself would be a second implementation of that rule, and the one
  * that was wrong would create an obstruction in a directory the core is
