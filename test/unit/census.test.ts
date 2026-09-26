@@ -148,9 +148,10 @@ const AT_LEAST: Array<[string, number]> = [
    * window showing them (2); 61 -> 63 in its delivery review r2: D4b through
    * the startup retry, and D4d, a text whose show throws not taking the others;
    * 63 -> 64 in review r3, D4e, a show that rejects later; 64 -> 65 folded from
-   * the closing review, D4f, the awaited save's own warning shown.
+   * the closing review, D4f, the awaited save's own warning shown. 65 -> 67 in
+   * queue item 46: E1 and its control; 67 -> 68 folded from its review, E7.
    */
-  ['durability.test.ts', 65],
+  ['durability.test.ts', 68],
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
   ['mutators.test.ts', 12],
@@ -247,9 +248,10 @@ const AT_LEAST: Array<[string, number]> = [
    * durability warnings go; 42 -> 44 in its delivery review r1: D3c through a
    * rejecting send (the settle version kept) and D3d; 44 -> 45 in review r2,
    * D3e; 45 -> 46 in review r3, D3e through save(); 46 -> 47 folded from the
-   * closing review, D3f.
+   * closing review, D3f. 47 -> 48 in queue item 46: E2; 48 -> 53 folded from
+   * its review, E3, E4, E5 and E6 through submit and save.
    */
-  ['sending.test.ts', 47],
+  ['sending.test.ts', 53],
   /*
    * UNCHANGED at fifteen by queue item 25, one in and one out: the cell that
    * lands a save while a publication is being prepared, and C12 retired (a

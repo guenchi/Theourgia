@@ -80,8 +80,10 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  // it, correctly, because an answer that never mentions the block is not an
  // answer about that block.
  const recursive=`((id . \"a.1\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position root . 0) (edges))\n((id . \"a.2\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position \"a.1\" . 0) (edges))\n`;
- const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?(process.argv[3].startsWith('integrity-show')?'(check (writers (("w" (end 0)))) (verdict damaged))\n':'(check (writers (("w" (end 0)))) (verdict ok))\n'):verb==='set'?'(error unknown (reason schedule))\n':'';
- return {argv:[verb,...args],rc:verb==='set'||verb==='conflicts'&&process.argv[3].includes('unknown')?1:0,stdout,stderr:''};}});
+ const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?(process.argv[3].startsWith('integrity-show')?'(check (writers (("w" (end 0)))) (verdict damaged))\n':'(check (writers (("w" (end 0)))) (verdict ok))\n'):verb==='set'?(process.argv[3]==='durability-order'?'(ok (events (("w" . 1))) (state (("a.9" . "hhh"))) (cursor ("w" . 1)) (replay #f))\n':'(error unknown (reason schedule))\n'):'';
+ // Queue item 46, E7: in durability-order a `set` is answered ok, so the settle writes the queue.
+ const setOk=verb==='set'&&process.argv[3]==='durability-order';
+ return {argv:[verb,...args],rc:verb==='set'&&!setOk||verb==='conflicts'&&process.argv[3].includes('unknown')?1:0,stdout,stderr:''};}});
 function files(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir).flatMap(n=>{const p=path.join(dir,n);return fs.statSync(p).isDirectory()?files(p):[p];});}
 function tree(dir){return Object.fromEntries(files(dir).map(p=>[path.relative(dir,p),fs.readFileSync(p).toString('hex')]));}
 function change(store){settings.store=store;configChanged({affectsConfiguration:()=>true});}
@@ -196,8 +198,12 @@ async function main(){
  // warning that was lost.
  if(scenario.startsWith('durability')){
   const fsops=require(path.join(out,'fsops.js')),sync=fsops.nodeFileOps.syncDirectory;
-  const queueA=core.outboxPath('/stores/A');let armed=false,failed=0,failWhen=null;
-  fsops.nodeFileOps.syncDirectory=d=>{if((armed||(failWhen&&failWhen()))&&path.resolve(d)===path.resolve(path.dirname(queueA))){armed=false;failWhen=null;failed++;return 'the disk said no';}return sync.call(fsops.nodeFileOps,d);};
+  const queueA=core.outboxPath('/stores/A');let armed=false,failed=0,failWhen=null,order=[];
+  fsops.nodeFileOps.syncDirectory=d=>{
+   const here=path.resolve(d)===path.resolve(path.dirname(queueA));
+   if(here&&order.length>0){failed++;return order.shift();}
+   if((armed||(failWhen&&failWhen()))&&here){armed=false;failWhen=null;failed++;return 'the disk said no';}
+   return sync.call(fsops.nodeFileOps,d);};
   await commands.get('theourgia.openBlock')('a.1');
   const a=files(storage).find(p=>p.endsWith('.md'));const body='# Alpha\nfirst A\n';fs.writeFileSync(a,body);
   await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>body});
@@ -207,6 +213,21 @@ async function main(){
   // A second save, whose enqueue is the write that fails -- the first time the
   // queue holds an entry still `queued` -- so the sentence rides on that save's
   // outcome, and only the save handler's own display of it can show it.
+  // E7 (queue item 46): the window keeps the NEWER warning when the older one
+  // reaches its sink later. The pending entry the prologue left is settled away
+  // and one legacy `set` entry queued; the retry command's drain marks it sent
+  // under a flush that fails "the older reason" (held on the outcome), the
+  // stand-in answers the set ok, and the settle's resolve fails "the newer
+  // reason", reported straight into the sink. The older arrives second.
+  if(scenario==='durability-order'){
+   const {Outbox}=require(path.join(out,'outbox.js')),q=new Outbox(queueA);q.load();
+   for(const e of q.entries)q.resolve(e.req,null);
+   q.enqueue({req:'legacy-order',cursor:'w:1',id:'a.9',field:'src',payload:'queued first\n',state:'queued',createdAt:0,lastError:null,importedBy:null});
+   order=['the older reason','the newer reason'];
+   await commands.get('theourgia.retryOutbox')();
+   const after=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>e.req);
+   return {queue:queueA,pendingBefore,failed,left:order.length,after,shown:shown.slice()};
+  }
   if(scenario==='durability-save'){
    failWhen=()=>fs.existsSync(queueA)&&JSON.parse(fs.readFileSync(queueA,'utf8')).entries.some(e=>e.state==='queued');
    const second='# Alpha\nsecond A\n';fs.writeFileSync(a,second);

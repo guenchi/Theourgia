@@ -34,11 +34,36 @@
  * (K5). Several writes to one file between two notices say one thing: that
  * file may not survive a power cut; the latest reason is the one to read.
  */
-export class DurabilitySink {
-  private readonly held = new Map<string, string>();
+/*
+ * THE ORDER IN WHICH WARNINGS WERE PRODUCED, for this process. (queue item 46)
+ * A counter, not a clock: two warnings in one millisecond are still two, and
+ * the order is the same on every run. A warning reported the moment it is
+ * produced takes its stamp on arrival; one held back on a drain's outcome
+ * took its stamp when it was produced and carries it (see `Saver.kept`).
+ */
+let produced = 0;
 
-  public add(file: string, text: string): void {
-    this.held.set(file, text);
+export function nextStamp(): number {
+  produced += 1;
+  return produced;
+}
+
+export class DurabilitySink {
+  private readonly held = new Map<string, { text: string; at: number }>();
+
+  /*
+   * THE LATEST PER FILE BY WHEN IT WAS PRODUCED, NOT BY WHEN IT ARRIVED.
+   * (queue item 46, from item 22's review r1, L1) A warning held on an
+   * outcome reaches the sink after the settle has reported a newer one
+   * straight away; kept by arrival, the older reason overwrote the newer.
+   * `at` is the warning's production stamp; left out, the warning is taken as
+   * produced now.
+   */
+  public add(file: string, text: string, at: number = nextStamp()): void {
+    const was = this.held.get(file);
+    if (was === undefined || at > was.at) {
+      this.held.set(file, { text, at });
+    }
   }
 
   /*
@@ -46,7 +71,7 @@ export class DurabilitySink {
    * once.
    */
   public take(): string[] {
-    const texts = [...this.held.values()];
+    const texts = [...this.held.values()].map((held) => held.text);
     this.held.clear();
     return texts;
   }

@@ -885,6 +885,27 @@ describe('D4c the durability sink says each queue file once', () => {
     assert.deepStrictEqual(stray, [], 'a rejection was left unhandled');
   });
 
+  /*
+   * E1: BY WHEN IT WAS PRODUCED, NOT BY WHEN IT ARRIVED. (queue item 46) A
+   * warning held on an outcome can reach the sink after a newer one about the
+   * same file; its stamp says it is older, and it does not replace the newer.
+   * The control: warnings that carry no stamp are taken as produced when they
+   * arrive, so the later arrival is kept, as before.
+   */
+  it('E1 keeps the newer of two warnings about one file when the older arrives second', () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'the newer reason', 2);
+    sink.add('/q/one/outbox.json', 'the older reason', 1);
+    assert.deepStrictEqual(sink.take(), ['the newer reason'], 'an older warning replaced a newer one by arriving later');
+  });
+
+  it('E1 (control) keeps the later arrival when neither warning carries a stamp', () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'the first to arrive');
+    sink.add('/q/one/outbox.json', 'the second to arrive');
+    assert.deepStrictEqual(sink.take(), ['the second to arrive']);
+  });
+
   it('keeps one sentence for each of two queue files', () => {
     const sink = new DurabilitySink();
     sink.add('/q/one/outbox.json', 'about one');
@@ -947,6 +968,25 @@ describe('D4 the window shows each queue warning once, whichever Saver raised it
     assert.strictEqual(r.failed, 1, 'the flush never failed, so this cell is about nothing');
     assert.strictEqual(times(r.afterChange, sentence(r.queue as string)), 0, 'the sentence was there before the old Saver wrote');
     assert.strictEqual(times(r.shown, sentence(r.queue as string)), 1, `the old Saver's warning was not shown: ${JSON.stringify(r.shown)}`);
+  });
+
+  /*
+   * E7: THE WINDOW KEEPS THE NEWER WARNING WHEN THE OLDER ARRIVES SECOND.
+   * (queue item 46, folded from its review) The shipping Saver callback must
+   * hand the held warning's production stamp to the window's sink; without it
+   * the older send mark, arriving after the settle's newer resolve warning,
+   * replaces it.
+   */
+  it('E7 shows the settle\'s newer warning, not the older send mark that reached the sink after it', () => {
+    const r = run('durability-order');
+    assert.strictEqual(r.failed, 2, 'the two flushes did not both fail');
+    assert.strictEqual(r.left, 0);
+    assert.deepStrictEqual(r.after, [], 'the entry was not settled out of the queue');
+    const said = (reason: string): string =>
+      `theourgia: the queue at ${r.queue as string} was written, but its directory could not be flushed (${reason}), ` +
+      'so it may not survive the machine losing power';
+    assert.strictEqual(times(r.shown, said('the newer reason')), 1, `the newer warning was not shown: ${JSON.stringify(r.shown)}`);
+    assert.strictEqual(times(r.shown, said('the older reason')), 0, 'the older warning was shown in its place');
   });
 
   /*

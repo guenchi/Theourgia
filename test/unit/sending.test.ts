@@ -55,6 +55,7 @@ import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { wroteAnswer } from '../support/answers';
 import { IGNORED_DURABILITY } from '../support/ignored-durability';
+import { DurabilitySink } from '../../src/durability';
 
 const SRC = path.join(__dirname, '..', '..', '..', 'src');
 
@@ -1778,7 +1779,15 @@ describe('plugin-r3 22 a drain puts each warning where its save can see it', () 
         if (fs.existsSync(queuePath())) {
           const held = JSON.parse(fs.readFileSync(queuePath(), 'utf8')) as { entries: Array<{ req: string; state: string }> };
           for (const [req, state] of failing) {
-            if (held.entries.some((e) => e.req === req && e.state === state)) {
+            /*
+             * `gone` is the write that removed the request (queue item 46's
+             * cells): the file no longer holds it.
+             */
+            const matches =
+              state === 'gone'
+                ? !held.entries.some((e) => e.req === req)
+                : held.entries.some((e) => e.req === req && e.state === state);
+            if (matches) {
               failing.splice(failing.indexOf(failing.find(([r, s]) => r === req && s === state) as [string, string]), 1);
               return `the flush failed with ${req.slice(0, 8)} ${state}`;
             }
@@ -1800,17 +1809,23 @@ describe('plugin-r3 22 a drain puts each warning where its save can see it', () 
     calls: ScriptedCall[],
     failing: Array<[string, string]>,
     options: {
-      settle?: (outbox: Outbox) => Settle;
+      settle?: (outbox: Outbox, real: DurabilitySink) => Settle;
       baselineOf?: (file: string) => { highWater: number } | null;
       rejects?: (verb: string, args: string[]) => boolean;
       newRequestId?: () => string;
     } = {}
-  ): Rig & { sink: string[] } {
+  ): Rig & { sink: string[]; real: DurabilitySink } {
     const made = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }, ...calls]);
     const queuePath = made.outboxFile();
     const outbox = new Outbox(queuePath, flushFailingWhen(() => queuePath, failing));
     outbox.load();
     const sink: string[] = [];
+    /*
+     * AND A REAL SINK BESIDE THE LIST (queue item 46): the list says what was
+     * handed on, the sink what a window would keep of it -- the latest per
+     * file by production stamp.
+     */
+    const real = new DurabilitySink();
     /*
      * A SEND THAT REJECTS WITH SOMETHING OTHER THAN A TransportError, when
      * `rejects` says so (design v4, K15: those are the rejections the drain
@@ -1832,16 +1847,17 @@ describe('plugin-r3 22 a drain puts each warning where its save can see it', () 
             }
           }
     );
-    const settle = options.settle === undefined ? settling(outbox, parts().storeHash) : options.settle(outbox);
+    const settle = options.settle === undefined ? settling(outbox, parts().storeHash) : options.settle(outbox, real);
     const saver = new Saver(client, outbox, settle, {
-      durability: (file, text) => {
+      durability: (file, text, at) => {
         assert.strictEqual(file, queuePath, 'a warning was handed to the sink under another file');
         sink.push(text);
+        real.add(file, text, at);
       },
       baselineOf: options.baselineOf,
       newRequestId: options.newRequestId
     });
-    return { core: made, outbox, queuePath, saver, sink };
+    return { core: made, outbox, queuePath, saver, sink, real };
   }
 
   function legacy(req: string): OutboxEntry {
@@ -1966,6 +1982,68 @@ describe('plugin-r3 22 a drain puts each warning where its save can see it', () 
     assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'queued')], 'the enqueue\'s warning was lost with the rejection');
   });
 
+  /*
+   * E3-E6: EVERY ROUTE A HELD WARNING TAKES TO THE SINK KEEPS ITS PRODUCTION
+   * STAMP. (queue item 46, folded from its review: each route's stamp could be
+   * dropped with every cell green) In each, an older warning reaches the real
+   * sink AFTER a newer one about the same queue file, and the newer is what the
+   * sink keeps.
+   */
+  it('E3 keeps a newer buffered warning over an older direct one (a retry\'s release, then its drain)', async () => {
+    const r = warningRig([{ match: ['set'], stdout: '', rc: 1 }], [[A, 'queued'], [A, 'sent'], [A, 'pending']]);
+    core = r.core;
+    r.outbox.enqueue({ ...legacy(A), state: 'parked' });
+    await r.saver.retryParked();
+    assert.strictEqual(r.sink.length, 2, 'the release and the drained outcome did not each hand a warning on');
+    assert.deepStrictEqual(r.real.take(), [warned(r.queuePath, A, 'pending')], 'the older release warning outlived the newer ones');
+  });
+
+  it('E4 keeps a settle\'s newer warning over an earlier outcome\'s older one handed on when a later send rejects', async () => {
+    const r = warningRig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0, once: true }], [[A, 'sent'], [A, 'gone']], {
+      rejects: (verb, args) => verb === 'set' && args.includes(B),
+      settle: (outbox, real) => (req, settlement) => {
+        const warning = outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+        if (warning !== null) {
+          real.add(outbox.path, warning);
+        }
+      }
+    });
+    core = r.core;
+    r.outbox.enqueue(legacy(A));
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: B }))), /the send was rejected/);
+    assert.deepStrictEqual(r.real.take(), [warned(r.queuePath, A, 'gone')], 'the older send mark outlived the settle\'s newer warning');
+  });
+
+  it('E5 keeps a settle\'s newer warning over the older one of an iteration that then throws', async () => {
+    const r = warningRig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }], [[A, 'sent'], [A, 'gone']], {
+      settle: (outbox, real) => (req, settlement) => {
+        const warning = outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+        if (warning !== null) {
+          real.add(outbox.path, warning);
+        }
+        throw new Error('the settle fell over after its resolve');
+      }
+    });
+    core = r.core;
+    r.outbox.enqueue(legacy(A));
+    await assert.rejects(r.saver.retry(), /fell over after its resolve/);
+    assert.deepStrictEqual(r.real.take(), [warned(r.queuePath, A, 'gone')], 'the older send mark outlived the settle\'s newer warning');
+  });
+
+  it('E6 (submit) keeps the send mark\'s newer warning over the enqueue\'s older one handed on at the rejection', async () => {
+    const r = warningRig([], [[A, 'queued'], [A, 'sent']], { rejects: (verb) => verb === 'set' });
+    core = r.core;
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: A }))), /the send was rejected/);
+    assert.deepStrictEqual(r.real.take(), [warned(r.queuePath, A, 'sent')], 'the enqueue\'s older warning outlived the newer one');
+  });
+
+  it('E6 (save) keeps the send mark\'s newer warning over the enqueue\'s older one handed on at the rejection', async () => {
+    const r = warningRig([], [[A, 'queued'], [A, 'sent']], { rejects: (verb) => verb === 'set', newRequestId: () => A });
+    core = r.core;
+    await assert.rejects(r.saver.save('a.2', 'src', 'body\n'), /the send was rejected/);
+    assert.deepStrictEqual(r.real.take(), [warned(r.queuePath, A, 'sent')], 'the enqueue\'s older warning outlived the newer one');
+  });
+
   it('D3c (settle) hands a warning gathered for an outcome that never came to the sink, and still rejects', async () => {
     const r = warningRig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }], [[A, 'sent']], {
       settle: () => () => {
@@ -1997,5 +2075,79 @@ describe('plugin-r3 22 a drain puts each warning where its save can see it', () 
     assert.strictEqual(outcome.req, B);
     assert.strictEqual(outcome.durability, undefined, 'B\'s outcome carries the warning of A\'s park');
     assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'parked')], 'the park\'s warning did not reach the sink');
+  });
+});
+
+/*
+ * E2: THE SINK KEEPS THE NEWER WARNING WHEN THE OLDER ARRIVES SECOND, THROUGH
+ * A REAL DRAIN. (queue item 46, from item 22's review r1, L1) A retry: the
+ * entry's `aboutToSend` flush fails first ("the older reason"), and the
+ * settle's `resolve` fails second ("the newer reason") and reports straight
+ * into the window's sink. The older one is held on the outcome and reaches
+ * the sink afterwards, through `passOn`; its production stamp says it is
+ * older, so the newer is what the window shows.
+ */
+describe('plugin-r3 46 the sink keeps the warning produced last', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  it('E2 keeps the settle\'s newer warning over the older one the drain hands on later', async () => {
+    const A = 'aaaaaaaa-4646-4646-4646-464646464646';
+    core = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: wroteAnswer(8), rc: 0 }
+    ]);
+    const queuePath = core.outboxFile();
+    const reasons = ['the older reason', 'the newer reason'];
+    let armed = false;
+    const outbox = new Outbox(queuePath, {
+      ...nodeFileOps,
+      syncDirectory(directory: string): string | null {
+        if (armed && reasons.length > 0) {
+          return reasons.shift() as string;
+        }
+        return nodeFileOps.syncDirectory(directory);
+      }
+    });
+    outbox.load();
+    outbox.enqueue({
+      req: A,
+      cursor: 'w:7',
+      id: 'a.3',
+      field: 'src',
+      payload: 'queued first\n',
+      state: 'queued',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
+    const sink = new DurabilitySink();
+    const saver = new Saver(
+      new Client(new CliTransport(core.config(), core.env())),
+      outbox,
+      (req, settlement) => {
+        const warning = outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+        if (warning !== null) {
+          sink.add(queuePath, warning);
+        }
+      },
+      { durability: (file, text, at) => sink.add(file, text, at) }
+    );
+    armed = true;
+    const outcomes = await saver.retry();
+    assert.strictEqual(reasons.length, 0, 'both flushes did not fail, so the order this cell is about did not happen');
+    assert.strictEqual(outcomes.length, 1);
+    assert.strictEqual(outbox.find(A), undefined, 'the entry was not settled');
+    assert.deepStrictEqual(
+      sink.take(),
+      [
+        `the queue at ${queuePath} was written, but its directory could not be flushed (the newer reason), so it may ` +
+          'not survive the machine losing power'
+      ],
+      'the older warning, arriving later, replaced the newer one'
+    );
   });
 });

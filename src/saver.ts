@@ -55,6 +55,7 @@ import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
 import { RETRY_OUTBOX } from './commands';
 import { Datum, answerOf, formatCursor, isList, isSym, wire } from './wire';
+import { nextStamp } from './durability';
 
 /*
  * WHAT THE CORE SAID ON THE OTHER STREAM, short enough to put in a
@@ -204,8 +205,13 @@ export interface SaverOptions {
    * NOTE: REQUIRED, not defaulted (ruled 2026-09-26, Q3): a Saver built
    * without somewhere to put these would drop them in silence, and the
    * compiler is the check that none is.
+   *
+   * NOTE: `at` IS WHEN THE WARNING WAS PRODUCED. (queue item 46) A warning
+   * handed on the moment its write returns leaves it out; one held on a
+   * drain's outcome and handed on later passes the stamp it took then, so the
+   * sink keeps the newest by production, not by arrival.
    */
-  durability: (file: string, text: string) => void;
+  durability: (file: string, text: string, at?: number) => void;
   newRequestId?: () => string;
   now?: () => number;
   /*
@@ -1023,12 +1029,18 @@ export class Saver {
     record: SendRecord
   ) => { known: true; retired: boolean } | { known: false };
   private bootstrapProblem: string | null = null;
-  private readonly durability: (file: string, text: string) => void;
+  private readonly durability: (file: string, text: string, at?: number) => void;
   /*
    * THE WARNINGS OF THE DRAIN ITERATION IN PROGRESS, or null outside one.
    * See `kept` and `placeGathered`.
    */
-  private gathered: string[] | null = null;
+  private gathered: Array<{ text: string; at: number }> | null = null;
+  /*
+   * WHEN EACH OUTCOME'S WARNING WAS PRODUCED, for the outcomes the drain
+   * built from its iterations (queue item 46): `passOn` and the drain's
+   * transfer on a throw hand the warning on with this stamp.
+   */
+  private readonly stamps = new WeakMap<SaveOutcome, number>();
 
   constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions) {
     /*
@@ -1121,11 +1133,12 @@ export class Saver {
        * carries it.
        */
       const receipt = this.outbox.enqueue(entry);
+      const enqueuedAt = nextStamp();
       let outcomes: SaveOutcome[];
       try {
         outcomes = await this.drain();
       } catch (e) {
-        this.toSink(receipt.durability);
+        this.toSink(receipt.durability, enqueuedAt);
         throw e;
       }
       const mine = outcomes.find((o) => o.req === entry.req);
@@ -1200,6 +1213,7 @@ export class Saver {
      * exists, and the number must not be given back (ruled 2026-09-22).
      */
     let receipt: Receipt | null = null;
+    let enqueuedAt = 0;
     return this.serialise(async () => {
       /*
        * NOTE: THE SECOND PLACE THIS IS ASKED, AND ON PURPOSE.
@@ -1312,6 +1326,7 @@ export class Saver {
       };
       try {
         receipt = this.outbox.enqueue(entry);
+        enqueuedAt = nextStamp();
       } catch (e) {
         /*
          * NOTE: AND THIS ONE IS RE-RAISED RATHER THAN ANSWERED HERE.
@@ -1368,7 +1383,7 @@ export class Saver {
          * THE OUTCOME. (queue item 22, K11) No outcome carries it now, so it
          * goes to the sink before the rejection does.
          */
-        this.toSink(receipt.durability);
+        this.toSink(receipt.durability, enqueuedAt);
         throw e;
       }
       return {
@@ -1585,7 +1600,7 @@ export class Saver {
       return await this.drainInto(outcomes);
     } catch (e) {
       for (const outcome of outcomes) {
-        this.toSink(outcome.durability);
+        this.toSink(outcome.durability, this.stamps.get(outcome));
       }
       throw e;
     }
@@ -1709,15 +1724,15 @@ export class Saver {
       return;
     }
     if (this.gathered !== null) {
-      this.gathered.push(warning);
+      this.gathered.push({ text: warning, at: nextStamp() });
       return;
     }
     this.toSink(warning);
   }
 
-  private toSink(warning: string | null | undefined): void {
+  private toSink(warning: string | null | undefined, at?: number): void {
     if (warning !== null && warning !== undefined) {
-      this.durability(this.outbox.path, warning);
+      this.durability(this.outbox.path, warning, at);
     }
   }
 
@@ -1735,11 +1750,13 @@ export class Saver {
     }
     if (outcomes.length > at) {
       const produced = outcomes[at];
-      outcomes[at] = { ...produced, durability: latestWarning(produced.durability, gathered[gathered.length - 1]) };
+      const latest = gathered[gathered.length - 1];
+      outcomes[at] = { ...produced, durability: latestWarning(produced.durability, latest.text) };
+      this.stamps.set(outcomes[at], latest.at);
       return;
     }
     for (const warning of gathered) {
-      this.toSink(warning);
+      this.toSink(warning.text, warning.at);
     }
   }
 
@@ -1754,7 +1771,7 @@ export class Saver {
       if (outcome === mine || outcome.durability === undefined) {
         return outcome;
       }
-      this.toSink(outcome.durability);
+      this.toSink(outcome.durability, this.stamps.get(outcome));
       const { durability: _handedOn, ...rest } = outcome;
       return rest;
     });

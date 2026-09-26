@@ -558,7 +558,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         durability: (file, text) => warnings.add(file, text)
       }),
       {
-        durability: (file, text) => warnings.add(file, text),
+        durability: (file, text, at) => warnings.add(file, text, at),
         /*
          * WHAT THE RECORD BESIDE A FILE HAS ALREADY CONFIRMED, READ
          * FRESH BEFORE EVERY TRANSMISSION. (R8)
