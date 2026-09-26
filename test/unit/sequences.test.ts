@@ -222,6 +222,12 @@ describe('C11/S3 a save cannot install an older reading', () => {
    * WHAT ANSWERS IT NOW: a save does not install a baseline at all. It
    * records an acknowledgement against the record of the file it was
    * split from, and that record belongs to one version and one path.
+   *
+   * NOTE: THIS DRIVES `Publisher.acknowledge` DIRECTLY. (queue item 25)
+   * Production records an answer through `Saving.recordAnswer`
+   * (src/saving.ts), whose projection-mismatch branch this cell does not
+   * reach; that branch is held by XC-17 (brief-current.test.ts, "equal
+   * bytes with a new origin cannot borrow the old receipt").
    */
   it('records the answer against the version it was split from, not against the newest', () => {
     const dir = scratch();
@@ -251,6 +257,36 @@ describe('C11/S3 a save cannot install an older reading', () => {
   });
 });
 
+/*
+ * A SAVE THAT LANDS DURING A PUBLICATION'S PREPARATION. Once armed, the first
+ * time the block file's own temporary is written, the user's text is written
+ * into the block file: after the check before preparation, before the
+ * recheck before the rename. `landed` says it happened; `temporaries` names
+ * every temporary written, so a cell can ask that none is left.
+ */
+class SaveLandsDuringPreparation extends RecordingFs {
+  public landed = 0;
+  public readonly temporaries: string[] = [];
+  private armed: { file: string; text: string } | undefined;
+
+  public arm(file: string, text: string): void {
+    this.armed = { file, text };
+  }
+
+  public writeDurably(file: string, text: string): void {
+    super.writeDurably(file, text);
+    if (file.endsWith('.tmp')) {
+      this.temporaries.push(file);
+    }
+    const armed = this.armed;
+    if (armed !== undefined && path.basename(file).startsWith(`${path.basename(armed.file)}.${process.pid}.`)) {
+      this.armed = undefined;
+      fs.writeFileSync(armed.file, armed.text, 'utf8');
+      this.landed += 1;
+    }
+  }
+}
+
 describe('C11/S4 a reading that began before a save cannot overwrite it', () => {
   /*
    * WHAT WENT WRONG: an open started reading, the user saved, the save
@@ -275,8 +311,17 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
    *     saved bytes, and at the `Publisher` level a publication of an older
    *     reading would then pass and overwrite the file. What prevents it is
    *     order: the extension takes the reading inside `chain.run`, after
-   *     the save, so an older reading cannot arrive there. No cell pins that
-   *     order today -- queue item 24.
+   *     the save, so an older reading cannot arrive there. That order is
+   *     pinned as shape by awaiting.test.ts ("an open takes its reading on
+   *     the save chain", queue item 24); queue item 43 is the design that
+   *     would make `Publisher` refuse it on its own.
+   *
+   * AND THE FIRST HALF HAS A WINDOW OF ITS OWN. (queue item 25) The check
+   * before preparation reads the file once; a save can land after it,
+   * while the temporary is being written, and only the recheck just before
+   * the rename sees it. Removing `now !== before` from that recheck left
+   * the whole suite green (G1, measured on 247ad31), so the second cell
+   * lands the save exactly there.
    */
   it('refuses a late reading over a save not yet recorded, and leaves the saved file untouched', async () => {
     const dir = scratch();
@@ -300,6 +345,36 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
       'a late reading was not refused over a save the sidecar does not yet know about'
     );
     assert.strictEqual(fs.readFileSync(first.file, 'utf8'), saved, 'a late reading overwrote a saved file');
+  });
+
+  it('refuses a reading when a save lands while it is being prepared, and leaves the saved file untouched', async () => {
+    const dir = scratch();
+    const files = new SaveLandsDuringPreparation();
+    const publisher = new Publisher(files, nothingOpen());
+    const reading = {
+      directory: dir,
+      storeId: 's1',
+      blockId: 'a.2',
+      prefix: '## Two\n',
+      cursor: null
+    };
+    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n' });
+    assert.ok(first.published, `the first reading was not published, so there is nothing to save over: ${JSON.stringify(first)}`);
+    const saved = '## Two\nwhat the user saved\n';
+    files.arm(first.file, saved);
+    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n' });
+    assert.strictEqual(files.landed, 1, 'the save never landed between the preparation and the rename, so nothing was tested');
+    assert.deepStrictEqual(
+      late.published ? 'published' : late.because,
+      'digest-moved',
+      'a reading was not refused over a save that landed while it was being prepared'
+    );
+    assert.strictEqual(fs.readFileSync(first.file, 'utf8'), saved, 'a reading being prepared overwrote a saved file');
+    assert.deepStrictEqual(
+      files.temporaries.filter((temporary) => fs.existsSync(temporary)),
+      [],
+      'the refused publication left a temporary behind'
+    );
   });
 });
 
@@ -453,59 +528,16 @@ describe('C11/S10 nothing is left set that only a person can clear', () => {
 });
 
 /*
- * C12: the display ticket decides which document is shown and nothing
- * else.
- *
- * HOW TO SHOW THAT SOMETHING DOES NOT PARTICIPATE. An absence cannot be
- * asserted directly, so the ticket is put OUT OF ORDER and the writing
- * is required to come out the same. If a build had let it into a write
- * decision, reversing it would change what landed.
+ * C12 RETIRED (queue item 25, ruled 2026-09-26). It said the display ticket
+ * decides which document is shown and nothing else, and its one cell,
+ * "writes the same versions whether the tickets run in order or reversed",
+ * ran the tickets out of order and required the same writing. The product
+ * has no display tickets now: the values that cell varied only chose
+ * `PathChain` keys, and a key reaches no argument of `publish`, so the cell
+ * could not go red by the thing it was named for. What carries the order is
+ * the chain: C11/S1 "does not let two publications of one block interleave"
+ * (above) and chain.test.ts.
  */
-describe('C12 the display ticket takes no part in what is written', () => {
-  async function publishTwice(dir: string, tickets: number[]): Promise<string[]> {
-    const files = new RecordingFs();
-    const publisher = new Publisher(files, nothingOpen());
-    const chain = new PathChain();
-    const written: string[] = [];
-    for (const [index, text] of ['## Two\nfirst\n', '## Two\nsecond\n'].entries()) {
-      await chain.run(path.join(dir, `${tickets[index]}.md`), async () => {
-        const outcome = await publisher.publish({
-          directory: dir,
-          storeId: 's1',
-          blockId: 'a.2',
-          prefix: '## Two\n',
-          text,
-          cursor: null
-        });
-        if (outcome.published) {
-          written.push(`${outcome.version}:${fs.readFileSync(outcome.file, 'utf8')}`);
-        }
-      });
-    }
-    return written;
-  }
-
-  it('writes the same versions whether the tickets run in order or reversed', async () => {
-    const inOrder = await publishTwice(scratch(), [1, 2]);
-    const reversed = await publishTwice(scratch(), [2, 1]);
-    /*
-     * NOTE: AND SOMETHING WAS WRITTEN. (queue item 4) Two runs that both
-     * wrote nothing are equal, so a publish that always refused passed this
-     * cell -- measured. What the in-order run writes is stated first, and
-     * only then is the reversed run compared with it.
-     */
-    assert.deepStrictEqual(
-      inOrder,
-      ['1:## Two\nfirst\n', '1:## Two\nsecond\n'],
-      'the in-order run did not write both readings, so the order had nothing to change'
-    );
-    assert.deepStrictEqual(
-      reversed,
-      inOrder,
-      'putting the display tickets out of order changed what was written, so they are in a write decision'
-    );
-  });
-});
 
 /*
  * C20: three interruptions, each of which an obvious implementation

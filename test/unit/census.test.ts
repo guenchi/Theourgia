@@ -229,6 +229,11 @@ const AT_LEAST: Array<[string, number]> = [
    * 36 -> 37 in its review r1, 5c, through the shipping file operations.
    */
   ['sending.test.ts', 37],
+  /*
+   * UNCHANGED at fifteen by queue item 25, one in and one out: the cell that
+   * lands a save while a publication is being prepared, and C12 retired (a
+   * chain key reaches no argument of `publish`).
+   */
   ['sequences.test.ts', 15],
   /*
    * ADDED in round 36: the settler moved out of `extension.ts` into
@@ -238,9 +243,10 @@ const AT_LEAST: Array<[string, number]> = [
   ['settling.test.ts', 23],
   /*
    * RAISED in plugin-r3 item 3 to the hundred and five it registers, with
-   * the addressed-receipt cell on the import path.
+   * the addressed-receipt cell on the import path; 105 -> 107 in item 25,
+   * the two cells that read a non-string mark on a complete entry.
    */
-  ['sessions.test.ts', 105],
+  ['sessions.test.ts', 107],
   ['shapes.test.ts', 68],
   ['tombstones.test.ts', 11],
   /*

@@ -46,7 +46,7 @@ import {
   systemStartTime
 } from '../../src/sessions';
 import { idleProcess } from '../support/host';
-import { Outbox, OutboxEntry, Receipt } from '../../src/outbox';
+import { Outbox, OutboxEntry, Receipt, readQueueFile } from '../../src/outbox';
 import { Publisher } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
 import { receiptFor, strangersReceipt } from '../support/receipts';
@@ -1810,7 +1810,7 @@ describe('the takeover ledger accounts for everything it saw', () => {
     ['an entries field that is not a list', '{"entries":{}}'],
     ['an element that is not an object', '{"entries":[null]}'],
     ['an element with no request id', '{"entries":[{"payload":"x"}]}'],
-    ['a mark that is not a string', `{"entries":[${JSON.stringify({ req: 'r', importedBy: false })}]}`],
+    ['an element with no cursor', `{"entries":[${JSON.stringify({ req: 'r', importedBy: false })}]}`],
     ['an empty queue', '{"entries":[]}']
   ] as Array<[string, string]>) {
     it(`adds up when another store's queue is ${what}`, async () => {
@@ -1855,6 +1855,46 @@ describe('the takeover ledger accounts for everything it saw', () => {
       );
     });
   }
+
+  /*
+   * A MARK THAT IS NOT A STRING, ON AN ENTRY THAT IS OTHERWISE COMPLETE.
+   * (queue item 25) The row above used to carry this name, but its entry has
+   * no cursor, and that is what made it unreadable; the mark was never
+   * looked at. A complete entry whose `importedBy` is not a string is read,
+   * with the mark read as absent (src/outbox.ts, the `importedBy:` line):
+   * in another store's queue it is left for that store, and in the queue
+   * being taken it is imported, like any other entry.
+   */
+  it('reads a mark that is not a string as unmarked, in another store\'s queue', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    write(storage, 'S-dead', 'store-a', `{"entries":[${request('fresh')}]}`);
+    write(storage, 'S-dead', 'store-b', `{"entries":[${request('r', false)}]}`);
+    assert.strictEqual(
+      readQueueFile(JSON.parse(`{"entries":[${request('r', false)}]}`)).entries[0].importedBy,
+      null,
+      'a mark that is not a string was not read as absent'
+    );
+    const led = await ledgerOf(storage);
+    assert.strictEqual(ledgerTotal(led), led.observed, `the ledger does not add up: ${JSON.stringify(led)}`);
+    assert.strictEqual(led.unreadableQueue, 0, `a complete entry was counted as unreadable: ${JSON.stringify(led)}`);
+    assert.strictEqual(led.imported, 1, `the readable store's request did not move: ${JSON.stringify(led)}`);
+    assert.strictEqual(
+      led.leftOtherStore,
+      1,
+      `the entry with a non-string mark was not left for its own store: ${JSON.stringify(led)}`
+    );
+  });
+
+  it('reads a mark that is not a string as unmarked, in the queue being taken', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    write(storage, 'S-dead', 'store-a', `{"entries":[${request('r', false)}]}`);
+    const led = await ledgerOf(storage);
+    assert.strictEqual(ledgerTotal(led), led.observed, `the ledger does not add up: ${JSON.stringify(led)}`);
+    assert.strictEqual(led.unreadableQueue, 0, `a complete entry was counted as unreadable: ${JSON.stringify(led)}`);
+    assert.strictEqual(led.imported, 1, `the entry with a non-string mark did not move: ${JSON.stringify(led)}`);
+  });
 });
 
 /*
