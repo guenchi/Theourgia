@@ -882,16 +882,21 @@ for f in *.sc *.py; do
   # others and prints no sentinel of its own. It is named here rather
   # than detected, because "imports nothing and prints nothing" is also
   # what a broken fixture looks like.
-  # NOTE: FIVE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
+  # NOTE: SIX HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
   # the python fixtures; `structure` is the preflight above;
   # `reduce-hash-check` is a filter `reduce1.sc` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
   # broken fixture looks like, so the list says which it is;
-  # `import-walk` is the shared walker seven fixtures `load`; and
+  # `import-walk` is the shared walker seven fixtures `load`;
   # `own-verbs` is the reader of the programs' dispatch tables that
-  # `options-gate` and `docs-check` `load` (F64). A sixth helper,
-  # `launch.pl`, starts every fixture; no glob here matches `.pl`, so it
-  # is never classified at all.
+  # `options-gate` and `docs-check` `load` (F64); and `f54-reference` is
+  # the reference library arm B of `startup-ratio` imports (F54): a
+  # library, not a fixture, whose name is not (theourgia ...) because
+  # the reference must import nothing of the tree, so the library test
+  # below does not catch it. Its program, `f54-reference-main.ss`, is a
+  # `.ss` and never reaches this loop. A seventh helper, `launch.pl`,
+  # starts every fixture; no glob here matches `.pl`, so it is never
+  # classified at all.
   #
   # NEVER: `import-walk` JOINED THIS LIST BECAUSE OF ITS EXTENSION. It was
   # `.scm` and so was never in `*.ss`, which is what the note above the
@@ -900,7 +905,7 @@ for f in *.sc *.py; do
   # sentinel, and been counted as a broken fixture -- an extension change
   # altering WHICH FILES ARE TESTS.
   case "$n" in
-    paths|structure|reduce-hash-check|import-walk|own-verbs) helpers="$helpers $n"; continue;;
+    paths|structure|reduce-hash-check|import-walk|own-verbs|f54-reference) helpers="$helpers $n"; continue;;
   esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
   # NEVER: STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the

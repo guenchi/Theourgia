@@ -112,6 +112,7 @@ smoke-wire-fuzz - 5 d2f81d74fdad6c838e079be6a1e05d51
 smoke-wire-trace - 6 41b0a4d9dda05cea5ab8de0a6cb1771d
 snap1 22 32 a5e16083850637eae203a988e68a259a
 stage-gate - 5 0f911587319ae008949660d0f4a59639
+startup-ratio 51 60 3098f4fd1de53fa83dda067abf277605
 store1 51 66 60ea5b7c1022ea51ccbdb9acef1bc037
 structure-strings 4 8 5403b357b58a7630fe2ac5ba6383cf26
 subtree 15 19 f89a5a8b5fda310b52497f5543d14aa4
