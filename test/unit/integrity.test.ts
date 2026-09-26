@@ -47,7 +47,16 @@ const CHECK = (verdict: string): string =>
   `(check (store "s") (writers (("w" (end 7) (torn #f) (integrity ())))) (snapshots ()) ` +
   `(registry outside-store) (notes ()) ${verdict})`;
 
-describe('plugin-r3 a store that says it is not sound', () => {
+describe('plugin-r3 a store that says it is not sound', function () {
+  /*
+   * ITS CELLS START A CORE PROCESS PER REQUEST -- the stand-in,
+   * test/fake-core.js, run as the configured `scheme` -- so they get the
+   * timeout the suites that start processes have (queue item 29; the queue's
+   * wording said the real core, which this describe does not start): under
+   * load a cell here timed out at mocha's two seconds, and a red that comes
+   * from load reads like a kill in a mutation table.
+   */
+  this.timeout(120000);
   let core: FakeCore | undefined;
   before(async () => {
     await initWire();
