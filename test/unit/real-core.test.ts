@@ -84,6 +84,7 @@ import { recordFor } from '../../src/record';
 import { digestOfBytes } from '../../src/publication';
 import { CorePin, RealStore, checkCorePin, daemonsUnder, pinCore } from '../support/real-core';
 import { entriesIn } from '../support/run-root';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 const DOC = '# Doc One\n\nintro\n\n## Two\nbody\n\n## Three  spaced\nb3\n';
 
@@ -233,7 +234,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
      */
     const counting = new Counting(store.transport());
     const spy = new SpawnSpy();
-    const saver = new Saver(new Client(counting), outbox, settling(outbox));
+    const saver = new Saver(new Client(counting), outbox, settling(outbox), IGNORED_DURABILITY);
 
     const split = splitDocument(document, `${document.headingSrc}body2\n`);
     assert.strictEqual(split.ok, true);
@@ -299,7 +300,7 @@ describe('S7 a save reaches the store and shows up in its log', function () {
     const id = await idOfSection(store, 'Three  spaced');
     const outbox = new Outbox(path.join(store.root, 'outbox-replay.json'));
     outbox.load();
-    const saver = new Saver(store.client, outbox, settling(outbox));
+    const saver = new Saver(store.client, outbox, settling(outbox), IGNORED_DURABILITY);
 
     /*
      * The cursor the first request will carry has to be read before it
@@ -447,7 +448,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       store.transport(),
       (verb) => verb === 'set'
     );
-    const blind = new Saver(new Client(losing), outbox, settling(outbox));
+    const blind = new Saver(new Client(losing), outbox, settling(outbox), IGNORED_DURABILITY);
     const lost = await blind.save(id, 'src', 'written but unheard\n');
     assert.strictEqual(lost.status, 'pending', lost.message);
     assert.strictEqual(outbox.pendingCount, 1, 'the unheard save was dropped');
@@ -484,7 +485,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       'the retry carries a different cursor, so it is a different request wearing the same name'
     );
 
-    const saver = new Saver(store.client, reloaded, settling(reloaded));
+    const saver = new Saver(store.client, reloaded, settling(reloaded), IGNORED_DURABILITY);
     const outcomes = await saver.retry();
     assert.strictEqual(outcomes.length, 1);
     assert.strictEqual(
@@ -536,7 +537,7 @@ describe('S13 a save whose answer is lost, retried against the real store', func
       'the client did not carry the record the replay named into its cursor'
     );
     const counting = new Counting(store.transport());
-    const next = new Saver(new Client(counting), reloaded, settling(reloaded));
+    const next = new Saver(new Client(counting), reloaded, settling(reloaded), IGNORED_DURABILITY);
     const second = await next.save(id, 'src', 'and then this\n');
     assert.strictEqual(second.status, 'saved', second.message);
     const sent = counting.sent.find((c) => c[0] === 'set');
@@ -561,12 +562,12 @@ describe('S13 a save whose answer is lost, retried against the real store', func
     outbox.load();
 
     const losing = new LosesTheAnswer(store.transport(), (verb) => verb === 'set');
-    const blind = new Saver(new Client(losing), outbox, settling(outbox));
+    const blind = new Saver(new Client(losing), outbox, settling(outbox), IGNORED_DURABILITY);
     const lost = await blind.save(id, 'src', 'unheard again\n');
     assert.strictEqual(lost.status, 'pending', lost.message);
 
     const counting = new Counting(store.transport());
-    const saver = new Saver(new Client(counting), outbox, settling(outbox));
+    const saver = new Saver(new Client(counting), outbox, settling(outbox), IGNORED_DURABILITY);
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'replayed', retried[0].message);
 
@@ -1116,7 +1117,7 @@ describe('a session that writes to two stores keeps their cursors apart', functi
     const saverFor = async (store: RealStore): Promise<Saver> => {
       const outbox = new Outbox(sessions.outboxPathFor('S-two-stores', hash(store.store)));
       outbox.load();
-      return new Saver(store.client, outbox, settling(outbox));
+      return new Saver(store.client, outbox, settling(outbox), IGNORED_DURABILITY);
     };
 
     const idOf = async (store: RealStore): Promise<string> => {
@@ -1380,7 +1381,7 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
         if (answer.verdict === 'refused') {
           queue.resolve(req, null);
         }
-      });
+      }, IGNORED_DURABILITY);
       const commitOf = async (body: string, req: string): Promise<SaveOutcome> => {
         const draft = await window.write(mine, body, prefix);
         return saver.submit(

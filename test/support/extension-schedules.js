@@ -189,6 +189,68 @@ async function main(){
   await new Promise(r=>setTimeout(r,50));
   return {lines:outputLines,unhandled:unhandledSeen.size,warnings:shown.filter(n=>n.level==='warning').map(n=>n.text)};
  }
+ // Queue item 22, D4 and D4b: the queue directory's flush fails ONCE, after a
+ // save has left an entry pending (the stand-in answers every commit unknown).
+ // One-shot, because the window's own later drains write the same queue: a
+ // flush that kept failing would raise the same sentence again and hide a
+ // warning that was lost.
+ if(scenario.startsWith('durability')){
+  const fsops=require(path.join(out,'fsops.js')),sync=fsops.nodeFileOps.syncDirectory;
+  const queueA=core.outboxPath('/stores/A');let armed=false,failed=0,failWhen=null;
+  fsops.nodeFileOps.syncDirectory=d=>{if((armed||(failWhen&&failWhen()))&&path.resolve(d)===path.resolve(path.dirname(queueA))){armed=false;failWhen=null;failed++;return 'the disk said no';}return sync.call(fsops.nodeFileOps,d);};
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));const body='# Alpha\nfirst A\n';fs.writeFileSync(a,body);
+  await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>body});
+  const pendingBefore=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>e.state);
+  shown.length=0;
+  // D4f (folded from item 22's closing review): the awaited save's OWN warning.
+  // A second save, whose enqueue is the write that fails -- the first time the
+  // queue holds an entry still `queued` -- so the sentence rides on that save's
+  // outcome, and only the save handler's own display of it can show it.
+  if(scenario==='durability-save'){
+   failWhen=()=>fs.existsSync(queueA)&&JSON.parse(fs.readFileSync(queueA,'utf8')).entries.some(e=>e.state==='queued');
+   const second='# Alpha\nsecond A\n';fs.writeFileSync(a,second);
+   await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>second});
+   return {queue:queueA,pendingBefore,failed,shown:shown.slice()};
+  }
+  if(scenario==='durability-retry'){
+   // D4 is about the retry command's RELEASE (K6): the entry is parked first,
+   // through the product's own queue, so the one failing flush is unparkAll's.
+   const {Outbox}=require(path.join(out,'outbox.js')),held=new Outbox(queueA);held.load();
+   held.markParked(held.entries[0].req,'parked for the cell');
+   const parkedBefore=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>e.state);
+   armed=true;await commands.get('theourgia.retryOutbox')();
+   const afterRetry=shown.slice();shown.length=0;
+   await commands.get('theourgia.showStatus')({ask:false});
+   return {queue:queueA,pendingBefore,parkedBefore,failed,afterRetry,afterNext:shown.slice()};
+  }
+  if(scenario==='durability-rebuild'){
+   const wait=gate();requestGate={...wait,verb:'commit'};
+   const retrying=commands.get('theourgia.retryOutbox')();await wait.entered;
+   change('/stores/A');const afterChange=shown.slice();
+   armed=true;wait.release();await retrying;
+   for(let i=0;i<5;i++)await new Promise(r=>setImmediate(r));
+   return {queue:queueA,pendingBefore,failed,afterChange,shown:shown.slice()};
+  }
+  // D4b through the STARTUP retry (delivery review r2 of item 22, S1): a settings
+  // change rebuilds and the new Saver's startup drain is held at its commit; a
+  // second change replaces that Saver too; only then is the held commit
+  // answered and the replaced Saver's mark written under the failing flush. What
+  // shows it is the startup retry's own take -- no command runs here.
+  // The second change is to store B, whose queue is empty (review r3, S1): its
+  // startup drain is over before the held commit answers, so nothing but the
+  // replaced Saver's own callback is left to show the sentence.
+  if(scenario==='durability-startup'){
+   const wait=gate();requestGate={...wait,verb:'commit'};
+   change('/stores/A');await wait.entered;
+   change('/stores/B');for(let i=0;i<20;i++)await new Promise(r=>setTimeout(r,10));
+   const afterChange=shown.slice();
+   armed=true;wait.release();
+   for(let i=0;i<200&&failed===0;i++)await new Promise(r=>setTimeout(r,10));
+   for(let i=0;i<20;i++)await new Promise(r=>setTimeout(r,10));
+   return {queue:queueA,pendingBefore,failed,afterChange,shown:shown.slice()};
+  }
+ }
  throw Error('Unknown schedule');
 }
 main().then(result=>{fs.writeSync(1,JSON.stringify({complete:true,result})+'\n');}).catch(error=>{fs.writeSync(2,String(error.stack)+'\n');process.exitCode=1;});

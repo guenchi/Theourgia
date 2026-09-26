@@ -378,16 +378,16 @@ export class Outbox {
   }
 
   /*
-   * NOTE: IT RETURNS WHAT `write` SAYS ABOUT DURABILITY, and only
-   * `enqueue` has somewhere to put it -- see `write`.
+   * NOTE: IT RETURNS WHAT `write` SAYS ABOUT DURABILITY, and every mutator
+   * hands that on to its caller -- see `write`.
    */
-  private commit(next: OutboxFile, durability: 'report' | 'throw' = 'throw'): string | null {
+  private commit(next: OutboxFile): string | null {
     if (!this.readable) {
       throw new OutboxWriteError(
         `the outbox at ${this.file} has not been read successfully, so it will not be written`
       );
     }
-    const warning = this.write(next, durability);
+    const warning = this.write(next);
     this.data = next;
     return warning;
   }
@@ -432,7 +432,7 @@ export class Outbox {
     this.refresh();
     const next = this.copy();
     next.entries.push({ ...entry });
-    const durability = this.commit(next, 'report');
+    const durability = this.commit(next);
     return { req: entry.req, durability, [WRITTEN]: true as const };
 
     });
@@ -448,28 +448,28 @@ export class Outbox {
    * not recover where. The next send asks the store rather than
    * composing against a number nobody stood at.
    */
-  public clearCursor(): void {
-    return withQueueExclusive(this.file, (): void => {
+  public clearCursor(): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     next.cursor = null;
-    this.commit(next);
+    return this.commit(next);
 
     });
   }
 
-  public setCursor(cursor: string): void {
-    return withQueueExclusive(this.file, (): void => {
+  public setCursor(cursor: string): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     next.cursor = cursor;
-    this.commit(next);
+    return this.commit(next);
 
     });
   }
 
-  public resolve(req: string, cursor: string | null): void {
-    return withQueueExclusive(this.file, (): void => {
+  public resolve(req: string, cursor: string | null): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     const before = next.entries.length;
@@ -528,7 +528,7 @@ export class Outbox {
         next.cursor = cursor;
       }
     }
-    this.commit(next);
+    return this.commit(next);
 
     });
   }
@@ -547,8 +547,8 @@ export class Outbox {
    * cursor had been moved and whose state still said it had never been
    * sent.
    */
-  public aboutToSend(req: string, cursor: string | null): void {
-    return withQueueExclusive(this.file, (): void => {
+  public aboutToSend(req: string, cursor: string | null): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     let changed = false;
@@ -562,9 +562,7 @@ export class Outbox {
       entry.state = 'sent';
       changed = true;
     }
-    if (changed) {
-      this.commit(next);
-    }
+    return changed ? this.commit(next) : null;
 
     });
   }
@@ -575,8 +573,8 @@ export class Outbox {
    * that window was doing, and nothing in this batch deletes such a
    * trace. (section 12.11.3, section 12.23)
    */
-  public markImported(req: string, token: string): void {
-    return withQueueExclusive(this.file, (): void => {
+  public markImported(req: string, token: string): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     let changed = false;
@@ -586,9 +584,7 @@ export class Outbox {
         changed = true;
       }
     }
-    if (changed) {
-      this.commit(next);
-    }
+    return changed ? this.commit(next) : null;
 
     });
   }
@@ -597,8 +593,8 @@ export class Outbox {
    * THIS SEND IS NOT GOING OUT AS IT STANDS, AND THE QUEUE CARRIES ON.
    * (section 13, r3-4)
    */
-  public markParked(req: string, why: string): void {
-    return withQueueExclusive(this.file, (): void => {
+  public markParked(req: string, why: string): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     for (const entry of next.entries) {
@@ -607,13 +603,14 @@ export class Outbox {
         entry.lastError = why;
       }
     }
-    this.commit(next);
+    return this.commit(next);
 
     });
   }
 
   /*
-   * PUT EVERY PARKED ENTRY BACK IN THE QUEUE, AND SAY HOW MANY.
+   * PUT EVERY PARKED ENTRY BACK IN THE QUEUE, AND SAY HOW MANY -- and, as
+   * every mutator does, what the write said about durability.
    *
    * NOTE: NOT A TIMER. An entry is parked because nothing it can wait for
    * will change the answer -- the store directory does not exist, the
@@ -644,8 +641,8 @@ export class Outbox {
    * exists for, and the reason this one was missed is that it is the
    * only mutator whose body reads like a report: it counts.
    */
-  public unparkAll(): number {
-    return withQueueExclusive(this.file, (): number => {
+  public unparkAll(): { unparked: number; durability: string | null } {
+    return withQueueExclusive(this.file, (): { unparked: number; durability: string | null } => {
     this.refresh();
     const next = this.copy();
     let released = 0;
@@ -655,16 +652,14 @@ export class Outbox {
         released += 1;
       }
     }
-    if (released > 0) {
-      this.commit(next);
-    }
-    return released;
+    const durability = released > 0 ? this.commit(next) : null;
+    return { unparked: released, durability };
 
     });
   }
 
-  public markPending(req: string, why: string): void {
-    return withQueueExclusive(this.file, (): void => {
+  public markPending(req: string, why: string): string | null {
+    return withQueueExclusive(this.file, (): string | null => {
     this.refresh();
     const next = this.copy();
     for (const entry of next.entries) {
@@ -673,7 +668,7 @@ export class Outbox {
         entry.lastError = why;
       }
     }
-    this.commit(next);
+    return this.commit(next);
 
     });
   }
@@ -704,21 +699,21 @@ export class Outbox {
    * result, and failing to close the connection cannot cancel it. One
    * rule, two places -- change one and look at the other.
    *
-   * NOTE: TWO RULES LIVE HERE AT ONCE, ON PURPOSE. Only `enqueue` has
-   * somewhere to put the warning: its receipt goes back to the save that
-   * asked, and from there onto the save's outcome, beside `behind`. Every
-   * other mutator (`markParked`, `resolve`, `unparkAll`, ...) still throws
-   * `OutboxWriteError` when the sync fails after the rename landed, which
-   * says "not written" about a queue that was. Whether they should follow
-   * the same rule, and where their warning would be shown, is queue item
-   * 22 -- a design to make first, not a change to slip in here.
+   * NOTE: AND IT IS ONE RULE FOR EVERY MUTATOR. (queue item 22, design v4)
+   * A failure BEFORE the rename throws `OutboxWriteError`: nothing changed.
+   * A failure of the flush AFTER it is returned as a warning, never thrown,
+   * and the mutation counts as done -- a `markParked` that "failed" used to
+   * leave the entry parked on disk and its caller believing it was not.
+   * `enqueue` carries the warning in its receipt; every other mutator
+   * returns it, and its caller hands it to the window's durability sink
+   * (or, for the awaited save, onto that save's outcome).
    *
    * NOTE: AND THE QUEUE IS NOT ATOMIC WITH ANYTHING ELSE. The sidecar
    * beside a document and this queue are two files with no transaction
    * between them; the receipt makes one caller's answer about THIS file
    * correct, and makes the pair no more atomic than it was.
    */
-  private write(next: OutboxFile, durability: 'report' | 'throw'): string | null {
+  private write(next: OutboxFile): string | null {
     const directory = path.dirname(this.file);
     try {
       this.files.makeDirectory(directory);
@@ -746,23 +741,15 @@ export class Outbox {
      * is read too. The shipping `syncDirectory` used to swallow a failed
      * fsync and now returns why (review r1 of item 3 found the warning
      * above could never fire in production); a stand-in may still throw.
-     * In `'throw'` mode a RETURNED reason is ignored -- every other mutator
-     * was silent about it before, through the swallowing, and stays exactly
-     * so -- while a THROWN one throws as it always did.
+     * Either way the rename has landed, so either way it is a warning.
      */
     let reason: string | null;
     try {
       reason = this.files.syncDirectory(directory);
     } catch (e) {
-      const thrown =
-        `the queue at ${this.file} was written, but its directory could not be flushed ` +
-        `(${String(e)}), so it may not survive the machine losing power`;
-      if (durability === 'report') {
-        return thrown;
-      }
-      throw new OutboxWriteError(thrown);
+      reason = String(e);
     }
-    if (reason === null || durability === 'throw') {
+    if (reason === null) {
       return null;
     }
     return (

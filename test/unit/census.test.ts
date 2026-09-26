@@ -95,9 +95,11 @@ const AT_LEAST: Array<[string, number]> = [
    * reads that the retry command calls `retryParked`. And in item 16,
    * 11 -> 12: a guard that compares the copy plus one is not a guard; and
    * 12 -> 13 in its r2: the shapes written around a guard. And in item 24,
-   * 13 -> 15: that the open reads and publishes on the save chain.
+   * 13 -> 15: that the open reads and publishes on the save chain. And in
+   * item 22, 15 -> 16: that every command is registered through the wrapper
+   * that shows the durability sink.
    */
-  ['awaiting.test.ts', 15],
+  ['awaiting.test.ts', 16],
   ['blocks.test.ts', 20],
   /*
    * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
@@ -139,7 +141,16 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['document-view.test.ts', 24],
   ['documents.test.ts', 8],
-  ['durability.test.ts', 33],
+  /*
+   * RAISED in queue item 22, 33 -> 65: D1 for each of eight mutators under a
+   * flush that returns and one that throws (16), D2 for each (8), and D4c,
+   * the sink keeping one sentence per queue file (2), and D4/D4b, the
+   * window showing them (2); 61 -> 63 in its delivery review r2: D4b through
+   * the startup retry, and D4d, a text whose show throws not taking the others;
+   * 63 -> 64 in review r3, D4e, a show that rejects later; 64 -> 65 folded from
+   * the closing review, D4f, the awaited save's own warning shown.
+   */
+  ['durability.test.ts', 65],
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
   ['mutators.test.ts', 12],
@@ -157,7 +168,11 @@ const AT_LEAST: Array<[string, number]> = [
    * the setting. Its cells are one per setting in package.json, so the
    * row goes when the setting goes; there is nothing left for it to cover.
    */
-  ['recovery.test.ts', 33],
+  /*
+   * 33 -> 34 in queue item 22: D6, a takeover's durability warning in its
+   * report and not in the sink.
+   */
+  ['recovery.test.ts', 34],
   /*
    * ADDED in plugin-r3 item 3: the four source censuses of the enqueue
    * receipt -- the brand, where it is issued, and the two call-site
@@ -227,8 +242,14 @@ const AT_LEAST: Array<[string, number]> = [
    * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five
    * runtime cells of the enqueue receipt (design cells 3, 4, 5a, 5b, 6);
    * 36 -> 37 in its review r1, 5c, through the shipping file operations.
+   * 37 -> 42 in item 22: D3 (two: the mark alone, and the enqueue and the
+   * mark on one file keeping the latest), D3b, D3c and D5, where a drain's
+   * durability warnings go; 42 -> 44 in its delivery review r1: D3c through a
+   * rejecting send (the settle version kept) and D3d; 44 -> 45 in review r2,
+   * D3e; 45 -> 46 in review r3, D3e through save(); 46 -> 47 folded from the
+   * closing review, D3f.
    */
-  ['sending.test.ts', 37],
+  ['sending.test.ts', 47],
   /*
    * UNCHANGED at fifteen by queue item 25, one in and one out: the cell that
    * lands a save while a publication is being prepared, and C12 retired (a
@@ -238,15 +259,18 @@ const AT_LEAST: Array<[string, number]> = [
   /*
    * ADDED in round 36: the settler moved out of `extension.ts` into
    * `src/settling.ts` so that "which queue, which store" could be
-   * driven by a cell at all.
+   * driven by a cell at all. 23 -> 24 in queue item 22: D5b, a settle's
+   * durability warning in the sink; 24 -> 27 folded from its closing review:
+   * D5b for the refusal, the recorded answer and an operator's determination.
    */
-  ['settling.test.ts', 23],
+  ['settling.test.ts', 27],
   /*
    * RAISED in plugin-r3 item 3 to the hundred and five it registers, with
    * the addressed-receipt cell on the import path; 105 -> 107 in item 25,
-   * the two cells that read a non-string mark on a complete entry.
+   * the two cells that read a non-string mark on a complete entry; 107 -> 108
+   * in item 22's delivery review r1, D6b; 108 -> 109 in its review r2, D6c.
    */
-  ['sessions.test.ts', 107],
+  ['sessions.test.ts', 109],
   ['shapes.test.ts', 68],
   ['tombstones.test.ts', 11],
   /*

@@ -27,8 +27,11 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 import { MAX_TIMEOUT_MS, WITNESS_SOURCE, problemsWith } from '../../src/config';
 import { Outbox, OutboxEntry, OutboxWriteError } from '../../src/outbox';
+import { FileOps, nodeFileOps } from '../../src/fsops';
+import { DurabilitySink } from '../../src/durability';
 
 function scratch(name: string): string {
   return path.join(fs.mkdtempSync(path.join(os.tmpdir(), `theourgia-${name}-`)), 'outbox.json');
@@ -638,5 +641,339 @@ describe('U-req the entries the queue hands out cannot be edited', () => {
     assert.throws(() => {
       (handed as { req: string }).req = 'r2';
     }, TypeError);
+  });
+});
+
+/*
+ * D1/D2: ONE DURABILITY RULE FOR EVERY QUEUE MUTATOR. (queue item 22, design
+ * v4)
+ *
+ * A failure BEFORE the rename throws `OutboxWriteError` and changes nothing;
+ * a failure of the directory flush AFTER it counts the mutation as done and
+ * returns the warning. Each of the eight mutators besides `enqueue` is driven
+ * through a Files stand-in that starts failing only after the seed is
+ * written, so the failing write is the mutation's own.
+ *
+ * D1 asks three things, and each is needed (K7): the queue file, re-read by
+ * a fresh reader, holds the new state; the object's own state -- read
+ * without reloading first -- holds it too, which is what a mutant returning
+ * before `this.data = next` fails; and the call RETURNED the warning rather
+ * than throwing it. It is asked for a flush that returns its reason (the
+ * shipping `syncDirectory`) and for one that throws (a stand-in may).
+ */
+const MUTATED = '33333333-3333-3333-3333-333333333333';
+
+interface Mutation {
+  name: string;
+  seed: (outbox: Outbox) => void;
+  run: (outbox: Outbox) => string | null;
+  shows: (outbox: Outbox) => boolean;
+}
+
+const MUTATIONS: Mutation[] = [
+  { name: 'setCursor', seed: () => undefined, run: (o) => o.setCursor('w:9'), shows: (o) => o.cursor === 'w:9' },
+  {
+    name: 'clearCursor',
+    seed: (o) => void o.setCursor('w:9'),
+    run: (o) => o.clearCursor(),
+    shows: (o) => o.cursor === null
+  },
+  {
+    name: 'markParked',
+    seed: (o) => void o.enqueue(entry(MUTATED, 'one\n')),
+    run: (o) => o.markParked(MUTATED, 'parked for the cell'),
+    shows: (o) => o.find(MUTATED)?.state === 'parked'
+  },
+  {
+    name: 'markPending',
+    seed: (o) => void o.enqueue(entry(MUTATED, 'one\n')),
+    run: (o) => o.markPending(MUTATED, 'pending for the cell'),
+    shows: (o) => o.find(MUTATED)?.state === 'pending'
+  },
+  {
+    name: 'aboutToSend',
+    seed: (o) => void o.enqueue(entry(MUTATED, 'one\n')),
+    run: (o) => o.aboutToSend(MUTATED, 'w:8'),
+    shows: (o) => o.find(MUTATED)?.state === 'sent' && o.find(MUTATED)?.cursor === 'w:8'
+  },
+  {
+    name: 'markImported',
+    seed: (o) => void o.enqueue(entry(MUTATED, 'one\n')),
+    run: (o) => o.markImported(MUTATED, 'S-dead.claim.1'),
+    shows: (o) => o.find(MUTATED)?.importedBy === 'S-dead.claim.1'
+  },
+  {
+    name: 'resolve',
+    seed: (o) => void o.enqueue(entry(MUTATED, 'one\n')),
+    run: (o) => o.resolve(MUTATED, null),
+    shows: (o) => o.find(MUTATED) === undefined
+  },
+  {
+    name: 'unparkAll',
+    seed: (o) => {
+      o.enqueue(entry(MUTATED, 'one\n'));
+      o.markParked(MUTATED, 'parked for the cell');
+    },
+    run: (o) => {
+      const released = o.unparkAll();
+      assert.strictEqual(released.unparked, 1, 'unparkAll did not say it released the parked entry');
+      return released.durability;
+    },
+    shows: (o) => o.find(MUTATED)?.state === 'queued'
+  }
+];
+
+/*
+ * A Files stand-in that behaves until `failing` is set, and then fails at
+ * one step: the directory flush, by returning a reason or by throwing; or
+ * the rename.
+ */
+function failingAt(step: 'returns' | 'throws' | 'rename'): { files: FileOps; fail: () => void } {
+  let failing = false;
+  const files: FileOps = {
+    ...nodeFileOps,
+    syncDirectory(directory: string): string | null {
+      if (failing && step === 'returns') {
+        return 'the disk said no';
+      }
+      if (failing && step === 'throws') {
+        throw new Error('the disk threw');
+      }
+      return nodeFileOps.syncDirectory(directory);
+    },
+    rename(from: string, to: string): void {
+      if (failing && step === 'rename') {
+        throw new Error('the rename was refused');
+      }
+      nodeFileOps.rename(from, to);
+    }
+  };
+  return { files, fail: () => (failing = true) };
+}
+
+describe('D1 a queue write whose rename landed is done, and says what it could not promise', () => {
+  for (const mutation of MUTATIONS) {
+    for (const [step, reason] of [
+      ['returns', 'the disk said no'],
+      ['throws', 'Error: the disk threw']
+    ] as Array<['returns' | 'throws', string]>) {
+      it(`${mutation.name}: done, on disk and in the object, with the warning returned (the flush ${step})`, () => {
+        const file = scratch(`d1-${mutation.name}-${step}`);
+        const stand = failingAt(step);
+        const outbox = new Outbox(file, stand.files);
+        outbox.load();
+        mutation.seed(outbox);
+        stand.fail();
+        let warning: string | null = null;
+        assert.doesNotThrow(() => {
+          warning = mutation.run(outbox);
+        }, `${mutation.name} threw about a write whose rename had landed`);
+        assert.strictEqual(
+          warning,
+          `the queue at ${file} was written, but its directory could not be flushed (${reason}), so it ` +
+            'may not survive the machine losing power',
+          `${mutation.name} did not return the durability warning`
+        );
+        assert.ok(mutation.shows(outbox), `${mutation.name}'s own state does not show the mutation`);
+        const fresh = new Outbox(file);
+        fresh.load();
+        assert.ok(mutation.shows(fresh), `the queue file does not show ${mutation.name}'s mutation`);
+      });
+    }
+  }
+});
+
+describe('D2 a queue write that failed before its rename throws and changes nothing', () => {
+  for (const mutation of MUTATIONS) {
+    it(`${mutation.name}: OutboxWriteError, the file and the object as they were`, () => {
+      const file = scratch(`d2-${mutation.name}`);
+      const stand = failingAt('rename');
+      const outbox = new Outbox(file, stand.files);
+      outbox.load();
+      mutation.seed(outbox);
+      const bytes = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+      const held = JSON.stringify({ entries: outbox.entries, cursor: outbox.cursor });
+      stand.fail();
+      assert.throws(() => mutation.run(outbox), OutboxWriteError);
+      assert.strictEqual(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null, bytes, 'the queue file changed');
+      assert.strictEqual(
+        JSON.stringify({ entries: outbox.entries, cursor: outbox.cursor }),
+        held,
+        `${mutation.name} changed the object although the file was not written`
+      );
+    });
+  }
+});
+
+/*
+ * D4c: THE SINK KEEPS ONE SENTENCE PER QUEUE FILE UNTIL IT IS TAKEN, THE
+ * LATEST. (queue item 22, K5) Two writes to one file between two notices say
+ * one thing -- that file may not survive a power cut -- and the latest reason
+ * is the one to read; a second file is a second thing.
+ */
+describe('D4c the durability sink says each queue file once', () => {
+  it('keeps the latest of two sentences about one queue file', () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'the first reason');
+    sink.add('/q/one/outbox.json', 'the second reason');
+    assert.deepStrictEqual(sink.take(), ['the second reason']);
+    assert.deepStrictEqual(sink.take(), [], 'what was taken was still held');
+  });
+
+  /*
+   * D4d: ONE TEXT THAT CANNOT BE SHOWN DOES NOT TAKE THE OTHERS WITH IT.
+   * (delivery review r2 of item 22, the W) The batch is taken before anything
+   * is shown, so a `show` that throws at once for the first text used to lose
+   * the second; now the second is shown and the failure reported.
+   */
+  it('D4d shows the second text when showing the first throws, and reports the failure', () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'about one');
+    sink.add('/q/two/outbox.json', 'about two');
+    const shown: string[] = [];
+    const failures: unknown[] = [];
+    sink.showAll(
+      (text) => {
+        if (text === 'about one') {
+          throw new Error('the editor threw');
+        }
+        shown.push(text);
+      },
+      (error) => failures.push(error)
+    );
+    assert.deepStrictEqual(shown, ['about two'], 'the second text was not shown');
+    assert.strictEqual(failures.length, 1, 'the failure was not reported');
+    assert.match(String(failures[0]), /the editor threw/);
+    assert.deepStrictEqual(sink.take(), [], 'the batch was not taken');
+  });
+
+  /*
+   * D4e: A SHOW THAT REJECTS LATER IS FOLLOWED. (delivery review r3 of item 22,
+   * the W) The first text's show answers with a promise that rejects; the
+   * second text is shown, the rejection reaches `failed`, and nothing is left
+   * unhandled.
+   */
+  it('D4e follows a show that rejects, and leaves nothing unhandled', async () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'about one');
+    sink.add('/q/two/outbox.json', 'about two');
+    const shown: string[] = [];
+    const failures: unknown[] = [];
+    const stray: unknown[] = [];
+    const note = (reason: unknown): void => {
+      stray.push(reason);
+    };
+    process.on('unhandledRejection', note);
+    try {
+      sink.showAll(
+        (text) => {
+          if (text === 'about one') {
+            return Promise.reject(new Error('the editor refused'));
+          }
+          shown.push(text);
+          return Promise.resolve(undefined);
+        },
+        (error) => failures.push(error)
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off('unhandledRejection', note);
+    }
+    assert.deepStrictEqual(shown, ['about two'], 'the second text was not shown');
+    assert.strictEqual(failures.length, 1, 'the rejection did not reach failed');
+    assert.match(String(failures[0]), /the editor refused/);
+    assert.deepStrictEqual(stray, [], 'a rejection was left unhandled');
+  });
+
+  it('keeps one sentence for each of two queue files', () => {
+    const sink = new DurabilitySink();
+    sink.add('/q/one/outbox.json', 'about one');
+    sink.add('/q/two/outbox.json', 'about two');
+    assert.deepStrictEqual(sink.take(), ['about one', 'about two']);
+  });
+});
+
+/*
+ * D4 and D4b: THE EXTENSION SHOWS WHAT THE SINK HOLDS, ONCE, AND AFTER A
+ * REBUILD TOO. (queue item 22, design v4, K4/K6/K13)
+ *
+ * Driven through the activated extension with the editor and the core
+ * stood in for (test/support/extension-schedules.js): a save leaves an entry
+ * pending, and the queue directory's flush then fails once. D4: the entry
+ * is parked, and the retry command's RELEASE (`unparkAll`, K6) writes under
+ * that failure; the command shows the sentence once, and the next command
+ * shows nothing more (delivery review r1 of item 22, S1: the entry was left
+ * pending, so `unparkAll` wrote nothing and the cell read a later mark). D4b:
+ * the retry's send is held, the settings change (the Saver is replaced and
+ * the generation moves), and only then does the held send answer and the
+ * OLD Saver write under the failure -- the sentence is still shown, because
+ * the sink is the window's. A Saver-owned sink would be dropped with the
+ * Saver and show nothing.
+ *
+ * NOTE: THE OLD SAVER'S WRITE IS ITS `markPending`, NOT A SETTLE. The design
+ * names a settle; the stand-in core answers every commit `unknown`, so what
+ * the old Saver writes after the rebuild is the mark. Both go to the sink by
+ * the same road, which is what this cell reads.
+ */
+describe('D4 the window shows each queue warning once, whichever Saver raised it', () => {
+  const run = (name: string): Record<string, unknown> => {
+    const child = spawnSync(process.execPath, [path.join(__dirname, '../support/extension-schedules.js'), '', name], {
+      encoding: 'utf8',
+      timeout: 20000
+    });
+    assert.strictEqual(child.status, 0, child.stdout + child.stderr);
+    const result = JSON.parse(child.stdout.trim().split('\n').pop() as string);
+    assert.strictEqual(result.complete, true);
+    return result.result;
+  };
+  const sentence = (queue: string): string =>
+    `theourgia: the queue at ${queue} was written, but its directory could not be flushed (the disk said no), ` +
+    'so it may not survive the machine losing power';
+  const times = (shown: unknown, text: string): number =>
+    (shown as Array<{ text: string; level: string }>).filter((n) => n.text === text && n.level === 'warning').length;
+
+  it('D4 shows the warning of the retry command\'s release once, and the next command shows nothing more', () => {
+    const r = run('durability-retry');
+    assert.deepStrictEqual(r.pendingBefore, ['pending'], 'the save did not leave an entry pending');
+    assert.deepStrictEqual(r.parkedBefore, ['parked'], 'the entry was not parked, so the release writes nothing');
+    assert.strictEqual(r.failed, 1, 'the flush never failed, so this cell is about nothing');
+    assert.strictEqual(times(r.afterRetry, sentence(r.queue as string)), 1, JSON.stringify(r.afterRetry));
+    assert.strictEqual(times(r.afterNext, sentence(r.queue as string)), 0, 'the sentence was shown again by the next command');
+  });
+
+  it('D4b shows a warning the old Saver raised after the settings changed', () => {
+    const r = run('durability-rebuild');
+    assert.deepStrictEqual(r.pendingBefore, ['pending'], 'the save did not leave an entry pending');
+    assert.strictEqual(r.failed, 1, 'the flush never failed, so this cell is about nothing');
+    assert.strictEqual(times(r.afterChange, sentence(r.queue as string)), 0, 'the sentence was there before the old Saver wrote');
+    assert.strictEqual(times(r.shown, sentence(r.queue as string)), 1, `the old Saver's warning was not shown: ${JSON.stringify(r.shown)}`);
+  });
+
+  /*
+   * D4f: THE AWAITED SAVE'S OWN WARNING IS SHOWN. (queue item 22, folded from
+   * its closing review r4) Its enqueue is the write that fails, so the
+   * sentence rides on the save's outcome and nothing puts it in the sink;
+   * only the save handler's display of `outcome.durability` shows it.
+   */
+  it('D4f shows the warning the awaited save carries on its outcome, once', () => {
+    const r = run('durability-save');
+    assert.deepStrictEqual(r.pendingBefore, ['pending'], 'the first save did not leave an entry pending');
+    assert.strictEqual(r.failed, 1, 'the second save\'s enqueue never failed, so this cell is about nothing');
+    assert.strictEqual(times(r.shown, sentence(r.queue as string)), 1, `the save's own warning was not shown once: ${JSON.stringify(r.shown)}`);
+  });
+
+  /*
+   * NOTE: AND THROUGH THE STARTUP RETRY, NOT A COMMAND. (delivery review r2 of
+   * item 22, S1) D4b's held drain is the retry command's, so the command
+   * wrapper shows it; deleting the startup retry's own take left every cell
+   * green. Here the held drain is a startup retry of a Saver that a second
+   * settings change replaces, and no command runs at all.
+   */
+  it('D4b (startup) shows a warning a replaced Saver\'s startup drain raised', () => {
+    const r = run('durability-startup');
+    assert.deepStrictEqual(r.pendingBefore, ['pending'], 'the save did not leave an entry pending');
+    assert.strictEqual(r.failed, 1, 'the flush never failed, so this cell is about nothing');
+    assert.strictEqual(times(r.afterChange, sentence(r.queue as string)), 0, 'the sentence was there before the replaced Saver wrote');
+    assert.strictEqual(times(r.shown, sentence(r.queue as string)), 1, `the replaced Saver's warning was not shown: ${JSON.stringify(r.shown)}`);
   });
 });

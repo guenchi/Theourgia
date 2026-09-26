@@ -52,6 +52,7 @@ import { settlerFor } from '../../src/settling';
 import { recordFor } from '../../src/record';
 import { Notice } from '../../src/status';
 import { nodeFileOps } from '../../src/fsops';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-settling-'));
@@ -192,6 +193,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const queueA = r.queueOf(A);
 
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: queueA,
       storeHash: A,
       sessionId: 'S-mine',
@@ -266,6 +268,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const r = rig();
     const { req, file } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -322,6 +325,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const r = rig();
     const { req, file } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -374,6 +378,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     assert.ok(bRecord !== null, 'the fixture did not publish store B’s version');
 
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -452,6 +457,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      */
 
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -534,6 +540,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     });
 
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -586,6 +593,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
     await queuedBeforeWeStarted(r, B, 'a.2', 'body\n');
     const settlerForA = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(A),
       storeHash: A,
       sessionId: 'S-mine',
@@ -597,7 +605,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     const client = new Client(new CliTransport({ scheme: 'scheme', corePath: 'nowhere', libDirs: [], store: '/tmp/s', actor: 'x', writer: '', timeoutMs: 1000 }, {}));
 
     assert.throws(
-      () => new Saver(client, r.queueOf(B), settlerForA),
+      () => new Saver(client, r.queueOf(B), settlerForA, IGNORED_DURABILITY),
       /was given a settler built for/,
       'a saver took a settler belonging to another queue'
     );
@@ -609,6 +617,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
      */
     const queue = r.queueOf(A);
     const settlerOverThatQueue = settlerFor({
+      ...IGNORED_DURABILITY,
       queue,
       storeHash: A,
       sessionId: 'S-mine',
@@ -617,7 +626,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       report: (notice) => r.said.push(notice),
       unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` })
     });
-    assert.doesNotThrow(() => new Saver(client, queue, settlerOverThatQueue));
+    assert.doesNotThrow(() => new Saver(client, queue, settlerOverThatQueue, IGNORED_DURABILITY));
   });
 
   /*
@@ -638,6 +647,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     assert.throws(
       () =>
         settlerFor({
+          ...IGNORED_DURABILITY,
           queue: queueA,
           storeHash: B,
           sessionId: 'S-mine',
@@ -661,6 +671,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
     await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
     assert.doesNotThrow(() =>
       settlerFor({
+        ...IGNORED_DURABILITY,
         queue: r.queueOf(A),
         storeHash: A,
         sessionId: 'S-mine',
@@ -699,6 +710,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
       importedBy: null
     });
     const settle = settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(B),
       storeHash: B,
       sessionId: 'S-mine',
@@ -763,6 +775,7 @@ describe('U-settle an answer is settled against the queue and store it was sent 
 describe('R5 each verdict leaves its own mark on the record', () => {
   function settlerOver(r: Rig, store: string) {
     return settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(store),
       storeHash: store,
       sessionId: 'S-mine',
@@ -896,6 +909,7 @@ describe('R5 each verdict leaves its own mark on the record', () => {
 describe('R4 which send becomes the baseline', () => {
   function settlerOver(r: Rig, store: string) {
     return settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(store),
       storeHash: store,
       sessionId: 'S-mine',
@@ -1081,6 +1095,7 @@ describe('R14 an entry written before the record', () => {
 
   function settlerOver(r: Rig, store: string) {
     return settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(store),
       storeHash: store,
       sessionId: 'S-mine',
@@ -1141,6 +1156,51 @@ describe('R14 an entry written before the record', () => {
     assert.ok(r.queueOf(A).find(req) !== undefined, 'the entry a person has to look at was released');
     assert.deepStrictEqual(r.publisher.sidecarOf(file), before, 'a file was marked for an entry that names none');
   });
+
+  /*
+   * D5b: A SETTLE'S DURABILITY WARNING GOES TO THE SINK, AND THE SETTLE
+   * STANDS. (queue item 22, design v4, K3) The settle path returns nothing,
+   * so the `resolve` it makes hands its warning to the `durability` part; the
+   * flush fails once, at that resolve, and the entry is gone from the file.
+   */
+  it('D5b hands a settle\'s warning to the sink, and the entry is settled on disk', () => {
+    const r = rig();
+    const req = legacyEntry(r, A, 'a.2', 'body\n');
+    const queuePath = r.sessions.outboxPathFor('S-mine', A);
+    let armed = true;
+    const queue = new Outbox(queuePath, {
+      ...nodeFileOps,
+      syncDirectory(directory: string): string | null {
+        if (armed) {
+          armed = false;
+          return 'the disk said no';
+        }
+        return nodeFileOps.syncDirectory(directory);
+      }
+    });
+    queue.load();
+    const sink: Array<[string, string]> = [];
+    const settle = settlerFor({
+      queue,
+      storeHash: A,
+      sessionId: 'S-mine',
+      sessions: r.sessions,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` }),
+      durability: (file, text) => void sink.push([file, text])
+    });
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
+    assert.strictEqual(armed, false, 'the settle never flushed, so this cell is about nothing');
+    assert.deepStrictEqual(sink, [
+      [
+        queuePath,
+        `the queue at ${queuePath} was written, but its directory could not be flushed (the disk said no), so it ` +
+          'may not survive the machine losing power'
+      ]
+    ]);
+    assert.strictEqual(r.queueOf(A).find(req), undefined, 'the settled entry is still in the queue file');
+  });
 });
 
 /*
@@ -1157,6 +1217,7 @@ describe('R14 an entry written before the record', () => {
 describe('R6 what a withdrawal leaves behind', () => {
   function settlerOver(r: Rig, store: string) {
     return settlerFor({
+      ...IGNORED_DURABILITY,
       queue: r.queueOf(store),
       storeHash: store,
       sessionId: 'S-mine',
@@ -1270,5 +1331,108 @@ describe('R6 what a withdrawal leaves behind', () => {
       { clean: true },
       'the file holds exactly what the store confirmed and the block was called a draft'
     );
+  });
+});
+
+/*
+ * D5b, EVERY SETTLE WRITE: EACH QUEUE WRITE THE SETTLER MAKES HANDS ITS
+ * WARNING TO THE SINK. (queue item 22; folded from its closing review r4,
+ * the S at settling.ts:198 and the two sites of the same shape found beside
+ * it) The D5b cell above drives the confirmed answer to an entry with no
+ * record; the settler writes the queue in three more places -- a refusal's
+ * resolve, the resolve `recordAnswer` calls back for an entry with a record,
+ * and an operator's determination, which resolves and then clears the
+ * cursor. Each flush fails from the moment the settle starts, with a reason
+ * numbered by the write, so each sentence says which write it is.
+ */
+describe('D5b every queue write of a settle hands its warning to the sink', () => {
+  function failingQueue(r: Rig, store: string): { queue: Outbox; arm: () => void; queuePath: string } {
+    const queuePath = r.sessions.outboxPathFor('S-mine', store);
+    let armed = false;
+    let writes = 0;
+    const queue = new Outbox(queuePath, {
+      ...nodeFileOps,
+      syncDirectory(directory: string): string | null {
+        if (armed) {
+          writes += 1;
+          return `settle write ${writes}`;
+        }
+        return nodeFileOps.syncDirectory(directory);
+      }
+    });
+    queue.load();
+    return { queue, arm: () => (armed = true), queuePath };
+  }
+
+  function settling(r: Rig, queue: Outbox, sink: Array<[string, string]>) {
+    return settlerFor({
+      queue,
+      storeHash: A,
+      sessionId: 'S-mine',
+      sessions: r.sessions,
+      saving: r.saving,
+      report: (notice) => r.said.push(notice),
+      unrecorded: (f, because) => ({ level: 'warning', text: `${f}:${because}` }),
+      durability: (file, text) => void sink.push([file, text])
+    });
+  }
+
+  const warned = (queuePath: string, write: number): [string, string] => [
+    queuePath,
+    `the queue at ${queuePath} was written, but its directory could not be flushed (settle write ${write}), so it ` +
+      'may not survive the machine losing power'
+  ];
+
+  it('D5b (refused) hands the warning of a refusal\'s resolve to the sink', () => {
+    const r = rig();
+    const req = 'req-refused-without-a-record';
+    r.queueOf(A).enqueue({
+      req,
+      cursor: 'w:1',
+      id: 'a.2',
+      field: 'src',
+      payload: 'body\n',
+      state: 'sent',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    });
+    const q = failingQueue(r, A);
+    const sink: Array<[string, string]> = [];
+    const settle = settling(r, q.queue, sink);
+    q.arm();
+    settle(req, { verdict: 'refused' });
+    assert.deepStrictEqual(sink, [warned(q.queuePath, 1)], 'the refusal\'s resolve did not hand on its warning');
+    assert.strictEqual(r.queueOf(A).find(req), undefined, 'the refused entry is still in the queue file');
+  });
+
+  it('D5b (recorded) hands the warning of the resolve recordAnswer calls back to the sink', async () => {
+    const r = rig();
+    const { req } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    const q = failingQueue(r, A);
+    const sink: Array<[string, string]> = [];
+    const settle = settling(r, q.queue, sink);
+    q.arm();
+    settle(req, { verdict: 'confirmed', cursor: 'w:2' });
+    assert.deepStrictEqual(sink, [warned(q.queuePath, 1)], 'the recorded resolve did not hand on its warning');
+    assert.strictEqual(r.queueOf(A).find(req), undefined, 'the settled entry is still in the queue file');
+  });
+
+  it('D5b (operator) hands on the warnings of both the resolve and the cleared cursor', async () => {
+    const r = rig();
+    const { req, file } = await queuedBeforeWeStarted(r, A, 'a.2', 'body\n');
+    assert.ok(r.publisher.takeSequence(file, req).taken);
+    r.queueOf(A).setCursor('w:9');
+    const q = failingQueue(r, A);
+    const sink: Array<[string, string]> = [];
+    const settle = settling(r, q.queue, sink);
+    q.arm();
+    settle(req, { verdict: 'executed-by-operator', note: 'an operator said so' });
+    assert.deepStrictEqual(
+      sink,
+      [warned(q.queuePath, 1), warned(q.queuePath, 2)],
+      'the resolve and the cleared cursor did not each hand on their warning, in that order'
+    );
+    assert.strictEqual(r.queueOf(A).cursor, null, 'the cursor was not cleared');
   });
 });

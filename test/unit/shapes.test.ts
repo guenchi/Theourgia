@@ -964,7 +964,14 @@ describe('every bucket a takeover counts is something the user is told', () => {
    * from every check below.
    */
   it('has a sentence written down for every bucket the ledger carries', () => {
-    const buckets = Object.keys(emptyLedger()).filter((name) => name !== 'observed');
+    /*
+     * NOTE: `durabilityWarnings` IS LEFT OUT BY NAME. (queue item 22, K8) It is
+     * not a bucket -- outside the conservation law -- and its sentences are
+     * held by their own cell.
+     */
+    const buckets = Object.keys(emptyLedger()).filter(
+      (name) => name !== 'observed' && name !== 'durabilityWarnings'
+    );
     const missing = buckets.filter((name) => SENTENCES[name] === undefined);
     assert.deepStrictEqual(missing, [], 'these buckets have no expected sentence');
     const extra = Object.keys(SENTENCES).filter((name) => !buckets.includes(name));

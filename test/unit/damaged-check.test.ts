@@ -30,6 +30,7 @@ import { Saver, Settle } from '../../src/saver';
 import { RawResult } from '../../src/transport';
 import { initWire, isSym, wire } from '../../src/wire';
 import { CorePin, RealStore, checkCorePin, pinCore } from '../support/real-core';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 /*
  * THE ANSWER F46 GIVES for a store with one writer directory it cannot
@@ -160,7 +161,7 @@ describe('plugin-r3 15 a damaged store\'s check is an answer', () => {
   it('goes on to the store when check exits non-zero with a complete answer', async () => {
     const core = standIn({ stdout: DAMAGED, rc: 1 });
     const outbox = queue();
-    const saver = new Saver(core.client, outbox, settling(outbox));
+    const saver = new Saver(core.client, outbox, settling(outbox), IGNORED_DURABILITY);
     const outcome = await saver.save('a.1', 'src', 'body\n');
     assert.strictEqual(saver.blockedBecause, null, `held back: ${saver.blockedBecause}`);
     assert.notStrictEqual(outcome.status, 'blocked', outcome.message);
@@ -171,7 +172,7 @@ describe('plugin-r3 15 a damaged store\'s check is an answer', () => {
     for (const [stdout, rc] of [['(error stand-in-busy)', 1], ['', 0]] as Array<[string, number]>) {
       const core = standIn({ stdout, rc });
       const outbox = queue();
-      const saver = new Saver(core.client, outbox, settling(outbox));
+      const saver = new Saver(core.client, outbox, settling(outbox), IGNORED_DURABILITY);
       const outcome = await saver.save('a.1', 'src', 'body\n');
       assert.strictEqual(outcome.status, 'blocked', `${JSON.stringify(stdout)}: ${outcome.message}`);
       assert.match(outcome.message, /did not answer `check`/);
@@ -190,7 +191,7 @@ describe('plugin-r3 15 a damaged store\'s check is an answer', () => {
     for (const stdout of [`${check}\n(error refused)`, `(error refused)\n${check}`]) {
       const core = standIn({ stdout, rc: 1 });
       const outbox = queue();
-      const saver = new Saver(core.client, outbox, settling(outbox));
+      const saver = new Saver(core.client, outbox, settling(outbox), IGNORED_DURABILITY);
       const outcome = await saver.save('a.1', 'src', 'body\n');
       assert.strictEqual(outcome.status, 'blocked', `${JSON.stringify(stdout)}: ${outcome.message}`);
       assert.match(outcome.message, /answered `check` with 2 forms where one was expected/);
@@ -202,7 +203,7 @@ describe('plugin-r3 15 a damaged store\'s check is an answer', () => {
     const twice = '(check (local-writer "w1") (writers (("w1" (end 7)) ("w1" (end unreadable)))) (verdict damaged))';
     const core = standIn({ stdout: twice, rc: 1 });
     const outbox = queue();
-    const saver = new Saver(core.client, outbox, settling(outbox));
+    const saver = new Saver(core.client, outbox, settling(outbox), IGNORED_DURABILITY);
     const outcome = await saver.save('a.1', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'blocked');
     assert.match(outcome.message, /lists its local writer \(w1\) more than once/);
@@ -213,7 +214,7 @@ describe('plugin-r3 15 a damaged store\'s check is an answer', () => {
     const own = '(check (local-writer "w1") (writers (("w1" (end unreadable)))) (verdict damaged))';
     const core = standIn({ stdout: own, rc: 1 });
     const outbox = queue();
-    const saver = new Saver(core.client, outbox, settling(outbox));
+    const saver = new Saver(core.client, outbox, settling(outbox), IGNORED_DURABILITY);
     const outcome = await saver.save('a.1', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'blocked');
     assert.match(outcome.message, /naming its local writer \(w1\) without a position/);
@@ -266,7 +267,7 @@ describe('plugin-r3 15 a real store with a writer it cannot read', function () {
     assert.match(check.text, /\(end unreadable\)/, check.text);
 
     const outbox = queue();
-    const saver = new Saver(store.client, outbox, settling(outbox));
+    const saver = new Saver(store.client, outbox, settling(outbox), IGNORED_DURABILITY);
     const outcome = await saver.save(id, 'src', 'two\n');
     assert.strictEqual(saver.blockedBecause, null, `held back: ${saver.blockedBecause}`);
     assert.doesNotMatch(outcome.message, /did not answer `check`/);

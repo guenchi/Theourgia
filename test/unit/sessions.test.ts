@@ -48,6 +48,7 @@ import {
 import { idleProcess } from '../support/host';
 import { Outbox, OutboxEntry, Receipt, readQueueFile } from '../../src/outbox';
 import { Publisher } from '../../src/publication';
+import { nodeFileOps } from '../../src/fsops';
 import { RecordingFs } from '../support/recording-fs';
 import { receiptFor, strangersReceipt } from '../support/receipts';
 
@@ -1769,8 +1770,13 @@ describe('the takeover ledger accounts for everything it saw', () => {
      * not notice a missing term -- an earlier comment claimed it would,
      * and a review showed otherwise. This is what notices.
      */
+    /*
+     * NOTE: `durabilityWarnings` IS LEFT OUT BY NAME, like `observed`. (queue
+     * item 22, K8) It is a list of sentences outside the conservation law,
+     * and adding it to a number would coerce it rather than fail.
+     */
     const byKey = Object.entries(led)
-      .filter(([name]) => name !== 'observed')
+      .filter(([name]) => name !== 'observed' && name !== 'durabilityWarnings')
       .reduce((total, [, count]) => total + (count as number), 0);
     assert.strictEqual(
       ledgerTotal(led),
@@ -1883,6 +1889,95 @@ describe('the takeover ledger accounts for everything it saw', () => {
       led.leftOtherStore,
       1,
       `the entry with a non-string mark was not left for its own store: ${JSON.stringify(led)}`
+    );
+  });
+
+  /*
+   * D6b: ONE WARNING PER QUEUE FILE ACROSS EVERY QUEUE A TAKEOVER IMPORTS, THE
+   * LATEST. (queue item 22, delivery review r1, L2) Without a store named, a
+   * takeover imports every queue the dead session kept; they all feed one
+   * destination, whose flush fails with a different reason each time. The
+   * ledger says that one file once, with the later reason.
+   */
+  it('D6b keeps one warning for the destination across two imported queues, the latest', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    write(storage, 'S-dead', 'store-a', `{"entries":[${request('first')}]}`);
+    write(storage, 'S-dead', 'store-b', `{"entries":[${request('second')}]}`);
+    const destination = path.join(scratch(), 'outbox.json');
+    let flushes = 0;
+    const into = new Outbox(destination, {
+      ...nodeFileOps,
+      syncDirectory: (): string | null => `reason ${++flushes}`
+    });
+    into.load();
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: (req) => into.find(req) !== undefined, adopt: (entry) => into.enqueue(entry) }
+        )
+      : emptyLedger();
+    assert.strictEqual(led.imported, 2, `both queues' requests did not move: ${JSON.stringify(led)}`);
+    assert.strictEqual(flushes, 2, 'the destination was not written twice, so this cell is about nothing');
+    assert.deepStrictEqual(
+      led.durabilityWarnings,
+      [
+        `the queue at ${destination} was written, but its directory could not be flushed (reason 2), so it may ` +
+          'not survive the machine losing power'
+      ],
+      'the destination was not said once, with the later reason'
+    );
+  });
+
+  /*
+   * D6c: THE SOURCE QUEUE'S MARK IS SAID TOO. (delivery review r2 of item 22,
+   * L2) The takeover marks each entry it carried in the dead window's queue;
+   * that queue's flush fails once, at the mark. The move still counts, and the
+   * ledger names the source queue's file.
+   */
+  it('D6c puts the source queue\'s mark warning in the ledger', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    write(storage, 'S-dead', 'store-a', `{"entries":[${request('carried')}]}`);
+    const source = path.join(storage, 'sessions', 'S-dead', 'store-a', 'outbox.json');
+    let failed = 0;
+    const files = {
+      ...nodeFileOps,
+      syncDirectory: (directory: string): string | null => {
+        if (failed === 0 && path.resolve(directory) === path.resolve(path.dirname(source)) && fs.readFileSync(source, 'utf8').includes('S-dead.claim')) {
+          failed += 1;
+          return 'the source disk said no';
+        }
+        return nodeFileOps.syncDirectory(directory);
+      }
+    };
+    const destination = path.join(scratch(), 'outbox.json');
+    const into = new Outbox(destination);
+    into.load();
+    const sessions = new Sessions(files, storage);
+    sessions.begin('S-mine', []);
+    const won = await sessions.claim('S-dead');
+    assert.ok(won.claimed, JSON.stringify(won));
+    const led = won.claimed
+      ? sessions.importFrom(
+          { deadSessionId: 'S-dead', sequence: won.sequence, file: won.token },
+          { has: (req) => into.find(req) !== undefined, adopt: (entry) => into.enqueue(entry) },
+          'store-a'
+        )
+      : emptyLedger();
+    assert.strictEqual(failed, 1, 'the source\'s flush never failed at the mark, so this cell is about nothing');
+    assert.strictEqual(led.imported, 1, `the move did not count: ${JSON.stringify(led)}`);
+    assert.deepStrictEqual(
+      led.durabilityWarnings,
+      [
+        `the queue at ${source} was written, but its directory could not be flushed (the source disk said no), so it ` +
+          'may not survive the machine losing power'
+      ],
+      'the ledger does not name the source queue\'s mark'
     );
   });
 

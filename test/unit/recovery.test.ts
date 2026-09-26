@@ -44,7 +44,7 @@ import {
   chooseAndRecover,
   destinationFor
 } from '../../src/recovery';
-import { ImportTarget, SessionIdentity, Sessions, systemStartTime } from '../../src/sessions';
+import { ImportTarget, SessionIdentity, Sessions, ledgerTotal, systemStartTime } from '../../src/sessions';
 import { Notice } from '../../src/status';
 import { OutboxEntry } from '../../src/outbox';
 import { nodeFileOps } from '../../src/fsops';
@@ -63,6 +63,7 @@ const WROTE =
   '(ok (events (("w" . 8))) (state (("a.2" . "hhh"))) (cursor ("w" . 8)) (replay #f))\n';
 import { idleProcess } from '../support/host';
 import { receiptFor } from '../support/receipts';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-recovery-'));
@@ -581,7 +582,8 @@ describe('review 22 a takeover moves one store’s work, through one lock', () =
         new Client(new CliTransport(core.config(), core.env())),
         outbox,
         (req, settlement) =>
-          settlement.verdict === 'confirmed' ? outbox.resolve(req, settlement.cursor) : undefined
+          settlement.verdict === 'confirmed' ? outbox.resolve(req, settlement.cursor) : undefined,
+        IGNORED_DURABILITY
       );
       const order: string[] = [];
       const saving = saver.save('a.2', 'src', 'body\n').then(() => {
@@ -1193,5 +1195,75 @@ describe('plugin-r2 a queue whose presence is unknown is still offered', () => {
       storage
     );
     assert.deepStrictEqual(sessions.outboxPathsFor('S-dead'), []);
+  });
+});
+
+/*
+ * D6: A TAKEOVER'S DURABILITY WARNINGS HAVE ONE DISPLAY OWNER, ITS REPORT.
+ * (queue item 22, design v4, K12)
+ *
+ * The destination's flush fails once, when the queue file first holds the
+ * request being carried in. The move still counts -- the rename landed --
+ * and the ledger carries the sentence outside its conservation law; the
+ * takeover report shows it; and the Saver's sink, which a real Saver is
+ * given here, stays empty, or the user would read it twice.
+ */
+describe('D6 a takeover whose destination could not be flushed says so in its report, once', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  it('puts the destination\'s warning in the ledger and the report, and nothing in the sink', async () => {
+    const storage = scratch();
+    makeSession(storage, 'S-dead');
+    withQueue(storage, 'S-dead', ['from-the-dead']);
+    const sessions = new Sessions(new RecordingFs(), storage);
+    sessions.begin('S-mine', []);
+    const core = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    try {
+      const queuePath = core.outboxFile();
+      let failed = 0;
+      const outbox = new Outbox(queuePath, {
+        ...nodeFileOps,
+        syncDirectory(directory: string): string | null {
+          if (failed === 0 && fs.existsSync(queuePath) && fs.readFileSync(queuePath, 'utf8').includes('from-the-dead')) {
+            failed += 1;
+            return 'the disk said no';
+          }
+          return nodeFileOps.syncDirectory(directory);
+        }
+      });
+      outbox.load();
+      const sink: string[] = [];
+      const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), outbox, () => undefined, {
+        durability: (_file, text) => void sink.push(text)
+      });
+      const through = destinationFor(() => ({ storeHash: 'h', adopt: (work) => saver.adopt(work) }));
+      assert.ok(through !== null);
+      const chooser = new Recorder(['S-dead', 'take-over']);
+      const outcome = await chooseAndRecover(sessions, chooser, through);
+      assert.strictEqual(failed, 1, 'the destination\'s flush never failed, so this cell is about nothing');
+      assert.ok(outcome.did === 'take-over', JSON.stringify(outcome));
+      const ledger = (outcome as { ledger: import('../../src/sessions').TakeoverLedger }).ledger;
+      const warning =
+        `the queue at ${queuePath} was written, but its directory could not be flushed (the disk said no), ` +
+        'so it may not survive the machine losing power';
+      assert.strictEqual(ledger.imported, 1, `the move did not count: ${JSON.stringify(ledger)}`);
+      assert.deepStrictEqual(ledger.durabilityWarnings, [warning], 'the ledger does not carry the destination\'s warning');
+      assert.strictEqual(ledgerTotal(ledger), ledger.observed, 'the warning changed the conservation law\'s sum');
+      const report = chooser.said[chooser.said.length - 1];
+      /*
+       * NOTE: THE WHOLE SENTENCE, as the report renders it. (delivery review r2
+       * of item 22, S2) Asking for its first words passed a renderer that cut
+       * it after "was written" -- the flush, the reason and the risk gone.
+       */
+      assert.ok(
+        report !== undefined && report.text.includes(`${warning.charAt(0).toUpperCase()}${warning.slice(1)}.`) && report.level === 'warning',
+        `the report does not show the warning: ${JSON.stringify(report)}`
+      );
+      assert.deepStrictEqual(sink, [], 'the takeover\'s warning went to the sink as well, so it would be shown twice');
+    } finally {
+      core.dispose();
+    }
   });
 });

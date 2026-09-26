@@ -46,7 +46,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
 import { Client } from '../../src/client';
-import { Outbox } from '../../src/outbox';
+import { Outbox, OutboxEntry } from '../../src/outbox';
 import { RecordParts, SendRecord, recordFor } from '../../src/record';
 import { SaveOutcome, Saver, Settle } from '../../src/saver';
 import { CliTransport, TransportError } from '../../src/transport';
@@ -54,6 +54,7 @@ import { FileOps, nodeFileOps } from '../../src/fsops';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
 import { wroteAnswer } from '../support/answers';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 const SRC = path.join(__dirname, '..', '..', '..', 'src');
 
@@ -329,7 +330,7 @@ function rig(
     core,
     outbox,
     queuePath,
-    saver: new Saver(client, outbox, settling(outbox, storeHash), { baselineOf })
+    saver: new Saver(client, outbox, settling(outbox, storeHash), { ...IGNORED_DURABILITY, baselineOf })
   };
 }
 
@@ -657,7 +658,7 @@ describe('R3 the request id is made when the save is accepted, not when it is se
     );
 
     const client = new Client(new CliTransport(core.config(), core.env()));
-    const rebornSaver = new Saver(client, reborn, settling(reborn, parts().storeHash));
+    const rebornSaver = new Saver(client, reborn, settling(reborn, parts().storeHash), IGNORED_DURABILITY);
     const outcomes = await rebornSaver.retry();
     const sent = sentCalls(core);
     assert.strictEqual(sent.length, 2, `the restarted saver did not send it again: ${sent.length} sends`);
@@ -903,7 +904,7 @@ describe('R9 a request that has been retired', () => {
       core: core0,
       outbox,
       queuePath,
-      saver: new Saver(client, outbox, settling(outbox, parts().storeHash), { retired })
+      saver: new Saver(client, outbox, settling(outbox, parts().storeHash), { ...IGNORED_DURABILITY, retired })
     };
   }
 
@@ -991,7 +992,7 @@ describe('R4 a send whose queue write did not land', () => {
     fs.chmodSync(blocked, 0o500);
 
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     const outcome = await saver.submit(recordFor(parts()));
     fs.chmodSync(blocked, 0o700);
 
@@ -1024,7 +1025,7 @@ describe('R4 a send whose queue write did not land', () => {
     outbox.load();
     outbox.setCursor('w:7');
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, 'hash-of-some-other-store'));
+    const saver = new Saver(client, outbox, settling(outbox, 'hash-of-some-other-store'), IGNORED_DURABILITY);
     const outcome = await saver.submit(recordFor(parts()));
     assert.strictEqual(outcome.status, 'blocked');
     assert.strictEqual(
@@ -1056,7 +1057,7 @@ describe('R4 a send whose queue write did not land', () => {
         throw new TransportError('timeout', 'the store did not answer the check in time', '');
       }
     };
-    const saver = new Saver(new Client(refusing), outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(new Client(refusing), outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     const outcome = await saver.submit(recordFor(parts()));
     assert.strictEqual(outcome.status, 'blocked', `the save was not blocked: ${outcome.message}`);
     assert.strictEqual(
@@ -1097,7 +1098,17 @@ describe('R4 a send whose queue write did not land', () => {
    * `closeSync` is not caught.
    */
   it('does not say it was not queued when the entry reached the file anyway', async () => {
-    const core0 = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }]);
+    /*
+     * NOTE: AND THE SEND IS ANSWERED WITH NOTHING, so the entry stays. (queue
+     * item 22, K15) Before item 22 the failing sync made `aboutToSend` throw
+     * and nothing was sent; now it is a warning and the drain sends, so an
+     * unscripted `set` would be refused and settle the entry out of the
+     * file this cell reads. An empty answer keeps it pending.
+     */
+    const core0 = new FakeCore([
+      { match: ['check'], stdout: CHECK, rc: 0 },
+      { match: ['set'], stdout: '', rc: 1 }
+    ]);
     core = core0;
     const queuePath = path.join(core0.root, 'outbox.json');
     let syncs = 0;
@@ -1122,7 +1133,7 @@ describe('R4 a send whose queue write did not land', () => {
      */
     failing = true;
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     let outcome: SaveOutcome | undefined;
     let rejected: unknown = null;
     try {
@@ -1205,7 +1216,7 @@ describe('R4 a send whose queue write did not land', () => {
       }
     };
     void client;
-    const saver = new Saver(new Client(watching), outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(new Client(watching), outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     let outcome: SaveOutcome | undefined;
     try {
       outcome = await saver.submit(recordFor(parts()));
@@ -1260,7 +1271,7 @@ describe('R4 a send whose queue write did not land', () => {
     outbox.load();
     outbox.setCursor('w:7');
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     blind = true;
     let outcome: SaveOutcome | undefined;
     try {
@@ -1288,7 +1299,7 @@ describe('R4 a send whose queue write did not land', () => {
      * file it is about to be refreshed from is not.
      */
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     fs.chmodSync(queuePath, 0o000);
     let outcome;
     try {
@@ -1317,7 +1328,7 @@ describe('R4 a send whose queue write did not land', () => {
     const outbox = new Outbox(path.join(core0.root, 'outbox.json'));
     outbox.load();
     const client = new Client(new CliTransport(core0.config(), core0.env()));
-    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash));
+    const saver = new Saver(client, outbox, settling(outbox, parts().storeHash), IGNORED_DURABILITY);
     const outcome = await saver.submit(recordFor(parts()));
     assert.strictEqual(outcome.status, 'blocked', `the save was not blocked: ${outcome.message}`);
     assert.strictEqual(
@@ -1606,7 +1617,7 @@ describe('plugin-r3 3 the enqueue receipt decides whether the number goes back',
     outbox.load();
     const client = new Client(new CliTransport(made.config(), made.env()));
     const settler = settle === undefined ? settling(outbox, parts().storeHash) : settle(outbox);
-    return { core: made, outbox, queuePath, saver: new Saver(client, outbox, settler) };
+    return { core: made, outbox, queuePath, saver: new Saver(client, outbox, settler, IGNORED_DURABILITY) };
   }
 
   function freshlyRead(queuePath: string): string[] {
@@ -1732,5 +1743,259 @@ describe('plugin-r3 3 the enqueue receipt decides whether the number goes back',
     await assert.rejects(r.saver.submit(record), /fell over after settling/, 'the failure was answered as not queued');
     assert.deepStrictEqual(freshlyRead(r.queuePath), [], 'the fixture did not remove the entry, so this is cell 4');
     assert.strictEqual(sentCalls(core).length, 1);
+  });
+});
+
+/*
+ * D3/D3b/D3c/D5: WHERE A DRAIN'S DURABILITY WARNINGS GO. (queue item 22,
+ * design v4; routing as ruled 2026-09-26, Q5)
+ *
+ * A mutation of the AWAITED entry, in the drain iteration that produces its
+ * outcome, puts its warning on that save's outcome -- one sentence for the
+ * queue file, the latest reason (ruled on the design's W); a
+ * mutation of any other entry, an iteration that produces no outcome, and an
+ * iteration that throws put theirs in the sink. The sink here is the list the
+ * Saver's `durability` callback fills.
+ *
+ * The flush fails by what the queue file holds when it is flushed -- one
+ * request in one state -- so each failure is one named mutation's own, and
+ * each reason names that state, so the joined text says which writes it is.
+ */
+describe('plugin-r3 22 a drain puts each warning where its save can see it', () => {
+  let core: FakeCore;
+  before(async () => {
+    await initWire();
+  });
+  afterEach(() => core?.dispose());
+
+  const A = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const B = 'bbbbbbbb-1111-2222-3333-444444444444';
+
+  function flushFailingWhen(queuePath: () => string, failing: Array<[string, string]>): FileOps {
+    return {
+      ...nodeFileOps,
+      syncDirectory(directory: string): string | null {
+        if (fs.existsSync(queuePath())) {
+          const held = JSON.parse(fs.readFileSync(queuePath(), 'utf8')) as { entries: Array<{ req: string; state: string }> };
+          for (const [req, state] of failing) {
+            if (held.entries.some((e) => e.req === req && e.state === state)) {
+              failing.splice(failing.indexOf(failing.find(([r, s]) => r === req && s === state) as [string, string]), 1);
+              return `the flush failed with ${req.slice(0, 8)} ${state}`;
+            }
+          }
+        }
+        return nodeFileOps.syncDirectory(directory);
+      }
+    };
+  }
+
+  function warned(queuePath: string, req: string, state: string): string {
+    return (
+      `the queue at ${queuePath} was written, but its directory could not be flushed ` +
+      `(the flush failed with ${req.slice(0, 8)} ${state}), so it may not survive the machine losing power`
+    );
+  }
+
+  function warningRig(
+    calls: ScriptedCall[],
+    failing: Array<[string, string]>,
+    options: {
+      settle?: (outbox: Outbox) => Settle;
+      baselineOf?: (file: string) => { highWater: number } | null;
+      rejects?: (verb: string, args: string[]) => boolean;
+      newRequestId?: () => string;
+    } = {}
+  ): Rig & { sink: string[] } {
+    const made = new FakeCore([{ match: ['check'], stdout: CHECK, rc: 0 }, ...calls]);
+    const queuePath = made.outboxFile();
+    const outbox = new Outbox(queuePath, flushFailingWhen(() => queuePath, failing));
+    outbox.load();
+    const sink: string[] = [];
+    /*
+     * A SEND THAT REJECTS WITH SOMETHING OTHER THAN A TransportError, when
+     * `rejects` says so (design v4, K15: those are the rejections the drain
+     * does not turn into a pending outcome); every other request goes to the
+     * fake core as usual.
+     */
+    const cli = new CliTransport(made.config(), made.env());
+    const rejects = options.rejects;
+    const client = new Client(
+      rejects === undefined
+        ? cli
+        : {
+            kind: 'rejecting',
+            send: async (verb: string, args: string[]) => {
+              if (rejects(verb, args)) {
+                throw new Error('the send was rejected');
+              }
+              return cli.send(verb, args);
+            }
+          }
+    );
+    const settle = options.settle === undefined ? settling(outbox, parts().storeHash) : options.settle(outbox);
+    const saver = new Saver(client, outbox, settle, {
+      durability: (file, text) => {
+        assert.strictEqual(file, queuePath, 'a warning was handed to the sink under another file');
+        sink.push(text);
+      },
+      baselineOf: options.baselineOf,
+      newRequestId: options.newRequestId
+    });
+    return { core: made, outbox, queuePath, saver, sink };
+  }
+
+  function legacy(req: string): OutboxEntry {
+    return {
+      req,
+      cursor: 'w:7',
+      id: 'a.3',
+      field: 'src',
+      payload: 'queued first\n',
+      state: 'queued',
+      createdAt: 0,
+      lastError: null,
+      importedBy: null
+    };
+  }
+
+  it('D3 carries the awaited entry\'s own pending mark on its outcome, and leaves the sink empty', async () => {
+    const r = warningRig([{ match: ['set'], stdout: '', rc: 1 }], [[A, 'pending']]);
+    core = r.core;
+    const outcome = await r.saver.submit(recordFor(parts({ req: A })));
+    assert.strictEqual(outcome.status, 'pending', outcome.message);
+    assert.strictEqual(outcome.durability, warned(r.queuePath, A, 'pending'), 'the outcome does not carry its own mark\'s warning');
+    assert.deepStrictEqual(r.sink, [], 'the awaited entry\'s warning went to the sink as well');
+  });
+
+  /*
+   * NOTE: ONE SENTENCE PER QUEUE FILE, THE LATEST. (queue item 22, ruled
+   * 2026-09-26 on the design's W) The enqueue and the mark write the same
+   * file, so the outcome says it once, with the mark's reason -- the later.
+   * The two flushes fail with different reasons, so a build that kept the
+   * enqueue's sentence reads the older one and is red here.
+   */
+  it('D3 keeps one sentence when the enqueue and the mark both fail on the same queue file, the latest', async () => {
+    const r = warningRig([{ match: ['set'], stdout: '', rc: 1 }], [[A, 'queued'], [A, 'pending']]);
+    core = r.core;
+    const outcome = await r.saver.submit(recordFor(parts({ req: A })));
+    assert.strictEqual(
+      outcome.durability,
+      warned(r.queuePath, A, 'pending'),
+      'the outcome does not carry one sentence with the latest reason'
+    );
+    assert.deepStrictEqual(r.sink, []);
+  });
+
+  /*
+   * D3f: OF TWO WARNINGS GATHERED IN ONE ITERATION, THE LATER. (queue item 22,
+   * folded from its closing review r4) `aboutToSend` and the mark both fail,
+   * with different reasons, inside the iteration that produces the outcome;
+   * the outcome keeps the mark's -- the later -- by the latest-text ruling.
+   */
+  it('D3f keeps the later of two warnings gathered in one iteration', async () => {
+    const r = warningRig([{ match: ['set'], stdout: '', rc: 1 }], [[A, 'sent'], [A, 'pending']]);
+    core = r.core;
+    const outcome = await r.saver.submit(recordFor(parts({ req: A })));
+    assert.strictEqual(outcome.durability, warned(r.queuePath, A, 'pending'), 'the outcome does not carry the later warning');
+    assert.deepStrictEqual(r.sink, []);
+  });
+
+  it('D3b sends the mark of an entry ahead of this save to the sink, not onto this save\'s outcome', async () => {
+    const r = warningRig([{ match: ['set'], stdout: '', rc: 1 }], [[A, 'pending']]);
+    core = r.core;
+    r.outbox.enqueue(legacy(A));
+    const outcome = await r.saver.submit(recordFor(parts({ req: B })));
+    assert.strictEqual(r.outbox.find(A)?.state, 'pending', 'the fixture did not leave A pending ahead of B');
+    assert.strictEqual(outcome.req, B);
+    assert.strictEqual(outcome.durability, undefined, 'B\'s outcome carries a warning about A');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'pending')], 'A\'s warning did not reach the sink');
+  });
+
+  /*
+   * D3c: THE SEND REJECTS BEFORE THE SETTLE (design v4, D3c; delivery review
+   * r1 of item 22, S2: the first version threw inside the settle, which a
+   * build that dropped the gathered warnings at the send's own rethrow
+   * passed). `aboutToSend` warns, then the transport rejects.
+   */
+  it('D3c hands the warning of a send that rejected to the sink, and still rejects', async () => {
+    const r = warningRig([], [[A, 'sent']], { rejects: (verb) => verb === 'set' });
+    core = r.core;
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: A }))), /the send was rejected/, 'the save did not reject');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'sent')], 'the send\'s warning was lost with the rejection');
+  });
+
+  /*
+   * D3d: A LATER ITERATION THAT THROWS DOES NOT TAKE AN EARLIER OUTCOME'S
+   * WARNING WITH IT. (delivery review r1 of item 22, the N) A is ahead of B:
+   * A's `aboutToSend` warns, A is answered and settled, and B's send then
+   * rejects. The save rejects, and A's sentence is in the sink.
+   */
+  it('D3d keeps the warning of an entry settled before a later send rejected', async () => {
+    const r = warningRig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0, once: true }], [[A, 'sent']], {
+      rejects: (verb, args) => verb === 'set' && args.includes(B)
+    });
+    core = r.core;
+    r.outbox.enqueue(legacy(A));
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: B }))), /the send was rejected/, 'the save did not reject');
+    assert.strictEqual(r.outbox.find(A), undefined, 'A was not settled before B was sent');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'sent')], 'A\'s warning was lost when B\'s send rejected');
+  });
+
+  /*
+   * D3e: THE ENQUEUE'S WARNING IS NOT LOST WITH A REJECTED SAVE. (delivery
+   * review r2 of item 22, L1) The enqueue's flush fails, then the send
+   * rejects: no outcome carries the receipt's sentence, so it goes to the sink
+   * before the rejection does (K11).
+   */
+  it('D3e hands the enqueue\'s warning to the sink when the save then rejects', async () => {
+    const r = warningRig([], [[A, 'queued']], { rejects: (verb) => verb === 'set' });
+    core = r.core;
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: A }))), /the send was rejected/, 'the save did not reject');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'queued')], 'the enqueue\'s warning was lost with the rejection');
+  });
+
+  /*
+   * D3e (save): THE SAME, THROUGH `save`. (delivery review r3 of item 22, L)
+   * `save` carries its own copy of the transfer; the request id is fixed so
+   * that the failing flush can name the entry.
+   */
+  it('D3e (save) hands the enqueue\'s warning to the sink when a save through save() then rejects', async () => {
+    const r = warningRig([], [[A, 'queued']], { rejects: (verb) => verb === 'set', newRequestId: () => A });
+    core = r.core;
+    await assert.rejects(r.saver.save('a.2', 'src', 'body\n'), /the send was rejected/, 'the save did not reject');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'queued')], 'the enqueue\'s warning was lost with the rejection');
+  });
+
+  it('D3c (settle) hands a warning gathered for an outcome that never came to the sink, and still rejects', async () => {
+    const r = warningRig([{ match: ['set'], stdout: wroteAnswer(8), rc: 0 }], [[A, 'sent']], {
+      settle: () => () => {
+        throw new Error('the settlement fell over');
+      }
+    });
+    core = r.core;
+    await assert.rejects(r.saver.submit(recordFor(parts({ req: A }))), /fell over/, 'the save did not reject as it did before');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'sent')], 'the send\'s warning was lost with the outcome');
+  });
+
+  it('D5 sends the park of an overtaken entry to the sink, and the drained save\'s outcome carries none of it', async () => {
+    const fileA = '/tmp/session/a.2/1.md';
+    let highWater = 0;
+    const r = warningRig(
+      [
+        { match: ['set'], stdout: '', rc: 7, once: true },
+        { match: ['set'], stdout: wroteAnswer(8), rc: 0, once: true }
+      ],
+      [[A, 'parked']],
+      { baselineOf: (file) => (file === fileA ? { highWater } : null) }
+    );
+    core = r.core;
+    await r.saver.submit(recordFor(parts({ req: A, file: fileA, seq: 4 })));
+    assert.strictEqual(r.outbox.find(A)?.state, 'pending', 'the fixture did not leave A waiting');
+    highWater = 9;
+    const outcome = await r.saver.submit(recordFor(parts({ req: B, file: '/tmp/session/a.3/1.md', seq: 1 })));
+    assert.strictEqual(r.outbox.find(A)?.state, 'parked', 'A was not parked as overtaken');
+    assert.strictEqual(outcome.req, B);
+    assert.strictEqual(outcome.durability, undefined, 'B\'s outcome carries the warning of A\'s park');
+    assert.deepStrictEqual(r.sink, [warned(r.queuePath, A, 'parked')], 'the park\'s warning did not reach the sink');
   });
 });

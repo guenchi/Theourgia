@@ -377,6 +377,19 @@ export interface TakeoverLedger {
    * times than any other.
    */
   outcomeUnknown: number;
+  /*
+   * WHAT THE QUEUE WRITES OF THIS TAKEOVER COULD NOT PROMISE, one sentence
+   * per queue file, the latest kept. (queue item 22, design v4, K12) A
+   * write whose rename landed and whose directory flush failed counts as
+   * done -- the move is in its bucket -- and says here that it may not
+   * survive a power cut. The takeover report is its one display owner;
+   * nothing of a takeover goes to the window's sink.
+   *
+   * NOTE: OUTSIDE THE CONSERVATION LAW. It is not a bucket: `ledgerTotal`
+   * does not sum it, and the cells that add the ledger's own keys leave it
+   * out by name.
+   */
+  durabilityWarnings: string[];
 }
 
 export function emptyLedger(): TakeoverLedger {
@@ -389,7 +402,8 @@ export function emptyLedger(): TakeoverLedger {
     unreadableQueue: 0,
     failedToMove: 0,
     movedButUnmarked: 0,
-    outcomeUnknown: 0
+    outcomeUnknown: 0,
+    durabilityWarnings: []
   };
 }
 
@@ -1270,13 +1284,20 @@ export class Sessions {
       seen.add(key);
       walk.push(queue);
     }
+    /*
+     * ONE WARNING PER QUEUE FILE, the latest, across every queue this run
+     * imports: the destination is one file however many sources feed it
+     * (delivery review r1 of item 22, L2). See `durabilityWarnings`.
+     */
+    const warnings = new Map<string, string>();
     for (const queue of walk) {
       if (queues.includes(queue)) {
-        this.importQueue(queue, token, into, ledger);
+        this.importQueue(queue, token, into, ledger, warnings);
         continue;
       }
       this.surveyQueue(queue, path.resolve(queue) === path.resolve(legacy), ledger);
     }
+    ledger.durabilityWarnings.push(...warnings.values());
     return ledger;
 
     });
@@ -1358,7 +1379,8 @@ export class Sessions {
     queue: string,
     token: ClaimToken,
     into: ImportTarget,
-    ledger: TakeoverLedger
+    ledger: TakeoverLedger,
+    warnings: Map<string, string>
   ): void {
     const source = new Outbox(queue, this.files);
     try {
@@ -1463,15 +1485,19 @@ export class Sessions {
           continue;
         }
         /*
-         * NOTE: AND ITS DURABILITY WARNING IS NOT SHOWN TO ANYBODY. A receipt
-         * whose queue write landed but whose directory could not be flushed
-         * carries `durability`, and a save shows it after its own notice;
-         * a takeover has no such road -- the ledger counts moves, and nothing
-         * that reads it renders a sentence per entry. Said here rather than
-         * left to be found (condition 5 of the receipt design), and queued
-         * with the other queue writes that cannot show theirs: item 22.
+         * NOTE: AND ITS DURABILITY WARNING GOES INTO THE LEDGER. (queue item
+         * 22, K12) A receipt whose queue write landed but whose directory
+         * could not be flushed carries `durability`; so does the source's
+         * mark. The move counts as done either way, and the takeover report
+         * shows the sentence -- it used to be dropped here.
          */
-        source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
+        if (receipt.durability !== null) {
+          warnings.set('destination', receipt.durability);
+        }
+        const marked = source.markImported(entry.req, `${token.deadSessionId}.claim.${token.sequence}`);
+        if (marked !== null) {
+          warnings.set(queue, marked);
+        }
         ledger.imported += 1;
       } catch (e) {
         /*

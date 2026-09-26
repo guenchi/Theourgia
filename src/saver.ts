@@ -192,6 +192,20 @@ export interface SaveOutcome {
 }
 
 export interface SaverOptions {
+  /*
+   * WHERE A QUEUE WRITE'S DURABILITY WARNING GOES WHEN NO SAVE IS WAITING
+   * FOR IT. (queue item 22, design v4) A mutation of the queue whose rename
+   * landed and whose directory flush failed counts as done and returns a
+   * warning; the awaited save carries its own entry's on its outcome, and
+   * every other one is handed here: the window's sink, which outlives this
+   * Saver (a rebuild replaces the Saver, not the sink) and is shown after
+   * each command and save.
+   *
+   * NOTE: REQUIRED, not defaulted (ruled 2026-09-26, Q3): a Saver built
+   * without somewhere to put these would drop them in silence, and the
+   * compiler is the check that none is.
+   */
+  durability: (file: string, text: string) => void;
   newRequestId?: () => string;
   now?: () => number;
   /*
@@ -968,6 +982,31 @@ export function nextRunnable(entries: OutboxEntry[]): OutboxEntry | undefined {
   return undefined;
 }
 
+/*
+ * ONE DURABILITY SENTENCE PER QUEUE FILE, THE LATEST. (queue item 22, ruled
+ * 2026-09-26 on the design's W) An outcome follows the sink's rule: several
+ * writes to one file say one thing -- that file may not survive a power cut
+ * -- and the latest reason is the one to read. Every warning a Saver hands
+ * on is about its one queue file, so of two, the later is kept; sentences
+ * about different files would be newline-joined, and a Saver has none.
+ */
+function latestWarning(earlier: string | null | undefined, later: string | null | undefined): string | undefined {
+  if (later !== null && later !== undefined) {
+    return later;
+  }
+  return earlier === null ? undefined : earlier;
+}
+
+/*
+ * THE AWAITED SAVE'S OUTCOME WITH WHAT ITS QUEUE WRITES COULD NOT PROMISE:
+ * its drain iteration's sentence when there is one, being later than the
+ * enqueue's, and the enqueue's otherwise.
+ */
+function withEnqueueFirst(outcome: SaveOutcome, enqueued: string | null): SaveOutcome {
+  const durability = latestWarning(enqueued, outcome.durability);
+  return durability === undefined ? outcome : { ...outcome, durability };
+}
+
 export class Saver {
   private readonly client: Client;
   private readonly outbox: Outbox;
@@ -984,8 +1023,14 @@ export class Saver {
     record: SendRecord
   ) => { known: true; retired: boolean } | { known: false };
   private bootstrapProblem: string | null = null;
+  private readonly durability: (file: string, text: string) => void;
+  /*
+   * THE WARNINGS OF THE DRAIN ITERATION IN PROGRESS, or null outside one.
+   * See `kept` and `placeGathered`.
+   */
+  private gathered: string[] | null = null;
 
-  constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions = {}) {
+  constructor(client: Client, outbox: Outbox, settle: Settle, options: SaverOptions) {
     /*
      * NOTE: IF THE SETTLER KNOWS WHICH QUEUE IT IS FOR, IT HAS TO BE THIS
      * ONE.
@@ -1026,6 +1071,7 @@ export class Saver {
     this.now = options.now ?? (() => Date.now());
     this.baselineOf = options.baselineOf;
     this.retired = options.retired;
+    this.durability = options.durability;
   }
 
   public get pendingCount(): number | null {
@@ -1075,8 +1121,15 @@ export class Saver {
        * carries it.
        */
       const receipt = this.outbox.enqueue(entry);
-      const outcomes = await this.drain();
+      let outcomes: SaveOutcome[];
+      try {
+        outcomes = await this.drain();
+      } catch (e) {
+        this.toSink(receipt.durability);
+        throw e;
+      }
       const mine = outcomes.find((o) => o.req === entry.req);
+      this.passOn(outcomes, mine);
       const outcome: SaveOutcome = mine ?? {
         status: 'pending' as const,
         req: entry.req,
@@ -1084,7 +1137,7 @@ export class Saver {
         message: 'the save is queued behind an earlier one whose outcome is unknown',
         answer: null
       };
-      return receipt.durability === null ? outcome : { ...outcome, durability: receipt.durability };
+      return withEnqueueFirst(outcome, receipt.durability);
     });
   }
 
@@ -1263,11 +1316,12 @@ export class Saver {
         /*
          * NOTE: AND THIS ONE IS RE-RAISED RATHER THAN ANSWERED HERE.
          *
-         * A failed enqueue is the case where the entry may or may not be
-         * on disk -- the rename happens before the sync -- so it is
-         * exactly the case the question below exists for. Answering it
-         * here would be a second place deciding the same thing, and the
-         * two would differ.
+         * An enqueue that threw failed BEFORE its rename (queue item 22: a
+         * flush that fails after the rename is a warning in the receipt, not
+         * a throw), so the entry is not on disk -- and that is the question
+         * the catch below answers, with no receipt to say otherwise.
+         * Answering it here would be a second place deciding the same thing,
+         * and the two would differ.
          */
         throw new Error(
           `the save could not be written to the queue at ${this.outbox.path}: ${String(e)}`
@@ -1287,6 +1341,7 @@ export class Saver {
       const held = receipt;
       const outcomes = await this.drain();
       const mine = outcomes.find((o) => o.req === entry.req);
+      this.passOn(outcomes, mine);
       const outcome: SaveOutcome = mine ?? {
         status: 'pending' as const,
         req: entry.req,
@@ -1294,7 +1349,7 @@ export class Saver {
         message: 'the save is queued behind an earlier one whose outcome is unknown',
         answer: null
       };
-      return held.durability === null ? outcome : { ...outcome, durability: held.durability };
+      return withEnqueueFirst(outcome, held.durability);
     }).catch((e) => {
       /*
        * THE ANSWER RECORDED AT THE ENQUEUE, not a second reading taken
@@ -1308,6 +1363,12 @@ export class Saver {
        * question, because by now a drain may have removed the entry.
        */
       if (receipt !== null) {
+        /*
+         * NOTE: AND WHAT THE ENQUEUE SAID ABOUT DURABILITY IS NOT LOST WITH
+         * THE OUTCOME. (queue item 22, K11) No outcome carries it now, so it
+         * goes to the sink before the rejection does.
+         */
+        this.toSink(receipt.durability);
         throw e;
       }
       return {
@@ -1323,7 +1384,7 @@ export class Saver {
   }
 
   public retry(): Promise<SaveOutcome[]> {
-    return this.serialise(() => this.drain());
+    return this.serialise(async () => this.passOn(await this.drain(), undefined));
   }
 
   /*
@@ -1345,8 +1406,8 @@ export class Saver {
    */
   public retryParked(): Promise<SaveOutcome[]> {
     return this.serialise(async () => {
-      this.outbox.unparkAll();
-      return this.drain();
+      this.toSink(this.outbox.unparkAll().durability);
+      return this.passOn(await this.drain(), undefined);
     });
   }
 
@@ -1501,7 +1562,7 @@ export class Saver {
       return null;
     }
     this.bootstrapProblem = null;
-    this.outbox.setCursor(first.cursor);
+    this.kept(this.outbox.setCursor(first.cursor));
     return first.cursor;
   }
 
@@ -1510,8 +1571,27 @@ export class Saver {
    * whose outcome is unknown. Everything behind it was composed against
    * a cursor that entry is about to move.
    */
+  /*
+   * NOTE: A DRAIN THAT THROWS HANDS THE WARNINGS OF THE OUTCOMES IT HAD
+   * ALREADY PRODUCED TO THE SINK FIRST. (queue item 22, delivery review r1,
+   * the N) An earlier iteration's warning waits on its outcome for the
+   * caller to select or pass on; a later iteration that throws takes the
+   * whole array with it, and nothing would select or pass on anything. The
+   * throwing iteration's own warnings went to the sink in its `finally`.
+   */
   private async drain(): Promise<SaveOutcome[]> {
     const outcomes: SaveOutcome[] = [];
+    try {
+      return await this.drainInto(outcomes);
+    } catch (e) {
+      for (const outcome of outcomes) {
+        this.toSink(outcome.durability);
+      }
+      throw e;
+    }
+  }
+
+  private async drainInto(outcomes: SaveOutcome[]): Promise<SaveOutcome[]> {
     for (;;) {
       const entries = this.outbox.entries;
       if (entries.length === 0) {
@@ -1532,77 +1612,152 @@ export class Saver {
        */
       const withdrawn = this.hasBeenRetired(entry);
       if (withdrawn !== null) {
-        this.outbox.markParked(entry.req, withdrawn);
+        this.kept(this.outbox.markParked(entry.req, withdrawn));
         continue;
       }
       const overtaken = this.hasBeenOvertaken(entry);
       if (overtaken !== null) {
-        this.outbox.markParked(entry.req, overtaken);
+        this.kept(this.outbox.markParked(entry.req, overtaken));
         continue;
       }
       /*
-       * THE ENTRY IS MARKED AS GOING OUT BEFORE IT GOES OUT, for the
-       * same reason it was written down before it was sent: after this
-       * line the store may have seen it, and nothing may change what it
-       * says.
+       * NOTE: FROM HERE THE ITERATION'S QUEUE WARNINGS ARE GATHERED FOR THE
+       * OUTCOME IT PRODUCES. (queue item 22, ruled Q5) The `finally` below
+       * hangs them on that outcome, or, when the iteration throws before
+       * producing one, hands them to the sink before the throw goes on
+       * (K11). The two parks above are iterations with no outcome; theirs
+       * went to the sink as they happened.
        */
-      this.outbox.aboutToSend(entry.req, this.outbox.cursor);
-      const current = this.outbox.find(entry.req) ?? entry;
-      const outcome = await this.send(current);
-      /*
-       * NOTE: AND IT STOPS IF THE ENTRY IS STILL HERE.
-       *
-       * This loop had exactly one way out: an answer of `pending`. It
-       * took `entries[0]`, sent it, and went round again on the
-       * assumption that the entry was gone by then -- and NOTHING
-       * CHECKED THAT IT WENT. The settler is allowed to decline: when
-       * the record beside the file cannot be written, `recordAnswer`
-       * KEEPS the entry so the request stays retryable rather than being
-       * lost, which is the safe direction and is deliberate. But then
-       * the store has answered, the outcome is not `pending`, and the
-       * same entry is at the front of the queue again -- so the same
-       * request goes to the store on every turn, for ever, inside a
-       * command the user is awaiting.
-       *
-       * MEASURED, NOT SUPPOSED: with a settler that records nothing, a
-       * single `save` sent the same request five times and stopped only
-       * because the scripted core ran out of `ok` answers. A real store
-       * does not run out.
-       *
-       * THE ENTRY IS MARKED PENDING AND THE OUTCOME SAYS SO, because
-       * "saved" would be a report that the work is done about a queue
-       * that still holds it -- the count in the status bar and the
-       * sentence after a retry would disagree with each other.
-       */
-      outcomes.push(outcome);
-      /*
-       * AN ANSWER OF `pending` IS ALREADY A REASON TO STOP, AND IT HAS
-       * ITS OWN SENTENCE. `send` keeps the entry in that case too, so
-       * the check below would be true here as well -- and would replace
-       * a message naming what went wrong ("the core exited 255 without
-       * saying why") with a general one. Three cells caught that.
-       */
-      if (outcome.status === 'pending') {
-        return outcomes;
-      }
-      /*
-       * AN ENTRY KEPT ON PURPOSE IS NOT AN ENTRY THAT COULD NOT BE
-       * RECORDED. The loop still stops -- nothing goes out past it --
-       * but the refusal keeps its own words, which name what the store
-       * said rather than describing a write that never failed.
-       */
-      if (outcome.keptForAPerson === true) {
-        return outcomes;
-      }
-      if (this.outbox.find(entry.req) !== undefined) {
-        const why =
-          'the store answered and the answer could not be recorded beside the file; the request ' +
-          'is kept';
-        this.outbox.markPending(entry.req, why);
-        outcomes[outcomes.length - 1] = { ...outcome, status: 'pending', message: why };
-        return outcomes;
+      const at = outcomes.length;
+      this.gathered = [];
+      try {
+        /*
+         * THE ENTRY IS MARKED AS GOING OUT BEFORE IT GOES OUT, for the
+         * same reason it was written down before it was sent: after this
+         * line the store may have seen it, and nothing may change what it
+         * says.
+         */
+        this.kept(this.outbox.aboutToSend(entry.req, this.outbox.cursor));
+        const current = this.outbox.find(entry.req) ?? entry;
+        const outcome = await this.send(current);
+        /*
+         * NOTE: AND IT STOPS IF THE ENTRY IS STILL HERE.
+         *
+         * This loop had exactly one way out: an answer of `pending`. It
+         * took `entries[0]`, sent it, and went round again on the
+         * assumption that the entry was gone by then -- and NOTHING
+         * CHECKED THAT IT WENT. The settler is allowed to decline: when
+         * the record beside the file cannot be written, `recordAnswer`
+         * KEEPS the entry so the request stays retryable rather than being
+         * lost, which is the safe direction and is deliberate. But then
+         * the store has answered, the outcome is not `pending`, and the
+         * same entry is at the front of the queue again -- so the same
+         * request goes to the store on every turn, for ever, inside a
+         * command the user is awaiting.
+         *
+         * MEASURED, NOT SUPPOSED: with a settler that records nothing, a
+         * single `save` sent the same request five times and stopped only
+         * because the scripted core ran out of `ok` answers. A real store
+         * does not run out.
+         *
+         * THE ENTRY IS MARKED PENDING AND THE OUTCOME SAYS SO, because
+         * "saved" would be a report that the work is done about a queue
+         * that still holds it -- the count in the status bar and the
+         * sentence after a retry would disagree with each other.
+         */
+        outcomes.push(outcome);
+        /*
+         * AN ANSWER OF `pending` IS ALREADY A REASON TO STOP, AND IT HAS
+         * ITS OWN SENTENCE. `send` keeps the entry in that case too, so
+         * the check below would be true here as well -- and would replace
+         * a message naming what went wrong ("the core exited 255 without
+         * saying why") with a general one. Three cells caught that.
+         */
+        if (outcome.status === 'pending') {
+          return outcomes;
+        }
+        /*
+         * AN ENTRY KEPT ON PURPOSE IS NOT AN ENTRY THAT COULD NOT BE
+         * RECORDED. The loop still stops -- nothing goes out past it --
+         * but the refusal keeps its own words, which name what the store
+         * said rather than describing a write that never failed.
+         */
+        if (outcome.keptForAPerson === true) {
+          return outcomes;
+        }
+        if (this.outbox.find(entry.req) !== undefined) {
+          const why =
+            'the store answered and the answer could not be recorded beside the file; the request ' +
+            'is kept';
+          this.kept(this.outbox.markPending(entry.req, why));
+          outcomes[outcomes.length - 1] = { ...outcome, status: 'pending', message: why };
+          return outcomes;
+        }
+      } finally {
+        this.placeGathered(outcomes, at);
       }
     }
+  }
+
+  /*
+   * A QUEUE WRITE'S DURABILITY WARNING, WHERE IT BELONGS. (queue item 22)
+   * Inside a drain iteration it is gathered for the outcome that iteration
+   * produces; anywhere else it goes to the window's sink.
+   */
+  private kept(warning: string | null): void {
+    if (warning === null) {
+      return;
+    }
+    if (this.gathered !== null) {
+      this.gathered.push(warning);
+      return;
+    }
+    this.toSink(warning);
+  }
+
+  private toSink(warning: string | null | undefined): void {
+    if (warning !== null && warning !== undefined) {
+      this.durability(this.outbox.path, warning);
+    }
+  }
+
+  /*
+   * WHERE AN ITERATION'S WARNINGS GO WHEN IT ENDS: onto the outcome it
+   * produced, when it produced one (the save that awaits that entry keeps
+   * it; `passOn` hands any other to the sink); to the sink when it produced
+   * none, which is the path of a throw.
+   */
+  private placeGathered(outcomes: SaveOutcome[], at: number): void {
+    const gathered = this.gathered ?? [];
+    this.gathered = null;
+    if (gathered.length === 0) {
+      return;
+    }
+    if (outcomes.length > at) {
+      const produced = outcomes[at];
+      outcomes[at] = { ...produced, durability: latestWarning(produced.durability, gathered[gathered.length - 1]) };
+      return;
+    }
+    for (const warning of gathered) {
+      this.toSink(warning);
+    }
+  }
+
+  /*
+   * EVERY OUTCOME BUT THE AWAITED ONE HANDS ITS WARNING TO THE SINK, and
+   * comes back without it: a drain may settle other saves' entries, and the
+   * caller selecting its own outcome would otherwise discard theirs (K2).
+   * With nothing awaited (a retry), every outcome's goes.
+   */
+  private passOn(outcomes: SaveOutcome[], mine: SaveOutcome | undefined): SaveOutcome[] {
+    return outcomes.map((outcome) => {
+      if (outcome === mine || outcome.durability === undefined) {
+        return outcome;
+      }
+      this.toSink(outcome.durability);
+      const { durability: _handedOn, ...rest } = outcome;
+      return rest;
+    });
   }
 
   /*
@@ -1668,7 +1823,7 @@ export class Saver {
         selected=JSON.parse(entry.record?.intent.expectation ?? 'null');
         if (!selected || typeof selected.writer!=='string' || typeof selected.version!=='string') throw new Error('Invalid working selection');
       } catch {
-        this.outbox.markPending(entry.req,'The immutable working selection is unreadable');
+        this.kept(this.outbox.markPending(entry.req,'The immutable working selection is unreadable'));
         return {status:'pending',req:entry.req,id:what.id,message:'The immutable working selection is unreadable; keep the request for recovery',answer:null};
       }
       /*
@@ -1694,7 +1849,7 @@ export class Saver {
     } catch (e) {
       if (e instanceof TransportError) {
         const why = aside(e.detail);
-        this.outbox.markPending(entry.req, `${e.message}${why}`);
+        this.kept(this.outbox.markPending(entry.req, `${e.message}${why}`));
         return {
           status: 'pending',
           req: entry.req,
@@ -1722,7 +1877,7 @@ export class Saver {
        * reported as the defect it is.
        */
       if (event === null) {
-        this.outbox.markPending(entry.req, 'the core answered ok without naming a record');
+        this.kept(this.outbox.markPending(entry.req, 'the core answered ok without naming a record'));
         return {
           status: 'pending',
           req: entry.req,
@@ -1735,7 +1890,7 @@ export class Saver {
       }
       const moved = formatCursor(event);
       if (!isWellFormedCursor(moved)) {
-        this.outbox.markPending(entry.req, `the core named a record this client cannot spell: ${moved}`);
+        this.kept(this.outbox.markPending(entry.req, `the core named a record this client cannot spell: ${moved}`));
         return {
           status: 'pending',
           req: entry.req,
@@ -1783,7 +1938,7 @@ export class Saver {
        * looked into afterwards is that this sentence did not carry it.
        */
       const why = aside(answer.stderr);
-      this.outbox.markPending(entry.req, `the core exited ${answer.rc} without saying why${why}`);
+      this.kept(this.outbox.markPending(entry.req, `the core exited ${answer.rc} without saying why${why}`));
       return {
         status: 'pending',
         req: entry.req,
@@ -1809,7 +1964,7 @@ export class Saver {
          */
         this.notNowCounts.delete(entry.req);
         const why = `the store answered ${notNow} ${soFar} times in a row; a person has to look`;
-        this.outbox.markParked(entry.req, why);
+        this.kept(this.outbox.markParked(entry.req, why));
         return {
           status: 'refused',
           req: entry.req,
@@ -1821,7 +1976,7 @@ export class Saver {
       }
       this.notNowCounts.set(entry.req, soFar);
       const why = `the store answered ${notNow}; attempt ${soFar} of ${RETRY_CAP}`;
-      this.outbox.markPending(entry.req, why);
+      this.kept(this.outbox.markPending(entry.req, why));
       return {
         status: 'pending',
         req: entry.req,
@@ -1855,7 +2010,7 @@ export class Saver {
      */
     const settings = whichSettingsRefusal(datum);
     if (settings !== null) {
-      this.outbox.markParked(entry.req, settings.message);
+      this.kept(this.outbox.markParked(entry.req, settings.message));
       return {
         status: 'refused',
         req: entry.req,
@@ -1881,7 +2036,7 @@ export class Saver {
      */
     if (answer.rc === CLIENT_REFUSED_EXIT && isUnrecognisedRefusal(datum)) {
       const why = `the client refused this request with ${describeRefusal(datum)}`;
-      this.outbox.markPending(entry.req, why);
+      this.kept(this.outbox.markPending(entry.req, why));
       return {
         status: 'pending',
         req: entry.req,
@@ -1894,7 +2049,7 @@ export class Saver {
     }
 
     if (saysNobodyKnows(datum)) {
-      this.outbox.markPending(entry.req, 'the store cannot say whether the request ran');
+      this.kept(this.outbox.markPending(entry.req, 'the store cannot say whether the request ran'));
       return {
         status: 'pending',
         req: entry.req,

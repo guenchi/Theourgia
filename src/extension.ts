@@ -58,6 +58,7 @@ import { IntegrityWatch } from './integrity';
 import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
 import { Tombstones } from './tombstones';
+import { DurabilitySink } from './durability';
 import { coreDirectoryAt, nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
@@ -383,6 +384,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let model: StoreModel | null = null;
   let outbox: Outbox | null = null;
   let saver: Saver | null = null;
+  /*
+   * WHAT THE QUEUE'S WRITES COULD NOT PROMISE, for this window. (queue item
+   * 22, design v4) Outlives every rebuild: see `DurabilitySink`.
+   */
+  const warnings = new DurabilitySink();
   let conflicts: number | null = null;
   /*
    * THE LAST REASON THE STORE COULD NOT BE ASKED, in the core's own
@@ -398,6 +404,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * generation that has been replaced is dropped rather than acted on.
    */
   let generation = 0;
+
+  /*
+   * EACH HELD DURABILITY SENTENCE, ONCE, as a warning: the user's work is
+   * written and may not survive a power cut.
+   */
+  function showDurability(): void {
+    warnings.showAll((text) => show({ level: 'warning', text }), reportFailure);
+  }
+
+  /*
+   * EVERY COMMAND IS REGISTERED HERE, AND WHATEVER ITS QUEUE WRITES COULD NOT
+   * PROMISE IS SHOWN WHEN IT ENDS. (queue item 22, ruled Q4) The shown
+   * sentences are the sink's, whichever Saver or settle raised them, so a
+   * command that drains, retries or settles says so after itself; the
+   * `finally` covers a command that throws. The census in
+   * `awaiting.test.ts` holds that no `registerCommand` in src goes around
+   * this.
+   */
+  function command<A extends unknown[]>(id: string, run: (...args: A) => unknown): vscode.Disposable {
+    return vscode.commands.registerCommand(id, async (...args: A) => {
+      try {
+        return await run(...args);
+      } finally {
+        showDurability();
+      }
+    });
+  }
 
   function rebuild(): void {
     generation += 1;
@@ -521,9 +554,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         sessions,
         saving,
         report: show,
-        unrecorded: unrecordedNotice
+        unrecorded: unrecordedNotice,
+        durability: (file, text) => warnings.add(file, text)
       }),
       {
+        durability: (file, text) => warnings.add(file, text),
         /*
          * WHAT THE RECORD BESIDE A FILE HAS ALREADY CONFIRMED, READ
          * FRESH BEFORE EVERY TRANSMISSION. (R8)
@@ -581,6 +616,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       } catch (e) {
         reportFailure(e);
       }
+      /*
+       * NOTE: SHOWN BEFORE THE CHECK BELOW, because the sink is the window's:
+       * a warning raised by a Saver that has since been replaced is still
+       * about this window's queue file (D4b).
+       */
+      showDurability();
       /*
        * THE CHECK AFTER THE WAIT LEAVES, rather than wrapping the work
        * it protects. The two read the same here, because painting is the
@@ -1272,6 +1313,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       outcome = await sending.submit(acceptance.record);
     } catch (e) {
       reportFailure(e);
+      /*
+       * NOTE: A SAVE THAT REJECTED STILL SAYS WHAT ITS QUEUE WRITES COULD NOT
+       * PROMISE: the Saver handed those to the sink before rejecting (K11).
+       */
+      showDurability();
       paint();
       return;
     }
@@ -1328,25 +1374,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (outcome.durability !== undefined) {
       show({ level: 'warning', text: outcome.durability });
     }
+    /*
+     * NOTE: AND THEN WHAT THE REST OF THIS DRAIN'S WRITES COULD NOT PROMISE
+     * (other saves' entries, the settle): the sink's, after this save's own.
+     */
+    showDurability();
     paint();
   }
 
   context.subscriptions.push(
     status,
     vscode.window.registerTreeDataProvider('theourgiaOutline', provider),
-    vscode.commands.registerCommand(REFRESH_OUTLINE.id, async () => {
+    command(REFRESH_OUTLINE.id, async () => {
       provider.refresh();
       await refreshConflicts();
     }),
-    vscode.commands.registerCommand(OPEN_BLOCK.id, openBlock),
+    command(OPEN_BLOCK.id, openBlock),
     vscode.workspace.registerTextDocumentContentProvider(DOCUMENT_SCHEME, views),
     vscode.workspace.onDidCloseTextDocument((closed) => {
       if (closed.uri.scheme === DOCUMENT_SCHEME) {
         views.forget(closed.uri);
       }
     }),
-    vscode.commands.registerCommand(OPEN_AS_DOCUMENT.id, openAsDocument),
-    vscode.commands.registerCommand(RECONCILE_BLOCK.id, reconcileBlock),
+    command(OPEN_AS_DOCUMENT.id, openAsDocument),
+    command(RECONCILE_BLOCK.id, reconcileBlock),
     /*
      * NOTE: THE HANDLER IS ONE LINE ON PURPOSE. Everything this command
      * decides -- which windows to list, what may be done to one, what
@@ -1354,7 +1405,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * can drive it. A handler that made any of those decisions here
      * would be making them where nothing can look.
      */
-    vscode.commands.registerCommand(OTHER_SESSIONS.id, () =>
+    command(OTHER_SESSIONS.id, () =>
       chooseAndRecover(sessions, editorChooser, adoptingInto())
     ),
     /*
@@ -1368,7 +1419,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * awaits long; capturing it here means the hits and the block that
      * is opened come from one store.
      */
-    vscode.commands.registerCommand(SEARCH_BLOCKS.id, () => {
+    command(SEARCH_BLOCKS.id, () => {
       /*
        * NEVER: THE HIT BELONGS TO THE STORE IT WAS FOUND IN.
        *
@@ -1419,7 +1470,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * read, and what it would be wrong about is which store the numbers
      * belong to.
      */
-    vscode.commands.registerCommand(RETRY_OUTBOX.id, async () => {
+    command(RETRY_OUTBOX.id, async () => {
       const active = saver;
       const store = config.store;
       const asked = generation;
@@ -1456,14 +1507,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       paint();
       return notice;
     }),
-    vscode.commands.registerCommand(SHOW_STATUS.id, async (options?: { ask?: boolean }) => {
+    command(SHOW_STATUS.id, async (options?: { ask?: boolean }) => {
       if (options?.ask !== false) {
         await refreshConflicts();
       }
       vscode.window.showInformationMessage(status.tooltip as string);
       return facts();
     }),
-    vscode.commands.registerCommand(MIGRATE_BLOCK.id,migrateBlock),
+    command(MIGRATE_BLOCK.id,migrateBlock),
     vscode.workspace.onDidSaveTextDocument(onSaved),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('theourgia')) {
@@ -1486,12 +1537,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          */
         if (outbox !== null) {
           try {
-            outbox.unparkAll();
+            const released = outbox.unparkAll();
+            if (released.durability !== null) {
+              warnings.add(outbox.path, released.durability);
+            }
           } catch (error) {
             reportFailure(error);
           }
         }
-        rebuild();
+        /*
+         * NOTE: SHOWN BEFORE THE REBUILD AND AFTER IT, the second even if the
+         * rebuild throws. (design v4, K4; delivery review r1 of item 22, L3)
+         */
+        showDurability();
+        try {
+          rebuild();
+        } finally {
+          showDurability();
+        }
       }
     })
   );

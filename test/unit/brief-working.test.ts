@@ -9,6 +9,7 @@ import {Publisher, digestOfBytes} from '../../src/publication';
 import {recordFor} from '../../src/record';
 import {answerOf, readEvent} from '../../src/wire';
 import {eventFromWrite} from '../../src/cursor';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 describe('WS-28/31 W is the real plugin body authority',function(){
   this.timeout(120000);
@@ -52,7 +53,7 @@ describe('WS-28/31 W is the real plugin body authority',function(){
       const saver=new Saver(store.client,queue,(req,answer)=>{
         if(answer.verdict==='confirmed')queue.resolve(req,answer.cursor);
         if(answer.verdict==='refused')queue.resolve(req,null);
-      });
+      }, IGNORED_DURABILITY);
       const send=recordFor({req:'working-plugin-R1',store:store.store,storeHash:'probe',blockId:id,file:refreshed.file as string,
         projectionId:saved.source.id,rawDigest:digestOfBytes(prefix+saved.body),sentDigest:digestOfBytes(saved.body),prefixDigest:digestOfBytes(prefix),seq:1,
         intent:{verb:'commit',field:'src',body:saved.body,expectation:JSON.stringify({writer:a.writer,version:saved.source.version})}});

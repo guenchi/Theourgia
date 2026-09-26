@@ -67,6 +67,13 @@ export interface SettlingParts {
    */
   report: (notice: Notice) => void;
   unrecorded: (file: string, because: Unrecorded) => Notice;
+  /*
+   * WHERE A QUEUE WRITE'S DURABILITY WARNING GOES. (queue item 22, design
+   * v4, K3) The settle path is one path and returns nothing, so every
+   * `resolve` and `clearCursor` it makes hands its warning here -- the
+   * window's sink -- rather than to a caller. Required (ruled Q3).
+   */
+  durability: (file: string, text: string) => void;
 }
 
 /*
@@ -94,6 +101,11 @@ export type Settler = ((req: string, settlement: Settlement) => void) & {
 
 export function settlerFor(parts: SettlingParts): Settler {
   const { queue, storeHash, sessionId, sessions, saving } = parts;
+  const warned = (warning: string | null): void => {
+    if (warning !== null) {
+      parts.durability(queue.path, warning);
+    }
+  };
 
   /*
    * NOTE: THE QUEUE AND THE STORE HAVE TO BE THE SAME WINDOW'S.
@@ -183,7 +195,7 @@ export function settlerFor(parts: SettlingParts): Settler {
       if (record !== undefined) {
         saving.releaseSend(record.file, record.seq);
       }
-      queue.resolve(req, null);
+      warned(queue.resolve(req, null));
       return;
     }
     /*
@@ -206,7 +218,7 @@ export function settlerFor(parts: SettlingParts): Settler {
       if (settlement.verdict === 'req-mismatch') {
         return;
       }
-      queue.resolve(req, cursor);
+      warned(queue.resolve(req, cursor));
       return;
     }
     const recorded = saving.recordAnswer(
@@ -232,7 +244,7 @@ export function settlerFor(parts: SettlingParts): Settler {
           by: settlement.verdict === 'executed-by-operator' ? 'operator' : 'store'
         }
       },
-      () => queue.resolve(req, cursor)
+      () => warned(queue.resolve(req, cursor))
     );
     /*
      * NOTE: AND AN OPERATOR'S DETERMINATION LEAVES THE QUEUE WITHOUT A
@@ -245,7 +257,7 @@ export function settlerFor(parts: SettlingParts): Settler {
      * thing to do with a number nobody can vouch for.
      */
     if (recorded.dequeued && settlement.verdict === 'executed-by-operator') {
-      queue.clearCursor();
+      warned(queue.clearCursor());
     }
     if (!recorded.dequeued) {
       /*

@@ -1136,16 +1136,30 @@ export function adoptedNotice(
     );
   }
   /*
+   * AND WHAT ITS QUEUE WRITES COULD NOT PROMISE, after everything else.
+   * (queue item 22, design v4, K12) A write whose rename landed and whose
+   * directory flush failed counted as done, so every sentence above stands;
+   * this says the queue it wrote may not survive a power cut, one sentence
+   * per queue file. This report is the one place a takeover's warning is
+   * shown, and it makes the notice a warning.
+   */
+  const durability = ledger.durabilityWarnings.map(
+    (warning) => `${warning.charAt(0).toUpperCase()}${warning.slice(1)}.`
+  );
+  /*
    * AND A TAKEOVER THAT FOUND NOTHING SAYS THAT, rather than naming the
    * window and stopping. Every bucket being empty is an answer.
    */
-  if (parts.length === 0) {
+  if (parts.length === 0 && durability.length === 0) {
     return {
       level: 'information',
       text: `${sessionId} was taken over and there was nothing in it to move.`
     };
   }
-  return { level: 'information', text: `${sessionId}: ${parts.join(' ')}` };
+  return {
+    level: durability.length === 0 ? 'information' : 'warning',
+    text: `${sessionId}: ${[...parts, ...durability].join(' ')}`
+  };
 }
 
 /*

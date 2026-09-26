@@ -54,6 +54,7 @@ import { Client } from '../../src/client';
 import { StoreModel } from '../../src/model';
 import { CoreConfig, WITNESS_SOURCE, environmentFor, problemsWith } from '../../src/config';
 import { behindNotice, statusLine } from '../../src/status';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 let counterAt = 0;
 const counter = (): number => (counterAt += 1);
@@ -1677,7 +1678,7 @@ describe('plugin-r2 an unreadable writer listing is not a shorter one', function
     });
     const blockedBy = async (stdout: string): Promise<string> => {
       const queue = new Outbox(path.join(os.tmpdir(), `tv-writers-${process.pid}-${counter()}.json`));
-      const saver = new Saver(new Client(answering(stdout)), queue, () => undefined);
+      const saver = new Saver(new Client(answering(stdout)), queue, () => undefined, IGNORED_DURABILITY);
       const outcome = await saver.save('a.1', 'src', 'body');
       assert.strictEqual(outcome.status, 'blocked', outcome.message);
       return outcome.message;

@@ -66,6 +66,7 @@ import { RETRYABLE_REFUSALS, RETRY_CAP, SETTINGS_REFUSALS, Saver, Settle } from 
 import { CliTransport } from '../../src/transport';
 import { initWire } from '../../src/wire';
 import { FakeCore, ScriptedCall } from '../support/fake';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 const CHECK = '(check (store "s") (writers (("w" (end 7) (torn #f) (integrity ())))) (snapshots ()) (registry outside-store) (verdict ok))\n';
 
@@ -84,7 +85,7 @@ function rig(calls: ScriptedCall[], outboxFile?: string): Rig {
   const outbox = new Outbox(outboxFile ?? core.outboxFile());
   outbox.load();
   const client = new Client(new CliTransport(core.config(), core.env()));
-  return { core, outbox, saver: new Saver(client, outbox, settling(outbox)) };
+  return { core, outbox, saver: new Saver(client, outbox, settling(outbox), IGNORED_DURABILITY) };
 }
 
 function setCalls(core: FakeCore): string[][] {
@@ -161,7 +162,7 @@ describe('S1 a save is one set, carrying a request id and a cursor', () => {
      */
     outbox.setCursor('w:7');
     fs.chmodSync(blocked, 0o500);
-    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox));
+    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox), IGNORED_DURABILITY);
     try {
       await assert.rejects(
         () => saver.save('a.2', 'src', 'body\n'),
@@ -200,7 +201,7 @@ describe('S1 a save is one set, carrying a request id and a cursor', () => {
     core = core0;
     const outbox = new Outbox(core0.outboxFile());
     outbox.load();
-    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox));
+    const saver = new Saver(new Client(new CliTransport(core0.config(), core0.env())), outbox, settling(outbox), IGNORED_DURABILITY);
     const outcome = await saver.save('a.2', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'blocked');
     assert.match(outcome.message, /writers/);
@@ -281,7 +282,7 @@ describe('S4 an unanswered save is kept and retried as the same request', () => 
     assert.strictEqual(kept.cursor, 'w:7');
     assert.strictEqual(kept.state, 'pending');
 
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted));
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted), IGNORED_DURABILITY);
     const retried = await saver.retry();
     assert.strictEqual(retried[0].status, 'saved');
     const sent = setCalls(core);
@@ -305,7 +306,8 @@ describe('S4 an unanswered save is kept and retried as the same request', () => 
     const saver = new Saver(
       new Client(new CliTransport(r.core.config({ timeoutMs: 250 }), r.core.env())),
       r.outbox,
-      settling(r.outbox)
+      settling(r.outbox),
+      IGNORED_DURABILITY
     );
     const outcome = await saver.save('a.2', 'src', 'body\n');
     assert.strictEqual(outcome.status, 'pending');
@@ -484,7 +486,7 @@ describe('S9 the cursor survives a restart and is not asked for twice', () => {
     const restarted = new Outbox(file);
     restarted.load();
     assert.strictEqual(restarted.cursor, 'w:9');
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted));
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), restarted, settling(restarted), IGNORED_DURABILITY);
     const outcome = await saver.save('a.2', 'src', 'two\n');
     assert.strictEqual(outcome.status, 'saved', outcome.message);
 
@@ -523,7 +525,8 @@ describe('S10 the entry is on disk at the moment the core sees the request', () 
     const saver = new Saver(
       new Client(new CliTransport(core0.config(), core0.env(outboxFile))),
       outbox,
-      settling(outbox)
+      settling(outbox),
+      IGNORED_DURABILITY
     );
     const outcome = await saver.save('a.2', 'src', 'body2\n');
     assert.strictEqual(outcome.status, 'saved');
@@ -603,7 +606,7 @@ describe('S11 a host interrupted between the send and the answer', () => {
     assert.strictEqual(reloaded.entries[0].state, 'sent');
     assert.strictEqual(reloaded.cursor, 'w:9', 'the cursor was not persisted');
 
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded), IGNORED_DURABILITY);
     const outcomes = await saver.retry();
     assert.strictEqual(outcomes[0].status, 'saved', outcomes[0].message);
     const sent = setCalls(core);
@@ -721,7 +724,7 @@ describe('S12 entries found on disk after a restart', () => {
     core = r.core;
     const reloaded = new Outbox(file);
     reloaded.load();
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded), IGNORED_DURABILITY);
     const outcomes = await saver.retry();
     assert.deepStrictEqual(outcomes.map((o) => o.status), ['saved', 'saved', 'saved']);
     const bodies = setCalls(core).map((c) => c[3]);
@@ -746,7 +749,7 @@ describe('S12 entries found on disk after a restart', () => {
     core = r.core;
     const reloaded = new Outbox(file);
     reloaded.load();
-    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded));
+    const saver = new Saver(new Client(new CliTransport(core.config(), core.env())), reloaded, settling(reloaded), IGNORED_DURABILITY);
     const outcomes = await saver.retry();
     assert.deepStrictEqual(outcomes.map((o) => o.status), ['pending']);
     assert.deepStrictEqual(
@@ -811,7 +814,7 @@ describe('two savers over one queue are still one request at a time', () => {
 
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second), IGNORED_DURABILITY);
 
     const first = r.saver.save('a.2', 'src', 'one\n');
     const later = other.save('a.2', 'src', 'two\n');
@@ -967,7 +970,7 @@ describe('two savers over one queue share the queue, not just the lock', () => {
      */
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second), IGNORED_DURABILITY);
 
     /*
      * BOTH ARE STARTED BEFORE EITHER FINISHES. Awaiting the first and
@@ -1005,7 +1008,7 @@ describe('two savers over one queue share the queue, not just the lock', () => {
 
     const second = new Outbox(file);
     second.load();
-    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second));
+    const other = new Saver(new Client(new CliTransport(core.config(), core.env())), second, settling(second), IGNORED_DURABILITY);
 
     await r.saver.save('a.2', 'src', 'one\n');
     /*
@@ -1094,7 +1097,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
      * the answer was in flight. Keeping the entry is deliberate; sending
      * it again for ever is not.
      */
-    const saver = new Saver(client, outbox, () => undefined);
+    const saver = new Saver(client, outbox, () => undefined, IGNORED_DURABILITY);
     const outcome = await saver.save('a.2', 'src', 'body\n');
     const sent = setCalls(core).length;
     assert.strictEqual(
@@ -1133,7 +1136,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
     const outbox = new Outbox(core.outboxFile());
     outbox.load();
     const client = new Client(new CliTransport(core.config(), core.env()));
-    const saver = new Saver(client, outbox, () => undefined);
+    const saver = new Saver(client, outbox, () => undefined, IGNORED_DURABILITY);
     await saver.save('a.2', 'src', 'body\n');
     const before = setCalls(core).length;
     const outcomes = await saver.retry();
@@ -1166,7 +1169,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
     const outbox = new Outbox(core.outboxFile());
     outbox.load();
     const client = new Client(new CliTransport(core.config(), core.env()));
-    const saver = new Saver(client, outbox, settling(outbox));
+    const saver = new Saver(client, outbox, settling(outbox), IGNORED_DURABILITY);
     /*
      * TWO ENTRIES IN THE QUEUE AND NEITHER SETTLED. `unknown` is the one
      * answer that means "ask again", so both saves leave their entry
@@ -1218,7 +1221,7 @@ describe('X1c a save stops when the answer could not be recorded', () => {
       if (settled === 1 && settlement.verdict === 'confirmed') {
         outbox.resolve(req, settlement.cursor);
       }
-    });
+    }, IGNORED_DURABILITY);
     await saver.save('a.2', 'src', 'one\n');
     await saver.save('a.3', 'src', 'two\n');
     assert.strictEqual(outbox.entries.length, 2);
@@ -1335,7 +1338,8 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
     const restarted = new Saver(
       new Client(new CliTransport(core.config(), core.env())),
       r.outbox,
-      settling(r.outbox)
+      settling(r.outbox),
+      IGNORED_DURABILITY
     );
     await restarted.save('a.2', 'src', 'again\n');
     assert.ok(setCalls(core).length > before, 'the restarted saver must have sent it again');
@@ -1616,7 +1620,7 @@ describe('plugin-r2 S-settings a configuration change releases what only a setti
     assert.strictEqual(r.outbox.entries[0].state, 'parked');
     const beforeRelease = setCalls(core).length;
 
-    const released = r.outbox.unparkAll();
+    const released = r.outbox.unparkAll().unparked;
     assert.strictEqual(released, 1, 'the release did not report what it released');
     await r.saver.retry();
 
@@ -1650,7 +1654,7 @@ describe('plugin-r2 S-settings a configuration change releases what only a setti
     const r = rig([{ match: ['set'], stdout: wrote(8), rc: 0 }]);
     core = r.core;
     await r.saver.save('a.2', 'src', 'body2\n');
-    assert.strictEqual(r.outbox.unparkAll(), 0);
+    assert.strictEqual(r.outbox.unparkAll().unparked, 0);
   });
 });
 
@@ -1901,7 +1905,7 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
     const outbox = new Outbox(made.outboxFile());
     outbox.load();
     const client = new Client(new CliTransport(made.config(), made.env()));
-    return { core: made, outbox, saver: new Saver(client, outbox, settling(outbox)) };
+    return { core: made, outbox, saver: new Saver(client, outbox, settling(outbox), IGNORED_DURABILITY) };
   }
 
   it('saves against the named local writer of a store with two writers', async () => {

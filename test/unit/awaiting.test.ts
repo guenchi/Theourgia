@@ -72,9 +72,13 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
     'captures the store before its own first wait, so a block chosen from a store the user has ' +
     'since left is answered unknown-id by the store they are in -- which is visible, and is not ' +
     'a write going to the wrong place',
-  'vscode.commands.registerCommand(REFRESH_OUTLINE.id)':
+  'command(REFRESH_OUTLINE.id)':
     'its only wait is refreshConflicts, which makes the check itself, and nothing follows it',
-  'vscode.commands.registerCommand(SHOW_STATUS.id)':
+  'vscode.commands.registerCommand(id)':
+    'the wrapper every command is registered through (queue item 22): it awaits the command, which ' +
+    'keeps its own generation check, and after it only shows what the durability sink holds -- ' +
+    'sentences about this window\'s queue files, true whatever the settings did meanwhile',
+  'command(SHOW_STATUS.id)':
     'it shows the status of the store configured NOW, which is what the user asked for; a stale ' +
     'generation is the answer to a question nobody put',
   onSaved:
@@ -952,7 +956,7 @@ describe('the retry command releases parked saves', () => {
     const walk = (n: ts.Node): void => {
       if (
         ts.isCallExpression(n) &&
-        n.expression.getText(src) === 'vscode.commands.registerCommand' &&
+        n.expression.getText(src) === 'command' &&
         n.arguments[0]?.getText(src) === 'RETRY_OUTBOX.id'
       ) {
         registrations.push(n);
@@ -973,6 +977,84 @@ describe('the retry command releases parked saves', () => {
       );
     assert.strictEqual(named('retryParked').length, 1, 'the retry command does not call retryParked');
     assert.strictEqual(named('retry').length, 0, 'the retry command calls retry, which leaves parked saves parked');
+  });
+});
+
+/*
+ * EVERY COMMAND IS REGISTERED THROUGH ONE WRAPPER, AND THE WRAPPER SHOWS THE
+ * DURABILITY SINK WHEN THE COMMAND ENDS. (queue item 22, ruled Q4)
+ *
+ * The sink holds what the queue's writes could not promise -- a drain that
+ * settled somebody else's save, a settle, a retry -- and nothing shows it
+ * unless something takes it. A command registered straight through
+ * `vscode.commands.registerCommand` would run its writes and never say.
+ * Calls are counted by the declaration they resolve to (the type checker,
+ * as the save-chain cells above), and a reference to `registerCommand` that
+ * is not a call is one this census cannot follow and fails on.
+ *
+ * NOTE: A TRIPWIRE, NOT A MEASUREMENT, with the save-chain cells' limits: it
+ * reads where calls sit, not whether they run.
+ */
+describe('every command shows what its queue writes could not promise', function () {
+  this.timeout(60000);
+
+  it('registers every command through the wrapper, and the wrapper shows the sink in a finally', () => {
+    const { checker, files } = chainedProgram();
+    const extension = files.find(({ name }) => name === 'extension.ts');
+    assert.ok(extension !== undefined, 'there is no extension.ts in src');
+    let register: ts.Declaration | undefined;
+    const find = (n: ts.Node): void => {
+      if (
+        register === undefined &&
+        ts.isCallExpression(n) &&
+        n.expression.getText(extension.src) === 'vscode.commands.registerCommand'
+      ) {
+        register = checker.getResolvedSignature(n)?.declaration;
+      }
+      ts.forEachChild(n, find);
+    };
+    find(extension.src);
+    assert.ok(register !== undefined, 'nothing in extension.ts calls vscode.commands.registerCommand');
+    const { calls, unreadable } = callsTo(checker, files, register);
+    assert.deepStrictEqual(unreadable, [], 'these references to registerCommand are calls this census cannot follow');
+    const around = calls
+      .filter(({ call }) => {
+        let at: ts.Node | undefined = call.parent;
+        while (at !== undefined && !ts.isFunctionDeclaration(at)) {
+          at = at.parent;
+        }
+        return at === undefined || at.name?.text !== 'command';
+      })
+      .map(({ name, src, call }) => `${name}:${lineOf(src, call)}`);
+    assert.deepStrictEqual(around, [], 'these commands are registered around the wrapper, so nothing shows their warnings');
+    assert.strictEqual(calls.length, 1, `registerCommand is called ${calls.length} times; the wrapper is the one`);
+
+    const handler = calls[0].call.arguments[1];
+    assert.ok(handler !== undefined && isFunction(handler), 'the wrapper does not register a function');
+    const finals = within(handler, (n): n is ts.TryStatement => ts.isTryStatement(n) && n.finallyBlock !== undefined);
+    assert.strictEqual(finals.length, 1, 'the wrapper has no try with a finally around the command');
+    /*
+     * NOTE: AS A STATEMENT OF THE FINALLY ITSELF, not anywhere inside it.
+     * (delivery review r3 of item 22, S2) A `showDurability()` under a
+     * condition -- `if (succeeded)` -- passed the first version of this, and
+     * a command that rejected then showed nothing.
+     */
+    const shows = ((finals[0] as ts.TryStatement).finallyBlock as ts.Block).statements.filter(
+      (statement) =>
+        ts.isExpressionStatement(statement) &&
+        ts.isCallExpression(statement.expression) &&
+        statement.expression.expression.getText(extension.src) === 'showDurability'
+    );
+    assert.strictEqual(shows.length, 1, 'the wrapper\'s finally does not show the durability sink unconditionally');
+    let commands = 0;
+    const count = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && n.expression.getText(extension.src) === 'command') {
+        commands += 1;
+      }
+      ts.forEachChild(n, count);
+    };
+    count(extension.src);
+    assert.ok(commands >= 9, `only ${commands} commands are registered through the wrapper`);
   });
 });
 
