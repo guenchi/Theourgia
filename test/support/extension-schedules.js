@@ -70,6 +70,10 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
   const note=workingNotes.get(key),q=JSON.stringify;
   return {argv:[verb,...args],rc:0,stdout:`(ok (projection ${note?'working':'committed'} ${q(writer)} ${q(args[0])} ${note?q(note.version):'#f'} "base" () ${q(note?note.body:'body\n')} ${q('# '+title+'\n')}))\n`,stderr:''};
  }
+ // Queue item 39: in notice-behind a commit succeeds and says who else landed; in
+ // notice-refused the store refuses it. Every other scenario keeps `unknown`.
+ if(verb==='commit'&&process.argv[3]==='notice-behind') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (behind (("w" . 1) ("other" . 2))))\n',stderr:''};
+ if(verb==='commit'&&process.argv[3]==='notice-refused') return {argv:[verb,...args],rc:1,stdout:'(error cursor-unreachable (after ("w" . 999)) (writing ("w" . 8)))\n',stderr:''};
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
 
  const read=`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)))\n`;
@@ -95,6 +99,14 @@ async function main(){
  const unhandledSeen=new Set();
  if(scenario.startsWith('integrity-show'))process.on('unhandledRejection',(reason,promise)=>unhandledSeen.add(promise));
  await require(path.join(out,'extension.js')).activate({globalStorageUri:{fsPath:storage},subscriptions:[]});
+ // Queue item 39: one save of the opened block, and what the editor was shown.
+ if(scenario==='notice-behind'||scenario==='notice-refused'){
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));const body='# Alpha\nfirst A\n';fs.writeFileSync(a,body);
+  shown.length=0;
+  await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>body});
+  return {shown:shown.slice(),requests:requests.filter(r=>r.verb==='commit').length};
+ }
  if(scenario.startsWith('save')){
   const number=core.publisher.takeSequence.bind(core.publisher);
   core.publisher.takeSequence=(...args)=>{numbering.push(args);return number(...args);};

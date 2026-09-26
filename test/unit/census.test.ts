@@ -155,6 +155,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
   ['mutators.test.ts', 12],
+  /*
+   * ADDED in queue item 39: an information notice and an error notice reach
+   * the editor at their levels.
+   */
+  ['notices.test.ts', 2],
   ['outline.test.ts', 48],
   ['ownership.test.ts', 18],
   ['publication.test.ts', 67],
