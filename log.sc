@@ -3473,6 +3473,9 @@
       ;; check a race could pass.
       (link! tmp target)
       (unlink! tmp)
+      ;; INJECTION ONLY (item 7): held after the link and the unlink and
+      ;; before the directory flush, the store's scope open (A-record).
+      (hold-point! 'publish-after-link)
       (directory-entry-durable! target 'publish)
       (add-to-manifest! store writer segment sha bytes)
       (list 'published segment)))

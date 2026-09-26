@@ -74,7 +74,7 @@
           ;; in `(theourgia client)` and is asked here rather than copied.
           (only (theourgia client) readable-shape?)
           (only (theourgia trace) trace-event!)
-          (only (theourgia ffi) theourgia-fault)
+          (only (theourgia ffi) theourgia-fault hold-point! hold-sleeper-set!)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
@@ -210,6 +210,12 @@
   ;; keep `report`/`say`.
   (define (write-report-line! fd datum)
     (flush-output-port (current-output-port))
+    ;; INJECTION ONLY (item 7): a start held before its report's one write
+    ;; (PID3 stops the daemon here, so no report carries the token). Inside
+    ;; the daemon the wait yields (main sets the sleeper). theourgiad's point
+    ;; 8 calls this BEFORE THE SCHEDULER EXISTS and keeps the blocking
+    ;; default, which is right there: one thread, nothing else to run.
+    (hold-point! 'report-write)
     (write-one! fd (string->utf8
                      (string-append "\n"
                                     (call-with-string-output-port (lambda (p) (write datum p)))
@@ -340,6 +346,11 @@
         (else (loop (cdr rest) (cons (car rest) kept))))))
 
   (define (main store socket attempt)
+    ;; THE HOLD SEAM WAITS BY YIELDING HERE, SET ONCE (F100b M2 Q3): main is
+    ;; the scheduler's first actor and no other exists yet. A hold that
+    ;; blocked the OS thread would stop every actor, and a second held
+    ;; actor could never be reached (A-record). Unarmed, holds never wait.
+    (hold-sleeper-set! sleep-ms)
     ;; MAIN'S STARTUP ANSWERS BY THE TABLE (F100b point 9): a filesystem
     ;; failure before the store process exists -- the socket directory, the
     ;; lock file, the lock, the probe of what is on the socket path -- is
@@ -990,6 +1001,10 @@
     (not (eq? (entry-type (string-append store "/meta.sexp")) 'absent)))
 
   (define (store-loop store main-pid)
+    ;; INJECTION ONLY (item 7): the store held at its entry, before
+    ;; store-here?, so a signal can arrive while main is STARTING (the
+    ;; startup-exit design R6).
+    (hold-point! 'store-start)
     ;; A RAISE BEFORE ANY REPORT (F100b D15), armed by
     ;; `THEOURGIA_FAULT=store-raise-early@report`: a plain condition, outside
     ;; the scope below, so no startup-failed message is sent and main
@@ -1216,7 +1231,10 @@
           ;; answers a reference and `stop-listen!` is about that
           ;; reference, not about the path -- the path may by then be
           ;; somebody else's socket.
-          (lref (listen! socket 64)))
+          (lref (begin
+                  ;; INJECTION ONLY (item 7): held before the bind (P6-timeout).
+                  (hold-point! 'bind)
+                  (listen! socket 64))))
       (send main-pid (list 'bound (device-inode socket)))
       (let loop ()
         (receive

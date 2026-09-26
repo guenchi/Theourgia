@@ -1144,6 +1144,277 @@
                   (and (list? a) (assq 'kind (filter pair? a))) (and (list? (cadr b)) (assq 'kind (filter pair? (cadr b)))))
             '(#t #t #t #t #t (kind unreadable) (kind unreadable))))))
 
+;; ---- F100b M2b2: the daemon's holds, AG-a, A-record, the STARTING signals ----
+;;
+;; Brief v7 rows P6-timeout, PID3, AG-a, A-record and its TWIN, and the
+;; STARTING+signal rows S-a, S-b, S-c (the startup-exit design v3 R5, R6;
+;; M2b2 rulings Q-5 to Q-9). Every hold here waits inside the daemon, which
+;; yields while it waits (main sets the sleeper), so the other actors run.
+(printf "== F100b M2b2: the daemon's holds ==\n")
+(define (wait-until-file p limit-ms)
+  (let loop ((k 0))
+    (cond ((file-exists? p) #t)
+          ((>= (* k 100) limit-ms) #f)
+          (else (system "sleep 0.1") (loop (+ k 1))))))
+(define (wait-until-text p limit-ms)
+  (let loop ((k 0))
+    (cond ((> (string-length (text-of-file p)) 0) #t)
+          ((>= (* k 100) limit-ms) #f)
+          (else (system "sleep 0.1") (loop (+ k 1))))))
+(define (touch! p) (call-with-output-file p (lambda (o) (write 'go o)) 'truncate))
+;; A thin-client command in the background; its stdout goes to `out`.
+(define (client-bg! env args out)
+  (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc "
+                         (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                         "> " out " 2> " out ".err < /dev/null &")))
+(define (first-datum-of p) (let ((ds (datums-of-text (text-of-file p)))) (and (pair? ds) (car ds))))
+(define (lines-of-text t)
+  (let loop ((cs (string->list t)) (cur '()) (acc '()))
+    (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+          ((char=? (car cs) #\newline) (loop (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+          (else (loop (cdr cs) (cons (car cs) cur) acc)))))
+;; Each line read on its own, so one line that does not read (a banner, a
+;; torn line) cannot hide the lines after it.
+(define (line-datums p)
+  (let ((ds (map (lambda (l) (guard (e (#t 'UNREADABLE-LINE)) (read (open-string-input-port l))))
+                 (lines-of-text (text-of-file p)))))
+    (filter (lambda (d) (not (eof-object? d))) ds)))
+(define (pid-alive? p) (= 0 (system (string-append "kill -0 " (number->string p) " 2>/dev/null"))))
+
+;; P6-timeout (item 4, G3, E8): a READABLE valid store, the P6 directory
+;; setup, the daemon held before its bind. At the budget the client answers
+;; timeout naming the pid and the log and LEAVES THE DAEMON ALONE: it is
+;; alive, and once released it binds.
+(let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)) (sock (socket-path s))
+       (rel (string-append root "/p6t-release")))
+  (system (string-append "mkdir -p " kd " && touch " kd "/.socket.lock"))
+  (let* ((r (client-read (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=bind:" rel) s))
+         (a (cadr r))
+         (p (let ((c (and (list? a) (assq 'pid (filter pair? a))))) (and c (cadr c))))
+         (alive (and (integer? p) (pid-alive? p)))
+         (is-daemon (and (integer? p) (equal? (daemon-pids s) (list p)))))
+    (touch! rel)
+    (let* ((bound (wait-until-file sock 5000))
+           (stopped (begin (when (integer? p) (system (string-append "kill -TERM " (number->string p))))
+                           (let loop ((k 0))
+                             (cond ((not (file-exists? sock)) #t)
+                                   ((>= k 50) #f)
+                                   (else (system "sleep 0.1") (loop (+ k 1))))))))
+      (restore-run!)
+      ;; THE BUDGET IS MEASURED (M2b2 review r1, F2): the answer comes after
+      ;; the 10 s budget and not long after it.
+      (want "P6-timeout a daemon held before its bind: at the 10 s budget (kind timeout) (pid p) (log <key>/serve.log), rc 75; p is the daemon, alive; released, it binds; TERM removes the socket"
+            (list (car r) a (and (>= (cadddr r) 10000) (< (cadddr r) 15000)) alive is-daemon bound stopped)
+            (list 75 (list 'error 'serve-start-failed '(kind timeout) (list 'pid p) (list 'log (string-append kd "/serve.log")))
+                  #t #t #t #t #t)))))
+
+;; PID3: the P6-unreadable store, the daemon held before its report's one
+;; write and stopped by SIGKILL there, so no report carries the token. The
+;; kill waits for the hold's marker, not a fixed second, so the daemon is
+;; known to be at the hold when it is stopped.
+(let* ((st (p6-store! #t)) (s (car st))
+       (never (string-append root "/pid3-never")) (out (string-append root "/pid3.out")))
+  (client-bg! (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=report-write:" never)
+              (list "read" "root" "--store" s) out)
+  (let* ((held (wait-until-file (string-append never ".held") 10000))
+         (pids (daemon-pids s)))
+    (for-each (lambda (p) (system (string-append "kill -KILL " (number->string p)))) pids)
+    (let* ((answered (wait-until-text out 10000))
+           (a (first-datum-of out)))
+      (p6-done! s)
+      (want "PID3 a daemon stopped by SIGKILL while held before its report: (kind exited) (signal 9) (attempt T)"
+            (list held (length pids) answered (mask-attempt a))
+            (list #t 1 #t '(error serve-start-failed (kind exited) (signal 9) (attempt <16-hex>)))))))
+
+;; AG-a (D15, G8): a valid store with the P6 directory setup; the store
+;; process raises at its entry before any report, so main hears only the
+;; DOWN while STARTING. The client answers exited with the status and its
+;; token; serve.log holds the store-actor-down line and no report carrying
+;; the token.
+;; THE TRACE ROW MEASURES WHICH BRANCH WAS TAKEN, NOT THE SKIPPED CLEANUP
+;; (M2b2 ruling Q-5; the startup-exit design R7): the STARTING branch traces
+;; daemon-down with a two-element subject (store <reason>), the SERVING
+;; clause with three (store <handling> <reason>). The cleanup it skips has
+;; nothing to release here, so no row can see it.
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)) (lp (string-append kd "/serve.log")))
+  (chmod! "644" (string-append s "/meta.sexp"))
+  (let* ((r (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=store-raise-early@report THEOURGIA_TRACE=1" s))
+         (a (cadr r))
+         (token (let ((c (and (list? a) (assq 'attempt (filter pair? a))))) (and c (cadr c))))
+         (log-ds (line-datums lp))
+         (downs (filter (lambda (d) (and (list? d) (= 4 (length d)) (eq? (car d) 'trace) (eq? (cadr d) 'daemon-down)))
+                        log-ds)))
+    (p6-done! s)
+    (want "AG-a a store that raises before any report: (kind exited) (exit 75) with the token, within 4 s; serve.log has store-actor-down and no report carrying the token"
+          (list (car r) (mask-attempt a) (< (cadddr r) 4000)
+                (and (member '(exiting (reason store-actor-down)) log-ds) #t)
+                (and (string? token) (has-substring? (text-of-file lp) (string-append "(attempt \"" token "\")"))))
+          (list 75 '(error serve-start-failed (kind exited) (exit 75) (attempt <16-hex>)) #t #t #f))
+    ;; The role and the length (M2b2 review r1, F3): the dead actor is named
+    ;; as the store, and the subject has the STARTING branch's two elements.
+    (want "AG-a the STARTING branch was taken: exactly one daemon-down trace, its subject (store <reason>): the role store, two elements"
+          (map (lambda (d) (let ((subj (caddr d))) (and (list? subj) (pair? subj) (list (car subj) (length subj))))) downs)
+          '((store 2)))))
+
+;; A-record (PR-16; G5, G7, J1): two actors each held inside its own record
+;; scope, the writer's scope ending FIRST. The publish's answer must name its
+;; own four entries and nothing of the writer's.
+(define (a-record-store!)
+  (let* ((s (m1-store!)) (a (m1-insert-a s)))
+    (system (string-append "mkdir -p " s "/writers/mirrora1"))
+    (list s a)))
+(define (a-record-expected s tmp)
+  (let ((wd (string-append s "/writers/mirrora1")))
+    (list 'error 'incomplete
+          (list 'failed '(op dir-fsync) (list 'path wd) '(reason "Input/output error") (list 'errno EIO))
+          (list 'written (list (list 'create tmp) (list 'write tmp)
+                               (list 'link tmp (string-append wd "/000001.sexp"))
+                               (list 'unlink tmp))))))
+(define (a-record-tmp a)
+  (let ((w (and (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) 'written))) (cdr a)))))
+    (and w (pair? (cadr w)) (pair? (car (cadr w))) (cadr (car (cadr w))))))
+(let* ((sa (a-record-store!)) (s (car sa)) (a (cadr sa))
+       (r1 (string-append root "/arec-r1")) (r2 (string-append root "/arec-r2"))
+       (wout (string-append root "/arec-w.out")) (pout (string-append root "/arec-p.out"))
+       (env (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=mirrora1 THEOURGIA_HOLD='write-after-create:"
+                           r1 ";publish-after-link:" r2 "'")))
+  ;; The daemon starts with the holds and the flush failure armed.
+  (client-read env s)
+  (client-bg! "" (list "write" a "the text W wrote" "--writer" "draftw1" "--store" s) wout)
+  (let* ((held1 (wait-until-file (string-append r1 ".held") 10000))
+         (publish-sent (client-bg! "" (list "publish" "mirrora1" "1" m1-seg "--store" s) pout))
+         (held2 (wait-until-file (string-append r2 ".held") 10000))
+         (r1-made (touch! r1))
+         (w-answered (wait-until-text wout 10000))
+         (p-pending (= 0 (string-length (text-of-file pout))))
+         (r2-made (touch! r2))
+         (p-answered (wait-until-text pout 10000))
+         (w (first-datum-of wout))
+         (p (first-datum-of pout))
+         (tmp (a-record-tmp p)))
+    (stop-daemon! "A-record" s)
+    (want "A-record W held in its scope, the publish held in its own, W resumes and answers FIRST; the publish then answers incomplete with its own four entries only"
+          (list held1 held2 w-answered p-pending (and (pair? w) (car w)) p-answered
+                (publish-tmp? tmp (string-append s "/writers/mirrora1"))
+                (if (and tmp (equal? p (a-record-expected s tmp))) #t p))
+          '(#t #t #t #t ok #t #t #t))))
+;; The TWIN: the same daemon and store with no holds, W's write completed
+;; before the publish starts.
+(let* ((sa (a-record-store!)) (s (car sa)) (a (cadr sa))
+       (wout (string-append root "/arect-w.out")) (pout (string-append root "/arect-p.out")))
+  (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@publish:dir=mirrora1" s)
+  (client-bg! "" (list "write" a "the text W wrote" "--writer" "draftw1" "--store" s) wout)
+  (let* ((w-answered (wait-until-text wout 10000))
+         (publish-sent (client-bg! "" (list "publish" "mirrora1" "1" m1-seg "--store" s) pout))
+         (p-answered (wait-until-text pout 10000))
+         (w (first-datum-of wout))
+         (p (first-datum-of pout))
+         (tmp (a-record-tmp p)))
+    (stop-daemon! "A-record TWIN" s)
+    (want "A-record TWIN sequential: W's write answers ok, then the publish answers incomplete with its own four entries"
+          (list w-answered (and (pair? w) (car w)) p-answered
+                (publish-tmp? tmp (string-append s "/writers/mirrora1"))
+                (if (and tmp (equal? p (a-record-expected s tmp))) #t p))
+          '(#t ok #t #t #t))))
+
+;; S-a, S-b, S-c (the startup-exit design R5, R6; ruling Q-6): a DIRECT serve
+;; with the store held at store-start. The signal is sent while the store is
+;; held, and the row reads `(trace signal-remembered <kind> #f)` on stderr
+;; BEFORE it creates the release, so the order is read, not assumed. Then the
+;; store's outcome decides the exit. A remembered `again` and a remembered
+;; `drain` exit alike after startup-failed (R5), so that case has one row.
+(define (serve-held! name store sock)
+  (let ((rel (string-append root "/" name "-release"))
+        (out (string-append root "/" name ".out"))
+        (err (string-append root "/" name ".err"))
+        (rcf (string-append root "/" name ".rc")))
+    ;; THE WRAPPER'S OWN ARGV MUST NOT NAME THE STORE: daemon-pids finds the
+    ;; daemon by `theourgiad.sc serve <store>` in a process's argv, and an
+    ;; `sh -c '<command>'` carrying that text would be signalled too. The
+    ;; command goes in a file and sh is given the file.
+    (let ((script (string-append root "/" name ".sh")))
+      (call-with-output-file script
+        (lambda (o)
+          (put-string o (string-append
+                          "THEOURGIA_INJECT=on THEOURGIA_TRACE=1 THEOURGIA_HOLD=store-start:" rel
+                          " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgiad.sc serve " (quoted store)
+                          " --socket " (quoted sock) " > " out " 2> " err " < /dev/null\necho $? > " rcf "\n")))
+        'truncate)
+      (system (string-append "sh " script " &")))
+    (list rel out err rcf)))
+(define (trace-kinds err)
+  (let ((ds (line-datums err)))
+    (map caddr (filter (lambda (d) (and (list? d) (= 4 (length d)) (eq? (car d) 'trace)
+                                        (eq? (cadr d) 'signal-remembered)))
+                       ds))))
+(define (wait-for-kinds err ok? limit-ms)
+  (let loop ((k 0))
+    (cond ((ok? (trace-kinds err)) #t)
+          ((>= (* k 100) limit-ms) #f)
+          (else (system "sleep 0.1") (loop (+ k 1))))))
+(define (just-drain? ks) (equal? ks '(drain)))
+;; After a second TERM the signal watcher sends `again` on every poll, so
+;; the trace is one drain and then again, again, ...
+(define (drain-then-again? ks) (and (pair? ks) (eq? (car ks) 'drain) (pair? (cdr ks)) (for-all (lambda (k) (eq? k 'again)) (cdr ks))))
+(define (term! store) (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p)))) (daemon-pids store)))
+(define (finish-held! h)
+  (touch! (car h))
+  (wait-until-text (cadddr h) 15000)
+  (let ((t (text-of-file (cadddr h)))) (and (> (string-length t) 0) (read (open-string-input-port t)))))
+(define (heads out) (map (lambda (d) (and (pair? d) (car d))) (datums-of-text (text-of-file out))))
+;; THE SIGNAL IS NOT ACTED ON WHILE STARTING (M2b2 reviews r1 F1, r2 F1):
+;; after the trace and before the release, the daemon
+;; - has written NOTHING on stdout (a drain entered early prints its
+;;   draining line);
+;; - is still alive and has not exited, after a settle LONGER than the drain
+;;   budget (drain-budget-ms, 5000): a drain armed early, even silently,
+;;   would end in drain-timeout 75 inside it, and an exit at once would land
+;;   at the start of it.
+(define (still-held? store h)
+  (system "sleep 6")
+  (and (= 0 (string-length (text-of-file (cadr h))))
+       (pair? (daemon-pids store))
+       (= 0 (string-length (text-of-file (cadddr h))))))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sa")) (sock (string-append d "/sock"))
+       (h (serve-held! "sa" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (seen (begin (term! s) (wait-for-kinds (caddr h) just-drain? 5000)))
+       (released-before (not (file-exists? (car h))))
+       (waiting (still-held? s h))
+       (rc (finish-held! h)))
+  (want "S-a one TERM while the store is held: signal-remembered drain is traced BEFORE the release and the daemon is still waiting then; after ready it drains at once with no listener: draining then drained, rc 0, no socket"
+        (list held seen released-before waiting rc (heads (cadr h))
+              (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t #t 0 '(draining exiting) '((draining (in-flight 0)) (exiting (reason drained))) #f)))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sb")) (sock (string-append d "/sock"))
+       (h (serve-held! "sb" s sock))
+       (held (wait-until-file (string-append (car h) ".held") 10000))
+       (seen1 (begin (term! s) (wait-for-kinds (caddr h) just-drain? 5000)))
+       (seen2 (begin (term! s) (wait-for-kinds (caddr h) drain-then-again? 5000)))
+       (waiting (still-held? s h))
+       (rc (finish-held! h)))
+  (want "S-b two TERMs while the store is held: drain then again traced BEFORE the release and the daemon is still waiting then; after ready: second-signal, rc 75, no listener, no socket"
+        (list held seen1 seen2 waiting rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t #t 75 '((exiting (reason second-signal))) #f)))
+
+(let* ((s (m1-store!)) (d (m2-sock-dir! "sc")) (sock (string-append d "/sock")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (chmod! "000" s)
+  (let* ((h (serve-held! "sc" s sock))
+         (held (wait-until-file (string-append (car h) ".held") 10000))
+         (seen (begin (term! s) (wait-for-kinds (caddr h) just-drain? 5000)))
+         (waiting (still-held? s h))
+         (rc (finish-held! h)))
+    (chmod! "755" s)
+    (want "S-c one TERM while a store at 000 is held: drain traced BEFORE the release and the daemon is still waiting then; after startup-failed: main's report, then store-actor-down, rc 75"
+          (list held seen waiting rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+          (list #t #t #t 75
+                (list (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES) '(attempt #f))
+                      '(exiting (reason store-actor-down)))
+                #f))))
+
 (want "the daemons M1's rows started were one process each, by the exact argv line"
       daemon-counts (map (lambda (c) (cons (car c) 1)) daemon-counts))
 (want "no daemon of a store this section made is left running"

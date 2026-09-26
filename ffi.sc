@@ -1990,7 +1990,7 @@
          read-fail-after readdir-fail-after
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
-         lseek-fail mkdir-fail client-extra-child))
+         lseek-fail mkdir-fail client-extra-child store-raise-early))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))

@@ -29,6 +29,7 @@
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
+                hold-point!
                 entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
                 unreadable-entry-reason fs-error? fs-error-op fs-error-errno))
 
@@ -205,6 +206,9 @@
     (ensure-area! store writer "working")
     (let ((path (lock-path store writer)))
       (file-ensure! path)
+      ;; INJECTION ONLY (item 7): held with the writer's scope open, its
+      ;; area and lock file already recorded (A-record).
+      (hold-point! 'write-after-create)
       (with-exclusive-lock path (lambda (fd) (thunk)))))
   (define (entry? x)
     (and (list? x) (= (length x) 8) (eq? (car x) 'working) (equal? (cadr x) 1)
