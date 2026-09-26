@@ -588,6 +588,272 @@ describe('the block being opened is published under the store it was read from',
 });
 
 /*
+ * AN OPEN TAKES ITS READING ON THE SAVE CHAIN. (queue item 24, C11/S4)
+ *
+ * An older reading must not overwrite what the user saved. Before the save
+ * is recorded, `Publisher` refuses a late publication itself
+ * (sequences.test.ts). After it is recorded, `recordWorking` has moved
+ * `written` to the saved bytes, and a publication of an older reading
+ * passes `Publisher`'s own check. What keeps that reading from existing is
+ * order: the open reads the working copy inside the `chain.run` callback
+ * keyed by the directory it publishes into, after any save of that
+ * directory. Moving the read out, keying the chain by something else, or
+ * publishing after the chain each left the whole suite green (measured on
+ * a4e4e43, W1-W4). A design that makes `Publisher` refuse on its own is
+ * queue item 43.
+ *
+ * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT. It reads where calls sit
+ * in the source, by the declaration each call resolves to (the type
+ * checker, as in receipts.test.ts), and a reference to either method that is
+ * not a call is one it cannot follow and fails on. Where reading shape goes
+ * wrong, both ways:
+ *   - it can stay green on wrong code. It measures shape, not execution: a
+ *     read in a closure lexically inside the chain's callback but called
+ *     after the callback has returned is green here and wrong.
+ *   - it can go red on correct code. A closure defined before `chain.run`
+ *     and only called inside it reads on the chain, and is red here (W2h).
+ *     If a refactor does that, rewrite this cell against the new shape
+ *     rather than deleting it.
+ *
+ * NOTE: A READ INSIDE `Working` ITSELF IS WHERE ITS METHOD IS CALLED.
+ * `Working.write` reads back what it wrote (`this.read`, working.ts), and the
+ * first run of this cell reported it as off the chain. It runs on a chain
+ * when `write` does, so a call on `this` inside a method of the class is
+ * followed to every call of that method, and it is on the chain only if
+ * they all are.
+ *
+ * What this does NOT hold: that the save's key, `path.dirname(file)`, and
+ * the open's `directory` are the same path. That is a fact about paths at
+ * run time; the syntax cannot show it.
+ */
+interface Chained {
+  checker: ts.TypeChecker;
+  files: Array<{ name: string; src: ts.SourceFile }>;
+}
+
+let chained: Chained | undefined;
+
+function chainedProgram(): Chained {
+  if (chained === undefined) {
+    const root = path.join(__dirname, '..', '..', '..', 'src');
+    const names = fs
+      .readdirSync(root)
+      .filter((name) => name.endsWith('.ts'))
+      .sort();
+    const built = ts.createProgram(
+      names.map((name) => path.join(root, name)),
+      {
+        target: ts.ScriptTarget.ES2022,
+        module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.Node10,
+        strict: true,
+        skipLibCheck: true,
+        noEmit: true
+      }
+    );
+    chained = {
+      checker: built.getTypeChecker(),
+      files: names.map((name) => ({ name, src: built.getSourceFile(path.join(root, name)) as ts.SourceFile }))
+    };
+  }
+  return chained;
+}
+
+function declaredMethod(files: Chained['files'], owner: string, method: string): ts.Declaration {
+  for (const { src } of files) {
+    for (const statement of src.statements) {
+      if (ts.isClassDeclaration(statement) && statement.name?.text === owner) {
+        const found = statement.members.find(
+          (m) => m.name !== undefined && ts.isIdentifier(m.name) && m.name.text === method
+        );
+        if (found !== undefined) {
+          return found;
+        }
+      }
+    }
+  }
+  throw new Error(`${owner}.${method} is not declared in src`);
+}
+
+/*
+ * THE `chain.run` WHOSE WORK HOLDS THIS NODE: the innermost call resolving to
+ * `PathChain.run` whose second argument is a function lexically enclosing it.
+ */
+function chainHolding(
+  checker: ts.TypeChecker,
+  run: ts.Declaration,
+  node: ts.Node
+): { call: ts.CallExpression; work: ts.Node } | undefined {
+  for (let at: ts.Node | undefined = node.parent; at !== undefined; at = at.parent) {
+    const holder: ts.Node | undefined = at.parent;
+    if (
+      (ts.isArrowFunction(at) || ts.isFunctionExpression(at)) &&
+      holder !== undefined &&
+      ts.isCallExpression(holder) &&
+      holder.arguments[1] === at &&
+      checker.getResolvedSignature(holder)?.declaration === run
+    ) {
+      return { call: holder, work: at };
+    }
+  }
+  return undefined;
+}
+
+/*
+ * EVERY CALL TO `method`, and every reference to it that is not a call.
+ */
+function callsTo(
+  checker: ts.TypeChecker,
+  files: Chained['files'],
+  method: ts.Declaration
+): { calls: Array<{ name: string; src: ts.SourceFile; call: ts.CallExpression }>; unreadable: string[] } {
+  const calls: Array<{ name: string; src: ts.SourceFile; call: ts.CallExpression }> = [];
+  const unreadable: string[] = [];
+  const named = (method as ts.NamedDeclaration).name;
+  for (const { name, src } of files) {
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && checker.getResolvedSignature(n)?.declaration === method) {
+        calls.push({ name, src, call: n });
+      } else if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent)) {
+        const key = n.propertyName ?? n.name;
+        const property = ts.isIdentifier(key) ? checker.getTypeAtLocation(n.parent).getProperty(key.text) : undefined;
+        if (property !== undefined && (property.declarations ?? []).includes(method)) {
+          unreadable.push(`${name}:${lineOf(src, n)} this build cannot read where this call goes`);
+        }
+      } else if (ts.isIdentifier(n) && n !== named && !(ts.isBindingElement(n.parent) && n.parent.name === n)) {
+        const symbol = checker.getSymbolAtLocation(n);
+        const callee =
+          ts.isPropertyAccessExpression(n.parent) &&
+          n.parent.name === n &&
+          ts.isCallExpression(n.parent.parent) &&
+          n.parent.parent.expression === n.parent;
+        if (symbol !== undefined && (symbol.declarations ?? []).includes(method) && !callee) {
+          unreadable.push(`${name}:${lineOf(src, n)} this build cannot read where this call goes`);
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(src);
+  }
+  return { calls, unreadable };
+}
+
+/*
+ * WHERE A CALL IS OFF THE CHAIN, as `file:line` entries: none when it is in a
+ * chain's work; when it is a call on `this` inside a method of a class, the
+ * entries of every call to that method (the call's own line when nothing
+ * calls the method, and the method's references when one is not a call);
+ * otherwise its own line.
+ */
+function offTheChain(
+  checker: ts.TypeChecker,
+  files: Chained['files'],
+  run: ts.Declaration,
+  name: string,
+  src: ts.SourceFile,
+  call: ts.CallExpression,
+  following: Set<ts.Node>
+): string[] {
+  if (chainHolding(checker, run, call) !== undefined) {
+    return [];
+  }
+  let method: ts.Node | undefined = call.parent;
+  while (method !== undefined && !ts.isFunctionLike(method)) {
+    method = method.parent;
+  }
+  const onThis =
+    ts.isPropertyAccessExpression(call.expression) && call.expression.expression.kind === ts.SyntaxKind.ThisKeyword;
+  if (method === undefined || !ts.isMethodDeclaration(method) || !onThis || following.has(method)) {
+    return [`${name}:${lineOf(src, call)}`];
+  }
+  following.add(method);
+  const { calls: callers, unreadable } = callsTo(checker, files, method);
+  if (unreadable.length > 0) {
+    return unreadable;
+  }
+  if (callers.length === 0) {
+    return [`${name}:${lineOf(src, call)} (in a method nothing calls)`];
+  }
+  return callers.flatMap((c) => offTheChain(checker, files, run, c.name, c.src, c.call, following));
+}
+
+function lineOf(src: ts.SourceFile, node: ts.Node): number {
+  return src.getLineAndCharacterOfPosition(node.getStart(src)).line + 1;
+}
+
+describe('an open takes its reading on the save chain (queue item 24)', function () {
+  /*
+   * NOTE: BUILDING THE PROGRAM TAKES SECONDS, once for both cells.
+   */
+  this.timeout(60000);
+
+  it('reads the working copy only inside the work of a chain.run', () => {
+    const { checker, files } = chainedProgram();
+    const run = declaredMethod(files, 'PathChain', 'run');
+    const { calls, unreadable } = callsTo(checker, files, declaredMethod(files, 'Working', 'read'));
+    assert.deepStrictEqual(unreadable, [], 'these references to Working.read are calls this census cannot follow');
+    assert.ok(calls.length >= 3, `the census found ${calls.length} Working.read calls, too few to be reading src`);
+    const off = calls.flatMap(({ name, src, call }) => offTheChain(checker, files, run, name, src, call, new Set()));
+    assert.deepStrictEqual(off, [], 'these Working.read calls are not on a save chain');
+  });
+
+  it('publishes only on that chain, after its reading, into the directory the chain is keyed by', () => {
+    const { checker, files } = chainedProgram();
+    const run = declaredMethod(files, 'PathChain', 'run');
+    const read = declaredMethod(files, 'Working', 'read');
+    const { calls, unreadable } = callsTo(checker, files, declaredMethod(files, 'Publisher', 'publish'));
+    assert.deepStrictEqual(unreadable, [], 'these references to Publisher.publish are calls this census cannot follow');
+    assert.ok(calls.length >= 1, 'the census found no Publisher.publish call, so it is reading nothing');
+    const wrong: string[] = [];
+    for (const { name, src, call } of calls) {
+      const at = `${name}:${lineOf(src, call)}`;
+      const chain = chainHolding(checker, run, call);
+      if (chain === undefined) {
+        wrong.push(`${at} publishes off the save chain`);
+        continue;
+      }
+      let readFirst = false;
+      const look = (n: ts.Node): void => {
+        if (
+          ts.isCallExpression(n) &&
+          n.getStart(src) < call.getStart(src) &&
+          checker.getResolvedSignature(n)?.declaration === read
+        ) {
+          readFirst = true;
+        }
+        ts.forEachChild(n, look);
+      };
+      look(chain.work);
+      if (!readFirst) {
+        wrong.push(`${at} publishes with no Working.read before it on its chain`);
+      }
+      const key = chain.call.arguments[0];
+      const request = call.arguments[0];
+      const given =
+        request !== undefined && ts.isObjectLiteralExpression(request)
+          ? request.properties.find((p) => p.name !== undefined && ts.isIdentifier(p.name) && p.name.text === 'directory')
+          : undefined;
+      const directory =
+        given === undefined
+          ? undefined
+          : ts.isShorthandPropertyAssignment(given)
+            ? checker.getShorthandAssignmentValueSymbol(given)
+            : ts.isPropertyAssignment(given) && ts.isIdentifier(given.initializer)
+              ? checker.getSymbolAtLocation(given.initializer)
+              : undefined;
+      const keyed = ts.isIdentifier(key) ? checker.getSymbolAtLocation(key) : undefined;
+      if (directory === undefined || keyed === undefined || directory !== keyed) {
+        wrong.push(
+          `${at} publishes into ${given?.getText(src) ?? 'a directory this census cannot read'} ` +
+            `on a chain keyed by ${key.getText(src)}`
+        );
+      }
+    }
+    assert.deepStrictEqual(wrong, [], 'these publications are not ordered after a save of their own directory');
+  });
+});
+
+/*
  * NOTE: TODAY THIS IS A TRIPWIRE, NOT A MEASUREMENT.
  *
  * `IntegrityWatch` decides when a store's condition is asked and told, and

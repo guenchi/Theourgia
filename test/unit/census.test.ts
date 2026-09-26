@@ -94,9 +94,10 @@ const AT_LEAST: Array<[string, number]> = [
    * the integrity watch is wired. And in item 7, 10 -> 11: the one that
    * reads that the retry command calls `retryParked`. And in item 16,
    * 11 -> 12: a guard that compares the copy plus one is not a guard; and
-   * 12 -> 13 in its r2: the shapes written around a guard.
+   * 12 -> 13 in its r2: the shapes written around a guard. And in item 24,
+   * 13 -> 15: that the open reads and publishes on the save chain.
    */
-  ['awaiting.test.ts', 13],
+  ['awaiting.test.ts', 15],
   ['blocks.test.ts', 20],
   /*
    * NOTE: INCLUDING ITSELF. This file was exempt from the inventory check
