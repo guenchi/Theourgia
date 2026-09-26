@@ -139,7 +139,7 @@ const AT_LEAST: Array<[string, number]> = [
    * document -- fifteen cells on the composition, five on the text behind
    * a document's address, four against a real store.
    */
-  ['document-view.test.ts', 24],
+  ['document-view.test.ts', 26],
   ['documents.test.ts', 8],
   /*
    * RAISED in queue item 22, 33 -> 65: D1 for each of eight mutators under a

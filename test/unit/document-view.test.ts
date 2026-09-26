@@ -150,6 +150,23 @@ describe('plugin-r3 6 a subtree as one read-only document', () => {
   });
 
   /*
+   * queue item 28, C28a: THE COMPOSITION SHIFTS A BODY'S HEADINGS BY ITS
+   * BLOCK'S DEPTH, below the clamp. The cell above calls `shiftHeadings`
+   * directly, and the composition cells look at depths five and seven, where
+   * the clamp at six hides a shift of twice the depth (item 6's review, M32).
+   */
+  it('moves the headings of a body in a depth-one and a depth-two block by their depths when composing', () => {
+    const text = composed(
+      'a.1',
+      record('a.1', 'root . 0', { title: 'Top', src: 'top body\n' }),
+      record('a.2', '"a.1" . 0', { title: 'Kid', src: '## sub\n' }),
+      record('a.3', '"a.2" . 0', { title: 'Grand', src: '## deeper\n' })
+    );
+    assert.ok(text.includes('\n### sub\n'), `a depth-one body heading is not one level down: ${text}`);
+    assert.ok(text.includes('\n#### deeper\n'), `a depth-two body heading is not two levels down: ${text}`);
+  });
+
+  /*
    * A LINE ENDING IN A CARRIAGE RETURN is still the line it was: a closing
    * fence is still closing, and a bare `#` is still a heading.
    */
@@ -341,6 +358,23 @@ describe('plugin-r3 6 the text behind a document address', () => {
     texts.forget(where);
     await texts.textFor(where, documentQuery('s', 'a.1'));
     assert.strictEqual(asked.length, 2, 'a forgotten address was not composed again');
+  });
+
+  /*
+   * queue item 28, C28b: A TEXT HELD FOR ONE STORE IS NOT SERVED FOR ANOTHER.
+   * Held under store A's address, the same block id under store B's address is
+   * composed from B. The other-store cell below starts with nothing held, so a
+   * holder keyed by the block id alone passed it (item 6's review, M33).
+   */
+  it('composes the same id under another store from that store, not from a text held for the first', async () => {
+    let now = { client: clientOf('A'), store: '/stores/A' };
+    const texts = new DocumentTexts(() => now, composer);
+    texts.hold(address('/stores/A', 'a.1'), 'held for A');
+    now = { client: clientOf('B'), store: '/stores/B' };
+    const text = await texts.textFor(address('/stores/B', 'a.1'), documentQuery('/stores/B', 'a.1'));
+    assert.notStrictEqual(text, 'held for A', 'the text held for store A was served under store B');
+    assert.strictEqual(text, 'text of a.1');
+    assert.deepStrictEqual(asked, [['B', 'a.1']], 'it did not compose from store B');
   });
 
   /*
