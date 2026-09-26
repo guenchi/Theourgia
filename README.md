@@ -1206,14 +1206,14 @@ spellings silently do nothing.
 
 ### `serve`
 
-    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>))
+    (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>) ("--attempt" <token>))
 
 Holds the store open and answers requests over a unix socket until it is
 told to stop. The store may be given as a positional or as `--store`.
 The program is `theourgiad.sc`; it takes this verb and no other, and
 answers any other with `(error bad-request (reason not-a-daemon-verb)
 (usage ...))`, this usage inside the error, exit 1. It reads `--store`,
-`--socket`, `--detach` and `--log`, and refuses any other option,
+`--socket`, `--detach`, `--log` and `--attempt`, and refuses any other option,
 `--wire` and the other verbs' shared options included, with `(error
 bad-request (reason unknown-option) (option "<the option>") (usage ...))`,
 exit 1, before anything is opened or bound. A shared option given without
@@ -1224,6 +1224,12 @@ usage on its own line, exit 1. A store whose name starts
 with `--` is given as `--store <store>` or after `--`; the clients that
 start a daemon pass a store that starts with `-` as `--store <store>`,
 and any other store as the positional.
+
+`--attempt <token>` is not for a person: it is the token a client passes
+for this one start, and the daemon echoes it as the last clause of every
+startup report it writes, so the client can tell its own start's report
+from another's in the shared log. A start made by hand has none, and its
+reports end with `(attempt #f)`.
 
 **Where the socket is.** With no `--socket`, it goes at
 `<run-root>/<key>/socket`, where the run root is `THEOURGIA_RUN` or
@@ -1302,7 +1308,10 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
-**Test-only, and two of them do not exist in an ordinary build.**
+**Test-only. Five of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
+`THEOURGIA_BARRIER`, `THEOURGIA_HOLD` and `THEOURGIA_HOLD_MS` -- are read only
+by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read
+them at all.**
 
 | variable | what it does |
 |---|---|
@@ -1310,6 +1319,8 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link` and `store-start`. An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
