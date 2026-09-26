@@ -37,6 +37,7 @@
   ("evidence-index.sc" (files) file-is-directory? 1 convert c "evidence inventory lists writer files (R2f)")
   ("ffi.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("ffi.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("ffi.sc" (hold-point!) file-exists? 1 keep a "the hold seam's release file (injection only, F100b item 7): not writer layout; a test's own marker")
   ("ffi.sc" (file-is-directory?) file-is-directory? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
   ("ffi.sc" (file-is-regular?) file-is-regular? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
   ("ffi.sc" (mkdir-p!) file-is-directory? 2 convert a "generic helper mkdir-p!: the predicate is now entry-type and raises on an unreadable path (R1: converted unconditionally)")
@@ -97,30 +98,15 @@
    "socket write"
    (e ((and (fs-error? e) (= sent 0)) (list (quote not-sent) (list (quote error) (quote write-failed) (list (quote path) path) (list (quote errno) (fs-error-errno e)))))))
   ("client.sc" (start-one!) 1 guard
-   ((unreadable-entry? e))
+   ((classify-failure e (quote ())))
    refuse a
-   "start-one!: a serve.log that is there and cannot be opened -- its size is read before the guard below -- is kept as a value and answered as the same (error serve-start-failed (unreadable ...)) the guard below gives; any other failure of that read leaves as it did on a839eb1 (review r2, B1)"
-   (e ((unreadable-entry? e) e)))
-  ("client.sc" (start-one!) 2 guard
-   ((fs-error? e) (unreadable-entry? e))
-   refuse a
-   "start-one!: a start that fails -- an fs-error, or a level of the log directory that cannot be searched (unreadable-entry since R1) -- answers (error serve-start-failed ...) naming it, never a raise out of call!"
-   (e ((fs-error? e) (list (quote error) (quote serve-start-failed) (list (quote spawn) (fs-error-errno e)))) ((unreadable-entry? e) (list (quote error) (quote serve-start-failed) (list (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e)))))))
+   "F100b point 6 (M2 Q6): a filesystem failure of the client's own step (the log's length, the run directory, the spawn) is the table's answer over an EMPTY record, as serve-start-failed with (kind K); the client's own entries go only in client-written; anything else propagates"
+   (e ((classify-failure e (quote ())) => (lambda (a) (own-start-failure a)))))
   ("client.sc" (connects?) 1 guard
    ((fs-error? e))
    unrelated a
    "socket connect"
    (e ((fs-error? e) #f)))
-  ("client.sc" (last-error-in) 1 guard
-   (#t)
-   unrelated a
-   "daemon log read"
-   (e (#t #f)))
-  ("client.sc" (last-error-in) 2 guard
-   (#t)
-   unrelated a
-   "daemon log read"
-   (e (#t (quote unreadable))))
   ("client.sc" (socket-dir-refusal) 1 guard
    ((unreadable-entry? e))
    refuse a
@@ -311,7 +297,7 @@
    unrelated a
    "barrier injection"
    (e (#t (void))))
-  ("ffi.sc" (file-ensure!) 1 guard
+  ("ffi.sc" (file-ensure-body!) 1 guard
    ((fs-error? e) (unreadable-entry? e) #t)
    propagate a
    "re-raises; unreadable-entry passes unchanged; the create's own failure is durable-error with the errno mapped from Chez's condition (F100a)"
@@ -1036,6 +1022,21 @@
    conservative a
    "F100b M2a r4 (the startup-exit design R3): a lock-drop whose release raises does not end main -- in STARTING the boot's own store lock comes back here; traced; a tripwire: no row makes an unlock or close fail"
    (e (#t (trace-event! (quote lock-drop-failed) #f #f))))
+  ("client.sc" (exited-answer) 1 guard
+   ((unreadable-entry? e))
+   refuse a
+   "F100b point 6, TK5: the log, read after the daemon's exit under stage client, cannot be read -- the condition is kept and answered as (kind unreadable) naming the log, with the status"
+   (e ((unreadable-entry? e) e)))
+  ("client.sc" (line-datum) 1 guard
+   (#t)
+   unrelated a
+   "select-report: a line whose bytes are not UTF-8 is not a report (peer text); not a filesystem read"
+   (e (#t #f)))
+  ("client.sc" (line-datum) 2 guard
+   (#t)
+   unrelated a
+   "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read"
+   (e (#t #f)))
   )
 
 (raw-accessors

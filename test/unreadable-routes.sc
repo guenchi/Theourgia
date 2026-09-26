@@ -33,7 +33,7 @@
         (only (theourgia wire) encode-record storable-encode)
         ;; F100b M1's rows (at the end of this file).
         (only (theourgia ffi) EACCES EIO)
-        (only (theourgia client) call! envelope-version)
+        (only (theourgia client) call! envelope-version socket-path serve-log-path)
         (only (theourgia render) render-wire)
         (only (theourgia store) store-evidence open-and-reduce)
         (only (theourgia request) actor-sub ev-actor ev-payload)
@@ -966,6 +966,183 @@
           (list (car r) (cadr r)
                 (filter (lambda (d) (or (eq? d 'UNREADABLE-TAIL) (and (pair? d) (eq? (car d) 'error)))) (datums-of-text (caddr r))))
           (list 71 '() (list (list 'error 'detach-failed '(step log) (list 'path log) '(errno EACCES)))))))
+
+;; ---- F100b M2b1: the client's start (point 6), the token and the pid ----------
+;;
+;; Brief rows P6 (unreadable, incomplete, unwritable, exited, store-not-found),
+;; TK1, TK2 a/b, TK5, PID1, PID2. Each start goes through the thin client
+;; (`theourgia.sc read root`), which spawns a daemon with --detach, a log
+;; under THEOURGIA_RUN and this start's token. The token is 16 hex and is
+;; read here as its shape: `(attempt <16-hex>)`.
+(printf "== F100b M2b1: the client's start, the token and the pid ==\n")
+(define (mask-attempt a)
+  (if (list? a)
+      (map (lambda (c)
+             (if (and (pair? c) (eq? (car c) 'attempt) (pair? (cdr c)) (string? (cadr c)) (= 16 (string-length (cadr c))))
+                 '(attempt <16-hex>)
+                 c))
+           a)
+      a))
+;; A run root of the row's own; the key directory and the log follow the
+;; client's own rule (socket-path, serve-log-path) under it.
+(define p6-n 0)
+(define (p6-run-root!)
+  (set! p6-n (+ p6-n 1))
+  (let ((r (string-append m1-run-root "/p6-" (number->string p6-n))))
+    (system (string-append "mkdir -p " r))
+    (putenv "THEOURGIA_RUN" r)
+    r))
+(define (restore-run!) (putenv "THEOURGIA_RUN" (string-append m1-run-root "/run")))
+(define (key-dir s) (let ((p (socket-path s))) (substring p 0 (- (string-length p) (string-length "/socket")))))
+;; -> (rc stdout-datum stderr-text elapsed-ms)
+(define (client-read env s)
+  (let ((out (string-append root "/cr.out")) (err (string-append root "/cr.err")) (t0 (real-time)))
+    (let ((rc (system (string-append env " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store "
+                                     (quoted s) " > " out " 2> " err " < /dev/null"))))
+      (list rc (guard (e (#t 'no-answer)) (call-with-input-file out read)) (text-of-file err) (- (real-time) t0)))))
+;; The P6 setup (E13): meta.sexp at 000; the key directory and .socket.lock
+;; PRE-CREATED, so neither the client nor main records a creation.
+(define (p6-store! pre-create?)
+  (let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)))
+    (when pre-create?
+      (system (string-append "mkdir -p " kd " && touch " kd "/.socket.lock")))
+    (chmod! "000" (string-append s "/meta.sexp"))
+    (list s run kd)))
+(define (p6-done! s) (chmod! "644" (string-append s "/meta.sexp")) (restore-run!))
+
+;; P6-unreadable, with PID1's bound (answered within 4 s of the launch).
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st))
+       (r (client-read "" s)))
+  (p6-done! s)
+  (want "P6-unreadable the thin client answers serve-start-failed with the report's kind and clauses, its token, and (exit 75); rc 75"
+        (list (car r) (mask-attempt (cadr r)))
+        (list 75 (list 'error 'serve-start-failed '(kind unreadable) (list 'path (string-append s "/meta.sexp"))
+                       (list 'reason denied) '(errno EACCES) '(attempt <16-hex>) '(exit 75))))
+  (want "PID1 the P6-unreadable start is answered within 4 s of the client's launch (the pid wait, not the 10 s budget)"
+        (< (cadddr r) 4000) #t))
+;; P6-incomplete: the key directory absent -- the client makes it (its
+;; client-written), main creates the lock (the report's written).
+(let* ((st (p6-store! #f)) (s (car st)) (kd (caddr st))
+       (r (client-read "" s)))
+  (p6-done! s)
+  (want "P6-incomplete the report's written names main's lock; the client's own mkdir is a separate client-written clause, last"
+        (list (car r) (mask-attempt (cadr r)))
+        (list 75 (list 'error 'serve-start-failed '(kind incomplete)
+                       (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                       (list 'written (list (list 'create (string-append kd "/.socket.lock"))))
+                       '(attempt <16-hex>) '(exit 75)
+                       (list 'client-written (list (list 'mkdir kd)))))))
+;; P6-unwritable (G2): the run root at 555, the key directory absent -- the
+;; client's own mkdir fails; no daemon, no attempt clause, no client-written.
+(let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)) (t0 (real-time)))
+  (chmod! "555" run)
+  (let ((r (client-read "" s)))
+    (chmod! "755" run)
+    (restore-run!)
+    (want "P6-unwritable a run root at 555: the client's own failure, unwritable (op mkdir) naming the key directory, errno 13, rc 75, under 1 s"
+          (list (car r) (cadr r) (< (cadddr r) 1000))
+          (list 75 (list 'error 'serve-start-failed '(kind unwritable) '(op mkdir) (list 'path kd) (list 'reason denied) (list 'errno EACCES))
+                #t))))
+;; P6-exited: the daemon's log open fails (open-fail@report); the client's
+;; stdout is the exited answer, its stderr the daemon's inherited line.
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)))
+  (system (string-append "touch " kd "/serve.log"))
+  (let ((r (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=open-fail@report:file=serve.log:errno=EACCES" s)))
+    (p6-done! s)
+    (want "P6-exited a daemon that exits before any report: (kind exited) (exit 71) (attempt T) on stdout, rc 75, and detach-failed on the client's stderr"
+          (list (car r) (mask-attempt (cadr r))
+                (filter (lambda (d) (or (eq? d 'UNREADABLE-TAIL) (and (pair? d) (eq? (car d) 'error)))) (datums-of-text (caddr r))))
+          (list 75 '(error serve-start-failed (kind exited) (exit 71) (attempt <16-hex>))
+                (list (list 'error 'detach-failed '(step log) (list 'path (string-append kd "/serve.log")) '(errno EACCES)))))))
+;; P6-store-not-found (D4): the store removed before the client runs.
+(let* ((s (m1-store!)) (run (p6-run-root!)) (kd (key-dir s)))
+  (system (string-append "mkdir -p " kd " && touch " kd "/.socket.lock && rm -rf " s))
+  (let ((r (client-read "" s)))
+    (restore-run!)
+    (want "P6-store-not-found the report's kind is store-not-found, its store clause, the token and (exit 75), within 4 s"
+          (list (car r) (mask-attempt (cadr r)) (< (cadddr r) 4000))
+          (list 75 (list 'error 'serve-start-failed '(kind store-not-found) (list 'store s) '(attempt <16-hex>) '(exit 75)) #t))))
+;; PID2: an extra child of the client that has exited, unreaped, before the
+;; daemon spawns; a wait that collects any child would answer (exit 0).
+(let* ((st (p6-store! #t)) (s (car st)))
+  (let ((r (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=client-extra-child@client" s)))
+    (p6-done! s)
+    (want "PID2 with an extra exited child the status is the daemon's own: (exit 75)"
+          (let ((a (cadr r))) (and (list? a) (assq 'exit (filter pair? a))))
+          '(exit 75))))
+;; TK2 (a): the framing in the log -- a line break before the report, and
+;; the report line complete.
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)))
+  (client-read "" s)
+  (p6-done! s)
+  (let ((log (text-of-file (string-append kd "/serve.log"))))
+    (want "TK2-a serve.log begins with a line break and the report line is complete"
+          (list (and (> (string-length log) 0) (char=? (string-ref log 0) #\newline))
+                (has-substring? log "(attempt \"")
+                (let ((d (datums-of-text log))) (and (pair? d) (pair? (car d)) (eq? 'error (car (car d))) (pair? (cdr d)) (cadr d))))
+          '(#t #t (exiting (reason store-actor-down))))))
+;; TK2 (b): a planted unterminated line before the start; the client answers
+;; its own report, and the planted text is terminated by the report's line break.
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)) (lp (string-append kd "/serve.log")))
+  (call-with-output-file lp (lambda (o) (put-string o "(error planted (attempt \"X\")")) 'truncate)
+  (let ((r (client-read "" s)))
+    (p6-done! s)
+    (let ((log (text-of-file lp)))
+      (want "TK2-b a planted unterminated line: the client selects its own report by the token, and the log reads planted, newline, the report, exiting"
+;; The rest after the planted text, read as lines: the report
+            ;; carrying a token, then the exiting line, then the end.
+            (let* ((planted "(error planted (attempt \"X\")")
+                   (n (string-length planted))
+                   (rest (and (> (string-length log) n) (substring log n (string-length log))))
+                   (lines (and rest (let split ((cs (string->list rest)) (cur '()) (acc '()))
+                                      (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+                                            ((char=? (car cs) #\newline) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+                                            (else (split (cdr cs) (cons (car cs) cur) acc)))))))
+              (list (let ((a (mask-attempt (cadr r)))) (and (list? a) (cadr (assq 'kind (filter pair? (cddr a))))))
+                    (and (string=? (substring log 0 n) planted) #t)
+                    (and lines (length lines))
+                    (and lines (= 3 (length lines)) (string=? (car lines) ""))
+                    (and lines (= 3 (length lines)) (has-substring? (cadr lines) "(error unreadable") (has-substring? (cadr lines) "(attempt \""))
+                    (and lines (= 3 (length lines)) (caddr lines))))
+            (list 'unreadable #t 3 #t #t "(exiting (reason store-actor-down))")))))
+;; TK5 (D8): the client's log read fails under stage `client`.
+(let* ((st (p6-store! #t)) (s (car st)) (kd (caddr st)))
+  (let ((r (client-read "THEOURGIA_INJECT=on THEOURGIA_FAULT=read-fail-after@client:file=serve.log:errno=EIO" s)))
+    (p6-done! s)
+    (want "TK5 the log cannot be read after the exit: (kind unreadable) naming serve.log with EIO, then the status"
+          (list (car r) (cadr r))
+          (list 75 (list 'error 'serve-start-failed '(kind unreadable) (list 'path (string-append kd "/serve.log"))
+                         '(reason "Input/output error") '(errno EIO) '(exit 75))))))
+;; TK1 (the token): client A held at client-scan after its daemon reported;
+;; client B starts and answers its own token; then A, released, answers ITS
+;; token although B's report came later in the same log.
+(let* ((st (p6-store! #t)) (s (car st))
+       (ra (string-append root "/tk1-release")) (aout (string-append root "/tk1-a.out")))
+  (system (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=client-scan:" ra
+                         " perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgia.sc read root --store " (quoted s)
+                         " > " aout " 2> /dev/null < /dev/null &"))
+  ;; THE ORDER IS ASSERTED, NOT HOPED FOR (M2b1 review r1, F5): A's marker
+  ;; was seen before B started, and A had not answered when B had.
+  (let* ((held (let wait ((k 0))
+                 (cond ((file-exists? (string-append ra ".held")) #t)
+                       ((>= k 250) #f)
+                       (else (system "sleep 0.1") (wait (+ k 1))))))
+         (b (client-read "" s))
+         (a-silent (= 0 (string-length (text-of-file aout)))))
+    (call-with-output-file ra (lambda (o) (write 'go o)))
+    (let wait ((k 0))
+      (when (and (< k 100) (= 0 (string-length (text-of-file aout))))
+        (system "sleep 0.1") (wait (+ k 1))))
+    (system "sleep 0.2")
+    (p6-done! s)
+    (let* ((a (guard (e (#t 'no-answer)) (call-with-input-file aout read)))
+           (ta (and (list? a) (assq 'attempt (filter pair? a))))
+           (tb (and (list? (cadr b)) (assq 'attempt (filter pair? (cadr b))))))
+      (want "TK1 A held (its marker seen before B started, no answer when B had one), then A and B answer different tokens, each its own start's, both unreadable"
+            (list held a-silent
+                  (and ta (cadr ta) #t) (and tb (cadr tb) #t) (and ta tb (not (equal? ta tb)))
+                  (and (list? a) (assq 'kind (filter pair? a))) (and (list? (cadr b)) (assq 'kind (filter pair? (cadr b)))))
+            '(#t #t #t #t #t (kind unreadable) (kind unreadable))))))
 
 (want "the daemons M1's rows started were one process each, by the exact argv line"
       daemon-counts (map (lambda (c) (cons (car c) 1)) daemon-counts))

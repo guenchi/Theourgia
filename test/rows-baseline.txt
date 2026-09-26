@@ -8,10 +8,10 @@ cli-forward 22 25 d95ae64e53d1be5e9b7be3bb78eeea28
 cli1 99 122 d20acdbf79ce31d24a1fca1a2f6b7f37
 cli2 12 24 103541ab36b3891ccc7f09cc2e9705af
 cli3 301 408 1f953cffe27a8c5390d62bffb698484a
-client-program 51 54 9873360f5ceb02ca0b677b0e1336ede0
-client-socket 39 42 a90e776bbf8f15f9433ac36ed3324db2
-client-start 23 33 c7aa1353855de1425988ebb16d3fd6c1
-closures 16 24 c92131def026643185c1eb5c687c2cb0
+client-program 51 54 8c53739b17fd77ca14d62b1aaa733c94
+client-socket 39 42 4d27b50746cc583236fd85fe8a977cd1
+client-start 23 33 e2d3040e7843f0fd61db06f2b930ab85
+closures 16 24 11013077cd252ae6d88503e4d2fc8d4d
 commit-consumes 25 28 e0dcd80c1c849b3472c9c4b64586da33
 condition-render 11 18 6549c1743dcfc74b31d1956acde62b42
 consumption-index 64 67 a503ece2d8e27fe674a2b5630aeb7d29
@@ -45,7 +45,7 @@ facade-ffi 72 79 8947fe9c097320ff92496964253f7943
 facade-gate 33 73 84e1f1ea4fdc0f53f930829c9e693fce
 facade-net 31 34 7a534b85de874fff97d2461b87d28df7
 facade-proc 20 23 91dc0314332e30c76a067df94162cb2b
-facade-record 36 39 92ffee960a4a8f6d3e3e3067233af6d1
+facade-record 57 60 6de1e4a6b6427581411fa3a2051cbc20
 facade-sched 16 19 912ca8b64c202c415537fada86e0d7a3
 facades 23 26 b5dc3be1323324f2ed8adfac1a45b7d4
 ffiprobe - 14 b1662267e06315b96b1088173414aeef
@@ -121,8 +121,8 @@ unreadable-adopt 34 47 0c0174935a6731998868a16b89d2a2be
 unreadable-census 40 45 bcfff8559d68b8fd6159b0b56784aca4
 unreadable-drafts 16 24 629bbd6c81e9d9af8af1fe25ff47c1ec
 unreadable-publish 12 20 6b80679017bfaea17e88094291717766
-unreadable-routes 55 64 a84a34006bcf4ac7cad7fbcd52a1bb22
-unreadable-writer 77 105 c541b1a493a64cb8a29fc1caa6fb777b
+unreadable-routes 66 76 bab1e475733447b0716eb076d23bfdb0
+unreadable-writer 77 105 265f36051b59a0bd6ec299c4e69017f5
 unscoped-lock 2 11 0bc39c12567c9dde5dff75237df153c7
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9
 verify-l4 - 14 9676df0f5ab614725215d746d2a76fd9

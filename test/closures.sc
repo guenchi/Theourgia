@@ -178,9 +178,11 @@
       (server-parts-of 'client)
       '())
 
+;; (theourgia answers) is in it since F100b item 6: the client's own
+;; failures are answered by the table (classify-failure).
 (want "C-1 and its closure is exactly what it should be"
       (closure 'client)
-      '(client digest ffi render trace))
+      '(answers client digest ffi render trace))
 
 ;; KEY: THE CONTROL ROW. Without it every row above is also passed by a
 ;; walker that found no edges at all -- which is the state this file
@@ -217,9 +219,11 @@
       (filter (lambda (n) (memq n server-side)) (closure-of-all shell-imports))
       '())
 
+;; (theourgia answers) is in it since F100b item 6: the client's own
+;; failures are answered by the table (classify-failure).
 (want "C-1 and the shell's closure is exactly what it should be"
       (closure-of-all shell-imports)
-      '(arguments client digest ffi json render trace))
+      '(answers arguments client digest ffi json render trace))
 
 
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------

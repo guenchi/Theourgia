@@ -222,13 +222,21 @@
 (system (string-append "echo not-a-socket > " blocked))
 
 (want "CS-3 a socket path held by a file is reported in the daemon's own words"
-      (ensure-daemon! (argv-for blocked) store blocked)
-;; The daemon's report carries main's record -- the lock file this start
-      ;; created -- and ends with its attempt clause (F100b items 2 and 3); #f
-      ;; until the client passes a token (M2b).
-      (list 'error 'serve-path-occupied (list 'path blocked)
+      ;; F100b item 6: relayed as serve-start-failed whose kind is the
+      ;; report's, the report's clauses verbatim (main's record, the attempt
+      ;; token this start passed -- read here as its shape), then the exit.
+      (let ((a (ensure-daemon! (argv-for blocked) store blocked)))
+        (if (list? a)
+            (map (lambda (c)
+                   (if (and (pair? c) (eq? (car c) 'attempt) (pair? (cdr c)) (string? (cadr c))
+                            (= 16 (string-length (cadr c))))
+                       '(attempt <16-hex>)
+                       c))
+                 a)
+            a))
+      (list 'error 'serve-start-failed '(kind serve-path-occupied) (list 'path blocked)
             (list 'written (list (list 'create (string-append sock-here "/.blocked.sock.lock"))))
-            '(attempt #f)))
+            '(attempt <16-hex>) '(exit 75)))
 
 ;; NEVER: AND THE FILE IS STILL THERE. A daemon that reported the path was
 ;; occupied and then took it anyway would have destroyed whatever was
@@ -450,10 +458,10 @@
                         "--detach" "--log" noisy-log "--socket" occupied)
                   noisy-store occupied)))
     (want "CS-7 a refusal written after non-ASCII in the log is relayed whole"
-          (if (and (pair? answer) (eq? 'error (car answer)))
-              (cadr answer)
+          (if (and (list? answer) (eq? 'error (car answer)))
+              (assq 'kind (cddr answer))
               (list 'said answer))
-          'serve-path-occupied)))
+          '(kind serve-path-occupied))))
 
 ;; ---- CS-8 a run root that cannot be written to ----------------------------
 ;;
@@ -535,9 +543,11 @@
               (closure-from 'client))
       '())
 
+;; (theourgia answers) is in it since F100b item 6: the client's own
+;; failures are answered by the table (classify-failure).
 (want "IMPORTS and the client's closure is exactly what it should be"
       (closure-from 'client)
-      '(client digest ffi render trace))
+      '(answers client digest ffi render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.sc`; what IT reaches is a separate fact from what the

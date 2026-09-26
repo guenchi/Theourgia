@@ -793,9 +793,11 @@
           #t)
     (want "K8 client: an existing serve.log this process cannot open answers serve-start-failed naming it with a reason, spawns nothing, and does not raise"
           (if (and (pair? a) (not (eq? (car a) 'RAISED)))
-              (let* ((u (and (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'unreadable))) (cdr a))))
-                     (path (and u (list? u) (find (lambda (x) (and (pair? x) (eq? (car x) 'path))) (cdr u))))
-                     (reason (and u (list? u) (find (lambda (x) (and (pair? x) (eq? (car x) 'reason))) (cdr u)))))
+              ;; F100b item 6 (M2 Q6): the client's own failure in the table's
+              ;; shape, flat -- (kind unreadable) (path p) (reason r) (errno e).
+              (let* ((u (and (list? a) (member '(kind unreadable) (cdr a)) a))
+                     (path (and u (find (lambda (x) (and (pair? x) (eq? (car x) 'path))) (cdr u))))
+                     (reason (and u (find (lambda (x) (and (pair? x) (eq? (car x) 'reason))) (cdr u)))))
                 (list (car a) (and (pair? (cdr a)) (cadr a))
                       (and path (pair? (cdr path)) (equal? (cadr path) lp))
                       (and reason (pair? (cdr reason)) (string? (cadr reason)) (> (string-length (cadr reason)) 0))

@@ -574,9 +574,11 @@
               (closure-from 'client))
       '())
 
+;; (theourgia answers) is in it since F100b item 6: the client's own
+;; failures are answered by the table (classify-failure).
 (want "IMPORTS and the client's closure is exactly what it should be"
       (closure-from 'client)
-      '(client digest ffi render trace))
+      '(answers client digest ffi render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.sc`; what IT reaches is a separate fact from what the

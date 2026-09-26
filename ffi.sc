@@ -168,8 +168,14 @@
 ;;;                                       handlers are F100c's)
 ;;;   path-case-sensitive?  pathconf; `unknown` for any failure, not
 ;;;                       classed (it asks about the volume, not an entry)
-;;;   EIO ENOENT EACCES ENOTDIR EBADF     the errno numbers, as
+;;;   EIO ENOENT EACCES ENOTDIR EBADF ECHILD  the errno numbers, as
 ;;;                                       durable-error carries them
+;;;   waitpid-status      waitpid         #f while the child runs, (exit n)
+;;;                                       or (signal n) once it has ended;
+;;;                                       durable-error (op waitpid) for a
+;;;                                       pid that is not a child (ECHILD)
+;;;   hold-point!         (injection only) blocks at a named stage until a
+;;;                                       release file exists (THEOURGIA_HOLD)
 ;;;   errno-text          strerror        the system's message for an errno
 ;;;                                       number; no filesystem access (the
 ;;;                                       reason (theourgia answers) gives a
@@ -373,7 +379,8 @@
           unlink! file-create-exclusive! mkdir-p!
           size-entry overwrite-entry! entry-bytes read-entry-range
           with-mutation-record mutation-record mutation-set-self!
-          EIO ENOENT EACCES ENOTDIR EBADF
+          EIO ENOENT EACCES ENOTDIR EBADF ECHILD waitpid-status
+          hold-point! hold-sleeper-set!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv!
           unix-socket-connect fd-read socket-timeout! sun-path-max
@@ -1092,6 +1099,29 @@
             (let ((r (c-waitpid -1 status WNOHANG)))
               (if (> r 0) (loop (+ n 1)) n))))))
 
+  ;; ONE CHILD, BY ITS PID, WITHOUT WAITING (F100b item 4). The client retains
+  ;; the daemon's pid and polls it in its socket wait: #f while it runs,
+  ;; `(exit n)` or `(signal n)` once it has ended, which reaps it. NOT
+  ;; waitpid(-1): that collects ANY child, and a client with another child
+  ;; that exits first would read that child's status as the daemon's (PID2).
+  ;; The status word is decoded as <sys/wait.h> does on both platforms: the
+  ;; low seven bits are the terminating signal, 0 for a normal exit, whose
+  ;; code is the next eight. A pid that is not a child is durable-error
+  ;; (op waitpid) with its errno, ECHILD.
+  (define (waitpid-status pid)
+    (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
+          (status (make-bytevector 4 0)))
+      (let ((r (c-waitpid pid status WNOHANG)))
+        (cond
+          ((= r 0) #f)
+          ((< r 0) (raise (fs-err 'waitpid pid (errno))))
+          (else
+           (let* ((w (bytevector-s32-native-ref status 0))
+                  (sig (fxand w #x7f)))
+             (if (= sig 0)
+                 (list 'exit (fxand (fxsra w 8) #xff))
+                 (list 'signal sig))))))))
+
   ;; ---- does this filesystem distinguish Foo from foo -----------------------
   ;;
   ;; NEVER: A STORE'S KEY MUST NOT CHANGE WHEN THE STORE APPEARS, and on a
@@ -1324,6 +1354,10 @@
   ;; syscall ran (the record's real-failure case). 9 on macOS, FreeBSD and
   ;; Linux; measured here by facade-ffi's real-syscall row.
   (define EBADF 9)
+  ;; waitpid(2) on a pid that is not a child of this process: 10 on macOS,
+  ;; FreeBSD and Linux (sys/errno.h). Exported so a row reads it by name
+  ;; (F100b Q7, H4).
+  (define ECHILD 10)
   (define EMFILE 24)
   (define F_FULLFSYNC 51)
   (define macos? (eq? platform-os 'macos))
@@ -1956,7 +1990,7 @@
          read-fail-after readdir-fail-after
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
-         lseek-fail mkdir-fail))
+         lseek-fail mkdir-fail client-extra-child))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2180,6 +2214,76 @@
      ;; port is used rather than a read(2) binding because blocking on
      ;; open is exactly the behaviour wanted and nothing here needs a
      ;; partial read.
+;; ---- the hold seam (F100b item 7) -----------------------------------
+     ;;
+     ;; ONE MECHANISM, SEPARATE FROM THEOURGIA_FAULT so a hold and a fault can
+     ;; be armed together. THEOURGIA_HOLD is `<stage>:<release>` or several
+     ;; of them joined by `;`. At a named stage the process creates
+     ;; `<release>.held` -- the acknowledgement a row polls for -- and waits,
+     ;; polling every 20 ms, until `<release>` exists. After THEOURGIA_HOLD_MS
+     ;; (default 30000) it goes on and says `(theourgia hold-expired <stage>)`
+     ;; on stderr. Once the release exists, later passes do not wait.
+     ;; AN UNKNOWN STAGE OR A MALFORMED ENTRY IS REFUSED AT LOAD, like an
+     ;; unknown fault: a hold aimed at nothing would read, in a test log,
+     ;; exactly like a hold that never came.
+     (define known-hold-stages
+       '(client-scan report-write bind write-after-create publish-after-link store-start))
+     (define (split-at-semicolons s)
+       (let loop ((i 0) (from 0) (out '()))
+         (cond
+           ((= i (string-length s)) (reverse (cons (substring s from i) out)))
+           ((char=? (string-ref s i) #\;) (loop (+ i 1) (+ i 1) (cons (substring s from i) out)))
+           (else (loop (+ i 1) from out)))))
+     (define holds
+       (let ((v (getenv "THEOURGIA_HOLD")))
+         (if (not (and (string? v) (> (string-length v) 0)))
+             '()
+             (map (lambda (entry)
+                    (let-values (((stage release) (split-at-colon entry)))
+                      (unless (and release (> (string-length release) 0)
+                                   (memq (string->symbol stage) known-hold-stages))
+                        (assertion-violation 'theourgia-ffi
+                          "THEOURGIA_HOLD must be <stage>:<path>[;<stage>:<path>...] with a known stage"
+                          v known-hold-stages))
+                      (cons (string->symbol stage) release)))
+                  (split-at-semicolons v)))))
+     ;; AN EXACT NON-NEGATIVE INTEGER OF MILLISECONDS, OR REFUSED AT LOAD
+     ;; like a stage (M2b1 review r1, F3): +inf.0 or +nan.0 would never
+     ;; expire, and a complex number would raise inside the wait.
+     (define hold-ms
+       (let ((v (getenv "THEOURGIA_HOLD_MS")))
+         (if (not v)
+             30000
+             (let ((n (string->number v 10)))
+               (unless (and n (exact? n) (integer? n) (>= n 0))
+                 (assertion-violation 'theourgia-ffi
+                   "THEOURGIA_HOLD_MS must be an exact non-negative integer of milliseconds" v))
+               n))))
+     ;; THE WAIT IS SETTABLE, ONCE, NEVER PARAMETERIZED (F100b M2 Q3). The
+     ;; default blocks the OS thread, which is right for the thin client (no
+     ;; scheduler). A daemon sets igropyr's sleep-ms, which yields, before any
+     ;; actor exists -- a hold that blocked the thread would stop every actor,
+     ;; and a second held actor could never be reached (A-record).
+     (define hold-sleeper
+       (lambda (ms) (sleep (make-time 'time-duration (* ms 1000000) 0))))
+     (define (hold-sleeper-set! proc) (set! hold-sleeper proc))
+     (define (hold-point! stage)
+       (let ((h (assq stage holds)))
+         (when h
+           (let ((release (cdr h)))
+             (trace-event! 'hold stage #f)
+             (file-ensure-unrecorded! (string-append release ".held"))
+             (let loop ((waited 0))
+               (cond
+                 ((file-exists? release) (void))
+                 ((>= waited hold-ms)
+                  (let ((p (current-error-port)))
+                    (put-string p "(theourgia hold-expired ")
+                    (put-string p (symbol->string stage))
+                    (put-string p ")\n")
+                    (flush-output-port p)))
+                 (else (hold-sleeper 20) (loop (+ waited 20)))))))))
+
      (define (barrier! name)
        (when (and barrier-name (eq? name barrier-name))
          (trace-event! 'barrier name #f)
@@ -2369,6 +2473,8 @@
      (define (open-fault path) #f)
      (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
+     (define (hold-point! stage) (void))
+     (define (hold-sleeper-set! proc) (void))
      (define no-flock? #f)
      (define (write-once fd bv count subject) (real-write/skipped fd bv count))))
 
@@ -2380,7 +2486,18 @@
   ;; contents alone, so this is create-if-absent and nothing else. It is
   ;; separate and exported because a caller sometimes wants only this --
   ;; the lock file has to exist before anyone opens it read-only.
-  (define (file-ensure! path)
+  (define (file-ensure! path) (file-ensure-body! path #t))
+
+  ;; THE HOLD SEAM'S MARKER IS CREATED THROUGH THE DOOR, WITHOUT A NOTE (F100b
+  ;; item 7, Q8). A hold inside an open scope must not add `<path>.held` to
+  ;; that scope's record. The flag is LEXICAL -- an argument -- and NOT a
+  ;; parameter: under igropyr a parameterize is one global cell that a
+  ;; preemption hands to every other actor (actor.sc:459-469), so it would
+  ;; suppress the notes of whatever actor ran during the hold. hold-point! is
+  ;; the only caller, and it exists only in an injection build.
+  (define (file-ensure-unrecorded! path) (file-ensure-body! path #f))
+
+  (define (file-ensure-body! path record?)
     (unless (string? path)
       (assertion-violation 'file-ensure! "path must be a string" path))
     ;; THE PRESENCE TEST RAISES FIRST (entry-type): under a parent that
@@ -2395,7 +2512,7 @@
                             ((unreadable-entry? e) (raise e))
                             (#t (raise (fs-err 'create path (and (condition? e) (condition-errno e))))))
                     (open-file-output-port path (file-options no-fail no-truncate)))))
-        (note! (list 'create path))
+        (when record? (note! (list 'create path)))
         (trace-event! 'create path #f)
         (close-unwritten-port! path port)))
     path)

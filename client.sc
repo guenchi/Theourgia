@@ -25,7 +25,7 @@
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
-          next-attempt-token)
+          next-attempt-token select-report)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
@@ -34,14 +34,19 @@
           (only (chezscheme) getenv guard raise sleep make-time
                 write call-with-string-output-port
                 read open-string-input-port eof-object? with-exception-handler
-                parameterize char-whitespace? get-process-id)
+                parameterize char-whitespace? get-process-id
+                process close-port get-string-all)
           (only (theourgia ffi)
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
                 spawn-detached! trace-event! fs-error? fs-error-errno
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
-                entry-type read-entry)
+                entry-type read-entry
+                ;; F100b point 6: the pid wait, the hold seam, the record.
+                waitpid-status hold-point! theourgia-fault
+                with-mutation-record mutation-record)
+          (only (theourgia answers) classify-failure)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
 
@@ -538,112 +543,181 @@
             #f
             (list 'error 'socket-dir-missing (list 'dir dir))))))
 
+  ;; ---- starting one, and saying why it did not start (F100b point 6) ------
+  ;;
+  ;; A START IS NAMED, WAITED FOR BY ITS PID, AND ANSWERED FROM ITS OWN REPORT.
+  ;; - The token (next-attempt-token) is passed as `--attempt`; the daemon
+  ;;   echoes it as the last clause of every startup report (item 3).
+  ;; - The client's own filesystem work -- the run directory -- is in a
+  ;;   record scope of its own. Its entries go ONLY in a `(client-written
+  ;;   ...)` clause, present when non-empty; the client never merges them
+  ;;   into the report's `written` (item 2, M2b Q-1).
+  ;; - The daemon's pid is retained and polled with waitpid-status in the
+  ;;   socket wait (item 4). When it has exited before the socket appeared,
+  ;;   the log is read -- ONLY THEN, or when the budget is spent -- and the
+  ;;   report carrying this start's token is selected (select-report).
+  ;; - The answer, item 6: `(error serve-start-failed (kind K) <the report's
+  ;;   clauses after its kind, verbatim, attempt included> (exit n | signal
+  ;;   n) [(client-written ...)])`; with no report carrying the token,
+  ;;   `(kind exited) (exit n | signal n) (attempt T)`; a daemon still alive
+  ;;   at the budget with no socket, `(kind timeout) (pid p) (log <path>)`,
+  ;;   and the daemon is LEFT ALONE.
+  ;; - A failure of the client's own step (the run directory, the log's
+  ;;   length, the spawn) is the table's answer over an EMPTY record, in the
+  ;;   same `(kind K) <clauses>` shape, with client-written (M2 Q6).
   (define (start-one! argv store socket)
-    (let* ((log-path (serve-log-path store))
-           ;; NEVER: A LOG THAT IS THERE AND CANNOT BE OPENED DOES NOT LEAVE
-           ;; THIS FUNCTION. Its size is read before the guard below, and
-           ;; since R1 file-size raises unreadable-entry for a file it cannot
-           ;; open; that went past every outcome this library defines (review
-           ;; r2, B1). It is the same failed start as the run directory
-           ;; below, and it is answered the same way. Only unreadable-entry is
-           ;; caught here: any other failure of this read leaves as it always
-           ;; did.
-           (before (guard (e ((unreadable-entry? e) e))
-                     (log-length log-path))))
-      (if (unreadable-entry? before)
-          (list 'error 'serve-start-failed
-                (list 'unreadable
-                      (list 'path (unreadable-entry-path before))
-                      (list 'reason (unreadable-entry-reason before))))
-      (guard (e ((fs-error? e) (list 'error 'serve-start-failed
-                                     (list 'spawn (fs-error-errno e))))
-                ;; AND A DIRECTORY ON THE WAY THAT CANNOT BE SEARCHED IS THE
-                ;; SAME FAILED START. mkdir-p! asks the type of each level,
-                ;; and since R1 a level it cannot search raises
-                ;; unreadable-entry rather than answering "not a directory";
-                ;; caught only as fs-error, that left this function exactly
-                ;; the way the note below says it must not.
-                ((unreadable-entry? e) (list 'error 'serve-start-failed
-                                             (list 'unreadable
-                                                   (list 'path (unreadable-entry-path e))
-                                                   (list 'reason (unreadable-entry-reason e))))))
-        ;; NEVER: MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE. It sat
-        ;; outside this guard, so a run root that could not be written to
-        ;; raised out of `call!` entirely -- past every outcome this
-        ;; library defines, to a caller that has no handler for it. It is
-        ;; a start that failed, and it is reported as one.
-        (mkdir-p! (dirname-of log-path))
-        ;; KEY: ONE EVENT PER PROCESS ACTUALLY STARTED, so "did it start
-        ;; one?" is a count and not a matter of looking soon enough.
-        ;; Measured by waiting and then reading the log, the answer
-        ;; depends on whether the process that lost the race had got as
-        ;; far as writing: a slower loser reads as "nothing was started".
-        ;; This is emitted where the process is created, so there is
-        ;; nothing to be early or late for.
-        (trace-event! 'spawn (spawn-detached! argv) #f)
+    (let* ((token (next-attempt-token))
+           (argv (append argv (list "--attempt" token)))
+           (log-path (serve-log-path store))
+           (outcome
+            (with-mutation-record
+              (lambda ()
+                (let ((answer
+                       (guard (e ((classify-failure e '())
+                                  => (lambda (a) (own-start-failure a))))
+                         (start-watched! argv socket log-path token))))
+                  (cons answer (mutation-record)))))))
+      (with-client-written (car outcome) (cdr outcome))))
+
+  ;; The table's answer for the client's own step, as serve-start-failed.
+  (define (own-start-failure a)
+    (append (list 'error 'serve-start-failed (list 'kind (cadr a))) (cddr a)))
+
+  ;; client-written, when non-empty, as the last clause of a refusal.
+  (define (with-client-written answer entries)
+    (if (and (pair? answer) (eq? (car answer) 'error) (pair? entries))
+        (append answer (list (list 'client-written entries)))
+        answer))
+
+  (define (start-watched! argv socket log-path token)
+    ;; THE LOG'S LENGTH IS TAKEN BEFORE THE SPAWN, and nothing before it is
+    ;; read (see log-length). NOT under stage `client`: D8 puts the reads
+    ;; AFTER the exit there (exited-answer), and a client-stage fault aimed
+    ;; at the connection's close (CS-6's close-fail@client) must not fire in
+    ;; this length probe.
+    (let ((before (log-length log-path)))
+      ;; NEVER: MAKING THE LOG'S DIRECTORY IS PART OF STARTING ONE; its
+      ;; failure is the client's own (above).
+      (mkdir-p! (dirname-of log-path))
+      (when (eq? (theourgia-fault) 'client-extra-child) (extra-child!))
+      ;; KEY: ONE EVENT PER PROCESS ACTUALLY STARTED, so "did it start
+      ;; one?" is a count and not a matter of looking soon enough.
+      (let ((pid (spawn-detached! argv)))
+        (trace-event! 'spawn pid #f)
         (let ((deadline (+ (wall-clock-ms) (start-budget-ms))))
           (let wait ()
             (cond
               ((connects? socket) 'ready)
-              ((>= (wall-clock-ms) deadline) (start-failure log-path before))
+              ((waitpid-status pid)
+               => (lambda (status) (exited-answer status log-path before token)))
+              ((>= (wall-clock-ms) deadline)
+               ;; THE DAEMON IS LEFT ALONE: it may be about to bind (E8).
+               (list 'error 'serve-start-failed '(kind timeout) (list 'pid pid) (list 'log log-path)))
               (else
                (sleep (make-time 'time-duration 50000000 0))
-               (wait)))))))))
+               (wait))))))))
+
+  ;; THE LOG IS READ ONLY HERE, AFTER THE EXIT WAS OBSERVED (item 4), under
+  ;; stage `client` (D8), behind the client-scan hold (item 7). A reader
+  ;; failure is the table's unreadable naming the log, with the status.
+  (define (exited-answer status log-path before token)
+    (hold-point! 'client-scan)
+    (let ((bytes (guard (e ((unreadable-entry? e) e))
+                   (parameterize ((theourgia-stage 'client))
+                     (let ((b (read-entry log-path))) (if (bytevector? b) b (make-bytevector 0)))))))
+      (if (unreadable-entry? bytes)
+          (append (own-start-failure (classify-failure bytes '())) (list status))
+          (let ((report (select-report bytes before token)))
+            (if report
+                (append (list 'error 'serve-start-failed (list 'kind (cadr report)))
+                        (cddr report)
+                        (list status))
+                (list 'error 'serve-start-failed '(kind exited) status (list 'attempt token)))))))
+
+  ;; INJECTION ONLY (`client-extra-child@client`, G6): a child of this
+  ;; process that has exited and not been reaped, observed as a zombie
+  ;; before the daemon is spawned, so a wait that collects ANY child would
+  ;; take its status for the daemon's (PID2).
+  (define (extra-child!)
+    (let ((pid (spawn-detached! (list "/bin/sh" "-c" "exit 0"))))
+      (let poll ((k 0))
+        (unless (or (>= k 100) (zombie? pid))
+          (sleep (make-time 'time-duration 20000000 0))
+          (poll (+ k 1))))))
+  (define (zombie? pid)
+    (let* ((p (process (string-append "ps -o stat= -p " (number->string pid))))
+           (t (get-string-all (car p))))
+      (close-port (car p)) (close-port (cadr p))
+      (and (string? t) (> (string-length t) 0)
+           (let loop ((i 0))
+             (and (< i (string-length t))
+                  (or (char=? (string-ref t i) #\Z) (loop (+ i 1))))))))
+
+  ;; ---- the report this start's daemon wrote (item 3) ----------------------
+  ;;
+  ;; A PURE FUNCTION OF BYTES, AN OFFSET AND A TOKEN, exported for H3.
+  ;; - The offset is in BYTES (the log's length before the spawn); the
+  ;;   scan starts there if it is 0 or just after a newline, else at the
+  ;;   first newline at or after it -- a line begun before the offset is
+  ;;   not this start's.
+  ;; - Only WHOLE lines are read: an unterminated tail is not a report yet.
+  ;; - A line that does not parse is skipped, not fatal.
+  ;; - The report is the LAST line whose datum carries `(attempt T)`; none
+  ;;   gives #f.
+  ;; - Each line is peer text and is asked readable-shape? first.
+  (define (select-report bytes offset token)
+    (let* ((n (bytevector-length bytes))
+           (start (cond
+                    ((or (<= offset 0) (> offset n)) (if (> offset n) n 0))
+                    ((= 10 (bytevector-u8-ref bytes (- offset 1))) offset)
+                    (else (let find ((i offset))
+                            (cond ((>= i n) n)
+                                  ((= 10 (bytevector-u8-ref bytes i)) (+ i 1))
+                                  (else (find (+ i 1)))))))))
+      (let loop ((i start) (from start) (found #f))
+        (cond
+          ((>= i n) found)
+          ((= 10 (bytevector-u8-ref bytes i))
+           (loop (+ i 1) (+ i 1) (let ((d (line-datum bytes from i)))
+                                   (if (carries-token? d token) d found))))
+          (else (loop (+ i 1) from found))))))
+
+  ;; A LINE IS A REPORT ONLY IF IT IS ONE DATUM (M2b1 review r1, F1): text
+  ;; after the datum, even an unmatched parenthesis, makes the whole line
+  ;; not a report, so a second read must find the end.
+  (define (line-datum bytes from to)
+    (let ((text (guard (e (#t #f))
+                  (let ((b (make-bytevector (- to from))))
+                    (bytevector-copy! bytes from b 0 (- to from))
+                    (utf8->string b)))))
+      (and text (readable-shape? text)
+           (guard (e (#t #f))
+             (let* ((port (open-string-input-port text))
+                    (d (read port)))
+               (and (not (eof-object? d))
+                    (eof-object? (read port))
+                    d))))))
+
+  ;; THE SHAPE THE DAEMON WRITES, AND ONLY IT (M2b1 review r1, F2):
+  ;; `(error <kind> <clause> ...)`, each clause a list headed by a symbol,
+  ;; the LAST clause exactly `(attempt T)`. A line carrying the token in any
+  ;; other shape is not this start's report: its kind would be relayed as
+  ;; whatever stood in the kind's place.
+  (define (carries-token? d token)
+    (and (list? d) (>= (length d) 3)
+         (eq? (car d) 'error) (symbol? (cadr d))
+         (let clauses ((cs (cddr d)))
+           (cond
+             ((null? cs) #t)
+             ((and (list? (car cs)) (pair? (car cs)) (symbol? (caar cs))) (clauses (cdr cs)))
+             (else #f)))
+         (equal? (list-ref d (- (length d) 1)) (list 'attempt token))))
 
   (define (connects? socket)
     (guard (e ((fs-error? e) #f))
       (let ((fd (unix-socket-connect socket 1000)))
         (fd-close fd)
         #t)))
-
-  ;; NEVER: THE DAEMON'S OWN WORDS, NOT A SENTENCE INVENTED HERE. `the socket
-  ;; path is occupied` and `the lock is held` are different situations
-  ;; needing different things done, and a client that flattened both into
-  ;; "it would not start" would be the only thing the caller ever saw.
-  ;; What cannot be read back as a refusal gets the generic answer AND
-  ;; the path to the file, so the reason is still one command away.
-  (define (start-failure log-path before)
-    (let ((refusal (last-error-in log-path before)))
-      (or refusal (list 'error 'serve-start-failed (list 'log log-path)))))
-
-  (define (last-error-in path from)
-    (guard (e (#t #f))
-      ;; NEVER: THE LOG WAS WRITTEN BY ANOTHER PROCESS -- a daemon this client
-      ;; started, possibly of another version -- so it is peer text like
-      ;; any other and is asked the same question before being read.
-      (let ((text (tail-of path from)))
-        (and (readable-shape? text)
-        (let ((port (open-string-input-port text)))
-          (let scan ((found #f))
-            (let ((datum (guard (e (#t 'unreadable)) (read port))))
-              (cond
-                ((eof-object? datum) found)
-                ;; NOTE: A LINE THAT DOES NOT READ ENDS THE SCAN rather than
-                ;; being skipped: after a partial write the reader is no
-                ;; longer positioned at a datum boundary, and carrying on
-                ;; would parse the remainder of one form as a whole one.
-                ((eq? datum 'unreadable) found)
-                ((and (pair? datum) (eq? (car datum) 'error)) (scan datum))
-                (else (scan found))))))))))
-
-  ;; NEVER: THE OFFSET IS IN BYTES, SO THE SLICE IS TOO. `log-length` asks the
-  ;; filesystem for a size, which is a count of bytes; this used to use it
-  ;; as a `substring` index, which counts characters. Any non-ASCII
-  ;; already in the log made the two disagree and the slice started too
-  ;; far in -- measured, with four bytes of two characters ahead of it, as
-  ;; `rror serve-path-occupied)`: the daemon's refusal with its head eaten,
-  ;; unreadable as a datum, so the caller was told the generic "it would
-  ;; not start" while the real reason sat in the file.
-  ;;
-  ;; Read bytes, cut bytes, decode once at the end.
-  (define (tail-of path from)
-    (let* ((whole (read-entry path))
-           (size (if (bytevector? whole) (bytevector-length whole) 0)))
-      (if (and (bytevector? whole) (<= from size))
-          (let* ((n (- size from)) (out (make-bytevector n)))
-            (bytevector-copy! whole from out 0 n)
-            (utf8->string out))
-          "")))
 
   (define (dirname-of path)
     (let-values (((dir base) (split-last path))) dir))

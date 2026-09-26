@@ -27,7 +27,7 @@
 (import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers)
         ;; F100b M2a's two helper rows (H5, H7).
         (only (theourgia daemon) write-report-line!)
-        (only (theourgia client) next-attempt-token))
+        (only (theourgia client) next-attempt-token select-report))
 
 (define bad 0)
 (define rows 0)
@@ -241,6 +241,209 @@
         (list (hex16? a) (hex16? b) (string=? a b)
               (string->number (substring a 0 8) 16) (string->number (substring b 0 8) 16))
         (list #t #t #f (get-process-id) (get-process-id))))
+
+;; ---- F100b M2b1: select-report, waitpid-status, the hold seam ----------------
+;;
+;; H3 (item 3, D10, E10): select-report of bytes, a byte offset and a token.
+(define T "0123456789abcdef")
+(define (u8 s) (string->utf8 s))
+(want "H3 offset 0, one line carrying T: that datum"
+      (select-report (u8 "(error a (attempt \"0123456789abcdef\"))\n") 0 T)
+      '(error a (attempt "0123456789abcdef")))
+(want "H3 offset just after a newline, the second line carrying T: the second"
+      (let* ((first-line "(error old (attempt \"0123456789abcdef\"))\n")
+             (b (u8 (string-append first-line "(error new (attempt \"0123456789abcdef\"))\n"))))
+        (select-report b (bytevector-length (u8 first-line)) T))
+      '(error new (attempt "0123456789abcdef")))
+(want "H3 an offset inside a line: the suffix carries T but began before a line boundary, and no later line does: #f"
+      (let* ((text "(error a (x)) (error b (attempt \"0123456789abcdef\"))\n(error c (x))\n")
+             (at (let loop ((i 0)) (if (string=? (substring text i (+ i 9)) " (error b") i (loop (+ i 1))))))
+        (select-report (u8 text) at T))
+      #f)
+(want "H3 a datum carrying T with no terminating newline: #f"
+      (select-report (u8 "(error a (attempt \"0123456789abcdef\"))") 0 T)
+      #f)
+(want "H3 two lines carrying T: the LAST"
+      (select-report (u8 "(error one (attempt \"0123456789abcdef\"))\n(error two (attempt \"0123456789abcdef\"))\n") 0 T)
+      '(error two (attempt "0123456789abcdef")))
+(want "H3 another token's line then T's, and the reverse: T's both times"
+      (list (select-report (u8 "(error x (attempt \"ffffffffffffffff\"))\n(error mine (attempt \"0123456789abcdef\"))\n") 0 T)
+            (select-report (u8 "(error mine (attempt \"0123456789abcdef\"))\n(error x (attempt \"ffffffffffffffff\"))\n") 0 T))
+      '((error mine (attempt "0123456789abcdef")) (error mine (attempt "0123456789abcdef"))))
+(want "H3 a line that does not parse, then T's line: T's line (the bad line is skipped)"
+      (select-report (u8 "(error broken (\n(error mine (attempt \"0123456789abcdef\"))\n") 0 T)
+      '(error mine (attempt "0123456789abcdef")))
+(want "H3 a multibyte prefix: a two-byte character and a newline, then (error b ...), at BYTE offset 3 selects (error b ...)"
+      (select-report (u8 "\x00e9;\n(error b (attempt \"0123456789abcdef\"))\n") 3 T)
+      '(error b (attempt "0123456789abcdef")))
+;; M2b1 review r1, F4: T's report wholly BEFORE the offset is an earlier
+;; start's, even when nothing after the offset carries T.
+(want "H3 T's report wholly before the offset, only another token's after: #f"
+      (let* ((first-line "(error old (attempt \"0123456789abcdef\"))\n")
+             (b (u8 (string-append first-line "(error x (attempt \"ffffffffffffffff\"))\n"))))
+        (select-report b (bytevector-length (u8 first-line)) T))
+      #f)
+;; M2b1 review r1, F1: a line is a report only if it is one datum.
+(want "H3 a line whose report datum is followed by more text is not a report: the earlier whole line is chosen"
+      (list (select-report (u8 "(error good (attempt \"0123456789abcdef\"))\n(error bad (attempt \"0123456789abcdef\")) (\n") 0 T)
+            (select-report (u8 "(error good (attempt \"0123456789abcdef\"))\n(error bad (attempt \"0123456789abcdef\")) (x)\n") 0 T))
+      '((error good (attempt "0123456789abcdef")) (error good (attempt "0123456789abcdef"))))
+;; M2b1 review r1, F2: carrying the token is not enough; the shape is the
+;; daemon's -- `(error <symbol> <clauses headed by symbols>)`, the attempt last.
+;; M2b1 review r3: every condition of carries-token? and of line-datum's
+;; readable-shape? gate has an input here that only it rejects (the table
+;; in r4 NOTES). Some inputs make a weakened check RAISE rather than
+;; answer, which the row reads as a value other than #f.
+(want "H3 token-bearing lines of another shape are not reports: no kind, a non-symbol kind, attempt not last, a clause that is not a list, a clause headed by a non-symbol, a head other than error, a dotted clause, (error) alone, an improper report, an empty clause, a datum comment"
+      (map (lambda (line) (select-report (u8 (string-append line "\n")) 0 T))
+           (list "(error (attempt \"0123456789abcdef\"))"
+                 "(error \"k\" (attempt \"0123456789abcdef\"))"
+                 "(error k (attempt \"0123456789abcdef\") (x 1))"
+                 "(error k junk (attempt \"0123456789abcdef\"))"
+                 "(error k (123 x) (attempt \"0123456789abcdef\"))"
+                 "(oops k (attempt \"0123456789abcdef\"))"
+                 "(error k (x . 1) (attempt \"0123456789abcdef\"))"
+                 "(error)"
+                 "(error k (attempt \"0123456789abcdef\") . 1)"
+                 "(error k () (attempt \"0123456789abcdef\"))"
+                 "(error k #;(x) (attempt \"0123456789abcdef\"))"))
+      '(#f #f #f #f #f #f #f #f #f #f #f))
+;; The log's length before the spawn is past its end now: nothing in it is
+;; this start's (the scan begins at the end), even a line carrying T.
+;; The offset falls inside a last line that has no line break yet: the scan
+;; starts at the end, not back at the beginning.
+(want "H3 an offset inside an unterminated last line: #f, although an earlier line carries T"
+      (let ((text "(error old (attempt \"0123456789abcdef\"))\n(error x"))
+        (select-report (u8 text) (- (string-length text) 3) T))
+      #f)
+(want "H3 an offset past the end of the bytes: #f, although the bytes carry T's report"
+      (let ((b (u8 "(error a (attempt \"0123456789abcdef\"))\n")))
+        (select-report b (+ (bytevector-length b) 10) T))
+      #f)
+
+;; H4 (item 4): waitpid-status on this process's own children.
+(let* ((first (spawn-detached! (list "/bin/sh" "-c" "exit 0")))
+       (second (spawn-detached! (list "/bin/sh" "-c" "sleep 1; exit 75")))
+       (early (waitpid-status second))
+       (later (let loop ((k 0))
+                (let ((st (waitpid-status second)))
+                  (if (or st (>= k 150)) st (begin (sleep (make-time 'time-duration 50000000 0)) (loop (+ k 1)))))))
+       (killed (spawn-detached! (list "/bin/sh" "-c" "kill -9 $$")))
+       (sig (let loop ((k 0))
+              (let ((st (waitpid-status killed)))
+                (if (or st (>= k 100)) st (begin (sleep (make-time 'time-duration 50000000 0)) (loop (+ k 1))))))))
+  (waitpid-status first)
+  (want "H4 waitpid-status: #f while the child runs, then (exit 75); a child killed by signal 9 is (signal 9)"
+        (list early later sig)
+        '(#f (exit 75) (signal 9)))
+  (want "H4 a pid that is not a child raises durable-error with op waitpid and errno ECHILD"
+        (guard (e ((fs-error? e) (list (fs-error-op e) (fs-error-errno e))))
+          (waitpid-status 1))
+        (list 'waitpid ECHILD)))
+
+;; H8 (item 7, G10) and the Q8 pin: the hold seam in a child process armed
+;; by THEOURGIA_HOLD (THEOURGIA_INJECT=on). The child writes `done` after the
+;; hold point returns.
+(define (hold-child! name env stage)
+  (let ((script (under (string-append name ".ss")))
+        (done (under (string-append name ".done")))
+        (err (under (string-append name ".err"))))
+    (call-with-output-file script
+      (lambda (o)
+        (write '(import (chezscheme) (theourgia ffi)) o)
+        (write `(begin (hold-point! ',stage)
+                       (call-with-output-file ,done (lambda (p) (write 'done p)))) o)))
+    (system (string-append "THEOURGIA_INJECT=on " env " scheme --script " script " > /dev/null 2> " err " < /dev/null &"))
+    (list done err)))
+(define (wait-for path limit-ms)
+  (let loop ((k 0))
+    (cond ((file-exists? path) (* k 20))
+          ((>= (* k 20) limit-ms) #f)
+          (else (sleep (make-time 'time-duration 20000000 0)) (loop (+ k 1))))))
+(let* ((p (under "h8-release"))
+       (child (hold-child! "h8" (string-append "THEOURGIA_HOLD=client-scan:" p) 'client-scan))
+       (held (wait-for (string-append p ".held") 5000))
+       (early (begin (sleep (make-time 'time-duration 0 2)) (file-exists? (car child)))))
+  (call-with-output-file p (lambda (o) (write 'go o)))
+  (let ((after (wait-for (car child) 2000)))
+    (want "H8 a held process creates <p>.held, does not proceed for 2 s, and proceeds after <p> is created"
+          (list (and held #t) early (and after #t))
+          '(#t #f #t))))
+;; The wait is measured from the marker (M2b1 review r1, F6): a hold that
+;; expired at once would also proceed and print the line.
+(let* ((p (under "h8x-release"))
+       (child (hold-child! "h8x" (string-append "THEOURGIA_HOLD=client-scan:" p " THEOURGIA_HOLD_MS=1000") 'client-scan))
+       (held (wait-for (string-append p ".held") 8000))
+       (after (and held (wait-for (car child) 8000))))
+  (want "H8 with THEOURGIA_HOLD_MS=1000 and no release it proceeds at least 900 ms after <p>.held appears, and its stderr says (theourgia hold-expired client-scan)"
+        (list (and after #t) (and after (>= after 900))
+              ;; One of stderr's lines, exactly: an armed process also prints
+              ;; its injection banner there.
+              (let ((t (guard (e (#t "")) (call-with-input-file (cadr child) get-string-all))))
+                (and (string? t)
+                     (let split ((cs (string->list t)) (cur '()))
+                       (cond ((null? cs) (string=? (list->string (reverse cur)) "(theourgia hold-expired client-scan)"))
+                             ((char=? (car cs) #\newline)
+                              (or (string=? (list->string (reverse cur)) "(theourgia hold-expired client-scan)")
+                                  (split (cdr cs) '())))
+                             (else (split (cdr cs) (cons (car cs) cur))))))))
+        '(#t #t #t)))
+;; Its own program and its own `done` path: h8.ss's `done` already exists
+;; after the rows above, so running h8.ss again fails at that write with the
+;; same 255 whether or not the load refuses the stage (M2b1 r1, ME-10).
+;; The body calls hold-point! first: Chez runs a library's body only when
+;; the program references one of its bindings, so a program that merely
+;; imports (theourgia ffi) never reaches the check.
+(let* ((script (under "h8u.ss"))
+       (done (under "h8u.done")))
+  (call-with-output-file script
+    (lambda (o)
+      (write '(import (chezscheme) (theourgia ffi)) o)
+      (write `(begin (hold-point! 'client-scan)
+                     (call-with-output-file ,done (lambda (p) (write 'done p)))) o)))
+  (let ((rc (system (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=nowhere:" (under "h8u")
+                                   " scheme --script " script " > /dev/null 2>&1 < /dev/null"))))
+    (want "H8 an unknown hold stage is refused at load: rc 255, and the program's body never runs"
+          (list rc (file-exists? done))
+          '(255 #f))))
+;; A PROGRAM THAT USES FFI AND NEVER HOLDS: the refusal is the library's,
+;; not the first hold's (M2b1 review r1, F7). hold-sleeper-set! is the
+;; daemon's entry before any actor exists; it reaches no hold point.
+(define (refused-at-load? name env)
+  (let ((script (under (string-append name ".ss")))
+        (done (under (string-append name ".done"))))
+    (call-with-output-file script
+      (lambda (o)
+        (write '(import (chezscheme) (theourgia ffi)) o)
+        (write `(begin (hold-sleeper-set! (lambda (ms) (void)))
+                       (call-with-output-file ,done (lambda (p) (write 'done p)))) o)))
+    (let ((rc (system (string-append "THEOURGIA_INJECT=on " env
+                                     " scheme --script " script " > /dev/null 2>&1 < /dev/null"))))
+      (list rc (file-exists? done)))))
+(want "H8 an unknown hold stage is refused when a program that never holds first uses ffi: rc 255, the body never runs"
+      (refused-at-load? "h8n" (string-append "THEOURGIA_HOLD=nowhere:" (under "h8n")))
+      '(255 #f))
+;; M2b1 review r1, F3: a wait that could never expire, or could not be
+;; compared, is refused like a stage.
+(want "H8 THEOURGIA_HOLD_MS of +inf.0 and of 1+2i are refused at load: rc 255, the body never runs"
+      (list (refused-at-load? "h8i" "THEOURGIA_HOLD_MS=+inf.0")
+            (refused-at-load? "h8c" "THEOURGIA_HOLD_MS=1+2i"))
+      '((255 #f) (255 #f)))
+;; Q8: a hold inside an open record scope leaves the record without the
+;; .held marker's creation while the marker exists (the lexical flag).
+(let* ((p (under "q8-release"))
+       (script (under "q8.ss"))
+       (out (under "q8.out")))
+  (call-with-output-file p (lambda (o) (write 'go o)))
+  (call-with-output-file script
+    (lambda (o)
+      (write '(import (chezscheme) (theourgia ffi)) o)
+      (write '(write (with-mutation-record (lambda () (hold-point! 'client-scan) (mutation-record)))) o)))
+  (let ((rc (system (string-append "THEOURGIA_INJECT=on THEOURGIA_HOLD=client-scan:" p
+                                   " scheme --script " script " > " out " 2> /dev/null < /dev/null"))))
+    (want "Q8 a hold inside an open scope: the record holds no entry for <p>.held, and <p>.held exists"
+          (list rc (guard (e (#t 'unread)) (call-with-input-file out read)) (file-exists? (string-append p ".held")))
+          '(0 () #t))))
 
 (define scope-exits '(normal raise escape))
 (define scope-enclosings '(none outer))
