@@ -89,4 +89,38 @@ describe('XL actual shared sidecar, process identity and takeover boundaries',fu
       assert.strictEqual(owner.record?.sessionId,'new');
     } finally {b.child.kill('SIGKILL');}
   });
+  /*
+   * queue item 26: WHICH SIDECAR A TAKEOVER SAYS THE PREVIOUS OWNER OWES. The
+   * new owner record carries, for the projection's sidecar, the previous
+   * owner's stamp -- that is what lets a late write from the previous owner be
+   * told apart. Passing no sidecar survived the whole suite (item 5, P8). With
+   * no projection in the directory yet there is no sidecar anybody could owe,
+   * and none is named.
+   */
+  for(const withProjection of [true,false])it(`XL-10b a takeover names ${withProjection?"the projection's sidecar":'no sidecar when there is no projection'} as owed by the previous owner`,async()=>{
+    const storage=scratch();assert.strictEqual(run(storage,'activate','old','free').status,'ok');
+    const core=activateCore({files:nodeFileOps,globalStorage:storage,documents:{isOpen:()=>false},stores:[],sessionId:'new'});
+    const directory=core.sessions.directoryFor('old','store','a.1');
+    const b=held(storage,'activate','adopter','hold');
+    try {
+      assert.strictEqual((await b.next()).kind,'held');
+      assert.ok(new Owners().take(directory,'adopter',[]).held);
+      let sidecar:string|null=null;
+      if(withProjection){
+        const adopter=new Publisher(nodeFileOps,{isOpen:()=>false},{owners:new Owners(),sessionId:'adopter'});
+        const published=adopter.publishNow({directory,storeId:'store',blockId:'a.1',prefix:'',text:'body',cursor:null,expected:null});
+        assert.ok(published.published,JSON.stringify(published));
+        sidecar=`${(published as {file:string}).file}.meta`;
+        assert.ok(fs.existsSync(sidecar),'the projection has no sidecar, so there is nothing to owe');
+      }
+      const adopted=new Owners().ownerOf(directory);assert.ok(adopted.known&&adopted.record);
+      b.child.kill('SIGKILL');await b.exit;
+      assert.strictEqual(core.sessions.claimMigrationDestination(directory,new Owners()),true);
+      const owner=new Owners().ownerOf(directory);assert.ok(owner.known&&owner.record);
+      assert.strictEqual(owner.record.sessionId,'new');
+      const previous={sessionId:'adopter',generation:adopted.record.generation};
+      assert.deepStrictEqual(owner.record.expected,sidecar===null?{}:{[sidecar]:[previous]},
+        'the takeover did not name exactly the sidecar the previous owner owes');
+    } finally {b.child.kill('SIGKILL');}
+  });
 });
