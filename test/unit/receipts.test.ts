@@ -214,6 +214,18 @@ describe('plugin-r3 3 a receipt comes only from the enqueue that wrote the entry
  * that declaration -- a `.call`/`.apply` receiver, a destructured binding, the
  * method passed as a value, an alias -- is a call this census cannot follow,
  * and it fails there with the file and the line; it never counts by shape.
+ *
+ * IMPLEMENTERS AND OVERRIDES, BY THE RECEIVER'S TYPE. (queue item 41) A class
+ * that implements `ImportTarget`, an object literal of that shape, or a
+ * subclass overriding `enqueue`, called on its own static type, resolves to
+ * its own member, not to the interface's or the class's: before this, such a
+ * call dropped the receipt and passed (V10, V11, V14; measured on 114b788).
+ * So a call to a member of that name also counts when its receiver's type is
+ * assignable to the owner's type -- structurally, so any src type with a
+ * compatible shape is counted as one. A receiver the checker reads as `any` or
+ * `unknown` could be anything, and fails as a call this census cannot follow
+ * (V12); so does a member of that name on such a receiver used other than as
+ * a call's callee (V13).
  */
 interface Checked {
   checker: ts.TypeChecker;
@@ -277,31 +289,95 @@ function inCallPosition(reference: ts.Node): boolean {
   return false;
 }
 
+/*
+ * THE RECEIVER OF A MEMBER NAMED `method`: the `x` of `x.method` or of
+ * `x['method']`, when this expression is one.
+ */
+function receiverOf(access: ts.Node, method: string): ts.Expression | undefined {
+  if (ts.isPropertyAccessExpression(access) && access.name.text === method) {
+    return access.expression;
+  }
+  if (
+    ts.isElementAccessExpression(access) &&
+    ts.isStringLiteralLike(access.argumentExpression) &&
+    access.argumentExpression.text === method
+  ) {
+    return access.expression;
+  }
+  return undefined;
+}
+
+/*
+ * WHAT A TYPE SAYS ABOUT BEING THE OWNER. `owner` when it, or one member of a
+ * union, is assignable to the owner's type (null and undefined removed first:
+ * `x?.method` is still a call on `x`); `unreadable` when it is `any` or
+ * `unknown`, which could be the owner or not; `other` otherwise.
+ */
+function ownershipOf(checker: ts.TypeChecker, type: ts.Type, owner: ts.Type): 'owner' | 'unreadable' | 'other' {
+  const present = checker.getNonNullableType(type);
+  if ((present.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return 'unreadable';
+  }
+  const parts = present.isUnion() ? present.types : [present];
+  return parts.some((part) => checker.isTypeAssignableTo(part, owner)) ? 'owner' : 'other';
+}
+
 function censusOf(owner: string, method: string): { sites: string[]; dropped: string[]; unreadable: string[] } {
   const { checker, files } = program();
   const target = methodOf(files, owner, method);
+  const holder = target.parent as ts.ClassDeclaration | ts.InterfaceDeclaration;
+  const ownerType = checker.getDeclaredTypeOfSymbol(checker.getSymbolAtLocation(holder.name as ts.Identifier) as ts.Symbol);
   const sites: string[] = [];
   const dropped: string[] = [];
   const unreadable: string[] = [];
   const isTarget = (symbol: ts.Symbol | undefined): boolean =>
     symbol !== undefined && (symbol.declarations ?? []).includes(target);
+  const cannotRead = (src: ts.SourceFile, name: string, n: ts.Node): void => {
+    unreadable.push(`${name}:${line(src, n)} this build cannot read where this call goes`);
+  };
   for (const { name, src } of files) {
     every(src, (n) => {
-      if (ts.isCallExpression(n) && checker.getResolvedSignature(n)?.declaration === target) {
-        const use = useOf(n);
-        sites.push(`${name}:${line(src, n)} ${use}`);
-        if (use !== 'kept') {
-          dropped.push(`${name}:${line(src, n)} ${use}`);
+      if (ts.isCallExpression(n)) {
+        const receiver = receiverOf(n.expression, method);
+        const ownership =
+          checker.getResolvedSignature(n)?.declaration === target
+            ? 'owner'
+            : receiver === undefined
+              ? 'other'
+              : ownershipOf(checker, checker.getTypeAtLocation(receiver), ownerType);
+        if (ownership === 'owner') {
+          const use = useOf(n);
+          sites.push(`${name}:${line(src, n)} ${use}`);
+          if (use !== 'kept') {
+            dropped.push(`${name}:${line(src, n)} ${use}`);
+          }
+        } else if (ownership === 'unreadable') {
+          cannotRead(src, name, n);
         }
         return;
       }
       if (n === target.name) {
         return;
       }
+      const named =
+        n.parent !== undefined &&
+        ((ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) ||
+          (ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n));
+      if (named && !inCallPosition(n)) {
+        const receiver = receiverOf(n.parent, method);
+        if (receiver !== undefined && ownershipOf(checker, checker.getTypeAtLocation(receiver), ownerType) !== 'other') {
+          cannotRead(src, name, n);
+          return;
+        }
+      }
       let symbol: ts.Symbol | undefined;
       if (ts.isBindingElement(n) && ts.isObjectBindingPattern(n.parent)) {
         const key = n.propertyName ?? n.name;
         if (ts.isIdentifier(key)) {
+          if (key.text === method && ownershipOf(checker, checker.getTypeAtLocation(n.parent), ownerType) !== 'other') {
+            cannotRead(src, name, n);
+            return;
+          }
           symbol = checker.getTypeAtLocation(n.parent).getProperty(key.text);
         }
       } else if (ts.isIdentifier(n) || ts.isStringLiteral(n)) {
@@ -310,7 +386,7 @@ function censusOf(owner: string, method: string): { sites: string[]; dropped: st
         }
       }
       if (isTarget(symbol) && !inCallPosition(n)) {
-        unreadable.push(`${name}:${line(src, n)} this build cannot read where this call goes`);
+        cannotRead(src, name, n);
       }
     });
   }
@@ -339,7 +415,9 @@ describe('plugin-r3 3 every call site holds the receipt it is handed', function 
    * THE `ImportTarget.adopt` CALL-SITE CENSUS, apart from the one above. The
    * name `adopt` also belongs to `Saver.adopt(work)` and
    * `Sessions.adopt(sessionId)`; the checker tells them apart by the
-   * declaration a call resolves to, not by the receiver's spelling.
+   * declaration a call resolves to and by whether the receiver's type is
+   * assignable to `ImportTarget` (neither `Saver` nor `Sessions` is), not by
+   * the receiver's spelling.
    */
   it('keeps the receipt at every ImportTarget.adopt in src', () => {
     const { sites, dropped, unreadable } = censusOf('ImportTarget', 'adopt');
