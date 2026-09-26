@@ -10,14 +10,14 @@ cli2 12 24 103541ab36b3891ccc7f09cc2e9705af
 cli3 301 408 1f953cffe27a8c5390d62bffb698484a
 client-program 51 54 9873360f5ceb02ca0b677b0e1336ede0
 client-socket 39 42 a90e776bbf8f15f9433ac36ed3324db2
-client-start 23 33 2ea67987a17b034f775633071eab81c3
+client-start 23 33 c7aa1353855de1425988ebb16d3fd6c1
 closures 16 24 c92131def026643185c1eb5c687c2cb0
 commit-consumes 25 28 e0dcd80c1c849b3472c9c4b64586da33
 condition-render 11 18 6549c1743dcfc74b31d1956acde62b42
 consumption-index 64 67 a503ece2d8e27fe674a2b5630aeb7d29
 crash 15 19 77b2faae06e845a259e7a62cd9c4df32
 crc-cost - 5 bed3e7ed705500dfcec50fc2fde6716f
-daemon-e1 46 49 bfa956e4e053b0284b6f8fe7968c6392
+daemon-e1 46 49 259d486e29568a70caf4a7d540f2d12c
 daemon-link-gate 35 38 e3a8e88a9d9e86058641d214b4366cf5
 daemon-socket 9 12 5b9a5a59bcd94d87b44f35a233f1f264
 dep-check - 4 c307f34b36a10d54b549410aeef9d498
@@ -27,7 +27,7 @@ devino - 1 a1db0a6c54d26163970627cc4119c32f
 doc-predicate 5 8 9c5b38e8f9786fd30a6212a739c6f7b6
 docs-check 21 24 82e66f6aa188dfe758a154c77d30de27
 empty-plan - 16 d57ea26f7094ce4415bd09f2798bd8ff
-entry-split 25 39 68653ece4aee4f03341e8575a177d526
+entry-split 25 39 fffcde710a35124fa9b7faa23d7d57a1
 envelope 76 80 e5bfff3f3a07c9e02b1eaf9e5b470f23
 eval-local 48 51 0d6f59aeb05cde3f83b187489d2a6dec
 eval-raise 9 16 94310dbf114782a255697d22160dfc66
@@ -45,7 +45,7 @@ facade-ffi 72 79 8947fe9c097320ff92496964253f7943
 facade-gate 33 73 84e1f1ea4fdc0f53f930829c9e693fce
 facade-net 31 34 7a534b85de874fff97d2461b87d28df7
 facade-proc 20 23 91dc0314332e30c76a067df94162cb2b
-facade-record 30 33 361174f6e26eec2dcb52a76be8a7c692
+facade-record 36 39 92ffee960a4a8f6d3e3e3067233af6d1
 facade-sched 16 19 912ca8b64c202c415537fada86e0d7a3
 facades 23 26 b5dc3be1323324f2ed8adfac1a45b7d4
 ffiprobe - 14 b1662267e06315b96b1088173414aeef
@@ -121,7 +121,7 @@ unreadable-adopt 34 47 0c0174935a6731998868a16b89d2a2be
 unreadable-census 40 45 bcfff8559d68b8fd6159b0b56784aca4
 unreadable-drafts 16 24 629bbd6c81e9d9af8af1fe25ff47c1ec
 unreadable-publish 12 20 6b80679017bfaea17e88094291717766
-unreadable-routes 36 44 468425bcd1592592f33096947ae5d22b
+unreadable-routes 55 64 a84a34006bcf4ac7cad7fbcd52a1bb22
 unreadable-writer 77 105 c541b1a493a64cb8a29fc1caa6fb777b
 unscoped-lock 2 11 0bc39c12567c9dde5dff75237df153c7
 verify-guard - 3 6a0a1f86a4d8ba848a58079cfeba57a9

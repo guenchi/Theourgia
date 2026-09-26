@@ -73,9 +73,17 @@
       ((fs-error? c)
        (list (list 'op (fs-error-op c))
              (list 'path (fs-error-target c))
-             (list 'reason (errno-text (fs-error-errno c)))
+             (list 'reason (reason-of (fs-error-op c) (fs-error-errno c)))
              (list 'errno (fs-error-errno c))))
       (else #f)))
+
+;; A durable-error's reason: strerror's text for its errno. With no errno,
+  ;; a write's failure is a short write (write-one!, write-all!); any other
+  ;; step's is only "no errno" (ffi's errno-text), since nothing says more.
+  (define (reason-of op n)
+    (cond (n (errno-text n))
+          ((eq? op 'write) "short write")
+          (else (errno-text n))))
 
   (define (failure-kind c)
     (cond

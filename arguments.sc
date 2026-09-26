@@ -70,7 +70,9 @@
         ;; computing the path separately is the shape that already cost a
         ;; day here, when a socket path was derived twice and the two
         ;; derivations disagreed about a store that did not exist yet.
-        ((serve) '("--log"))
+        ;; `--attempt` is the client's token for this start (F100b item 3),
+        ;; echoed in every startup report; a value, like the log.
+        ((serve) '("--log" "--attempt"))
         ;; NEVER: DECLARING AN OPTION IN THE USAGE FORM IS NOT DECLARING IT
         ;; HERE. A token is only read as an option if it appears in this list
         ;; or in `flag-options`; anything else becomes a positional. `grep`

@@ -41,7 +41,11 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path socket-dir-refusal)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
-              fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno))
+              fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno
+              with-mutation-record mutation-record theourgia-stage)
+        ;; F100b point 8: the table for this program's own failures, and the
+        ;; aggregation rule's named-outcome half for detach-failed.
+        (only (theourgia answers) classify-failure with-written))
 
 (define (later lib name)
   (eval name (environment lib)))
@@ -54,7 +58,8 @@
 ;; shown has already been redirected to the log.
 (define serve-usage
   '(serve [<store>] ["--socket" <path>]
-          ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]))
+          ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
+          ["--attempt" <token> (started-by-a-client-not-by-hand)]))
 
 ;; ---- serve -----------------------------------------------------------------
 ;;
@@ -65,6 +70,10 @@
 ;; verb uses: a second one here would be a second place that knows what
 ;; `--socket` means.
 ;;
+;; `--attempt <token>` (F100b item 3) is the client's name for this start:
+;; the daemon echoes it as the last clause of every startup report, so the
+;; client can tell its own start's report from another's in the shared log.
+;;
 ;; NEVER: AN OPTION SERVE DOES NOT READ IS REFUSED, BEFORE ANYTHING IS
 ;; OPENED OR BOUND. The shared parser reads the options every verb shares
 ;; (`--actor`, `--req`, `--cursor`, `--wire`) and turns a token it does not
@@ -72,7 +81,7 @@
 ;; `d` and drop the rest. Serve reads exactly the four below; anything
 ;; else spelled as an option is named back with the usage. A positional
 ;; after `--` is a literal, as for every verb, and is not an option.
-(define serve-options '("--store" "--socket" "--detach" "--log"))
+(define serve-options '("--store" "--socket" "--detach" "--log" "--attempt"))
 
 (define (serve-unknown-option nodes)
   (let loop ((ns nodes))
@@ -97,47 +106,72 @@
         (say (list 'error 'bad-request '(reason unknown-option)
                    (list 'option unknown) (list 'usage serve-usage)))
         (exit 1)))
-    (let* ((positional (argument-positionals nodes))
-           (store (or (argument-option nodes "--store")
-                      (and (pair? positional) (car positional))
-                      (getenv "THEOURGIA_STORE")
-                      "."))
-           ;; NEVER: THE SHARED RULE, NOT A SECOND ONE. This used to
-           ;; default to `<store>/socket`, which bypassed the
-           ;; daemon's own function entirely -- so the rule the
-           ;; README documented was never the rule that ran.
-           (socket (or (argument-option nodes "--socket")
-                       (socket-path store))))
-      ;; NEVER: AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
-      ;; not a path, and every layer below treats it as one: the
-      ;; daemon derives its lock file from it, and for a path with no
-      ;; directory in it that lock is created IN THE CURRENT
-      ;; DIRECTORY -- an empty path produced a file called `..lock`
-      ;; in whatever directory the process happened to be in, which
-      ;; is how this was found, in the source tree. The bind then
-      ;; fails and the daemon leaves.
-      (when (and socket (string=? socket ""))
-        (say '(error bad-socket-path (reason empty)))
-        (exit 2))
-      ;; NEVER: A --socket GIVEN BY HAND IS NOT GIVEN A DIRECTORY. Before
-      ;; F15 the daemon made the whole chain and served, so a mistyped
-      ;; path became a directory tree nobody asked for. It is refused
-      ;; here, before --detach (a refusal after it would go to the log
-      ;; instead of to the caller) and before anything is created. The
-      ;; default socket's directory is still made by the daemon: it is
-      ;; the run directory, the client's own.
-      (let ((given (argument-option nodes "--socket")))
-        (when (and given (not (string=? given "")))
-          (let ((refusal (socket-dir-refusal given)))
-            (when refusal
-              (say refusal)
-              (exit 2)))))
-      (when (argument-option nodes "--detach")
-        (detach! (argument-option nodes "--log")))
-      ;; Does not return: the daemon runs until it is told to go, or
-      ;; until it finds a reason to leave and reports it.
-      ((later '(theourgia daemon) 'serve) store socket)
-      (exit 0))))
+    ;; THIS PROGRAM'S OWN FAILURES ANSWER BY THE TABLE (F100b point 8): the
+    ;; socket's derivation, the refusal checks and the detach run inside one
+    ;; scope, and a filesystem condition that reaches here is the table's
+    ;; answer, written as a startup report with the attempt token (stdout
+    ;; before --detach, the log after) and exit 75 -- where it used to leave
+    ;; as an uncaught exception, rc 255. The argument refusals above and
+    ;; below stay `say` with their own exit codes (M2 Q7).
+    (let ((attempt (argument-option nodes "--attempt")))
+      (with-mutation-record
+        (lambda ()
+          (guard (e ((classify-failure e (mutation-record))
+                     => (lambda (answer)
+                          ;; Reported once; a failure of the report's own write
+                          ;; is not reported again (M2a review r1, F1, F3).
+                          (guard (e2 (#t (exit 75)))
+                            ((later '(theourgia daemon) 'write-report-line!)
+                             1 (append answer (list (list 'attempt attempt)))))
+                          (exit 75))))
+            (let* ((positional (argument-positionals nodes))
+                   (store (or (argument-option nodes "--store")
+                              (and (pair? positional) (car positional))
+                              (getenv "THEOURGIA_STORE")
+                              "."))
+                   ;; NEVER: THE SHARED RULE, NOT A SECOND ONE. This used to
+                   ;; default to `<store>/socket`, which bypassed the
+                   ;; daemon's own function entirely -- so the rule the
+                   ;; README documented was never the rule that ran.
+                   (socket (or (argument-option nodes "--socket")
+                               (socket-path store))))
+              ;; NEVER: AN EMPTY SOCKET PATH IS REFUSED RATHER THAN TRIED. It is
+              ;; not a path, and every layer below treats it as one: the
+              ;; daemon derives its lock file from it, and for a path with no
+              ;; directory in it that lock is created IN THE CURRENT
+              ;; DIRECTORY -- an empty path produced a file called `..lock`
+              ;; in whatever directory the process happened to be in, which
+              ;; is how this was found, in the source tree. The bind then
+              ;; fails and the daemon leaves.
+              (when (and socket (string=? socket ""))
+                (say '(error bad-socket-path (reason empty)))
+                (exit 2))
+              ;; NEVER: A --socket GIVEN BY HAND IS NOT GIVEN A DIRECTORY. Before
+              ;; F15 the daemon made the whole chain and served, so a mistyped
+              ;; path became a directory tree nobody asked for. It is refused
+              ;; here, before --detach (a refusal after it would go to the log
+              ;; instead of to the caller) and before anything is created. The
+              ;; default socket's directory is still made by the daemon: it is
+              ;; the run directory, the client's own.
+              (let ((given (argument-option nodes "--socket")))
+                (when (and given (not (string=? given "")))
+                  (let ((refusal (socket-dir-refusal given)))
+                    (when refusal
+                      (say refusal)
+                      (exit 2)))))
+              (when (argument-option nodes "--detach")
+                ;; UNDER THE `report` STAGE, SO A @report FAULT CAN FIRE IN THE LOG'S
+                ;; OPEN (F100b item 1). NO ACTOR EXISTS WHILE THIS RUNS: the
+                ;; scheduler starts in `serve` below. That is what makes a
+                ;; parameterize safe here -- under igropyr a parameterize is one
+                ;; global cell that a preemption hands to every other actor
+                ;; (actor.sc:459-469), and there is no other actor yet.
+                (parameterize ((theourgia-stage 'report))
+                  (detach! (argument-option nodes "--log"))))
+              ;; Does not return: the daemon runs until it is told to go, or
+              ;; until it finds a reason to leave and reports it.
+              ((later '(theourgia daemon) 'serve) store socket attempt)
+              (exit 0))))))))
 
 ;; ---- leaving the caller behind ------------------------------------------
 ;;
@@ -237,14 +271,30 @@
   (detach-step 'setsid log-path (lambda () (setsid!)))
   (detach-step 'log log-path (lambda () (redirect-stdio! log-path))))
 
+;; A NAMED OUTCOME, ON STDERR (F100b item 5, D1' 362-363, E2). detach-failed
+;; keeps its name and gains the record of this program's scope through
+;; with-written. It goes to STDERR: a daemon spawned by a client inherits the
+;; client's stderr, and the client's stdout must carry one answer, the
+;; client's own. The record is not empty when the log was created and its
+;; open then failed: fd-open's file-ensure! creates the log before the
+;; open (NO4b, open-fail@report on an absent log). When the log's directory
+;; cannot be searched nothing is created and the clause is absent (NO4).
 (define (detach-step step log-path thunk)
   (guard (e (#t
              (let ((code (detach-errno e)))
                (trace-event! 'detach-failed code #f)
-               (say (list 'error 'detach-failed
-                          (list 'step step)
-                          (list 'path log-path)
-                          (list 'errno code))))
+               ;; A stderr that cannot be written does not change the exit (M2a
+               ;; r3, the exit-site table): 71 either way.
+               (guard (e2 (#t (trace-event! 'detach-report-failed #f #f)))
+                 (let ((err (current-error-port)))
+                   (write (with-written (list 'error 'detach-failed
+                                              (list 'step step)
+                                              (list 'path log-path)
+                                              (list 'errno code))
+                                        (mutation-record))
+                          err)
+                   (newline err)
+                   (flush-output-port err))))
              (exit 71)))
     (thunk)))
 

@@ -24,7 +24,8 @@
           call! answer-limit no-daemon-errno?
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
-          exit-code? symbol-char? wire-safe-spelling? verb-spelling-error)
+          exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
+          next-attempt-token)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
@@ -33,7 +34,7 @@
           (only (chezscheme) getenv guard raise sleep make-time
                 write call-with-string-output-port
                 read open-string-input-port eof-object? with-exception-handler
-                parameterize char-whitespace?)
+                parameterize char-whitespace? get-process-id)
           (only (theourgia ffi)
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
@@ -452,6 +453,19 @@
   ;; daemon is listening on it, and a client that raced to the file would
   ;; connect into nothing and call the daemon broken.
   (define (start-budget-ms) 10000)
+
+  ;; THE NAME OF ONE START (F100b item 3): 16 lowercase hex characters, the
+  ;; client's pid then a counter, each 8 digits. The daemon echoes it as the
+  ;; last clause of every startup report, so the report this start's daemon
+  ;; wrote is told from any other in the shared log. A new one per start:
+  ;; two starts from one process (the MCP shell) must not share one (H7, E9).
+  (define attempt-counter 0)
+  (define (hex8 n)
+    (let ((h (number->string (mod n 4294967296) 16)))
+      (string-append (make-string (- 8 (string-length h)) #\0) (string-downcase h))))
+  (define (next-attempt-token)
+    (set! attempt-counter (+ attempt-counter 1))
+    (string-append (hex8 (get-process-id)) (hex8 attempt-counter)))
 
   ;; The daemon's own output, beside its socket. NEVER: THE CLIENT DECIDES
   ;; THIS AND PASSES IT: the daemon does not work the path out for

@@ -612,8 +612,15 @@
                                          " scheme --script " runner2 " > " log2 " 2>&1"))))
           (want "D-05 a second daemon on the same store refuses and exits 75"
                 (list (if (= rc 75) 'exit-75 (list 'exit rc))
-                      (let ((text (file-text log2)))
-                        (if (starts-with? text "(error serve-busy")
+                      ;; The FIRST DATUM, not the first bytes: a startup report
+                      ;; is framed by a leading newline and ends with its
+                      ;; attempt clause (F100b item 3).
+                      (let* ((text (file-text log2))
+                             (port (open-string-input-port text))
+                             (d (guard (e (#t #f)) (read port)))
+                             ;; ONE report (M2a review r1, F10): nothing after it.
+                             (more (guard (e (#t #f)) (read port))))
+                        (if (and (pair? d) (pair? (cdr d)) (eq? (cadr d) 'serve-busy) (eof-object? more))
                             'said-busy
                             (list 'said text))))
                 '(exit-75 said-busy))))
@@ -638,8 +645,12 @@
           (want "D-06 a non-socket on the path is refused, and left alone"
                 (list (if (= rc 75) 'exit-75 (list 'exit rc))
                       (if (file-exists? occupied) 'still-there 'DESTROYED)
-                      (let ((text (file-text log3)))
-                        (if (starts-with? text "(error serve-path-occupied")
+                      (let* ((text (file-text log3))
+                             (port (open-string-input-port text))
+                             (d (guard (e (#t #f)) (read port)))
+                             ;; ONE report (M2a review r1, F10): nothing after it.
+                             (more (guard (e (#t #f)) (read port))))
+                        (if (and (pair? d) (pair? (cdr d)) (eq? (cadr d) 'serve-path-occupied) (eof-object? more))
                             'said-occupied
                             (list 'said text))))
                 '(exit-75 still-there said-occupied))))

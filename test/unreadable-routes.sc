@@ -218,9 +218,14 @@
 (define sock-base
   (let ((v (getenv "THEOURGIA_TEST_SOCK")))
     (if (and (string? v) (> (string-length v) 0)) v "/tmp")))
+;; THE LOCK IS PRE-CREATED (F100b brief G), so main records nothing and the
+;; store's failure is answered by the table alone: the exact datum, with its
+;; errno and the attempt clause of a start made by hand.
 (let* ((s (fresh-store!))
        (sock (string-append sock-base "/ur-" (number->string (get-process-id)) ".sock"))
+       (lock (string-append sock-base "/.ur-" (number->string (get-process-id)) ".sock.lock"))
        (out (string-append root "/start.out")))
+  (system (string-append "touch " lock))
   (chmod! "000" (writers-of s))
   (let* ((rc (system (string-append "perl -e 'alarm 60; exec @ARGV' scheme --script ../theourgiad.sc serve "
                                     s " --socket " sock " > " out " 2> /dev/null < /dev/null")))
@@ -229,12 +234,14 @@
                    (lambda (p) (let loop ((acc '()))
                                  (let ((x (read p))) (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
     (chmod! "700" (writers-of s))
+    (system (string-append "rm -f " lock))
     (want "F79-3 a daemon started on a store whose writers/ cannot be listed names writers/ and leaves as a failed start does: exit 75, store-actor-down, no socket"
-          (list (and (pair? said) (names-writers? (car said) s))
+          (list (and (pair? said) (car said))
                 (and (pair? said) (pair? (cdr said)) (cadr said))
                 rc
                 (file-exists? sock))
-          (list #t '(exiting (reason store-actor-down)) 75 #f))))
+          (list (list 'error 'unreadable (list 'path (writers-of s)) '(reason "Permission denied") '(errno EACCES) '(attempt #f))
+                '(exiting (reason store-actor-down)) 75 #f))))
 
 ;; ---- F100b M1: the answers at the synchronous points ---------------------------
 ;;
@@ -679,6 +686,287 @@
           (list (car r) (and (pair? (cadr r)) (car (cadr r))) (carries-a-record? (cadr r))
                 (file-exists? (string-append out "/z/deeper/b.sc")))
           '(0 ok #f #t))))
+;; ---- F100b M2a: the daemon's startup reports -----------------------------------
+;;
+;; Brief v7 rows P2-startup and its TWIN, P8, P9 a-d, NO4, and their F row.
+;; Each is a DIRECT serve (`theourgiad.sc serve`, no client, no token): its
+;; stdout read as datums, its stderr kept, its exit code. A startup report
+;; is framed by a newline, so the rows read datums, not lines (J4). A daemon
+;; that serves is stopped by its exact argv line, as above.
+(printf "== F100b M2a: the daemon's startup reports ==\n")
+(define (text-of-file p)
+  (if (file-exists? p)
+      (let ((t (call-with-input-file p get-string-all))) (if (eof-object? t) "" t))
+      ""))
+;; A tail that does not read is NOT the end of the output (M2a review r2,
+;; F7): it is kept as the marker UNREADABLE-TAIL, so a report followed by a
+;; torn one does not compare equal to the report alone.
+(define (datums-of-text t)
+  (let ((port (open-string-input-port t)))
+    (let loop ((acc '()))
+      (let ((x (guard (e (#t 'UNREADABLE-TAIL)) (read port))))
+        (cond ((eof-object? x) (reverse acc))
+              ((eq? x 'UNREADABLE-TAIL) (reverse (cons x acc)))
+              (else (loop (cons x acc))))))))
+(define (has-panic? t) (has-substring? t "PANIC"))
+;; -> (rc stdout-datums stderr-text): a start that is expected to leave.
+(define (serve-direct env store args)
+  (let ((out (string-append root "/sd.out")) (err (string-append root "/sd.err")))
+    (let ((rc (system (string-append env " perl -e 'alarm 30; exec @ARGV' scheme --script ../theourgiad.sc serve "
+                                     (quoted store) " "
+                                     (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                                     "> " out " 2> " err " < /dev/null"))))
+      (list rc (datums-of-text (text-of-file out)) (text-of-file err) (text-of-file out)))))
+(define (m2-sock-dir! name)
+  (let ((d (string-append m1-run-root "/" name)))
+    (system (string-append "mkdir -p " d))
+    d))
+
+;; P2-startup (store-loop's entry, point 2; PR-04): the store at 000; the
+;; socket directory and its lock PRE-CREATED, so main records nothing.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p2")) (sock (string-append d "/sock")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (chmod! "000" s)
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (chmod! "755" s)
+    (want "P2-startup a store at 000: the first datum is the table's unreadable with the attempt clause, then store-actor-down, rc 75, no socket"
+          (list (car r) (let ((ds (cadr r))) (and (pair? ds) (car ds)))
+                (let ((ds (cadr r))) (and (pair? ds) (pair? (cdr ds)) (cadr ds)))
+                (file-exists? sock))
+          (list 75 (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES) '(attempt #f))
+                '(exiting (reason store-actor-down)) #f))))
+;; The TWIN (aggregation (a) through the daemon): the same with the lock NOT
+;; pre-created -- main creates it, and main's record joins the store's
+;; answer, which becomes incomplete.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p2t")) (sock (string-append d "/sock")))
+  (chmod! "000" s)
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (chmod! "755" s)
+    (want "P2-startup TWIN main made the lock: the store's unreadable is promoted to incomplete, written naming the lock"
+          (list (car r) (let ((ds (cadr r))) (and (pair? ds) (car ds))))
+          (list 75 (list 'error 'incomplete
+                         (list 'failed (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES))
+                         (list 'written (list (list 'create (string-append d "/.sock.lock"))))
+                         '(attempt #f))))))
+
+;; P8 (theourgiad serve-and-exit!, point 8; PR-13): no --socket, the store's
+;; parent at 000, so the socket's derivation cannot read the store.
+(let ((s (m1-store!)))
+  (chmod! "000" (parent-of s))
+  (let ((r (serve-direct "" s '())))
+    (chmod! "755" (parent-of s))
+    (want "P8 serve with no --socket under a 000 parent: stdout holds ONE datum, the table's unreadable naming the store with the attempt clause, rc 75"
+          (list (car r) (cadr r) (has-panic? (caddr r)))
+          (list 75 (list (list 'error 'unreadable (list 'path s) (list 'reason denied) '(errno EACCES) '(attempt #f))) #f))))
+
+;; P9 (daemon main, point 9; PR-14), a valid store, --socket <dir>/<name>.
+;; (a) stat-fail@report aimed at "/<name>", which is in the socket's path and
+;; not in the lock's (`<dir>/.<name>.lock`): the lock is made, then the probe
+;; of the socket path fails -- the guard in occupied-by-a-non-socket? used to
+;; answer #f and the daemon served.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9a")) (name "sockq7") (sock (string-append d "/" name)))
+  (let ((r (serve-direct (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=stat-fail@report:file=/" name) s (list "--socket" sock))))
+    (want "P9-a a probe of the socket path that fails after the lock was made: ONE datum, incomplete, written naming the lock, rc 75, no PANIC, no socket"
+          (list (car r) (let ((ds (cadr r))) (and (= 1 (length ds)) (car ds))) (has-panic? (caddr r)) (file-exists? sock))
+          (list 75 (list 'error 'incomplete
+                         (list 'failed (list 'path sock) '(reason "Input/output error") '(errno EIO))
+                         (list 'written (list (list 'create (string-append d "/." name ".lock"))))
+                         '(attempt #f))
+                #f #f))))
+;; (b) the socket directory at 500: the lock cannot be created.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9b")) (sock (string-append d "/sock")))
+  (chmod! "500" d)
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (chmod! "755" d)
+    (want "P9-b a socket directory at 500: ONE datum, unwritable (op create) naming the lock, errno 13, rc 75, no PANIC"
+          (list (car r) (let ((ds (cadr r))) (and (= 1 (length ds)) (car ds))) (has-panic? (caddr r)))
+          (list 75 (list 'error 'unwritable '(op create) (list 'path (string-append d "/.sock.lock")) (list 'reason denied)
+                         (list 'errno EACCES) '(attempt #f))
+                #f))))
+;; (c, D6) the lock file pre-created at 000: it cannot be opened, which is not
+;; contention -- the table's unreadable, not serve-busy.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9c")) (sock (string-append d "/sock")) (lock (string-append d "/.sock.lock")))
+  (system (string-append "touch " lock))
+  (chmod! "000" lock)
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (chmod! "644" lock)
+    ;; THE PHYSICAL FRAMING TOO (M2a review r1, F9): stdout's bytes are
+    ;; exactly newline, the datum, newline -- one report, written by
+    ;; write-report-line!, not by `report`.
+    (want "P9-c a lock file at 000 is unreadable, not serve-busy: stdout is exactly \\n + the one report + \\n, rc 75"
+          (list (car r) (cadddr r))
+          (list 75 (string-append "\n"
+                                  (call-with-string-output-port
+                                    (lambda (p) (write (list 'error 'unreadable (list 'path lock) (list 'reason denied) '(errno EACCES) '(attempt #f)) p)))
+                                  "\n")))))
+;; P9-c with a token (M2a review r1, F5): a supplied --attempt is echoed as
+;; the report's last clause.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9t")) (sock (string-append d "/sock")) (lock (string-append d "/.sock.lock")))
+  (system (string-append "touch " lock))
+  (chmod! "000" lock)
+  (let ((r (serve-direct "" s (list "--socket" sock "--attempt" "0123456789abcdef"))))
+    (chmod! "644" lock)
+    (want "P9-c with --attempt: the one report ends with the supplied token"
+          (list (car r) (cadr r))
+          (list 75 (list (list 'error 'unreadable (list 'path lock) (list 'reason denied) '(errno EACCES) '(attempt "0123456789abcdef")))))))
+;; serve-path-occupied carries main's record (M2a review r1, F2): a regular
+;; file on the socket path, the lock NOT pre-created -- main made it.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9o")) (sock (string-append d "/sock")))
+  (system (string-append "printf x > " sock))
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (want "P9-occupied a file on the socket path: ONE datum, serve-path-occupied with written naming the lock main made, rc 75; the file survives"
+          (list (car r) (cadr r) (file-exists? sock))
+          (list 75 (list (list 'error 'serve-path-occupied (list 'path sock)
+                               (list 'written (list (list 'create (string-append d "/.sock.lock"))))
+                               '(attempt #f)))
+                #t))))
+;; The store process's two non-table outcomes (M2a review r1, F14):
+;; store-load-failed (a meta.sexp that does not parse) and an (error ...)
+;; passthrough (store-busy: the store's lock held elsewhere past the 5 s
+;; budget). Both locks pre-created, so main records nothing.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p2f")) (sock (string-append d "/sock")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (call-with-output-file (string-append s "/meta.sexp") (lambda (o) (put-string o "(broken")) 'truncate)
+;; The parse failure is a log-error, not a condition, so its reason is the
+  ;; symbol `raised`, as on the base (PR-11 u).
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (want "P2-load-failed a meta.sexp that does not parse: store-load-failed (reason raised) with the attempt clause, then store-actor-down, rc 75"
+          (list (car r) (cadr r))
+          (list 75 (list '(error store-load-failed (reason raised) (attempt #f)) '(exiting (reason store-actor-down)))))))
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p2b")) (sock (string-append d "/sock"))
+       (holder-pid (string-append root "/holder.pid")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (system (string-append "perl -e 'use Fcntl qw(:flock); open(my $f, \">>\", $ARGV[0]) or die; flock($f, LOCK_EX) or die; sleep 20' "
+                         (quoted (string-append s "/lock")) " > /dev/null 2>&1 & echo $! > " holder-pid))
+  (system "sleep 0.5")
+  (let ((r (serve-direct "" s (list "--socket" sock))))
+    (system (string-append "kill -TERM $(cat " holder-pid ") 2>/dev/null"))
+    (want "P2-busy the store's lock held elsewhere past the budget: store-busy passed through with the attempt clause, then store-actor-down, rc 75"
+          (list (car r) (cadr r))
+          (list 75 (list (list 'error 'store-busy (list 'path (string-append s "/lock")) '(attempt #f))
+                         '(exiting (reason store-actor-down)))))))
+;; (d, D5, and the F row for these routes) a first start with no socket and
+;; no lock serves; its first datum is `serving`, with no record clause.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p9d")) (sock (string-append d "/sock"))
+       (out (string-append root "/p9d.out")))
+  (system (string-append "scheme --script ../theourgiad.sc serve " (quoted s) " --socket " (quoted sock)
+                         " > " out " 2> /dev/null < /dev/null &"))
+  (let wait ((k 0))
+    (when (and (< k 100) (not (has-substring? (text-of-file out) "(serving")))
+      (system "sleep 0.1") (wait (+ k 1))))
+  (let ((first (let ((ds (datums-of-text (text-of-file out)))) (and (pair? ds) (car ds)))))
+    (stop-daemon! "P9-d" s)
+    (want "P9-d / F a first start with no socket and no lock serves: the first datum is serving, with no written, client-written or attempt clause"
+          (list (and (pair? first) (car first))
+                (and (clause-of first 'written) #t) (and (clause-of first 'client-written) #t) (and (clause-of first 'attempt) #t))
+          '(serving #f #f #f))))
+
+;; THE REPORT CHANNEL ITSELF FAILS (M2a review r2, F1, F2, F4): stdout
+;; closed, so the report's one write fails. Each startup that refused still
+;; leaves with 75 -- main's own refusal (P9-c's setup), point 8 (P8's), and
+;; the store's failure through main's combined report and the store-actor-
+;; down line after it (P2-startup's) -- and never with the scheduler's
+;; panic 70.
+(define (serve-direct-closed env store args)
+  (let ((err (string-append root "/sdc.err")))
+    (let ((rc (system (string-append env " perl -e 'alarm 30; exec @ARGV' scheme --script ../theourgiad.sc serve "
+                                     (quoted store) " "
+                                     (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                                     ">&- 2> " err " < /dev/null"))))
+      (list rc (has-panic? (text-of-file err))))))
+(let* ((s (m1-store!)) (d (m2-sock-dir! "cl9")) (sock (string-append d "/sock")) (lock (string-append d "/.sock.lock")))
+  (system (string-append "touch " lock))
+  (chmod! "000" lock)
+  (let ((r (serve-direct-closed "" s (list "--socket" sock))))
+    (chmod! "644" lock)
+    (want "P9-c closed stdout: main's refusal cannot be written, and the start still leaves with 75, no PANIC"
+          r '(75 #f))))
+(let ((s (m1-store!)))
+  (chmod! "000" (parent-of s))
+  (let ((r (serve-direct-closed "" s '())))
+    (chmod! "755" (parent-of s))
+    (want "P8 closed stdout: point 8's report cannot be written, and the start still leaves with 75, no PANIC"
+          r '(75 #f))))
+(let* ((s (m1-store!)) (d (m2-sock-dir! "cl2")) (sock (string-append d "/sock")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (chmod! "000" s)
+  (let ((r (serve-direct-closed "" s (list "--socket" sock))))
+    (chmod! "755" s)
+    (want "P2-startup closed stdout: neither main's combined report nor store-actor-down can be written, and the start still leaves with 75, no PANIC"
+          r '(75 #f))))
+;; detach-failed with STDERR closed: the exit stays 71. THEOURGIA_HOME is
+;; UNSET for this run: ffi.sc announces a set home on stderr when the
+;; library loads (machine-home-announced) and flushes it, so with stderr
+;; closed and the home set, the program ends at load with 255 -- before
+;; detach-step exists. That is the base's behaviour and outside M2a; the
+;; detach fails before anything reads the home.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "no4c")) (logdir (string-append root "/no4c-logs")) (log (string-append logdir "/serve.log")))
+  (system (string-append "mkdir -p " logdir))
+  (chmod! "000" logdir)
+  (let ((rc (system (string-append "env -u THEOURGIA_HOME perl -e 'alarm 30; exec @ARGV' scheme --script ../theourgiad.sc serve " (quoted s)
+                                   " --socket " (quoted (string-append d "/sock")) " --detach --log " (quoted log)
+                                   " > /dev/null 2>&- < /dev/null"))))
+    (chmod! "755" logdir)
+    (want "NO4 closed stderr: detach-failed cannot be written, and the exit is still 71"
+          rc 71)))
+
+;; THE TOKEN AND THE FRAMING THROUGH THE OTHER TWO EMITTERS (M2a review r2,
+;; F5, F6): point 8 and the store's failure reported by main from its
+;; state. Stdout's exact bytes, the supplied token last.
+(define (framed . datums)
+  (apply string-append
+         (map (lambda (d) (call-with-string-output-port (lambda (p) (write d p)))) datums)))
+(let ((s (m1-store!)))
+  (chmod! "000" (parent-of s))
+  (let ((r (serve-direct "" s (list "--attempt" "0123456789abcdef"))))
+    (chmod! "755" (parent-of s))
+    (want "P8 with --attempt: stdout is exactly \\n + the report ending with the token + \\n, rc 75"
+          (list (car r) (cadddr r))
+          (list 75 (string-append "\n" (framed (list 'error 'unreadable (list 'path s) (list 'reason denied) '(errno EACCES)
+                                                     '(attempt "0123456789abcdef")))
+                                  "\n")))))
+(let* ((s (m1-store!)) (d (m2-sock-dir! "p2k")) (sock (string-append d "/sock")))
+  (system (string-append "touch " d "/.sock.lock"))
+  (chmod! "000" s)
+  (let ((r (serve-direct "" s (list "--socket" sock "--attempt" "0123456789abcdef"))))
+    (chmod! "755" s)
+    (want "P2-startup with --attempt: stdout is exactly \\n + main's combined report ending with the token + \\n, then store-actor-down, rc 75"
+          (list (car r) (cadddr r))
+          (list 75 (string-append "\n" (framed (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied)
+                                                     '(errno EACCES) '(attempt "0123456789abcdef")))
+                                  "\n" (framed '(exiting (reason store-actor-down))) "\n")))))
+
+;; NO4b (M2a review r1, F4 and F12): the log's directory writable and the log
+;; absent, its open failed by open-fail@report: fd-open's file-ensure! has
+;; created the log first, so detach-failed carries that creation -- and the
+;; fault fires only because detach! runs under the `report` stage.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "no4b")) (logdir (string-append root "/no4b-logs")) (log (string-append logdir "/serve.log")))
+  (system (string-append "mkdir -p " logdir))
+  (let ((r (serve-direct "THEOURGIA_INJECT=on THEOURGIA_FAULT=open-fail@report:file=serve.log:errno=EACCES"
+                         s (list "--socket" (string-append d "/sock") "--detach" "--log" log))))
+    (want "NO4b a log created and then not opened: detach-failed on stderr carries the creation, exit 71, nothing on stdout"
+          (list (car r) (cadr r)
+                (filter (lambda (x) (or (eq? x 'UNREADABLE-TAIL) (and (pair? x) (eq? (car x) 'error)))) (datums-of-text (caddr r))))
+          (list 71 '() (list (list 'error 'detach-failed '(step log) (list 'path log) '(errno EACCES)
+                                   (list 'written (list (list 'create log)))))))))
+
+;; NO4 (theourgiad detach-step, a named outcome; PR-13/E2): --detach with a
+;; log beneath a 000 directory. detach-failed goes to STDERR, keeps its name,
+;; carries no written (nothing was created), exit 71; stdout holds nothing.
+(let* ((s (m1-store!)) (d (m2-sock-dir! "no4")) (logdir (string-append root "/no4-logs")) (log (string-append logdir "/serve.log")))
+  (system (string-append "mkdir -p " logdir))
+  (chmod! "000" logdir)
+  (let ((r (serve-direct "" s (list "--socket" (string-append d "/sock") "--detach" "--log" log))))
+    (chmod! "755" logdir)
+    ;; stderr's (error ...) datums: the daemon also prints its
+    ;; `(theourgia machine-home ...)` notice there, which is not an answer.
+    ;; A torn tail is KEPT (M2a review r3, F3): the filter passes the
+    ;; UNREADABLE-TAIL marker, so a report followed by half of another fails.
+    (want "NO4 a log that cannot be opened: detach-failed on stderr, no written, exit 71, nothing on stdout"
+          (list (car r) (cadr r)
+                (filter (lambda (d) (or (eq? d 'UNREADABLE-TAIL) (and (pair? d) (eq? (car d) 'error)))) (datums-of-text (caddr r))))
+          (list 71 '() (list (list 'error 'detach-failed '(step log) (list 'path log) '(errno EACCES)))))))
+
 (want "the daemons M1's rows started were one process each, by the exact argv line"
       daemon-counts (map (lambda (c) (cons (car c) 1)) daemon-counts))
 (want "no daemon of a store this section made is left running"

@@ -133,6 +133,8 @@
 ;;;                       as acquire and release; the release is checked
 ;;;                       on a normal exit, quiet on an escape
 ;;;   write-all!          write           durable-error
+;;;   write-one!          write, once     durable-error; a short write is one
+;;;                                       (op write, errno #f), never retried
 ;;;   ftruncate!          ftruncate       durable-error
 ;;;   fsync! fsync-dir!   fsync           durable-error; fsync-dir!'s open
 ;;;                                       of the directory is
@@ -352,7 +354,7 @@
 (library (theourgia ffi)
   (export fd-open fd-close
           with-exclusive-lock with-shared-lock
-          ftruncate! fsync! fsync-dir! write-all!
+          ftruncate! fsync! fsync-dir! write-all! write-one!
           fd-seek! fd-size file-size file-ensure! fd-path link!
           setsid! session-id signal-pid! process-alive-signal0?
           setrlimit! getrlimit RLIMIT_CPU process-rss-bytes
@@ -1491,7 +1493,12 @@
   (define c-strerror (foreign-procedure "strerror" (int) string))
   ;; THE REASON A durable-error IS ANSWERED WITH (F100b): the same text an
   ;; unreadable-entry already carries for the same errno.
-  (define (errno-text code) (c-strerror code))
+  ;; #f HAS NO TEXT (F100b M2a reviews r1 F3, r2 F3): a durable-error may
+  ;; carry no errno -- a short write, or a Chez condition condition-errno
+  ;; cannot map (a create, say) -- and handing #f to strerror raised from
+  ;; the table itself. What a missing errno MEANS depends on the step; the
+  ;; table in (theourgia answers) says so for a write.
+  (define (errno-text code) (if code (c-strerror code) "no errno"))
   (define (errno-reason code)
     (cond
       ((eqv? code EACCES) 'EACCES)
@@ -2649,6 +2656,26 @@
       (values n code #f)))
 
   (define short-count 7)
+
+  ;; ONE write(2), NEVER RETRIED (F100b item 3, E4). A startup report is one
+  ;; line that a reader selects whole or not at all; write-all!'s retry of a
+  ;; short write would join a second syscall's bytes to the first, and a
+  ;; reader between the two sees half a line that parses as nothing. So a
+  ;; short write is a failure here: durable-error with op write and errno
+  ;; #f, as write-all! answers a zero-length write. The write is noted once,
+  ;; when write(2) really ran, as in write-all!.
+  (define (write-one! fd bv . opts)
+    (unless (bytevector? bv)
+      (assertion-violation 'write-one! "not a bytevector" bv))
+    (let ((subject (subject-of fd opts))
+          (total (bytevector-length bv)))
+      (let-values (((n code skipped) (begin (written! fd)
+                                            (write-once fd bv total subject))))
+        (unless skipped (note! (list 'write subject)))
+        (cond
+          ((< n 0) (raise (fs-err 'write subject code)))
+          ((< n total) (raise (fs-err 'write subject #f)))
+          (else (trace-event! 'write subject n) total)))))
 
   ;; HOW FAR IT GOT IS REPORTED, NOT INFERRED. A caller that has to
   ;; classify "nothing written" against "partly written" was measuring

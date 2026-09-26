@@ -24,7 +24,10 @@
 ;;       scope inside that actor, handing it the entries so far
 ;;       (`with-mutation-record`'s optional second argument), and reads the
 ;;       combined record back.
-(import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers))
+(import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers)
+        ;; F100b M2a's two helper rows (H5, H7).
+        (only (theourgia daemon) write-report-line!)
+        (only (theourgia client) next-attempt-token))
 
 (define bad 0)
 (define rows 0)
@@ -115,6 +118,14 @@
         (list (unreadable-at "/p" 'EACCES denied) "EACCES" '(path "/p") (list 'reason denied) '(errno EACCES))
         (list (durable 'mkdir "/p" EACCES) "durable mkdir" '(op mkdir) '(path "/p") (list 'reason denied) (list 'errno EACCES))
         (list (durable 'dir-fsync "/d" EIO) "durable dir-fsync" '(op dir-fsync) '(path "/d") '(reason "Input/output error") (list 'errno EIO))))
+;; A durable-error with no errno is a short write (M2a review r1, F3):
+;; the table answers it with a reason of its own instead of raising.
+(want "H1 durable write with errno #f (a short write), empty record -> unwritable, reason \"short write\", errno #f"
+      (classify-failure (durable 'write "/p" #f) '())
+      '(error unwritable (op write) (path "/p") (reason "short write") (errno #f)))
+(want "H1 durable create with errno #f (a Chez condition with no mapped errno), empty record -> unwritable, reason \"no errno\" (M2a review r2, F3)"
+      (classify-failure (durable 'create "/p" #f) '())
+      '(error unwritable (op create) (path "/p") (reason "no errno") (errno #f)))
 (want "H1 what the table does not classify answers #f (the caller keeps its own answer)"
       (list (classify-failure (make-message-condition "x") '()) (classify-failure 'boom h-record))
       '(#f #f))
@@ -158,6 +169,78 @@
 (want "H2 a success answer is never given a written clause"
       (combine-report '(ok (values (3))) h-entries)
       '(ok (values (3))))
+
+;; ---- F100b M2a: the startup report's one write, and the attempt token ----
+;;
+;; H5 (brief item 3, E4): write-report-line! writes newline, the datum,
+;; newline, as ONE write, and the caller's record holds exactly one entry
+;; for it. The descriptor is opened outside the scope, so the scope holds
+;; the report's write alone.
+;; STATED LIMIT (M2a review r1, F6, ruled): "one call to write-once, read at
+;; write-one!'s body, not measured". A write-one! that split a successful
+;; write into two syscalls while keeping one note and one trace would leave
+;; the file, the record and the fault as they are; no row here counts
+;; syscalls (that would be a measurement of the kernel, not of the door).
+(let* ((p (under "h5.log"))
+       (fd (fd-open p '(write append create)))
+       (record (with-mutation-record
+                 (lambda ()
+                   (write-report-line! fd '(error x (path "/p") (attempt "0123456789abcdef")))
+                   (mutation-record)))))
+  (fd-close fd)
+  (want "H5 write-report-line! writes \\n + the datum + \\n exactly, and the record holds one write entry naming the file"
+        (list (bytes-of p) record)
+        (list "\n(error x (path \"/p\") (attempt \"0123456789abcdef\"))\n" (list (list 'write p)))))
+;; H5b: under short-write@report the call raises durable-error (op write,
+;; errno #f) and the file holds no complete report line -- only the seven
+;; bytes the short write offered, never a second syscall's. Run as a child
+;; process, since the fault is read from the environment at start.
+(let* ((p (under "h5b.log"))
+       (script (under "h5b.ss"))
+       (out (under "h5b.out")))
+  (call-with-output-file script
+    (lambda (o)
+      (write '(import (chezscheme) (theourgia ffi) (only (theourgia daemon) write-report-line!)) o)
+      ;; Inside a record scope (M2a review r1, F8): the short write that
+      ;; really ran is noted once, like a whole one.
+      (write `(let ((fd (fd-open ,p '(write append create))))
+                (write (with-mutation-record
+                         (lambda ()
+                           (list (guard (e ((fs-error? e) (list 'raised (fs-error-op e) (fs-error-errno e))))
+                                   (parameterize ((theourgia-stage 'report))
+                                     (write-report-line! fd '(error x (attempt "0123456789abcdef"))))
+                                   'returned)
+                                 (mutation-record)))))
+                (fd-close fd))
+             o)))
+  (let ((rc (system (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=short-write@report scheme --script "
+                                   script " > " out " 2> /dev/null < /dev/null"))))
+    (want "H5b under short-write@report write-report-line! raises durable-error (op write, errno #f), notes the one write, and leaves no complete line: the seven offered bytes only"
+          (list rc (guard (e (#t 'unread)) (call-with-input-file out read)) (bytes-of p))
+          (list 0 (list '(raised write #f) (list (list 'write p))) "\n(error"))))
+;; H5d (M2a review r1, F7): the port's buffered bytes are flushed before the
+;; report, so they land before it: a child prints "pre" through the port,
+;; writes a report to fd 1, prints "post", and its stdout reads in that
+;; order.
+(let* ((script (under "h5d.ss")) (out (under "h5d.out")))
+  (call-with-output-file script
+    (lambda (o)
+      (write '(import (chezscheme) (only (theourgia daemon) write-report-line!)) o)
+      (write '(begin (display "pre") (write-report-line! 1 '(error x (attempt #f))) (display "post")) o)))
+  (let ((rc (system (string-append "scheme --script " script " > " out " 2> /dev/null < /dev/null"))))
+    (want "H5d buffered port output lands before the report: stdout is pre, the framed report, post"
+          (list rc (bytes-of out))
+          (list 0 "pre\n(error x (attempt #f))\npost"))))
+;; H7 (D11): two tokens from one process are distinct, each 16 lowercase hex.
+(let* ((a (next-attempt-token)) (b (next-attempt-token))
+       (hex16? (lambda (t) (and (string? t) (= 16 (string-length t))
+                                (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f)))
+                                         (string->list t))))))
+  ;; The first eight characters are this process's pid (M2a review r1, F13).
+  (want "H7 next-attempt-token twice in one process: two distinct strings of 16 lowercase hex, the first eight this pid"
+        (list (hex16? a) (hex16? b) (string=? a b)
+              (string->number (substring a 0 8) 16) (string->number (substring b 0 8) 16))
+        (list #t #t #f (get-process-id) (get-process-id))))
 
 (define scope-exits '(normal raise escape))
 (define scope-enclosings '(none outer))

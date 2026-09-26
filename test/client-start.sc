@@ -223,7 +223,12 @@
 
 (want "CS-3 a socket path held by a file is reported in the daemon's own words"
       (ensure-daemon! (argv-for blocked) store blocked)
-      (list 'error 'serve-path-occupied (list 'path blocked)))
+;; The daemon's report carries main's record -- the lock file this start
+      ;; created -- and ends with its attempt clause (F100b items 2 and 3); #f
+      ;; until the client passes a token (M2b).
+      (list 'error 'serve-path-occupied (list 'path blocked)
+            (list 'written (list (list 'create (string-append sock-here "/.blocked.sock.lock"))))
+            '(attempt #f)))
 
 ;; NEVER: AND THE FILE IS STILL THERE. A daemon that reported the path was
 ;; occupied and then took it anyway would have destroyed whatever was

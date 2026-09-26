@@ -141,7 +141,7 @@
           (list expect-rc expect-out #t))))
 (theourgiad-row "F46-2 theourgiad.sc with a verb that is not serve answers bad-request not-a-daemon-verb with the serve usage, exit 1"
                 "init --store d" 1
-                "(error bad-request (reason not-a-daemon-verb) (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)))))\n")
+                "(error bad-request (reason not-a-daemon-verb) (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
 (let ((d (string-append here "/r" (number->string row-n))))
   (want "F46-2 TWIN: and it created nothing under the store it was named"
         (if (program-exists? "theourgiad.sc") (file-exists? (string-append d "/cwd/d")) 'no-such-program)
@@ -150,16 +150,32 @@
                 "serve d --socket \"\"" 2 "(error bad-socket-path (reason empty))\n")
 (theourgiad-row "F46-9 theourgiad.sc serve --detach without --log answers detach-needs-a-log with the usage, exit 71"
                 "serve d --detach" 71
-                "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)))))\n")
+                "(error detach-needs-a-log (usage (serve (<store>) (\"--socket\" <path>) (\"--detach\" \"--log\" <path> (started-by-a-client-not-by-hand)) (\"--attempt\" <token> (started-by-a-client-not-by-hand)))))\n")
 (let ((d (row-dir!)))
   (want "F46-9 theourgiad.sc serve on an absent store answers store-not-found then exiting, exit 75"
         (if (not (program-exists? "theourgiad.sc"))
             'no-such-program
-            (let ((r (run-in d "theourgiad.sc" "serve d" 8)))
-              (list (rc-of r)
-                    (and (contains? (out-of r) "(error store-not-found (store \"d\"))")
-                         (contains? (out-of r) "(exiting (reason store-actor-down))")))))
-        (list 75 #t)))
+            ;; A NAMED OUTCOME CARRIES MAIN'S RECORD (F100b item 2): serving the
+            ;; default socket, main made the run directory and the lock before
+            ;; the store process found no store, so store-not-found gains
+            ;; (written ...) naming only those, under THEOURGIA_RUN. The
+            ;; report ends with the attempt clause (#f: started by hand).
+            (let* ((r (run-in d "theourgiad.sc" "serve d" 8))
+                   (run (string-append sock-base "/es-" pid-text "-" (number->string row-n)))
+                   (first (guard (e (#t #f)) (read (open-string-input-port (out-of r)))))
+                   (written (and (list? first) (assq 'written (filter pair? first)))))
+              ;; EXACTLY main's three creations (M2a review r1, F11): the run
+              ;; directory, the store's key directory under it, and the lock.
+              ;; The key is read back as the one directory under the run root.
+              (let* ((keys (guard (e (#t '())) (directory-list run)))
+                     (kd (and (= 1 (length keys)) (string-append run "/" (car keys)))))
+                (list (rc-of r)
+                      (and (list? first) (filter (lambda (c) (not (and (pair? c) (eq? (car c) 'written)))) first))
+                      (and written kd
+                           (equal? (cadr written)
+                                   (list (list 'mkdir run) (list 'mkdir kd) (list 'create (string-append kd "/.socket.lock")))))
+                      (contains? (out-of r) "(exiting (reason store-actor-down))")))))
+        (list 75 '(error store-not-found (store "d") (attempt #f)) #t #t)))
 ;; AN OPTION serve DOES NOT KNOW IS REFUSED (F94), as every other verb
 ;; refuses one; before it, `serve d --bogus` served in the foreground.
 (let ((d (row-dir!)))

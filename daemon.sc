@@ -37,7 +37,7 @@
 ;;; its death (§7.6.32 A). Closing one is killing that adapter.
 
 (library (theourgia daemon)
-  (export serve)
+  (export serve write-report-line!)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports)
           (only (chezscheme) real-time getenv write newline read void let-values
@@ -46,7 +46,8 @@
                 irritants-condition? condition-irritants filter raise condition
                 make-message-condition make-irritants-condition
                 open-string-input-port call-with-string-output-port
-                condition? message-condition? condition-message guard exit)
+                condition? message-condition? condition-message guard exit
+                parameterize)
           ;; NEVER: NAMED ONE BY ONE, AND `link` IS NOT AMONG THEM. A linked
           ;; process that exits abnormally takes its peer down with it
           ;; without asking, which is the one shape this daemon must not
@@ -78,8 +79,9 @@
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
                 mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode
-                entry-type unreadable-entry? unreadable-entry-errno)
-          (only (theourgia answers) classify-failure))
+                entry-type unreadable-entry? unreadable-entry-errno
+                write-one! with-mutation-record mutation-record theourgia-stage)
+          (only (theourgia answers) classify-failure combine-report))
 
   ;; ---- where a daemon lives ---------------------------------------------
   ;;
@@ -176,14 +178,57 @@
   ;; outside that window would get the blocking default, which is the
   ;; freeze this exists to prevent. What keeps the CLI on the default is
   ;; that nothing in the CLI ever sets this.
+  ;; The optional second argument is the start's attempt token (F100b item
+  ;; 3), echoed as the last clause of every startup report; #f when the
+  ;; daemon was started by hand without one.
   (define (serve store . opts)
     ;; NEVER: ONCE, HERE, BEFORE ANY ANSWER LEAVES. Every conn process in this
     ;; VM prints through `render-wire`, and the settings it needs are per
     ;; OS thread -- so they are set on the way in rather than around each
     ;; write.
     (answer-printing!)
-    (let ((socket (if (pair? opts) (car opts) (socket-path store))))
-      (start-scheduler (lambda () (main store socket)))))
+    (let ((socket (if (pair? opts) (car opts) (socket-path store)))
+          (attempt (and (pair? opts) (pair? (cdr opts)) (cadr opts))))
+      (start-scheduler (lambda () (main store socket attempt)))))
+
+  ;; ---- the startup report ------------------------------------------------
+  ;;
+  ;; A STARTUP REPORT IS ONE LINE WRITTEN BY ONE write(2) (F100b item 3, E4):
+  ;; a newline, the datum, a newline, handed to ffi's write-one!, which
+  ;; never retries a short write. The leading newline ends whatever an
+  ;; earlier process left unterminated in the append-mode log, so a reader
+  ;; that selects whole lines finds this one whole. A short write is a
+  ;; report failure (durable-error, op write). The port that `report` and
+  ;; `say` print through is flushed first, so bytes it buffered cannot land
+  ;; after this line.
+  ;;
+  ;; THE STARTUP REPORTS ARE THESE (F100b M2 Q1), and every one is written
+  ;; here: main's serve-busy, serve-path-occupied and table answers (point
+  ;; 9); the store process's failure, combined by main (point 2); and
+  ;; theourgiad's translated refusals (point 8). `(serving ...)`,
+  ;; `(exiting ...)` and the argument refusals are not startup reports and
+  ;; keep `report`/`say`.
+  (define (write-report-line! fd datum)
+    (flush-output-port (current-output-port))
+    (write-one! fd (string->utf8
+                     (string-append "\n"
+                                    (call-with-string-output-port (lambda (p) (write datum p)))
+                                    "\n"))))
+
+  ;; The attempt token is the report's LAST clause (item 3), #f for a start
+  ;; made by hand.
+  (define (startup-report! attempt answer)
+    (write-report-line! 1 (append answer (list (list 'attempt attempt)))))
+
+  ;; A STARTUP THAT FAILED REPORTS ONCE AND LEAVES WITH 75 (point 9). A
+  ;; failure of the report's own write (a short write, say) is not answered
+  ;; again: the report channel is what failed, so there is nowhere left to
+  ;; say it, and a second report under the same attempt is what the client
+  ;; must never select (M2a review r1, F1, F3). The exit is 75 either way.
+  (define (report-and-exit! attempt answer)
+    (guard (e (#t (exit 75)))
+      (startup-report! attempt answer))
+    (exit 75))
 
   ;; ---- the lock service ---------------------------------------------
   ;;
@@ -294,33 +339,66 @@
          (loop (cdr rest) kept))
         (else (loop (cdr rest) (cons (car rest) kept))))))
 
-  (define (main store socket)
-    (mkdir-p! (directory-of socket))
-    ;; NOTE: THE LOCK FILE HAS TO EXIST BEFORE IT CAN BE LOCKED: `flock`
-    ;; wants an open descriptor, so the file is the lock's name, not its
-    ;; content, and it is never removed -- removing it would let the next
-    ;; caller create a NEW file and lock that one instead, which is two
-    ;; daemons each holding "the" lock.
-    (file-ensure! (lock-path-for socket))
-    ;; NEVER: THE ATTEMPT THAT NEVER WAITS. A blocking flock here would park
-    ;; this process on the scheduler's own thread -- and a second daemon
-    ;; is supposed to answer `serve-busy` and leave, not queue for ever
-    ;; behind the first one. Measured: with the blocking form, the second
-    ;; daemon simply hung and its row never returned.
-    (let ((lock (guard (e (#t #f)) (lock-try-acquire! (lock-path-for socket) 'exclusive))))
-      (cond
-        ((or (not lock) (not (lock-held? lock))) (report `(error serve-busy (path ,socket))) (exit 75))
-        ((occupied-by-a-non-socket? socket)
-         (report `(error serve-path-occupied (path ,socket)))
-         ;; NOTE: MAIN'S OWN LOCK IS TAKEN AND RELEASED DIRECTLY, NEVER: never
-         ;; through the service below: the service is a process asking
-         ;; main, and main cannot answer itself from inside a handler.
-         ;; It is also never in the table -- the table is for the
-         ;; descriptors main opens on somebody else's behalf.
-         (lock-release! lock)
-         (exit 75))
-        (else
-         (clear-stale-socket! socket)
+  (define (main store socket attempt)
+    ;; MAIN'S STARTUP ANSWERS BY THE TABLE (F100b point 9): a filesystem
+    ;; failure before the store process exists -- the socket directory, the
+    ;; lock file, the lock, the probe of what is on the socket path -- is
+    ;; written as main's startup report with main's record, and main leaves
+    ;; with 75, never the scheduler's panic 70. The record is kept after a
+    ;; successful startup: a store process that fails later has its answer
+    ;; combined with it (point 2, aggregation (a)).
+    ;;
+    ;; UNDER THE `report` STAGE, SO A @report FAULT CAN FIRE HERE (item 1).
+    ;; NO ACTOR EXISTS WHILE THIS RUNS: the store process is spawned after
+    ;; it. That is what makes a parameterize safe here -- under igropyr a
+    ;; parameterize is one global cell that a preemption hands to every
+    ;; other actor (actor.sc:459-469), and there is no other actor yet.
+    (let ((started
+           (parameterize ((theourgia-stage 'report))
+             (with-mutation-record
+               (lambda ()
+                 ;; THE ANSWER IS DECIDED INSIDE THE SCOPE AND REPORTED OUTSIDE IT,
+                 ;; ONCE (M2a review r1, F1-F3). Reporting from inside the guarded
+                 ;; body let a failure after the report -- of the report's own
+                 ;; write, or of a lock release -- be classified and reported a
+                 ;; second time under the same attempt, carrying the first
+                 ;; report's write in its record.
+                 (guard (e ((classify-failure e (mutation-record))
+                            => (lambda (answer) (list 'refuse answer))))
+                   (mkdir-p! (directory-of socket))
+                   ;; NOTE: THE LOCK FILE HAS TO EXIST BEFORE IT CAN BE LOCKED: `flock`
+                   ;; wants an open descriptor, so the file is the lock's name, not its
+                   ;; content, and it is never removed -- removing it would let the next
+                   ;; caller create a NEW file and lock that one instead, which is two
+                   ;; daemons each holding "the" lock.
+                   (file-ensure! (lock-path-for socket))
+                   ;; NEVER: THE ATTEMPT THAT NEVER WAITS. A blocking flock here would park
+                   ;; this process on the scheduler's own thread -- and a second daemon
+                   ;; is supposed to answer `serve-busy` and leave, not queue for ever
+                   ;; behind the first one. Measured: with the blocking form, the second
+                   ;; daemon simply hung and its row never returned.
+                   ;; #f IS CONTENTION ONLY (F100b D6): lock-try-acquire! answers #f
+                   ;; itself when another holds the lock; a lock file that cannot be
+                   ;; opened raises unreadable-entry, which goes to the table above
+                   ;; instead of reading as "somebody is serving".
+                   (let ((lock (lock-try-acquire! (lock-path-for socket) 'exclusive)))
+                     ;; THE TWO NAMED OUTCOMES CARRY MAIN'S RECORD (item 2; M2a review
+                     ;; r1, F2): the lock file this start created is named in them.
+                     ;; NEVER: A LOCK THAT IS HELD IS NOT RELEASED BEFORE THE EXIT. The
+                     ;; exit closes its descriptor, which releases the flock; a release
+                     ;; here could raise after the answer was decided (F1).
+                     (cond
+                       ((or (not lock) (not (lock-held? lock)))
+                        (list 'refuse (combine-report `(error serve-busy (path ,socket)) (mutation-record))))
+                       ((occupied-by-a-non-socket? socket)
+                        (list 'refuse (combine-report `(error serve-path-occupied (path ,socket)) (mutation-record))))
+                       (else
+                        (clear-stale-socket! socket)
+                        (list 'ok lock (mutation-record)))))))))))
+      (when (eq? (car started) 'refuse)
+        (report-and-exit! attempt (cadr started)))
+      (let ((lock (cadr started))
+            (main-record (caddr started)))
          (let ((me self))
            ;; NEVER: ONE LOCKING STRATEGY FOR THE WHOLE VM, SET ONCE, HERE --
            ;; here because this is where main's own pid first exists, and
@@ -353,7 +431,7 @@
            (watch-for-signals! me)
            (let* ((store-pid (spawn (lambda () (store-loop store me))))
                   (smon (monitor store-pid))
-                  (st (make-main-state lock socket store store-pid #f)))
+                  (st (make-main-state lock socket store store-pid #f main-record attempt)))
              (state-roles-set! st (list (cons store-pid 'store)))
              ;; NEVER: NOTHING IS ACCEPTED UNTIL THE STORE HAS PUBLISHED. The
              ;; listener is spawned by the `ready` clause below, not
@@ -361,7 +439,7 @@
              ;; boot load takes the store's lock THROUGH main, so a main
              ;; that waited here for `ready` would be waiting for a
              ;; message that only it could make possible.
-             (watch-loop st)))))))
+             (watch-loop st))))))
 
   ;; NEVER: MAIN'S STATE IS ONE VALUE THAT MAIN MUTATES, NOT NINE ARGUMENTS
   ;; IT THREADS. Four of the nine are association lists of the same
@@ -382,9 +460,20 @@
   (define writers-slot 9)
 
   ;; 11 draining-since (#f until a signal), 12 the tickets being executed,
-  ;; 13 the conn processes that have been told to drain.
-  (define (make-main-state lock socket store store-pid listener)
-    (vector lock socket store store-pid listener '() '() #f '() '() self #f '() '()))
+  ;; 13 the conn processes that have been told to drain, 14 main's startup
+  ;; record, 15 the start's attempt token (F100b points 2 and 9), 16 the
+  ;; phase, 17 the signal remembered while STARTING (the startup-exit design,
+  ;; archive/theourgia-f100b-m2a-startup-exit-design.md v3).
+  ;;
+  ;; THE PHASE DECIDES WHAT AN EVENT ENDS IN. STARTING runs from the store's
+  ;; spawn to its outcome (`ready` or `startup-failed`); SERVING follows
+  ;; `ready`; DRAINING is SERVING with draining-since set. A startup failure
+  ;; ENDS main in STARTING -- it never returns to the loop, so no ordinary
+  ;; exit (drained 0 among them) can follow a reported failure -- and a
+  ;; signal during STARTING is remembered, with its kind, until the outcome.
+  (define (make-main-state lock socket store store-pid listener main-record attempt)
+    (vector lock socket store store-pid listener '() '() #f '() '() self #f '() '() main-record attempt
+            'starting #f))
 
   (define (state-lock st) (vector-ref st 0))
   (define (state-socket st) (vector-ref st 1))
@@ -397,6 +486,12 @@
   (define (state-draining-set! st v) (vector-set! st 11 v))
   (define (state-running st) (vector-ref st 12))
   (define (state-running-set! st v) (vector-set! st 12 v))
+  (define (state-main-record st) (vector-ref st 14))
+  (define (state-attempt st) (vector-ref st 15))
+  (define (state-phase st) (vector-ref st 16))
+  (define (state-phase-set! st v) (vector-set! st 16 v))
+  (define (state-remembered st) (vector-ref st 17))
+  (define (state-remembered-set! st v) (vector-set! st 17 v))
   (define (state-roles st) (vector-ref st roles-slot))
   (define (state-roles-set! st v) (vector-set! st roles-slot v))
   (define (state-handling st) (vector-ref st handling-slot))
@@ -428,8 +523,8 @@
       (after drain-poll-ms
              (when (state-draining st)
                (when (> (- (real-time) (state-draining st)) drain-budget-ms)
-                 (report `(exiting (reason drain-timeout)
-                                   (in-flight ,(length (state-running st)))))
+                 (report-quietly `(exiting (reason drain-timeout)
+                                           (in-flight ,(length (state-running st)))))
                  (leave st 75)))
              (watch-loop st))
       ;; The listener says what it bound, so the exit path can tell this
@@ -446,22 +541,61 @@
       ;; in that order. The first line is what a caller waits for and
       ;; believes; the second is what happened. Measured with
       ;; `--socket ""`.
+      ;; THE STORE PROCESS'S STARTUP FAILURE ENDS MAIN (F100b point 2,
+      ;; aggregation (a); the startup-exit design). Its answer already carries
+      ;; the store's own record (the table ran over it there; the record
+      ;; travels with it for the trace); main adds what it had created itself
+      ;; before the store existed -- the lock file, say -- and writes the one
+      ;; report, then the store-actor-down line itself, then leaves with 75.
+      ;; NEVER: IT DOES NOT RETURN TO THE LOOP. It did, and a drain signal
+      ;; processed before the store's DOWN ended the start in `drained`, exit
+      ;; 0, after its failure had been reported (M2a review r3, F1). The
+      ;; store's DOWN that follows is never processed, nor its cleanup; the
+      ;; exit closes the descriptors main holds. A report that cannot be
+      ;; written is not reported again (r1 F1, F3). Only STARTING receives
+      ;; this: the store sends it before `ready` or not at all. READ, NOT
+      ;; MEASURED in M2a: that no loop follows it is seen in the code; the
+      ;; rows that force a signal before the outcome come with M2b's
+      ;; `store-start` hold stage.
+      (`(startup-failed ,answer ,record)
+       (trace-event! 'startup-failed record #f)
+       (trace-event! 'daemon-down (list 'store 'startup-failed) #f)
+       (guard (e (#t (trace-event! 'startup-report-failed #f #f)))
+         (startup-report! (state-attempt st) (combine-report answer (state-main-record st))))
+       (report-quietly '(exiting (reason store-actor-down)))
+       (leave st 75))
       (`(bound ,ident)
        (state-bound-set! st ident)
-       (report `(serving (store ,(state-store st)) (socket ,(state-socket st))))
+       (report-quietly `(serving (store ,(state-store st)) (socket ,(state-socket st))))
        (watch-loop st))
       ;; NEVER: THE DOOR OPENS HERE AND NOWHERE ELSE. Until the store has a
       ;; value to serve, a connection could only be told to wait or be
       ;; told something untrue -- so there are no connections.
+      ;;
+      ;; A SIGNAL REMEMBERED DURING STARTING ACTS HERE, WITH ITS KIND (the
+      ;; startup-exit design R5): `again` is second-signal, exit 75, and no
+      ;; listener; `drain` is a drain entered at once, with no listener either,
+      ;; which finishes drained 0 when nothing runs. Neither can reach a
+      ;; connection, because there is none.
       (`(ready)
-       (let ((listener (spawn (lambda () (listener-loop (state-socket st)
-                                                        (state-store-pid st)
-                                                        (state-store st)
-                                                        (state-main st))))))
-         (monitor listener)
-         (state-listener-set! st listener)
-         (state-roles-set! st (cons (cons listener 'listener) (state-roles st))))
-       (watch-loop st))
+       (state-phase-set! st 'serving)
+       (case (state-remembered st)
+         ((again)
+          (report-quietly `(exiting (reason second-signal)))
+          (leave st 75))
+         ((drain)
+          (enter-drain! st)
+          (finish-if-drained st)
+          (watch-loop st))
+         (else
+          (let ((listener (spawn (lambda () (listener-loop (state-socket st)
+                                                           (state-store-pid st)
+                                                           (state-store st)
+                                                           (state-main st))))))
+            (monitor listener)
+            (state-listener-set! st listener)
+            (state-roles-set! st (cons (cons listener 'listener) (state-roles st))))
+          (watch-loop st))))
       (`(watch ,pid ,role)
        (monitor pid)
        (state-roles-set! st (cons (cons pid role) (state-roles st)))
@@ -485,7 +619,11 @@
       ;; would be closed out from under its new owner.
       (`(lock-drop ,l ,who ,tok)
        (state-locks-set! st (drop-lock l (state-locks st)))
-       (lock-release! l)
+       ;; A RELEASE THAT RAISES DOES NOT END MAIN (the startup-exit design
+       ;; R3): in STARTING the boot's own store lock comes back here, and a
+       ;; raise in main is the scheduler's panic 70. TRIPWIRE, NOT A
+       ;; MEASUREMENT: no row makes an unlock or a close fail.
+       (guard (e (#t (trace-event! 'lock-drop-failed #f #f))) (lock-release! l))
        (send who (list 'lock-dropped tok (void)))
        (watch-loop st))
       ;; NEVER: ONE PROCESS PER WRITER, MADE ON DEMAND AND NAMED BY THE WRITER,
@@ -515,17 +653,19 @@
       ;; closes its own connection when its write has completed.
       (`(signal ,which)
        (cond
+         ;; STARTING: REMEMBERED, WITH ITS KIND, until the store's outcome (the
+         ;; startup-exit design R5, R6). `again` outranks `drain`.
+         ((eq? (state-phase st) 'starting)
+          (let ((kind (if (or (eq? which 'again) (eq? (state-remembered st) 'again)) 'again 'drain)))
+            (state-remembered-set! st kind)
+            (trace-event! 'signal-remembered kind #f))
+          (watch-loop st))
          ((eq? which 'again)
-          (report `(exiting (reason second-signal)))
+          (report-quietly `(exiting (reason second-signal)))
           (leave st 75))
          ((state-draining st) (watch-loop st))
          (else
-          (state-draining-set! st (real-time))
-          (report `(draining (in-flight ,(length (state-running st)))))
-          (when (state-listener st) (send (state-listener st) (list 'stop)))
-          (for-each (lambda (entry)
-                      (when (eq? 'conn (cdr entry)) (send (car entry) (list 'drain))))
-                    (state-roles st))
+          (enter-drain! st)
           ;; NOTE: AND BACK INTO THE LOOP. `finish-if-drained` leaves only
           ;; when the drain is already over; on every other path main has
           ;; to keep watching, because the clock that ends a drain that
@@ -566,7 +706,18 @@
        (state-roles-set! st (remove-key who (state-roles st)))
        (finish-if-drained st)
        (watch-loop st))
+      ;; THE STORE DIED WHILE STARTING WITHOUT SENDING `startup-failed` (a death
+      ;; without the message, D15; AG-a in M2b): a terminal clause of its own
+      ;; (the startup-exit design R7). It traces daemon-down itself, writes
+      ;; the store-actor-down line and leaves 75, and NEVER reaches the
+      ;; SERVING cleanup below (release-all-of) -- the exit closes whatever
+      ;; main holds.
       (`#(DOWN ,who ,reason)
+       (if (and (eq? (state-phase st) 'starting) (eq? who (state-store-pid st)))
+           (begin
+             (trace-event! 'daemon-down (list 'store (reason-text reason)) #f)
+             (report-quietly '(exiting (reason store-actor-down)))
+             (leave st 75))
        (let ((role (or (lookup who (state-roles st)) 'unknown)))
          (unless (eq? reason 'normal)
            (trace-event! 'daemon-down
@@ -588,9 +739,12 @@
            ;; The store and the listener are the daemon; a conn is not,
            ;; and neither is one writer.
            ((or (eq? who (state-store-pid st)) (eq? who (state-listener st)))
-            (report `(exiting (reason ,(if (eq? who (state-store-pid st))
-                                           'store-actor-down
-                                           'listener-down))))
+            ;; A death while SERVING or DRAINING; report-quietly keeps the exit
+            ;; at 75 if the line cannot be written. A startup failure never
+            ;; reaches here: its clause ends main (the startup-exit design).
+            (report-quietly `(exiting (reason ,(if (eq? who (state-store-pid st))
+                                                   'store-actor-down
+                                                   'listener-down))))
             (leave st 75))
            (else
             (state-roles-set! st (remove-key who (state-roles st)))
@@ -601,15 +755,23 @@
             ;; here as well, or a crash during a drain would be reported
             ;; as a drain that timed out.
             (finish-if-drained st)
-            (watch-loop st)))))))
+            (watch-loop st))))))))
 
   ;; NEVER: ONE WAY OUT, SO THE SOCKET IS TIDIED ON ALL OF THEM. A daemon
   ;; that leaves its socket behind is one the next client waits on before
   ;; falling back, and every exit path that forgot the unlink would be a
   ;; separate small version of that bug.
+  ;; THE EXIT CODE IS DECIDED BEFORE THE TIDYING, AND THE TIDYING CANNOT
+  ;; CHANGE IT (F100b M2a review r2, F2). A failed unlink probe or lock
+  ;; release raised here, past the exit, into the scheduler's panic 70 --
+  ;; for a start that had already said why it was leaving with 75. The exit
+  ;; closes the lock's descriptor, which releases the flock anyway.
+  ;; TRIPWIRE, NOT A MEASUREMENT: no row makes an unlock or a close fail.
   (define (leave st code)
-    (unlink-own-socket! (state-socket st) (state-bound st))
-    (lock-release! (state-lock st))
+    (guard (e (#t (trace-event! 'leave-tidy-failed #f #f)))
+      (unlink-own-socket! (state-socket st) (state-bound st)))
+    (guard (e (#t (trace-event! 'leave-tidy-failed #f #f)))
+      (lock-release! (state-lock st)))
     (exit code))
 
   ;; NEVER: FINISHED MEANS NOTHING IS RUNNING AND NO CONNECTION IS LEFT --
@@ -630,11 +792,21 @@
   ;; rather than refused: it changes nothing, and the answer it gets is
   ;; the right one. Refusing a correct answer so that two paths agree
   ;; would be putting the rule ahead of the result.
+;; The drain's entry, once: from a first signal while SERVING, or from a
+  ;; drain remembered while STARTING when `ready` arrives.
+  (define (enter-drain! st)
+    (state-draining-set! st (real-time))
+    (report-quietly `(draining (in-flight ,(length (state-running st)))))
+    (when (state-listener st) (send (state-listener st) (list 'stop)))
+    (for-each (lambda (entry)
+                (when (eq? 'conn (cdr entry)) (send (car entry) (list 'drain))))
+              (state-roles st)))
+
   (define (finish-if-drained st)
     (when (and (state-draining st)
                (null? (state-running st))
                (not (exists (lambda (entry) (eq? 'conn (cdr entry))) (state-roles st))))
-      (report `(exiting (reason drained)))
+      (report-quietly `(exiting (reason drained)))
       (leave st 0)))
 
   (define (forget-pid who alist)
@@ -648,10 +820,13 @@
   ;; it before falling back -- but one that deletes whatever is at that
   ;; path deletes the socket of whoever took over in the meantime. The
   ;; dev/inode recorded at bind is what tells those two apart.
+  ;; NOTHING WAS BOUND, NOTHING IS PROBED (F100b M2a review r2, F2): a start
+  ;; that failed before the bind has no socket of its own to tidy.
   (define (unlink-own-socket! socket bound)
-    (let ((now (device-inode socket)))
-      (when (and bound now (equal? bound now))
-        (guard (e (#t #f)) (unlink! socket)))))
+    (when bound
+      (let ((now (device-inode socket)))
+        (when (and now (equal? bound now))
+          (guard (e (#t #f)) (unlink! socket))))))
 
   (define (lookup k alist)
     (let ((e (assq k alist))) (and e (cdr e))))
@@ -696,9 +871,11 @@
   ;; through to the unlink below. The question this guard exists to ask
   ;; is whether the thing on that path is the kind of object this daemon
   ;; made, and only `stat`'s type bits answer it.
+  ;; NOTHING IS SWALLOWED HERE ANY MORE (F100b, a startup propagation): a
+  ;; path that cannot be asked about raises into main's table rather than
+  ;; reading as "not occupied".
   (define (occupied-by-a-non-socket? p)
-    (guard (e (#t #f))
-      (and (device-inode p) (not (file-is-socket? p)))))
+    (and (device-inode p) (not (file-is-socket? p))))
 
   ;; NEVER: SAFE BECAUSE OF WHERE IT IS CALLED, and that is the whole of the
   ;; argument. `serve` reaches this only after `lock-try-acquire!` on the
@@ -719,6 +896,21 @@
     (when (device-inode p) (guard (e (#t #f)) (unlink! p))))
 
   (define (report x) (write x) (newline))
+
+  ;; A LINE MAIN WRITES CANNOT CHANGE AN EXIT OR END MAIN (F100b M2a review r2,
+  ;; F1; the exit-site table in M2a r3's NOTES). Every `(exiting ...)` line is
+  ;; written just before `leave`, whose code is already decided, and
+  ;; `(serving ...)` and `(draining ...)` are information; a report channel
+  ;; that has failed -- stdout closed, a log that cannot be written -- made
+  ;; each raise into the scheduler's panic 70 instead. The failure is traced,
+  ;; and main goes on. Every line main writes goes through here.
+  ;; MEASURED for the exiting line: with stdout closed, the store-actor-down
+  ;; line after a failed startup report raises, and without this guard the
+  ;; start panics (M2a r3, "P2-startup closed stdout", mutant MC-1). The
+  ;; serving and draining lines go through here too; no row measures them.
+  (define (report-quietly x)
+    (guard (e (#t (trace-event! 'report-failed #f #f)))
+      (report x)))
 
   ;; ---- what has been published --------------------------------------------
   ;;
@@ -798,25 +990,43 @@
     (not (eq? (entry-type (string-append store "/meta.sexp")) 'absent)))
 
   (define (store-loop store main-pid)
-    (unless (store-here? store)
-      (report (list 'error 'store-not-found (list 'store store)))
-      (raise (list 'error 'store-not-found (list 'store store))))
-    ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED AT START-UP TOO (F79), in
-    ;; the shape `answer-for` gives it once the daemon is serving: the path
-    ;; and the system's reason. `store-load-failed` carries only a
-    ;; condition's message, which for an unlistable writers/ said "the entry
-    ;; cannot be read" and named neither the entry nor the reason. The start
-    ;; still fails the same way: the failure is raised after the report.
-    (let ((failure (guard (e (#t e)) (publish! store (open-and-reduce store)) #f)))
+    ;; A RAISE BEFORE ANY REPORT (F100b D15), armed by
+    ;; `THEOURGIA_FAULT=store-raise-early@report`: a plain condition, outside
+    ;; the scope below, so no startup-failed message is sent and main
+    ;; answers only store-actor-down. Unarmed it is one comparison.
+    (when (eq? (theourgia-fault) 'store-raise-early)
+      (raise (make-message-condition "injected store raise early")))
+    ;; THE STARTUP IS ONE SCOPE (F100b point 2): whether there is a store
+    ;; here and its first load. A failure is answered by the table over this
+    ;; scope's record, or kept as the named outcome it already is, and SENT
+    ;; to main before this process raises -- main combines it with its own
+    ;; record and writes the report (aggregation (a)). The scope closes
+    ;; before the request loop, so each request opens its own.
+    ;;
+    ;; NEVER: "THERE IS NO STORE HERE" IS ITS OWN ANSWER, AND IT IS THE COMMON
+    ;; ONE, `store-not-found`, as before. AN ENTRY THAT CANNOT BE READ IS
+    ;; NAMED AT START-UP TOO (F79): now by the table, with its errno.
+    ;; `store-load-failed` stays for a condition the table does not
+    ;; classify.
+    (let ((failure (with-mutation-record
+                     (lambda ()
+                       (guard (e (#t (cons e (mutation-record))))
+                         (unless (store-here? store)
+                           (raise (list 'error 'store-not-found (list 'store store))))
+                         (publish! store (open-and-reduce store))
+                         #f)))))
       (when failure
-        (report (cond
-                  ((and (pair? failure) (eq? 'error (car failure))) failure)
-                  ((unreadable-entry? failure)
-                   (list 'error 'unreadable
-                         (list 'path (unreadable-entry-path failure))
-                         (list 'reason (unreadable-entry-reason failure))))
-                  (else (list 'error 'store-load-failed (list 'reason (condition-text failure))))))
-        (raise failure)))
+        (let ((e (car failure)) (record (cdr failure)))
+          (send main-pid
+                (list 'startup-failed
+                      (or (classify-failure e record)
+                          (combine-report
+                            (if (and (pair? e) (eq? 'error (car e)))
+                                e
+                                (list 'error 'store-load-failed (list 'reason (condition-text e))))
+                            record))
+                      record))
+          (raise e))))
     (send main-pid (list 'ready))
     (let loop ()
       (receive

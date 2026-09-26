@@ -73,9 +73,9 @@
    (e (#t (quote unreadable))))
   ("theourgiad.sc" (detach-step) 1 guard
    (#t)
-   unrelated a
-   "detach errno"
-   (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (say (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path) (list (quote errno) code)))) (exit 71))))
+   fact a
+   "detach-failed, a named outcome (F100b item 5): the step, the log path and the errno, with the scope's record through with-written -- the log's creation when its open failed after it (NO4b), nothing when its directory could not be searched (NO4) -- written on STDERR (E2); exit 71"
+   (e (#t (let ((code (detach-errno e))) (trace-event! (quote detach-failed) code #f) (guard (e2 (#t (trace-event! (quote detach-report-failed) #f #f))) (let ((err (current-error-port))) (write (with-written (list (quote error) (quote detach-failed) (list (quote step) step) (list (quote path) log-path) (list (quote errno) code)) (mutation-record)) err) (newline err) (flush-output-port err)))) (exit 71))))
   ("client.sc" (call-on-socket) 1 guard
    ((fs-error? e))
    unrelated a
@@ -157,21 +157,16 @@
    "socket device/inode: only an absent entry (ENOENT, ENOTDIR) is no inode; any other unreadable-entry, and anything else, propagates to the caller's table (F100b P2b; the other callers are M2's)"
    (e ((and (unreadable-entry? e) (memq (unreadable-entry-errno e) (quote (ENOENT ENOTDIR)))) #f)))
   ("daemon.sc" (main) 1 guard
-   (#t)
-   unrelated a
-   "main"
-   (e (#t #f)))
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 9: main's startup (the socket directory, the lock file, the lock, the socket-path probe) answers a filesystem failure by the one table with main's record; the answer is decided here and reported ONCE outside the scope by report-and-exit!, exit 75 (P9 a-c; M2a review r1, F1); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (answer) (list (quote refuse) answer)))))
   ("daemon.sc" (watch-loop) 1 guard
    (#t)
-   unrelated a
-   "watch loop"
-   (e (#t #f)))
+   conservative a
+   "F100b point 2 (M2a review r1, F1/F3): a combined startup report that cannot be written is traced, not reported again; the terminal startup-failed clause then writes the exiting line and leaves 75 itself (the startup-exit design)"
+   (e (#t (trace-event! (quote startup-report-failed) #f #f))))
   ("daemon.sc" (unlink-own-socket!) 1 guard
-   (#t)
-   unrelated a
-   "socket"
-   (e (#t #f)))
-  ("daemon.sc" (occupied-by-a-non-socket?) 1 guard
    (#t)
    unrelated a
    "socket"
@@ -189,8 +184,8 @@
   ("daemon.sc" (store-loop) 1 guard
    (#t)
    propagate c
-   "store-loop reports the load failure and re-raises it; c makes the daemon declare acceptance of an incomplete reduction"
-   (e (#t e)))
+   "F100b point 2: the store process's startup scope hands every failure, with the scope's record, to the code after it, which sends (startup-failed <answer> <record>) to main and raises it again (P2-startup and its TWIN, F79-3); main writes the report. c makes the daemon declare acceptance of an incomplete reduction"
+   (e (#t (cons e (mutation-record)))))
   ("daemon.sc" (store-loop) 2 guard
    (#t)
    fact c
@@ -996,6 +991,51 @@
    refuse a
    "F100b point 4: the thin client answers a filesystem failure by the one table and exits 75 through refuse (P4); anything else propagates"
    (e ((classify-failure e (mutation-record)) => refuse)))
+  ("daemon.sc" (report-and-exit!) 1 guard
+   (#t)
+   conservative a
+   "F100b point 9 (M2a review r1, F1/F3): a failure of the startup report's own write is not reported again -- the report channel is what failed -- and the exit is 75 either way"
+   (e (#t (exit 75))))
+  ("daemon.sc" (watch-loop) 2 guard
+   (#t)
+   unrelated a
+   "watch loop"
+   (e (#t #f)))
+  ("theourgiad.sc" (serve-and-exit!) 2 guard
+   (#t)
+   conservative a
+   "F100b point 8 (M2a review r1, F1/F3): a failure of the report's own write is not reported again; exit 75"
+   (e2 (#t (exit 75))))
+  ("theourgiad.sc" (serve-and-exit!) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "F100b point 8: this program's own filesystem failure (the socket's derivation, the refusal checks, the detach) answers by the one table, written once as a startup report with the attempt clause, exit 75 (P8); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (answer) (guard (e2 (#t (exit 75))) ((later (quote (theourgia daemon)) (quote write-report-line!)) 1 (append answer (list (list (quote attempt) attempt))))) (exit 75)))))
+  ("daemon.sc" (leave) 1 guard
+   (#t)
+   conservative a
+   "F100b M2a r2 F2: the exit code is decided before the tidying; a failed unlink probe is traced and the exit goes ahead (a tripwire: no row makes it fail)"
+   (e (#t (trace-event! (quote leave-tidy-failed) #f #f))))
+  ("daemon.sc" (leave) 2 guard
+   (#t)
+   conservative a
+   "F100b M2a r2 F2: a failed lock release at exit is traced and the exit goes ahead; the exit closes the descriptor (a tripwire: no row makes it fail)"
+   (e (#t (trace-event! (quote leave-tidy-failed) #f #f))))
+  ("daemon.sc" (report-quietly) 1 guard
+   (#t)
+   conservative a
+   "F100b M2a r3: a line main writes (exiting, serving, draining) cannot change an exit or end main; measured for the exiting line by P2-startup closed stdout (mutant MC-1), no row for serving and draining"
+   (e (#t (trace-event! (quote report-failed) #f #f))))
+  ("theourgiad.sc" (detach-step) 2 guard
+   (#t)
+   conservative a
+   "F100b M2a r3: a stderr that cannot be written does not change detach-failed's exit 71 (NO4 closed stderr)"
+   (e2 (#t (trace-event! (quote detach-report-failed) #f #f))))
+  ("daemon.sc" (watch-loop) 3 guard
+   (#t)
+   conservative a
+   "F100b M2a r4 (the startup-exit design R3): a lock-drop whose release raises does not end main -- in STARTING the boot's own store lock comes back here; traced; a tripwire: no row makes an unlock or close fail"
+   (e (#t (trace-event! (quote lock-drop-failed) #f #f))))
   )
 
 (raw-accessors
