@@ -1990,5 +1990,17 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
     assert.match(outcome.message, /a writer listing this build could not read in full/);
     assert.doesNotMatch(outcome.message, /how many writers/, 'the sentence claimed the count was unknown');
     assert.doesNotMatch(outcome.message, /naming its local writer/, 'the sentence blamed the clause');
+    /*
+     * NO NUMBER OF WRITERS AT ALL (queue item 32): not "how many is not
+     * known" and not a count either. The sentence has no digit, and no word
+     * that counts writers stands before "writers" ("no writer's position" is
+     * about positions, and stays).
+     */
+    assert.doesNotMatch(outcome.message, /\d/, 'the sentence states a number');
+    assert.doesNotMatch(
+      outcome.message,
+      /\b(?:no|zero|one|two|three|four|five|six|seven|eight|nine|ten|several|many|some|all)\s+writers\b/i,
+      'the sentence counts the writers'
+    );
   });
 });
