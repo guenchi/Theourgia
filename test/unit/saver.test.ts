@@ -1724,9 +1724,16 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
    * KEY: A REMEDY THIS CLIENT CANNOT PUT INTO WORDS IS PRINTED, NOT DROPPED.
    * No such shape comes from 877f0da; the rule is that nothing after the
    * name disappears, and this is the case where the first version broke it.
+   *
+   * NOTE: `(remedy #f)` TOO (queue item 20). 877f0da's remedies are all
+   * names (`remedy-for`, store.sc:2470, and the other places that build
+   * one), never a boolean; the cell pins the client's rule -- what can be
+   * said is said, what cannot is printed as written -- for an answer to
+   * come, not today's shape. A boolean taken as sayable (measured on
+   * d552fe1: survived this file) says "the remedy: false".
    */
   it('prints a remedy it cannot put into words, rather than dropping it', async () => {
-    for (const remedy of ['(remedy (adopt))', '(remedy)', '(remedy 0)']) {
+    for (const remedy of ['(remedy (adopt))', '(remedy)', '(remedy 0)', '(remedy #f)']) {
       const r = rig([{ match: ['set'], stdout: `(error refused integrity ${remedy})\n`, rc: 1 }]);
       core = r.core;
       const outcome = await r.saver.save('a.2', 'src', 'body\n');
@@ -1743,6 +1750,15 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
    * KEY: THE ONE SENTENCE WRITTEN FOR A NAME CARRIES THE REST AS WELL.
    * `(error changed (current ...))` is what store.sc makes of a stale
    * expectation (store.sc:2324 in 877f0da).
+   *
+   * NOTE: AND EVERY CLAUSE, NOT ONLY THE FIRST (queue item 20). 877f0da's
+   * `changed` has exactly one clause, `(current <hash>)`; the second answer
+   * below, with a field and a remedy, is not a shape it produces. It pins
+   * the client's rule -- nothing after the name disappears, a remedy that
+   * can be said is said and not printed twice -- for an answer to come
+   * (the core's API may change while it is internal), not today's shape.
+   * Printing only the first clause (measured on d552fe1: survived this
+   * file) drops the rest.
    */
   it('carries what follows changed into the sentence written for it', async () => {
     const r = rig([{ match: ['set'], stdout: '(error changed (current "hhh"))\n', rc: 1 }]);
@@ -1750,6 +1766,17 @@ describe('plugin-r3 7 a refusal says what the core said after its name', () => {
     const outcome = await r.saver.save('a.2', 'src', 'body\n');
     assert.match(outcome.message, /the block changed in the store since it was opened/);
     assert.match(outcome.message, /\(current "hhh"\)/, `the clause after changed was dropped: ${outcome.message}`);
+    core.dispose();
+    const every = rig([
+      { match: ['set'], stdout: '(error changed (current "hhh") (field title) (remedy adopt))\n', rc: 1 }
+    ]);
+    core = every.core;
+    const all = await every.saver.save('a.2', 'src', 'body\n');
+    assert.match(all.message, /the block changed in the store since it was opened/);
+    assert.match(all.message, /\(current "hhh"\)/, `the first clause was dropped: ${all.message}`);
+    assert.match(all.message, /\(field title\)/, `a later clause was dropped: ${all.message}`);
+    assert.match(all.message, /The core names the remedy: adopt/, `the remedy was not said: ${all.message}`);
+    assert.doesNotMatch(all.message, /\(remedy adopt\)/, `the remedy was printed as well as said: ${all.message}`);
   });
 
   /*
