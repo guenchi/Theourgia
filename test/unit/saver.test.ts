@@ -1933,6 +1933,15 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
    * of this item measured an unreadable `local-writer` clause reported as an
    * unreadable writer LISTING with an unknown count -- about a listing that
    * had read, one writer.
+   *
+   * NOTE: WHATEVER THE NUMBER OF WRITERS (queue item 21). The same answer
+   * with one writer, and with none, gets the same sentence: which writer is
+   * local is what could not be read, not the listing. Limiting that sentence
+   * to stores with more than one writer (measured on 87f7115: survived this
+   * file) gave the others the listing's sentence. 877f0da never sends
+   * `(local-writer #f)` -- store.sc:4279 leaves the clause out when there is
+   * no local writer -- so these answers pin the client's rule for an answer
+   * to come, not today's shape.
    */
   it('says it could not read which writer is local, not that the listing could not be read', async () => {
     const r = over(TWO.replace('(local-writer "LOCAL")', '(local-writer #f)'), [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
@@ -1942,6 +1951,21 @@ describe('plugin-r3 2 a store with several writers, when the core names the loca
     assert.match(outcome.message, /naming its local writer in a form this build could not read/);
     assert.doesNotMatch(outcome.message, /writer listing/, 'the sentence blamed the listing');
     assert.strictEqual(setCalls(core).length, 0);
+    core.dispose();
+    const answers: Array<[string, string]> = [
+      ['one writer', '(check (store "s") (local-writer #f) (writers (("LOCAL" (end 3) (torn #f) (integrity ())))) (snapshots ()) (registry outside-store) (verdict ok))\n'],
+      ['no writer', '(check (store "s") (local-writer #f) (writers ()) (snapshots ()) (registry outside-store) (verdict ok))\n']
+    ];
+    for (const [what, answer] of answers) {
+      const each = over(answer, [{ match: ['set'], stdout: wrote(8), rc: 0 }]);
+      core = each.core;
+      const said = await each.saver.save('a.2', 'src', 'body\n');
+      assert.strictEqual(said.status, 'blocked', `(${what}) ${said.status}`);
+      assert.match(said.message, /naming its local writer in a form this build could not read/, `(${what}) ${said.message}`);
+      assert.doesNotMatch(said.message, /writer listing/, `(${what}) the sentence blamed the listing: ${said.message}`);
+      assert.strictEqual(setCalls(core).length, 0, `(${what}) a save was sent`);
+      core.dispose();
+    }
   });
 
   /*
