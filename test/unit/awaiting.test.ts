@@ -59,9 +59,17 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
   migrateBlock: 'The offered store, directory and client are captured before confirmation. migrateLegacy rechecks source liveness, pending sends, complete bytes and dirty state after its source reads; the result names that captured directory.',
   sources: 'Both source reads use the captured client and source writer. migrateLegacy compares the returned authority bytes against every original after these waits before any move.',
 
-  'chain.run(directory)':
+  'openBlock/PathChain.run':
     'The working read, directory, store and writer are captured for the same open. Publisher checks dirty, bytes and owner at the final synchronous replacement boundary; a setting change cannot retarget the directory.',
-  'chain.run(path.dirname(file))':
+  'reconcileBlock/PathChain.run(directory)#1':
+    'as reconcileBlock\'s entry in WAITS_AFTER_ITS_GUARD: XR-01 binds both chain waits to the selected file ' +
+    'directory, and XR-03/05/07 hold the offered bytes, owner denial and dirty confirmation (found by item 45: ' +
+    'previously exempted by the text-key collision with openBlock\'s chain work; whether a save landing between ' +
+    'the two waits is refused is queue item 47)',
+  'reconcileBlock/PathChain.run(directory)#2':
+    'as the #1 entry: the second of reconcileBlock\'s two chain waits, after the pick (found by item 45: previously ' +
+    'exempted by the same text-key collision; queue item 47)',
+  'onSaved/PathChain.run':
     'The save persists into the captured working namespace, verifies readback, rechecks the projection and checks live queue store in acceptSave before numbering. Its result uses the captured Saver; XO-01/02/10 and WS-28/31 cover these boundaries.',
   activate:
     'the extension is being built; there is no earlier generation for anything to have changed from',
@@ -72,13 +80,13 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
     'captures the store before its own first wait, so a block chosen from a store the user has ' +
     'since left is answered unknown-id by the store they are in -- which is visible, and is not ' +
     'a write going to the wrong place',
-  'command(REFRESH_OUTLINE.id)':
+  'activate/command(REFRESH_OUTLINE)':
     'its only wait is refreshConflicts, which makes the check itself, and nothing follows it',
-  'vscode.commands.registerCommand(id)':
+  'command/registerCommand':
     'the wrapper every command is registered through (queue item 22): it awaits the command, which ' +
     'keeps its own generation check, and after it only shows what the durability sink holds -- ' +
     'sentences about this window\'s queue files, true whatever the settings did meanwhile',
-  'command(SHOW_STATUS.id)':
+  'activate/command(SHOW_STATUS)':
     'it shows the status of the store configured NOW, which is what the user asked for; a stale ' +
     'generation is the answer to a question nobody put',
   onSaved:
@@ -98,7 +106,102 @@ interface Waiting {
   waitsAfterTheLastGuard: number;
 }
 
-function nameOf(fn: ts.Node, src: ts.SourceFile): string {
+/*
+ * A NAMED FUNCTION'S NAME, for a function declaration, a method, or a
+ * function written as a variable's or a property's value; undefined for any
+ * other node.
+ */
+function functionName(n: ts.Node, src: ts.SourceFile): string | undefined {
+  if ((ts.isFunctionDeclaration(n) || ts.isMethodDeclaration(n)) && n.name !== undefined) {
+    return n.name.getText(src);
+  }
+  if ((ts.isArrowFunction(n) || ts.isFunctionExpression(n)) && n.parent !== undefined) {
+    if (ts.isVariableDeclaration(n.parent) || ts.isPropertyAssignment(n.parent)) {
+      return n.parent.name.getText(src);
+    }
+  }
+  return undefined;
+}
+
+/*
+ * A DECLARATION'S NAME, with the class or interface that holds it: `PathChain.run`,
+ * `Promise.then`, `command`.
+ */
+function declarationName(declared: ts.Declaration | undefined): string | undefined {
+  const name = (declared as ts.NamedDeclaration | undefined)?.name;
+  if (declared === undefined || name === undefined) {
+    return undefined;
+  }
+  const own = ts.isIdentifier(name) ? name.text : name.getText();
+  const holder = declared.parent;
+  if ((ts.isClassDeclaration(holder) || ts.isInterfaceDeclaration(holder)) && holder.name !== undefined) {
+    return `${holder.name.text}.${own}`;
+  }
+  return own;
+}
+
+/*
+ * A CALLBACK'S KEY: THE FUNCTION IT IS WRITTEN IN AND THE DECLARATION IT IS
+ * HANDED TO. (queue item 45, ruled 2026-09-26) It used to be the call's text,
+ * so changing an argument's expression -- item 24's W3, the chain keyed by
+ * `path.dirname(directory)` -- lost the exception and reddened a cell about the
+ * generation check. Now it is `<outer named function>/<the callee's resolved
+ * declaration>`: 'openBlock/PathChain.run'. When the outer function holds
+ * several calls to that declaration with a function argument (activate's
+ * commands), the declaration the first argument's root identifier resolves to
+ * is added -- 'activate/command(REFRESH_OUTLINE)' -- so that reordering them
+ * changes nothing; an occurrence index only when that root does not resolve.
+ */
+function keyOfCallback(call: ts.CallExpression, src: ts.SourceFile, checker: ts.TypeChecker): string {
+  const declared = checker.getResolvedSignature(call)?.declaration;
+  const callee = declarationName(declared) ?? call.expression.getText(src);
+  let outer: ts.Node | undefined = call.parent;
+  while (outer !== undefined && functionName(outer, src) === undefined) {
+    outer = outer.parent;
+  }
+  const key = `${outer === undefined ? '(top level)' : functionName(outer, src)}/${callee}`;
+  const same = (n: ts.CallExpression): boolean =>
+    declared !== undefined
+      ? checker.getResolvedSignature(n)?.declaration === declared
+      : n.expression.getText(src) === call.expression.getText(src);
+  const siblings: ts.CallExpression[] = [];
+  const look = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && n.arguments.some((a) => isFunction(a)) && same(n)) {
+      siblings.push(n);
+    }
+    ts.forEachChild(n, look);
+  };
+  look(outer ?? src);
+  if (siblings.length <= 1) {
+    return key;
+  }
+  const rootName = (n: ts.CallExpression): string | undefined => {
+    let at: ts.Node | undefined = n.arguments[0];
+    while (at !== undefined && (ts.isPropertyAccessExpression(at) || ts.isElementAccessExpression(at) || ts.isCallExpression(at))) {
+      at = at.expression;
+    }
+    return at !== undefined && ts.isIdentifier(at) ? checker.getSymbolAtLocation(at)?.name : undefined;
+  };
+  const mine = rootName(call);
+  if (mine === undefined) {
+    return `${key}#${siblings.indexOf(call) + 1}`;
+  }
+  /*
+   * AND AN INDEX WHEN TWO SIBLINGS SHARE THAT ROOT TOO: reconcileBlock hands
+   * two works to `chain.run(directory, ...)`, one before the pick and one
+   * after it.
+   */
+  const alike = siblings.filter((n) => rootName(n) === mine);
+  return alike.length > 1 ? `${key}(${mine})#${alike.indexOf(call) + 1}` : `${key}(${mine})`;
+}
+
+/*
+ * NOTE: THE CHECKER IS OPTIONAL for a caller that names a function by its own
+ * name only (the integrity wiring cell below reads `activate`); a callback is
+ * then keyed by its call's text, as before item 45. The wait survey always
+ * passes one.
+ */
+function nameOf(fn: ts.Node, src: ts.SourceFile, checker?: ts.TypeChecker): string {
   const named = fn as ts.FunctionDeclaration;
   if (named.name !== undefined) {
     return named.name.getText(src);
@@ -111,10 +214,11 @@ function nameOf(fn: ts.Node, src: ts.SourceFile): string {
     return parent.name.getText(src);
   }
   if (parent !== undefined && ts.isCallExpression(parent)) {
-    const called = parent.expression.getText(src);
+    if (checker !== undefined) {
+      return keyOfCallback(parent, src, checker);
+    }
     const first = parent.arguments[0];
-    const subject = first !== undefined && first !== fn ? first.getText(src) : '';
-    return `${called}(${subject})`;
+    return `${parent.expression.getText(src)}(${first !== undefined && first !== fn ? first.getText(src) : ''})`;
   }
   return 'anonymous';
 }
@@ -331,8 +435,44 @@ function extensionText(): string {
  * says. A census that can only read the tree has no way to show that it
  * would notice the guard going away.
  */
+/*
+ * THE GIVEN TEXT OF extension.ts, CHECKED WITH THE REST OF src. (queue item 45)
+ * The survey reads text it is handed -- the shipping file, or the shipping
+ * file with one guard changed -- and a callback's key is the declaration its
+ * call resolves to, which only a program can say. The first program is kept
+ * and handed to the next as its old program, so the files that did not change
+ * are reused.
+ */
+let surveyed: ts.Program | undefined;
+
+function checkedExtension(text: string): { src: ts.SourceFile; checker: ts.TypeChecker } {
+  const options: ts.CompilerOptions = {
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
+    strict: true,
+    skipLibCheck: true,
+    noEmit: true
+  };
+  const root = path.dirname(EXTENSION);
+  const names = fs
+    .readdirSync(root)
+    .filter((name) => name.endsWith('.ts'))
+    .sort()
+    .map((name) => path.join(root, name));
+  const host = ts.createCompilerHost(options, true);
+  const read = host.getSourceFile.bind(host);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreate) =>
+    path.resolve(fileName) === path.resolve(EXTENSION)
+      ? ts.createSourceFile(fileName, text, languageVersion, true)
+      : read(fileName, languageVersion, onError, shouldCreate);
+  const program = ts.createProgram(names, options, host, surveyed);
+  surveyed = surveyed ?? program;
+  return { src: program.getSourceFile(EXTENSION) as ts.SourceFile, checker: program.getTypeChecker() };
+}
+
 function survey(text: string = extensionText()): Waiting[] {
-  const src = ts.createSourceFile('extension.ts', text, ts.ScriptTarget.ES2022, true);
+  const { src, checker } = checkedExtension(text);
   const out: Waiting[] = [];
   const visit = (n: ts.Node): void => {
     if (isFunction(n)) {
@@ -346,7 +486,7 @@ function survey(text: string = extensionText()): Waiting[] {
         const guards = guardsIn(n, src, first, taken).filter((g) => g.getStart(src) > first);
         const lastGuard = guards.reduce((at, g) => Math.max(at, g.getEnd()), -1);
         out.push({
-          name: nameOf(n, src),
+          name: nameOf(n, src, checker),
           line: src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1,
           checked: guards.length > 0,
           /*
@@ -1195,7 +1335,7 @@ describe('every wait in the extension host knows what may have changed under it'
         'this cell against the new shape rather than deleting it'
     );
     const drainIn = (over: Waiting[]): Waiting | undefined =>
-      over.find((w) => w.name === 'Promise.resolve().then()');
+      over.find((w) => w.name === 'rebuild/Promise.then');
 
     const asShipped = drainIn(survey(text));
     assert.ok(asShipped !== undefined, 'the census did not find the drain in the shipping file');
