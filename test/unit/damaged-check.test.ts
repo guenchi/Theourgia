@@ -272,6 +272,12 @@ describe('plugin-r3 15 a real store with a writer it cannot read', function () {
     assert.strictEqual(saver.blockedBecause, null, `held back: ${saver.blockedBecause}`);
     assert.doesNotMatch(outcome.message, /did not answer `check`/);
     assert.strictEqual(outcome.status, 'pending', outcome.message);
+    /*
+     * AND WHAT IT SAYS IS THE STORE'S OWN VERDICT (queue item 31): the store
+     * could not say whether the save ran. Nothing else pinned this sentence,
+     * and one claiming the save had been applied passed every cell.
+     */
+    assert.match(outcome.message, /^the store cannot say whether this save ran; it is kept and can be retried/);
     const said = outcome.answer;
     assert.ok(
       Array.isArray(said) && isSym(said[0], 'error') && isSym(said[1], 'unknown'),
