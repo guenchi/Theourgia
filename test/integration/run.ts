@@ -314,6 +314,25 @@ function stopOurDaemons(marker: string): { asked: number; left: Array<{ pid: num
 }
 
 async function main(): Promise<void> {
+  /*
+   * KEY: NO VARIABLE FROM THE USER'S EDITOR REACHES THE TEST HOST. (queue
+   * item 30) The editor takes its profile from VSCODE_PORTABLE or
+   * VSCODE_APPDATA BEFORE `--user-data-dir` (its main.js, measured in 1.138),
+   * and test-electron hands the editor this process's whole environment -- so
+   * a run started from a terminal inside the user's editor ran in the user's
+   * profile (item 9's gate measured a decoy VSCODE_APPDATA receiving 23
+   * files). Every VSCODE_* and ELECTRON_* variable is removed first, as
+   * scripts/package-gate.js does, and their names are said.
+   *
+   * NOTE: A DECOY IS PLANTED BEFORE THE REMOVAL, so there is always one to
+   * remove: the cell "sees no editor variable of the process that launched
+   * it" (extension.test.ts) asserts the test host does not have it. Without
+   * the decoy that cell could only pass on a machine with nothing to remove.
+   */
+  process.env.VSCODE_THEOURGIA_DECOY = 'planted by test/integration/run.ts';
+  const stripped = Object.keys(process.env).filter((k) => /^(VSCODE_|ELECTRON_)/.test(k)).sort();
+  stripped.forEach((k) => delete process.env[k]);
+  console.log(`environment: removed ${stripped.length} editor variable(s): ${stripped.join(', ')}`);
   const root = path.resolve(__dirname, '..', '..', '..');
   const profile = chooseProfile(root);
   emptyTheStorage(root, profile);

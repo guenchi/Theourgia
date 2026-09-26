@@ -311,6 +311,21 @@ describe('the extension inside an editor', function () {
    * did: nothing declared it, nothing registered it, and this cell --
    * naming four commands, all of which were fine -- passed.
    */
+  /*
+   * THE LAUNCHING PROCESS'S EDITOR VARIABLES DO NOT REACH THIS HOST (queue
+   * item 30). test/integration/run.ts plants this decoy and then removes every
+   * VSCODE_* and ELECTRON_* key before it launches the editor; a runner that
+   * did not remove them would hand this host the decoy -- and, from a terminal
+   * inside the user's editor, the user's profile.
+   */
+  it('sees no editor variable of the process that launched it', () => {
+    assert.strictEqual(
+      process.env.VSCODE_THEOURGIA_DECOY,
+      undefined,
+      'the runner handed the test host a VSCODE_ variable it had planted to be removed'
+    );
+  });
+
   it('registers every command its manifest declares', async () => {
     const extension = vscode.extensions.getExtension('theourgia.theourgia');
     const declared = (
