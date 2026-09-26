@@ -15,7 +15,7 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
     const directory=scratch(),files=new RecordingFs(),publisher=new Publisher(files,{isOpen:()=>true,isDirty:()=>false});
     for(let n=0;n<15;n++){
       const text='# A\n'+'value'.repeat(n+1);
-      const answer=await publisher.publish(request(directory,text));
+      const answer=await publisher.publish({...request(directory,text),expected:publisher.revisionIn(directory)});
       assert.strictEqual(answer.published,true,'clean updates');
       assert.strictEqual(answer.file,path.join(directory,CANON),'canonical path');
       assert.strictEqual(fs.readFileSync(answer.file as string,'utf8'),text,'updated bytes');
@@ -25,18 +25,18 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
   it('XC-03 dirty documents retain both disk and metadata',async()=>{
     const directory=scratch();let dirty=false;
     const publisher=new Publisher(new RecordingFs(),{isOpen:()=>true,isDirty:()=>dirty});
-    const first=await publisher.publish(request(directory,'# A\nold'));
+    const first=await publisher.publish({...request(directory,'# A\nold'),expected:publisher.revisionIn(directory)});
     assert.ok(first.published);
     const before=fs.readdirSync(directory).map(n=>[n,fs.readFileSync(path.join(directory,n),'hex')]);dirty=true;
-    const answer=await publisher.publish(request(directory,'# A\nnew'));
+    const answer=await publisher.publish({...request(directory,'# A\nnew'),expected:publisher.revisionIn(directory)});
     assert.strictEqual(answer.published,false,'dirty refusal');
     assert.deepStrictEqual(fs.readdirSync(directory).map(n=>[n,fs.readFileSync(path.join(directory,n),'hex')]),before,'dirty bytes');
   });
   it('XC-04 current has one rename and zero truncating writes per replacement',async()=>{
     const directory=scratch(),files=new RecordingFs(),publisher=new Publisher(files,{isOpen:()=>false});
-    await publisher.publish(request(directory,'# A\nlong old contents'));
+    await publisher.publish({...request(directory,'# A\nlong old contents'),expected:publisher.revisionIn(directory)});
     files.entries.length=0;
-    const answer=await publisher.publish(request(directory,'# A\nx'));
+    const answer=await publisher.publish({...request(directory,'# A\nx'),expected:publisher.revisionIn(directory)});
     assert.strictEqual(answer.file,path.join(directory,CANON));
     assert.strictEqual(files.countOf('writeText',answer.file as string),0,'current writeText');
     assert.strictEqual(files.countOf('writeDurably',answer.file as string),0,'current truncate');
@@ -44,7 +44,8 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
   });
   it('XC-20 an unrecognized current file is preserved',async()=>{
     const directory=scratch(),file=path.join(directory,'current.md');fs.writeFileSync(file,'unique foreign bytes');
-    const answer=await new Publisher(new RecordingFs(),{isOpen:()=>false}).publish(request(directory,'replacement'));
+    const foreign=new Publisher(new RecordingFs(),{isOpen:()=>false});
+    const answer=await foreign.publish({...request(directory,'replacement'),expected:foreign.revisionIn(directory)});
     assert.strictEqual(answer.published,false,'foreign refusal');
     assert.strictEqual(fs.readFileSync(file,'utf8'),'unique foreign bytes');
   });
@@ -52,18 +53,18 @@ describe('XC v20 current projection replaces C2 immutable publication',()=>{
     const directory=scratch();for(let n=1;n<=5;n++)fs.writeFileSync(path.join(directory,`${n}.md`),n===3?'unique draft':`history ${n}`);
     const before=fs.readdirSync(directory).map(n=>[n,fs.readFileSync(path.join(directory,n),'hex')]);
     const publisher=new Publisher(new RecordingFs(),{isOpen:()=>false});
-    const answer=await publisher.publish(request(directory,'# A\nnew'));
+    const answer=await publisher.publish({...request(directory,'# A\nnew'),expected:publisher.revisionIn(directory)});
     assert.strictEqual(answer.published,false,'migration required');
     assert.strictEqual(publisher.latestIn(directory),null,'legacy is not current');
     assert.deepStrictEqual(fs.readdirSync(directory).map(n=>[n,fs.readFileSync(path.join(directory,n),'hex')]),before);
   });
   it('XC-17 equal bytes with a new origin cannot borrow the old receipt',async()=>{
     const directory=scratch(),files=new RecordingFs(),publisher=new Publisher(files,{isOpen:()=>false});
-    const first=await publisher.publish(request(directory,'# A\nsame'));
+    const first=await publisher.publish({...request(directory,'# A\nsame'),expected:publisher.revisionIn(directory)});
     assert.ok(first.published);
     const file=first.file as string,origin=(publisher.sidecarOf(file) as any).projection;
     publisher.takeSequence(file,'R1');
-    await publisher.publish(request(directory,'# A\nsame'));
+    await publisher.publish({...request(directory,'# A\nsame'),expected:publisher.revisionIn(directory)});
     const before=publisher.sidecarOf(file);
     let dequeued=false;
     new Saving(files).recordAnswer(file,{req:'R1',cursor:'w:1',rawDigest:digestOfBytes('# A\nsame'),sentDigest:digestOfBytes('same'),mismatch:false,

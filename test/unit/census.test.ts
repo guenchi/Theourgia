@@ -79,11 +79,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['brief-lease.test.ts', 8],
   ['brief-migration.test.ts', 7],
   ['brief-outline.test.ts', 8],
-  ['brief-reconcile.test.ts', 6],
+  ['brief-reconcile.test.ts', 17],
   ['brief-shared-state.test.ts', 4],
   ['brief-temporary.test.ts', 7],
   ['brief-working.test.ts', 2],
-  ['brief-write-boundaries.test.ts', 12],
+  ['brief-write-boundaries.test.ts', 13],
   ['activation.test.ts', 4],
   ['answering.test.ts', 27],
   /*
@@ -162,7 +162,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['notices.test.ts', 2],
   ['outline.test.ts', 48],
   ['ownership.test.ts', 18],
-  ['publication.test.ts', 67],
+  ['publication.test.ts', 101],
   /*
    * ADDED in plugin-r3 item 5: the slug of a title, and how a block's
    * projection is named once and found again by its sidecar.
@@ -185,6 +185,11 @@ const AT_LEAST: Array<[string, number]> = [
    * censuses, one per interface change.
    */
   ['receipts.test.ts', 4],
+  /*
+   * ADDED in plugin-r3 item 43: the source census that every write of a
+   * record goes through writeSidecar, and its probe.
+   */
+  ['record-door.test.ts', 6],
   ['real-core.test.ts', 19],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the

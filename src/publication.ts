@@ -202,6 +202,18 @@ export interface Sidecar {
    * silent.
    */
   writtenBy: WrittenBy | null;
+  /*
+   * THE RECORD'S REVISION. (queue item 43) Every write of the record goes
+   * through `writeSidecar`, which reads the record on disk and writes its
+   * revision plus one (0 when there is none; a record written before this
+   * field reads as 0). A publication names the revision it replaces and is
+   * refused `record-moved` when the record is not there any more: no other
+   * field is a record identity -- a re-read of an unchanged working source
+   * gives the same projection id, and many writes keep `nextSeq` -- and
+   * bytes come back (item 47). A value supplied here by a caller is ignored
+   * on write.
+   */
+  revision: number;
 }
 
 /*
@@ -294,6 +306,13 @@ export type Acknowledgement =
 
 export interface PublishRequest {
   projection?: ProjectionSource;
+  /*
+   * THE REVISION OF THE RECORD THIS PUBLICATION REPLACES, or null when it
+   * replaces none. (queue item 43) Required: a publication that does not say
+   * which record it read is the defect the item removes. Read inside the same
+   * chain wait as the reading being published.
+   */
+  expected: number | null;
   directory: string;
   storeId: string;
   blockId: string;
@@ -323,7 +342,7 @@ export type PublishOutcome =
        * block's directory: nothing is wrong with the bytes, and the
        * thing to do is look at that window rather than save again.
        */
-      because: 'document-open' | 'dirty-document' | 'digest-moved' | 'not-ours' | 'projection-incomplete' | 'migration-required' | 'unknown-file';
+      because: 'document-open' | 'dirty-document' | 'digest-moved' | 'record-moved' | 'not-ours' | 'projection-incomplete' | 'migration-required' | 'unknown-file';
       file: string | null;
       /*
        * THE NAMES SEEN, when a block directory holds more than one projection
@@ -365,6 +384,7 @@ export function sidecarToDisk(sidecar: Sidecar): Record<string, unknown> {
     unresolved: sidecar.unresolved,
     'body-has-crlf': sidecar.bodyHasCrlf,
     'legacy-send': sidecar.legacySend,
+    revision: sidecar.revision,
     /*
      * NOTE: WRITTEN EVEN WHILE NOTHING READS THEM. A record this build
      * writes must be one this build can read back with the same meaning,
@@ -431,9 +451,10 @@ export const FIRST_SEQ = 1;
 
 export const UNNUMBERED: Pick<
   Sidecar,
-  'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy' | 'legacySend'
+  'confirmed' | 'outstanding' | 'highWater' | 'nextSeq' | 'writtenBy' | 'legacySend' | 'revision'
 > = {
   confirmed: null,
+  revision: 0,
   outstanding: [],
   highWater: 0,
   nextSeq: FIRST_SEQ,
@@ -507,6 +528,15 @@ export function sidecarFromDisk(text: string): SidecarRead {
       prior = parsed.sidecar;
     }
   }
+  /*
+   * THE REVISION (queue item 43): absent on a record written before it
+   * existed, which reads as 0; anything but a non-negative integer is a
+   * record this build cannot place.
+   */
+  const revision = record.revision === undefined ? 0 : record.revision;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    return { read: false, because: 'unreadable', detail: 'the record\'s revision is not a non-negative integer' };
+  }
   const confirmed = confirmationFrom(record);
   if (confirmed === null) {
     return {
@@ -536,6 +566,7 @@ export function sidecarFromDisk(text: string): SidecarRead {
       unresolved: record.unresolved === true,
       bodyHasCrlf: record['body-has-crlf'] === true,
       legacySend: record['legacy-send'] === true,
+      revision,
       ...confirmed
     }
   };
@@ -799,6 +830,15 @@ export type Reconciliation =
     };
 
 /*
+ * A RECONCILIATION'S ANSWER AND THE RECORD IT LEAVES BEHIND, null when there
+ * is none. (queue item 43, review r1 #1)
+ */
+export interface ReconcileLeaving {
+  answer: Reconciliation;
+  record: Sidecar | null;
+}
+
+/*
  * WHETHER AN ANSWER IS NEWS. For the SAME writer the sequence numbers
  * are compared numerically; a DIFFERENT writer is a later generation and
  * is accepted. A late replay carrying an older position must not move
@@ -852,8 +892,29 @@ export function sidecarPathOf(file: string): string {
  * stated in one place and enforced in one of two is a rule half the code
  * does not have.
  */
-export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): void {
-  replaceText(files, sidecarPathOf(file), `${JSON.stringify(sidecarToDisk(sidecar), null, 2)}\n`);
+/*
+ * THE ONE DOOR A RECORD IS WRITTEN THROUGH, AND IT NUMBERS WHAT IT WRITES.
+ * (queue item 43, design v3 U1) It reads the record on disk and writes the
+ * given record at that record's revision plus one -- 0 when there is none --
+ * and returns the revision it wrote. The caller never chooses it. A record on
+ * disk that cannot be read (unreadable, or a later format) is not written
+ * over with a revision: its position is not known, so no position after it
+ * is claimed, and the throw is each writer's existing refusal path. Every
+ * caller holds the directory's exclusive section, so the read and the write
+ * are one step.
+ */
+export function writeSidecar(files: FileOps, file: string, sidecar: Sidecar): number {
+  const meta = sidecarPathOf(file);
+  let revision = 0;
+  if (files.exists(meta)) {
+    const current = sidecarFromDisk(files.readText(meta));
+    if (!current.read) {
+      throw new Error(`the record beside ${file} could not be read (${current.detail}), so it is not written over`);
+    }
+    revision = current.sidecar.revision + 1;
+  }
+  replaceText(files, meta, `${JSON.stringify(sidecarToDisk({ ...sidecar, revision }), null, 2)}\n`);
+  return revision;
 }
 
 /*
@@ -1071,8 +1132,31 @@ export class Publisher {
     return found.found === 'one' ? found.file : null;
   }
 
-  private write(file: string, sidecar: Sidecar): void {
-    writeSidecar(this.files, file, sidecar);
+  private write(file: string, sidecar: Sidecar): number {
+    return writeSidecar(this.files, file, sidecar);
+  }
+
+  /*
+   * THE REVISION OF THE RECORD BESIDE `file`, or null when it has none.
+   * (queue item 43) Read under the directory's exclusive section; a caller
+   * reads it inside the same chain wait as the reading it will publish, and
+   * names it as the publication's `expected`.
+   */
+  public revisionOf(file: string): number | null {
+    return withExclusive(path.dirname(file), (): number | null => this.sidecarOf(file)?.revision ?? null);
+  }
+
+  /*
+   * THE REVISION OF THE BLOCK'S RECORD IN `directory`, for a publication into
+   * it (an open): its one projection's record, or null when the directory holds
+   * none or the projection has no record. A directory holding two projections
+   * is refused by the publication itself (`unknown-file`).
+   */
+  public revisionIn(directory: string): number | null {
+    return withExclusive(directory, (): number | null => {
+      const found = projectionFileIn(this.files, directory);
+      return found.found === 'one' ? this.sidecarOf(found.file)?.revision ?? null : null;
+    });
   }
 
   public recoverCurrent(file: string, supplied?: {source:ProjectionSource;text:string}): boolean {
@@ -1127,6 +1211,16 @@ export class Publisher {
     if (this.documents.isDirty?.(file)) return refuse('dirty-document');
     if (this.files.list(directory).some(n => /^\d+\.md(?:\.meta)?$/.test(n))) return refuse('migration-required');
     let old = this.sidecarOf(file);
+    /*
+     * THE RECORD THIS PUBLICATION REPLACES IS THE ONE IT NAMED. (queue item 43)
+     * `expected` is the revision read in the same wait as the reading being
+     * published, or null for none; anything else on disk now is a record that
+     * moved while the reading was taken -- a save, a settlement, another
+     * publication -- and nothing is written over it. Bytes are not the test:
+     * they come back (item 47). Recovery below is this publication's own act,
+     * so after it the predecessor is whatever recovery left.
+     */
+    if ((old === null ? null : old.revision) !== what.expected) return refuse('record-moved');
     if (this.files.exists(file) && (!old || !old.projection)) return refuse('unknown-file');
     if (old && (old.storeId !== what.storeId || old.blockId !== what.blockId)) return refuse('unknown-file');
     if (old?.phase === 'publishing' && !explicit) {
@@ -1157,13 +1251,21 @@ export class Publisher {
     };
     const temporary = temporaryFor(this.files,file);
     let promoted=false;
+    /*
+     * THE REVISION THE PREPARED WRITE WROTE. (queue item 43, design v3 U1/T4)
+     * The final check compares the record on disk with THIS, not with
+     * `expected`: our own prepared write has moved the record past `expected`,
+     * and anything past it is somebody else's.
+     */
+    let prepared = -1;
     try {
       this.files.writeDurably(temporary,what.text);
-      this.write(file,record);
-      // No asynchronous preparation follows this final editor/owner/byte check.
+      prepared = this.write(file,record);
+      // No asynchronous preparation follows this final editor/owner/record/byte check.
       const now = this.files.exists(file) ? digestOfBytes(this.files.readBytes(file)) : null;
-      if (this.documents.isDirty?.(file) || now !== before || !this.mayWrite(file).may) {
-        const reason = this.documents.isDirty?.(file) ? 'dirty-document' : now !== before ? 'digest-moved' : 'not-ours';
+      const moved = this.sidecarOf(file)?.revision !== prepared;
+      if (this.documents.isDirty?.(file) || moved || now !== before || !this.mayWrite(file).may) {
+        const reason = this.documents.isDirty?.(file) ? 'dirty-document' : moved ? 'record-moved' : now !== before ? 'digest-moved' : 'not-ours';
         throw Object.assign(new Error(reason), {publicationRefusal:reason});
       }
       this.files.rename(temporary,file);
@@ -1178,7 +1280,12 @@ export class Publisher {
       const observation=cleanupTemporary(this.files,temporary,error);
       if (typeof error==='object' && error!==null && 'publicationRefusal' in error) {
         // The prepared record is retained for explicit recovery if ownership changed.
-        if (old && this.mayWrite(file).may) this.write(file,old);
+        /*
+         * AND IT IS ROLLED BACK ONLY WHILE IT IS STILL OURS. (queue item 43,
+         * T5) A record that moved past our prepared write is newer than both,
+         * and writing `old` over it would lose it.
+         */
+        if (old && this.mayWrite(file).may && this.sidecarOf(file)?.revision === prepared) this.write(file,old);
         if (observation.presence==='present' || observation.presence==='unknown') throw cleanupFailure(observation);
         return refuse((error as {publicationRefusal:Extract<PublishOutcome,{published:false}>['because']}).publicationRefusal);
       }
@@ -1291,7 +1398,26 @@ export class Publisher {
    * Offers the way out, without taking it. (section 12.11.7, C3)
    */
   public reconcile(file: string, storePrefix: string, storeText: string): Reconciliation {
-    return withExclusive(path.dirname(file), (): Reconciliation => {
+    return this.reconcileLeaving(file, storePrefix, storeText).answer;
+  }
+
+  /*
+   * THE ANSWER AND THE RECORD IT LEAVES, READ IN ONE EXCLUSIVE SECTION.
+   * (queue item 43, review r1 #1) The reconcile's first wait names the record
+   * its offer is built from. Read by a second call after this one, it could
+   * be a record another process wrote after the offer was built -- the offer
+   * then carried a newer revision than its own, and the second wait let it
+   * through. Read here, after the automatic route's own write and before the
+   * section ends, it is the record the answer describes.
+   */
+  public reconcileLeaving(file: string, storePrefix: string, storeText: string): ReconcileLeaving {
+    return withExclusive(path.dirname(file), (): ReconcileLeaving => {
+      const answer = this.reconcileInside(file, storePrefix, storeText);
+      return { answer, record: this.sidecarOf(file) };
+    });
+  }
+
+  private reconcileInside(file: string, storePrefix: string, storeText: string): Reconciliation {
     const fileText = this.files.readText(file);
     if (this.documents.isDirty?.(file)) {
       return {reconciled:false, because:'dirty-document', choices:[], storeText, previousText:null, fileText};
@@ -1364,8 +1490,6 @@ export class Publisher {
       previousText,
       fileText
     };
-
-    });
   }
 
   /*
@@ -1374,15 +1498,31 @@ export class Publisher {
    * re-arm the overwrite the third-version judgement exists to prevent,
    * and would pass every other cell. (section 12.11.7, C15)
    */
-  public reconciliationGuard(file: string, offered: string): string | null {
+  /*
+   * NOTE: THE RECORD FIRST, THEN THE BYTES. (queue item 43) `held` is the
+   * revision of the record the offer was built from, read in the reconcile's
+   * first wait. A record that moved while the pick was open is refused
+   * `record-moved` even when the bytes came back to the offered ones -- the
+   * case item 47 measured, in which the bytes-only guard let the reconcile
+   * publish over a record a queued save still expected.
+   */
+  public reconciliationGuard(file: string, offered: string, held: number | null): string | null {
     if (this.documents.isDirty?.(file)) return 'dirty-document';
     if (!this.mayWrite(file).may) return 'not-ours';
+    if ((this.sidecarOf(file)?.revision ?? null) !== held) return 'record-moved';
     if (!this.files.exists(file) || this.files.readText(file)!==offered) return 'file-changed';
     return null;
   }
 
+  /*
+   * `expected` names the record the offer was built from (the first wait's
+   * `held`), as every publication names what it replaces (queue item 43); a
+   * record that moved between the guard and here -- only a writer outside the
+   * block chain can, such as a settlement -- is refused `record-moved`, late.
+   */
   public reconcileBy(file: string, action: 'prepend-prefix' | 'take-store-version', storePrefix: string,
-      storeText: string, offered?: string, projection?: ProjectionSource): {done:boolean;file:string;because?:string} {
+      storeText: string, offered: string | undefined, projection: ProjectionSource | undefined,
+      expected: number | null): {done:boolean;file:string;because?:string} {
     return withExclusive(path.dirname(file), (): {done:boolean;file:string;because?:string} => {
     if (this.documents.isDirty?.(file)) return {done:false,file,because:'dirty-document'};
     const sidecar=this.sidecarOf(file);
@@ -1391,7 +1531,7 @@ export class Publisher {
     const current=this.files.exists(file)?this.files.readText(file):null;
     if (current===null || offered!==undefined && current!==offered) return {done:false,file,because:'file-changed'};
     const text=action==='take-store-version'?storeText:current.startsWith(storePrefix)?current:storePrefix+current;
-    const result=this.publishInto(path.dirname(file),{storeId:sidecar.storeId,blockId:sidecar.blockId,prefix:storePrefix,text,projection},
+    const result=this.publishInto(path.dirname(file),{storeId:sidecar.storeId,blockId:sidecar.blockId,prefix:storePrefix,text,projection,expected},
       action==='take-store-version'?{cursor:null}:null,true,digestOfBytes(current));
     return result.published?{done:true,file:result.file}:{done:false,file,because:result.because};
 
@@ -1405,11 +1545,20 @@ export class Publisher {
       !this.documents.isDirty?.(file) && this.files.exists(file) && digestOfBytes(this.files.readBytes(file))===rawDigest;
   }
 
-  public recordWorking(file: string, projection: ProjectionSource, rawDigest: string, priorId?: string): boolean {
+  /*
+   * NOTE: AND IT NAMES THE REVISION IT REPLACES, beside the projection id.
+   * (queue item 43, T-A) The id says which working source the note was built
+   * on; it survives writes that keep the source (a settlement, a released
+   * number), so the revision is what says the record did not move since the
+   * wait that read it. A same-window settlement landing during the working
+   * write makes this refuse and the save report `working-unavailable`: the
+   * accepted cost (ruled 2026-09-26, Q2).
+   */
+  public recordWorking(file: string, projection: ProjectionSource, rawDigest: string, priorId: string | undefined, expected: number | null): boolean {
     return withExclusive(path.dirname(file), (): boolean => {
     if (!this.mayWrite(file).may) return false;
     const held=this.sidecarOf(file);
-    if (!held || held.phase!=='published' || held.projection?.id!==priorId ||
+    if (!held || held.revision!==expected || held.phase!=='published' || held.projection?.id!==priorId ||
         !this.files.exists(file) || digestOfBytes(this.files.readBytes(file))!==rawDigest) return false;
     this.write(file,{...held,projection,written:rawDigest,confirmed:null,acknowledgedRaw:null,localOnly:false});
     return true;

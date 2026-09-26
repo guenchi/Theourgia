@@ -45,9 +45,9 @@ describe('WS-28/31 W is the real plugin body authority',function(){
       assert.strictEqual((await b.read(id,prefix)).body,'old','other namespace sees committed');
       const publisher=new Publisher(nodeFileOps,{isOpen:()=>true,isDirty:()=>false});
       const directory=path.join(store.root,'projection');
-      await publisher.publish({directory,storeId:store.store,blockId:id,prefix,text:prefix+saved.body,cursor:null,projection:saved.source});
+      await publisher.publish({directory,storeId:store.store,blockId:id,prefix,text:prefix+saved.body,cursor:null,projection:saved.source,expected:null});
       const reread=await a.read(id,prefix);
-      const refreshed=await publisher.publish({directory,storeId:store.store,blockId:id,prefix,text:prefix+reread.body,cursor:null,projection:reread.source});
+      const refreshed=await publisher.publish({directory,storeId:store.store,blockId:id,prefix,text:prefix+reread.body,cursor:null,projection:reread.source,expected:publisher.revisionIn(directory)});
       assert.strictEqual(nodeFileOps.readText(refreshed.file as string),prefix+'edited\n');
       const queue=new Outbox(path.join(store.root,'outbox.json'));
       const saver=new Saver(store.client,queue,(req,answer)=>{

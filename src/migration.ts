@@ -101,7 +101,9 @@ export async function migrateLegacy(parts: {
     try {
       if (!parts.claimDestination()) return {migrated:false,because:'not-ours',retained};
       if (current!==null && held?.phase==='publishing') parts.publisher.recoverCurrent(current,{source:plan.selected.source,text:plan.selected.text});
-      const result=parts.publisher.publishNow({directory,storeId:parts.storeId,blockId:parts.blockId,
+      // The record this publication replaces, read after the recovery above (queue item 43).
+      const expected=current===null?null:parts.publisher.revisionOf(current);
+      const result=parts.publisher.publishNow({directory,storeId:parts.storeId,blockId:parts.blockId,expected,
         prefix:plan.selected.prefix,text:plan.selected.text,projection:plan.selected.source,cursor:null});
       if (!result.published) return {migrated:false,because:result.because,retained};
       replaceText(files,journal,JSON.stringify({format:1,phase:'complete',directory,archive:plan.archive,file:result.file})+'\n');
@@ -153,7 +155,8 @@ export async function migrateLegacy(parts: {
   files.syncDirectory(path.dirname(directory));files.syncDirectory(control);
   try {
     if (!parts.claimDestination()) return {migrated:false,because:'not-ours',retained:[archive,journal]};
-    const published=parts.publisher.publishNow({directory,storeId:parts.storeId,blockId:parts.blockId,
+    // A first publication: the directory was moved to the archive just above (queue item 43).
+    const published=parts.publisher.publishNow({directory,storeId:parts.storeId,blockId:parts.blockId,expected:null,
       prefix:selected.prefix,text:selected.text,projection:selected.source,cursor:null});
     if (!published.published) return {migrated:false,because:published.because,retained:[archive,journal]};
     replaceText(files,journal,JSON.stringify({format:1,phase:'complete',directory,archive,file:published.file})+'\n');

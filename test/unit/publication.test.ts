@@ -51,6 +51,8 @@ import {
   replacesBaseline
 } from '../../src/publication';
 import { RecordingFs } from '../support/recording-fs';
+import { nodeFileOps } from '../../src/fsops';
+import { Saving } from '../../src/saving';
 
 function scratch(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-pub-'));
@@ -66,6 +68,16 @@ function openOn(file: string): OpenDocuments {
 
 function request(directory: string, text: string, prefix = '## Two\n', cursor: string | null = null) {
   return { directory, storeId: 's1', blockId: 'a.2', prefix, text, cursor };
+}
+
+/*
+ * THE REVISION OF THE RECORD BESIDE `file` NOW, as a caller names the record
+ * a publication replaces (queue item 43), for a call made through a publisher
+ * the cell builds inline. Read by a publisher of its own, which writes nothing
+ * and records nothing in the cell's FileOps.
+ */
+function revisionNow(file: string): number | null {
+  return new Publisher(new RecordingFs(), nothingOpen()).revisionOf(file);
 }
 
 /*
@@ -251,7 +263,7 @@ describe('D5 only bytes that came from the store make a baseline', () => {
   it('publishes a baseline that says where the bytes came from', async () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const outcome = await publisher.publish(request(dir, '## Two\nbody\n', '## Two\n', 'w:7'));
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nbody\n', '## Two\n', 'w:7'), expected: publisher.revisionIn(dir) });
     assert.ok(outcome.published);
     const sidecar = publisher.sidecarOf(outcome.file);
     assert.deepStrictEqual(sidecar?.confirmed, {
@@ -265,7 +277,7 @@ describe('D5 only bytes that came from the store make a baseline', () => {
   it('calls a freshly published version clean, and one whose bytes moved a draft', async () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const outcome = await publisher.publish(request(dir, '## Two\nbody\n', '## Two\n', 'w:7'));
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nbody\n', '## Two\n', 'w:7'), expected: publisher.revisionIn(dir) });
     assert.ok(outcome.published);
     const sidecar = publisher.sidecarOf(outcome.file) as Sidecar;
     assert.deepStrictEqual(
@@ -357,7 +369,7 @@ describe('D5 only bytes that came from the store make a baseline', () => {
     });
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(file, 'their own words\n', 'utf8');
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstore\n');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstore\n', undefined, undefined, publisher.revisionOf(file));
     assert.ok(done.done, `the reconciliation did not happen: ${JSON.stringify(done)}`);
     const made = publisher.sidecarOf(done.file) as Sidecar;
     assert.strictEqual(made.confirmed, null, 'the user’s own bytes were given a baseline');
@@ -684,8 +696,8 @@ describe('C2 to XC current publication handoff', () => {
   const CANON = 'two-a.2.md';
   it('uses one canonical path for successive readings', async () => {
     const dir=scratch(),publisher=new Publisher(new RecordingFs(),nothingOpen());
-    const first=await publisher.publish(request(dir,'## Two\none\n'));
-    const second=await publisher.publish(request(dir,'## Two\ntwo\n'));
+    const first=await publisher.publish({ ...request(dir, '## Two\none\n'), expected: publisher.revisionIn(dir) });
+    const second=await publisher.publish({ ...request(dir, '## Two\ntwo\n'), expected: publisher.revisionIn(dir) });
     assert.ok(first.published&&second.published);
     assert.strictEqual(first.file,second.file);
     assert.strictEqual(fs.readFileSync(second.file as string,'utf8'),'## Two\ntwo\n');
@@ -693,7 +705,7 @@ describe('C2 to XC current publication handoff', () => {
   });
   it('never opens the canonical body for a truncating write', async () => {
     const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
-    for(const body of ['long long body','x','third'])assert.ok((await publisher.publish(request(dir,'## Two\n'+body))).published);
+    for(const body of ['long long body','x','third'])assert.ok((await publisher.publish({ ...request(dir, '## Two\n'+body), expected: publisher.revisionIn(dir) })).published);
     const file=path.join(dir,CANON);
     assert.strictEqual(files.countOf('writeText',file)+files.countOf('writeDurably',file),0);
     assert.strictEqual(files.countOf('rename',file),3);
@@ -701,31 +713,31 @@ describe('C2 to XC current publication handoff', () => {
   });
   it('never unlinks current while installing a replacement', async () => {
     const dir=scratch(),files=new RecordingFs(),publisher=new Publisher(files,nothingOpen());
-    await publisher.publish(request(dir,'## Two\none'));
-    await publisher.publish(request(dir,'## Two\ntwo'));
+    await publisher.publish({ ...request(dir, '## Two\none'), expected: publisher.revisionIn(dir) });
+    await publisher.publish({ ...request(dir, '## Two\ntwo'), expected: publisher.revisionIn(dir) });
     assert.strictEqual(files.countOf('unlink',path.join(dir,CANON)),0);
     assert.strictEqual(files.countOf('rename',path.join(dir,CANON)),2);
   });
   it('replaces the record through a temporary file rather than truncating it', async () => {
     const dir=scratch(),files=new RecordingFs();
-    await new Publisher(files,nothingOpen()).publish(request(dir,'## Two\none'));
+    await new Publisher(files,nothingOpen()).publish({...request(dir,'## Two\none'),expected:null});
     const meta=path.join(dir,`${CANON}.meta`);
     assert.ok(files.countOf('rename',meta)>=2);
     assert.strictEqual(files.countOf('writeText',meta)+files.countOf('writeDurably',meta),0);
   });
   it('preserves disk and sidecar when the current editor is dirty', async () => {
     const dir=scratch(),file=path.join(dir,CANON);
-    await new Publisher(new RecordingFs(),nothingOpen()).publish(request(dir,'## Two\none'));
+    await new Publisher(new RecordingFs(),nothingOpen()).publish({...request(dir,'## Two\none'),expected:null});
     const before=[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),files=new RecordingFs();
-    const refused=await new Publisher(files,openOn(file)).publish(request(dir,'## Two\ntwo'));
+    const refused=await new Publisher(files,openOn(file)).publish({...request(dir,'## Two\ntwo'),expected:revisionNow(file)});
     assert.deepStrictEqual(refused,{published:false,because:'dirty-document',file});
     assert.deepStrictEqual([file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),before);
     assert.strictEqual(files.touched('rename').length,0);
   });
   it('updates an open clean document at the same path', async () => {
     const dir=scratch(),publisher=new Publisher(new RecordingFs(),{isOpen:()=>true,isDirty:()=>false});
-    await publisher.publish(request(dir,'## Two\none'));
-    const result=await publisher.publish(request(dir,'## Two\ntwo'));
+    await publisher.publish({ ...request(dir, '## Two\none'), expected: publisher.revisionIn(dir) });
+    const result=await publisher.publish({ ...request(dir, '## Two\ntwo'), expected: publisher.revisionIn(dir) });
     assert.ok(result.published);assert.strictEqual(fs.readFileSync(result.file,'utf8'),'## Two\ntwo');
   });
 });
@@ -878,7 +890,12 @@ describe('C15 the record on disk uses the design names and says which shape it i
       cursor: null,
       localOnly: false,
       unresolved: true,
-      bodyHasCrlf: false
+      bodyHasCrlf: false,
+      /*
+       * NOT THE DEFAULT, so a build that drops the field on either side of
+       * the round trip reads back 0 and differs here. (queue item 43, U9)
+       */
+      revision: 7
     };
     const read = sidecarFromDisk(JSON.stringify(sidecarToDisk(sidecar)));
     assert.deepStrictEqual(read, { read: true, sidecar });
@@ -995,7 +1012,7 @@ describe('C3 reconcile is the only way out of a third version', () => {
   it('keeps the user’s bytes when they choose to put the prefix in front of them', () => {
     const file = stranded(scratch(), 'no heading at all\n');
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nthe store version\n');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nthe store version\n', undefined, undefined, publisher.revisionOf(file));
     assert.ok(done.done);
     assert.ok(
       fs.readFileSync(done.file, 'utf8').includes('no heading at all'),
@@ -1016,7 +1033,10 @@ describe('C3 reconcile is the only way out of a third version', () => {
       file,
       'take-store-version',
       '## Two\n',
-      '## Two\nthe store version\n'
+      '## Two\nthe store version\n',
+      undefined,
+      undefined,
+      revisionNow(file)
     );
     assert.ok(done.done);
     assert.strictEqual(done.file, file, 'reconciliation did not use the canonical path');
@@ -1041,7 +1061,7 @@ describe('C3 reconcile is the only way out of a third version', () => {
     const before = publisher.sidecarOf(file);
     assert.strictEqual(before?.unresolved, true, 'the record did not say it was stranded to begin with');
     publisher.reconcile(file, '## Two\n', '## Two\nthe store version\n');
-    publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nthe store version\n');
+    publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nthe store version\n', undefined, undefined, publisher.revisionOf(file));
     assert.strictEqual(
       publisher.sidecarOf(file)?.unresolved,
       false,
@@ -1171,7 +1191,10 @@ describe('every publication path asks the same questions', () => {
       file,
       'take-store-version',
       '## Two\n',
-      '## Two\nthe store version\n'
+      '## Two\nthe store version\n',
+      undefined,
+      undefined,
+      revisionNow(file)
     );
     assert.strictEqual(done.done, false, 'a version was published onto a path the editor had open');
     assert.deepStrictEqual(
@@ -1195,7 +1218,8 @@ describe('every publication path asks the same questions', () => {
       blockId: 'a.2',
       prefix: '## Two\n',
       text: '## Two\nline one\r\nline two\r\n',
-      cursor: null
+      cursor: null,
+      expected: null
     });
     assert.ok(published.published);
     if (published.published) {
@@ -1215,7 +1239,8 @@ describe('every publication path asks the same questions', () => {
       blockId: 'a.2',
       prefix: '## Two\r\n',
       text: '## Two\r\nplain body\n',
-      cursor: null
+      cursor: null,
+      expected: null
     });
     assert.ok(published.published);
     if (published.published) {
@@ -1278,7 +1303,10 @@ describe('XC reconciliation replaces current without a truncating write', () => 
       file,
       'prepend-prefix',
       '## Two\n',
-      '## Two\nthe store version\n'
+      '## Two\nthe store version\n',
+      undefined,
+      undefined,
+      revisionNow(file)
     );
     assert.ok(done.done);
     assert.strictEqual(done.file, file, 'the result is not the current file');
@@ -1487,7 +1515,7 @@ describe('X1c ⑧ what reconciliation computes and what the record keeps', () =>
       'utf8'
     );
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', undefined, undefined, publisher.revisionOf(file));
     assert.ok(done.done);
     assert.strictEqual(
       publisher.sidecarOf(done.file)?.localOnly,
@@ -1732,7 +1760,7 @@ describe('review 20 a reconciliation is measured against the text it offered', (
      */
     fs.writeFileSync(file, 'beta\n', 'utf8');
 
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered, undefined, publisher.revisionOf(file));
     assert.deepStrictEqual(
       done,
       { done: false, file, because: 'file-changed' },
@@ -1758,7 +1786,9 @@ describe('review 20 a reconciliation is measured against the text it offered', (
       'take-store-version',
       '## Two\n',
       '## Two\nstored\n',
-      offered
+      offered,
+      undefined,
+      publisher.revisionOf(file)
     );
     /*
      * THE OTHER ACTION TOO. It does not re-read the file, so it would
@@ -1781,7 +1811,7 @@ describe('review 20 a reconciliation is measured against the text it offered', (
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
     const offer = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
     const offered = offer.reconciled ? '' : offer.fileText;
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered, undefined, publisher.revisionOf(file));
     assert.strictEqual(done.done, true, `the ordinary path was refused: ${JSON.stringify(done)}`);
     assert.strictEqual(fs.readFileSync(done.file, 'utf8'), '## Two\nalpha\n');
   });
@@ -1797,7 +1827,10 @@ describe('review 20 a reconciliation is measured against the text it offered', (
       file,
       'prepend-prefix',
       '## Two\n',
-      '## Two\nstored\n'
+      '## Two\nstored\n',
+      undefined,
+      undefined,
+      revisionNow(file)
     );
     assert.strictEqual(done.done, true, JSON.stringify(done));
   });
@@ -1866,7 +1899,7 @@ describe('review 21 what the reconciliation action is measured against', () => {
     const offered = offer.reconciled ? '' : offer.fileText;
     assert.strictEqual(offered, 'alpha\n');
     fs.writeFileSync(file, 'beta\n', 'utf8');
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', offered, undefined, publisher.revisionOf(file));
     assert.strictEqual(
       done.because,
       'file-changed',
@@ -1906,7 +1939,9 @@ describe('review 21 what the reconciliation action is measured against', () => {
       'prepend-prefix',
       '## Two\n',
       '## Two\nstored\n',
-      'alpha\n'
+      'alpha\n',
+      undefined,
+      revisionNow(file)
     );
     assert.ok(reads >= 1, 'the file was never read, so nothing was raced');
     assert.strictEqual(done.done,false,'an external write was overwritten');
@@ -1928,7 +1963,457 @@ describe('review 21 what the reconciliation action is measured against', () => {
     const file = strandedOver(dir, 'alpha\n', 'alpha\n');
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
     fs.unlinkSync(file);
-    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', 'alpha\n');
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', 'alpha\n', undefined, publisher.revisionOf(file));
     assert.deepStrictEqual(done, { done: false, file, because: 'file-changed' });
+  });
+});
+
+/*
+ * queue item 43: THE RECORD'S REVISION. (design v3 U1/U4, v4 V3; rulings Q1,
+ * Q4) A publication names the record it replaces by a revision that
+ * `writeSidecar` computes from the record on disk: 0 for a first record, one
+ * more on every write after it.
+ *
+ * NOTE: THE REVISION IS READ FROM THE FILE HERE, not through `Publisher`: a
+ * reader that shares the product's own reading would agree with it about a
+ * field both had dropped.
+ */
+const RECORD: Sidecar = {
+  ...UNNUMBERED,
+  format: 1,
+  storeId: 's1',
+  blockId: 'a.2',
+  phase: 'published',
+  prefix: '## Two\n',
+  written: 'w',
+  previous: null,
+  acknowledgedRaw: null,
+  sent: null,
+  cursor: null,
+  localOnly: false,
+  unresolved: false,
+  bodyHasCrlf: false
+};
+
+function recordOnDisk(file: string): Sidecar {
+  const read = sidecarFromDisk(fs.readFileSync(`${file}.meta`, 'utf8'));
+  assert.ok(read.read, `the record beside ${file} does not read`);
+  return read.sidecar;
+}
+
+function revisionOnDisk(file: string): number {
+  return recordOnDisk(file).revision;
+}
+
+function bytesOf(file: string): string[] {
+  return [file, `${file}.meta`].map((name) => (fs.existsSync(name) ? fs.readFileSync(name, 'hex') : 'absent'));
+}
+
+/*
+ * A BLOCK PUBLISHED ONCE, the way every row below starts: `## Two\nbody\n`
+ * under the prefix `## Two\n`, at revision 1 (prepared at 0, completed at 1).
+ */
+async function publishedOnce(files: RecordingFs = new RecordingFs()): Promise<{ dir: string; file: string; publisher: Publisher; files: RecordingFs }> {
+  const dir = scratch();
+  const publisher = new Publisher(files, nothingOpen());
+  const outcome = await publisher.publish({ ...request(dir, '## Two\nbody\n'), expected: null });
+  assert.ok(outcome.published, `the fixture could not publish: ${JSON.stringify(outcome)}`);
+  return { dir, file: (outcome as { file: string }).file, publisher, files };
+}
+
+/*
+ * THE ROW'S MEASUREMENT: the writer, driven once, moved the record by exactly
+ * one. `act` returns whether the writer says it wrote, so a row whose writer
+ * refused is not read as a row whose writer skipped the bump.
+ */
+function movesByOne(file: string, act: () => boolean): void {
+  const before = revisionOnDisk(file);
+  assert.ok(act(), 'the writer did not write, so this row measured nothing');
+  assert.strictEqual(revisionOnDisk(file), before + 1, 'the writer did not move the record\'s revision by exactly one');
+}
+
+class RevisionAtRename extends RecordingFs {
+  public readonly seen: number[] = [];
+  public rename(from: string, to: string): void {
+    if (to.endsWith('.md') && fs.existsSync(`${to}.meta`)) {
+      this.seen.push(revisionOnDisk(to));
+    }
+    super.rename(from, to);
+  }
+}
+
+class LandsDuringStaging extends RecordingFs {
+  private armed: { file: string; text: string } | undefined;
+  public arm(file: string, text: string): void {
+    this.armed = { file, text };
+  }
+  public writeDurably(file: string, text: string): void {
+    super.writeDurably(file, text);
+    const armed = this.armed;
+    if (armed !== undefined && path.basename(file).startsWith(`${path.basename(armed.file)}.${process.pid}.`)) {
+      this.armed = undefined;
+      fs.writeFileSync(armed.file, armed.text, 'utf8');
+    }
+  }
+}
+
+describe('queue item 43 R0 every writer of the record moves its revision by one', () => {
+  it('numbers a first record 0, and every write after it one more', () => {
+    const file = path.join(scratch(), 'a.2.md');
+    assert.strictEqual(writeSidecar(nodeFileOps, file, RECORD), 0);
+    assert.strictEqual(revisionOnDisk(file), 0);
+    assert.strictEqual(writeSidecar(nodeFileOps, file, { ...RECORD, revision: 40 }), 1, 'the caller chose the revision');
+    assert.strictEqual(revisionOnDisk(file), 1);
+  });
+
+  it('reads a record written before revisions as 0, and its next write makes it 1', () => {
+    const file = path.join(scratch(), 'a.2.md');
+    const onDisk: Record<string, unknown> = { ...sidecarToDisk(RECORD) };
+    delete onDisk.revision;
+    fs.writeFileSync(`${file}.meta`, JSON.stringify(onDisk), 'utf8');
+    assert.strictEqual(revisionOnDisk(file), 0);
+    assert.strictEqual(writeSidecar(nodeFileOps, file, RECORD), 1);
+  });
+
+  /*
+   * Q1: A RECORD WHOSE POSITION IS NOT KNOWN IS NOT WRITTEN OVER. No position
+   * after it can be claimed, so the write throws and the bytes stay.
+   */
+  for (const [what, text] of [
+    ['bytes that are not a record', 'this is not json'],
+    ['a record from a later build', JSON.stringify({ format: 2, 'block-id': 'a.2' })],
+    ['a negative revision', JSON.stringify({ ...sidecarToDisk(RECORD), revision: -1 })],
+    ['a fractional revision', JSON.stringify({ ...sidecarToDisk(RECORD), revision: 1.5 })],
+    ['a revision that is a string', JSON.stringify({ ...sidecarToDisk(RECORD), revision: '3' })]
+  ] as const) {
+    it(`throws rather than number a write over ${what}`, () => {
+      const file = path.join(scratch(), 'a.2.md');
+      fs.writeFileSync(`${file}.meta`, text, 'utf8');
+      assert.throws(() => writeSidecar(nodeFileOps, file, RECORD));
+      assert.strictEqual(fs.readFileSync(`${file}.meta`, 'utf8'), text, 'the unreadable record was written over');
+    });
+  }
+
+  it('prepares a first publication at 0 and completes it at 1', async () => {
+    const files = new RevisionAtRename();
+    const { file } = await publishedOnce(files);
+    assert.deepStrictEqual(files.seen, [0], 'the prepared record was not at 0 when the file was renamed into place');
+    assert.strictEqual(revisionOnDisk(file), 1);
+  });
+
+  it('prepare and finalize: a publication over revision r leaves r+1 at the rename and r+2 after it', async () => {
+    const files = new RevisionAtRename();
+    const { dir, file, publisher } = await publishedOnce(files);
+    files.seen.length = 0;
+    const r = revisionOnDisk(file);
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: r });
+    assert.ok(outcome.published, JSON.stringify(outcome));
+    assert.deepStrictEqual(files.seen, [r + 1]);
+    assert.strictEqual(revisionOnDisk(file), r + 2);
+  });
+
+  it('rollback: a refused publication puts the old record back at one past its own prepared write', async () => {
+    const files = new LandsDuringStaging();
+    const { dir, file, publisher } = await publishedOnce(files);
+    const r = revisionOnDisk(file);
+    const old = recordOnDisk(file);
+    files.arm(file, '## Two\nsaved meanwhile\n');
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: r });
+    assert.deepStrictEqual(outcome, { published: false, because: 'digest-moved', file });
+    assert.strictEqual(revisionOnDisk(file), r + 2, 'the rollback did not number its write after the prepared one');
+    assert.deepStrictEqual({ ...recordOnDisk(file), revision: 0 }, { ...old, revision: 0 }, 'the rollback did not put the old record back');
+  });
+
+  it('recovery (the old bytes): a record left publishing is put back, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    const old = recordOnDisk(file);
+    writeSidecar(nodeFileOps, file, {
+      ...old,
+      phase: 'publishing',
+      prior: old,
+      written: digestOfBytes('## Two\nnever landed\n'),
+      projection: { ...(old.projection as NonNullable<Sidecar['projection']>), id: 'next-origin' }
+    });
+    movesByOne(file, () => publisher.recoverCurrent(file));
+    assert.strictEqual(recordOnDisk(file).written, old.written, 'recovery did not choose the old record');
+  });
+
+  it('recovery (the new bytes): a record left publishing is completed, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    const old = recordOnDisk(file);
+    fs.writeFileSync(file, '## Two\nlanded\n', 'utf8');
+    writeSidecar(nodeFileOps, file, {
+      ...old,
+      phase: 'publishing',
+      prior: old,
+      written: digestOfBytes('## Two\nlanded\n'),
+      projection: { ...(old.projection as NonNullable<Sidecar['projection']>), id: 'next-origin' }
+    });
+    movesByOne(file, () => publisher.recoverCurrent(file));
+    assert.strictEqual(recordOnDisk(file).phase, 'published', 'recovery did not complete the new record');
+  });
+
+  it('the automatic reconcile: a file that already carries the store\'s prefix gets a baseline, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    fs.writeFileSync(file, '## Two\nedited\n', 'utf8');
+    movesByOne(file, () => {
+      const result = publisher.reconcile(file, '## Two\n', '## Two\nstored\n');
+      return result.reconciled && result.because === 'prefix-already-present';
+    });
+  });
+
+  it('recordWorking, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    const held = recordOnDisk(file);
+    const source = { id: 'working-origin', kind: 'working' as const, writer: 'window-a', version: 'v2', basedOn: null };
+    movesByOne(file, () =>
+      publisher.recordWorking(file, source, digestOfBytes(fs.readFileSync(file)), held.projection?.id, held.revision)
+    );
+  });
+
+  it('takeSequence, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    movesByOne(file, () => publisher.takeSequence(file, 'R1').taken);
+  });
+
+  it('markLegacySend and clearLegacySend, one more each', () => {
+    const dir = scratch();
+    const file = path.join(dir, '1.md');
+    fs.writeFileSync(file, '## Two\nbody\n', 'utf8');
+    writeSidecar(nodeFileOps, file, RECORD);
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    movesByOne(file, () => publisher.markLegacySend(dir).length === 1);
+    movesByOne(file, () => publisher.clearLegacySend(file));
+  });
+
+  it('acknowledge, one more', async () => {
+    const { file, publisher } = await publishedOnce();
+    movesByOne(file, () => publisher.acknowledge(file, digestOfBytes('## Two\nbody\n'), digestOfBytes('body\n'), 'w:9').recorded);
+  });
+
+  it('releaseSend (saving.ts), one more', async () => {
+    const { file, publisher, files } = await publishedOnce();
+    const taken = publisher.takeSequence(file, 'R1');
+    assert.ok(taken.taken);
+    movesByOne(file, () => new Saving(files).releaseSend(file, (taken as { seq: number }).seq));
+  });
+
+  /*
+   * THE FOUR WRITES IN recordAnswer (saving.ts), each reached by the answer
+   * that leads to it: an answer for an older origin retires its number; one
+   * the store says is a different request marks the file; one whose number
+   * a different request already settled marks it too; one that matches
+   * settles.
+   */
+  function answerFor(file: string, req: string, seq: number, cursor: string, over: { mismatch?: boolean; projectionId?: string } = {}) {
+    return {
+      req,
+      cursor,
+      rawDigest: digestOfBytes('## Two\nbody\n'),
+      sentDigest: digestOfBytes('body\n'),
+      mismatch: over.mismatch ?? false,
+      send: {
+        seq,
+        prefixDigest: digestOfBytes('## Two\n'),
+        by: 'store' as const,
+        projectionId: over.projectionId ?? recordOnDisk(file).projection?.id
+      }
+    };
+  }
+
+  it('recordAnswer retiring an older origin\'s number, one more', async () => {
+    const { file, publisher, files } = await publishedOnce();
+    assert.ok(publisher.takeSequence(file, 'R1').taken);
+    movesByOne(file, () => new Saving(files).recordAnswer(file, answerFor(file, 'R1', 1, 'w:1', { projectionId: 'an-older-origin' })).dequeued);
+  });
+
+  it('recordAnswer for a request the store holds under another name, one more', async () => {
+    const { file, publisher, files } = await publishedOnce();
+    assert.ok(publisher.takeSequence(file, 'R1').taken);
+    movesByOne(file, () => {
+      const answered = new Saving(files).recordAnswer(file, answerFor(file, 'R1', 1, 'w:1', { mismatch: true }));
+      return !answered.dequeued && answered.because === 'req-mismatch';
+    });
+  });
+
+  it('recordAnswer for a number another request already settled, one more', async () => {
+    const { file, publisher, files } = await publishedOnce();
+    assert.ok(publisher.takeSequence(file, 'R1').taken);
+    const saving = new Saving(files);
+    assert.ok(saving.recordAnswer(file, answerFor(file, 'R1', 1, 'w:1')).dequeued, 'the first answer did not settle');
+    movesByOne(file, () => {
+      const answered = saving.recordAnswer(file, answerFor(file, 'R9', 1, 'w:2'));
+      return !answered.dequeued && answered.because === 'number-taken';
+    });
+  });
+
+  it('recordAnswer settling a send, one more', async () => {
+    const { file, publisher, files } = await publishedOnce();
+    assert.ok(publisher.takeSequence(file, 'R1').taken);
+    movesByOne(file, () => new Saving(files).recordAnswer(file, answerFor(file, 'R1', 1, 'w:1')).dequeued);
+  });
+});
+
+describe('queue item 43 R1 a publication names the record it replaces', () => {
+  it('refuses a publication one revision behind, and touches neither the file nor the record', async () => {
+    const { dir, file, publisher } = await publishedOnce();
+    const before = bytesOf(file);
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: revisionOnDisk(file) - 1 });
+    assert.deepStrictEqual(outcome, { published: false, because: 'record-moved', file });
+    assert.deepStrictEqual(bytesOf(file), before);
+  });
+
+  it('publishes one that names the record there, and leaves it two further on', async () => {
+    const { dir, file, publisher } = await publishedOnce();
+    const r = revisionOnDisk(file);
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: r });
+    assert.ok(outcome.published, JSON.stringify(outcome));
+    assert.strictEqual(revisionOnDisk(file), r + 2);
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), '## Two\nnext\n');
+  });
+
+  it('refuses one that names no record when there is one', async () => {
+    const { dir, file, publisher } = await publishedOnce();
+    const before = bytesOf(file);
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: null });
+    assert.deepStrictEqual(outcome, { published: false, because: 'record-moved', file });
+    assert.deepStrictEqual(bytesOf(file), before);
+  });
+
+  it('publishes one that names no record when there is none, at 1', async () => {
+    const dir = scratch();
+    const outcome = await new Publisher(new RecordingFs(), nothingOpen()).publish({ ...request(dir, '## Two\nfirst\n'), expected: null });
+    assert.ok(outcome.published, JSON.stringify(outcome));
+    assert.strictEqual(revisionOnDisk((outcome as { file: string }).file), 1);
+  });
+
+  it('refuses one that names a record when there is none, and writes nothing', async () => {
+    const dir = scratch();
+    const outcome = await new Publisher(new RecordingFs(), nothingOpen()).publish({ ...request(dir, '## Two\nfirst\n'), expected: 0 });
+    assert.deepStrictEqual(outcome, { published: false, because: 'record-moved', file: path.join(dir, 'two-a.2.md') });
+    assert.deepStrictEqual(fs.readdirSync(dir), []);
+  });
+
+  /*
+   * THE EXPLICIT ROUTE (reconcileBy) OBEYS THE SAME RULE. It skips the byte
+   * check, not this one. Its two rows without a record cannot be reached:
+   * reconcileBy answers `no-record` before it publishes, and the row below
+   * says so.
+   */
+  async function stranded(): Promise<{ file: string; publisher: Publisher }> {
+    const { file, publisher } = await publishedOnce();
+    fs.writeFileSync(file, 'edited without a heading\n', 'utf8');
+    return { file, publisher };
+  }
+
+  it('explicit: refuses one revision behind, untouched', async () => {
+    const { file, publisher } = await stranded();
+    const before = bytesOf(file);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', undefined, undefined, revisionOnDisk(file) - 1);
+    assert.deepStrictEqual(done, { done: false, file, because: 'record-moved' });
+    assert.deepStrictEqual(bytesOf(file), before);
+  });
+
+  it('explicit: refuses naming no record when there is one, untouched', async () => {
+    const { file, publisher } = await stranded();
+    const before = bytesOf(file);
+    const done = publisher.reconcileBy(file, 'take-store-version', '## Two\n', '## Two\nstored\n', undefined, undefined, null);
+    assert.deepStrictEqual(done, { done: false, file, because: 'record-moved' });
+    assert.deepStrictEqual(bytesOf(file), before);
+  });
+
+  it('explicit: carries out one that names the record there, two further on', async () => {
+    const { file, publisher } = await stranded();
+    const r = revisionOnDisk(file);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', undefined, undefined, r);
+    assert.deepStrictEqual(done, { done: true, file });
+    assert.strictEqual(revisionOnDisk(file), r + 2);
+  });
+
+  it('explicit: with no record there is no publication to name one', () => {
+    const dir = scratch();
+    const file = path.join(dir, 'two-a.2.md');
+    fs.writeFileSync(file, 'no record\n', 'utf8');
+    const publisher = new Publisher(new RecordingFs(), nothingOpen());
+    for (const expected of [null, 0]) {
+      const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', undefined, undefined, expected);
+      assert.deepStrictEqual(done, { done: false, file, because: 'no-record' });
+    }
+  });
+});
+
+/*
+ * R2: THE CHECK BEFORE THE RENAME IS AGAINST OUR OWN PREPARED RECORD. (T4,
+ * T5, U2) A record that moves before the publication's entry read is refused
+ * there; one that moves after the prepared write is refused at the final
+ * check, nothing is renamed, and the newer record is not rolled back over.
+ * Between the entry read and the prepared write no other process can enter
+ * (the exclusive section spans both), so there is no row for it.
+ */
+class MovesAfterPreparedWrite extends RecordingFs {
+  private armed: string | undefined;
+  public moved = 0;
+  public arm(file: string): void {
+    this.armed = file;
+  }
+  public rename(from: string, to: string): void {
+    super.rename(from, to);
+    const armed = this.armed;
+    if (armed !== undefined && to === `${armed}.meta`) {
+      this.armed = undefined;
+      writeSidecar(nodeFileOps, armed, { ...recordOnDisk(armed), nextSeq: 99 });
+      this.moved += 1;
+    }
+  }
+}
+
+describe('queue item 43 R2 the final check is against our own prepared record', () => {
+  it('refuses at entry a record that moved before the publication read it, and stages nothing', async () => {
+    const { dir, file, publisher, files } = await publishedOnce();
+    const expected = revisionOnDisk(file);
+    assert.ok(publisher.takeSequence(file, 'R1').taken);
+    const moved = bytesOf(file);
+    files.entries.length = 0;
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected });
+    assert.deepStrictEqual(outcome, { published: false, because: 'record-moved', file });
+    assert.deepStrictEqual(files.touched('writeDurably'), [], 'something was staged for a publication refused at entry');
+    assert.deepStrictEqual(bytesOf(file), moved);
+  });
+
+  it('refuses at the final check a record that moved after the prepared write, renames nothing, and keeps the newer record', async () => {
+    const files = new MovesAfterPreparedWrite();
+    const { dir, file, publisher } = await publishedOnce(files);
+    const r = revisionOnDisk(file);
+    files.entries.length = 0;
+    files.arm(file);
+    const outcome = await publisher.publish({ ...request(dir, '## Two\nnext\n'), expected: r });
+    assert.strictEqual(files.moved, 1, 'the record was never moved after the prepared write, so the final check was not tested');
+    assert.deepStrictEqual(outcome, { published: false, because: 'record-moved', file });
+    assert.strictEqual(files.countOf('rename', file), 0, 'the file was renamed into place over a record that moved');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), '## Two\nbody\n');
+    const kept = recordOnDisk(file);
+    assert.strictEqual(kept.nextSeq, 99, 'the newer record was rolled back over');
+    assert.strictEqual(kept.revision, r + 2, 'the newer record is not the one after our prepared write');
+  });
+
+  /*
+   * AND THE EXPLICIT ROUTE (reconcileBy) GETS THE SAME FINAL CHECK. (review r1
+   * #4) It skips the byte check, not this one; its other rows refuse at entry.
+   */
+  it('explicit: refuses at the final check a record that moved after the prepared write, renames nothing, and keeps the newer record', async () => {
+    const files = new MovesAfterPreparedWrite();
+    const { file, publisher } = await publishedOnce(files);
+    fs.writeFileSync(file, 'edited without a heading\n', 'utf8');
+    const r = revisionOnDisk(file);
+    files.entries.length = 0;
+    files.arm(file);
+    const done = publisher.reconcileBy(file, 'prepend-prefix', '## Two\n', '## Two\nstored\n', undefined, undefined, r);
+    assert.strictEqual(files.moved, 1, 'the record was never moved after the prepared write, so the final check was not tested');
+    assert.deepStrictEqual(done, { done: false, file, because: 'record-moved' });
+    assert.strictEqual(files.countOf('rename', file), 0, 'the file was renamed into place over a record that moved');
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'edited without a heading\n');
+    const kept = recordOnDisk(file);
+    assert.strictEqual(kept.nextSeq, 99, 'the newer record was rolled back over');
+    assert.strictEqual(kept.revision, r + 2, 'the newer record is not the one after our prepared write');
   });
 });

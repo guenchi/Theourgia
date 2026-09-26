@@ -565,6 +565,21 @@ export function reconcileStaleNotice(file: string): Notice {
 }
 
 /*
+ * THE RECORD MOVED WHILE THE PICK WAS OPEN. (queue item 43, design v3 U7)
+ * The early refusal: the second wait found the record behind the file at
+ * another revision than the one the offer was built from, and did nothing.
+ * It names no cause -- a save is the usual one, not the only one -- and it
+ * does not say "what you picked is no longer there": the bytes may be the
+ * same ones (item 47).
+ */
+export function reconcileMovedNotice(file: string): Notice {
+  return {
+    level: 'warning',
+    text: `Nothing was done: the record behind ${file} changed while you were choosing; pick again.`
+  };
+}
+
+/*
  * THE CHOICE COULD NOT BE CARRIED OUT. `reconcileBy` answers `done:
  * false` when the record beside the file is missing or when the editor
  * holds the path the new version would take -- neither of which the
@@ -576,6 +591,19 @@ export function reconcileUnfinishedNotice(file: string, because?: string): Notic
   }
   if (because === 'not-ours') {
     return {level:'warning', text:`${file} is owned by another session. The current file was not updated. Resolve ownership before reconciling again.`};
+  }
+  /*
+   * THE LATE REFUSAL (queue item 43, design v3 U8): the record moved after the
+   * second wait's check -- a settlement landing during the working write --
+   * and `reconcileBy` refused. The working note may already have been written.
+   */
+  if (because === 'record-moved') {
+    return {
+      level: 'warning',
+      text:
+        `${file} was not replaced: its record changed while the reconciliation was being applied (the working ` +
+        'note may have been written); reconcile again.'
+    };
   }
   return {
     level: 'warning',

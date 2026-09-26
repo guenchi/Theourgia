@@ -158,13 +158,15 @@ async function main() {
            * happened.
            */
           const sessions = new p.sessions.Sessions(p.fsops.nodeFileOps, storage);
+          const directory = sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId);
           const outcome = await publisher.publish({
-            directory: sessions.directoryFor(argument.sessionId, argument.storeHash || 'st', argument.blockId),
+            directory,
             storeId: argument.storeId,
             blockId: argument.blockId,
             prefix: argument.prefix,
             text: argument.text,
-            cursor: argument.cursor ?? null
+            cursor: argument.cursor ?? null,
+            expected: publisher.revisionIn(directory)
           });
           report({ step: 'publish', outcome });
           break;

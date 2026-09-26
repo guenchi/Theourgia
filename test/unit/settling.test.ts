@@ -147,7 +147,8 @@ async function queuedBeforeWeStarted(
      * fixture should never be manufacturing by accident.
      */
     text: `## Two\n${body}`,
-    cursor: null
+    cursor: null,
+    expected: r.publisher.revisionIn(directory)
   });
   assert.ok(outcome.published, `the fixture could not publish a version: ${JSON.stringify(outcome)}`);
   const file = (outcome as { file: string }).file;
@@ -1236,7 +1237,8 @@ describe('R6 what a withdrawal leaves behind', () => {
       blockId: 'a.2',
       prefix: '## Two\n',
       text: '## Two\nX\n',
-      cursor: 'w:1'
+      cursor: 'w:1',
+      expected: r.publisher.revisionIn(directory)
     });
     assert.ok(outcome.published);
     return (outcome as { file: string }).file;

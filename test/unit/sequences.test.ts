@@ -151,8 +151,8 @@ describe('C11/S1 an older reading cannot replace a newer baseline', () => {
   it('replaces body and prefix together at the current path', async () => {
     const dir = scratch();
     const publisher = new Publisher(new RecordingFs(), nothingOpen());
-    const older = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '', text: 'no heading\n', cursor: null });
-    const newer = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '## Grown\n', text: '## Grown\nbody\n', cursor: null });
+    const older = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '', text: 'no heading\n', cursor: null, expected: null });
+    const newer = await publisher.publish({ directory: dir, storeId: 's1', blockId: 'a.2', prefix: '## Grown\n', text: '## Grown\nbody\n', cursor: null, expected: publisher.revisionIn(dir) });
     assert.ok(older.published && newer.published);
     if (older.published && newer.published) {
       assert.strictEqual(older.file, newer.file, 'the canonical path changed');
@@ -308,13 +308,16 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
    *     `digest-moved`, leaving the file alone. That is `Publisher`'s own
    *     guarantee and the cell below holds it.
    *   - a save ALREADY RECORDED: `recordWorking` moves `written` to the
-   *     saved bytes, and at the `Publisher` level a publication of an older
-   *     reading would then pass and overwrite the file. What prevents it is
-   *     order: the extension takes the reading inside `chain.run`, after
-   *     the save, so an older reading cannot arrive there. That order is
-   *     pinned as shape by awaiting.test.ts ("an open takes its reading on
-   *     the save chain", queue item 24); queue item 43 is the design that
-   *     would make `Publisher` refuse it on its own.
+   *     saved bytes and the record's revision on. A publication names the
+   *     revision it read beside its reading (queue item 43), so one of an
+   *     older reading names a record that is no longer there and `Publisher`
+   *     refuses it `record-moved` on its own (publication.test.ts, R1). The
+   *     order that keeps an older reading from arriving at all -- the
+   *     extension takes the reading inside `chain.run`, after the save -- is
+   *     still pinned as shape by awaiting.test.ts ("an open takes its reading
+   *     on the save chain", queue item 24). The same race on the reconcile's
+   *     path, where the bytes come back and the record does not, is R5
+   *     (extension-schedules.js, `midpick-aba`).
    *
    * AND THE FIRST HALF HAS A WINDOW OF ITS OWN. (queue item 25) The check
    * before preparation reads the file once; a save can land after it,
@@ -334,11 +337,11 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
       prefix: '## Two\n',
       cursor: null
     };
-    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n' });
+    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n', expected: null });
     assert.ok(first.published, `the first reading was not published, so there is nothing to save over: ${JSON.stringify(first)}`);
     const saved = '## Two\nwhat the user saved\n';
     fs.writeFileSync(first.file, saved, 'utf8');
-    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n' });
+    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n', expected: publisher.revisionIn(dir) });
     assert.deepStrictEqual(
       late.published ? 'published' : late.because,
       'digest-moved',
@@ -358,11 +361,11 @@ describe('C11/S4 a reading that began before a save cannot overwrite it', () => 
       prefix: '## Two\n',
       cursor: null
     };
-    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n' });
+    const first = await publisher.publish({ ...reading, text: '## Two\nwhat the store had\n', expected: null });
     assert.ok(first.published, `the first reading was not published, so there is nothing to save over: ${JSON.stringify(first)}`);
     const saved = '## Two\nwhat the user saved\n';
     files.arm(first.file, saved);
-    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n' });
+    const late = await publisher.publish({ ...reading, text: '## Two\nthe older reading\n', expected: publisher.revisionIn(dir) });
     assert.strictEqual(files.landed, 1, 'the save never landed between the preparation and the rename, so nothing was tested');
     assert.deepStrictEqual(
       late.published ? 'published' : late.because,

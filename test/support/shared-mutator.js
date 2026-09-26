@@ -10,13 +10,19 @@ const [directory,operation,hold]=process.argv.slice(2);
 const file=operation.includes('Legacy')?path.join(directory,'1.md')
   :(new Publisher(nodeFileOps,{isOpen:()=>false}).latestIn(directory)||path.join(directory,'a.1.md'));
 const initial=new Publisher(nodeFileOps,{isOpen:()=>false}).sidecarOf(file);
+// The revision a caller names (queue item 43), read here before the instrumented FileOps
+// exist, so that the operation's own first read is still the one the cell holds.
+const expected=initial?initial.revision:null;
 const owner=new Owners().ownerOf(directory);
 const report=value=>fs.writeSync(1,JSON.stringify(value)+'\n');
-let reads=0,writes=0;
+let reads=0,writes=0,metaHeld=false;
 const files={...nodeFileOps};
+// `hold-meta` (queue item 43, review r2 #3): hold instead at the first read of a record
+// (a `.meta` file), after it has been read.
 for(const name of ['readText','readBytes','list','readDirectory'])files[name]=(...args)=>{
   const result=nodeFileOps[name](...args);reads++;
   if(reads===1&&hold==='hold'){report({kind:'read'});fs.readSync(0,Buffer.alloc(1),0,1,null);}
+  if(hold==='hold-meta'&&!metaHeld&&name==='readText'&&String(args[0]).endsWith('.meta')){metaHeld=true;report({kind:'read'});fs.readSync(0,Buffer.alloc(1),0,1,null);}
   return result;
 };
 for(const name of ['writeDurably','writeText','rename','unlink','link'])files[name]=(...args)=>{writes++;return nodeFileOps[name](...args);};
@@ -25,11 +31,12 @@ try {
  const saving=new Saving(files,{owners,sessionId:'A'}),digest=digestOfBytes('body');
  const source={id:'next-origin',kind:'working',writer:'window-a',version:'next-version',basedOn:'H0',cut:'()'};
  const calls={
-  publishNow:()=>publisher.publishNow({directory,storeId:'store',blockId:'a.1',prefix:'',text:'next',cursor:null}),
+  publishNow:()=>publisher.publishNow({directory,storeId:'store',blockId:'a.1',prefix:'',text:'next',cursor:null,expected}),
   recoverCurrent:()=>publisher.recoverCurrent(file),
   reconcile:()=>publisher.reconcile(file,'','body'),
-  reconcileBy:()=>publisher.reconcileBy(file,'take-store-version','','next','body'),
-  recordWorking:()=>publisher.recordWorking(file,source,digest,initial.projection.id),
+  reconcileLeaving:()=>publisher.reconcileLeaving(file,'# Other\n','body'),
+  reconcileBy:()=>publisher.reconcileBy(file,'take-store-version','','next','body',undefined,expected),
+  recordWorking:()=>publisher.recordWorking(file,source,digest,initial.projection.id,expected),
   takeSequence:()=>publisher.takeSequence(file,'R2'),
   markLegacySend:()=>publisher.markLegacySend(directory),
   clearLegacySend:()=>publisher.clearLegacySend(file),

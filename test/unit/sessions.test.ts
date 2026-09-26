@@ -555,7 +555,8 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
       blockId: 'a.2',
       prefix: '## Two\n',
       text: '## Two\nfrom the store\n',
-      cursor: null
+      cursor: null,
+      expected: null
     });
     assert.ok(published.published);
     /*
@@ -591,7 +592,8 @@ describe('C6 and C12 what is a draft, decided without the queue', () => {
       blockId: 'a.2',
       prefix: '',
       text: 'no heading at all\n',
-      cursor: null
+      cursor: null,
+      expected: publisher.revisionIn(directory)
     });
     assert.ok(published.published);
     if (published.published) {

@@ -59,7 +59,7 @@ describe('XU real cleanup observations',()=>{
     it(`XU-08/09 block replacement reaches actual failed rename and ${change} probe`,async()=>{
       assert.notStrictEqual(process.getuid?.(),0,'The permission device requires an ordinary user');
       const root=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-block-cleanup-')),directory=path.join(root,'block');
-      const request={directory,storeId:'A',blockId:'a.1',prefix:'',text:'old whole body',cursor:null};
+      const request={directory,storeId:'A',blockId:'a.1',prefix:'',text:'old whole body',cursor:null,expected:null};
       const initial=new Publisher(nodeFileOps,{isOpen:()=>false});await initial.publish(request);
       // An empty prefix in block `a.1` is published as `a.1.md` (queue item 5).
       const current=path.join(directory,'a.1.md');let parent='',temporary='',original:unknown,removed:unknown;
@@ -75,7 +75,7 @@ describe('XU real cleanup observations',()=>{
         presenceOf(file){const found=nodeFileOps.presenceOf(file);probes.push(found);return found;}
       };
       let failure:NodeJS.ErrnoException|undefined;
-      try{await new Publisher(files,{isOpen:()=>false}).publish({...request,text:'new whole body'});}catch(e){failure=e as NodeJS.ErrnoException;}
+      try{await new Publisher(files,{isOpen:()=>false}).publish({...request,text:'new whole body',expected:initial.revisionIn(directory)});}catch(e){failure=e as NodeJS.ErrnoException;}
       finally{if(parent)fs.chmodSync(parent,0o755);}
       assert.ok(failure,'actual replacement failed');
       assert.strictEqual((original as NodeJS.ErrnoException).code,'EACCES','actual body rename');

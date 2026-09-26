@@ -67,6 +67,7 @@ import {
   nodeTooltip,
   notABlockNotice,
   reconcileChoiceNotice,
+  reconcileMovedNotice,
   reconcileStaleNotice,
   reconcileUnfinishedNotice,
   reconciledNotice,
@@ -863,9 +864,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * for this block waits rather than interleaving. (section 12.11.1)
      */
     const outcome = await chain.run(directory, async () => {
+      /*
+       * THE RECORD THIS OPEN WILL REPLACE, READ BEFORE THE READING. (queue
+       * item 43) A save of this block lands on this chain after the open, but
+       * a settlement or another window's write does not wait for it; the
+       * publication names this revision and is refused `record-moved` if the
+       * record moved while the working copy was read.
+       */
+      const expected = publisher.revisionIn(directory);
       const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,document.prefix);
       return publisher.publish({directory,storeId:store,blockId:id,prefix:projection.prefix,
-        text:projection.prefix+projection.body,cursor:null,projection:projection.source});
+        text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
     });
 
     if (!outcome.published) {
@@ -983,21 +992,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * interleave with it. (section 12.11.1)
      */
     const outcome = await chain.run(directory, async () => {
-      const result=publisher.reconcile(file,document.prefix,document.text);
+      const leaving=publisher.reconcileLeaving(file,document.prefix,document.text);
+      const result=leaving.answer;
+      /*
+       * THE RECORD THE OFFER IS BUILT FROM: its revision and its projection,
+       * taken in the first wait (queue item 43, T10/T11). The read at the top
+       * of this function stays for routing only. They come back WITH the
+       * answer, read inside the same exclusive section after any write the
+       * automatic route made (review r1 #1): a read after that section could
+       * see a record another process wrote after the offer was built. The
+       * second wait checks the revision before anything else and writes the
+       * working note against this projection, never a re-read one.
+       */
+      const heldRecord = leaving.record;
+      const held = heldRecord?.revision ?? null;
+      const heldProjection = heldRecord?.projection;
       if (result.reconciled) {
-        const held=publisher.sidecarOf(file),text=files.readText(file);
-        if (held?.projection) {
+        const text=files.readText(file);
+        if (heldRecord?.projection) {
           try {
             const note=await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
-              .write(held.blockId,text.slice(held.prefix.length),held.prefix,false,held.projection);
-            if (!publisher.recordWorking(file,note.source,digestOfBytes(text),held.projection.id)) throw new Error('Projection changed');
+              .write(heldRecord.blockId,text.slice(heldRecord.prefix.length),heldRecord.prefix,false,heldRecord.projection);
+            if (!publisher.recordWorking(file,note.source,digestOfBytes(text),heldRecord.projection.id,held)) throw new Error('Projection changed');
           } catch (error) {
             reportFailure(error);
-            return {reconciled:false as const,because:'working-unavailable' as const,choices:[],storeText:document.text,previousText:null,fileText:text};
+            return {reconciled:false as const,because:'working-unavailable' as const,choices:[],storeText:document.text,previousText:null,fileText:text,held,heldProjection};
           }
         }
       }
-      return result;
+      return {...result,held,heldProjection};
     });
     if (outcome.reconciled) {
       const notice = reconciledNotice(sidecar.blockId, path.basename(file));
@@ -1050,20 +1073,32 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * error and nothing is undone -- the offer is simply stale, and the
      * user is told to look again.
      */
-    const done = await chain.run(directory, async () => {
-      const refused=publisher.reconciliationGuard(file,outcome.fileText);
-      if (refused) return {done:false,file,because:refused};
+    const done: {done:boolean;file:string;because?:string;early?:true} = await chain.run(directory, async () => {
+      const refused=publisher.reconciliationGuard(file,outcome.fileText,outcome.held);
+      if (refused) return {done:false,file,because:refused,early:true as const};
       let projection;
-      if (sidecar.projection) {
+      if (outcome.heldProjection) {
         const text=picked.action==='take-store-version'?document.text:
           outcome.fileText.startsWith(document.prefix)?outcome.fileText:document.prefix+outcome.fileText;
         try {
           projection=(await new Working(reconciling,`window-${sessionId.toLowerCase()}`)
-            .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',sidecar.projection)).source;
+            .write(sidecar.blockId,text.slice(document.prefix.length),document.prefix,picked.action==='take-store-version',outcome.heldProjection)).source;
         } catch (error) {reportFailure(error);return {done:false,file,because:'working-unavailable'};}
       }
-      return publisher.reconcileBy(file,picked.action,document.prefix,document.text,outcome.fileText,projection);
+      return publisher.reconcileBy(file,picked.action,document.prefix,document.text,outcome.fileText,projection,outcome.held);
     });
+    /*
+     * THE RECORD MOVED WHILE THE PICK WAS OPEN (queue item 43): refused by the
+     * second wait's first check, before anything was written. A refusal with
+     * the same reason from `reconcileBy` (late) goes on to the unfinished
+     * notice below, whose sentence says the note may have been written.
+     */
+    if (!done.done && done.because === 'record-moved' && done.early === true) {
+      const notice = reconcileMovedNotice(file);
+      show(notice);
+      paint();
+      return notice;
+    }
     if (!done.done && done.because === 'file-changed') {
       const notice = reconcileStaleNotice(file);
       show(notice);
@@ -1257,7 +1292,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         try {
           const working = await new Working(writing,`window-${sessionId.toLowerCase()}`)
             .write(capturedSidecar.blockId,decision.src,capturedSidecar.prefix,false,source);
-          if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id)) {
+          if (!publisher.recordWorking(file,working.source,decision.rawDigest,source.id,capturedSidecar.revision)) {
             throw new Error('The file or its projection changed while the working note was being saved');
           }
           currentSidecar = publisher.sidecarOf(file);

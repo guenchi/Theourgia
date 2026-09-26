@@ -15,6 +15,11 @@ const corePath = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-extension-sche
 fs.writeFileSync(path.join(corePath, require(path.join(out, 'config.js')).WITNESS_SOURCE), ';; stand-in\n', 'utf8');
 const settings = {store:'/stores/A',corePath,scheme:'scheme',actor:'probe',libDirs:[],timeoutMs:1000};
 let provider, configChanged, savedHandler, core, pickGate = null, requestGate = null, failWrite=false;
+// Queue item 43 (ruling Q6): a gate per verb, each held by its own scenario step,
+// optionally only for the request `match` accepts; releasing one with an answer
+// replaces the stand-in's own answer to that request. And `afterRead`, which holds
+// a Working.read after its reading is obtained and before it is returned.
+const verbGates = {};let afterRead = null;
 // NEVER: `channels` ALONE CANNOT SAY WHICH MESSAGE WAS WHICH. A scenario that
 // shows several notices satisfies "an error was raised" with an unrelated one:
 // measured in a twelfth review round, the earlier setup saves in the save
@@ -56,9 +61,13 @@ const accepting=require(path.join(out,'accepting.js')), accept=accepting.acceptS
 const acceptances=[], numbering=[];
 accepting.acceptSave=parts=>{const result=accept(parts);acceptances.push(result);return result;};
 const {Client}=require(path.join(out,'client.js'));
+const {Working}=require(path.join(out,'working.js')),workingRead=Working.prototype.read;
+Working.prototype.read=async function(...args){const reading=await workingRead.apply(this,args);if(afterRead){const held=afterRead;afterRead=null;held.enter();await held.promise;}return reading;};
 Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  requests.push({store:cfg.store,verb,args});
  if(requestGate && verb===requestGate.verb && (!requestGate.working || args.includes('--working-info'))){const held=requestGate;requestGate=null;held.enter();await held.promise;}
+ const byVerb=verbGates[verb];
+ if(byVerb&&(!byVerb.match||byVerb.match(args))){delete verbGates[verb];byVerb.enter();const replaced=await byVerb.promise;if(replaced)return {argv:[verb,...args],...replaced};}
  const title=cfg.store.endsWith('A')?'Alpha':'Beta';
  const writerAt=args.indexOf('--writer'),writer=writerAt<0?'default':args[writerAt+1],key=cfg.store+'|'+writer+'|'+args[0];
  if(verb==='write'){
@@ -91,6 +100,37 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
 function files(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir).flatMap(n=>{const p=path.join(dir,n);return fs.statSync(p).isDirectory()?files(p):[p];});}
 function tree(dir){return Object.fromEntries(files(dir).map(p=>[path.relative(dir,p),fs.readFileSync(p).toString('hex')]));}
 function change(store){settings.store=store;configChanged({affectsConfiguration:()=>true});}
+// Queue item 43. What a record is, read from the file beside it (revision included),
+// for comparing before and after.
+function recordOf(file){const r=core.publisher.sidecarOf(file);return r===null?null:{revision:r.revision,phase:r.phase,written:r.written,nextSeq:r.nextSeq,highWater:r.highWater,outstanding:r.outstanding,projection:r.projection?{kind:r.projection.kind,id:r.projection.id,writer:r.projection.writer,version:r.projection.version,basedOn:r.projection.basedOn}:null};}
+// Queue item 43 (design v4 V2): the outcome observed as a structure, not as a
+// sentence. The extension's own Publisher is wrapped where it is exposed; each
+// guard, reconciliation and publication records the stage it refused at and why
+// (null when it went through).
+function traced(){
+ const trace=[],p=core.publisher,guard=p.reconciliationGuard.bind(p),by=p.reconcileBy.bind(p),publish=p.publish.bind(p);
+ p.reconciliationGuard=(...args)=>{const because=guard(...args);trace.push({stage:'early',because});return because;};
+ p.reconcileBy=(...args)=>{const done=by(...args);trace.push({stage:'late',because:done.done?null:done.because});return done;};
+ p.publish=async(...args)=>{const outcome=await publish(...args);trace.push({stage:'publish',because:outcome.published?null:outcome.because});return outcome;};
+ return trace;
+}
+// Queue item 43 (ruling Q6): a second Publisher of the SAME window -- the extension's
+// session, a fresh Owners -- records a working write on the file, moving its record
+// as a write this window makes outside the block chain would. With `text`, the file
+// is given those bytes first. Answers the revision the write left.
+function secondWrite(file,text){
+ const {Publisher,digestOfBytes}=require(path.join(out,'publication.js')),{Owners}=require(path.join(out,'ownership.js')),{nodeFileOps}=require(path.join(out,'fsops.js'));
+ const sessionId=path.relative(storage,file).split(path.sep)[1];
+ const second=new Publisher(nodeFileOps,{isOpen:()=>false},{owners:new Owners(),sessionId});
+ const held=second.sidecarOf(file);
+ if(text!==undefined)fs.writeFileSync(file,text);
+ const source={id:'second-origin',kind:'working',writer:'window-'+sessionId.toLowerCase(),version:'v-second',basedOn:'base',cut:'()'};
+ if(!second.recordWorking(file,source,digestOfBytes(fs.readFileSync(file)),held.projection.id,held.revision))throw Error('The second publisher did not record its working write');
+ return second.sidecarOf(file).revision;
+}
+function within(promise,ms){let timer;return Promise.race([promise.then(()=>true),new Promise(r=>{timer=setTimeout(()=>r(false),ms);})]).finally(()=>clearTimeout(timer));}
+// A commit the store answers ok (the form notice-behind uses), for R8 and the save's twin.
+const COMMIT_OK={rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (behind (("w" . 1))))\n',stderr:''};
 async function main(){
  const scenario=process.argv[3];
  // Queue item 33, C7: the integrity scenarios count unhandled rejections in this
@@ -155,6 +195,204 @@ async function main(){
   docs.push({uri:{fsPath:file},isDirty:scenario==='open-late-dirty',getText:()=> 'unsaved buffer'});
   wait.release();await opening;
   return {file,before,after:[file,file+'.meta'].map(p=>fs.readFileSync(p,'hex')),messages,channels,shown};
+ }
+ // Queue item 43, R3 (T7): the record moves while an open's reading is being taken.
+ // The second open is held after Working.read has its reading and before it
+ // publishes; meanwhile a second Publisher of the same window writes the file and
+ // records it. The open must be refused `record-moved` and leave that write alone.
+ if(scenario==='open-moved'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const before=recordOf(a);
+  const held=gate();afterRead=held;
+  const opening=commands.get('theourgia.openBlock')('a.1');
+  const entered=await within(held.entered,5000);
+  const moved=entered?secondWrite(a,'# Alpha\nthe second write\n'):null;
+  trace.length=0;shown.length=0;
+  held.release();await opening;
+  return {entered,before,moved,after:recordOf(a),file:fs.readFileSync(a,'utf8'),trace,shown:shown.slice()};
+ }
+ // Queue item 43, R4/R5 (item 47's measurement, restored as cells): a save lands
+ // between reconcileBlock's two chain waits, while the pick is open. midpick-save
+ // saves new text; midpick-aba saves new text and then puts the offered bytes back
+ // without saving, so the bytes the second wait compares are the offered ones while
+ // the record has moved.
+ if(scenario==='midpick-save'||scenario==='midpick-aba'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  fs.writeFileSync(a,'offered text\n');
+  const beforePick=recordOf(a);
+  pickGate=gate();const pending=commands.get('theourgia.reconcileBlock')(a);const choices=await pickGate.entered;
+  const saved='# Alpha\nsaved while the pick was open\n';fs.writeFileSync(a,saved);
+  await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>saved});
+  const afterSave=recordOf(a);
+  if(scenario==='midpick-aba')fs.writeFileSync(a,'offered text\n');
+  trace.length=0;shown.length=0;
+  pickGate.release(choices[0]);const notice=await pending;
+  const queueA=core.outboxPath('/stores/A');
+  const queue=fs.existsSync(queueA)?JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>({req:e.req,state:e.state,expectation:e.record&&e.record.intent&&e.record.intent.expectation})):[];
+  return {choice:choices[0]&&choices[0].action,notice,beforePick,afterSave,afterReconcile:recordOf(a),file:fs.readFileSync(a,'utf8'),queue,writes:requests.filter(r=>r.verb==='write').length,trace,shown:shown.slice()};
+ }
+ // Queue item 43, R6 (T9): a save lands after reconcileBlock's routing read and
+ // before its first wait, and the offered bytes -- without the heading, so the
+ // offer's route is taken -- are put back. The offer is built in the first wait
+ // from the record the save left, and the second wait applies it: its one working
+ // write names the save's working version as its parent.
+ if(scenario==='midpick-prechain-save'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  fs.writeFileSync(a,'offered text\n');
+  const beforePick=recordOf(a);
+  const run=core.chain.run.bind(core.chain);let landed=null;
+  core.chain.run=async(dir,work)=>{
+   if(path.resolve(dir)===path.resolve(path.dirname(a))){
+    core.chain.run=run;
+    const saved='# Alpha\nsaved before the first wait\n';fs.writeFileSync(a,saved);
+    await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>saved});
+    landed=recordOf(a);
+    fs.writeFileSync(a,'offered text\n');
+   }
+   return run(dir,work);
+  };
+  pickGate=gate();const pending=commands.get('theourgia.reconcileBlock')(a);const choices=await pickGate.entered;
+  const atPick=requests.filter(r=>r.verb==='write').length;
+  trace.length=0;shown.length=0;
+  pickGate.release(choices[0]);const notice=await pending;
+  return {choice:choices[0]&&choices[0].action,notice,beforePick,landed,after:recordOf(a),file:fs.readFileSync(a,'utf8'),reconcileWrites:requests.filter(r=>r.verb==='write').slice(atPick).map(r=>r.args),trace,shown:shown.slice()};
+ }
+ // Queue item 43, R6b (U3, V2): the record moves after the second wait's guard has
+ // validated it and before the working note is written. A wrapper around the guard
+ // has a second Publisher of the same window record a working write the moment the
+ // guard answers "go on". The note must still be written against the offer's
+ // projection, and the reconciliation refused `record-moved`, late.
+ if(scenario==='midpick-afterguard'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const saved='# Alpha\nsaved first\n';fs.writeFileSync(a,saved);
+  await savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>saved});
+  fs.writeFileSync(a,'offered text\n');
+  const beforePick=recordOf(a);
+  pickGate=gate();const pending=commands.get('theourgia.reconcileBlock')(a);const choices=await pickGate.entered;
+  const guard=core.publisher.reconciliationGuard;let second=null;
+  core.publisher.reconciliationGuard=(...args)=>{const because=guard(...args);if(because===null&&second===null)second=secondWrite(a);return because;};
+  const atPick=requests.filter(r=>r.verb==='write').length;
+  trace.length=0;shown.length=0;
+  pickGate.release(choices[0]);const notice=await pending;
+  return {choice:choices[0]&&choices[0].action,notice,beforePick,second,after:recordOf(a),file:fs.readFileSync(a,'utf8'),reconcileWrites:requests.filter(r=>r.verb==='write').slice(atPick).map(r=>r.args),trace,shown:shown.slice()};
+ }
+ // Queue item 43, R8 (U6, V1) and its twin on the save path (ruling Q2): a
+ // settlement written by this window's own drain, which does not wait on the block
+ // chain, lands while a working write is in flight. Two saves leave two requests
+ // pending; the first was sent for the first save's origin, which the second save
+ // replaced, so the store's `ok` for it retires its number (saving.ts, the older-
+ // origin write). Its commit is held until the working write has entered its own
+ // gate; the record must have moved before that write is let go.
+ if(scenario==='midpick-settlement'||scenario==='working-save-settlement'){
+  const trace=traced();
+  async function save(file,body){fs.writeFileSync(file,body);await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>body});}
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  await save(a,'# Alpha\nfirst save\n');
+  await save(a,'# Alpha\nsecond save\n');
+  const queueA=core.outboxPath('/stores/A'),pendingBefore=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>({req:e.req,state:e.state}));
+  const first=pendingBefore[0]&&pendingBefore[0].req;
+  let pending=null,choices=null;
+  if(scenario==='midpick-settlement'){
+   fs.writeFileSync(a,'offered text\n');
+   pickGate=gate();pending=commands.get('theourgia.reconcileBlock')(a);choices=await pickGate.entered;
+  }
+  const held=recordOf(a);
+  const commitGate=Object.assign(gate(),{match:args=>args.includes(first)});verbGates.commit=commitGate;
+  const retrying=commands.get('theourgia.retryOutbox')();
+  const commitEntered=await within(commitGate.entered,5000);
+  const writeGate=gate();verbGates.write=writeGate;
+  trace.length=0;shown.length=0;messages.length=0;
+  const third='# Alpha\nthird save\n';
+  if(scenario==='midpick-settlement')pickGate.release(choices[0]);
+  else{fs.writeFileSync(a,third);pending=savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>third});}
+  const writeEntered=await within(writeGate.entered,5000);
+  commitGate.release(COMMIT_OK);
+  let advanced=false;
+  for(let i=0;i<300&&!advanced;i++){await new Promise(r=>setTimeout(r,10));advanced=recordOf(a).revision>held.revision;}
+  const atRelease=recordOf(a);
+  writeGate.release();
+  const notice=await pending;await retrying;
+  const queueAfter=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>({req:e.req,state:e.state}));
+  return {commitEntered,writeEntered,advanced,pendingBefore,held,atRelease,after:recordOf(a),file:fs.readFileSync(a,'utf8'),queueAfter,notice,trace,shown:shown.slice(),messages:messages.slice()};
+ }
+ // Queue item 43, review r1 #1: a record written by another process after the first
+ // wait's reconcile has left its exclusive section, and before anything else in that
+ // wait. The Publisher's reconcileLeaving is wrapped so that, the moment it returns,
+ // a second Publisher records a working write (the bytes unchanged). The offer was
+ // built from the record before that write, so the second wait must refuse early.
+ if(scenario==='midpick-afterreconcile'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  fs.writeFileSync(a,'offered text\n');
+  const beforePick=recordOf(a);
+  const leaving=core.publisher.reconcileLeaving.bind(core.publisher);let second=null;
+  core.publisher.reconcileLeaving=(...args)=>{const answer=leaving(...args);if(second===null)second=secondWrite(a);return answer;};
+  pickGate=gate();const pending=commands.get('theourgia.reconcileBlock')(a);const choices=await pickGate.entered;
+  trace.length=0;shown.length=0;
+  pickGate.release(choices[0]);const notice=await pending;
+  return {choice:choices[0]&&choices[0].action,notice,beforePick,second,after:recordOf(a),file:fs.readFileSync(a,'utf8'),writes:requests.filter(r=>r.verb==='write').length,trace,shown:shown.slice()};
+ }
+ // Queue item 43, review r1 #5 and #6: a chain callback queued AHEAD of an open or a
+ // save moves the record (takeSequence) before the open's or the save's own wait
+ // starts. What they name must be read inside their wait, so the open publishes and
+ // the save is recorded; a revision read before the wait would be refused.
+ if(scenario==='open-queued'||scenario==='queued-save'){
+  const trace=traced();
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  const blocker=gate();
+  const ahead=core.chain.run(path.dirname(a),async()=>{blocker.enter();await blocker.promise;core.publisher.takeSequence(a,'queued-ahead');});
+  await blocker.entered;
+  const queued=gate(),run=core.chain.run.bind(core.chain);
+  core.chain.run=(dir,work)=>{core.chain.run=run;queued.enter();return run(dir,work);};
+  const body='# Alpha\nsaved behind a queued move\n';
+  if(scenario==='queued-save')fs.writeFileSync(a,body);
+  const before=recordOf(a);
+  trace.length=0;shown.length=0;messages.length=0;
+  const pending=scenario==='open-queued'?commands.get('theourgia.openBlock')('a.1'):savedHandler({uri:{fsPath:a},isDirty:false,getText:()=>body});
+  const entered=await within(queued.entered,5000);
+  blocker.release();await ahead;await pending;
+  return {entered,before,after:recordOf(a),trace,shown:shown.slice(),messages:messages.slice()};
+ }
+ // Queue item 43, review r3 S1: the same settlement as R8, on the AUTOMATIC route. The file
+ // already carries the heading, so the first wait reconciles it itself (a record write),
+ // then writes the working note and records it against the revision reconcileLeaving
+ // returned. An older-origin commit, held until that note's write has entered its gate,
+ // settles in between; the note must not be recorded over the settlement's record.
+ if(scenario==='autoreconcile-settlement'){
+  const trace=traced();
+  async function save(file,body){fs.writeFileSync(file,body);await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>body});}
+  await commands.get('theourgia.openBlock')('a.1');
+  const a=files(storage).find(p=>p.endsWith('.md'));
+  await save(a,'# Alpha\nfirst save\n');
+  await save(a,'# Alpha\nsecond save\n');
+  const queueA=core.outboxPath('/stores/A'),pendingBefore=JSON.parse(fs.readFileSync(queueA,'utf8')).entries.map(e=>({req:e.req,state:e.state}));
+  const first=pendingBefore[0]&&pendingBefore[0].req;
+  const leaving=core.publisher.reconcileLeaving.bind(core.publisher);let left=null;
+  core.publisher.reconcileLeaving=(...args)=>{const answer=leaving(...args);if(left===null)left=recordOf(a);return answer;};
+  const commitGate=Object.assign(gate(),{match:args=>args.includes(first)});verbGates.commit=commitGate;
+  const retrying=commands.get('theourgia.retryOutbox')();
+  const commitEntered=await within(commitGate.entered,5000);
+  const writeGate=gate();verbGates.write=writeGate;
+  trace.length=0;shown.length=0;messages.length=0;
+  const pending=commands.get('theourgia.reconcileBlock')(a);
+  const writeEntered=await within(writeGate.entered,5000);
+  commitGate.release(COMMIT_OK);
+  let advanced=false;
+  for(let i=0;i<300&&!advanced;i++){await new Promise(r=>setTimeout(r,10));advanced=left!==null&&recordOf(a).revision>left.revision;}
+  writeGate.release();
+  const notice=await pending;await retrying;
+  return {commitEntered,writeEntered,advanced,pendingBefore,left,after:recordOf(a),file:fs.readFileSync(a,'utf8'),notice,trace,shown:shown.slice(),messages:messages.slice()};
  }
  if(scenario.startsWith('reconcile')){
   await commands.get('theourgia.openBlock')('a.1');

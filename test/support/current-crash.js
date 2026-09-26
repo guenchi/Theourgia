@@ -16,7 +16,7 @@ for(const op of ['writeDurably','rename','syncDirectory','unlink'])files[op]=(..
 async function main(){
  const publisher=new Publisher(files,{isOpen:()=>false,isDirty:()=>false});
  let answer;
- if(mode==='replace')answer=await publisher.publish({directory,storeId:'store',blockId:'a.1',prefix:'# A\n',text:body,cursor:null});
+ if(mode==='replace')answer=await publisher.publish({directory,storeId:'store',blockId:'a.1',prefix:'# A\n',text:body,cursor:null,expected:publisher.revisionIn(directory)});
  else answer=publisher.recoverCurrent(file);
  const sidecar=publisher.sidecarOf(file),bytes=fs.existsSync(file)?fs.readFileSync(file,'utf8'):null;
  const decision=new Saving(files).decide({file,isDirty:false,getText:()=>bytes},sidecar);

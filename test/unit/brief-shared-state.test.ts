@@ -31,7 +31,7 @@ describe('XL actual shared sidecar, process identity and takeover boundaries',fu
   it('XL-08 a stopped writer blocks handoff; death releases the same lock inode',async()=>{
     const storage=scratch(),directory=path.join(storage,'sessions','S','store','a.1');
     const publisher=new Publisher(nodeFileOps,{isOpen:()=>false},{owners:new Owners(),sessionId:'A'});
-    const first=await publisher.publish({directory,storeId:'store',blockId:'a.1',prefix:'',text:'body',cursor:null});assert.ok(first.published);
+    const first=await publisher.publish({directory,storeId:'store',blockId:'a.1',prefix:'',text:'body',cursor:null,expected:null});assert.ok(first.published);
     const a=held(directory,'sequence','A','hold');
     try {
       assert.strictEqual((await a.next()).kind,'held');

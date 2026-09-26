@@ -86,11 +86,11 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
     assert.strictEqual(projectionNameFor('Two Sections', 'a.2'), 'two-sections-a.2.md');
     assert.strictEqual(projectionNameFor('!!!', 'a.2'), 'a.2.md');
     const named = block();
-    const first = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish(request(named, '## Two Sections\n'));
+    const first = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({ ...request(named, '## Two Sections\n'), expected: null });
     assert.ok(first.published, JSON.stringify(first));
     assert.strictEqual(path.basename(first.file), 'two-sections-a.2.md');
     const untitled = block();
-    const bare = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish(request(untitled, ''));
+    const bare = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({ ...request(untitled, ''), expected: null });
     assert.ok(bare.published, JSON.stringify(bare));
     assert.strictEqual(path.basename(bare.file), 'a.2.md');
   });
@@ -102,9 +102,9 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
   it('keeps the first name when the title changes', async () => {
     const directory = block();
     const publisher = new Publisher(new RecordingFs(), { isOpen: () => false });
-    const first = await publisher.publish(request(directory, '## First Title\n'));
+    const first = await publisher.publish({ ...request(directory, '## First Title\n'), expected: publisher.revisionIn(directory) });
     assert.ok(first.published);
-    const second = await publisher.publish(request(directory, '## A Different Title\n'));
+    const second = await publisher.publish({ ...request(directory, '## A Different Title\n'), expected: publisher.revisionIn(directory) });
     assert.ok(second.published, JSON.stringify(second));
     assert.strictEqual(second.file, first.file, 'the file was renamed after its title changed');
     assert.deepStrictEqual(fs.readdirSync(directory).sort(), ['first-title-a.2.md', 'first-title-a.2.md.meta']);
@@ -120,13 +120,13 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
     const directory = block();
     const publisher = new Publisher(new RecordingFs(), { isOpen: () => false });
     const scratchDir = block();
-    const seeded = await publisher.publish(request(scratchDir, '## Two\n', 'old body\n'));
+    const seeded = await publisher.publish({ ...request(scratchDir, '## Two\n', 'old body\n'), expected: publisher.revisionIn(scratchDir) });
     assert.ok(seeded.published);
     const current = path.join(directory, 'current.md');
     fs.copyFileSync(seeded.file, current);
     fs.copyFileSync(`${seeded.file}.meta`, `${current}.meta`);
     assert.strictEqual(publisher.latestIn(directory), current, 'the old name is not found as the projection');
-    const updated = await publisher.publish(request(directory, '## Two\n', 'new body\n'));
+    const updated = await publisher.publish({ ...request(directory, '## Two\n', 'new body\n'), expected: publisher.revisionIn(directory) });
     assert.ok(updated.published, JSON.stringify(updated));
     assert.strictEqual(updated.file, current, 'the old projection was not the one updated');
     assert.strictEqual(fs.readFileSync(current, 'utf8'), '## Two\nnew body\n');
@@ -156,7 +156,7 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
       });
     }
     assert.deepStrictEqual(projectionFileIn(nodeFileOps, directory), { found: 'unknown', names: ['one-a.2.md', 'two-a.2.md'] });
-    const refused = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish(request(directory, '## Two\n'));
+    const refused = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({ ...request(directory, '## Two\n'), expected: null });
     assert.deepStrictEqual(refused, { published: false, because: 'unknown-file', file: null, seen: ['one-a.2.md', 'two-a.2.md'] });
   });
 
@@ -164,7 +164,7 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
     const directory = block();
     const stranger = path.join(directory, 'notes.md');
     fs.writeFileSync(stranger, 'somebody else\n', 'utf8');
-    const refused = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish(request(directory, '## Two\n'));
+    const refused = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({ ...request(directory, '## Two\n'), expected: null });
     assert.deepStrictEqual(refused, { published: false, because: 'unknown-file', file: null, seen: ['notes.md'] });
     assert.deepStrictEqual(fs.readdirSync(directory), ['notes.md']);
   });
@@ -177,7 +177,7 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
   it('stages a titled projection and its sidecar outside the block directory', async () => {
     const directory = block();
     const files = new RecordingFs();
-    const published = await new Publisher(files, { isOpen: () => false }).publish(request(directory, '## Two\n'));
+    const published = await new Publisher(files, { isOpen: () => false }).publish({ ...request(directory, '## Two\n'), expected: null });
     assert.ok(published.published);
     const staged = files.touched('writeDurably');
     assert.ok(staged.length > 0, 'nothing was written durably, so this cell saw no staging');
