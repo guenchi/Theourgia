@@ -70,7 +70,11 @@
 ;;; write and flush vanished, the rename went ahead, and the whole
 ;;; replacement returned success. The shape that satisfies both is to
 ;;; act on the way THROUGH and clear a flag, leaving the unwind to act
-;;; only when the flag says the way through did not happen.
+;;; only when the flag says the way through did not happen. F100a applies
+;;; it to every close of a descriptor that was never written (read-closing:
+;;; read-entry, read-entry-range, list-entries, file-size, fsync-dir!) and
+;;; to the lock's release (call-with-lock): checked on the way through,
+;;; quiet in the unwind.
 
 ;;; ERRORS USE igropyr's durable-error VECTOR, TAG AND ARITY. A caller
 ;;; of this library also calls durable-write-file!, and one guard should
@@ -86,6 +90,91 @@
 ;;; works the same as it does for igropyr's own errors; <errno> is #f
 ;;; when the failure was not a syscall refusal. fs-error-target and
 ;;; fs-error-errno read the two halves.
+;;;
+;;; TWO CONDITIONS, BY PRIMITIVE CLASS (F100 D1). A NON-MUTATING primitive
+;;; that fails raises `unreadable-entry` (path reason errno); a MUTATING one
+;;; raises the durable-error vector above (op subject errno). Absence is
+;;; the unreadable-entry whose errno is ENOENT or ENOTDIR; only the four R1
+;;; queries answer `absent` for it instead. THE DOOR COSTS +12 ms PER START
+;;; FROM SOURCE (measured, (theourgia ffi) loaded alone, F100a; see
+;;; test/f0-ondemand.sc's F0-2 header); a .so build does not expand this file
+;;; at start (not measured). The errno is kept at every site, in two forms: unreadable-entry carries its NAME where this file
+;;; knows one (EACCES, ENOENT, ...; the number otherwise), durable-error its
+;;; NUMBER, as the exported constants are. Unifying the two is its own item. Every filesystem operation of the product goes through this
+;;; file (test/unreadable-census.sc, section `door`). One line per export:
+;;;
+;;;   entry-type          stat            unreadable-entry | absent
+;;;   read-entry          open, read      unreadable-entry | absent
+;;;   list-entries        opendir, read   unreadable-entry | absent
+;;;   size-entry          stat            unreadable-entry | absent
+;;;   entry-bytes         open, read      unreadable-entry, ENOENT included
+;;;   read-entry-range    open, lseek,    unreadable-entry, ENOENT included;
+;;;                       read            an offset at or past the end is an
+;;;                                       empty bytevector, a range that
+;;;                                       crosses the end a shorter one
+;;;   directory-entries   opendir, read   unreadable-entry, ENOENT included
+;;;   file-is-directory?  stat            unreadable-entry; #f when absent
+;;;   file-is-regular?    stat            unreadable-entry; #f when absent
+;;;   path-device-inode   stat            unreadable-entry, ENOENT included
+;;;   path-version        stat, times     unreadable-entry, ENOENT included
+;;;   file-size           open, lseek     unreadable-entry, ENOENT included
+;;;   fd-open             open            unreadable-entry, ENOENT included
+;;;     with 'create      create, open    durable-error from the create;
+;;;                                       unreadable-entry from the open
+;;;   fd-seek! fd-size    lseek           unreadable-entry naming the path
+;;;   fd-close            close           durable-error for a descriptor
+;;;                                       written or truncated, else
+;;;                                       unreadable-entry
+;;;   lock-acquire!       open, flock     unreadable-entry; waits only on
+;;;                                       contention
+;;;   lock-try-acquire!   open, flock     unreadable-entry; #f on contention
+;;;   lock-release!       flock, close    unreadable-entry, both attempted
+;;;   with-exclusive-lock with-shared-lock
+;;;                       as acquire and release; the release is checked
+;;;                       on a normal exit, quiet on an escape
+;;;   write-all!          write           durable-error
+;;;   ftruncate!          ftruncate       durable-error
+;;;   fsync! fsync-dir!   fsync           durable-error; fsync-dir!'s open
+;;;                                       of the directory is
+;;;                                       unreadable-entry (op dir-open)
+;;;   file-ensure!        stat, create,   unreadable-entry from the stat
+;;;                       close           and from the close of the port
+;;;                                       it never wrote; durable-error
+;;;                                       from the create
+;;;   file-create-exclusive!  create,     durable-error from the create;
+;;;                       close           unreadable-entry from the close
+;;;                                       of the port it never wrote; #f
+;;;                                       when the name exists
+;;;   overwrite-entry!    create, open,   as its steps: durable-error from
+;;;                       truncate, write a mutating one, unreadable-entry
+;;;                                       from the stat, the create's
+;;;                                       unwritten close or the open. Its
+;;;                                       record:
+;;;                                       (create p) (truncate p) (write
+;;;                                       p) for a fresh path, (truncate
+;;;                                       p) (write p) for an existing
+;;;                                       file; no (write p) for empty
+;;;                                       bytes
+;;;   mkdir-p!            stat, mkdir     unreadable-entry from a stat;
+;;;                                       durable-error from a mkdir; a
+;;;                                       directory another process made
+;;;                                       first is success
+;;;   rename-over!        rename          durable-error
+;;;   link!               link            durable-error; 'exists on EEXIST
+;;;   unlink!             unlink          durable-error
+;;;   file-is-socket? real-path           #f for any failure (their
+;;;                                       handlers are F100c's)
+;;;   path-case-sensitive?  pathconf; `unknown` for any failure, not
+;;;                       classed (it asks about the volume, not an entry)
+;;;   EIO ENOENT EACCES ENOTDIR EBADF     the errno numbers, as
+;;;                                       durable-error carries them
+;;;
+;;; A read's descriptor, never written, is closed on the normal path with
+;;; its failure raised as unreadable-entry (close-fail reaches it where the
+;;; reader opened a descriptor, not a directory stream).
+;;;
+;;; THE MUTATION RECORD (with-mutation-record, mutation-record,
+;;; mutation-set-self!) is described where it is defined.
 ;;;
 ;;; THE TRACE IS PRODUCT CODE, not a test harness. With
 ;;; THEOURGIA_TRACE=1 set, each lock, truncate, write and flush reports
@@ -276,6 +365,9 @@
           unreadable-entry? unreadable-entry-path unreadable-entry-reason
           unreadable-entry-errno make-unreadable-entry
           unlink! file-create-exclusive! mkdir-p!
+          size-entry overwrite-entry! entry-bytes read-entry-range
+          with-mutation-record mutation-record mutation-set-self!
+          EIO ENOENT EACCES ENOTDIR EBADF
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv!
           unix-socket-connect fd-read socket-timeout! sun-path-max
@@ -388,7 +480,13 @@
   ;; above this file is portable R6RS -- the same reason open, flock and
   ;; fsync are here. Chez provides all five; another host substitutes
   ;; this file and nothing else.
-  (define (directory-entries path) (directory-list path))
+  ;; A LISTING THAT IS NOT AN R1 QUERY: absence raises unreadable-entry
+  ;; with its errno, ENOENT or ENOTDIR, like every other failure (F100
+  ;; D1). list-entries answers `absent` instead, for a caller that has a
+  ;; next step for it.
+  (define (directory-entries path)
+    (let ((r (list-entries/errno path)))
+      (if (vector? r) (unreadable! path (vector-ref r 1)) r)))
   ;; THE TYPE QUESTIONS ARE ASKED OF entry-type, so a path that cannot be
   ;; read raises unreadable-entry instead of answering #f -- #f is the
   ;; answer for a path that is not there, or is something else.
@@ -405,11 +503,21 @@
   ;; by one of these survives only if its directory was fsynced
   ;; afterwards. A rename that is not in the trace is a rename the
   ;; reconstruction would silently keep.
+  ;; A MUTATING PRIMITIVE, SO durable-error WITH THE SYSCALL'S ERRNO (F100
+  ;; D1). Noted after success, and on EIO, the one failure under which
+  ;; POSIX allows the rename to have partly happened.
   (define (rename-over! from to)
     (unless (and (string? from) (string? to))
       (assertion-violation 'rename-over! "paths must be strings" from to))
-    (rename-file from to)
-    (trace-event! 'rename (cons from to) #f))
+    (let ((rc (c-rename from to)))
+      (cond
+        ((>= rc 0)
+         (note! (list 'rename from to))
+         (trace-event! 'rename (cons from to) #f))
+        (else
+         (let ((code (errno)))
+           (when (eqv? code EIO) (note! (list 'rename from to)))
+           (raise (fs-err 'rename to code)))))))
 
   ;; CREATE-IF-ABSENT'S SIBLING: create-or-fail. Both are here rather
   ;; than at the call site so that every directory entry this library
@@ -418,16 +526,21 @@
   ;; the reconstruction cannot know existed. Returns #f when the name is
   ;; already taken, which is a collision the caller retries, and raises
   ;; for everything else.
+  ;; The create is Chez's (open(2) cannot be handed a mode from here), so
+  ;; its errno is read from Chez's condition class (condition-errno). The
+  ;; create is noted before the close, which can still fail.
   (define (file-create-exclusive! path)
     (unless (string? path)
       (assertion-violation 'file-create-exclusive! "path must be a string" path))
     (let ((port (guard (e ((i/o-file-already-exists-error? e) #f)
                           ((fs-error? e) (raise e))
-                          (#t (raise e)))
+                          ((unreadable-entry? e) (raise e))
+                          (#t (raise (fs-err 'create path (condition-errno e)))))
                   (open-file-output-port path))))
       (and port
-           (begin (close-port port)
+           (begin (note! (list 'create path))
                   (trace-event! 'create path #f)
+                  (close-unwritten-port! path port)
                   path))))
 
   ;; CREATE A DIRECTORY, PARENTS INCLUDED. R6RS has no mkdir; this is
@@ -455,18 +568,33 @@
   ;; same directory first; every other failure -- a permission error, a
   ;; regular file already occupying the name -- was being reported as
   ;; success, so mkdir-p! on "/dev/null" answered "/dev/null".
+  ;; NOTE: WITH mkdir(2)'S OWN ERRNO (F100 D1), and noted only when this
+  ;; call made the directory. The injected mkdir-fail stands where the
+  ;; syscall would and skips it, so it creates nothing and notes nothing.
   (define (mkdir-one! path)
-    (guard (e (#t (unless (file-is-directory? path)
-                    (raise (fs-err 'mkdir path #f)))))
-      (mkdir path)
-      (trace-event! 'create path #f)))
+    (let-values (((rc code)
+                  (let ((injected (mkdir-fault path)))
+                    (if injected
+                        (values -1 injected)
+                        (let ((rc (c-mkdir path #o777)))
+                          (values rc (and (< rc 0) (errno))))))))
+      (cond
+        ((>= rc 0)
+         (note! (list 'mkdir path))
+         (trace-event! 'create path #f))
+        ((file-is-directory? path) (void))
+        (else (raise (fs-err 'mkdir path code))))))
 
+  ;; unlink(2), NOT delete-file: Chez's delete-file answered #f and raised
+  ;; nothing when it could not delete (F99), so a failed unlink read as a
+  ;; done one. A failure raises durable-error with the errno; success is
+  ;; noted.
   (define (unlink! path)
     (unless (string? path)
       (assertion-violation 'unlink! "path must be a string" path))
-    (guard (e ((fs-error? e) (raise e))
-              (#t (raise (fs-err 'unlink path #f))))
-      (delete-file path)
+    (let ((rc (c-unlink path)))
+      (when (< rc 0) (fail! 'unlink path))
+      (note! (list 'unlink path))
       (trace-event! 'unlink path #f)
       path))
 
@@ -549,6 +677,14 @@
   (define c-lseek (foreign-procedure "lseek" (int integer-64 int) integer-64))
   (define c-write (foreign-procedure "write" (int u8* size_t) ssize_t))
   (define c-link  (foreign-procedure "link"  (string string) int))
+  ;; NOT VARIADIC, UNLIKE open(2): rename(2), unlink(2) and mkdir(2) name
+  ;; every argument, so their errno is the syscall's own and a mode passes
+  ;; as the second named argument. Chez's rename-file, delete-file and
+  ;; mkdir raised their own conditions (or, for delete-file, nothing), and
+  ;; the errno was lost at the door (F100 D1).
+  (define c-rename (foreign-procedure "rename" (string string) int))
+  (define c-unlink (foreign-procedure "unlink" (string) int))
+  (define c-mkdir (foreign-procedure "mkdir" (string unsigned-16) int))
   (define c-stat  (foreign-procedure "stat"  (string u8*) int))
   (define c-realpath (foreign-procedure "realpath" (string u8*) uptr))
   (define c-socket (foreign-procedure "socket" (int int int) int))
@@ -1166,6 +1302,10 @@
   (define EINTR 4)
   (define EIO 5)
   (define EEXIST 17)
+  ;; flock's "somebody else holds it" under LOCK_NB. Measured on macOS 25.3
+  ;; (35); FreeBSD's sys/errno.h gives 35 (EAGAIN), Linux's 11, and those two
+  ;; are UNMEASURED until test/facade-ffi.sc's contention row runs there.
+  (define EWOULDBLOCK (if (eq? platform-os 'linux) 11 35))
   ;; THE THREE WAYS AN OPEN FAILS THAT A BARRIER HAS TO SURVIVE,
   ;; named because an injected fault says which one it is: the file is
   ;; gone, this process may not read it, or this process has no
@@ -1174,6 +1314,10 @@
   ;; which is why the seam exists.
   (define ENOENT 2)
   (define EACCES 13)
+  ;; A write on a descriptor opened read-only: the kernel refuses it, so the
+  ;; syscall ran (the record's real-failure case). 9 on macOS, FreeBSD and
+  ;; Linux; measured here by facade-ffi's real-syscall row.
+  (define EBADF 9)
   (define EMFILE 24)
   (define F_FULLFSYNC 51)
   (define macos? (eq? platform-os 'macos))
@@ -1201,6 +1345,115 @@
       (and (pair? x) (cdr x))))
 
   (define (fail! op subject) (raise (fs-err op subject (errno))))
+
+  ;; ---- the mutation record (F100 D1') --------------------------------------
+  ;;
+  ;; KEY: WHAT THIS PROCESS CHANGED THROUGH THE DOOR, per request. A scope
+  ;; opened by `with-mutation-record` collects, in order, one entry per
+  ;; content change a mutating primitive made: (create p) (mkdir p)
+  ;; (write p) (truncate p) (rename from to) (unlink p) (link from to).
+  ;; Outside a scope nothing is noted, and `mutation-record` answers ().
+  ;; IT IS AN OPERATION HISTORY OF POSSIBLE MUTATION, not proof of changed
+  ;; bytes: a same-byte write is noted, and a digest is what answers for
+  ;; bytes. Process output (stdout, stderr, a daemon's serve.log) is not a
+  ;; change made through the door and is outside it.
+  ;;
+  ;; WHEN A PRIMITIVE NOTES ITSELF is decided per primitive from the
+  ;; syscall's contract: mkdir, create, create-exclusive, ftruncate, unlink
+  ;; and link after success only (a failed call leaves the tree as it
+  ;; was); rename after success and on a failure with errno EIO, the one
+  ;; case in which it may have partly happened; a write when any byte was
+  ;; reported written, and on any final failure of a real write syscall;
+  ;; fsync, fullfsync and close never. A composite notes each step as it
+  ;; succeeds.
+  ;;
+  ;; NEVER: KEYED BY WHO IS RUNNING, NOT HELD IN A PARAMETER. A Chez
+  ;; parameter belongs to the OS thread, and every actor of a scheduler
+  ;; shares one, so a daemon request that yields would lend its record to
+  ;; whichever actor runs next. AND ONE KEY FOR TWO ACTORS LEAKS A SCOPE
+  ;; PAST ITS ACTOR: measured with a shared key (F100a r2's mutant), A's
+  ;; scope exits and deletes the key, B's then restores the box it saved,
+  ;; A's, and a stale scope stays installed for the process, noting what
+  ;; later scopeless actors do (facade-record (a) and (b) both go red). The key is asked of a thunk, two cases:
+  ;;   - no scheduler started (whether or not the scheduler library is
+  ;;     loaded: the CLI, core.sc's local route, the eval worker): the
+  ;;     default thunk answers `process-key`, one object for the process;
+  ;;   - a scheduler started through (theourgia sched): its start-scheduler
+  ;;     installs (lambda () self) first, so the key is the running actor.
+  ;; ffi imports nothing of the scheduler for this: importing igropyr's
+  ;; actor library here would load libuv into every program (F0-2).
+  ;; The table is WEAK, so an actor killed without unwinding takes its
+  ;; entry with it. igropyr's scheduler saves and restores each process's
+  ;; winders on a switch and never runs them (actor.sc:459-474, :503), so a
+  ;; scope is installed once and stays installed across its actor's
+  ;; yields; a killed actor's after-thunk never runs (:701-705), and the
+  ;; weak table lets its entry go with the PCB.
+  (define process-key (list 'process-key))
+  (define mutation-self (lambda () process-key))
+  (define (mutation-set-self! thunk)
+    (unless (procedure? thunk)
+      (assertion-violation 'mutation-set-self! "not a procedure" thunk))
+    (set! mutation-self thunk))
+  (define mutation-records (make-weak-eq-hashtable))
+
+  ;; A SCOPE SAVES AND RESTORES THE ONE BEFORE IT, and the key is taken
+  ;; once, at entry: the winders may run when another actor is current,
+  ;; and they must still name this one. INITIAL ENTRIES are how a scope
+  ;; that hands its work to another actor carries what it had already
+  ;; done: the spawned actor's record is those entries followed by its
+  ;; own, and the spawner reads that whole record back.
+  (define (with-mutation-record thunk . initial)
+    (unless (procedure? thunk)
+      (assertion-violation 'with-mutation-record "not a procedure" thunk))
+    (let* ((key (mutation-self))
+           (entries (box (if (pair? initial) (reverse (car initial)) '())))
+           (before #f))
+      (dynamic-wind
+        (lambda ()
+          (set! before (hashtable-ref mutation-records key #f))
+          (hashtable-set! mutation-records key entries))
+        thunk
+        (lambda ()
+          (if before
+              (hashtable-set! mutation-records key before)
+              (hashtable-delete! mutation-records key))))))
+
+  (define (mutation-record)
+    (let ((b (hashtable-ref mutation-records (mutation-self) #f)))
+      (if b (reverse (unbox b)) '())))
+
+  (define (note! entry)
+    (let ((b (hashtable-ref mutation-records (mutation-self) #f)))
+      (when b (set-box! b (cons entry (unbox b))))))
+
+  ;; CHEZ'S OWN I/O CONDITIONS, MAPPED TO AN ERRNO where Chez did the
+  ;; syscall (file-ensure!'s and file-create-exclusive!'s create, which
+  ;; cannot pass a mode through open(2)'s variadic argument). A condition
+  ;; with no class here keeps errno #f.
+  (define EROFS 30)
+  (define (condition-errno e)
+    ;; THE SUBTYPE FIRST: a read-only-file error is also a protection error,
+    ;; and asked the other way round it read as EACCES (F100a review r1).
+    (cond ((i/o-file-does-not-exist-error? e) ENOENT)
+          ((i/o-file-is-read-only-error? e) EROFS)
+          ((i/o-file-protection-error? e) EACCES)
+          ((i/o-file-already-exists-error? e) EEXIST)
+          (else #f)))
+
+  ;; CHEZ'S CONDITION FROM A NON-MUTATING STEP, as unreadable-entry naming
+  ;; the path, the errno mapped where the class names one.
+  (define (chez-unreadable! path e)
+    (let ((code (and (condition? e) (condition-errno e))))
+      (raise (make-unreadable-entry path
+                                    (if code (c-strerror code) "the step failed")
+                                    (and code (errno-reason code))))))
+
+  ;; THE CLOSE OF A PORT CHEZ OPENED TO CREATE A FILE AND NEVER WROTE: a
+  ;; non-mutating step (F100 D1), so its failure is unreadable-entry.
+  (define (close-unwritten-port! path port)
+    (guard (e ((unreadable-entry? e) (raise e))
+              (#t (chez-unreadable! path e)))
+      (close-port port)))
 
   ;; ---- reading an entry, and saying why it could not be read -------------
   ;;
@@ -1285,8 +1538,96 @@
           ((absence-errno? code) 'absent)
           (else (unreadable! path code))))))
 
-  ;; -> the file's bytes, or absent
-  (define (read-entry path)
+  ;; -> the size in bytes of what the path names, or absent. An R1 query
+  ;; (F100 D1): a stat, so it needs no read permission on the file itself,
+  ;; and it answers `absent` for ENOENT and ENOTDIR and raises
+  ;; unreadable-entry for any other failure. stat-fail reaches it.
+  ;;
+  ;; st_size's offset, per platform, from the field lists given at
+  ;; path-device-inode:
+  ;;   macOS 25.3 arm64   96, eight bytes: MEASURED 2026-09-25, offsetof in
+  ;;                      a C program against the system header
+  ;;                      (sizeof(struct stat) 144, as stated below).
+  ;;   FreeBSD 15         112, eight bytes: from sys/stat.h's field order
+  ;;                      (dev 8, ino 8, nlink 8, mode 2, padding0 2, uid 4,
+  ;;                      gid 4, padding1 4, rdev 8, four timespecs 64), whose
+  ;;                      total is the 224 measured below.
+  ;;   Linux x86-64       48 (glibc's field list).
+  ;; NEVER: FreeBSD's AND Linux's ARE UNMEASURED until test/facade-ffi.sc's
+  ;; row "size-entry answers absent for ENOENT and the size otherwise" runs
+  ;; there; that row is the check of this offset on whichever platform the
+  ;; suite runs.
+  (define st-size-offset
+    (case platform-os ((macos) 96) ((linux) 48) (else 112)))
+  (define (size-entry path)
+    (unless (string? path)
+      (assertion-violation 'size-entry "path must be a string" path))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let-values (((rc code)
+                    (if (stat-fault? path)
+                        (values -1 (stat-fault-errno))
+                        (let ((rc (c-stat path buf))) (values rc (and (< rc 0) (errno)))))))
+        (cond
+          ((>= rc 0) (bytevector-s64-native-ref buf st-size-offset))
+          ((absence-errno? code) 'absent)
+          (else (unreadable! path code))))))
+
+  ;; REPLACE A FILE'S CONTENTS IN PLACE, keeping its inode. The door's form
+  ;; of the base's truncating open-file-output-port (F100 D1): a hard link
+  ;; to the file sees the new bytes, as it did. Create if absent, then open
+  ;; for writing, truncate and write; each step is noted as it succeeds, by
+  ;; the primitive that takes it: (create p) (truncate p) (write p) for a
+  ;; fresh path, (truncate p) (write p) for an existing file, and no
+  ;; (write p) for empty bytes. It notes nothing itself.
+  ;; NEVER: THE TRUNCATE IS UNCONDITIONAL. Deciding it from a presence test
+  ;; taken before the open let another process create the file in between
+  ;; and keep its tail: "x" over its "abcdef" left "xbcdef", where the
+  ;; base's truncating port left "x" (F100a review r1).
+  ;; No flush: the base's sites did not flush, and this keeps their bytes.
+  (define (overwrite-entry! path bv)
+    (unless (bytevector? bv)
+      (assertion-violation 'overwrite-entry! "not a bytevector" bv))
+    (let ((fd (fd-open path '(write create))))
+      (let ((done (box #f)))
+        (dynamic-wind
+          void
+          (lambda ()
+            (ftruncate! fd 0)
+            (write-all! fd bv)
+            (set-box! done #t)
+            (fd-close fd))
+          (lambda ()
+            (unless (unbox done)
+              (set-box! done #t)
+              (close-quietly fd)))))
+      (void)))
+
+  ;; A DESCRIPTOR THAT WAS NEVER WRITTEN, CLOSED BY ITS READER. On the
+  ;; normal path the close is checked, and its failure (or an injected
+  ;; close-fail) raises unreadable-entry naming the path -- the close of an
+  ;; unwritten descriptor is a non-mutating primitive (F100 D1). On an escape
+  ;; it is closed quietly, so the failure already on its way out is the one
+  ;; reported: the header's two obligations around cleanup.
+  (define (read-closing path close-rc fault? thunk)
+    (let ((closed (box #f)))
+      (dynamic-wind
+        void
+        (lambda ()
+          (let ((v (thunk)))
+            (set-box! closed #t)
+            (let ((rc (close-rc)))
+              (when (< rc 0) (unreadable! path (errno)))
+              (when (and fault? (close-fault?)) (unreadable! path EIO)))
+            v))
+        (lambda ()
+          (unless (unbox closed)
+            (set-box! closed #t)
+            (close-rc))))))
+
+  ;; -> the file's bytes, or #(absent <errno>) for ENOENT and ENOTDIR. The
+  ;; errno is kept so a caller for which absence is a failure can name it
+  ;; (entry-bytes); read-entry answers the bare `absent`.
+  (define (read-entry/errno path)
     (unless (string? path)
       (assertion-violation 'read-entry "path must be a string" path))
     (let ((fd (let ((injected (open-fault path)))
@@ -1296,11 +1637,10 @@
       (cond
         ((< fd 0)
          (let ((code (errno)))
-           (if (absence-errno? code) 'absent (unreadable! path code))))
+           (if (absence-errno? code) (vector 'absent code) (unreadable! path code))))
         (else
          (let ((chunk (make-bytevector 65536)))
-           (dynamic-wind
-             void
+           (read-closing path (lambda () (c-close fd)) #t
              (lambda ()
                (let-values (((out collect) (open-bytevector-output-port)))
                  (let loop ((produced 0))
@@ -1316,8 +1656,63 @@
                        ((= n 0) (collect))
                        (else
                         (put-bytevector out chunk 0 n)
-                        (loop (+ produced n))))))))
-             (lambda () (c-close fd))))))))
+                        (loop (+ produced n))))))))))))))
+
+  ;; -> the file's bytes, or absent
+  (define (read-entry path)
+    (let ((r (read-entry/errno path)))
+      (if (vector? r) 'absent r)))
+
+  ;; -> the file's bytes. NOT AN R1 QUERY: absence raises unreadable-entry
+  ;; with ITS errno, ENOENT or ENOTDIR, like any other failure, for a caller
+  ;; whose file must be there and that has no next step for `absent`
+  ;; (F100a; the base's native read raised too). directory-entries is the
+  ;; same shape for a listing.
+  (define (entry-bytes path)
+    (let ((r (read-entry/errno path)))
+      (if (vector? r) (unreadable! path (vector-ref r 1)) r)))
+
+  ;; -> at most COUNT bytes of the file from OFFSET: fewer only at its end.
+  ;; An offset at or past the end answers an empty bytevector, a range that
+  ;; crosses the end the bytes up to it -- found by a further read that
+  ;; answers 0, and read-fail-after stands before every read after the
+  ;; first that produced something, as it does in read-entry.
+  ;; Non-mutating throughout (open, lseek, read, the close), so any failure,
+  ;; absence included, raises unreadable-entry naming the path (F100a). For
+  ;; a caller that reads one record out of a segment, where reading the
+  ;; whole file to slice it would cost the file's size per record.
+  (define (read-entry-range path offset count)
+    (unless (and (string? path) (integer? offset) (exact? offset) (>= offset 0)
+                 (integer? count) (exact? count) (>= count 0))
+      (assertion-violation 'read-entry-range "path, offset and count" path offset count))
+    (let ((fd (let ((injected (open-fault path)))
+                (if injected
+                    (unreadable! path injected)
+                    (c-open path O_RDONLY)))))
+      (when (< fd 0) (unreadable! path (errno)))
+      (read-closing path (lambda () (c-close fd)) #t
+        (lambda ()
+          (when (< (c-lseek fd offset SEEK_SET) 0) (unreadable! path (errno)))
+          (let ((buf (make-bytevector count)))
+            (let loop ((got 0))
+              (if (= got count)
+                  buf
+                  (let ((injected (read-fault path got)))
+                    (when injected (unreadable! path injected))
+                    (let* ((want (- count got))
+                           (chunk (make-bytevector want))
+                           (n (c-read fd chunk want)))
+                      (cond
+                        ((< n 0)
+                         (let ((code (errno)))
+                           (if (eqv? code EINTR) (loop got) (unreadable! path code))))
+                        ((= n 0)
+                         (let ((out (make-bytevector got)))
+                           (bytevector-copy! buf 0 out 0 got)
+                           out))
+                        (else
+                         (bytevector-copy! chunk 0 buf got n)
+                         (loop (+ got n)))))))))))))
 
   ;; -> the names in the directory, without "." and "..", or absent
   (define dirent-name-offset
@@ -1337,15 +1732,16 @@
             (utf8->string (u8-list->bytevector (reverse acc)))
             (loop (+ i 1) (cons b acc))))))
 
-  (define (list-entries path)
+  ;; -> the names, or #(absent <errno>); list-entries answers the bare
+  ;; `absent`, directory-entries raises with the errno kept.
+  (define (list-entries/errno path)
     (unless (string? path)
       (assertion-violation 'list-entries "path must be a string" path))
     (let ((dir (c-opendir path)))
       (if (= dir 0)
           (let ((code (errno)))
-            (if (absence-errno? code) 'absent (unreadable! path code)))
-          (dynamic-wind
-            void
+            (if (absence-errno? code) (vector 'absent code) (unreadable! path code)))
+          (read-closing path (lambda () (c-closedir dir)) #f
             (lambda ()
               (let loop ((names '()))
                 (let ((injected (readdir-fault path (length names))))
@@ -1360,8 +1756,11 @@
                       (let ((name (dirent-name entry)))
                         (loop (if (or (string=? name ".") (string=? name ".."))
                                   names
-                                  (cons name names))))))))
-            (lambda () (c-closedir dir))))))
+                                  (cons name names))))))))))))
+
+  (define (list-entries path)
+    (let ((r (list-entries/errno path)))
+      (if (vector? r) 'absent r)))
 
   ;; ---- what descriptor is that ------------------------------------------
 
@@ -1383,7 +1782,14 @@
 
   (define (fd-path fd) (hashtable-ref fd-paths fd #f))
 
-  (define (forget-fd! fd) (hashtable-delete! fd-paths fd))
+  ;; WHETHER A DESCRIPTOR WAS WRITTEN (a write or a truncation was asked
+  ;; of it), which decides the class of its close's failure.
+  (define fd-written (make-eqv-hashtable))
+  (define (written! fd) (hashtable-set! fd-written fd #t))
+
+  (define (forget-fd! fd)
+    (hashtable-delete! fd-paths fd)
+    (hashtable-delete! fd-written fd))
 
   (define (subject-of fd opts)
     (cond ((pair? opts) (car opts))
@@ -1535,7 +1941,8 @@
          fsync-fail no-log-fsync stat-fail open-fail report-fail
          read-fail-after readdir-fail-after
          conn-raise store-raise writer-raise writer-raise-late
-         writer-hold writer-hold-long conn-hold conn-hold-long close-fail))
+         writer-hold writer-hold-long conn-hold conn-hold-long close-fail
+         lseek-fail mkdir-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -1597,7 +2004,9 @@
 
      ;; The faults that fail with an errno. stat-fail predates the
      ;; qualifier and reports EIO without one; the other three require it.
-     (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after))
+     ;; lseek-fail and mkdir-fail are stat-fail's kind: EIO unless :errno=
+     ;; names another (F100a amendment 6).
+     (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after lseek-fail mkdir-fail))
      (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
 
      (define-values (fault-arg-head fault-errno-text)
@@ -1646,9 +2055,9 @@
              (assertion-violation 'theourgia-ffi
                "this fault needs :errno=<name> (EMFILE EACCES ENOENT ENOTDIR EIO ELOOP EOVERFLOW) or a positive integer"
                fault-spec)))
-         (when (and (eq? fault-name 'stat-fail) (eq? fault-errno 'unknown))
+         (when (and (memq fault-name '(stat-fail lseek-fail mkdir-fail)) (eq? fault-errno 'unknown))
            (assertion-violation 'theourgia-ffi
-             "stat-fail's :errno= names no errno this file knows"
+             "this fault's :errno= names no errno this file knows"
              fault-spec))))
 
      (define-values (fault-kind fault-substring) (split-kind fault-arg-head))
@@ -1684,7 +2093,8 @@
            fault-spec)))
 
      (define fault-argument-checked
-       (when (memq fault-name '(fsync-fail no-log-fsync open-fail read-fail-after readdir-fail-after))
+       (when (memq fault-name '(fsync-fail no-log-fsync open-fail read-fail-after readdir-fail-after
+                                lseek-fail mkdir-fail))
          (unless (and (string? fault-substring) (> (string-length fault-substring) 0))
            (assertion-violation 'theourgia-ffi
                                 "this fault needs a non-empty path substring"
@@ -1830,6 +2240,26 @@
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) #t)))
 
+     ;; ONE-SHOT, PATH-SCOPED, LIKE stat-fail (F100a): an lseek on a
+     ;; descriptor whose path matches, and a mkdir of a path that matches,
+     ;; report EIO or the :errno= given, without the syscall. -> an errno,
+     ;; or #f.
+     (define (lseek-fault subject)
+       (and fault-name
+            (eq? fault-name 'lseek-fail)
+            (in-fault-stage?)
+            (fault-path-match? #f subject)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) (or fault-errno EIO))))
+
+     (define (mkdir-fault path)
+       (and fault-name
+            (eq? fault-name 'mkdir-fail)
+            (in-fault-stage?)
+            (fault-path-match? #f path)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) (or fault-errno EIO))))
+
      ;; -> an errno to fail the open with, or #f
      ;;
      ;; ONE SHOT, like the others: the barrier opens the segment once,
@@ -1865,30 +2295,37 @@
      ;; stage wrote first -- the registry's temporary file as readily as
      ;; the log record. A qualifier that is accepted and then ignored is
      ;; worse than one that is refused: the run looks aimed.
+     ;; -> the count, the errno, and whether the syscall was SKIPPED by an
+     ;; injected failure. write-all! notes a final write failure only when
+     ;; write(2) really ran (F100 D1'), and the flag travels with the
+     ;; answer: a process-global flag was overwritten by another actor's
+     ;; write between the two (F100a review r1).
      (define (write-once fd bv count subject)
        (if (and (in-fault-stage?)
                 (or (not fault-arg) (fault-path-match? fd subject)))
            (staged-write-once fd bv count)
-           (real-write fd bv count)))
+           (real-write/skipped fd bv count)))
+
+     (define (skipped-failure code) (values -1 code #t))
 
      (define (staged-write-once fd bv count)
        (case fault-name
          ((eintr-once)
           (if (eq? (unbox fault-state) 'fresh)
-              (begin (set-box! fault-state 'done) (values -1 EINTR))
-              (real-write fd bv count)))
+              (begin (set-box! fault-state 'done) (skipped-failure EINTR))
+              (real-write/skipped fd bv count)))
          ((short-write)
           (if (eq? (unbox fault-state) 'fresh)
               (let-values (((n code) (real-write fd bv (min short-count count))))
                 (when (> n 0) (set-box! fault-state 'done))
-                (values n code))
-              (real-write fd bv count)))
+                (values n code #f))
+              (real-write/skipped fd bv count)))
          ((write-eio-after-partial)
           (if (eq? (unbox fault-state) 'fresh)
               (let-values (((n code) (real-write fd bv (min short-count count))))
                 (when (> n 0) (set-box! fault-state 'partial))
-                (values n code))
-              (values -1 EIO)))
+                (values n code #f))
+              (skipped-failure EIO)))
          ;; FAILS BEFORE THE FIRST BYTE. write-eio-after-partial cannot
          ;; produce this: it fails only after its partial has landed, so
          ;; the outcome that means "reserved and nothing written" had no
@@ -1896,9 +2333,9 @@
          ;; retry is safe there.
          ((write-eio-first)
           (if (eq? (unbox fault-state) 'fresh)
-              (begin (set-box! fault-state 'done) (values -1 EIO))
-              (real-write fd bv count)))
-         (else (real-write fd bv count)))))
+              (begin (set-box! fault-state 'done) (skipped-failure EIO))
+              (real-write/skipped fd bv count)))
+         (else (real-write/skipped fd bv count)))))
 
     (else
      (define theourgia-stage (make-parameter #f))
@@ -1909,6 +2346,8 @@
      (define (theourgia-fault-armed?) #f)
      (define (stat-fault? path) #f)
      (define (stat-fault-errno) EIO)
+     (define (lseek-fault subject) #f)
+     (define (mkdir-fault path) #f)
      (define (read-fault path produced) #f)
      (define (readdir-fault path produced) #f)
      (define (close-fault?) #f)
@@ -1917,7 +2356,7 @@
      (define (fsync-fault fd subject kind) #f)
      (define (barrier! name) (void))
      (define no-flock? #f)
-     (define (write-once fd bv count subject) (real-write fd bv count))))
+     (define (write-once fd bv count subject) (real-write/skipped fd bv count))))
 
   ;; ---- opening ----------------------------------------------------------
 
@@ -1930,14 +2369,22 @@
   (define (file-ensure! path)
     (unless (string? path)
       (assertion-violation 'file-ensure! "path must be a string" path))
-    (guard (e ((fs-error? e) (raise e))
-              ((unreadable-entry? e) (raise e))
-              (#t (raise (fs-err 'create path #f))))
-      (when (eq? (entry-type path) 'absent)
-        (close-port
-          (open-file-output-port path (file-options no-fail no-truncate)))
-        (trace-event! 'create path #f))
-      path))
+    ;; THE PRESENCE TEST RAISES FIRST (entry-type): under a parent that
+    ;; cannot be searched it is unreadable-entry, before anything is made.
+    ;; The create's own failure is durable-error with the errno mapped from
+    ;; Chez's condition (the create is Chez's, see the note on open(2)). The
+    ;; create is NOTED AS SOON AS IT SUCCEEDED, before the close: a close
+    ;; that then fails must not take the create out of the record (F100a
+    ;; review r1). That close, of a port never written, is its own step.
+    (when (eq? (entry-type path) 'absent)
+      (let ((port (guard (e ((fs-error? e) (raise e))
+                            ((unreadable-entry? e) (raise e))
+                            (#t (raise (fs-err 'create path (and (condition? e) (condition-errno e))))))
+                    (open-file-output-port path (file-options no-fail no-truncate)))))
+        (note! (list 'create path))
+        (trace-event! 'create path #f)
+        (close-unwritten-port! path port)))
+    path)
 
   ;; COMBINED WITH bitwise-ior AND NOT WITH ADDITION, because a repeated
   ;; flag is a caller's slip and addition turns it into a DIFFERENT flag:
@@ -1989,10 +2436,14 @@
       ;; produces. The rule is the one stated at the top of this file: a
       ;; return value may only be replaced when skipping the call leaves
       ;; the world as if it had failed.
+      ;; NOTE: THE OPEN ITSELF IS NON-MUTATING (the create, if any, is
+      ;; file-ensure!'s and already happened), so its failure is
+      ;; unreadable-entry with the errno, ENOENT and ENOTDIR included (F100
+      ;; D1): only the R1 queries answer `absent`.
       (let ((injected (open-fault path)))
-        (when injected (raise (fs-err 'open path injected))))
+        (when injected (unreadable! path injected)))
       (let ((fd (c-open path (flags->int 'fd-open flags))))
-        (when (< fd 0) (fail! 'open path))
+        (when (< fd 0) (unreadable! path (errno)))
         (hashtable-set! fd-paths fd path)
         fd)))
 
@@ -2000,16 +2451,26 @@
   ;; cannot leave a descriptor number mapped to a path it no longer
   ;; refers to -- the number is reusable either way, and a stale mapping
   ;; would put the wrong path in the next trace.
+  ;; NOTE: THE CLOSE OF A WRITTEN DESCRIPTOR IS MUTATING, the close of one
+  ;; never written is not (F100 D1): a failed close after a write may
+  ;; have lost bytes, a failed close of a read loses nothing. It notes
+  ;; nothing either way.
   (define (fd-close fd)
-    (let ((subject (subject-of fd '())))
+    (let ((subject (subject-of fd '()))
+          (written? (hashtable-ref fd-written fd #f)))
       (forget-fd! fd)
-      (let ((rc (c-close fd)))
+      (let* ((rc (c-close fd))
+             (code (and (< rc 0) (errno))))
+        (define (refuse! code)
+          (if written?
+              (raise (fs-err 'close subject code))
+              (raise (make-unreadable-entry subject (c-strerror code) (errno-reason code)))))
         ;; NOTE: THE DESCRIPTOR IS REALLY CLOSED, and the failure is injected
         ;; after: a fault that skipped the close would leak one per call,
         ;; and the leak rather than the refusal is what a row would end up
         ;; measuring.
-        (when (close-fault?) (fail! 'close subject))
-        (when (< rc 0) (fail! 'close subject))
+        (when (close-fault?) (refuse! EIO))
+        (when code (refuse! code))
         (void))))
 
   ;; Closing on the way out of a dynamic-wind, where raising would
@@ -2080,16 +2541,14 @@
     (check-stage! 'fsync-dir! stage)
     (parameterize ((theourgia-stage stage))
     (let ((subject path))
+      ;; THE DIRECTORY'S OPEN IS NON-MUTATING (F100 D1): unreadable-entry.
       (let ((fd (c-open path O_RDONLY)))
-        (when (< fd 0) (fail! 'dir-open subject))
-        (let ((done (box #f)))
-          (dynamic-wind
-            void
-            (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync 'dir))
-            (lambda ()
-              (unless (unbox done)
-                (set-box! done #t)
-                (close-quietly fd))))))
+        (when (< fd 0) (unreadable! subject (errno)))
+        ;; THE DIRECTORY'S DESCRIPTOR IS NEVER WRITTEN, so a close that fails
+        ;; on the normal path is unreadable-entry; close-fail, aimed at
+        ;; fd-close's descriptors, is not armed here.
+        (read-closing subject (lambda () (c-close fd)) #f
+          (lambda () (flush! fd subject 'dir-fsync 'dir-fullfsync 'dir))))
       (void))))
 
   ;; ---- size, position, truncation ---------------------------------------
@@ -2101,56 +2560,49 @@
       ((end) SEEK_END)
       (else (assertion-violation who "unknown whence" w))))
 
+  ;; lseek IS NON-MUTATING (F100 D1): its failure is unreadable-entry naming
+  ;; the descriptor's path (fd-paths), the number only when none. The
+  ;; injected lseek-fail stands where the first lseek would and skips it.
+  (define (lseek-or-refuse fd offset whence subject)
+    (let ((injected (lseek-fault subject)))
+      (when injected (unreadable! subject injected)))
+    (let ((pos (c-lseek fd offset whence)))
+      (when (< pos 0) (unreadable! subject (errno)))
+      pos))
+
   (define (fd-seek! fd offset whence . opts)
-    (let ((subject (subject-of fd opts)))
-      (let ((pos (c-lseek fd offset (whence->int 'fd-seek! whence))))
-        (when (< pos 0) (fail! 'lseek subject))
-        pos)))
+    (lseek-or-refuse fd offset (whence->int 'fd-seek! whence) (subject-of fd opts)))
 
   (define (fd-size fd . opts)
-    (let ((subject (subject-of fd opts)))
-      (let ((here (c-lseek fd 0 SEEK_CUR)))
-        (when (< here 0) (fail! 'lseek subject))
-        (let ((end (c-lseek fd 0 SEEK_END)))
-          (when (< end 0) (fail! 'lseek subject))
-          (let ((back (c-lseek fd here SEEK_SET)))
-            (when (< back 0) (fail! 'lseek subject))
-            end)))))
+    (let* ((subject (subject-of fd opts))
+           (here (lseek-or-refuse fd 0 SEEK_CUR subject))
+           (end (lseek-or-refuse fd 0 SEEK_END subject)))
+      (lseek-or-refuse fd here SEEK_SET subject)
+      end))
 
   ;; By seeking rather than by stat: a stat structure's layout differs
   ;; between these platforms and would have to be measured field by
   ;; field, while lseek returns one integer that means the same thing
   ;; everywhere.
   ;;
-  ;; A FILE THAT IS THERE AND WILL NOT OPEN IS UNREADABLE, NOT A FAILED
-  ;; OPERATION (R1, K12). The open's own errno decides: ENOENT and ENOTDIR
-  ;; stay the durable error they were, anything else -- permission, i/o, a
-  ;; loop -- raises unreadable-entry naming the path, so a caller that asks
-  ;; the size of a segment it cannot read is told which one and why.
+  ;; A COMPOSITE (open then lseek), NON-MUTATING throughout: whichever step
+  ;; fails raises unreadable-entry naming the path, absence included (F100
+  ;; D1). Its own classifying guard is gone; fd-open's failure is already
+  ;; the right class.
   (define (file-size path)
-    (when (stat-fault? path) (fail-with! 'stat path (stat-fault-errno)))
-    (let ((fd (guard (e ((and (fs-error? e) (fs-error-errno e)
-                              (not (absence-errno? (fs-error-errno e))))
-                         (unreadable! path (fs-error-errno e))))
-                (fd-open path '(read)))))
-      (let ((done (box #f)))
-        (dynamic-wind
-          void
-          (lambda () (fd-size fd path))
-          (lambda ()
-            (unless (unbox done)
-              (set-box! done #t)
-              (close-quietly fd)))))))
-
-  (define (fail-with! op target code)
-    (raise (fs-err op target code)))
+    (when (stat-fault? path) (unreadable! path (stat-fault-errno)))
+    (let ((fd (fd-open path '(read))))
+      (read-closing path (lambda () (forget-fd! fd) (c-close fd)) #t
+        (lambda () (fd-size fd path)))))
 
   (define (ftruncate! fd length . opts)
     (unless (and (integer? length) (exact? length) (>= length 0))
       (assertion-violation 'ftruncate! "length must be a non-negative exact integer" length))
     (let ((subject (subject-of fd opts)))
+      (written! fd)
       (let ((rc (c-ftruncate fd length)))
         (when (< rc 0) (fail! 'ftruncate subject))
+        (note! (list 'truncate subject))
         (trace-event! 'ftruncate subject length)
         (void))))
 
@@ -2184,6 +2636,11 @@
     (let ((r (c-write fd bv count)))
       (if (< r 0) (values -1 (errno)) (values r #f))))
 
+  ;; The same, with write-once's third answer: the syscall ran.
+  (define (real-write/skipped fd bv count)
+    (let-values (((n code) (real-write fd bv count)))
+      (values n code #f)))
+
   (define short-count 7)
 
   ;; HOW FAR IT GOT IS REPORTED, NOT INFERRED. A caller that has to
@@ -2201,19 +2658,33 @@
            (progress (if (and (pair? opts) (pair? (cdr opts)) (procedure? (cadr opts)))
                          (cadr opts)
                          (lambda (n) (if #f #f))))
-           (total (bytevector-length bv)))
+           (total (bytevector-length bv))
+           ;; THE WRITE IS NOTED ONCE PER CALL: when a byte is reported
+           ;; written, or when a real write syscall fails finally (POSIX
+           ;; gives no unchanged-file guarantee for a physical write error).
+           ;; The EINTR retried without progress is not a final failure, and
+           ;; write-eio-first skips the syscall, so it notes nothing.
+           (noted #f)
+           (note-write! (lambda () (unless noted (set! noted #t) (note! (list 'write subject))))))
       (let loop ((pos 0) (chunk bv))
         (if (>= pos total)
             total
-            (let-values (((n code) (write-once fd chunk (- total pos) subject)))
+            ;; MARKED WRITTEN WHERE A WRITE IS ATTEMPTED, not on entry: an
+            ;; empty bytevector attempts none, and its descriptor's close
+            ;; keeps the class of an unwritten one (F100a review r1).
+            (let-values (((n code skipped) (begin (written! fd)
+                                                   (write-once fd chunk (- total pos) subject))))
               (cond
                 ((and (< n 0) (= code EINTR))
                  (loop pos chunk))
                 ((< n 0)
+                 (unless skipped (note-write!))
                  (raise (fs-err 'write subject code)))
                 ((= n 0)
+                 (note-write!)
                  (raise (fs-err 'write subject #f)))
                 (else
+                 (note-write!)
                  (trace-event! 'write subject n)
                  (progress (+ pos n))
                  (let ((pos (+ pos n)))
@@ -2362,9 +2833,13 @@
   (define (path-device-inode path)
     (unless (string? path)
       (assertion-violation 'path-device-inode "path must be a string" path))
+    ;; stat IS NON-MUTATING (F100 D1): unreadable-entry with the errno,
+    ;; absence included, and stat-fail reaches it (it called c-stat
+    ;; directly, where the fault could not).
+    (when (stat-fault? path) (unreadable! path (stat-fault-errno)))
     (let ((buf (make-bytevector stat-buffer-size 0)))
       (let ((rc (c-stat path buf)))
-        (when (< rc 0) (fail! 'stat path))
+        (when (< rc 0) (unreadable! path (errno)))
         (values (if macos?
                     (bytevector-u32-native-ref buf st-dev-offset)
                     (bytevector-u64-native-ref buf st-dev-offset))
@@ -2373,9 +2848,17 @@
   ;; Version hints invalidate derived indexes; they never prove a record.
   ;; ctime catches replacements and same-length edits even if mtime is restored.
   (define (path-version path)
+    ;; THE TIMES ARE A STAT, NON-MUTATING (F100 D1): Chez's own condition
+    ;; becomes unreadable-entry, its errno read from the condition class.
     (let-values (((device inode) (path-device-inode path)))
-      (let ((modified (file-modification-time path))
-            (changed (file-change-time path)))
+      (let-values (((modified changed)
+                    (guard (e ((unreadable-entry? e) (raise e))
+                              (#t (let ((code (and (condition? e) (condition-errno e))))
+                                    (raise (make-unreadable-entry
+                                             path
+                                             (if code (c-strerror code) "the entry's times cannot be read")
+                                             (and code (errno-reason code)))))))
+                      (values (file-modification-time path) (file-change-time path)))))
         (list device inode (time-second modified) (time-nanosecond modified)
               (time-second changed) (time-nanosecond changed)
               (and (file-is-regular? path) (file-size path))))))
@@ -2398,7 +2881,7 @@
       (assertion-violation 'link! "paths must be strings" from to))
     (let ((rc (c-link from to)))
       (cond
-        ((>= rc 0) (trace-event! 'link to #f) 'linked)
+        ((>= rc 0) (note! (list 'link from to)) (trace-event! 'link to #f) 'linked)
         ((= (errno) EEXIST) 'exists)
         (else (fail! 'link to)))))
 
@@ -2464,20 +2947,28 @@
       (assertion-violation 'lock-acquire! "path must be a string" path))
     (let* ((m (mode->int 'lock-acquire! mode))
            (subject (cons path mode)))
+      ;; THE OPEN AND THE flock ARE NON-MUTATING (F100 D1): unreadable-entry.
       (let ((fd (c-open path O_RDONLY)))
-        (when (< fd 0) (fail! 'open path))
+        (when (< fd 0) (unreadable! path (errno)))
         (hashtable-set! fd-paths fd path)
         (unless no-flock?
           (guard (e (#t (close-quietly fd) (raise e)))
-            (let ((rc (c-flock fd (+ m LOCK_NB))))
-              (when (< rc 0)
+            (let* ((rc (c-flock fd (+ m LOCK_NB)))
+                   (code (and (< rc 0) (errno))))
+              ;; ONLY CONTENTION WAITS (F100 D1). A non-blocking attempt that
+              ;; failed for another reason is unreadable-entry: waiting on it
+              ;; hid an EIO behind a later success (F100a review r1).
+              (when (and code (not (memv code (list EWOULDBLOCK EINTR))))
+                (unreadable! path code))
+              (when code
                 (trace-event! 'lock-wait subject #f)
                 (let retry ()
                   (let ((rc (c-flock fd m)))
                     (when (< rc 0)
-                      (if (= (errno) EINTR)
-                          (retry)
-                          (fail! 'flock path))))))))
+                      (let ((code (errno)))
+                        (if (= code EINTR)
+                            (retry)
+                            (unreadable! path code)))))))))
           (trace-event! 'flock subject #f))
         (make-lock-handle path mode fd #t))))
 
@@ -2493,17 +2984,31 @@
   (define (lock-try-acquire! path mode)
     (unless (string? path)
       (assertion-violation 'lock-try-acquire! "path must be a string" path))
+    ;; CONTENTION IS AN ANSWER, #f; every other failure of the open or the
+    ;; flock is unreadable-entry (F100 D1). An earlier version answered #f
+    ;; for any flock failure, so a lock that could not be asked about read
+    ;; as a lock somebody held.
     (let ((m (mode->int 'lock-try-acquire! mode)))
       (let ((fd (c-open path O_RDONLY)))
-        (when (< fd 0) (fail! 'open path))
+        (when (< fd 0) (unreadable! path (errno)))
         (hashtable-set! fd-paths fd path)
         (cond
           (no-flock? (make-lock-handle path mode fd #t))
           (else
-           (let ((rc (guard (e (#t (close-quietly fd) (raise e)))
-                       (c-flock fd (+ m LOCK_NB)))))
+           (let* ((rc (guard (e (#t (close-quietly fd) (raise e)))
+                        (c-flock fd (+ m LOCK_NB))))
+                  (code (and (< rc 0) (errno))))
              (cond
-               ((< rc 0) (close-quietly fd) #f)
+               ;; CONTENTION IS AN ANSWER, so its close is on the normal path
+               ;; and is checked: a failure is unreadable-entry, never #f
+               ;; (F100a review r2; the census's `close` section pins it).
+               ((and code (eqv? code EWOULDBLOCK))
+                (forget-fd! fd)
+                (let ((rc (c-close fd)))
+                  (when (< rc 0) (unreadable! path (errno))))
+                (when (close-fault?) (unreadable! path EIO))
+                #f)
+               (code (close-quietly fd) (unreadable! path code))
                (else (trace-event! 'flock (cons path mode) #f)
                      (make-lock-handle path mode fd #t)))))))))
 
@@ -2513,13 +3018,26 @@
   (define (lock-release! l)
     (unless (lock-handle? l)
       (assertion-violation 'lock-release! "not a lock" l))
+    ;; NOTE: A FAILED UNLOCK OR CLOSE RAISES (F100 D1): the descriptor was
+    ;; never written, so either is unreadable-entry naming the lock's path;
+    ;; close-fail reaches the close. Both are attempted before either is
+    ;; reported, so a failed unlock does not leak the descriptor. A caller in
+    ;; an unwind wants it quiet: call-with-lock releases quietly on an
+    ;; escape and checked on a normal exit.
     (when (lock-handle-held l)
       (lock-handle-held-set! l #f)
       (let* ((fd (lock-handle-fd l))
-             (subject (cons (lock-handle-path l) (lock-handle-mode-name l)))
-             (released (>= (c-flock fd LOCK_UN) 0)))
-        (close-quietly fd)
-        (when released (trace-event! 'unlock subject #f))))
+             (path (lock-handle-path l))
+             (subject (cons path (lock-handle-mode-name l)))
+             (unlock-rc (c-flock fd LOCK_UN))
+             (unlock-code (and (< unlock-rc 0) (errno))))
+        (forget-fd! fd)
+        (let* ((close-rc (c-close fd))
+               (close-code (and (< close-rc 0) (errno))))
+          (unless unlock-code (trace-event! 'unlock subject #f))
+          (cond (unlock-code (unreadable! path unlock-code))
+                (close-code (unreadable! path close-code))
+                ((close-fault?) (unreadable! path EIO))))))
     (void))
 
   ;; NEITHER HELPER CREATES THE LOCK FILE, and that is what makes "a
@@ -2572,11 +3090,24 @@
   (define (call-with-lock who path mode-name proc)
     (unless (procedure? proc)
       (assertion-violation who "not a procedure" proc))
-    (let ((l ((current-lock-acquire) path mode-name)))
+    ;; THE HEADER'S TWO OBLIGATIONS: on a normal exit the release is checked
+    ;; and its failure raises; on an escape it is released quietly, so the
+    ;; failure already on its way out is the one reported.
+    (let ((l ((current-lock-acquire) path mode-name))
+          (released (box #f)))
       (dynamic-wind
         void
-        (lambda () (proc (lock-fd l)))
-        (lambda () ((current-lock-release) l)))))
+        (lambda ()
+          (call-with-values
+            (lambda () (proc (lock-fd l)))
+            (lambda vs
+              (set-box! released #t)
+              ((current-lock-release) l)
+              (apply values vs))))
+        (lambda ()
+          (unless (unbox released)
+            (set-box! released #t)
+            (guard (e (#t (void))) ((current-lock-release) l)))))))
 
   (define (with-exclusive-lock path proc)
     (call-with-lock 'with-exclusive-lock path 'exclusive proc))

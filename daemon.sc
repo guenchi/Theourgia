@@ -41,7 +41,7 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs io simple) (rnrs io ports)
           (only (chezscheme) real-time getenv write newline read void let-values
-                file-exists? char-whitespace? lookahead-char get-char
+                char-whitespace? lookahead-char get-char
                 register-signal-handler
                 irritants-condition? condition-irritants filter raise condition
                 make-message-condition make-irritants-condition
@@ -77,7 +77,8 @@
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
-                mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode))
+                mkdir-p! unlink! file-is-regular? file-is-directory? path-device-inode
+                entry-type))
 
   ;; ---- where a daemon lives ---------------------------------------------
   ;;
@@ -782,8 +783,11 @@
   ;; always answered `(error no-store <path>)` for this, from `no-store?`
   ;; in `rpc.sc`; the two routes disagreed about the most ordinary
   ;; failure there is, and the daemon's version told nobody anything.
+  ;; THROUGH THE DOOR (F100a): absent is "no store here", as before; a
+  ;; meta.sexp whose directory cannot be searched raises instead of
+  ;; reading as a missing store.
   (define (store-here? store)
-    (file-exists? (string-append store "/meta.sexp")))
+    (not (eq? (entry-type (string-append store "/meta.sexp")) 'absent)))
 
   (define (store-loop store main-pid)
     (unless (store-here? store)

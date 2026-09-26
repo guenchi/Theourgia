@@ -26,22 +26,15 @@
   ("build.ss" (libraries) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-directory? 1 keep a "build.ss: build output and source paths, not writer layout")
   ("build.ss" (copy-programs!) file-exists? 2 keep a "build.ss: build output and source paths, not writer layout")
-  ("core.sc" (main) file-exists? 1 keep a "not writer layout: daemon socket path")
-  ("client.sc" () file-exists? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("client.sc" (nearest-existing) file-exists? 1 keep a "not writer layout: client path search")
-  ("client.sc" (log-length) file-exists? 1 keep a "not writer layout: daemon log file")
   ("code-project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("code-project.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("code-project.sc" (directory-files walk) file-is-directory? 1 keep a "not writer layout: import-code input tree")
   ("code-project.sc" (directory-files walk) file-is-regular? 1 keep a "not writer layout: import-code input tree")
   ("code-project.sc" (directory-files) file-is-directory? 1 keep a "not writer layout: import-code input dir")
-  ("daemon.sc" () file-exists? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("daemon.sc" (store-here?) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("evidence-index.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("evidence-index.sc" (files) file-is-directory? 1 convert c "evidence inventory lists writer files (R2f)")
-  ("evidence-index.sc" (inventory) file-exists? 1 convert c "evidence inventory of writer files (R2f)")
   ("ffi.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("ffi.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("ffi.sc" (file-is-directory?) file-is-directory? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
@@ -50,43 +43,16 @@
   ("ffi.sc" (mkdir-one!) file-is-directory? 1 convert a "generic helper mkdir-one!: the predicate is now entry-type and raises on an unreadable path (R1)")
   ("ffi.sc" (rss-linux) file-exists? 1 keep a "not writer layout: /proc on linux")
   ("ffi.sc" (path-version) file-is-regular? 1 convert a "generic helper path-version: the predicate is now entry-type and raises on an unreadable path (R1)")
-  ("log.sc" (snapshot-read) file-exists? 1 keep a "not writer layout: snapshot file under snap/")
-  ("log.sc" (open-load) file-exists? 1 keep a "not writer layout: store meta.sexp")
-  ("log.sc" (metadata-flush!) file-exists? 1 convert b "metadata-flush!: the delivery barrier (R1a)")
-  ("log.sc" (read-instance) file-exists? 1 keep a "not writer layout: store instance.sexp")
-  ("log.sc" (machine-id) file-exists? 2 keep a "not writer layout: machine home machine-id")
   ("log.sc" (ensure-machine-home!) file-is-directory? 1 keep a "not writer layout: machine home")
-  ("log.sc" (registry-inside-store?) file-exists? 1 keep a "not writer layout: store meta.sexp")
-  ("log.sc" (local-writer-name) file-exists? 1 convert b "local-writer-name scans owner.sexp (R2g)")
-  ("log.sc" (segment-range) file-exists? 1 convert b "segment-range (publish)")
   ("log.sc" (ensure-directory!) file-is-directory? 1 convert b "ensure-directory! under the writer (incoming/quarantine)")
-  ("log.sc" (overwrite-segment!) file-exists? 1 convert b "overwrite-segment! target")
-  ("log.sc" (evidence-path) file-exists? 1 convert b "evidence-path under incoming/")
-  ("log.sc" (barrier-artefacts) file-exists? 1 convert b "barrier-artefacts: recovery barrier inventory (Implementation checks)")
   ("log.sc" (ensure-writer-directory!) file-is-directory? 1 convert b "ensure-writer-directory! (publish)")
-  ("log.sc" (active-current-segment?) file-exists? 1 convert b "active-current-segment? owner.sexp (R2d, publish)")
-  ("log.sc" (generation-present?) file-exists? 1 convert b "generation-present? (adopt)")
-  ("log.sc" (retired-put-clause!) file-exists? 1 convert b "retired-put-clause! (adopt)")
-  ("log.sc" (step-owner-installed!) file-exists? 1 convert b "step-owner-installed! (adopt)")
-  ("log.sc" (writer-owner-nonce) file-exists? 1 convert b "writer-owner-nonce: recovery read (R1a REFUSE)")
-  ("log.sc" (writer-owner-tx) file-exists? 1 convert b "writer-owner-tx: recovery read")
-  ("log.sc" (transaction-state) file-exists? 1 convert b "transaction-state owner.sexp (adopt)")
-  ("log.sc" (retired-successor) file-exists? 1 convert b "retired-successor: recovery read")
-  ("log.sc" (segment-length) file-exists? 1 convert b "segment-length (adopt)")
   ("log.sc" (install-snapshot!) file-is-directory? 1 keep a "not writer layout: snapshot directory; creation is refused on an incomplete reduction in c")
   ("log.sc" (select-readable-snapshot) file-is-directory? 1 keep a "not writer layout: the snapshot directory; select-snapshot answers writer-unreadable before this when any writer is unreadable (K8)")
-  ("operation-packet.sc" (frozen-operation) file-exists? 1 keep a "not writer layout: store/operation-packets")
   ("project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("project.sc" (nearest-existing) file-exists? 1 keep a "not writer layout: export-md output dir")
   ("project.sc" (md-files) file-is-directory? 1 keep a "not writer layout: import-md input dir")
   ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
-  ("rpc.sc" (no-store?) file-exists? 1 keep a "not writer layout: store meta.sexp")
   ("store.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("store.sc" (foreign-writer) file-exists? 1 convert b "foreign-writer scans owner.sexp at init")
-  ("store.sc" (store-init!) file-exists? 1 keep a "not writer layout: store meta.sexp")
-  ("store.sc" (check-snapshots) file-exists? 1 keep a "not writer layout: snapshot dir in check (check is a)")
   ("working.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("working.sc" (writer-for) file-exists? 2 convert b "writer-for owner.sexp and retired.sexp")
   )
 
 (handlers
@@ -301,20 +267,20 @@
    "verified-record reads a writer segment; unreadable-entry propagates so the index answers unknown (R2f); a failed read of a readable file keeps #f"
    (failure (#t #f)))
   ("ffi.sc" (file-create-exclusive!) 1 guard
-   ((i/o-file-already-exists-error? e) (fs-error? e) #t)
+   ((i/o-file-already-exists-error? e) (fs-error? e) (unreadable-entry? e) #t)
    propagate a
-   "re-raises"
-   (e ((i/o-file-already-exists-error? e) #f) ((fs-error? e) (raise e)) (#t (raise e))))
-  ("ffi.sc" (mkdir-one!) 1 guard
+   "re-raises; an existing name is #f; any other failure of the create is durable-error with the errno mapped from Chez's condition (F100a)"
+   (e ((i/o-file-already-exists-error? e) #f) ((fs-error? e) (raise e)) ((unreadable-entry? e) (raise e)) (#t (raise (fs-err (quote create) path (condition-errno e))))))
+  ("ffi.sc" (close-unwritten-port!) 1 guard
+   ((unreadable-entry? e) #t)
+   propagate a
+   "the close of a port Chez opened to create a file and never wrote: its failure is raised again as unreadable-entry naming the path (F100a review r1, D6)"
+   (e ((unreadable-entry? e) (raise e)) (#t (chez-unreadable! path e))))
+  ("ffi.sc" (call-with-lock) 1 guard
    (#t)
-   propagate a
-   "mkdir-one!: catch-all then re-checks with the predicate; rewritten with R1"
-   (e (#t (unless (file-is-directory? path) (raise (fs-err (quote mkdir) path #f))))))
-  ("ffi.sc" (unlink!) 1 guard
-   ((fs-error? e) #t)
-   propagate a
-   "re-raises"
-   (e ((fs-error? e) (raise e)) (#t (raise (fs-err (quote unlink) path #f)))))
+   unrelated a
+   "cleanup on an escape only: the lock's release is quiet so the condition already leaving is the one reported; on a normal exit the release is checked and raises (header obligation a; F100a review r1, D7)"
+   (e (#t (void))))
   ("ffi.sc" (rss-linux) 1 guard
    (#t)
    unrelated a
@@ -343,13 +309,13 @@
   ("ffi.sc" (file-ensure!) 1 guard
    ((fs-error? e) (unreadable-entry? e) #t)
    propagate a
-   "re-raises; unreadable-entry passes unchanged"
-   (e ((fs-error? e) (raise e)) ((unreadable-entry? e) (raise e)) (#t (raise (fs-err (quote create) path #f)))))
-  ("ffi.sc" (file-size) 1 guard
-   ((and (fs-error? e) (fs-error-errno e) (not (absence-errno? (fs-error-errno e)))))
-   unrelated a
-   "file-size: catches the open's durable error only; a non-absence errno is raised again as unreadable-entry naming the path (R1, K12), ENOENT and ENOTDIR stay the durable error"
-   (e ((and (fs-error? e) (fs-error-errno e) (not (absence-errno? (fs-error-errno e)))) (unreadable! path (fs-error-errno e)))))
+   "re-raises; unreadable-entry passes unchanged; the create's own failure is durable-error with the errno mapped from Chez's condition (F100a)"
+   (e ((fs-error? e) (raise e)) ((unreadable-entry? e) (raise e)) (#t (raise (fs-err (quote create) path (and (condition? e) (condition-errno e)))))))
+  ("ffi.sc" (path-version) 1 guard
+   ((unreadable-entry? e) #t)
+   propagate a
+   "path-version's times: Chez's condition is raised again as unreadable-entry naming the path, errno mapped (F100a D1)"
+   (e ((unreadable-entry? e) (raise e)) (#t (let ((code (and (condition? e) (condition-errno e)))) (raise (make-unreadable-entry path (if code (c-strerror code) "the entry's times cannot be read") (and code (errno-reason code))))))))
   ("ffi.sc" (real-path) 1 guard
    (#t)
    unrelated a
@@ -370,6 +336,11 @@
    propagate a
    "re-raises"
    (e (#t (close-quietly fd) (raise e))))
+  ("log.sc" (present-or-unreadable-skip?) 1 guard
+   ((unreadable-entry? e))
+   conservative a
+   "F77b R2g, by ruling (F100a): three sites, one rule -- log.sc's local-writer-name and barrier-artefacts and working.sc's writer-for read an owner.sexp or retired.sexp that cannot be stat'ed as absent, as the native presence test they replace did; the only places an unreadable entry still reads as absent"
+   (e ((unreadable-entry? e) #f)))
   ("log.sc" (atomic-write!) 1 guard
    (#t)
    propagate b
@@ -430,11 +401,6 @@
    unrelated a
    "snapshot parse"
    (e (#t (quote bad))))
-  ("log.sc" (read-whole) 1 guard
-   (#t)
-   unrelated a
-   "read-whole: guards close-port in cleanup only; the read itself is outside it"
-   (e (#t (if #f #f))))
   ("log.sc" (quarantine-of) 1 guard
    (#t)
    unrelated a
@@ -725,11 +691,6 @@
    unrelated b
    "segment-first-ts: guards the decode of bytes already read; the read is outside"
    (e (#t #f)))
-  ("log.sc" (read-first-line) 1 guard
-   (#t)
-   unrelated b
-   "read-first-line: guards close-port in cleanup only"
-   (e (#t (if #f #f))))
   ("log.sc" (write-line!) 1 guard
    (#t)
    unrelated b
@@ -1030,3 +991,44 @@
     (raw-torn discovery-torn)
     (raw-retired-tail discovery-retired-tail)
     ))
+
+;; close: (enclosing-definitions callee ordinal category reason)
+;;   every reference in ffi.sc to c-close, c-closedir, close-quietly,
+;;   current-lock-release, close-port, close-input-port, close-output-port,
+;;   fd-close and the forms that close what they open (call-with-input-file,
+;;   call-with-output-file, with-input-from-file, with-output-to-file,
+;;   call-with-port), and every unlock (c-flock ... LOCK_UN), by the close
+;;   census of unreadable-census.sc (F100a, rulings H1, I and J). category is one of four: checked, escape,
+;;   contention or out-of-scope; the line is the reader's, not pinned.
+(close
+  ((above-stdio) c-close 1 escape "the dup failed: the held descriptors are released and the durable-error is raised")
+  ((above-stdio) c-close 2 escape "the dup failed: the original descriptor is released before the raise")
+  ((above-stdio) c-close 3 out-of-scope "a dup landed above 2: the held low descriptors are released; process descriptors, D1's scope exclusion")
+  ((above-stdio) c-close 4 out-of-scope "a dup landed above 2: the original descriptor is released; process descriptor, D1's scope exclusion")
+  ((redirect-stdio!) close-quietly 1 out-of-scope "after the dup2s: the /dev/null descriptor is released; stdio, D1's scope exclusion")
+  ((redirect-stdio!) close-quietly 2 out-of-scope "after the dup2s: the log descriptor is released; stdio, D1's scope exclusion")
+  ((redirect-stdio!) fd-close 1 out-of-scope "inside the failure guard, before the re-raise: fd-close raises on its own failure, which would replace the condition leaving; stdio, D1's scope exclusion, the queue candidate")
+  ((redirect-stdio!) fd-close 2 out-of-scope "inside the failure guard, before the re-raise: fd-close raises on its own failure, which would replace the condition leaving; stdio, D1's scope exclusion, the queue candidate")
+  ((rss-linux) call-with-input-file 1 out-of-scope "the implicit close of /proc's statm, not a store entry; rss-linux is outside the door")
+  ((unix-socket-connect) c-close 1 escape "setsockopt raised: the socket is released and the condition re-raised")
+  ((unix-socket-connect) c-close 2 escape "connect failed: the socket is released before the raise")
+  ((close-unwritten-port!) close-port 1 checked "the close of a port Chez opened to create and never wrote: its failure raises unreadable-entry")
+  ((overwrite-entry!) close-quietly 1 escape "the unwind after-thunk, only when the normal path did not reach its fd-close")
+  ((overwrite-entry!) fd-close 1 checked "the normal path's close of the written descriptor: durable-error on failure")
+  ((read-entry/errno) c-close 1 checked "through read-closing: checked on the normal path, quiet on an escape")
+  ((read-entry-range) c-close 1 checked "through read-closing: checked on the normal path, quiet on an escape")
+  ((list-entries/errno) c-closedir 1 checked "through read-closing: checked on the normal path, quiet on an escape")
+  ((fd-close) c-close 1 checked "the descriptor's own close: durable-error when written, unreadable-entry when not")
+  ((close-quietly) c-close 1 escape "the quiet close itself; its category belongs to each caller, pinned by its own use (escape in the unwinds and guards, out-of-scope in redirect-stdio!)")
+  ((fsync-dir!) c-close 1 checked "through read-closing: checked on the normal path, quiet on an escape")
+  ((file-size) c-close 1 checked "through read-closing: checked on the normal path, quiet on an escape")
+  ((lock-acquire!) close-quietly 1 escape "inside the guard that re-raises a failed flock")
+  ((lock-try-acquire!) close-quietly 1 escape "inside the guard that re-raises a raising flock call")
+  ((lock-try-acquire!) c-close 1 checked "the contention answer: checked, then #f (F100a review r2, ruling H1)")
+  ((lock-try-acquire!) close-quietly 2 escape "a flock failure other than contention: released, then unreadable-entry raised")
+  ((lock-release!) unlock 1 checked "the unlock's failure raises unreadable-entry after the close is attempted")
+  ((lock-release!) c-close 1 checked "the close's failure raises unreadable-entry; close-fail reaches it")
+  ((call-with-lock) current-lock-release 1 checked "the normal exit's release: its failure raises")
+  ((call-with-lock) current-lock-release 2 escape "the unwind's release on an escape: quiet, so the condition leaving is the one reported")
+  ((barrier!) close-port 1 out-of-scope "the injection FIFO's close, not a store entry; barrier! is the fault injection's, outside the door")
+  )

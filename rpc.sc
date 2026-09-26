@@ -48,7 +48,7 @@
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
           (only (theourgia datum-code) datum-source-read)
-          (only (theourgia ffi) read-entry)
+          (only (theourgia ffi) read-entry entry-type)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -296,8 +296,11 @@
   ;; opens it. Letting the load layer discover it works, but it answers
   ;; with the kind of the file that was missing rather than with the fact
   ;; the caller can act on: there is no store here.
+  ;; THROUGH THE DOOR (F100a): absent is no-store, as before; a meta.sexp
+  ;; whose directory cannot be searched raises instead of reading as no
+  ;; store (F100b translates what escapes).
   (define (no-store? store)
-    (and (not (file-exists? (string-append store "/meta.sexp")))
+    (and (eq? (entry-type (string-append store "/meta.sexp")) 'absent)
          (list 'error 'no-store store)))
 
   ;; WHETHER AN ANSWER IS A SUCCESS IS A RULE, not a shape anyone may

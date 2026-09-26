@@ -195,10 +195,37 @@
 (want "D1-05 the facade list is the seven this tree declares"
       facade-names '(digest wire ffi sched net proc json))
 
-;; KEY: ZERO DEFINITIONS IN sched. Measured rather than asserted in prose:
-;; the file is read as data and every `define` in it counted.
-(want "D1-05 sched.sc defines nothing of its own"
-      (defined-names (path-of 'sched)) '())
+;; KEY: ONE DEFINITION IN sched, BY NAME (F100a, ruling A2). Measured rather
+;; than asserted in prose: the file is read as data and every `define` in
+;; it counted. Its own start-scheduler exists because Chez runs a
+;; library's body only when a variable the library defines is referenced:
+;; it hands ffi the mutation record's key, (lambda () self), and then
+;; starts igropyr's scheduler. A second definition is red here.
+(want "D1-05 sched.sc defines exactly (start-scheduler)"
+      (defined-names (path-of 'sched)) '(start-scheduler))
+
+;; AND THAT DEFINITION DOES WHAT THE ROW ABOVE SAYS IT IS FOR: read as
+;; data, its body names ffi's setter and igropyr's start-scheduler,
+;; imported renamed. A start-scheduler that forgot the setter, or called
+;; itself, would still satisfy the name row.
+(define (symbols-in x)
+  (cond ((symbol? x) (list x))
+        ((pair? x) (append (symbols-in (car x)) (symbols-in (cdr x))))
+        (else '())))
+(want "D1-05 TWIN: sched's start-scheduler calls mutation-set-self! and igropyr's start-scheduler, imported renamed"
+      (let* ((lib (car (forms-of (path-of 'sched))))
+             (def (find (lambda (f) (and (pair? f) (eq? (car f) 'define)
+                                         (pair? (cadr f)) (eq? (caadr f) 'start-scheduler)))
+                        (library-body lib)))
+             (syms (if def (symbols-in (cddr def)) '()))
+             (import-specs (cdr (list-ref lib 3))))
+        (list (and (memq 'mutation-set-self! syms) #t)
+              (and (memq 'igropyr-start-scheduler syms) #t)
+              (and (member '(rename (only (igropyr actor) start-scheduler)
+                                    (start-scheduler igropyr-start-scheduler))
+                           import-specs)
+                   #t)))
+      '(#t #t #t))
 
 ;; NOTE: AND THE OTHER TWO DO DEFINE THINGS, which is what makes the row
 ;; above a statement about `sched` rather than about the reader. An
@@ -218,10 +245,17 @@
     conn-on-close! proc-spawn! proc-write! proc-kill! proc-close! proc-stdin-close!
     proc-read-start! proc-read-stop! sha256 bytevector->hex))
 
+;; ONE STATED EXCEPTION (F100a, ruling A2): sched's own start-scheduler,
+;; which D1-05 pins and whose body its TWIN reads. It is not a copy of
+;; igropyr's: it forwards to it by its renamed import.
+(define (allowed-shadow? facade n)
+  (and (eq? facade 'sched) (eq? n 'start-scheduler)))
 (for-each
   (lambda (name)
     (let* ((here (defined-names (path-of name)))
-           (clash (filter (lambda (n) (memq n igropyr-primitive-names)) here)))
+           (clash (filter (lambda (n) (and (memq n igropyr-primitive-names)
+                                           (not (allowed-shadow? name n))))
+                          here)))
       (want (string-append "D1-06 " (symbol->string name)
                            ".sc defines no name igropyr owns")
             clash '())))

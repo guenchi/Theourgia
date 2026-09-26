@@ -19,7 +19,8 @@
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
-          (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!))
+          (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
+                entry-bytes))
   (define (code-field state id name)
     ;; THE VIEW, because a projection writes what a reader would see --
     ;; a code block's `name` is derived from its source and is not in the
@@ -33,9 +34,9 @@
   (define (code-files state)
     (filter (lambda (id) (and (alive? state id) (eq? 'file (code-field state id 'kind))))
             (map cadr (state-datum state))))
-  (define (read-code-bytes path)
-    (call-with-port (open-file-input-port path)
-      (lambda (p) (let ((b (get-bytevector-all p))) (if (eof-object? b) #vu8() b)))))
+  ;; THROUGH THE DOOR (F100a): the file must be there, so absence raises
+  ;; like any other failure, as the native read did.
+  (define (read-code-bytes path) (entry-bytes path))
   (define (relative-safe? s)
     (and (string? s) (> (string-length s) 0) (not (char=? (string-ref s 0) #\/))
          (not (exists (lambda (c) (memv c '(#\nul #\\))) (string->list s)))

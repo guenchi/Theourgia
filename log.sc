@@ -51,7 +51,7 @@
 ;;; states and both are legal (section 4.4).
 
 (library (theourgia log)
-  (export directory-entry-durable!
+  (export directory-entry-durable! present-or-unreadable-skip?
           discover-prefix
           discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
@@ -711,7 +711,7 @@
     (define (reject reason)
       (trace-event! 'snapshot-read (cons path reason) #f)
       (values #f reason))
-    (if (not (file-exists? path))
+    (if (not (entry-present? path))
         (values #f 'absent)
         (let* ((bytes (read-whole path))
                (n (bytevector-length bytes)))
@@ -924,18 +924,27 @@
   ;; call-with-port closes on a NORMAL return only, so an I/O error part
   ;; way through a read would leak the descriptor and a caller that
   ;; retries would leak one per attempt.
-  (define (read-whole path)
-    (let ((port (open-file-input-port path))
-          (open? (vector #t)))
-      (dynamic-wind
-        (lambda () (if #f #f))
-        (lambda ()
-          (let ((b (get-bytevector-all port)))
-            (if (eof-object? b) (make-bytevector 0) b)))
-        (lambda ()
-          (when (vector-ref open? 0)
-            (vector-set! open? 0 #f)
-            (guard (e (#t (if #f #f))) (close-port port)))))))
+  (define (read-whole path) (entry-bytes path))
+
+  ;; A PRESENCE TEST THROUGH THE DOOR (F100 D1): absent is #f, a path whose
+  ;; stat fails for any other reason raises unreadable-entry, never #f. The
+  ;; native predicate this replaces read an unsearchable parent as absence.
+  (define (entry-present? p) (not (eq? (entry-type p) 'absent)))
+
+  ;; R2g'S SKIP, KEPT AS RULED (F77b), THROUGH THE DOOR (F100a). THREE SITES,
+  ;; ONE RULE: local-writer-name here and working.sc's writer-for ask, of
+  ;; every writer, whether its owner.sexp (and, for writer-for, its
+  ;; retired.sexp) is there, and barrier-artefacts asks the same of every
+  ;; writer's owner.sexp and retired.sexp; a file that cannot be stat'ed
+  ;; reads as absent, as the native presence test read it. Converting
+  ;; the test to a raise refused every write and every draft verb beside
+  ;; any unreadable mirror (measured: F100a suite-1, U2c and the
+  ;; unreadable-routes CONTROL). These are the only places an
+  ;; unreadable-entry becomes a value by ruling; the census pins the one
+  ;; definition.
+  (define (present-or-unreadable-skip? path)
+    (guard (e ((unreadable-entry? e) #f))
+      (not (eq? (entry-type path) 'absent))))
 
   (define (quarantine-of store writer)
     (let* ((p (writer-file store writer "quarantine.sexp"))
@@ -1641,7 +1650,7 @@
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
     (let ((meta-path (string-append store "/meta.sexp")))
-      (unless (file-exists? meta-path)
+      (unless (entry-present? meta-path)
         (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
       (let ((meta (guard (e (#t #f))
                     (string->sexpr-extended (utf8->string (read-whole meta-path))))))
@@ -2463,7 +2472,7 @@
       (for-each
         (lambda (name)
           (let* ((path (string-append store "/" name))
-                 (version (and (file-exists? path)
+                 (version (and (entry-present? path)
                                (segment-sha (read-whole path)))))
             (when (and version (not (equal? version (remembered "" name))))
               (flush-file! path stage)
@@ -2685,7 +2694,7 @@
   ;; log-begin, because that is the window the adopt happens in.
   (define (read-instance store)
     (let ((path (string-append store "/instance.sexp")))
-      (and (file-exists? path)
+      (and (entry-present? path)
            (let ((d (guard (e (#t 'malformed))
                       (string->sexpr-extended (utf8->string (read-whole path))))))
              (if (eq? d 'malformed) 'malformed d)))))
@@ -2777,7 +2786,7 @@
   ;; because that is the thing it qualifies.
   (define (machine-id)
     (let ((path (string-append (machine-home) "/machine.sexp")))
-      (if (file-exists? path)
+      (if (entry-present? path)
           (guard (e (#t "unknown"))
             (alist-ref (string->sexpr-extended (utf8->string (read-whole path))) 'machine))
           ;; MINTED UNDER THE MACHINE LOCK, and re-read inside it. Two
@@ -2788,7 +2797,7 @@
             (ensure-machine-home! 'registry)
             (with-machine-lock
               (lambda ()
-                (if (file-exists? path)
+                (if (entry-present? path)
                     (guard (e (#t "unknown"))
                       (alist-ref (string->sexpr-extended (utf8->string (read-whole path)))
                                  'machine))
@@ -3123,7 +3132,7 @@
                (cond
                  ((> depth 64) #f)
                  ((and (or (> depth 0) (not skip-self))
-                       (file-exists? (string-append p "/meta.sexp")))
+                       (entry-present? (string-append p "/meta.sexp")))
                   #t)
                  (else
                   (let* ((up (string-append p "/.."))
@@ -3150,7 +3159,7 @@
   ;; machine may no longer extend, and adopting it again would branch
   ;; from a generation that has already been superseded.
   (define (local-writer-name store)
-    (let ((locals (filter (lambda (w) (file-exists? (writer-file store w "owner.sexp")))
+    (let ((locals (filter (lambda (w) (present-or-unreadable-skip? (writer-file store w "owner.sexp")))
                           (store-writers store))))
       (let loop ((ws locals))
         (cond
@@ -3298,7 +3307,7 @@
   (define (segment-range store writer n)
     (let ((path (string-append (writer-directory store writer)
                                "/" (segment-file-name n))))
-      (and (file-exists? path)
+      (and (entry-present? path)
            (seq-range (segment-records (read-whole path))))))
 
   ;; WHERE THE HISTORY BELOW THIS SEGMENT ENDS. Layout coordinates come
@@ -3422,6 +3431,11 @@
   ;; untested by choice; they were untestable, and that is indis-
   ;; tinguishable from tested until someone tries to write the row.
   (define (stage-candidate! store writer bytes stage)
+    ;; AN ARM POINT BEFORE PUBLISH'S FIRST STAGING WRITE (F100a, design D2):
+    ;; a fixture parks the process here to change the store between the
+    ;; checks that come before it and the writes that follow. It does
+    ;; nothing unless THEOURGIA_BARRIER names it; F100d is its first user.
+    (barrier! 'before-stage)
     (parameterize ((theourgia-stage stage))
     (let* ((target (string-append (writer-directory store writer) "/publish"))
            (tmp (temp-name-for target))
@@ -3479,7 +3493,7 @@
            (target (string-append dir "/" (segment-file-name segment)))
            (damaged (string-append dir "/damaged"))
            (kept (vector #f)))
-      (when (file-exists? target)
+      (when (entry-present? target)
         (ensure-directory! damaged)
         (let ((evidence (evidence-path damaged segment)))
           (vector-set! kept 0 evidence)
@@ -3516,7 +3530,7 @@
       (let ((p (string-append damaged "/" (segment-file-name segment)
                               "." (number->string (wall-clock-ms))
                               "." (number->string n))))
-        (if (file-exists? p) (loop (+ n 1)) p))))
+        (if (entry-present? p) (loop (+ n 1)) p))))
 
   ;; THE RANGE IS TAKEN FROM THE BYTES BEING PUBLISHED, once, here. They
   ;; have passed their hash and their contiguity by the time anything is
@@ -3848,7 +3862,14 @@
       ;; THE TABLE IS WHAT IS THERE. A store with no retirement record
       ;; has nothing to promise about one, and listing the path anyway
       ;; would put a row in the table that no fault can be armed at.
-      (filter (lambda (entry) (file-exists? (cdr entry))) candidates)))
+      ;; AN ARTEFACT THAT CANNOT BE STAT'ED IS LEFT OUT, as the native
+      ;; presence test left it out (F100a, the R2g rule's third site): a
+      ;; mirror whose directory cannot be searched put its owner.sexp and
+      ;; retired.sexp in every commit's barrier, and a raise here answered
+      ;; every write beside it `unknown` after it had committed (measured:
+      ;; F100a suite-1, U2c). What a barrier does with an unreadable
+      ;; artefact it must touch is F100d's (design D2).
+      (filter (lambda (entry) (present-or-unreadable-skip? (cdr entry))) candidates)))
 
   ;; THE ROWS THE ANSWER DEPENDS ON, named rather than assumed. Absence
   ;; and success are the same silence: flush-file! does nothing to a path
@@ -4205,7 +4226,7 @@
   ;; current is not known", not "none is", and a repair that replaced the
   ;; live segment is the thing this check exists to refuse.
   (define (active-current-segment? store writer segment)
-    (and (file-exists? (writer-file store writer "owner.sexp"))
+    (and (entry-present? (writer-file store writer "owner.sexp"))
          (not (retired-of store writer))
          (let ((p (guard (e (#t #f)) (discover-prefix store writer 'held-exclusive))))
            (and p
@@ -4288,7 +4309,7 @@
       (and r
            (not (eq? (car r) 'malformed))
            (equal? (list-ref r 3) (gen-tx g))
-           (file-exists? (writer-file store (gen-new g) "owner.sexp")))))
+           (entry-present? (writer-file store (gen-new g) "owner.sexp")))))
 
 ;; ---- the adopt transaction (section 4.1) ----------------------------------
 
@@ -4343,7 +4364,7 @@
   ;; other file can supply.
   (define (retired-put-clause! store writer . clauses)
     (let* ((p (writer-file store writer "retired.sexp"))
-           (d (and (file-exists? p)
+           (d (and (entry-present? p)
                    (guard (e (#t #f))
                      (string->sexpr-extended (utf8->string (read-whole p)))))))
       (unless (list? d)
@@ -4602,9 +4623,7 @@
     ;; adopt. It carries no history, so creating it cannot corrupt
     ;; anything; its absence is what makes the new generation unusable.
     (let ((seg (string-append (writer-directory store new) "/" (segment-file-name 1))))
-      (unless (file-exists? seg)
-        (call-with-port (open-file-output-port seg (file-options no-fail))
-          (lambda (p) (if #f #f)))))
+      (file-ensure! seg))
     (directory-entry-durable! (writer-directory store new) 'registry))
 
   ;; THE TRANSACTION IS NOT AN ARGUMENT ANY MORE. It was one only
@@ -4639,14 +4658,14 @@
   ;; has to ask about a particular writer.
   (define (writer-owner-nonce store writer)
     (let ((p (writer-file store writer "owner.sexp")))
-      (and (file-exists? p)
+      (and (entry-present? p)
            (let ((d (guard (e (#t #f))
                       (string->sexpr-extended (utf8->string (read-whole p))))))
              (and (list? d) (alist-ref d 'instance))))))
 
   (define (writer-owner-tx store writer)
     (let ((p (writer-file store writer "owner.sexp")))
-      (and (file-exists? p)
+      (and (entry-present? p)
            (let ((d (guard (e (#t #f))
                       (string->sexpr-extended (utf8->string (read-whole p))))))
              (and (list? d) (transaction-of d))))))
@@ -4656,7 +4675,7 @@
     (let* ((r (retired-of store old))
            (g (generation-with-tx reg tx))
            (new (and g (gen-new g)))
-           (owner? (and new (file-exists? (writer-file store new "owner.sexp"))))
+           (owner? (and new (entry-present? (writer-file store new "owner.sexp"))))
            (successor (and r (not (eq? (car r) 'malformed)) (retired-successor store old))))
       (list (cons 'retired (and r (not (eq? (car r) 'malformed)) (equal? (list-ref r 3) tx)))
             (cons 'gen (and g (gen-state g)))
@@ -4665,7 +4684,7 @@
 
   (define (retired-successor store writer)
     (let ((p (writer-file store writer "retired.sexp")))
-      (and (file-exists? p)
+      (and (entry-present? p)
            (let ((d (guard (e (#t #f))
                       (string->sexpr-extended (utf8->string (read-whole p))))))
              (and (list? d)
@@ -5086,7 +5105,7 @@
 
   (define (segment-length store writer seg)
     (let ((p (string-append (writer-directory store writer) "/" (segment-file-name seg))))
-      (if (file-exists? p) (bytevector-length (read-whole p)) 0)))
+      (if (entry-present? p) (bytevector-length (read-whole p)) 0)))
 
   (define (derive-writer-id store tx)
     (let ((digits "0123456789abcdefghijklmnopqrstuvwxyz")
@@ -5684,18 +5703,7 @@
   ;; Enough bytes to hold a first line, not the whole file. A record is
   ;; a line and the first one is all the age needs; reading the segment
   ;; entire made every append pay for its size.
-  (define (read-first-line path)
-    (let ((port (open-file-input-port path))
-          (open? (vector #t)))
-      (dynamic-wind
-        (lambda () (if #f #f))
-        (lambda ()
-          (let ((b (get-bytevector-n port 4096)))
-            (if (eof-object? b) (make-bytevector 0) b)))
-        (lambda ()
-          (when (vector-ref open? 0)
-            (vector-set! open? 0 #f)
-            (guard (e (#t (if #f #f))) (close-port port)))))))
+  (define (read-first-line path) (read-entry-range path 0 4096))
 
   ;; STEP 8 AND 9: the write loop, the log flush, then the apply -- and
   ;; the apply is INSIDE the lock. A record applied after the lock was

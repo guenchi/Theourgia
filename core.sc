@@ -38,7 +38,7 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
               verb-spelling-error)
-        (only (theourgia ffi) env-or)
+        (only (theourgia ffi) env-or entry-type)
         (only (theourgia working) working-snapshot working-baseline)
         (only (theourgia store) open-and-reduce))
 
@@ -522,7 +522,7 @@
                      (socket-path* (or (argument-option nodes "--socket") (socket-path store)))
                      (resolved (argument-stdin verb (argument-remove nodes '("--store" "--actor" "--wire" "--socket"))
                                  (lambda () (read-all-text (current-input-port))))))
-                 (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (file-exists? socket-path*))
+                 (when (and (not (equal? (getenv "THEOURGIA_LOCAL") "1")) (not (eq? (entry-type socket-path*) 'absent)))
                    (forward-then-exit! socket-path* store actor verb resolved
                                        (argument-option nodes "--wire")))
                  (rpc-dispatch-parsed store verb resolved actor #f (environment-writer))))))

@@ -16,7 +16,8 @@
   (export indexed-records index-checkpoint! index-forget-memory!)
   (import (rnrs) (theourgia request) (theourgia wire)
           (only (theourgia digest) sha256 bytevector->hex)
-          (only (theourgia ffi) directory-entries file-is-directory? path-version trace-event!)
+          (only (theourgia ffi) directory-entries file-is-directory? path-version trace-event!
+                entry-type entry-bytes read-entry-range)
           (only (theourgia log) store-writers writer-directory store-id-of
                 enumerate-segment-files segment-file-name read-manifest manifest-segments
                 discover-prefix discovery-quarantine atomic-write!))
@@ -29,9 +30,7 @@
   (define (digest x) (bytevector->hex (sha256 (encode x))))
   (define (key x) (sexpr->string-extended x))
   (define (table) (make-hashtable string-hash string=?))
-  (define (read-bytes path)
-    (call-with-port (open-file-input-port path)
-      (lambda (p) (let ((b (get-bytevector-all p))) (if (eof-object? b) #vu8() b)))))
+  (define (read-bytes path) (entry-bytes path))
   (define (files dir)
     (if (file-is-directory? dir)
         (map (lambda (n) (string-append dir "/" n)) (list-sort string<? (directory-entries dir))) '()))
@@ -39,7 +38,7 @@
     (map (lambda (n) (string-append (writer-directory store writer) "/" (segment-file-name n)))
          (enumerate-segment-files store writer)))
   (define (inventory store)
-    (map (lambda (p) (cons p (and (file-exists? p) (path-version p))))
+    (map (lambda (p) (cons p (and (not (eq? (entry-type p) 'absent)) (path-version p))))
       (append (list (string-append store "/meta.sexp") (string-append store "/instance.sexp"))
         (apply append
           (map (lambda (w)
@@ -139,10 +138,7 @@
             (hashtable-set! caches cache-key fresh) fresh))))
   (define (verified-record e)
     (let ((actual (guard (failure (#t #f))
-                    (call-with-port (open-file-input-port (car e))
-                      (lambda (p)
-                        (set-port-position! p (caddr e))
-                        (get-bytevector-n p (bytevector-length (cadddr e))))))))
+                    (read-entry-range (car e) (caddr e) (bytevector-length (cadddr e))))))
       (trace-event! 'identity-source-decode (car e) (and (bytevector? actual) (bytevector-length actual)))
       (if (and (not (eq? (list-ref e 4) 'index-evidence-missing)) (equal? actual (cadddr e)))
           (frame-record (cadr e) actual (list-ref e 4))

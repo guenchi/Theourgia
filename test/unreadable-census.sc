@@ -340,7 +340,9 @@
                              (list (list 'body (car k)))))))))
              have)))))
 
-(define categories '(propagate fact refuse unrelated))
+;; `conservative` SINCE F100a: a handler that chooses the branch a ruling
+;; names as the safe one (the R2g skip, F77b: log.sc's present-or-unreadable-skip?), stated per pin.
+(define categories '(propagate fact refuse unrelated conservative))
 (define (pin-shape-problems pin)
   (append
     (map (lambda (e) (list 'presence e))
@@ -463,6 +465,176 @@
       '())
 (want "U11-iii the raw accessors appear only in the record and in their wrappers"
       (raw-diff symbols (map car pinned-wrappers) (allowed-raw-places)) '())
+
+;; ---- the door (F100 D1) ------------------------------------------------
+;;
+;; KEY: EVERY FILESYSTEM ACCESS GOES THROUGH ffi.sc. This walks the same
+;; production files as the three rows above, keeps the `.sc` ones other
+;; than ffi.sc (the `.ss` build script is outside the door, and NOTES names
+;; it), and is red on any occurrence of a native filesystem name as a
+;; TOKEN: read as data, so strings and comments are not occurrences and a
+;; name split across lines is one. A name an import gives a banned one
+;; (prefix, rename) counts as the banned name, as row (i) counts them.
+;; The list is the design's, exactly.
+(define door-banned
+  '(file-exists? delete-file rename-file directory-list mkdir file-directory?
+    file-regular? file-modification-time file-change-time file-access-time
+    open-file-input-port open-file-output-port open-file-input/output-port
+    open-input-file open-output-file call-with-input-file call-with-output-file
+    with-input-from-file with-output-to-file set-port-position! port-position
+    get-mode chmod))
+(define (door-file? rel) (and (suffix? rel ".sc") (not (string=? rel "ffi.sc"))))
+(define (door-hits fs ts syms)
+  (let ((aliases (map (lambda (f t)
+                        (cons f (if (door-file? f)
+                                    (map car (import-aliases (forms-of-text f t) door-banned))
+                                    '())))
+                      fs ts)))
+    (filter (lambda (s) (let ((a (assoc (car s) aliases))) (and a (memq (caddr s) (cdr a)))))
+            syms)))
+
+(want "D1-door-00 the walk reads .sc files at any depth; ffi.sc and the .ss files it saw are outside the door"
+      (list (and (member "mcp/server.sc" files) (door-file? "mcp/server.sc") #t)
+            (and (member "ffi.sc" files) (door-file? "ffi.sc"))
+            (filter (lambda (f) (suffix? f ".ss")) files))
+      '(#t #f ("build.ss")))
+(want "D1-door-01 no native filesystem name outside ffi.sc, as a token or by an imported name"
+      (door-hits files texts symbols) '())
+
+;; ---- the close census (F100a, ruling H1) --------------------------------
+;;
+;; KEY: EVERY CLOSE IN ffi.sc IS ACCOUNTED FOR. Review round 2 found a close
+;; on the normal path swallowed in the one place round 1's fixes did not
+;; reach (lock-try-acquire!'s contention answer), so the list is read, not
+;; remembered: every call of c-close, c-closedir, close-quietly, the lock's
+;; release through (current-lock-release), and the unlock (c-flock with
+;; LOCK_UN), by enclosing definitions and ordinal, with its line for the
+;; reader. Review round 3 found closes the list did not name, so it also
+;; takes a Chez port's close (close-port, close-input-port,
+;; close-output-port), the descriptor's own close (fd-close), and the forms
+;; that close what they open on return: call-with-input-file,
+;; call-with-output-file, with-input-from-file, with-output-to-file and
+;; call-with-port (a form of one of those names is a site of its enclosing
+;; definition; the last three names of the port family were added by
+;; ruling J with no site in ffi.sc). Each is pinned in the .sexp's `close`
+;; form with ONE of four categories:
+;;   checked     the normal path's close, whose failure raises (read-closing,
+;;               close-unwritten-port!, the written close, call-with-lock's
+;;               checked release, lock-release!, the contention answer);
+;;   escape      a quiet close that runs only when a failure is already on
+;;               its way out (an unwind after-thunk, a guard that re-raises);
+;;   contention  an answer path whose close is not checked -- none since the
+;;               ruling made the contention close checked; kept so a pin can
+;;               say so if one appears.
+;;   out-of-scope  a close of a process, socket or stdio descriptor that
+;;               D1's scope exclusion leaves as it is, or of something that
+;;               is not a store entry (the injection FIFO, /proc); allowed
+;;               only inside the definitions D1 puts outside the door (the
+;;               row below pins that list, so a filesystem close cannot
+;;               take it).
+;; A site with no pin, or a pin with no site, is red; the counts are equal.
+;; The census counts occurrences, not behaviour: a close whose normal-path
+;; check is dropped keeps its site. The close-fail rows of facade-ffi are
+;; the behaviour reading (F100a review r3, ruling I).
+(define close-callees
+  '(c-close c-closedir close-quietly current-lock-release close-port fd-close
+    close-input-port close-output-port
+    call-with-input-file call-with-output-file with-input-from-file with-output-to-file
+    call-with-port))
+(define close-categories '(checked escape contention out-of-scope))
+(define close-out-of-scope-definitions
+  '(above-stdio redirect-stdio! unix-socket-connect spawn-detached! barrier! rss-linux))
+(define (close-sites rel text)
+  (let* ((sfd (make-source-file-descriptor rel (open-bytevector-input-port (string->utf8 text))))
+         (p (open-string-input-port text))
+         (annotated (let loop ((bfp 0) (out '()))
+                      (let-values (((a nb) (get-datum/annotations p sfd bfp)))
+                        (if (eof-object? a) (reverse out) (loop nb (cons a out))))))
+         (line-of (lambda (bfp)
+                    (let loop ((i 0) (n 1))
+                      (cond ((>= i bfp) n)
+                            ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ n 1)))
+                            (else (loop (+ i 1) n))))))
+         (ordinals (make-hashtable equal-hash equal?))
+         (out '()))
+    (define (site! defs callee x)
+      (let* ((k (list defs callee))
+             (n (+ 1 (hashtable-ref ordinals k 0))))
+        (hashtable-set! ordinals k n)
+        (set! out (cons (list defs callee n
+                              (if (annotation? x) (line-of (source-object-bfp (annotation-source x))) 0))
+                        out))))
+    ;; EVERY REFERENCE, NOT ONLY A CALL: `(for-each c-close held)` passes the
+    ;; close as a value, and a walk of call heads did not see it. A
+    ;; definition's own name -- (define (close-quietly fd) ...), (define
+    ;; c-close ...) -- is not a site.
+    (for-each
+      (lambda (a)
+        (let walk ((x a) (defs '()))
+          (let ((d (unwrap x)))
+            (cond
+              ((symbol? d)
+               (when (memq d close-callees) (site! defs d x)))
+              ((and (pair? d) (memq (unwrap (car d)) '(export import)))
+               ;; A DECLARATION, NOT A USE: the library's export and import
+               ;; lists name a close without calling or passing it.
+               (void))
+              ((pair? d)
+               ;; A PLAIN LIST (the parts of a definition left after its
+               ;; header) has no definition name of its own; it is walked into.
+               (let* ((sd (and (annotation? x) (annotation-stripped x)))
+                      (nm (and sd (defined-name sd)))
+                      (defs2 (if nm (append defs (list nm)) defs))
+                      (head (unwrap (car d)))
+                      (body (if (and sd (memq head '(define define-syntax)) (pair? (unwrap (cdr d))))
+                                (let ((target (unwrap (car (unwrap (cdr d))))))
+                                  (if (pair? target)
+                                      (cons (cdr target) (cdr (unwrap (cdr d))))
+                                      (cdr (unwrap (cdr d)))))
+                                d)))
+                 (when (and sd (eq? head 'c-flock) (list? sd) (memq 'LOCK_UN sd))
+                   (site! defs2 'unlock x))
+                 (let lp ((l body))
+                   (let ((l (unwrap l)))
+                     (cond ((pair? l) (walk (car l) defs2) (lp (cdr l)))
+                           ((symbol? l) (walk l defs2))
+                           (else (void)))))))
+              (else (void))))))
+      annotated)
+    (reverse out)))
+(define pinned-close (cdr (assq 'close pin)))
+(define (close-diff sites pins)
+  (let ((keys (map (lambda (s) (list-head s 3)) sites))
+        (pkeys (map (lambda (p) (list-head p 3)) pins)))
+    (append
+      (map (lambda (s) (list 'unpinned s))
+           (filter (lambda (s) (not (member (list-head s 3) pkeys))) sites))
+      (map (lambda (p) (list 'no-site (list-head p 3)))
+           (filter (lambda (p) (not (member p keys))) pkeys)))))
+(define ffi-text (text-of "ffi.sc"))
+(define ffi-close-sites (close-sites "ffi.sc" ffi-text))
+(want "D1-close-00 the close census found close sites in ffi.sc: a reader's, the unlock, and a close passed as a value"
+      (list (> (length ffi-close-sites) 5)
+            (and (find (lambda (s) (equal? (list-head s 2) '((read-entry/errno) c-close))) ffi-close-sites)
+                 (find (lambda (s) (equal? (list-head s 2) '((lock-release!) unlock))) ffi-close-sites)
+                 (find (lambda (s) (equal? (list-head s 2) '((above-stdio) c-close))) ffi-close-sites)
+                 #t))
+      '(#t #t))
+(want "D1-close-01 every close site in ffi.sc is pinned, every pin has its site, and the counts are equal"
+      (list (close-diff ffi-close-sites pinned-close)
+            (= (length ffi-close-sites) (length pinned-close)))
+      '(() #t))
+(want "D1-close-03 out-of-scope is taken only inside the definitions D1 puts outside the door"
+      (filter (lambda (p) (and (eq? (list-ref p 3) 'out-of-scope)
+                               (not (and (pair? (car p))
+                                         (exists (lambda (d) (memq d close-out-of-scope-definitions)) (car p))))))
+              pinned-close)
+      '())
+(want "D1-close-02 every close pin has one of the four categories and a reason"
+      (filter (lambda (p) (not (and (= (length p) 5) (memq (list-ref p 3) close-categories)
+                                    (string? (list-ref p 4)) (> (string-length (list-ref p 4)) 0))))
+              pinned-close)
+      '())
 
 ;; ---- each row, against a copy of log.sc with one thing changed ---------
 ;;
@@ -615,17 +787,19 @@
 ;; (The box needs the reader switched to Chez's own syntax, as a source file
 ;; may switch it; log.sc begins #!r6rs.)
 
-;; A PINNED OCCURRENCE COUNTED TWICE. open-load asks file-exists? of the
-;; store's meta.sexp once; the copy asks it twice in the same definition.
+;; A PINNED OCCURRENCE COUNTED TWICE. ensure-machine-home! asks
+;; file-is-directory? of the machine home once; the copy asks it twice in the
+;; same definition. (It was open-load's file-exists? of meta.sexp until F100a
+;; moved every presence test through the door and left log.sc none.)
 (define-values (p10 h10 s10)
   (scan-tree files (with-log-text
-                     (replace-once log-text "(unless (file-exists? meta-path)"
-                                   "(unless (and (file-exists? meta-path) (file-exists? meta-path))"))))
+                     (replace-once log-text "(unless (file-is-directory? home)"
+                                   "(unless (and (file-is-directory? home) (file-is-directory? home))"))))
 (want "U11-i NEGATIVE: a pinned predicate use made twice is a changed count, the one difference"
       (presence-diff p10 pinned-presence)
-      (let ((e (find (lambda (e) (equal? (list-head e 3) (list raw-file '(open-load) 'file-exists?)))
+      (let ((e (find (lambda (e) (equal? (list-head e 3) (list raw-file '(ensure-machine-home!) 'file-is-directory?)))
                      pinned-presence)))
-        (list (list 'count (list raw-file '(open-load) 'file-exists?)
+        (list (list 'count (list raw-file '(ensure-machine-home!) 'file-is-directory?)
                     (cadddr e) (+ 1 (cadddr e))))))
 
 (define-values (p11 h11 s11)
@@ -649,5 +823,57 @@
                       raw-record)))
         (filter (lambda (f) (not (member f pinned-fields))) fields))
       '((immutable extra raw-extra)))
+
+;; ---- the door row, against a copy of log.sc with one thing changed ----
+(define (door-diff new-log-text)
+  (let ((ts (with-log-text new-log-text)))
+    (let-values (((p h s) (scan-tree files ts)))
+      (door-hits files ts s))))
+(want "D1-door NEGATIVE: a native name used in log.sc is the one hit"
+      (door-diff (insert-before-close log-text "(define (door-probe p) (file-exists? p))"))
+      (list (list raw-file '(door-probe) 'file-exists?)))
+(want "D1-door NEGATIVE: a native name split across lines is one hit"
+      (door-diff (insert-before-close log-text "(define (door-split p)\n  (call-with-input-file\n    p get-string-all))"))
+      (list (list raw-file '(door-split) 'call-with-input-file)))
+(want "D1-door NEGATIVE: a native name reached through a prefixed import is a hit where it is used"
+      (and (member (list raw-file '(door-prefixed) 'host:delete-file)
+                   (door-diff (insert-before-close
+                                (with-extra-import log-text "(prefix (only (chezscheme) delete-file) host:)")
+                                "(define (door-prefixed p) (host:delete-file p))")))
+           #t)
+      #t)
+(want "D1-door CONTROL: a native name in a string or a comment is not a hit"
+      (door-diff (insert-before-close log-text "(define (door-quiet) \"file-exists?\")\n  ;; delete-file"))
+      '())
+
+;; ---- the close census, against a copy of ffi.sc with one close added ---
+(want "D1-close NEGATIVE: a close passed as a value is a site, and unpinned"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-value fds) (for-each c-close fds))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: a quiet close added to ffi.sc is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe fd) (close-quietly fd))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: a bare Chez port close added to ffi.sc is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-port p) (close-port p))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: a form that closes what it opens, added to ffi.sc, is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-implicit p) (with-output-to-file p newline))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: an input port close added to ffi.sc is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-close-input-port p) (close-input-port p))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: an output port close added to ffi.sc is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-close-output-port p) (close-output-port p))"))
+                           pinned-close))
+      '(unpinned))
+(want "D1-close NEGATIVE: a call-with-port added to ffi.sc is the one unpinned site"
+      (map car (close-diff (close-sites "ffi.sc" (insert-before-close ffi-text "(define (close-probe-call-with-port p) (call-with-port p get-u8))"))
+                           pinned-close))
+      '(unpinned))
 
 (printf "\n~a failures\nrows: ~a\nunreadable-census complete\n" bad rows)

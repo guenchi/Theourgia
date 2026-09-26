@@ -29,7 +29,7 @@
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
           (only (rnrs exceptions) raise)
           (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?
-                real-path path-case-sensitive?)
+                real-path path-case-sensitive? entry-type entry-bytes overwrite-entry!)
           ;; NEVER: THE RULE IS SHARED, NOT COPIED. `code-safe-path?` is
           ;; `relative-safe?` in the code projection, and it already says what
           ;; a path a projection may write has to be. A second rule here --
@@ -218,7 +218,7 @@
   ;; projection refuses those with `unsupported-file` after looking; doing the
   ;; same here is a separate piece of work.
   (define (nearest-existing path)
-    (if (file-exists? path)
+    (if (not (eq? (entry-type path) 'absent))
         path
         (let ((parent (parent-directory path)))
           (if (string=? parent path) path (nearest-existing parent)))))
@@ -514,15 +514,14 @@
             ((char=? (string-ref path (- i 1)) #\/) (substring path 0 (- i 1)))
             (else (loop (- i 1))))))
 
+  ;; THROUGH THE DOOR (F100a). The write replaces the file in place, as
+  ;; the truncating native port did, so its inode stays; the read raises on
+  ;; absence, as the native one did.
   (define (write-file path text)
-    (call-with-port (open-file-output-port path (file-options no-fail))
-      (lambda (p) (put-bytevector p (string->utf8 text)))))
+    (overwrite-entry! path (string->utf8 text)))
 
   (define (read-file path)
-    (call-with-port (open-file-input-port path)
-      (lambda (p)
-        (let ((b (get-bytevector-all p)))
-          (if (eof-object? b) "" (utf8->string b))))))
+    (utf8->string (entry-bytes path)))
 
   ;; ---- import --------------------------------------------------------------
 

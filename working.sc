@@ -24,7 +24,7 @@
   (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
           (theourgia wire) (theourgia digest)
           (only (theourgia log) store-writers writer-directory atomic-write!
-                directory-entry-durable!)
+                directory-entry-durable! present-or-unreadable-skip?)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
                 entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
@@ -81,12 +81,15 @@
          (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
                                   (memv c '(#\- #\_ #\.)))) (string->list x))
          (not (member x '("." "..")))))
+  ;; R2g's SKIP, KEPT AS RULED (F77b), THROUGH THE DOOR (F100a): an owner.sexp
+  ;; or retired.sexp that cannot be stat'ed reads as absent, by
+  ;; present-or-unreadable-skip?, defined once in log.sc for both R2g sites.
   (define (writer-for store supplied)
     (cond
       (supplied (and (safe-id? supplied) supplied))
       (else (find (lambda (w)
-                    (and (file-exists? (string-append (writer-directory store w) "/owner.sexp"))
-                         (not (file-exists? (string-append (writer-directory store w) "/retired.sexp")))))
+                    (and (present-or-unreadable-skip? (string-append (writer-directory store w) "/owner.sexp"))
+                         (not (present-or-unreadable-skip? (string-append (writer-directory store w) "/retired.sexp")))))
                   (store-writers store)))))
   ;; ---- whose drafts are these? ----------------------------------------------
   ;;
@@ -832,11 +835,13 @@
             (if (present? p)
                 (begin
                   (unlink! p)
-                  ;; NEVER: ASKED AGAIN, NOT ASSUMED. unlink! is Chez's
-                  ;; delete-file, which answers #f and raises nothing when it
-                  ;; cannot delete (queued as F99: ffi's reach is every
-                  ;; caller); a draft still there after it is a cleanup that
-                  ;; failed.
+                  ;; NEVER: ASKED AGAIN, NOT ASSUMED. unlink! was Chez's
+                  ;; delete-file, which answered #f and raised nothing when
+                  ;; it could not delete (F99). Since F100a it is unlink(2)
+                  ;; and a failure raises durable-error, which retire!'s
+                  ;; guard turns into cleanup-failed; this second question
+                  ;; stays for a draft that is still there after an unlink
+                  ;; that reported success.
                   (if (present? p)
                       (list 'cleanup-failed (list 'path p)
                             (list 'reason "the draft file is still there after it was unlinked"))

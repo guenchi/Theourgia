@@ -41,7 +41,7 @@
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
-              fs-error? fs-error-errno))
+              fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno))
 
 (define (later lib name)
   (eval name (environment lib)))
@@ -176,8 +176,15 @@
   ;;
   ;; NEVER: Not guessed: a detach that failed for a reason nobody recorded is
   ;; a daemon that will not start and will not say why.
+  ;; NOTE: A THIRD SHAPE SINCE F100a. The log's create is a mutating
+  ;; primitive and raises durable-error as before; its open, after the
+  ;; create, is not, and raises unreadable-entry, whose errno is a field of
+  ;; its own (a name such as EACCES where the file layer's is a number). It
+  ;; is read before the irritants, which that condition also carries: the
+  ;; first irritant there is the path, and the path is not an errno.
   (cond
     ((fs-error? e) (fs-error-errno e))
+    ((unreadable-entry? e) (unreadable-entry-errno e))
     ((and (condition? e) (irritants-condition? e) (pair? (condition-irritants e)))
      (car (condition-irritants e)))
     (else 'unknown)))

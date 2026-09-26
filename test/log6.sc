@@ -390,7 +390,8 @@
          (seen '()))
     (damage)
     (guard (e (#t (list 'raised
-                        (cond ((and (condition? e) (who-condition? e)) (condition-who e))
+                        (cond ((unreadable-entry? e) 'unreadable-entry)
+                              ((and (condition? e) (who-condition? e)) (condition-who e))
                               ((and (vector? e) (> (vector-length e) 0)) (vector-ref e 0))
                               (else 'unknown))
                         (reverse seen))))
@@ -422,11 +423,15 @@
 ;; to fail. One error class is one branch: a barrier that propagated
 ;; permission errors and quietly skipped everything else would pass a
 ;; single-class row while leaving the defect exactly where it was.
+;; THE OPEN'S FAILURE IS unreadable-entry SINCE F100a (D1): an open without
+;; create is a non-mutating primitive. The delivery stops as before; these
+;; rows, the errno rows and both witnesses below read that class, and an
+;; errno by the name ffi gives it where it knows one (the number otherwise).
 (build-with-second-segment!)
 (want "a cached segment whose file cannot be opened stops the delivery (permission)"
       (delivery-outcome
         (lambda () (system (string-append "chmod 000 " d "/writers/" A "/000002.sexp"))))
-      (list 'raised 'durable-error '()))
+      (list 'raised 'unreadable-entry '()))
 (system (string-append "chmod 644 " d "/writers/" A "/000002.sexp"))
 ;; THE SECOND CLASS IS FREE AND IT IS A DIFFERENT ONE: the file is gone
 ;; rather than forbidden. Discovery has already read it, so delivery
@@ -437,7 +442,7 @@
 (want "a cached segment whose file has been removed stops the delivery (absent)"
       (delivery-outcome
         (lambda () (system (string-append "rm -f " d "/writers/" A "/000002.sexp"))))
-      (list 'raised 'durable-error '()))
+      (list 'raised 'unreadable-entry '()))
 
 ;; AND THE CLASS OF FAILURE IS NOT ALLOWED TO MATTER. The two rows above
 ;; reach the barrier's open by removing the file and by forbidding it --
@@ -465,7 +470,9 @@
             "#!chezscheme\n(import (chezscheme) (theourgia log) (theourgia ffi))\n"
             "(define seen 0)\n"
             "(define res\n"
-            "  (guard (e (#t (list 'raised (if (fs-error? e) (fs-error-errno e) 'other))))\n"
+            "  (guard (e (#t (list 'raised (cond ((fs-error? e) (fs-error-errno e))\n"
+            "                                     ((unreadable-entry? e) (unreadable-entry-errno e))\n"
+            "                                     (else 'other)))))\n"
             "    (let* ((ls (log-open \"" d "\"))\n"
             "           (r (load-deliver! ls '()\n"
             "                (lambda (w seg off seq ts actor deps payload)\n"
@@ -528,11 +535,11 @@
                            " refuses the delivery, it does not skip it")
             (child6-says (string-append "open-fail@deliver-barrier:file=000002.sexp:errno=" name))
             (list 'raised code 0))))
-  (list (cons "EMFILE" 24)
-        (cons "EACCES" 13)
-        (cons "ENOENT" 2)
+  (list (cons "EMFILE" 'EMFILE)
+        (cons "EACCES" 'EACCES)
+        (cons "ENOENT" 'ENOENT)
         (cons "23" 23)
-        (cons "5" 5)))
+        (cons "5" 'EIO)))
 ;; AND THE SEAM ITSELF FIRES. An injection point that is never reached
 ;; reads, in every one of the rows above, exactly like a product that
 ;; refuses correctly -- both give `raised`. So the witness runs the same
@@ -563,9 +570,11 @@
           "#!chezscheme\n(import (chezscheme) (theourgia ffi))\n"
           "(define p \"" d "/writers/" A "/000002.sexp\")\n"
           "(define (try-full)\n"
-          "  (guard (e (#t (if (fs-error? e)\n"
-          "                    (list 'raised (fs-error-op e) (fs-error-target e) (fs-error-errno e))\n"
-          "                    (list 'raised 'not-an-fs-error))))\n"
+          "  (guard (e (#t (cond ((fs-error? e)\n"
+          "                       (list 'raised (fs-error-op e) (fs-error-target e) (fs-error-errno e)))\n"
+          "                      ((unreadable-entry? e)\n"
+          "                       (list 'raised 'unreadable (unreadable-entry-path e) (unreadable-entry-errno e)))\n"
+          "                      (else (list 'raised 'not-an-fs-error)))))\n"
           "    (parameterize ((theourgia-stage 'deliver-barrier))\n"
           "      (let ((fd (fd-open p '(read)))) (fd-close fd) 'opened))))\n"
           "(printf \"~s\\n\" (try-full))\n")))
@@ -578,7 +587,7 @@
                       (if (bytevector? b) (utf8->string b) (if (string? b) b "")))))
           (guard (e (#t (list 'unreadable text)))
             (read (open-string-input-port text)))))
-      (list 'raised 'open (string-append d "/writers/" A "/000002.sexp") 24))
+      (list 'raised 'unreadable (string-append d "/writers/" A "/000002.sexp") 'EMFILE))
 
 ;; AND THE INJECTION IS SPENT WHEN IT FIRES. Every row above stops at the
 ;; first exception, so none of them can tell a one-shot fault from one
@@ -596,7 +605,9 @@
           "#!chezscheme\n(import (chezscheme) (theourgia ffi))\n"
           "(define p \"" d "/writers/" A "/000002.sexp\")\n"
           "(define (try)\n"
-          "  (guard (e (#t (list 'raised (if (fs-error? e) (fs-error-errno e) 'other))))\n"
+          "  (guard (e (#t (list 'raised (cond ((fs-error? e) (fs-error-errno e))\n"
+          "                                     ((unreadable-entry? e) (unreadable-entry-errno e))\n"
+          "                                     (else 'other)))))\n"
           "    (parameterize ((theourgia-stage 'deliver-barrier))\n"
           "      (let ((fd (fd-open p '(read)))) (fd-close fd) 'opened))))\n"
           ;; SEQUENCED WITH let*, NOT PASSED AS TWO ARGUMENTS. Chez
@@ -616,7 +627,7 @@
                       (if (bytevector? b) (utf8->string b) (if (string? b) b "")))))
           (guard (e (#t (list 'unreadable text)))
             (let ((p (open-string-input-port text))) (list (read p) (read p))))))
-      (list (list 'raised 24) 'opened))
+      (list (list 'raised 'EMFILE) 'opened))
 
 (printf "== L4: a reader changes nothing ==\n")
 (build!)

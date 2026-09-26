@@ -178,7 +178,45 @@
 ;; move; the alternative on the table -- moving new code out of the static
 ;; closure -- was rejected because the measurement says there is nothing there
 ;; to move.
-(define budget-ms 540)
+;;
+;; ---- the budget was raised from 540 to 590 (F100a), and here is the reading
+;;
+;; F100a moved every filesystem access into ffi.sc (the door) and added the
+;; mutation record there, and ffi.sc is in the command line's static
+;; closure. Measured, two passes alternated back to back on one machine,
+;; 2026-09-25, the same layout on both sides:
+;;
+;;   F0-2 median          1f7f9d9 (before F100a)   the F100a tree
+;;     pass 1             521 (load 2.11)          541 (load 4.46)
+;;     pass 2             518 (load 3.97)          538 (load 3.54)
+;;
+;; +20 ms in both passes, against a base spread of 3: real, not load. Where
+;; it comes from, each library loaded alone (median of ten starts):
+;;
+;;                        1f7f9d9     tree     tree, the three new C
+;;                                              bindings stubbed
+;;     (theourgia ffi)    61 / 60     72.5 / 72     72 / 72
+;;     (theourgia log)    212.5/207.5  229 / 230.5    --
+;;
+;; The new bindings cost nothing measurable; the rest is the door itself,
+;; compiled from source at every start, and it cannot move out of ffi.sc:
+;; the record has to load with the primitives that note into it. So the
+;; budget moved, by this reading, to 590: today's tree read 540, and 590 is
+;; 540 x 1.09, the headroom 540 had over the 491 quiet reading above.
+;; NOTE: TODAY'S BASE READ 518 TO 521 AGAINST THE 491 RECORDED ABOVE, AND
+;; IT IS THE BATCHES BETWEEN, NOT THE MACHINE. Measured the same evening, both
+;; trees on igropyr 56ca0db (git archive), alternated:
+;;
+;;   F0-2 median          6c5c881 (the 491 tree)    1f7f9d9
+;;     pass 1             490 (load 2.90)           520 (load 2.54)
+;;     pass 2             484 (load 2.07)           513 (load 3.76)
+;;
+;; The 6c5c881 tree reads its recorded 491 today, so the ~30 ms between it
+;; and 1f7f9d9 came in with the batches between the two (F46 onwards), not
+;; from this machine; F54's first row takes this reading.
+;; The relative instrument, F54, is the next item after F100a. Moved by the
+;; main session (ruling F, 2026-09-25), the only way this budget may move.
+(define budget-ms 590)
 
 (define (median xs)
   (let ((v (list-sort < xs)))

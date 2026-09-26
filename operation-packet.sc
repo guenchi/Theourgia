@@ -16,7 +16,7 @@
   (export frozen-operation)
   (import (rnrs) (theourgia store) (theourgia wire) (theourgia digest)
           (only (theourgia log) atomic-write! directory-entry-durable!)
-          (only (theourgia ffi) mkdir-p! file-ensure! with-exclusive-lock))
+          (only (theourgia ffi) mkdir-p! file-ensure! with-exclusive-lock read-entry))
   (define (encode x) (string->utf8 (sexpr->string-extended (storable-encode x))))
   ;; Capture and install under a separate, stable lock. The store lock is
   ;; acquired only inside capture or execution, never in the reverse order.
@@ -32,9 +32,12 @@
           (file-ensure! lock)
           (with-exclusive-lock lock
             (lambda (fd)
-              (if (file-exists? path)
-                  (let ((saved (call-with-port (open-file-input-port path)
-                                 (lambda (p) (storable-decode (string->sexpr-extended (utf8->string (get-bytevector-all p))))))))
+              ;; ONE READ THROUGH THE DOOR (F100a), not a presence test and
+              ;; then a native read: absent is "not captured yet", as before,
+              ;; and a packet that cannot be read raises unreadable-entry.
+              (let ((bytes (read-entry path)))
+                (if (not (eq? bytes 'absent))
+                  (let ((saved (storable-decode (string->sexpr-extended (utf8->string bytes)))))
                     (unless (and (list? saved) (= 5 (length saved)) (eq? (car saved) 'operation-packet)
                                  (equal? (cadr saved) 1))
                       (raise '(error operation-packet-unavailable)))
@@ -45,5 +48,5 @@
                                       (append (list-ref req 3) (list (utf8->string (encode captured))))
                                       (list-ref req 4) (list-ref req 5))))
                     (atomic-write! path (encode (list 'operation-packet 1 req effective captured)) 'working)
-                    (list effective captured))))))))
+                    (list effective captured)))))))))
 )

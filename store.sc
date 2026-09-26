@@ -54,7 +54,7 @@
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
-                file-is-directory? report-fault? trace-event!)
+                file-is-directory? report-fault? trace-event! entry-type overwrite-entry!)
           (only (theourgia digest) sha256 bytevector->hex)
           ;; NEVER: THE NAMES A BLOCK DEFINES ARE DERIVED, NOT STORED.
           ;; `code-project.sc` says it outright: a code block's `name` is
@@ -3986,13 +3986,13 @@
       (cond
         ((null? ws) #f)
         ((let* ((path (string-append (writer-directory store (car ws)) "/owner.sexp")))
-           (and (file-exists? path) (car ws)))
+           (and (not (eq? (entry-type path) 'absent)) (car ws)))
          (car ws))
         (else (loop (cdr ws))))))
 
   (define (store-init! store)
     (cond
-      ((file-exists? (string-append store "/meta.sexp"))
+      ((not (eq? (entry-type (string-append store "/meta.sexp")) 'absent))
        (list 'error 'already-initialised (list 'store store)))
       ((foreign-writer store)
        => (lambda (w)
@@ -4008,9 +4008,9 @@
          ;; write renames a new inode over the name, and every process
          ;; already holding the old one would be locking a file nobody
          ;; else can see.
-         (call-with-port (open-file-output-port (string-append store "/lock")
-                                                (file-options no-fail))
-           (lambda (p) (if #f #f)))
+         ;; overwrite-entry!, the door's truncating open (F100a): created
+         ;; empty, or emptied in place with its inode kept, as before.
+         (overwrite-entry! (string-append store "/lock") (make-bytevector 0))
          (atomic-write! (string-append store "/meta.sexp")
                         (string->utf8 (string-append "((format 1) (store-id \"" sid "\"))\n"))
                         'registry)
@@ -4021,10 +4021,8 @@
          ;; file the writer has no append target, and the first write
          ;; into a freshly initialised store is refused before it
          ;; reserves -- correct about a store nobody finished making.
-         (call-with-port (open-file-output-port
-                           (string-append store "/writers/" writer "/" (segment-file-name 1))
-                           (file-options no-fail))
-           (lambda (p) (if #f #f)))
+         (overwrite-entry! (string-append store "/writers/" writer "/" (segment-file-name 1))
+                           (make-bytevector 0))
          (list 'ok (list 'store sid) (list 'writer writer))))))
 
   ;; ---- snapshots -----------------------------------------------------------
@@ -4296,7 +4294,7 @@
   ;; verdict; the writers' integrity does.
   (define (check-snapshots store coverage)
     (let ((dir (string-append store "/snap")))
-      (if (not (file-exists? dir))
+      (if (eq? (entry-type dir) 'absent)
           '()
           (let loop ((ns (list-sort < (filter (lambda (n) n)
                                               (map segment-file-number

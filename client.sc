@@ -33,15 +33,14 @@
           (only (chezscheme) getenv guard raise sleep make-time
                 write call-with-string-output-port
                 read open-string-input-port eof-object? with-exception-handler
-                call-with-input-file get-string-all file-exists?
-                call-with-port open-file-input-port get-bytevector-all
                 parameterize char-whitespace?)
           (only (theourgia ffi)
                 real-path env-or wall-clock-ms file-size mkdir-p! sun-path-max
                 path-case-sensitive? theourgia-stage
                 unix-socket-connect fd-read fd-close write-all!
                 spawn-detached! trace-event! fs-error? fs-error-errno
-                unreadable-entry? unreadable-entry-path unreadable-entry-reason)
+                unreadable-entry? unreadable-entry-path unreadable-entry-reason
+                entry-type read-entry)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
 
@@ -205,8 +204,11 @@
   ;; NOTE: THE QUESTION IS PUT TO THE NEAREST EXISTING DIRECTORY, because a
   ;; path that is not there yet has no filesystem to answer for it, and
   ;; the absent store is the whole case this exists for.
+  ;; THROUGH THE DOOR (F100a): absent climbs, as before; a stat that fails
+  ;; for any other reason raises instead of climbing past a directory it
+  ;; could not see into.
   (define (nearest-existing path)
-    (if (file-exists? path)
+    (if (not (eq? (entry-type path) 'absent))
         path
         (let-values (((parent base) (split-last path)))
           (if (string=? parent path) path (nearest-existing parent)))))
@@ -466,8 +468,13 @@
   ;; answer today's question with last week's answer, and it would look
   ;; entirely plausible. The length is taken BEFORE the spawn and nothing
   ;; before it is ever read.
+  ;; THROUGH THE DOOR (F100a): absent is 0 as before; otherwise the size is
+  ;; taken by OPENING the log (file-size), as the base did, so a log that is
+  ;; there and cannot be read raises unreadable-entry and start-one! refuses
+  ;; the start naming it (K8). A stat would succeed on a 000 log and let the
+  ;; start go ahead: measured, F100a suite-1's K8 row.
   (define (log-length path)
-    (if (file-exists? path) (file-size path) 0))
+    (if (eq? (entry-type path) 'absent) 0 (file-size path)))
 
   (define (ensure-daemon! argv store socket)
     ;; NEVER: ASK BEFORE STARTING ONE. Spawning unconditionally works -- the
@@ -586,7 +593,7 @@
   ;;
   ;; Read bytes, cut bytes, decode once at the end.
   (define (tail-of path from)
-    (let* ((whole (call-with-port (open-file-input-port path) get-bytevector-all))
+    (let* ((whole (read-entry path))
            (size (if (bytevector? whole) (bytevector-length whole) 0)))
       (if (and (bytevector? whole) (<= from size))
           (let* ((n (- size from)) (out (make-bytevector n)))
