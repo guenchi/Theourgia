@@ -724,13 +724,25 @@ function callsTo(
         if (property !== undefined && (property.declarations ?? []).includes(method)) {
           unreadable.push(`${name}:${lineOf(src, n)} this build cannot read where this call goes`);
         }
-      } else if (ts.isIdentifier(n) && n !== named && !(ts.isBindingElement(n.parent) && n.parent.name === n)) {
+      } else if (
+        ts.isIdentifier(n) &&
+        n !== named &&
+        !(ts.isBindingElement(n.parent) && n.parent.name === n) &&
+        !ts.isImportSpecifier(n.parent) &&
+        !ts.isExportSpecifier(n.parent)
+      ) {
         const symbol = checker.getSymbolAtLocation(n);
+        /*
+         * A CALLEE IS `x.method(...)`'s name, or -- for a function rather than a
+         * method (queue item 44: `migrateLegacy`) -- the identifier that is the
+         * call's own expression. An import or export of the name is not a use.
+         */
         const callee =
-          ts.isPropertyAccessExpression(n.parent) &&
-          n.parent.name === n &&
-          ts.isCallExpression(n.parent.parent) &&
-          n.parent.parent.expression === n.parent;
+          (ts.isPropertyAccessExpression(n.parent) &&
+            n.parent.name === n &&
+            ts.isCallExpression(n.parent.parent) &&
+            n.parent.parent.expression === n.parent) ||
+          (ts.isCallExpression(n.parent) && n.parent.expression === n);
         if (symbol !== undefined && (symbol.declarations ?? []).includes(method) && !callee) {
           unreadable.push(`${name}:${lineOf(src, n)} this build cannot read where this call goes`);
         }
@@ -779,6 +791,48 @@ function offTheChain(
     return [`${name}:${lineOf(src, call)} (in a method nothing calls)`];
   }
   return callers.flatMap((c) => offTheChain(checker, files, run, c.name, c.src, c.call, following));
+}
+
+/*
+ * WHERE A PUBLICATION IS OFF THE CHAIN, TRACED THROUGH A NAMED FUNCTION. (queue
+ * item 44) As `offTheChain`, but a call outside a chain's work is followed
+ * from the nearest enclosing named function or method -- `migrateLegacy`, or
+ * `publish` for its `this.publishNow` -- to every call of that function, and
+ * is on the chain only if they all are. Callbacks between the call and that
+ * function are taken as running within it (the header's limit).
+ */
+function tracedOffTheChain(
+  checker: ts.TypeChecker,
+  files: Chained['files'],
+  run: ts.Declaration,
+  name: string,
+  src: ts.SourceFile,
+  call: ts.CallExpression,
+  following: Set<ts.Node>
+): string[] {
+  if (chainHolding(checker, run, call) !== undefined) {
+    return [];
+  }
+  let holder: ts.Node | undefined = call.parent;
+  while (holder !== undefined && !ts.isFunctionDeclaration(holder) && !ts.isMethodDeclaration(holder)) {
+    holder = holder.parent;
+  }
+  if (holder === undefined || following.has(holder)) {
+    return [`${name}:${lineOf(src, call)}`];
+  }
+  following.add(holder);
+  const { calls: callers, unreadable } = callsTo(checker, files, holder as ts.Declaration);
+  if (unreadable.length > 0) {
+    return unreadable;
+  }
+  if (callers.length === 0) {
+    return [`${name}:${lineOf(src, call)} (in a function nothing calls)`];
+  }
+  return callers.flatMap((c) =>
+    tracedOffTheChain(checker, files, run, c.name, c.src, c.call, following).map(
+      (entry) => `${name}:${lineOf(src, call)} through ${entry}`
+    )
+  );
 }
 
 function lineOf(src: ts.SourceFile, node: ts.Node): number {
@@ -851,6 +905,30 @@ describe('an open takes its reading on the save chain (queue item 24)', function
           `${at} publishes into ${given?.getText(src) ?? 'a directory this census cannot read'} ` +
             `on a chain keyed by ${key.getText(src)}`
         );
+      }
+    }
+    /*
+     * AND `publishNow`, WHICH PUBLISHES THE SAME WAY. (queue item 44) Its one
+     * product route onto the chain is migration: migration.ts calls it inside
+     * `migrateLegacy`, which is chain work only because its one caller
+     * (extension.ts) passes it as `chain.run`'s work; `publish` calls it as
+     * `this.publishNow`. Each call is traced through its named function to
+     * every call site (see `tracedOffTheChain`), and only "on the chain" is
+     * asserted for these: a traced site's reading and directory are the
+     * caller's to hold, and `migrateLegacy`'s directory is a parameter.
+     *
+     * NOTE: A1 COVERS THE MIGRATION CASE TODAY, INDIRECTLY, AND THIS IS KEPT
+     * ANYWAY (ruled: a second, independent reading). Moving migration off the
+     * chain moves the two `sources` reads with it while they are written
+     * inline at the call, and A1 reads that (W6, measured on 4fa919b: red on A1
+     * only). If `sources` stops being inline, A1 stops seeing it; this does not.
+     */
+    const { calls: now, unreadable: unreadNow } = callsTo(checker, files, declaredMethod(files, 'Publisher', 'publishNow'));
+    assert.deepStrictEqual(unreadNow, [], 'these references to Publisher.publishNow are calls this census cannot follow');
+    assert.ok(now.length >= 3, `the census found ${now.length} publishNow calls, too few to be reading src`);
+    for (const { name, src, call } of now) {
+      for (const entry of tracedOffTheChain(checker, files, run, name, src, call, new Set())) {
+        wrong.push(`${entry} publishes off the save chain`);
       }
     }
     assert.deepStrictEqual(wrong, [], 'these publications are not ordered after a save of their own directory');
