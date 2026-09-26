@@ -79,6 +79,31 @@ describe('plugin-r3 5 the slug of a title', () => {
   it('drops a leading dot, so the file is not hidden', () => {
     assert.strictEqual(slugOf('.hidden notes'), 'hidden-notes');
   });
+
+  /*
+   * queue item 27: INPUTS WHERE THE RULES DIFFER. Each of these rules could be
+   * changed and no slug cell would notice, because every input above reads the
+   * same under either version (review r1 of item 5, Q1-Q5).
+   */
+  it('counts the forty in code points, not in UTF-16 units (a character outside the BMP)', () => {
+    assert.strictEqual(slugOf('\u{20000}'.repeat(45)), '\u{20000}'.repeat(40));
+  });
+
+  it('keeps forty, not thirty-nine', () => {
+    assert.strictEqual(slugOf('b'.repeat(45)), 'b'.repeat(40));
+  });
+
+  it('composes a decomposed letter first (NFC)', () => {
+    assert.strictEqual(slugOf('Cafe\u0301'), 'caf\u00e9');
+  });
+
+  it('keeps a combining mark that has no composed form', () => {
+    assert.strictEqual(slugOf('x\u0301y'), 'x\u0301y');
+  });
+
+  it('lower-cases ASCII letters only', () => {
+    assert.strictEqual(slugOf('\u00c4RGER'), '\u00c4rger');
+  });
 });
 
 describe('plugin-r3 5 the projection is named once and found by its sidecar', () => {
@@ -158,6 +183,36 @@ describe('plugin-r3 5 the projection is named once and found by its sidecar', ()
     assert.deepStrictEqual(projectionFileIn(nodeFileOps, directory), { found: 'unknown', names: ['one-a.2.md', 'two-a.2.md'] });
     const refused = await new Publisher(new RecordingFs(), { isOpen: () => false }).publish({ ...request(directory, '## Two\n'), expected: null });
     assert.deepStrictEqual(refused, { published: false, because: 'unknown-file', file: null, seen: ['one-a.2.md', 'two-a.2.md'] });
+  });
+
+  /*
+   * AND WITH THE SIDECARS ONLY (queue item 27, P4): a publication interrupted
+   * before its bodies leaves two records and no `.md`. Treating several
+   * sidecars as not `unknown` passed the cell above, which writes both bodies;
+   * here the lookup must still refuse to choose.
+   */
+  it('refuses to choose between two projections that have only their sidecars', () => {
+    const directory = block();
+    for (const name of ['one-a.2.md', 'two-a.2.md']) {
+      writeSidecar(nodeFileOps, path.join(directory, name), {
+        ...UNNUMBERED,
+        format: 1,
+        storeId: 's1',
+        blockId: 'a.2',
+        phase: 'publishing',
+        prefix: '## Two\n',
+        written: 'w',
+        previous: null,
+        acknowledgedRaw: null,
+        sent: null,
+        cursor: null,
+        localOnly: false,
+        unresolved: false,
+        bodyHasCrlf: false
+      });
+    }
+    assert.deepStrictEqual(fs.readdirSync(directory).sort(), ['one-a.2.md.meta', 'two-a.2.md.meta']);
+    assert.deepStrictEqual(projectionFileIn(nodeFileOps, directory), { found: 'unknown', names: ['one-a.2.md', 'two-a.2.md'] });
   });
 
   it('does not write a second file beside a .md it does not know', async () => {

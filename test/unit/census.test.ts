@@ -167,7 +167,7 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED in plugin-r3 item 5: the slug of a title, and how a block's
    * projection is named once and found again by its sidecar.
    */
-  ['projection-name.test.ts', 12],
+  ['projection-name.test.ts', 18],
   /*
    * LOWERED in plugin-r3 item 1, 34 -> 33: the cell "imports when
    * theourgia.transport changed under it and the store did not" went with
