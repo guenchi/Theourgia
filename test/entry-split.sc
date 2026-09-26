@@ -180,6 +180,47 @@
                     (let ((t (file-text sockets))) (substring t 0 (max 0 (- (string-length t) 1)))))))
         (list 1 '(error bad-request) 'unknown-option "--bogus" #t "0")))
 
+;; A SOCKET UNDER A DIRECTORY THAT DOES NOT EXIST IS REFUSED, not created
+;; (F15, as F82: refuse, do not create). Before it, serve made the whole
+;; chain and served.
+(let ((d (row-dir!)))
+  (system (string-append "mkdir -p " d "/cwd/d"))
+  (run-in d "core.sc" "init --store d")
+  (want "F46-9 TWIN: serve with a socket under a directory that does not exist answers socket-dir-missing naming the directory, exit 2, and creates nothing"
+        (if (not (program-exists? "theourgiad.sc"))
+            'no-such-program
+            (let* ((absent (string-append sock-base "/es-absent-" pid-text "-" (number->string row-n)))
+                   (r (run-in d "theourgiad.sc" (string-append "serve d --socket " absent "/deep/s.sock") 8))
+                   (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read))))
+              (list (rc-of r)
+                    (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
+                    (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'dir))) (cdr a))))) (and f (equal? (cadr f) (string-append absent "/deep"))))
+                    (if (file-exists? absent) 'created 'nothing-created))))
+        (list 2 '(error socket-dir-missing) #t 'nothing-created)))
+
+;; A DIRECTORY THAT CANNOT BE SEARCHED IS NOT "MISSING" (F15, ruling c). The
+;; socket's directory sits under one at mode 000: its type cannot be asked,
+;; and the refusal names it as unreadable, the way R1 names a path it could
+;; not look at -- not socket-dir-missing, which would send the caller looking
+;; for a directory that is there.
+(let* ((d (row-dir!))
+       (sealed (string-append sock-base "/es-sealed-" pid-text "-" (number->string row-n)))
+       (inner (string-append sealed "/inner")))
+  (system (string-append "mkdir -p " d "/cwd/d " inner))
+  (run-in d "core.sc" "init --store d")
+  (system (string-append "chmod 000 " sealed))
+  (let* ((r (run-in d "theourgiad.sc" (string-append "serve d --socket " inner "/s.sock") 8))
+         (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read))))
+    (system (string-append "chmod 700 " sealed))
+    (want "F15 TWIN: serve with a socket whose directory is under one at 000 answers unreadable naming that directory, exit 2, not socket-dir-missing"
+          (if (not (program-exists? "theourgiad.sc"))
+              'no-such-program
+              (list (rc-of r)
+                    (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
+                    (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'path))) (cdr a))))) (and f (string? (cadr f)) (contains? (cadr f) inner)))))
+          (list 2 '(error unreadable) #t))
+    (system (string-append "rm -rf " sealed))))
+
 ;; THE REFUSALS COME BEFORE THE DAEMON LIBRARY LOADS, as they did in the
 ;; base: igropyr reads IGROPYR_INJECT when a library that uses injection is
 ;; expanded, so a program that imported (theourgia daemon) statically would
@@ -406,6 +447,34 @@
 (printf "F46-11 reading: ~a spawn forms in ~a fixture files\n"
         (length spawn-readings)
         (length (fold-left (lambda (acc r) (if (member (car r) acc) acc (cons (car r) acc))) '() spawn-readings)))
+
+(printf "== F15: the thin client refuses before starting a daemon ==\n")
+;; THE THIN CLIENT SAYS THE SAME THING BEFORE STARTING ANYTHING (F15, the
+;; main session's ruling b). Before it, a --socket under a directory that
+;; does not exist started a daemon, which made the whole chain and served.
+;; Now the client refuses in ensure-daemon!, with the text the daemon uses,
+;; at once: well inside the 10 s start budget, no daemon for the store, and
+;; nothing created.
+(let* ((d (row-dir!))
+       (store (string-append d "/cwd/s"))
+       (absent (string-append sock-base "/es-cabsent-" pid-text "-" (number->string row-n))))
+  (system (string-append "mkdir -p " store))
+  (run-in d "core.sc" (string-append "init --store " store))
+  (let* ((t0 (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+         (r (run-in d "theourgia.sc" (string-append "outline --store " store " --socket " absent "/deep/s.sock") 30))
+         (ms (- (let ((t (current-time))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))) t0))
+         (a (guard (e (#t #f)) (call-with-port (open-string-input-port (out-of r)) read)))
+         (lines (daemon-lines store)))
+    (for-each (lambda (l) (system (string-append "kill -TERM " (number->string (pid-of l)) " 2>/dev/null"))) lines)
+    (want "F15 the thin client with a --socket under a directory that does not exist answers socket-dir-missing naming it at once, starts no daemon, and creates nothing"
+          (list (rc-of r)
+                (and (pair? a) (list? a) (pair? (cdr a)) (list (car a) (cadr a)))
+                (let ((f (and (pair? a) (list? a) (find (lambda (x) (and (pair? x) (eq? (car x) 'dir))) (cdr a))))) (and f (equal? (cadr f) (string-append absent "/deep"))))
+                (if (< ms 5000) 'under-half-the-budget (list 'took-ms ms))
+                (length lines)
+                (if (file-exists? absent) 'created 'nothing-created))
+          (list 75 '(error socket-dir-missing) #t 'under-half-the-budget 0 'nothing-created))
+    (system (string-append "rm -rf " absent))))
 
 (system (string-append "rm -rf " here " " sock-base "/es-" pid-text "-*"))
 (printf "\n~a failures\nrows: ~a\nentry-split complete\n" bad rows)

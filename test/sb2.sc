@@ -206,5 +206,67 @@
                   (and (string? (field i 'path)) (contains? (field i 'path) inner)))
             '(error unreadable #t)))))
 
+;; ---- F98: a target that stats but cannot be listed or written ---------------
+(printf "== F98: the target directory itself at 000 ==\n")
+;; The directory test passes (stat needs search on the parent); the failure
+;; comes at the write (export) or the listing (import) and must be named,
+;; never internal.
+(let* ((s (fresh-store!))
+       (target (string-append root "/target000")))
+  (let ((a (insert! s "--under" "root" "--title" "A" "--text" "hello")))
+    (ask s 'set a "kind" "doc")
+    (ask s 'set a "path" "a.md"))
+  (system (string-append "mkdir -p " target))
+  (chmod! "000" target)
+  (let ((e (ask s 'export-md target))
+        (i (ask s 'import-md target)))
+    (chmod! "700" target)
+    (want "F98-1 export-md to a directory it cannot write into answers unreadable naming the file it could not write, not internal"
+          (list (head e) (and (pair? (cdr e)) (cadr e))
+                (and (string? (field e 'path)) (contains? (field e 'path) target)))
+          '(error unreadable #t))
+    (want "F98-2 import-md from a directory it cannot list answers unreadable naming it, not internal"
+          (list (head i) (and (pair? (cdr i)) (cadr i))
+                (and (string? (field i 'path)) (contains? (field i 'path) target)))
+          '(error unreadable #t))))
+
+;; AN EXPORT STOPPED PART WAY SAYS HOW FAR IT GOT (F98, the brief's "with the
+;; files written so far named in the answer"). Two documents, one at the top
+;; and one under a sub-directory at 000; whichever the export reaches first,
+;; the answer's `written` must be exactly the files that are on disk
+;; afterwards, and `path` the file it could not write.
+(let* ((s (fresh-store!))
+       (target (string-append root "/partial"))
+       (sub (string-append target "/sub")))
+  ;; The export writes documents in id order, so the one with the smaller id
+  ;; gets the writable path: the file written first is then always there to
+  ;; be named, and an answer that named nothing could not pass.
+  (let* ((x (insert! s "--under" "root" "--title" "A" "--text" "top"))
+         (y (insert! s "--under" "root" "--title" "B" "--text" "below"))
+         (first (if (string<? x y) x y))
+         (second (if (string<? x y) y x)))
+    (for-each (lambda (id) (ask s 'set id "kind" "doc")) (list x y))
+    (ask s 'set first "path" "a.md")
+    (ask s 'set second "path" "sub/b.md"))
+  (system (string-append "mkdir -p " sub))
+  ;; MODE 500, NOT 000 (the merge onto F100a): the export lists the target
+  ;; before it writes, and a directory at 000 cannot be listed, so the
+  ;; answer named nothing written and nothing was. At 500 the listing
+  ;; succeeds and the write into it is the one refused.
+  (chmod! "500" sub)
+  (let ((e (ask s 'export-md target)))
+    (chmod! "700" sub)
+    (let ((on-disk (filter (lambda (f) (file-exists? (string-append target "/" f)))
+                           '("a.md" "sub/b.md")))
+          (named (let ((w (and (pair? e) (list? e)
+                               (find (lambda (x) (and (pair? x) (eq? (car x) 'written))) (cdr e)))))
+                   (and w (cadr w)))))
+      (want "F98-3 export-md stopped at a file it cannot write names the files it had already written, and they are exactly the ones on disk"
+            (list (head e) (and (pair? (cdr e)) (cadr e))
+                  (and (string? (field e 'path)) (contains? (field e 'path) "sub/b.md"))
+                  on-disk
+                  (and (list? named) (equal? named on-disk)))
+            '(error unreadable #t ("a.md") #t)))))
+
 (system (string-append "chmod -R u+rwx " root " 2>/dev/null; rm -rf " root))
 (printf "\n~a failures\nrows: ~a\nsb2 complete\n" bad rows)

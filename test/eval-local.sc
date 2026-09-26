@@ -129,12 +129,18 @@
                      (else (scan (+ j 1) depth)))))
             (else (loop (+ i 1)))))))
 
+;; NEVER: A RED ROW CARRIES THE ANSWER IT JUDGED (F76). Each row below
+;; evaluates once, binds what came back, and on red prints it whole. These
+;; rows printed two booleans, and the three rows further down evaluated a
+;; SECOND time to say what went wrong -- so a red showed #f, or an answer
+;; other than the one that failed.
 (for-each
   (lambda (pair)
-    (let ((out (evaluate (car pair))))
+    (let* ((out (evaluate (car pair)))
+           (found (list (contains? out (string-append "(values " (cdr pair) ")"))
+                        (contains? out "(stdout \"\") (stderr \"\")"))))
       (want (string-append "EV-06 complete values " (car pair))
-            (list (contains? out (string-append "(values " (cdr pair) ")"))
-                  (contains? out "(stdout \"\") (stderr \"\")"))
+            (if (equal? found '(#t #t)) found (list found 'said out))
             '(#t #t))))
   '(("(+ 1 2)" . "(3)") ("(values)" . "()") ("(values 1 2)" . "(1 2)")))
 
@@ -189,11 +195,12 @@
       'committed)
 
 (want "EV-06 the view field carries the cut the evaluation used"
-      (let ((v (view-of (evaluate "(+ 1 2)"))))
+      (let* ((out (evaluate "(+ 1 2)"))
+             (v (view-of out)))
         (list (if (and v (starts-with? v "(working-view #f (")) 'writer-absent
-                  (list 'said v))
-              (if (and v block-id (contains? v block-id)) 'cut-names-the-block (list 'said v))
-              (if (and v (ends-with? v " ())")) 'and-no-drafts (list 'said v))))
+                  (list 'said out))
+              (if (and v block-id (contains? v block-id)) 'cut-names-the-block (list 'said out))
+              (if (and v (ends-with? v " ())")) 'and-no-drafts (list 'said out))))
       '(writer-absent cut-names-the-block and-no-drafts))
 
 ;; NEVER: TWIN ALONG THE AXIS UNDER TEST. Without this row the one above is
@@ -203,11 +210,12 @@
 (must "write" (cli "write" "--writer" "w1" qualified "(define answer 2)"))
 
 (want "EV-06 TWIN: with a writer the same field names the writer and its drafts"
-      (let ((v (view-of (evaluate "(+ 1 2)" "--working" "--writer" "w1"))))
+      (let* ((out (evaluate "(+ 1 2)" "--working" "--writer" "w1"))
+             (v (view-of out)))
         (list (if (and v (starts-with? v "(working-view \"w1\" (")) 'writer-named
-                  (list 'said v))
+                  (list 'said out))
               (if (and v (not (ends-with? v " ())"))) 'and-the-drafts-are-there
-                  (list 'said v))))
+                  (list 'said out))))
       '(writer-named and-the-drafts-are-there))
 
 ;; ---- EV-02 the time limit -----------------------------------------------------
@@ -226,17 +234,18 @@
 (for-each
   (lambda (pair)
     (want (string-append "EV-05 a value of kind " (cdr pair) " is classified")
-          (if (contains? (evaluate (car pair)) (string-append "(kind " (cdr pair) ")"))
-              'classified
-              (list 'said (evaluate (car pair))))
+          (let ((out (evaluate (car pair))))
+            (if (contains? out (string-append "(kind " (cdr pair) ")"))
+                'classified
+                (list 'said out)))
           'classified))
   '(("(lambda (x) x)" . "procedure")
     ("(let ((c (list 1))) (set-cdr! c c) c)" . "cycle")))
 
 ;; ---- EV-07 an exception is an answer ------------------------------------------
 (want "EV-07 an exception inside the evaluation is a bounded answer"
-      (if (starts-with? (evaluate "(car '())") "(error eval-exception ") 'bounded
-          (list 'said (evaluate "(car '())")))
+      (let ((out (evaluate "(car '())")))
+        (if (starts-with? out "(error eval-exception ") 'bounded (list 'said out)))
       'bounded)
 
 ;; ---- EV-04 the numeric gate runs before evaluation ----------------------------
@@ -244,8 +253,8 @@
 ;; NEVER: BEFORE, because the point of the gate is that the reader never
 ;; builds the number at all.
 (want "EV-04 an unsafe numeric token is refused before anything is evaluated"
-      (if (contains? (evaluate "#e1e99999999") "unsafe-numeric-token") 'refused-by-the-reader
-          (list 'said (evaluate "#e1e99999999")))
+      (let ((out (evaluate "#e1e99999999")))
+        (if (contains? out "unsafe-numeric-token") 'refused-by-the-reader (list 'said out)))
       'refused-by-the-reader)
 
 ;; ---- EV-09 the user's output cannot become the protocol -----------------------
@@ -267,16 +276,16 @@
 ;; ---- EV-08 the evaluation cannot write ----------------------------------------
 (let ((before (file-text (string-append store "/meta.sexp"))))
   (want "EV-08 an evaluation cannot reach a capability it was not given"
-        (if (starts-with? (evaluate "(open-output-file \"/tmp/eval-should-not-write\")") "(error ")
-            'refused (list 'said (evaluate "(open-output-file \"/tmp/eval-should-not-write\")")))
+        (let ((out (evaluate "(open-output-file \"/tmp/eval-should-not-write\")")))
+          (if (starts-with? out "(error ") 'refused (list 'said out)))
         'refused)
   (want "EV-08 TWIN: and the committed store is byte for byte what it was"
         (file-text (string-append store "/meta.sexp")) before))
 
 ;; ---- EV-10 the committed snapshot is readable ---------------------------------
 (want "EV-10 the committed store can be read from inside an evaluation"
-      (if (starts-with? (evaluate "(length (blocks))") "(ok (values (") 'readable
-          (list 'said (evaluate "(length (blocks))")))
+      (let ((out (evaluate "(length (blocks))")))
+        (if (starts-with? out "(ok (values (") 'readable (list 'said out)))
       'readable)
 
 ;; ---- EV-01 eval is not an rpc verb --------------------------------------------
@@ -293,12 +302,21 @@
       '(unknown-verb alike))
 
 
+;; NEVER: TWO READINGS, NOT ONE (F66). A worker that never said ready answers
+;; (error eval-worker-unavailable (reason no-ready)), and that is a different
+;; fact from an answer that came back without naming its limit. Both used to
+;; read UNNAMED, so a red row could not say which had happened.
+(define (limit-reading out limit-text)
+  (cond ((contains? out limit-text) 'named-the-limit)
+        ((contains? out "(error eval-worker-unavailable (reason no-ready))") 'no-ready)
+        (else 'UNNAMED)))
+
 ;; ---- EV-09 the output quota ---------------------------------------------------
-(want "EV-09 an unbounded printer meets the output quota, and the answer is complete"
+(want "EV-09 an unbounded printer meets the output quota, and the answer is complete (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (evaluate "(let loop () (display \"0123456789\") (loop))"
                            "--output-bytes" "2048" "--timeout-ms" "8000")))
         (list (if (contains? out "(resource output)") 'quota (list 'said out))
-              (if (contains? out "(limit 2048)") 'named-the-limit 'UNNAMED)
+              (limit-reading out "(limit 2048)")
               (if (= (count-lines out) 1) 'one-line 'TORN)))
       '(quota named-the-limit one-line))
 
@@ -314,10 +332,10 @@
 ;; worker speaks, which is not something a memory budget may depend on.
 (define grow "(let loop ((xs (quote ()))) (loop (cons (make-bytevector 1048576 1) xs)))")
 
-(want "EV-03 a worker that allocates without printing meets the memory budget"
+(want "EV-03 a worker that allocates without printing meets the memory budget (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (evaluate grow "--memory-bytes" "268435456" "--timeout-ms" "10000")))
         (list (if (contains? out "(resource memory)") 'memory (list 'said out))
-              (if (contains? out "(limit 268435456)") 'named-the-limit 'UNNAMED)))
+              (limit-reading out "(limit 268435456)")))
       '(memory named-the-limit))
 
 (want "EV-03 a worker that prints before allocating meets it too, and the print survives"
@@ -333,8 +351,8 @@
 ;; take a while. A sampler that killed on every sample would pass both
 ;; rows above.
 (want "EV-03 TWIN: a small allocation fits the same budget"
-      (if (contains? (evaluate "(+ 2 3)" "--memory-bytes" "268435456") "(values (5))")
-          'fits (list 'said (evaluate "(+ 2 3)" "--memory-bytes" "268435456")))
+      (let ((out (evaluate "(+ 2 3)" "--memory-bytes" "268435456")))
+        (if (contains? out "(values (5))") 'fits (list 'said out)))
       'fits)
 
 ;; NOTE: TWO BILLION, NOT FORTY MILLION. The sampler runs only while the
@@ -404,8 +422,12 @@
           (list 'said outline-lines))
       'two-nodes)
 
+;; F76: THE ANSWER THE CUT WAS READ FROM IS KEPT, so the setup row's red can
+;; print it whole rather than the #f the projection gives.
+(define old-cut-answer (evaluate "(store-cut)"))
+
 (define old-cut
-  (let* ((out (evaluate "(store-cut)"))
+  (let* ((out old-cut-answer)
          (head "(ok (values (")
          (i (and (starts-with? out head) (string-length head))))
     (and i (let scan ((j i) (depth 0))
@@ -416,20 +438,19 @@
                    (else (scan (+ j 1) depth)))))))
 
 (want "EV-10 setup: the committed cut can be read out of an evaluation"
-      (if (and (string? old-cut) (> (string-length old-cut) 0)) 'read-it (list 'said old-cut))
+      (if (and (string? old-cut) (> (string-length old-cut) 0)) 'read-it (list 'said old-cut-answer))
       'read-it)
 
 (must "set" (cli "set" child-id "body" "(define x 90)"))
 
 (want "EV-10 selected library definitions are visible"
-      (if (contains? (evaluate "(+ x 2)" "--under" lib-id) "(values (92))") 'sees-the-new
-          (list 'said (evaluate "(+ x 2)" "--under" lib-id)))
+      (let ((out (evaluate "(+ x 2)" "--under" lib-id)))
+        (if (contains? out "(values (92))") 'sees-the-new (list 'said out)))
       'sees-the-new)
 
 (want "EV-10 an explicit earlier cut retains the old definitions"
-      (if (contains? (evaluate "(+ x 2)" "--under" lib-id "--cut" old-cut) "(values (42))")
-          'sees-the-old
-          (list 'said (evaluate "(+ x 2)" "--under" lib-id "--cut" old-cut)))
+      (let ((out (evaluate "(+ x 2)" "--under" lib-id "--cut" old-cut)))
+        (if (contains? out "(values (42))") 'sees-the-old (list 'said out)))
       'sees-the-old)
 
 (system (string-append "rm -rf " here))

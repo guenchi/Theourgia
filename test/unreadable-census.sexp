@@ -121,6 +121,16 @@
    unrelated a
    "daemon log read"
    (e (#t (quote unreadable))))
+  ("client.sc" (socket-dir-refusal) 1 guard
+   ((unreadable-entry? e))
+   refuse a
+   "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created (F15)"
+   (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
+  ("project.sc" (export-md) 1 guard
+   ((unreadable-entry? e) (fs-error? e))
+   refuse a
+   "export-md: a target whose listing, directory creation or file write fails -- the unreadable-entry and the door's durable-error this guard catches -- answers (error unreadable (path ...) (reason ...) (written ...)), not internal (F98; the durable clause replaced an i/o-error clause when the writes went through the door). Filed as REFUSE, and it differs from that category's definition (refused before any mutation) in one way: files already written to the export target stay there, and (written ...) names them. export-md does not write the store"
+   (e ((unreadable-entry? e) (raise (unwritten (unreadable-entry-path e) (unreadable-entry-reason e) written))) ((fs-error? e) (raise (unwritten (fs-error-target e) (durable-failure-reason e) written)))))
   ("code-project.sc" (answer) 1 guard
    ((and (list? e) (pair? e) (eq? (car e) (quote error))))
    unrelated a

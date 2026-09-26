@@ -36,7 +36,7 @@
 
 (import (rnrs)
         (only (chezscheme) with-input-from-file system get-process-id call-with-input-file
-              get-string-all file-exists?)
+              get-string-all file-exists? load)
         (only (theourgia arguments) parse-arguments)
         (only (theourgia rpc) rpc-verbs))
 
@@ -277,18 +277,32 @@
 ;; lines below -- two copies of one list, in the file whose subject is two
 ;; copies of one form.
 ;;
-;; THE LIST IS STILL A LITERAL, and that is a hole with a name: `rpc-verbs`
-;; is derived from the dispatcher's own table, while these two are typed
-;; here by hand. `core.sc` dispatches `eval` and `theourgiad.sc` dispatches
-;; `serve`, each with a `string=?` and no table, so a third one added to
-;; either joins no list, is compared against nothing, and turns no row red.
+;; NEVER: AND THE LIST IS READ FROM THE PROGRAMS, NOT TYPED HERE (F64). It
+;; was the literal `'(eval serve)`, while `rpc-verbs` was derived from the
+;; dispatcher's own table; `core.sc` dispatched `eval` and `theourgiad.sc`
+;; dispatched `serve` each with a `string=?`, so a third verb added to either
+;; joined no list, was compared against nothing, and turned no row red. Each
+;; program now dispatches from one `own-verbs` table, and `own-verbs.sc`
+;; reads both, raising rather than answering empty -- the F64 rows below
+;; hold it to that.
 ;;
 ;; NEVER: EACH VERB'S FORM IS LOOKED FOR IN THE PROGRAM THAT ANSWERS IT.
 ;; Since F46 `serve-usage` is `theourgiad.sc`'s, and with `core.sc` the only
 ;; program read here, `serve` read as a verb with no usage form: GATE-A and
 ;; GATE-B2 went red on the split's own tree. That is F64, and the paragraph at
 ;; the partition row says what the partition does and does not promise.
-(define cli-own-verbs '(eval serve))
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+
+(load (string-append script-dir "/own-verbs.sc"))
+
+(define cli-own-verbs
+  (append (own-verbs-of "../core.sc") (own-verbs-of "../theourgiad.sc")))
 
 (define named-usage-forms
   (let loop ((vs (append (rpc-verbs) cli-own-verbs)) (out '()))
@@ -385,6 +399,45 @@
             (and (memq 'serve verbs-to-cover) #t)
             (and (memq 'eval (rpc-verbs)) #t))
       '(#t #t #f))
+
+;; ---- F64: the programs' own verbs are read, and the reader can say no -----
+;;
+;; NEVER: THE CENSUS IS ONLY AS GOOD AS ITS READER. A reader that answered an
+;; empty list when it could not find the table would make every row above
+;; read "nothing to check" as green, so each way of not finding it is a
+;; row here: no define, a table naming nothing, an entry of another shape.
+;; The samples are forms, not files: the reader is the same procedure
+;; either way, and a sample on disk would be one more thing to clean up.
+(display "== F64: the verbs each program answers itself ==\n")
+
+(want "F64 each program's own verbs are read from its dispatch table, core.sc then theourgiad.sc"
+      (list (own-verbs-of "../core.sc") (own-verbs-of "../theourgiad.sc"))
+      '((eval) (serve)))
+
+(want "F64 a program with no own-verbs define is a raise naming the file, not an empty census"
+      (guard (e (#t (list 'RAISED (condition-message e) (condition-irritants e))))
+        (own-verbs-in '((import (rnrs)) (define (main argv) argv)) "sample-without"))
+      '(RAISED "no (define own-verbs ...) at the top level" ("sample-without")))
+
+(want "F64 a table that names no verb is a raise, not an empty census"
+      (own-verbs-in '((define own-verbs (list))) "sample-empty")
+      '(RAISED "the own-verbs table names no verb"))
+
+(want "F64 an entry that is not (cons '<verb> <procedure>) is a raise, not a skipped verb"
+      (own-verbs-in '((define own-verbs (list (cons 'eval f) (list 'serve g)))) "sample-shape")
+      '(RAISED "an entry is not (cons '<verb> <procedure>)"))
+
+(want "F64 a quote with more than one datum in an entry is a raise, not the first datum"
+      (own-verbs-in '((define own-verbs (list (cons (quote eval ignored) f)))) "sample-quote")
+      '(RAISED "an entry is not (cons '<verb> <procedure>)"))
+
+(want "F64 a define with more than one value form is a raise, not its first value"
+      (own-verbs-in '((define own-verbs (list (cons 'eval f)) extra)) "sample-define")
+      '(RAISED "own-verbs is not a (list ...) form"))
+
+(want "F64 CONTROL: a well-formed sample table reads as its verbs, in order"
+      (own-verbs-in '((define own-verbs (list (cons 'b f) (cons 'a g)))) "sample-good")
+      '(b a))
 
 (want "GATE-A every usage site could be read, or is one of the pinned run-time ones"
       unresolved expected-unresolved)

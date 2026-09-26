@@ -105,7 +105,7 @@ Every verb prints one S-expression per item on stdout; the exit code is the verd
 **Empty output with a zero code is an answer** — no references, no hits, no
 differences — and is never an error.
 
-### `read <id> [--md] [--recursive] [--working] [--writer <name>] [--working-info]`
+### `read`
 
     (read <id> ("--md") ("--recursive") ("--writer" <name>)
           ("--working") ("--working-info"))
@@ -152,7 +152,9 @@ draft still reads as committed in the same answer -- the overlay replaces
 the blocks it covers, not the view. `--working-info` adds what the view
 is made of rather than changing what is read.
 
-### `refs <id>`
+### `refs`
+
+    (refs <id>)
 
     (ref (from <id>) (rel <rel>) (via link|md))
 
@@ -166,7 +168,9 @@ because materialising them would give one fact two suppliers that can then disag
 A block's own out-edges are not references to it; those are part of what `read`
 returns about the block.
 
-### `search <query>`
+### `search`
+
+    (search <query> ("--all"))
 
     (hit <id> <score> "<snippet>" (fields (<field> ...)))
     --all           every hit, not just the best ten
@@ -249,7 +253,9 @@ index, and
 None of these clauses appear without `--wire`. The human rendering of an
 answer with items writes the items and nothing else.
 
-### `grep <pattern>`
+### `grep`
+
+    (grep <pattern> ("--under" <id>) ("--all"))
 
     (match <id> <line-no> "<text>")
     --under <id>    only the block given and what is under it
@@ -283,7 +289,9 @@ has no lines.
 Order is score descending then id ascending — total, so two runs over one store agree.
 The query is only ever text: nothing in it reaches a numeric parser.
 
-### `whereis <name>`
+### `whereis`
+
+    (whereis <name>)
 
     (def <id> (library <lib>) (name <sym>) (kind code))
     (export <lib-id> (library <lib>) (name <sym>))
@@ -303,7 +311,9 @@ A name that is nowhere is refused with `(error unknown-name <name> (nearest ...)
 naming up to five of the closest names it does know: those sharing a prefix first,
 then those containing the query, then those within a couple of typing errors.
 
-### `log [<id>]`
+### `log`
+
+    (log (<id>))
 
     (entry (event <writer> <seq>) (ts <ms>) (actor "<name>") (verb <verb>))
 
@@ -316,7 +326,9 @@ therefore the slow one. Two facts force it: the timestamp and actor exist only a
 record is delivered, and a snapshot-seeded read never delivers what the snapshot
 already covers — which would produce a log that silently began in the middle.
 
-### `tag [<name>]`
+### `tag`
+
+    (tag (<name>))
 
     (tag (name "<name>") (cut ((<writer> . <seq>) ...)))
 
@@ -331,7 +343,9 @@ both stand and are reported as unsettled with their event ids rather than with a
 winner chosen here. Both records remain in the log either way; a tag is not a
 uniqueness constraint.
 
-### `diff <cut> <cut>`
+### `diff`
+
+    (diff <cut> <cut>)
 
     (added <id>) | (removed <id>) | (changed <id> <field>)
 
@@ -384,6 +398,8 @@ writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 
 ### `conflicts`
 
+    (conflicts)
+
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
@@ -408,7 +424,7 @@ across two verbs.
 Creates a store in the directory named by `--store`, and answers with the
 store's id and the writer the caller was given.
 
-### `insert --under <id> --title <text> [--after <id>] [--text <text>] [--keywords <text>]`
+### `insert`
 
     (insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)
             ("--keywords" <text>))
@@ -425,7 +441,7 @@ string, spacing and commas included. Splitting it into words happens in
 normalised form could not give back what was sent. `set <id> keywords
 <text>` changes it afterwards.
 
-### `set <id> <field> <value> [--if-unchanged <version>] [--based-on <version>]`
+### `set`
 
     (set <id> <field> <value> ("--if-unchanged" <version>) ("--based-on" <version>))
 
@@ -442,7 +458,7 @@ simply stop behaving like what it said it was. The same set applies to a kind
 written through `batch`, and to nothing else: a record already in a store
 keeps whatever kind it carries, including one a later version introduced.
 
-### `move <id> <parent> [--after <id>]`
+### `move`
 
     (move <id> <parent> ("--after" <id>))
 
@@ -470,13 +486,13 @@ Removes that edge. NOTE: The three positionals are the same three `link`
 takes, in the same order, and getting them out of order is not an error
 the store can see.
 
-### `def <name> <source> [--under <library>]`
+### `def`
 
     (def <name> ("--under" <library>) <source>)
 
 Defines one datum by name, optionally inside a library block.
 
-### `outline [--depth <n>] [--with-keywords]`
+### `outline`
 
     (outline ["--depth" <n>] ["--with-keywords"])
 
@@ -518,7 +534,7 @@ NEVER: **There is no machinery behind this rule** -- no record of who holds an
 id, no lock, and nothing refuses a second process. It is a convention,
 stated here because the failure it prevents is silent.
 
-### `write <block> <bytes> [--writer <name>] [--based-on <version>] [--working-cut <cut>] [--working-parent-writer <name>] [--working-parent <version>] [--rebase]`
+### `write`
 
     (write <block> <bytes> ("--writer" <name>) ("--based-on" <version>)
            ("--working-cut" <cut>) ("--working-parent-writer" <name>)
@@ -529,7 +545,7 @@ the name of its content -- `sha256(bytes || based-on || cut)` -- so the
 same bytes written twice are the same version. `--rebase` moves a draft
 onto a newer committed parent.
 
-### `restore <version> [--writer <name>]`
+### `restore`
 
     (restore <version> ("--writer" <name>))
 
@@ -542,7 +558,7 @@ drafts a commit took and a later retraction gave back -- so `--writer`
 selects whose list is searched, and the same version can be unknown to
 one writer and restorable by another.
 
-### `drafts [--writer <name>]`
+### `drafts`
 
     (drafts ("--writer" <name>))
 
@@ -551,14 +567,14 @@ Lists that writer's live drafts. Each carries `block`, `writer`,
 moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
 (whether the draft's bytes differ from what is committed).
 
-### `discard <block> [--writer <name>]`
+### `discard`
 
     (discard <block> ("--writer" <name>))
 
 Drops that writer's draft for that block. The committed block is
 untouched.
 
-### `commit [<block> ...] [--writer <name>] [--working-version <block>=<version>]`
+### `commit`
 
     (commit (<block> ...) ("--writer" <name>) ("--working-version" <block>=<version>))
 
@@ -574,14 +590,14 @@ present and empty: a field that is always there says nothing.
 
 ## Importing, exporting, and splitting
 
-### `import-md <dir> [--allow-delete]`
+### `import-md`
 
     (import-md <dir> ("--allow-delete"))
 
 Reads a directory of Markdown into the store. Without `--allow-delete` a
 file that has disappeared from the directory leaves its blocks alone.
 
-### `export-md <dir> [--with-ids]`
+### `export-md`
 
     (export-md <dir> ("--with-ids"))
 
@@ -630,14 +646,18 @@ root (see `read`), or a section whose front was set with `set`. It is not in `sk
 because the block's body was written and the `1 + n` sum over `skipped` counts
 lost blocks only. The clause is absent when there is nothing to name.
 
-### `import-code <dir> [--allow-delete] [--datum]`
+### `import-code`
 
     (import-code <dir> ("--allow-delete") ("--datum"))
 
 Reads a directory of source into the store. `--datum` reads it as data --
-one block per top-level form -- rather than as text.
+one block per top-level form -- rather than as text. With `--datum`, the
+whole-line ; comments directly above a form become its doc; a ; comment
+inside a form is dropped, and the answer warns with its line and column. A
+#| |# block comment, and any comment inside a datum discarded with #;, is
+dropped with neither.
 
-### `export-code <dir> [--raw] [--datum]`
+### `export-code`
 
     (export-code <dir> ("--raw") ("--datum"))
 
@@ -645,7 +665,7 @@ Writes the store out as source. NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".
 
-### `split-suggest <file> [--output <review-file>]`
+### `split-suggest`
 
     (split-suggest <file> ("--output" <review-file>))
 
@@ -766,6 +786,8 @@ So a crash cannot leave a client holding an `ok` for a record that is not on
 disk. It can leave a client holding **no** answer, which is what `--req` is for.
 
 ### `batch`
+
+    (batch <intents>)
 
 Intents are read from standard input, one wrapping list or several top-level
 forms:
@@ -1123,7 +1145,7 @@ Run the suites from source (igropyr must be a sibling checkout):
 
 ## Evaluating against a store
 
-### `eval <source> [--cut <cut>] [--under <library>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>]`
+### `eval`
 
     (eval ("--cut" <cut>) ("--under" <library>) ("--working") ("--latest")
           ("--writer" <name>) ("--timeout-ms" <n>) ("--memory-bytes" <n>)
@@ -1182,7 +1204,7 @@ spellings silently do nothing.
 
 ## Serving a store
 
-### `serve [<store>] [--socket <path>] [--detach --log <path>]`
+### `serve`
 
     (serve (<store>) ("--socket" <path>) ("--detach" "--log" <path>))
 
@@ -1305,15 +1327,6 @@ was found rather than left for a reader to discover.
     rewrites `<home>/instances.sexp` whole, and entries for stores that
     have been deleted stay in it marked `active`. Measured on the
     development machine: 319 KB, 5421 records, all `active`.
-  * **`structure.py` is Python**, and it is the only check in the suite
-    that is -- it is the preflight that reads every file's paren depth at
-    each top-level definition, which is how a missing closer is caught
-    before it reports itself as an unbound identifier a hundred lines
-    away. It is an OPTIONAL preflight: a machine with no `python3`
-    prints `preflight: NOT CHECKED -- structure.py is here but no
-    python3 is` and the run continues. NOTE: NOT CHECKED is not green -- it
-    says the reading has a hole in it and names the hole. Porting it to
-    Scheme is not done.
   * **`W11-export-working` and `W11-cut-plus-working` have no cells.**
     They belong to verbs the working-view fixture does not drive
     (`export-code`, and `eval --cut` combined with a view beyond the one

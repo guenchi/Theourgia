@@ -289,8 +289,23 @@ run_tracked() {
   wait "$tracked_w"
   rt_st=$?
   tracked_w=""
+  rt_was_aborted=$aborted
   if read_result "$tracked_result" "$tracked_id" "$tracked_name" && [ -n "$rr_status" ]; then
     rt_st=$rr_status
+  fi
+  # THE RUN THAT STOPS LAUNCHING SAYS WHY, AT THE FIXTURE THAT STOPPED IT
+  # (F95). Its reason and that fixture's output are both known here, and
+  # the output lives in this run's scratch, which is removed at the end --
+  # so a run inside another fixture's scratch (runner-self, launch-self)
+  # used to leave only its exit code, 6, and nothing to read the cause from.
+  if [ "$rt_was_aborted" = 0 ] && [ "$aborted" = 1 ]; then
+    echo "ABORTED AT $tracked_name: $abort_reason"
+    echo "  the last 20 lines of $tracked_name's output ($rt_out):"
+    if [ -r "$rt_out" ]; then
+      tail -n 20 "$rt_out" | sed 's/^/  | /'
+    else
+      echo "  | (no output file)"
+    fi
   fi
   return "$rt_st"
 }
@@ -813,25 +828,17 @@ fi
 # something, which reads as a broken environment. One line naming the
 # file and the first definition that was swallowed is the difference.
 #
-# NOTE: IT IS NOT IN `*.sc`, so it does not run again in the loop and the
-# count-back below is untouched.
-# NOTE: AND IT IS THE ONE CHECK IN THIS SUITE THAT NEEDS PYTHON. Every
-# other thing here runs under Chez. A machine without `python3` must be
-# able to take a reading -- so a missing interpreter prints NOT CHECKED
-# and the run continues, exactly as a missing `structure.py` does.
-# NEVER: THE TWO CASES SAY DIFFERENT WORDS ON PURPOSE: "the file is not here"
-# and "nothing here can run it" send a reader to different places, and
-# one message for both would send them to the wrong one half the time.
-# NOTE: NOT CHECKED IS NOT GREEN. It says this reading does not cover the
-# thing the check covers; porting it to Scheme is in the README's KNOWN
-# OPEN, and until then a run on a machine with no python3 is a reading
-# with a hole in it that names itself.
-if [ -f structure.py ] && ! command -v python3 > /dev/null 2>&1; then
-  echo "preflight: NOT CHECKED -- structure.py is here but no python3 is"
-elif [ -f structure.py ] && [ "$aborted" = 1 ]; then
+# NOTE: IT IS IN `*.sc` NOW, AND IT DOES NOT RUN AGAIN IN THE LOOP: the
+# loop names it among the helpers, as it named the Python file before it.
+# It was `structure.py`, the one check in this suite that needed Python,
+# so a machine without `python3` printed NOT CHECKED here and took a
+# reading with a hole in it. It is Scheme since F9, a port read against
+# the Python on the whole tree and on copies with each kind of defect,
+# and it runs wherever the fixtures do.
+if [ -f structure.sc ] && [ "$aborted" = 1 ]; then
   echo "preflight: NOT RUN -- $abort_reason; nothing more is launched"
-elif [ -f structure.py ]; then
-  run_tracked 120 "$out/structure.out" structure python3 structure.py
+elif [ -f structure.sc ]; then
+  run_tracked 120 "$out/structure.out" structure scheme --script structure.sc
   st_rc=$?
   st_sent=$(grep -c "^structure complete" "$out/structure.out")
   st_hard=$(grep -c "^FAIL\|^MISMATCH\|^Exception" "$out/structure.out")
@@ -846,7 +853,7 @@ elif [ -f structure.py ]; then
     early_refuse "nothing below this line would be a reading." 1
   fi
 else
-  echo "preflight: NOT CHECKED -- structure.py is not in this directory"
+  echo "preflight: NOT CHECKED -- structure.sc is not in this directory"
 fi
 
 # NEVER: PYTHON FIXTURES RUN TOO, AND THEY DID NOT USED TO. This loop was
@@ -875,14 +882,16 @@ for f in *.sc *.py; do
   # others and prints no sentinel of its own. It is named here rather
   # than detected, because "imports nothing and prints nothing" is also
   # what a broken fixture looks like.
-  # NOTE: FOUR HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
+  # NOTE: FIVE HELPERS, NAMED RATHER THAN DETECTED. `paths` is imported by
   # the python fixtures; `structure` is the preflight above;
   # `reduce-hash-check` is a filter `reduce1.sc` pipes bytes through --
   # run bare it prints a hash and no sentinel, which is also what a
-  # broken fixture looks like, so the list says which it is; and
-  # `import-walk` is the shared walker seven fixtures `load`. A fifth
-  # helper, `launch.pl`, starts every fixture; no glob here matches `.pl`,
-  # so it is never classified at all.
+  # broken fixture looks like, so the list says which it is;
+  # `import-walk` is the shared walker seven fixtures `load`; and
+  # `own-verbs` is the reader of the programs' dispatch tables that
+  # `options-gate` and `docs-check` `load` (F64). A sixth helper,
+  # `launch.pl`, starts every fixture; no glob here matches `.pl`, so it
+  # is never classified at all.
   #
   # NEVER: `import-walk` JOINED THIS LIST BECAUSE OF ITS EXTENSION. It was
   # `.scm` and so was never in `*.ss`, which is what the note above the
@@ -891,7 +900,7 @@ for f in *.sc *.py; do
   # sentinel, and been counted as a broken fixture -- an extension change
   # altering WHICH FILES ARE TESTS.
   case "$n" in
-    paths|structure|reduce-hash-check|import-walk) helpers="$helpers $n"; continue;;
+    paths|structure|reduce-hash-check|import-walk|own-verbs) helpers="$helpers $n"; continue;;
   esac
   if grep -q "^(library (theourgia" "$f"; then libs="$libs $n"; continue; fi
   # NEVER: STANDARD INPUT IS /dev/null, FOR EVERY FIXTURE. Inherited from the

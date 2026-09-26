@@ -14,14 +14,16 @@
 
 ;; A definition inside a string literal is text, not a definition.
 ;;
-;; structure.py reports a top-level definition that sits deeper than the
-;; top level: the form before it never closed. It used to record an opening
+;; structure.sc reports a top-level definition that sits deeper than the
+;; top level: the form before it never closed. (It was structure.py until
+;; F9; these rows were written against the Python and read the same on the
+;; port.) It used to record an opening
 ;; `(define` at the start of a line before asking whether the scan was
 ;; inside a string, so a program written as a string -- a child script a
 ;; fixture hands to another process -- was reported as a swallowed
 ;; definition, and the whole suite was refused at preflight (F84).
 ;;
-;; The gate is run on a directory this file builds: a copy of structure.py
+;; The gate is run on a directory this file builds: a copy of structure.sc
 ;; under <dir>/test, and the samples in <dir>, which is where it looks.
 
 (import (chezscheme))
@@ -107,9 +109,9 @@
   (let* ((dir (string-append root "/" name))
          (test (string-append dir "/test")))
     (system (string-append "mkdir -p " test))
-    (system (string-append "cp structure.py " test "/structure.py"))
+    (system (string-append "cp structure.sc " test "/structure.sc"))
     (spit! (string-append dir "/" name ".sc") text)
-    (system (string-append "python3 " test "/structure.py > " dir "/out.txt 2>&1"))
+    (system (string-append "scheme --script " test "/structure.sc > " dir "/out.txt 2>&1"))
     (let ((out (slurp (string-append dir "/out.txt")))
           (file (string-append name ".sc")))
       (list (filter (lambda (l) (and (starts-with? l "FAIL") (contains? l file)))

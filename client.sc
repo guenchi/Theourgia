@@ -22,7 +22,7 @@
 (library (theourgia client)
   (export socket-path run-root store-key
           call! answer-limit no-daemon-errno?
-          ensure-daemon! serve-log-path start-budget-ms
+          ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
@@ -492,7 +492,37 @@
       ;; one fact that would fix it.
       ((not (socket-path-fits? socket)) (path-too-long socket))
       ((connects? socket) 'ready)
+      ;; AND A SOCKET WHOSE DIRECTORY IS NOT THERE, for the same reason: the
+      ;; daemon refuses it (theourgiad.sc) and the start would be read back
+      ;; out of the log only after the whole start budget. The default
+      ;; socket is exempt, because its directory is the run directory this
+      ;; client makes in start-one!, before the daemon is spawned.
+      ((and (not (string=? socket (socket-path store)))
+            (socket-dir-refusal socket))
+       => (lambda (refusal) refusal))
       (else (start-one! argv store socket))))
+
+  ;; -> #f when the directory a socket goes in is a directory, otherwise
+  ;; the refusal, as a datum. ONE TEXT FOR BOTH PLACES THAT REFUSE: the
+  ;; daemon's `serve` (theourgiad.sc, for a --socket given by hand) and the
+  ;; start above. A socket is never given a directory by being served: the
+  ;; directory is the caller's to make (F15, as F82 for export-md).
+  ;;
+  ;;   absent, or a file where the directory must be
+  ;;       -> (error socket-dir-missing (dir <dir>))
+  ;;   a directory on the way that cannot be searched
+  ;;       -> (error unreadable (path <p>) (reason <r>)), R1's naming; it
+  ;;          is not "missing", and saying so would send the caller looking
+  ;;          for a directory that is there.
+  (define (socket-dir-refusal socket)
+    (let ((dir (dirname-of socket)))
+      (guard (e ((unreadable-entry? e)
+                 (list 'error 'unreadable
+                       (list 'path (unreadable-entry-path e))
+                       (list 'reason (unreadable-entry-reason e)))))
+        (if (eq? (entry-type dir) 'directory)
+            #f
+            (list 'error 'socket-dir-missing (list 'dir dir))))))
 
   (define (start-one! argv store socket)
     (let* ((log-path (serve-log-path store))

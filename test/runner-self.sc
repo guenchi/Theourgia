@@ -428,6 +428,25 @@
                (leak-lines c))))
 (define (line-with c . words)
   (exists (lambda (l) (for-all (lambda (w) (contains? l w)) words)) (lines-of (run-log c))))
+;; THE INNER RUN'S OWN ACCOUNT, for a row that went red (F95). The inner run
+;; lives in this fixture's scratch, which is removed; a red reading of its
+;; exit code alone -- (#f 6 #f) -- said that it stopped and not why. These
+;; are the lines that say why: the verdicts, the abort and the output it
+;; quoted, the summary. Bounded, so a runaway log cannot swamp the line.
+(define (inner-account c)
+  ;; NOTE: `NOTE <fixture>:` lines are the launcher's own notes, copied from its
+  ;; result file -- a watcher that could not block a signal, an anchor that
+  ;; died. When the launcher wrote one, it is the nearest thing to a cause.
+  (let ((marks '("REFUSING" "NOT ALL LAUNCHED" "ABORTED AT" "  | " "RESULT NOT READ"
+                 "GROUP NOT READ" "OUTLIVED KILL" "LEFT IN GROUP" "NOTE " "fixtures run:")))
+    (let loop ((ls (lines-of (run-log c))) (acc '()) (k 0))
+      (cond ((or (null? ls) (>= k 40)) (cons 'inner (reverse acc)))
+            ((exists (lambda (m) (starts-with? (car ls) m)) marks)
+             (loop (cdr ls) (cons (car ls) acc) (+ k 1)))
+            (else (loop (cdr ls) acc k))))))
+;; The reading, and on red the inner account beside it.
+(define (with-account c got expected)
+  (if (equal? got expected) got (append got (list (inner-account c)))))
 
 ;; ============================================================================
 
@@ -706,6 +725,13 @@
           (list (and (line-with c "RESULT NOT READ") #t)
                 (file-exists? (string-append (car c) "/out/ok.out")))
           '(#t #f))
+    ;; F95: THE ABORT SAYS WHERE AND WHY, and quotes the fixture's output,
+    ;; in the run's own log -- the one place that survives the run's removal
+    ;; of its scratch.
+    (want "F95 an aborted run names the fixture it stopped at and the reason, and quotes that fixture's last lines of output"
+          (list (and (line-with c "ABORTED AT" "could not be read") #t)
+                (and (line-with c "the last 20 lines of") #t))
+          '(#t #t))
     (for-each (lambda (n)
                 (when (or (starts-with? n "run-") (starts-with? n "ths-snap."))
                   (sh "rm -rf " (cadr c) "/" n)))
@@ -1008,9 +1034,11 @@
           (list done (integer? p))
           '(#t #t))
     (want "RS-14 LEFT IN GROUP names the fixture and the pid, the run refuses with 3, and the member is gone"
-          (list (and (integer? p) (line-with c "LEFT IN GROUP" "leavegroup" (number->string p)) #t)
-                (rc-of c)
-                (alive? p))
+          (with-account c
+                        (list (and (integer? p) (line-with c "LEFT IN GROUP" "leavegroup" (number->string p)) #t)
+                              (rc-of c)
+                              (alive? p))
+                        '(#t 3 #f))
           '(#t 3 #f))
     (stop-pid! (string-append (car c) "/lg.pid"))))
 

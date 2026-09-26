@@ -775,7 +775,8 @@
       (list 'split-suggest '(split-suggest <file> ["--output" <review-file>])
             "Propose where a long file could be divided into blocks." #f 'daemon)
       (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"])
-            "Read a directory of source into the store." #f 'daemon)
+            "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither."
+            #f 'daemon)
       (list 'export-code '(export-code <dir> ["--raw"] ["--datum"])
             "Write the store's source back out to a directory." #f 'daemon)
       (list 'def '(def <name> ["--under" <library>] <source>)

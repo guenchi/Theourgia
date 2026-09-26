@@ -312,8 +312,11 @@
             'error 'detach-needs-a-log 'no-second-element
             '(usage (serve)) #f))
 
-;; AND THE USAGE CLAUSE IS THE WHOLE FORM -- compared against the one this
-;; program keeps, read out of `theourgiad.sc`.
+;; AND THE USAGE CLAUSE IS THE WHOLE FORM -- compared against the one the
+;; daemon program gives on its OTHER refusal: a first word that is not
+;; `serve` answers (error bad-request (reason not-a-daemon-verb) (usage ...)).
+;; Two paths at run time, each emitting the usage, and nothing read out of
+;; the source (F68).
 ;;
 ;; NEVER: THE FIRST VERSION OF THIS ROW WAS TITLED "is serve's own form" AND
 ;; DID NOT COMPARE IT. It checked that the clause's head was `serve` and that
@@ -321,35 +324,45 @@
 ;; row exists for is whether that refusal tells the caller what the verb
 ;; really accepts, and a shape check cannot answer it: a form with the right
 ;; head and the right bracketing and a missing option would pass.
-(define serve-usage-in-source
+;;
+;; NEVER: AND THE SECOND VERSION READ THE FORM OUT OF theourgiad.sc, with a
+;; scanner that took the first top-level `define` named serve-usage. That is
+;; a claim about the text of a file, and it outlives the program: a usage
+;; built at run time, or moved into a library, reads as "not found" while
+;; both refusals go on agreeing. What is compared now is what the program
+;; says, twice.
+(define refusal-out (string-append here "/refusal.txt"))
+(define refusal-code
+  (system (string-append (env-prefix "") " scheme --script " daemon
+                         " not-serve > " refusal-out " 2>&1")))
+(define refusal-answer
   (let ((data (guard (e (#t '()))
-                (with-input-from-file daemon
+                (with-input-from-file refusal-out
                   (lambda ()
                     (let loop ((acc '()))
                       (let ((x (read)))
                         (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))))
     (let look ((xs data))
-      (cond
-        ((null? xs) #f)
-        ((and (pair? (car xs)) (eq? (car (car xs)) 'define)
-              (pair? (cdr (car xs))) (eq? (cadr (car xs)) 'serve-usage)
-              (pair? (cddr (car xs))) (pair? (caddr (car xs)))
-              (eq? (car (caddr (car xs))) 'quote))
-         (cadr (caddr (car xs))))
-        (else (look (cdr xs)))))))
+      (cond ((null? xs) (list 'no-answer-in (length data)))
+            ((and (pair? (car xs)) (eq? (car (car xs)) 'error)) (car xs))
+            (else (look (cdr xs)))))))
+(define serve-usage-from-refusal
+  (let ((u (usage-clause-of refusal-answer)))
+    (and u (cadr u))))
 
-;; CONTROL: the form was found in the source at all. Without this, a failure
-;; to read it would make the comparison below compare `#f` with `#f` on some
-;; future day when the refusal also stopped carrying one.
-(want "D-2b CONTROL: serve-usage was read out of theourgiad.sc and is a serve form"
-      (list (and (pair? serve-usage-in-source) #t)
-            (and (pair? serve-usage-in-source) (car serve-usage-in-source)))
-      (list #t 'serve))
+;; CONTROL: the other refusal carried a usage at all, and it is a serve form.
+;; Without this, a refusal that stopped carrying one would make the
+;; comparison below compare `#f` with `#f` on the day both stopped.
+(want "D-2b CONTROL: the daemon's refusal of a verb that is not serve carries a usage clause, and it is a serve form"
+      (list (if (= 0 refusal-code) 'EXIT-ZERO 'refused)
+            (and (pair? serve-usage-from-refusal) #t)
+            (and (pair? serve-usage-from-refusal) (car serve-usage-from-refusal)))
+      (list 'refused #t 'serve))
 
-(want "D-2b TWIN: the usage clause it carries IS serve-usage, compared whole"
+(want "D-2b TWIN: the usage clause --detach without --log carries IS the one the other refusal carries, compared whole"
       (let ((u (usage-clause-of nolog-answer)))
         (list (and u #t)
-              (and u (equal? (cadr u) serve-usage-in-source))))
+              (and u (equal? (cadr u) serve-usage-from-refusal))))
       (list #t #t))
 
 ;; AND THE NOTATION, ASKED SEPARATELY. The row above would also pass if both

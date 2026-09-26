@@ -258,14 +258,24 @@
     (let ((dp (read-datum (string-append d "/d.pid")))
           (res (result-of d)))
       (stop-pid! (string-append d "/d.pid"))
-      (want "LS-8 a descendant left in the group is reported as left, by pid, and is gone once W returns"
-            (list (car r)
-                  (and res (cadddr res))
-                  (and res (integer? dp)
-                       (exists (lambda (m) (starts-with? m (string-append (number->string dp) " ")))
-                               (list-ref res 4)))
-                  (alive? dp))
-            '(0 "left" #t #f)))))
+      ;; F95: ON RED THE LAUNCH'S OWN ACCOUNT GOES WITH THE READING -- its
+      ;; result file and W's log, from this case's directory, which is
+      ;; removed. (0 "unknown" #f #f) alone said the group was not read and
+      ;; not why.
+      (let ((got (list (car r)
+                       (and res (cadddr res))
+                       (and res (integer? dp)
+                            (exists (lambda (m) (starts-with? m (string-append (number->string dp) " ")))
+                                    (list-ref res 4)))
+                       (alive? dp)))
+            (expected '(0 "left" #t #f)))
+        (want "LS-8 a descendant left in the group is reported as left, by pid, and is gone once W returns"
+              (if (equal? got expected)
+                  got
+                  (append got (list (list 'inner
+                                          (list 'result (slurp (string-append d "/result")))
+                                          (list 'w-log (slurp (string-append d "/w.log")))))))
+              expected)))))
 (let ((d (case!)))
   (let ((r (run-w d 30 "sh -c '(sleep 1) & exit 0'")))
     (want "LS-9 a descendant that ends within the grace is not reported: clean"

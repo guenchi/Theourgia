@@ -27,9 +27,9 @@
 
 (import (rnrs)
         (only (chezscheme) with-input-from-file call-with-input-file
-              get-string-all directory-list file-exists?)
+              get-string-all directory-list file-exists? load)
         (only (theourgia arguments) parse-arguments)
-        (only (theourgia rpc) rpc-verbs write-protocol))
+        (only (theourgia rpc) rpc-verbs write-protocol verb-catalogue))
 
 (define bad 0)
 (define rows 0)
@@ -107,21 +107,43 @@
     (fold-left (lambda (acc l) (let ((v (heading-verb l))) (if v (add-unique v acc) acc)))
                '() (lines-of readme))))
 
+;; NEVER: THE VERBS EACH PROGRAM ANSWERS ITSELF ARE READ FROM ITS DISPATCH
+;; TABLE (F64), by the reader `options-gate.sc` uses. This was the literal
+;; `'(eval serve)`, here and again in DOC-2, so a third verb dispatched by
+;; either program was one the README never had to document.
+(define script-dir
+  (let* ((self (car (command-line)))
+         (cut (let loop ((i (- (string-length self) 1)))
+                (cond ((< i 0) #f)
+                      ((char=? (string-ref self i) #\/) i)
+                      (else (loop (- i 1)))))))
+    (if cut (substring self 0 cut) ".")))
+
+(load (string-append script-dir "/own-verbs.sc"))
+
+(define programs-own-verbs
+  (append (own-verbs-of "../core.sc") (own-verbs-of "../theourgiad.sc")))
+
 (define program-verbs
-  (sorted-strings (map symbol->string (append (rpc-verbs) '(eval serve)))))
+  (sorted-strings (map symbol->string (append (rpc-verbs) programs-own-verbs))))
 
 (want "DOC-1 the README documents exactly the verbs the program answers to"
       readme-heading-verbs program-verbs)
 
 ;; ---- the options it advertises ------------------------------------------------
 ;;
-;; NEVER: ONLY THE HEADING LINE AND THE INDENTED USAGE BLOCK COUNT AS AN
-;; ADVERTISEMENT. Prose has to be able to NAME an option in order to say
-;; something about it -- that it was broken, that it is the same spelling
-;; another verb uses -- and a scanner reading the whole section cannot
-;; tell the two apart. Measured while writing that README: a paragraph
-;; saying "`--writer` does not work on this verb" was read as the verb
-;; advertising `--writer`.
+;; NEVER: ONLY THE INDENTED BLOCKS COUNT AS AN ADVERTISEMENT. Prose has to be
+;; able to NAME an option in order to say something about it -- that it was
+;; broken, that it is the same spelling another verb uses -- and a scanner
+;; reading the whole section cannot tell the two apart. Measured while
+;; writing that README: a paragraph saying "`--writer` does not work on this
+;; verb" was read as the verb advertising `--writer`.
+;;
+;; NEVER: AND NOT THE HEADING (F52). The heading used to carry the usage form
+;; too, so every option was written twice in the section, and this set was
+;; the union of the two: an option dropped from the block stayed advertised
+;; by the heading and turned nothing red. A heading is the verb's name only
+;; now -- a row below holds it to that -- and the blocks are the one place.
 
 (define (dashed-tokens line)
   ;; NOTE: `--` MUST BE FOLLOWED BY A LETTER. Without that test the `---`
@@ -149,10 +171,7 @@
        (let ((l (car ls)))
          (cond
            ((heading-verb l)
-            => (lambda (v)
-                 (loop (cdr ls) v
-                       (append (map (lambda (o) (list (string->symbol v) o)) (dashed-tokens l))
-                               out))))
+            => (lambda (v) (loop (cdr ls) v out)))
            ((and (starts-with? l "#") (not (starts-with? l "####")))
             (loop (cdr ls) #f out))
            ((and verb (starts-with? l "    "))
@@ -188,10 +207,144 @@
                                   (not (member o common-options))
                                   (not (member (list verb o) advertised))))
                            every-spelling))))
-    '() (append (rpc-verbs) '(eval serve))))
+    '() (append (rpc-verbs) programs-own-verbs)))
 
 (want "DOC-2 every verb-specific option the parser accepts is in the README"
       unadvertised '())
+
+;; ---- F52: a heading is a name, and the usage form is the product's --------------
+;;
+;; KEY: THE USAGE FORM IS WRITTEN ONCE, IN THE FIRST BLOCK OF THE VERB'S
+;; SECTION, and what it names is compared with the form the product itself
+;; gives for the verb: the catalogue's entry (what `describe` publishes),
+;; or for a verb a program answers itself, that program's `<verb>-usage`.
+;; A name the README writes and the product's form lacks is red -- an
+;; option the verb never had, a placeholder the verb does not take.
+;;
+;; NOTE: WHAT THIS DOES NOT COMPARE. Names only, not the form's structure:
+;; which clauses are optional, and their order, are not read. A name the
+;; product form has and the README block leaves out is not red here; DOC-2
+;; above is what asks for every option the parser accepts. And the answer
+;; shapes a section shows in its later blocks are compared with NOTHING --
+;; there is no product table of answer shapes to hold them to.
+
+(define verb-headings
+  (filter heading-verb (lines-of readme)))
+
+;; NEVER: ANY `--`, NOT ONLY AN OPTION-SHAPED ONE. `dashed-tokens` wants a
+;; letter after the two dashes, so a heading ending in a bare `--` passed.
+;; The rule is that a heading is the verb's name, and a name has no `--`.
+(want "F52 no verb heading contains --: the usage form is written once, in the section's block"
+      (filter (lambda (l) (contains? l "--")) verb-headings)
+      '())
+
+;; The first indented block after a verb's heading, as text, or #f when the
+;; section has none before the next heading.
+(define (first-block-after ls)
+  (let skip ((ls ls))
+    (cond ((null? ls) #f)
+          ((and (starts-with? (car ls) "#") (not (starts-with? (car ls) "####"))) #f)
+          ((starts-with? (car ls) "    ")
+           (let take ((ls ls) (acc '()))
+             (if (and (pair? ls) (starts-with? (car ls) "    "))
+                 (take (cdr ls) (cons (car ls) acc))
+                 (fold-left (lambda (s l) (string-append s l "\n")) "" (reverse acc)))))
+          (else (skip (cdr ls))))))
+
+;; Every name in a form: strings, symbols, anything that is not a pair.
+(define (names-in x)
+  (cond ((pair? x) (append (names-in (car x)) (names-in (cdr x))))
+        ((null? x) '())
+        ((vector? x) (names-in (vector->list x)))
+        (else (list x))))
+
+;; A USAGE FORM IS SPELLED IN THREE KINDS OF NAME after the verb's own: an
+;; option in a string, `"--under"`; a placeholder, `<id>`; and `...`. An
+;; answer shape can be headed by the verb's name too -- `tag` answers
+;; `(tag (name "<name>") ...)` -- and its bare words are what tell it apart.
+(define (usage-name? x)
+  (or (and (string? x) (starts-with? x "--"))
+      (and (symbol? x)
+           (let ((s (symbol->string x)))
+             (or (string=? s "...") (starts-with? s "<"))))))
+
+;; `(verb . datum)` for every verb section whose first block reads as a form
+;; headed by the verb's name and spelled in usage names only, and `(verb .
+;; #f)` for every other section.
+(define section-usage-blocks
+  (let loop ((ls (lines-of readme)) (out '()))
+    (cond
+      ((null? ls) (reverse out))
+      ((heading-verb (car ls))
+       => (lambda (v)
+            (let* ((verb (string->symbol v))
+                   (text (first-block-after (cdr ls)))
+                   (datum (and text
+                               (guard (e (#t #f))
+                                 (read (open-string-input-port text))))))
+              (loop (cdr ls)
+                    (cons (cons verb (and (pair? datum) (eq? (car datum) verb)
+                                          (for-all usage-name? (names-in (cdr datum)))
+                                          datum))
+                          out)))))
+      (else (loop (cdr ls) out)))))
+
+;; The product's own usage form for a verb, or #f.
+(define (program-usage-form verb)
+  (let search ((programs '("../core.sc" "../theourgiad.sc")))
+    (cond
+      ((null? programs) #f)
+      ((memq verb (own-verbs-of (car programs)))
+       (let ((name (string->symbol (string-append (symbol->string verb) "-usage"))))
+         (let find ((fs (own-verbs-forms (car programs))))
+           (cond ((null? fs) #f)
+                 ((and (pair? (car fs)) (eq? (car (car fs)) 'define)
+                       (pair? (cdr (car fs))) (eq? (cadr (car fs)) name)
+                       (pair? (cddr (car fs))) (pair? (caddr (car fs)))
+                       (eq? (car (caddr (car fs))) 'quote))
+                  (cadr (caddr (car fs))))
+                 (else (find (cdr fs)))))))
+      (else (search (cdr programs))))))
+
+(define (product-usage-form verb)
+  (let ((entry (assq verb (verb-catalogue))))
+    (if entry (cadr entry) (program-usage-form verb))))
+
+(define (names-missing-from product block)
+  (let ((theirs (names-in product)))
+    (fold-left (lambda (acc n) (if (member n theirs) acc (append acc (list n))))
+               '() (names-in block))))
+
+(define compared
+  (filter (lambda (s) (and (cdr s) (product-usage-form (car s)))) section-usage-blocks))
+
+(want "F52 every name a section's usage-form block writes is in the product's own form for that verb"
+      (fold-left (lambda (acc s)
+                   (let ((extra (names-missing-from (product-usage-form (car s)) (cdr s))))
+                     (if (null? extra) acc (append acc (list (cons (car s) extra))))))
+                 '() compared)
+      '())
+
+(want "F52 every section with a usage-form block has a product form to compare it with"
+      (map car (filter (lambda (s) (and (cdr s) (not (product-usage-form (car s)))))
+                       section-usage-blocks))
+      '())
+
+;; NEVER: EVERY VERB SECTION OPENS WITH ITS USAGE FORM, and this row holds the
+;; list of those that do not at empty. Nine sections -- refs, search, grep,
+;; whereis, log, tag, diff, conflicts, batch -- opened with an answer shape or
+;; an example and were compared with nothing; each was given its form from
+;; the catalogue, before the answer shape, under a name-only heading. A
+;; section that opens any other way is outside the comparison above, so it
+;; is red here rather than silently skipped.
+(want "F52 every verb section's first block is its usage form, so the comparison above reads every section"
+      (map car (filter (lambda (s) (not (cdr s))) section-usage-blocks))
+      '())
+
+(want "F52 CONTROL: the comparison read at least twenty sections, and it reports a name the product form lacks"
+      (list (>= (length compared) 20)
+            (names-missing-from (product-usage-form 'insert) '(insert "--under" <id> ("--bogus"))))
+      '(#t ("--bogus")))
 
 
 ;; ---- DOC-4: the options every verb takes ---------------------------------------
@@ -261,6 +414,43 @@
       (list (if (contains? readme holding-phrase) 'in-the-readme 'MISSING-FROM-README)
             (if (contains? write-protocol holding-phrase) 'in-the-constant 'MISSING-FROM-CONSTANT))
       '(in-the-readme in-the-constant))
+
+;; ---- F19: what import-code --datum does with comments, in both places ----------
+;;
+;; NOTE: THE SAME SENTENCE, IN THE README'S import-code SECTION AND IN THE
+;; VERB'S CATALOGUE DESCRIPTION, which is what `describe` publishes and the
+;; MCP tool description is built from. The catalogue is read as the running
+;; product answers it, not as source text. Whitespace is compared squashed:
+;; the README wraps the sentence across lines, and that is not a difference in
+;; what is said. What the answer does
+;; is held by `datum-import.sc`'s F19 rows, not here.
+(define datum-comment-phrase
+  "the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither")
+
+(define (squashed text)
+  (let loop ((cs (string->list text)) (space #f) (out '()))
+    (cond ((null? cs) (list->string (reverse out)))
+          ((char-whitespace? (car cs)) (loop (cdr cs) #t out))
+          (space (loop (cdr cs) #f (cons (car cs) (if (null? out) out (cons #\space out)))))
+          (else (loop (cdr cs) #f (cons (car cs) out))))))
+
+(define import-code-section
+  (let ((at (index-of readme "### `import-code`" 0)))
+    (and at
+         (let ((end (index-of readme "\n### " (+ at 5))))
+           (substring readme at (or end (string-length readme)))))))
+
+(define import-code-description
+  (let ((entry (assq 'import-code (verb-catalogue))))
+    (and entry (caddr entry))))
+
+(want "F19 what import-code --datum does with comments is in the README's import-code section and in the verb's catalogue description"
+      (list (if (and import-code-section (contains? (squashed import-code-section) datum-comment-phrase))
+                'in-the-readme-section 'MISSING-FROM-README-SECTION)
+            (if (and import-code-description
+                     (contains? (squashed import-code-description) datum-comment-phrase))
+                'in-the-description 'MISSING-FROM-DESCRIPTION))
+      '(in-the-readme-section in-the-description))
 
 ;; ---- the environment variables it lists ---------------------------------------
 ;;

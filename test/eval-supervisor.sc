@@ -112,6 +112,15 @@
 ;; ~900ms and the supervisor takes 17 samples. A row about sampling has
 ;; to outlive the sampling interval, and the interval is a property of
 ;; the supervisor, not of the clock on the wall.
+;; NEVER: TWO READINGS, NOT ONE (F66). A worker that never said ready answers
+;; (error eval-worker-unavailable (reason no-ready)), and that is a different
+;; fact from an answer that came back without naming its limit. Both used to
+;; read UNNAMED, so a red row could not say which had happened.
+(define (limit-reading out limit-text)
+  (cond ((contains? out limit-text) 'named-the-limit)
+        ((contains? out "(error eval-worker-unavailable (reason no-ready))") 'no-ready)
+        (else 'UNNAMED)))
+
 (define finite-slow "(let loop ((i 0)) (if (< i 2000000000) (loop (+ i 1)) 3))")
 
 ;; ---- the deadline branch ------------------------------------------------------
@@ -120,10 +129,10 @@
 ;; supervisor stopping it, so an infinite loop would not distinguish a
 ;; supervisor that enforces the deadline from one that merely never
 ;; returns.
-(want "SUP-01 a deadline already past stops a worker that would have answered"
+(want "SUP-01 a deadline already past stops a worker that would have answered (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (cli "eval" "--timeout-ms" "1" "(+ 1 2)")))
         (list (if (contains? out "(resource time)") 'time (list 'said out))
-              (if (contains? out "(limit 1)") 'named-the-limit 'UNNAMED)))
+              (limit-reading out "(limit 1)")))
       '(time named-the-limit))
 
 ;; ---- the memory branch --------------------------------------------------------
@@ -133,10 +142,10 @@
 ;; NOTE: The worker must outlive one sampling interval, which is why it is
 ;; the slow finite one and not `(+ 1 2)`: a worker that exits first is
 ;; answered from its exit, and the row would pass or fail on a race.
-(want "SUP-02 a budget below the worker's real size stops it at a sample"
+(want "SUP-02 a budget below the worker's real size stops it at a sample (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (cli "eval" "--memory-bytes" "1048576" "--timeout-ms" "30000" finite-slow)))
         (list (if (contains? out "(resource memory)") 'memory (list 'said out))
-              (if (contains? out "(limit 1048576)") 'named-the-limit 'UNNAMED)))
+              (limit-reading out "(limit 1048576)")))
       '(memory named-the-limit))
 
 ;; ---- the twin -----------------------------------------------------------------

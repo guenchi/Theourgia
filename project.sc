@@ -27,9 +27,11 @@
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs hashtables)
           (rnrs unicode)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
-          (only (rnrs exceptions) raise)
-          (only (theourgia ffi) mkdir-p! directory-entries file-is-directory?
-                real-path path-case-sensitive? entry-type entry-bytes overwrite-entry!)
+          (only (rnrs exceptions) raise guard)
+          (only (theourgia ffi) mkdir-p! file-is-directory?
+                real-path path-case-sensitive? entry-type entry-bytes overwrite-entry!
+                list-entries unreadable-entry? unreadable-entry-path unreadable-entry-reason
+                fs-error? fs-error-target fs-error-errno)
           ;; NEVER: THE RULE IS SHARED, NOT COPIED. `code-safe-path?` is
           ;; `relative-safe?` in the code projection, and it already says what
           ;; a path a projection may write has to be. A second rule here --
@@ -284,16 +286,33 @@
         (lambda (doc)
           (hashtable-set! doc-key (car doc) (file-key dir (path-of (car doc)))))
         docs)
-      (for-each
-        (lambda (doc)
-          (let* ((id (car doc))
-                 (key (hashtable-ref doc-key id #f)))
-            (when (and key (not (hashtable-ref winner key #f)))
-              (hashtable-set! winner key id)
-              (let ((full (string-append dir "/" (path-of id))))
-                (mkdir-p! (parent-directory full))
-                (write-file full (block-text state id recover?))))))
-        (list-sort (lambda (a b) (string<? (car a) (car b))) docs))
+      ;; NEVER: A FILE THAT CANNOT BE WRITTEN IS NAMED, NOT CALLED INTERNAL
+      ;; (F98). A target directory that stats but cannot be written into --
+      ;; mode 000 passes the directory test above, which needs search only on
+      ;; its parent -- failed at the first write with a bare port error. It is
+      ;; answered in R1's words, the file and the system's reason, AND with
+      ;; the files already written: an export stopped part way has changed
+      ;; the directory, and the answer says how far.
+      (let ((written '()))
+        (for-each
+          (lambda (doc)
+            (let* ((id (car doc))
+                   (key (hashtable-ref doc-key id #f)))
+              (when (and key (not (hashtable-ref winner key #f)))
+                (hashtable-set! winner key id)
+                (let ((full (string-append dir "/" (path-of id))))
+                  (guard (e ((unreadable-entry? e)
+                             (raise (unwritten (unreadable-entry-path e)
+                                               (unreadable-entry-reason e)
+                                               written)))
+                            ((fs-error? e)
+                             (raise (unwritten (fs-error-target e)
+                                               (durable-failure-reason e)
+                                               written))))
+                    (mkdir-p! (parent-directory full))
+                    (write-file full (block-text state id recover?)))
+                  (set! written (cons (path-of id) written))))))
+          (list-sort (lambda (a b) (string<? (car a) (car b))) docs)))
       (let* ((rows (state-outline state))
              (written (make-hashtable string-hash string=?))
              (parent (make-hashtable string-hash string=?))
@@ -514,6 +533,24 @@
             ((char=? (string-ref path (- i 1)) #\/) (substring path 0 (- i 1)))
             (else (loop (- i 1))))))
 
+  ;; The refusal for an export that could not write a file: R1's shape, with
+  ;; the files written before it, in the order they were written.
+  (define (unwritten path reason written)
+    (list 'error 'unreadable
+          (list 'path path)
+          (list 'reason reason)
+          (list 'written (reverse written))))
+
+  ;; A WRITE THAT THE DOOR REFUSED (F100a): the file is written through
+  ;; overwrite-entry!, so a directory that cannot be written into raises the
+  ;; door's durable-error, a value and not a condition, carrying the errno.
+  ;; Before the door the native port raised an i/o-error whose irritants
+  ;; held the system's words; that clause caught nothing once the port was
+  ;; gone, and is replaced by this one.
+  (define (durable-failure-reason e)
+    (string-append "the file could not be written, errno "
+                   (number->string (fs-error-errno e))))
+
   ;; THROUGH THE DOOR (F100a). The write replaces the file in place, as
   ;; the truncating native port did, so its inode stays; the read raises on
   ;; absence, as the native one did.
@@ -573,6 +610,12 @@
     (let ((d (md-split (string-append line "\n"))))
       (= 1 (length (doc-sections d)))))
 
+  ;; LISTED WITH list-entries (F98), R1's listing: a directory that cannot
+  ;; be read raises unreadable-entry naming it, which the RPC layer answers
+  ;; as (error unreadable (path ...) (reason ...)). The earlier listing was
+  ;; the host's, which raised a bare port error for a directory at mode 000,
+  ;; answered internal. A directory gone between being seen and being
+  ;; listed is not an empty one: see below.
   (define (md-files dir)
     (let walk ((d dir) (prefix ""))
       (apply append
@@ -584,7 +627,23 @@
                         ((file-is-directory? full) (walk full rel))
                         ((md-name? name) (list rel))
                         (else '()))))
-                  (list-sort string<? (directory-entries d))))))
+                  ;; NEVER: ABSENT IS NOT EMPTY. The directory was a directory
+                  ;; when it was checked; gone by the time it is listed, it
+                  ;; is not a directory with no files in it. Read as empty,
+                  ;; import-md --allow-delete would delete every block that
+                  ;; came from it.
+                  ;;
+                  ;; NEVER: AND IT IS NOT LISTED A SECOND TIME. The host's listing
+                  ;; used before list-entries raised at this point, and the RPC
+                  ;; layer answered (error internal (condition "failed for ~a:
+                  ;; ~(~a~)")) -- the condition's message, which is that format
+                  ;; string, unformatted. It is raised here with that message.
+                  ;; Listing again instead let a directory made anew in between
+                  ;; read as empty after all (review r2).
+                  (let ((names (list-entries d)))
+                    (when (eq? names 'absent)
+                      (error 'list-entries "failed for ~a: ~(~a~)" d "no such file or directory"))
+                    (list-sort string<? names))))))
 
   (define (md-name? name)
     (let ((n (string-length name)))

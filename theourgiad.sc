@@ -39,7 +39,7 @@
 ;; where the base refused with exit 2 (F46 review 1, N1).
 (import (chezscheme) (theourgia arguments)
         (only (theourgia render) answer-printing!)
-        (only (theourgia client) socket-path)
+        (only (theourgia client) socket-path socket-dir-refusal)
         (only (theourgia ffi) setsid! redirect-stdio! trace-event!
               fs-error? fs-error-errno unreadable-entry? unreadable-entry-errno))
 
@@ -119,6 +119,19 @@
       (when (and socket (string=? socket ""))
         (say '(error bad-socket-path (reason empty)))
         (exit 2))
+      ;; NEVER: A --socket GIVEN BY HAND IS NOT GIVEN A DIRECTORY. Before
+      ;; F15 the daemon made the whole chain and served, so a mistyped
+      ;; path became a directory tree nobody asked for. It is refused
+      ;; here, before --detach (a refusal after it would go to the log
+      ;; instead of to the caller) and before anything is created. The
+      ;; default socket's directory is still made by the daemon: it is
+      ;; the run directory, the client's own.
+      (let ((given (argument-option nodes "--socket")))
+        (when (and given (not (string=? given "")))
+          (let ((refusal (socket-dir-refusal given)))
+            (when refusal
+              (say refusal)
+              (exit 2)))))
       (when (argument-option nodes "--detach")
         (detach! (argument-option nodes "--log")))
       ;; Does not return: the daemon runs until it is told to go, or
@@ -235,16 +248,24 @@
              (exit 71)))
     (thunk)))
 
+;; KEY: THE VERBS THIS PROGRAM ANSWERS, AS ONE TABLE THAT IS THE DISPATCH
+;; (F64), in the shape `core.sc` keeps: `(cons '<verb> <procedure>)`, the
+;; procedure taking the whole argv and not returning. `test/own-verbs.sc`
+;; reads this define as data, so the gates count what `main` dispatches.
+(define own-verbs
+  (list (cons 'serve serve-and-exit!)))
+
 (define (main argv)
   ;; NEVER: ONCE, BEFORE ANYTHING IS PRINTED, as in `core.sc`: every answer
   ;; this program prints goes through the same printing settings, so its
   ;; refusals are the bytes `core.sc serve` printed before the split.
   (answer-printing!)
-  (if (and (pair? argv) (string=? (car argv) "serve"))
-      (serve-and-exit! argv)
-      (begin
-        (say (list 'error 'bad-request '(reason not-a-daemon-verb)
-                   (list 'usage serve-usage)))
-        (exit 1))))
+  (let ((own (and (pair? argv) (assq (string->symbol (car argv)) own-verbs))))
+    (if own
+        ((cdr own) argv)
+        (begin
+          (say (list 'error 'bad-request '(reason not-a-daemon-verb)
+                     (list 'usage serve-usage)))
+          (exit 1)))))
 
 (main (cdr (command-line)))

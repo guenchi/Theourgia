@@ -439,6 +439,22 @@
                       (else (loop (- i 1)))))))
     (if cut (string-append (substring argv0 0 cut) "/" name) name)))
 
+;; ---- the verbs this program answers itself ------------------------------
+;;
+;; KEY: ONE TABLE, AND IT IS THE DISPATCH (F64). `main` looks the first
+;; argument up here and nowhere else, and `test/own-verbs.sc` reads this
+;; define as data for the gates that census every verb the product answers
+;; -- so a verb added here is dispatched and counted by the same edit.
+;; Before this it was a `string=?` in `main` and a literal `'(eval serve)`
+;; in two fixtures, and a third verb dispatched here joined neither.
+;;
+;; NEVER: EACH ENTRY IS `(cons '<verb> <procedure>)`, the procedure taking the
+;; whole argv and not returning. The reader raises on any other shape
+;; rather than skip it, so a verb written some other way is a red census,
+;; not a missing one.
+(define own-verbs
+  (list (cons 'eval eval-and-exit!)))
+
 (define (main argv)
   ;; NEVER: ONCE, BEFORE ANYTHING IS PRINTED. Every answer this program gives
   ;; -- local, forwarded, wire or human -- goes through `render-wire`,
@@ -458,7 +474,8 @@
   ;; and a request naming `eval` that reaches a daemon meets a dispatcher
   ;; that has no such verb, which is the same answer any unknown verb
   ;; gets. Those two facts are the whole of E1-6.
-  (when (string=? (car argv) "eval") (eval-and-exit! argv))
+  (let ((own (assq (string->symbol (car argv)) own-verbs)))
+    (when own ((cdr own) argv)))
   ;; NEVER: THE SPELLING IS JUDGED FIRST, BEFORE THE ARGUMENTS ARE PARSED.
   ;; The order is CHOSEN so that the two programs share one, and this is
   ;; the check that can be made without a verb's option table.

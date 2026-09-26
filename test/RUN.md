@@ -69,13 +69,16 @@ somebody remembered, and on the day the loop was widened two of them were
 red against a daemon that had been deleted a batch earlier. Nothing had
 ever said so, because nothing had ever run them.
 
-Three of the remaining `*.py` files are **helpers, not fixtures**, and the
+Two of the remaining `*.py` files are **helpers, not fixtures**, and the
 runner names them rather than detecting them -- "imports nothing and
 prints no sentinel" is also what a broken fixture looks like:
 
   * `paths.py` is imported by the others;
-  * `structure.py` is the preflight that reads every file's paren depth;
   * `reduce-hash-check.py` is a filter `reduce1.sc` pipes bytes through.
+
+The third was `structure.py`, the preflight that reads every file's paren
+depth. It is `structure.sc` since F9 and is still named among the helpers,
+now from the `*.sc` side of the loop.
 
 The fixtures proper are `datum-processes`, `q8-cli` and
 `working-processes`. Each prints its rows and ends with `<name>
@@ -190,6 +193,8 @@ than staying in this paragraph indefinitely.
 fixtures, `q8-cli.py` (driven on its own, not one of the nine),
 `paths.py`, **`import-walk.sc`** -- which `facade-gate.sc` and
 `closures.sc` both `load`, and which neither can run without --
+**`own-verbs.sc`**, which `options-gate.sc` and `docs-check.sc` `load` for
+the same reason --
 **`evidence-cli1-hang/`**, which this file cites above, and
 **`vectors/`**, ten language files `code-text.sc` imports. The last of
 those were read from `../theourgos/`, a different and closed repository,

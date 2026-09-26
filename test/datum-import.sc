@@ -121,5 +121,29 @@
          (lib (find (lambda (id) (equal? (code-field state id 'path) "plain.sc")) (map cadr (state-datum state)))))
     (want "CD-15 plain imports preserve declared order" (code-field state lib 'imports) '((rnrs) (only (chezscheme) pretty-print)))
     (want "CD-15 plain import declaration is not a code block" (length (code-children state lib)) 1)))
+;; F19: THE ANSWER NAMES A COMMENT INSIDE A FORM, AND NOTHING FOR ONE ABOVE IT.
+;; The README's import-code section and the catalogue's description say so in
+;; one sentence; these rows hold the sentence to what the answer does. They
+;; are a GUARD, green on the base: the answer already carried this before the
+;; sentence was written, and the rows are here so that it cannot stop doing
+;; so while the sentence stays.
+(define (warnings-of answer)
+  (let ((clause (and (list? answer) (assq 'warnings (filter pair? answer)))))
+    (and clause (cadr clause))))
+(define (import-one! name text)
+  (let* ((area (string-append root "/" name)) (store (string-append area "/store"))
+         (input (string-append area "/input")))
+    (mkdir-p! input)
+    (rpc-dispatch store '(init) "test")
+    (write! (string-append input "/lib.sc") text)
+    (rpc-dispatch store (list 'import-code input "--datum") "test")))
+(want "F19 GUARD (green on the base): import-code --datum of a comment inside a form answers one internal-comment warning with its line and column"
+      (warnings-of (import-one! "f19-inner"
+                                "(library (demo inner)\n  (export f)\n  (import (rnrs))\n  (define (f x)\n    ;; inside a form\n    (+ x 1)))\n"))
+      '((warning internal-comment (byte-offset 73) (line 5) (column 5))))
+(want "F19 GUARD TWIN (green on the base): a comment only above the form answers no warning"
+      (warnings-of (import-one! "f19-lead"
+                                ";; leading comment\n(library (demo lead)\n  (export g)\n  (import (rnrs))\n  (define (g x) (* x 2)))\n"))
+      '())
 (printf "~a failures\ndatum-import complete\n" bad)
 (exit (if (zero? bad) 0 1))
