@@ -151,7 +151,7 @@
   "scripts": {
     "compile": "node scripts/clean.js && tsc -p ./ && node scripts/copy-vendor.js && node scripts/build-native.js",
     "watch": "tsc -watch -p ./",
-    "test:unit": "npm run compile && mocha --reporter spec 'out/test/unit/**/*.test.js'",
+    "test:unit": "npm run compile && mocha --reporter spec --require out/test/support/unhandled-tripwire.js 'out/test/unit/**/*.test.js'",
     "test:integration": "npm run compile && node out/test/integration/run.js",
     "test": "npm run test:unit && npm run test:integration"
   },

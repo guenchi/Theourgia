@@ -252,6 +252,7 @@ const AT_LEAST: Array<[string, number]> = [
    * this comment is.
    */
   ['transport.test.ts', 26],
+  ['tripwire.test.ts', 7],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]
 ];
