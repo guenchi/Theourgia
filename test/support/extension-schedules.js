@@ -21,7 +21,7 @@ let provider, configChanged, savedHandler, core, pickGate = null, requestGate = 
 // scenarios raise their own errors, so the assertion about the wrong-store
 // message held whatever channel that message used. `shown` pairs each text with
 // its channel, which is what lets a cell ask about ONE of them.
-const commands = new Map(), messages = [], channels = [], shown = [], requests = [];
+const commands = new Map(), messages = [], channels = [], shown = [], requests = [], outputLines = [];
 const workingNotes=new Map();let workingVersion=0;
 const disposable = {dispose(){}};
 function gate(){let release,enter;const promise=new Promise(r=>release=r),entered=new Promise(r=>enter=r);return {promise,release,entered,enter};}
@@ -31,7 +31,7 @@ const vs = {
  TreeItem:class{constructor(label){this.label=label;}},ThemeIcon:class{},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
  languages:{setTextDocumentLanguage:async d=>d},
- window:{createStatusBarItem:()=>({show(){},dispose(){}}),createOutputChannel:()=>({appendLine(){},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
+ window:{createStatusBarItem:()=>({show(){},dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
   // no cell could tell a warning from an alarm. The other editor double was
@@ -39,7 +39,7 @@ const vs = {
   // repair was made where the finding pointed. `messages` keeps the text so
   // the cells that read it are unchanged; `channels` is the new reading.
   showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
-  showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});return messages.push(m);},
+  showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});messages.push(m);if(process.argv[3]==='integrity-show-throws')throw new Error('the editor threw');return process.argv[3]==='integrity-show-rejects'?Promise.reject(new Error('the editor refused the warning')):Promise.resolve(undefined);},
   showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
   showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>d},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
@@ -80,13 +80,18 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  // it, correctly, because an answer that never mentions the block is not an
  // answer about that block.
  const recursive=`((id . \"a.1\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position root . 0) (edges))\n((id . \"a.2\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position \"a.1\" . 0) (edges))\n`;
- const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?'(check (writers (("w" (end 0)))) (verdict ok))\n':verb==='set'?'(error unknown (reason schedule))\n':'';
+ const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?(process.argv[3].startsWith('integrity-show')?'(check (writers (("w" (end 0)))) (verdict damaged))\n':'(check (writers (("w" (end 0)))) (verdict ok))\n'):verb==='set'?'(error unknown (reason schedule))\n':'';
  return {argv:[verb,...args],rc:verb==='set'||verb==='conflicts'&&process.argv[3].includes('unknown')?1:0,stdout,stderr:''};}});
 function files(dir){if(!fs.existsSync(dir))return [];return fs.readdirSync(dir).flatMap(n=>{const p=path.join(dir,n);return fs.statSync(p).isDirectory()?files(p):[p];});}
 function tree(dir){return Object.fromEntries(files(dir).map(p=>[path.relative(dir,p),fs.readFileSync(p).toString('hex')]));}
 function change(store){settings.store=store;configChanged({affectsConfiguration:()=>true});}
 async function main(){
  const scenario=process.argv[3];
+ // Queue item 33, C7: the integrity scenarios count unhandled rejections in this
+ // process, from before activation. Only they do: every other scenario keeps Node's
+ // default, which ends the process -- a tripwire in its own right.
+ const unhandledSeen=new Set();
+ if(scenario.startsWith('integrity-show'))process.on('unhandledRejection',(reason,promise)=>unhandledSeen.add(promise));
  await require(path.join(out,'extension.js')).activate({globalStorageUri:{fsPath:storage},subscriptions:[]});
  if(scenario.startsWith('save')){
   const number=core.publisher.takeSequence.bind(core.publisher);
@@ -178,6 +183,11 @@ async function main(){
   if(scenario.includes('aba')){change('/stores/B');change('/stores/A');}
   held.release();const nodes=await pending;
   return {nodes,messages,requests};
+ }
+ if(scenario.startsWith('integrity-show')){
+  for(let i=0;i<5;i++)await new Promise(r=>setImmediate(r));
+  await new Promise(r=>setTimeout(r,50));
+  return {lines:outputLines,unhandled:unhandledSeen.size,warnings:shown.filter(n=>n.level==='warning').map(n=>n.text)};
  }
  throw Error('Unknown schedule');
 }

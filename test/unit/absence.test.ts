@@ -95,13 +95,14 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers FALSE for "the core directory holds this file". A directory this process may not ' +
     'search then reads as neither form, which `problemsWith` refuses by name -- so the failure ' +
     'reaches the user as a refusal about the setting rather than as a wrong extension list.',
-  'integrity.ts#check: on.show(notice);':
+  'integrity.ts#check: returned = on.show(notice);':
     'answers nothing to anybody: `check` returns no value and nobody waits for it. The catch is ' +
     'a `show` that threw (queue item 18, ruled): it writes the failure to the output channel ' +
-    'through `record` -- a name this census does not count as speaking, because `record` means ' +
-    'a save record elsewhere in src -- and returns so that the store stays unmarked and the ' +
-    'next check tells the user. Reporting it with another message would use the path that ' +
-    'just failed.',
+    'through `write`, which calls `record` inside its own guard -- names this census does not ' +
+    'count as speaking, because `record` means a save record elsewhere in src -- and returns so ' +
+    'that the store stays unmarked and the next check tells the user. Reporting it with another ' +
+    'message would use the path that just failed. (Re-keyed by item 33: the statement now keeps ' +
+    'what `show` returned, to follow it.)',
   'model.ts#verbs: const answer = await this.client.request(\'describe\', []);':
     'answers NULL, which `verbs` documents as "I could not find out" and which its caller must ' +
     'tell apart from a core with no verbs. The absence has a name here.',

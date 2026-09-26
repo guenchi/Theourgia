@@ -237,14 +237,21 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
  * missing and that the child was stopped when it timed out; rewriting
  * those here would produce a second, worse description of each.
  */
-function show(notice: Notice): void {
+/*
+ * NOTE: THE THENABLE THE EDITOR RETURNS IS HANDED BACK (queue item 33, D5),
+ * at all three levels, so that a caller that follows it -- `IntegrityWatch`
+ * -- hears a refusal. A caller that does not follow it discards it as it
+ * always did.
+ */
+function show(notice: Notice): Thenable<unknown> | undefined {
   if (notice.level === 'error') {
-    vscode.window.showErrorMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showErrorMessage(`theourgia: ${notice.text}`);
   } else if (notice.level === 'warning') {
-    vscode.window.showWarningMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showWarningMessage(`theourgia: ${notice.text}`);
   } else if (notice.level === 'information') {
-    vscode.window.showInformationMessage(`theourgia: ${notice.text}`);
+    return vscode.window.showInformationMessage(`theourgia: ${notice.text}`);
   }
+  return undefined;
 }
 
 /*

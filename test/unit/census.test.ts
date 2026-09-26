@@ -199,9 +199,10 @@ const AT_LEAST: Array<[string, number]> = [
    * that throws at once. And in item 18, 15 -> 17: an output channel that
    * throws too, and nothing written for a warning that was shown; in its r2,
    * 17 -> 19: an Error named by what it says, and a value that cannot be
-   * named still written down.
+   * named still written down. And in item 33, 19 -> 55: what `show` and
+   * `record` return (C1-C7, C9-C36; C6 is two cells).
    */
-  ['integrity.test.ts', 19],
+  ['integrity.test.ts', 55],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
    * what a search does, and the envelope --wire puts round a commit.

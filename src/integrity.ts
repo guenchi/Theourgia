@@ -41,17 +41,32 @@ import { Notice, integrityNotice } from './status';
  * What one check needs from the window that asks it. `store` is the one
  * configured when the check starts; `generation` is read live, so that an
  * answer arriving after the window moved to another store is recognised.
+ *
+ * KEY: `ask`, `generation`, `show` AND `record` ARE CALLED AS METHODS OF
+ * THE QUESTION, with the question as their receiver, so an implementation
+ * may read `this`. (The extension's own functions do not; the contract is
+ * for any caller.)
+ *
+ * KEY: `store` IS THE CONFIGURED STRING, AND IT IS THE KEY AS IT IS. Two
+ * strings are two stores to the watch, even when they name one directory on
+ * a case-insensitive file system; deciding that is not the watch's.
  */
 export interface IntegrityQuestion {
   store: string;
   ask: () => Promise<StoreVerdict>;
-  show: (notice: Notice) => void;
+  /*
+   * NOTE: IT MAY RETURN A THENABLE (queue item 33): the editor's
+   * `showWarningMessage` does. The watch never waits for it; it follows it,
+   * once, to hear of a refusal (see `follow`).
+   */
+  show: (notice: Notice) => void | PromiseLike<unknown>;
   generation: () => number;
   /*
    * WHERE A WARNING THAT COULD NOT BE SHOWN IS WRITTEN DOWN: the extension's
    * output channel. Not another message -- what just failed is showing one.
+   * It may return a thenable too, followed the same way and never awaited.
    */
-  record: (line: string) => void;
+  record: (line: string) => void | PromiseLike<unknown>;
 }
 
 /*
@@ -119,8 +134,62 @@ export function describeValue(value: unknown): string {
   }
 }
 
+/*
+ * THE ONE WAY A RETURNED VALUE IS READ (queue item 33, design D2).
+ *
+ * A fresh promise resolved with the value, and one `then` on it. That is a
+ * single entry into the language's own promise resolution: a value that is
+ * not a thenable resolves; a thenable's `then` is read and called once with
+ * two one-shot callbacks, so its first terminal signal wins and every later
+ * one is ignored; a `then` getter or call that throws is a rejection; a
+ * thenable that never settles holds nothing open. NOT `Promise.resolve`: it
+ * hands a native promise back unchanged, and its own `then` or
+ * `constructor` would then be read by the watch itself.
+ *
+ * KEY: NOTHING ELSE OF THE VALUE IS READ, and that is the guarantee's
+ * boundary: a promise the value's own `then` creates and returns, and the
+ * original rejection of a native promise that refuses subscription, are the
+ * value's, not the watch's (design D2 (a), (b)).
+ *
+ * KEY: THE FULFILMENT IS NOT PASSED THROUGH (design A5). With no fulfilment
+ * callback, the promise `then` derives would resolve itself with the value
+ * and read its `then` a second time; a getter that throws on that read
+ * rejected the derived promise, which nobody holds -- an unhandled rejection
+ * of the watch's own (measured, codex r11 F0). The fulfilment callback
+ * returns `undefined`, so the derived promise settles with `undefined`, and
+ * `onRejected` never throws, so it never rejects.
+ */
+function follow(returned: unknown, onRejected: (reason: unknown) => void): void {
+  new Promise<unknown>((resolve) => resolve(returned)).then(() => undefined, onRejected);
+}
+
 export class IntegrityWatch {
   private readonly told = new Set<string>();
+
+  /*
+   * WRITING THE LINE NEVER THROWS AND NEVER WAITS (design D4). A synchronous
+   * throw is swallowed -- a disposed channel throws "Channel has been
+   * closed" -- and whatever `record` returns is followed and its rejection
+   * swallowed: there is nowhere left to say either. It is never awaited, so
+   * a line that never finishes neither delays the unmark nor keeps `check`
+   * pending.
+   */
+  private write(on: IntegrityQuestion, thrown: unknown): void {
+    try {
+      follow(
+        on.record(
+          `theourgia: the warning about ${on.store} could not be shown (${describeValue(thrown)}) ` +
+            `at ${new Date().toISOString()}`
+        ),
+        () => undefined
+      );
+    } catch {
+      /*
+       * NOTE: NOTHING. The line could not be written either; the store is
+       * left unmarked all the same, which is what brings the warning back.
+       */
+    }
+  }
 
   public async check(on: IntegrityQuestion): Promise<void> {
     if (this.told.has(on.store)) {
@@ -182,22 +251,29 @@ export class IntegrityWatch {
      * check tells the user, and the check resolves. If writing it down
      * throws too, there is nowhere left to say it, and that is swallowed.
      */
+    let returned: void | PromiseLike<unknown>;
     try {
-      on.show(notice);
+      returned = on.show(notice);
     } catch (thrown) {
-      try {
-        on.record(
-          `theourgia: the warning about ${on.store} could not be shown (${describeValue(thrown)}) ` +
-            `at ${new Date().toISOString()}`
-        );
-      } catch {
-        /*
-         * NOTE: NOTHING. The line could not be written either; the store is
-         * left unmarked all the same, which is what brings the warning back.
-         */
-      }
+      this.write(on, thrown);
       return;
     }
+    /*
+     * KEY: TOLD IS THE HANDOVER, NOT THE DISMISSAL (design D1). The mark is
+     * written when `show` returns, as it always was; what `show` returned is
+     * then followed, not awaited -- awaiting it would let a second check of
+     * the same store show again while the first waits (measured: 2 shown).
+     *
+     * A REFUSAL TAKES THE MARK BACK AND IS WRITTEN DOWN (D2, D3): tied to the
+     * store alone, never to the generation, so a refusal that arrives after
+     * the window moved away and back still unmarks. Each follow hears at most
+     * one refusal, and a later show can only come after the unmark, so no
+     * refusal can undo a later mark.
+     */
     this.told.add(on.store);
+    follow(returned, (reason) => {
+      this.told.delete(on.store);
+      this.write(on, reason);
+    });
   }
 }
