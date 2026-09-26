@@ -226,6 +226,17 @@ describe('plugin-r3 3 a receipt comes only from the enqueue that wrote the entry
  * `unknown` could be anything, and fails as a call this census cannot follow
  * (V12); so does a member of that name on such a receiver used other than as
  * a call's callee (V13).
+ *
+ * A COMPUTED KEY IS READ BY ITS TYPE. (queue item 42) `x[k](...)` on an
+ * implementer, `k` not a string literal, resolves to the implementer's member
+ * and was neither counted nor flagged (V15, measured on e6e4ed4). Under
+ * strict, only a key whose type is the method's own name reaches a call that
+ * compiles (a `string` key has no index signature to read; `keyof` gives a
+ * union no single argument list fits), so that is the shape V15 is written
+ * in. On a receiver that is the owner or cannot be read, a computed key whose
+ * type may be the method's name fails as a call this census cannot follow,
+ * called (V15) or taken as a value (V17); a key typed as another name is not
+ * the method (V16).
  */
 interface Checked {
   checker: ts.TypeChecker;
@@ -308,6 +319,46 @@ function receiverOf(access: ts.Node, method: string): ts.Expression | undefined 
 }
 
 /*
+ * WHETHER A KEY'S TYPE MAY BE THE METHOD'S NAME. A string literal is that name
+ * or not; a union may be when one member may; a number, a symbol, a boolean,
+ * null, undefined, void and never are not names of a method; every other type
+ * (`string`, a template literal, a type parameter, `any`, `unknown`) may be.
+ */
+function mayName(type: ts.Type, method: string): boolean {
+  if (type.isUnion()) {
+    return type.types.some((part) => mayName(part, method));
+  }
+  if (type.isStringLiteral()) {
+    return type.value === method;
+  }
+  const notAName =
+    ts.TypeFlags.NumberLike |
+    ts.TypeFlags.BigIntLike |
+    ts.TypeFlags.ESSymbolLike |
+    ts.TypeFlags.BooleanLike |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Void |
+    ts.TypeFlags.Never;
+  return (type.flags & notAName) === 0;
+}
+
+/*
+ * THE RECEIVER OF A COMPUTED KEY THAT MAY NAME `method`: the `x` of `x[k]`,
+ * `k` not a string literal and its type one `mayName` accepts.
+ */
+function computedReceiverOf(checker: ts.TypeChecker, access: ts.Node, method: string): ts.Expression | undefined {
+  if (
+    ts.isElementAccessExpression(access) &&
+    !ts.isStringLiteralLike(access.argumentExpression) &&
+    mayName(checker.getTypeAtLocation(access.argumentExpression), method)
+  ) {
+    return access.expression;
+  }
+  return undefined;
+}
+
+/*
  * WHAT A TYPE SAYS ABOUT BEING THE OWNER. `owner` when it, or one member of a
  * union, is assignable to the owner's type (null and undefined removed first:
  * `x?.method` is still a call on `x`); `unreadable` when it is `any` or
@@ -339,12 +390,15 @@ function censusOf(owner: string, method: string): { sites: string[]; dropped: st
     every(src, (n) => {
       if (ts.isCallExpression(n)) {
         const receiver = receiverOf(n.expression, method);
+        const computed = computedReceiverOf(checker, n.expression, method);
         const ownership =
           checker.getResolvedSignature(n)?.declaration === target
             ? 'owner'
-            : receiver === undefined
-              ? 'other'
-              : ownershipOf(checker, checker.getTypeAtLocation(receiver), ownerType);
+            : receiver !== undefined
+              ? ownershipOf(checker, checker.getTypeAtLocation(receiver), ownerType)
+              : computed !== undefined && ownershipOf(checker, checker.getTypeAtLocation(computed), ownerType) !== 'other'
+                ? 'unreadable'
+                : 'other';
         if (ownership === 'owner') {
           const use = useOf(n);
           sites.push(`${name}:${line(src, n)} ${use}`);
@@ -364,7 +418,7 @@ function censusOf(owner: string, method: string): { sites: string[]; dropped: st
         ((ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) ||
           (ts.isElementAccessExpression(n.parent) && n.parent.argumentExpression === n));
       if (named && !inCallPosition(n)) {
-        const receiver = receiverOf(n.parent, method);
+        const receiver = receiverOf(n.parent, method) ?? computedReceiverOf(checker, n.parent, method);
         if (receiver !== undefined && ownershipOf(checker, checker.getTypeAtLocation(receiver), ownerType) !== 'other') {
           cannotRead(src, name, n);
           return;
