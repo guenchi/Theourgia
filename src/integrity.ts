@@ -44,8 +44,15 @@ import { Notice, integrityNotice } from './status';
  *
  * KEY: `ask`, `generation`, `show` AND `record` ARE CALLED AS METHODS OF
  * THE QUESTION, with the question as their receiver, so an implementation
- * may read `this`. (The extension's own functions do not; the contract is
- * for any caller.)
+ * may read `this`. (The extension's own functions do not.)
+ *
+ * NOTE: WHAT THE CALLER GUARANTEES, stated as what the product keeps rather
+ * than as a contract for any caller (queue item 34, ruled L): `generation`
+ * returns a number -- the extension's is a closure over one -- and `ask`'s
+ * verdict has data properties -- the model builds it as a plain object from
+ * the parsed answer. A `generation` that throws, or a verdict whose `known` is
+ * a getter that throws, makes `check` reject, and no source of this product
+ * produces either.
  *
  * KEY: `store` IS THE CONFIGURED STRING, AND IT IS THE KEY AS IT IS. Two
  * strings are two stores to the watch, even when they name one directory on
