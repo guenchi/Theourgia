@@ -1070,7 +1070,21 @@ describe('plugin-r2 T5 what a search does', function () {
    * the main session after a review round asked what happened to this
    * name, which until then was in no table at all.
    */
+  /*
+   * NOTE: ON f5ebd58 A FAILED START ALWAYS ANSWERS `serve-start-failed`, with
+   * a `kind` (client.sc, `start-one!` and `exited-answer`): the head of the
+   * daemon's own startup report for this start's `--attempt` token -- an
+   * occupied path is `(kind serve-path-occupied)` -- or `exited` (no report
+   * for the token) or `timeout` (the daemon alive at the budget with no
+   * socket). The occupied path is therefore retried through
+   * `serve-start-failed`; the older head stays in the table for a core that
+   * still relays it.
+   */
   it('counts an occupied socket path among the refusals worth trying again', function () {
+    assert.ok(
+      (RETRYABLE_REFUSALS as readonly string[]).includes('serve-start-failed'),
+      'a failed start, which is how an occupied path arrives, is not tried again'
+    );
     assert.ok(
       (RETRYABLE_REFUSALS as readonly string[]).includes('serve-path-occupied'),
       'an occupied socket path is treated as a name this build has never heard of'
@@ -1112,7 +1126,11 @@ describe('plugin-r2 T5 what a search does', function () {
       send: async (): Promise<RawResult> => ({
         argv: [],
         rc: 75,
-        stdout: '(error serve-path-occupied (path "/blocked"))',
+        /*
+         * The shape a failed start has on f5ebd58 (see the note above
+         * "counts an occupied socket path ...").
+         */
+        stdout: '(error serve-start-failed (kind serve-path-occupied) (path "/blocked") (attempt "0000abcd00000001") (exit 1))',
         stderr: ''
       })
     };
@@ -1466,14 +1484,18 @@ describe('plugin-r2 T2 the envelope --wire puts round a commit', function () {
  * KEY: A QUESTION MARK IS NOT SOMETHING ANYBODY CAN ACT ON. The tooltip
  * said "conflicts: unknown, the store could not be asked" and stopped
  * there, and what had been thrown away was the core's own sentence.
- * Measured against the pinned core, with a directory sitting where the
- * daemon's socket goes:
+ * Measured against the F46 core (877f0da), with a directory sitting where
+ * the daemon's socket goes:
  *
  *   $ theourgia outline --store <s>
  *   (error serve-path-occupied (path "/tmp/vsc-t6/fb4eecc43a207f1b/socket"))
  *   rc=75
  *
- * That names a directory a person can remove.
+ * On f5ebd58 a failed start answers `serve-start-failed` with a `kind` --
+ * the daemon's report head (`serve-path-occupied` here), `exited` or
+ * `timeout` -- and the report's clauses after it (read in client.sc, not yet
+ * measured here); the path is still in it. That names a directory a person
+ * can remove.
  */
 describe('plugin-r2 T1 the status bar carries the words the core used', function () {
   const base = {
@@ -1489,7 +1511,8 @@ describe('plugin-r2 T1 the status bar carries the words the core used', function
   it('puts the reason in the tooltip, unaltered', function () {
     const line = statusLine({
       ...base,
-      unreachable: 'the core refused: (error serve-path-occupied (path "/tmp/r/k/socket"))'
+      unreachable:
+        'the core refused: (error serve-start-failed (kind serve-path-occupied) (path "/tmp/r/k/socket") (attempt "0000abcd00000001") (exit 1))'
     });
     assert.match(line.tooltip, /serve-path-occupied/);
     assert.match(line.tooltip, /\/tmp\/r\/k\/socket/);

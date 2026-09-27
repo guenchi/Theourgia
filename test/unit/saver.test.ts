@@ -386,6 +386,22 @@ describe('S6 an answer is sorted by what it says about the store', () => {
   });
 
   /*
+   * THE F100b RE-PIN: `incomplete` (f5ebd58, answers.sc) is a filesystem
+   * failure after the request had changed something, its `written` clause
+   * naming what. Whether the save landed is not said, so it is kept as
+   * `unknown` is: pending, under the SAME request id, sent again.
+   */
+  it('keeps a save the store answered incomplete, under its request id', async () => {
+    const { outcome, outbox } = await outcomeOf(
+      '(error incomplete (failed (op fsync) (path "/s/writers/w/000001.sexp") (reason "Input/output error") (errno 5)) (written ((append "/s/writers/w/000001.sexp"))))\n',
+      1
+    );
+    assert.strictEqual(outcome.status, 'pending', `an incomplete answer was settled: ${outcome.message}`);
+    assert.strictEqual(outbox.pendingCount, 1);
+    assert.strictEqual(outbox.entries[0].req, outcome.req, 'the save would go again under a new id');
+  });
+
+  /*
    * NOTE: THIS EXPECTATION CHANGED, AND THE CHANGE IS THE POINT.
    *
    * It used to read "drops the entry", asserting `pendingCount === 0`,
@@ -1277,6 +1293,28 @@ describe('S-notnow a refusal that is not about these bytes is retried, and cappe
    * stepped over. The two are not interchangeable and this row is the
    * difference.
    */
+  /*
+   * THE F100b RE-PIN: `unwritable` (f5ebd58, answers.sc) is a write that
+   * failed with nothing changed, so it is retried under the same id -- and
+   * when it is parked, the person is told where and why: its path and reason
+   * are what they have to fix.
+   */
+  it('parks an unwritable save after five in a row, naming the path and the reason', async () => {
+    const UNWRITABLE =
+      '(error unwritable (op write) (path "/s/writers/w/000001.sexp") (reason "Permission denied") (errno 13))\n';
+    const r = rig([{ match: ['set', 'a.2'], stdout: UNWRITABLE, rc: 1 }]);
+    core = r.core;
+    for (let i = 0; i < RETRY_CAP; i += 1) {
+      await r.saver.save('a.2', 'src', `body${i}\n`);
+    }
+    const parked = r.outbox.entries.filter((e) => e.state === 'parked');
+    assert.strictEqual(parked.length, 1, 'the fifth answer must park the entry being retried');
+    assert.ok(
+      parked[0].lastError?.includes('/s/writers/w/000001.sexp') && parked[0].lastError?.includes('Permission denied'),
+      `the reason does not say where and why: ${parked[0].lastError}`
+    );
+  });
+
   it('parks the entry after five in a row, and carries on with another block', async () => {
     const r = rig([
       { match: ['set', 'a.2'], stdout: BUSY, rc: 1 },
@@ -1577,6 +1615,23 @@ describe('plugin-r2 S-transport a refusal from the transport is not a refusal of
    * and asserts the entry survived. Delete an interception in `send`
    * and exactly this reddens.
    */
+  /*
+   * THE F100b RE-PIN: `absent` (f5ebd58, answers.sc) -- a file or directory
+   * of the store is not there. Parked for a person at once, with the path.
+   */
+  it('parks a save the store answered absent, naming the path that is not there', async () => {
+    const r = rig([
+      { match: ['set'], stdout: '(error absent (path "/s/writers") (reason "No such file or directory") (errno ENOENT))\n', rc: 1 }
+    ]);
+    core = r.core;
+    const outcome = await r.saver.save('a.2', 'src', 'body2\n');
+    assert.strictEqual(outcome.status, 'refused');
+    assert.strictEqual((outcome as { keptForAPerson?: true }).keptForAPerson, true);
+    assert.match(outcome.message, /a file or directory of the store is not there/);
+    assert.match(outcome.message, /\/s\/writers/, 'the sentence does not name the path');
+    assert.strictEqual(r.outbox.entries.length, 1);
+  });
+
   it('lets no name in either family settle the entry', async () => {
     for (const kind of [...RETRYABLE_REFUSALS, ...Object.keys(SETTINGS_REFUSALS)]) {
       const r = rig([{ match: ['set'], stdout: `(error ${kind} (detail "x"))\n`, rc: 75 }]);

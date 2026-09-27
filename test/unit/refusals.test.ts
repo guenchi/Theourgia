@@ -44,7 +44,7 @@
 
 import * as assert from 'assert';
 import {execFileSync} from 'child_process';
-import {readdirSync} from 'fs';
+import {readFileSync, readdirSync} from 'fs';
 import * as path from 'path';
 import { NOT_A_WRITES_ANSWER, classifyRefusal } from '../../src/saver';
 import { initWire, parseAnswers } from '../../src/wire';
@@ -163,5 +163,76 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
     const kinds = kindsTheCoreMakes();
     const stale = Object.keys(NOT_A_WRITES_ANSWER).filter((kind) => !kinds.has(kind));
     assert.deepStrictEqual(stale, [], 'these kinds are excused and the core does not make them');
+  });
+});
+
+/*
+ * THE F100b RE-PIN'S TWO PROVENANCE ROWS STAY TRUE ONLY WHILE THIS EXTENSION
+ * SENDS WHAT IT SENDS. `candidate-unreadable` is made only by the core's
+ * `publish` verb and `socket-dir-missing` only for a `--socket` other than the
+ * default (NOT_A_WRITES_ANSWER, saver.ts). Each cell below is a tripwire, not a
+ * measurement: it is green today and turns red the day a request builder
+ * starts sending the one or passing the other, which is the day those rows
+ * become false.
+ */
+describe('re-pin f5ebd58: what this extension sends keeps two answers out of its reach', () => {
+  const SRC = path.join(__dirname, '..', '..', '..', 'src');
+  const sources = (): Array<{ name: string; text: string }> =>
+    readdirSync(SRC)
+      .filter((name) => name.endsWith('.ts'))
+      .sort()
+      .map((name) => ({ name, text: readFileSync(path.join(SRC, name), 'utf8') }));
+
+  /*
+   * THE VERBS THE REQUEST BUILDERS SEND, read from the calls, not from
+   * client.ts's table of verbs it knows: every `.request(<first>, ...)`; a
+   * quoted first argument is the verb, and a name is followed to its `const`
+   * in the same file, whose quoted strings are the verbs it can hold. A first
+   * argument of any other form is reported, not passed over.
+   */
+  function verbsSent(): { verbs: Set<string>; unread: string[] } {
+    const verbs = new Set<string>();
+    const unread: string[] = [];
+    for (const { name, text } of sources()) {
+      for (const call of text.matchAll(/\.request\(\s*([^,)]+)/g)) {
+        const first = call[1].trim();
+        const quoted = /^'([a-z-]+)'$/.exec(first);
+        if (quoted !== null) {
+          verbs.add(quoted[1]);
+          continue;
+        }
+        const held = /^[A-Za-z_]\w*$/.test(first)
+          ? new RegExp(`const ${first}\\s*(?::[^=]+)?=\\s*([^;]+);`).exec(text)
+          : null;
+        if (held === null) {
+          unread.push(`${name}: ${first}`);
+          continue;
+        }
+        for (const literal of held[1].matchAll(/'([a-z-]+)'/g)) {
+          verbs.add(literal[1]);
+        }
+      }
+    }
+    return { verbs, unread };
+  }
+
+  it('sends no `publish` (the only verb that answers candidate-unreadable)', () => {
+    const { verbs, unread } = verbsSent();
+    assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
+    assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
+    assert.strictEqual(verbs.has('publish'), false, 'this extension now sends publish, so candidate-unreadable can answer it');
+  });
+
+  /*
+   * A `--socket` in an argument list is a quoted string, '--socket' or
+   * "--socket"; the backquoted `--socket` of a comment or a provenance row is
+   * prose and is not counted.
+   */
+  it('passes no `--socket` (the only way to be answered socket-dir-missing)', () => {
+    const found = sources()
+      .filter(({ text }) => /(['"])--socket\1/.test(text))
+      .map(({ name }) => name);
+    assert.ok(sources().length > 0, 'no source file was read');
+    assert.deepStrictEqual(found, [], 'a source file spells --socket, so socket-dir-missing can answer it');
   });
 });

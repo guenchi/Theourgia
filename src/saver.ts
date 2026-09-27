@@ -284,7 +284,8 @@ function saysNobodyKnows(datum: Datum): boolean {
     (isSym(datum[1], 'unknown') ||
       isSym(datum[1], 'working-unavailable') ||
       isSym(datum[1], 'transport-unknown') ||
-      isSym(datum[1], 'unreadable'))
+      isSym(datum[1], 'unreadable') ||
+      isSym(datum[1], 'incomplete'))
   );
 }
 
@@ -321,6 +322,17 @@ function saysNobodyKnows(datum: Datum): boolean {
  * would be measuring the core's classifier through a keyhole.
  */
 export const RETRYABLE_REFUSALS = [
+  /*
+   * NOTE: `unwritable` (f5ebd58, answers.sc's table, made at rpc.sc's
+   * `rpc-dispatch-parsed` for any verb): a write failed and the request had
+   * changed NOTHING -- the record was empty, or the answer would be
+   * `incomplete`. So the save did not land and sending it again under the
+   * same id is safe; it is the store's disk or permissions, which a person
+   * fixes, so after RETRY_CAP it is parked with the answer's path and reason
+   * (ruled by the main session 2026-09-27; not `unknown`, which is for "the
+   * store cannot say", and this one says).
+   */
+  'unwritable',
   'draining',
   'store-busy',
   'connect-failed',
@@ -374,8 +386,46 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
   'socket-path-too-long':
     'the socket path computed under THEOURGIA_RUN is longer than the 104 bytes a unix socket ' +
     'name may have. Set THEOURGIA_RUN to a shorter directory; the save is kept and goes again ' +
-    'when the setting changes'
+    'when the setting changes',
+  /*
+   * NOTE: `absent` (f5ebd58, answers.sc's table: ENOENT or ENOTDIR, the
+   * request having changed nothing): a file or directory of the store is not
+   * there -- a store moved or cut down under the daemon. No automatic retry:
+   * a loop against a moved store is noise (ruled by the main session
+   * 2026-09-27). The path from the answer is added to this sentence where it
+   * is shown (`whichSettingsRefusal`).
+   */
+  absent:
+    'a file or directory of the store is not there. Check the store directory in theourgia.store; ' +
+    'the save is kept and goes again when the setting changes or the retry command is run'
 };
+
+/*
+ * A STRING CLAUSE OF A REFUSAL, `(<name> "<text>")`, or null. For the
+ * answers table's clauses (`path`, `reason`), which say where and why and
+ * are shown to a person. Read through the one clause reader (`answerOf`'s
+ * `value`), so a clause given twice or not as one value is not shown.
+ */
+function stringClauseOf(datum: Datum, name: string): string | null {
+  const form = answerOf(datum, 'error');
+  if (form === null) {
+    return null;
+  }
+  const one = form.value(name);
+  return one.read && typeof one.value === 'string' ? one.value : null;
+}
+
+/*
+ * ", at <path> (<reason>)" from a refusal that names them, or "".
+ */
+function whereAndWhy(datum: Datum): string {
+  const where = stringClauseOf(datum, 'path');
+  const why = stringClauseOf(datum, 'reason');
+  if (where === null && why === null) {
+    return '';
+  }
+  return `, at ${where ?? '(no path given)'}${why === null ? '' : ` (${why})`}`;
+}
 
 /*
  * WHAT AN ANSWER THIS CLIENT DOES NOT RECOGNISE MEANS WHEN THE THIN
@@ -427,7 +477,11 @@ function whichSettingsRefusal(datum: Datum): { kind: string; message: string } |
   }
   for (const kind of Object.keys(SETTINGS_REFUSALS)) {
     if (isSym(datum[1], kind)) {
-      return { kind, message: SETTINGS_REFUSALS[kind] };
+      /*
+       * `absent` names the path that is not there; the sentence carries it.
+       */
+      const where = kind === 'absent' ? stringClauseOf(datum, 'path') : null;
+      return { kind, message: where === null ? SETTINGS_REFUSALS[kind] : `${SETTINGS_REFUSALS[kind]} (${where})` };
     }
   }
   const instance = instanceMismatchOf(datum);
@@ -645,6 +699,27 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * relayed error, not these.
    */
   'bad-socket-path': 'theourgiad.sc:91 -- refuses an empty `--socket`; this extension never passes one',
+  /*
+   * NOTE: THREE KINDS FIRST READ ON f5ebd58 (the F100b re-pin, 2026-09-27).
+   * `incomplete` is a write's answer and is taken before settlement, as
+   * `unreadable` is; the other two cannot answer anything this extension
+   * sends, and a tripwire cell in refusals.test.ts is red if what it sends
+   * ever changes that (`publish`, `--socket`).
+   */
+  'socket-dir-missing':
+    "client.sc, `ensure-daemon!` and `socket-dir-refusal` -- only for a `--socket` other than the " +
+    "store's default one; this extension never passes `--socket`",
+  'candidate-unreadable':
+    "rpc.sc, the `publish` verb's arm (`publish <writer> <segment> <file>`) -- a log segment's " +
+    'candidate that cannot be read; this extension never sends `publish`',
+  incomplete:
+    "rpc.sc, `rpc-dispatch-parsed` through answers.sc's table: `(error incomplete (failed (path ...) " +
+    '(reason ...) (errno ...) [(op ...)]) (written <what the request changed>))`, a filesystem failure ' +
+    'after the request had changed something. For a save (commit, set) `saysNobodyKnows` takes it ' +
+    'before settlement, exactly as `unreadable`: pending, same request id, sent again. The read ' +
+    'verbs this extension sends change nothing, so they are answered `absent` or `unreadable` ' +
+    'instead. Not the `(incomplete ...)` CLAUSE an ok answer may carry, which is an older, ' +
+    'different thing',
   'detach-needs-a-log':
     'theourgiad.sc:173 -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
     'client does, and it always names the log',
@@ -1980,7 +2055,13 @@ export class Saver {
          * running" ask for different things from whoever reads it.
          */
         this.notNowCounts.delete(entry.req);
-        const why = `the store answered ${notNow} ${soFar} times in a row; a person has to look`;
+        /*
+         * `unwritable` says where and why (its path and reason clauses), and
+         * that is what the person who has to look needs; the other members
+         * of this family carry neither.
+         */
+        const where = notNow === 'unwritable' ? whereAndWhy(datum) : '';
+        const why = `the store answered ${notNow}${where} ${soFar} times in a row; a person has to look`;
         this.kept(this.outbox.markParked(entry.req, why));
         return {
           status: 'refused',
