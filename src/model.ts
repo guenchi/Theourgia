@@ -90,7 +90,7 @@ export type StoreVerdict =
  * NEVER: THE EXIT CODE IS NOT ASKED. The core's `rpc-ok?` makes `check` a
  * failure exactly when its verdict is not `ok`, so a damaged store answers
  * with a non-zero exit AND a complete `(check ... (verdict damaged))` --
- * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:306). A reader that required `ok`
+ * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:312). A reader that required `ok`
  * would read "could not ask" on precisely the occasion it exists for.
  * The form's head is what says whether this is an answer at all.
  *
@@ -472,7 +472,7 @@ export class StoreModel {
      *
      * `read <id> --recursive` includes the block itself -- the core's
      * `subtree-ids` answers the block and everything under it
-     * (project.sc:174-178) -- so a success
+     * (project.sc:177-181) -- so a success
      * carrying nothing is an answer this build cannot account for, and
      * drawing it as a leaf is the reassuring reading. The repair that
      * made the LOOP refuse an unreadable record left this case outside
@@ -491,7 +491,7 @@ export class StoreModel {
      * NEVER: AND IT HAS TO BE THE SUBTREE THAT WAS ASKED FOR.
      *
      * The core's `read --recursive` includes the block itself
-     * (`project.sc:174-178`), so an answer that never mentions it is not an
+     * (`project.sc:177-181`), so an answer that never mentions it is not an
      * answer about it. Measured in a twelfth review round: a successful
      * response carrying only an unrelated root block gave
      * `{nodes: [], marksKnown: true}` -- a leaf, confidently. Checking
@@ -501,8 +501,8 @@ export class StoreModel {
     /*
      * NEVER: NO EXEMPTION FOR THE PLACEMENT ROOT. There was one, and it
      * existed for a stand-in: the only caller that ever asked this with
-     * `root` was a cell whose script answered a request the pinned core
-     * refuses (`(error unknown-id "root" (nearest ...))`, measured). The
+     * `root` was a cell whose script answered a request the core then pinned
+     * refused (`(error unknown-id "root" (nearest ...))`, measured). The
      * cell was corrected to ask about a real block and the exemption
      * went with it. The product asks this with block ids only -- the top
      * level comes from `outline --depth 1`.

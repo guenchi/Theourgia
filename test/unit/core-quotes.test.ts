@@ -24,8 +24,8 @@ import * as path from 'path';
 
 /*
  * THE ONE CORE FILE STILL NAMED `.ss`. The core renamed its sources to `.sc`
- * (276d9f2); its build script kept its name, and the pinned core (877f0da)
- * still calls it `build.ss`. Every other `<name>.ss` in src/ is a quotation
+ * (276d9f2); its build script kept its name, and the pinned core (877f0da,
+ * and f5ebd58 after it) still calls it `build.ss`. Every other `<name>.ss` in src/ is a quotation
  * of a file that is `.sc` now, or gone.
  *
  * NOTE: A BARE `.ss` IS NOT A FILE NAME and is not looked for: the library
@@ -59,7 +59,7 @@ const OWNED_ELSEWHERE: Array<{ file: string; text: string; owner: string }> = [
 describe('plugin-r3 19 the core is quoted by the names its files have', () => {
   /*
    * KEY: ONE NUMBER, AND IT IS ZERO. Sixty-seven quotations were re-read
-   * against the pinned core by hand (queue item 19); what keeps them from
+   * against the core then pinned (877f0da) by hand (queue item 19); what keeps them from
    * coming back is this count, not the reading.
    */
   it('quotes no core file as `.ss` in src/, except the one still named so', () => {
@@ -81,7 +81,7 @@ describe('plugin-r3 19 the core is quoted by the names its files have', () => {
 
   /*
    * queue item 37: THE SAME RULE OVER test/. Twenty-nine quotations were left
-   * there by item 19's scope; each was re-read against the pinned core (the
+   * there by item 19's scope; each was re-read against the core then pinned, 877f0da (the
    * address table is in item 37's NOTES), not given a new suffix.
    */
   it('quotes no core file as `.ss` in test/, except the named ones', () => {

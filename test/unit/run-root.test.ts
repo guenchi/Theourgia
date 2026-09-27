@@ -167,8 +167,8 @@ describe('plugin-r2 T6 the run-root gate reads the user\'s directory', function 
  * cannot be produced today, and a cell that passes either way is worse
  * than none. `init` is the one verb the core routes LOCALLY -- `describe`
  * answers `(init (usage (init)) ... (route local))` -- so it never
- * reaches a daemon and never starts one. Measured two ways against the
- * pinned core, a store path under a regular file and a store directory
+ * reaches a daemon and never starts one. Measured two ways against a
+ * core pinned before F100b (877f0da or earlier), a store path under a regular file and a store directory
  * with no write permission: both refuse, and `ps` shows no daemon for
  * either. A cell written on that premise was drafted, passed, and passed
  * again with the cleanup mutated away; it was deleted rather than kept.

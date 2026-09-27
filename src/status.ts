@@ -159,7 +159,7 @@ export interface Notice {
  * reading of this field that is wrong in the ordinary case.
  *
  * NOTE: AND THE WRITER THIS COMMIT ITSELF ADVANCED IS DROPPED. Measured
- * on the pinned core: a commit whose own cursor is `("w" . 7)` answers
+ * on a core pinned before F100b (877f0da or earlier): a commit whose own cursor is `("w" . 7)` answers
  * `(behind (("w" . 7)))` -- its own record, reported back as though it
  * were somebody's. The core's rule excludes the DRAFT writer's name and
  * the keys here are LOG writer ids, which are equal only when the two

@@ -68,7 +68,7 @@ export const LIBRARY_EXTENSIONS =
  *
  * NOTE: THEY CHANGED, AND THIS IS WHERE. The core renamed every library
  * `.ss` to `.sc` (276d9f2) and split its entry points by role (e55b680,
- * 877f0da): `theourgia.sc` the client, `theourgiad.sc` the daemon it
+ * 877f0da; unchanged in f5ebd58): `theourgia.sc` the client, `theourgiad.sc` the daemon it
  * starts, `core.sc` the in-process route that the old `cli` entry point
  * was. Spelling any
  * of these into a fixture or a cell would make that a search across the
@@ -152,7 +152,7 @@ export function libraryExtensionsFor(form: CoreForm): string {
  * this and the old `cli` entry point, which loaded the whole core for
  * every request and was kept for one version as a way back. The core split
  * that entry point by
- * role (877f0da): what is left of it is `core.sc`, the in-process route,
+ * role (877f0da; unchanged in f5ebd58): what is left of it is `core.sc`, the in-process route,
  * and nothing here runs that. A setting whose meaning would have changed
  * with no end-to-end cell to see it is removed rather than kept under an
  * old name.
@@ -211,8 +211,8 @@ export function environmentFor(
      *
      * This command line starts the thin client, and the client starts
      * the daemon -- with `THEOURGIA_SCHEME`, or failing that with
-     * whatever `scheme` resolves to on PATH (theourgia.sc:137, used at :161
-     * and :358; and core.sc:432 on the in-process route). So a user who set
+     * whatever `scheme` resolves to on PATH (theourgia.sc:142, used at :161
+     * and :358; and core.sc:468 on the in-process route). So a user who set
      * this setting BECAUSE
      * `scheme` is not on their PATH got a client from the path they gave
      * and a daemon that could not be started at all.

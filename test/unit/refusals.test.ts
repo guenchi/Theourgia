@@ -21,7 +21,7 @@
  *
  * I wrote one by hand first, from the cells in `saver.test.ts` that
  * happened to exercise a refusal. It had seven names and looked
- * complete. The pinned core makes TWENTY-FIVE, several of them on the
+ * complete. The core pinned when this was written made TWENTY-FIVE, several of them on the
  * write path, so a save could receive a refusal this client had never
  * heard of -- and the sorting table would have taken the default branch
  * with nobody the wiser. A list of what our own cells have seen is not a

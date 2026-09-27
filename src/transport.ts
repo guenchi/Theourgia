@@ -73,9 +73,9 @@ export interface Transport {
  * THE VERB COMES FIRST AND THE OPTIONS COME LAST. The in-process route
  * (`main`, core.sc) takes its verb from the first argument, so a store
  * option placed ahead of the verb is read AS the verb and refused. The thin
- * client this extension runs (`scan`, theourgia.sc:73) takes `--store` and
+ * client this extension runs (`scan`, theourgia.sc:78) takes `--store` and
  * `--actor` wherever they stand before a `--` (after it, everything is an
- * argument: theourgia.sc:89-94) -- so today the order matters on one route
+ * argument: theourgia.sc:94-99) -- so today the order matters on one route
  * and not the other, and it is pinned here in one function so that both
  * routes are handed the same list.
  */

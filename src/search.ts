@@ -21,7 +21,7 @@
  * and the words in it are all required to match; handing the core two
  * words as two arguments gets `(usage (search <query>))` back, which is
  * a refusal about the command line rather than a search with no
- * results. Measured against the pinned core. The joining happens where
+ * results. Measured against a core pinned before F100b (877f0da or earlier). The joining happens where
  * the request is built, so no caller can arrive at a different rule.
  *
  * NOTE: AND NOTHING HERE PARSES A RENDERING. `--wire` answers are data:

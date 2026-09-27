@@ -190,7 +190,7 @@ const AT_LEAST: Array<[string, number]> = [
    * record goes through writeSidecar, and its probe.
    */
   ['record-door.test.ts', 6],
-  ['real-core.test.ts', 19],
+  ['real-core.test.ts', 20],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them.
@@ -247,7 +247,7 @@ const AT_LEAST: Array<[string, number]> = [
    * 65 -> 67 in its review r1, one true sentence for each thing that could
    * not be read.
    */
-  ['saver.test.ts', 70],
+  ['saver.test.ts', 72],
   ['saving.test.ts', 34],
   /*
    * RAISED in plugin-r3 item 3 to the thirty-six it registers: the five

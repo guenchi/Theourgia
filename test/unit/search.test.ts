@@ -19,7 +19,7 @@
  * the core has.
  *
  * MEASURED AGAINST THE CORE, NOT AGAINST A BELIEF. Every shape asserted
- * here was produced by the pinned core and copied in verbatim:
+ * here was produced by a core pinned before F100b (877f0da or earlier) and copied in verbatim:
  *
  *   $ theourgia search "stale baseline" --wire
  *   (ok (items (hit "qqevbgov.1" 6 "concurrency, baseline, stale")))
@@ -307,7 +307,7 @@ describe('plugin-r2 T5 reading a search answer', function () {
  * remove. Instead the core is asked what it can do, `describe` answers
  * with a catalogue, and the entry appears the day the verb does.
  *
- * Measured, from the pinned core:
+ * Measured, from a core pinned before F100b (877f0da or earlier):
  *
  *   $ theourgia describe
  *   (ok (verbs (init (usage (init)) (description "...") ...)
@@ -1155,9 +1155,9 @@ describe('plugin-r2 T5 what a search does', function () {
    * Found by a second review round. `theourgia.scheme` is used to start
    * the thin client, and the client starts the daemon with
    * `THEOURGIA_SCHEME` or, failing that, whatever `scheme` resolves to
-   * on PATH (`scheme-binary`, theourgia.sc:137, which `server-argv` puts at
-   * the head of the daemon's argument list, :357-361; the in-process route
-   * reads the same variable, core.sc:432-433). A user who set the
+   * on PATH (`scheme-binary`, theourgia.sc:142, which `server-argv` puts at
+   * the head of the daemon's argument list, :377-381; the in-process route
+   * reads the same variable, core.sc:467-468). A user who set the
    * setting because `scheme` is not on their PATH got a client from the
    * path they gave and a daemon that could not be started at all -- and
    * the cells never met it, because the fixtures take the setting FROM
@@ -1294,7 +1294,7 @@ describe('plugin-r2 T5 what a search does', function () {
 /*
  * plugin-r2 T2, resettled: the clause the human rendering drops.
  *
- * MEASURED, BOTH WAYS, AGAINST THE PINNED CORE:
+ * MEASURED, BOTH WAYS, AGAINST A CORE PINNED BEFORE F100b (877f0da OR EARLIER):
  *
  *   $ theourgia commit <id> --working-version <id>=<v>
  *   (ok (events (("w" . 5))) (state (("w.1" . "fb26...")))

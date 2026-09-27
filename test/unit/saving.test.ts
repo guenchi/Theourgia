@@ -487,7 +487,7 @@ describe('a file whose line endings differ from the record’s prefix', () => {
  * is a prefix with CRLF above a body WITHOUT, and none of them had it.
  *
  * THE SHAPE IS REAL, AND IT WAS MEASURED rather than supposed: importing
- * `---\r\ntitle\r\n---\r\n\nbody\n` into the pinned core gives back
+ * `---\r\ntitle\r\n---\r\n\nbody\n` into a core pinned before F100b (877f0da or earlier) gave back
  * exactly that -- `front` carrying CRLF, `src` carrying none. Without
  * the branch, the text is normalised while the prefix is not, the
  * comparison fails, and every save of such a document is refused as

@@ -1165,7 +1165,7 @@ describe('what the status reports when the settings are unusable', function () {
  * the old `cli` entry point -- a fresh interpreter, loading the whole
  * core, for every request. It now runs `theourgia.sc`, which finds or
  * starts a daemon
- * and sends it the request. Measured on the pinned core: about 460 ms a
+ * and sends it the request. Measured on a core pinned before F100b (877f0da or earlier): about 460 ms a
  * request from source, about 40 to 50 from a product directory, about 30
  * through the daemon (design section 7.6.53). None of that is visible
  * from inside the extension; what IS visible, from outside, is whether a
@@ -1271,12 +1271,16 @@ describe('plugin-r2 T1 the extension reaches the core through a daemon', functio
  * on this path is to turn "I could not start a server" into words; an
  * extension that collapsed those into "unknown" would leave somebody
  * looking at a save that will not go with nothing to act on. Measured
- * against the pinned core, with a directory sitting where the socket
- * goes:
+ * against a core pinned before F100b (877f0da or earlier), with a directory
+ * sitting where the socket goes:
  *
  *   $ theourgia outline --store <s>
  *   (error serve-path-occupied (path "<run root>/<key>/socket"))
  *   rc=75
+ *
+ * On f5ebd58 the same start answers `serve-start-failed` with that head as
+ * its `kind` (client.sc:559-635; read, not measured here); the path is still
+ * in it.
  */
 describe('plugin-r2 T1 a daemon that cannot be started', function () {
   this.timeout(180000);
@@ -1408,10 +1412,10 @@ describe('plugin-r2 T1 a daemon that cannot be started', function () {
      * answered `serve-busy` instead: with a directory sitting where the
      * socket goes, which of the core's names comes back depends on how
      * far the start got before it gave up -- the start may fail
-     * (`serve-start-failed`, client.sc:503-556), the path may be held by
-     * something that is not a socket (`serve-path-occupied`, daemon.sc:306-307),
+     * (`serve-start-failed`, client.sc:559-635), the path may be held by
+     * something that is not a socket (`serve-path-occupied`, daemon.sc:405),
      * or a server may start and find it cannot take the lock
-     * (`serve-busy`, daemon.sc:305). All of them carry the path. Naming one of
+     * (`serve-busy`, daemon.sc:403). All of them carry the path. Naming one of
      * them made this cell about which branch the core happened to take,
      * which is not what it is for; the twin below is what keeps the
      * assertion from being vacuous.

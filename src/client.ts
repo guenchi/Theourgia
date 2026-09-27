@@ -20,10 +20,10 @@
  *
  * THE EXIT CODE IS THE VERDICT AND NOTHING ELSE IS. The thin client exits
  * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
- * the answer is a success (daemon.sc:1571, relayed by `deliver!` in
+ * the answer is a success (daemon.sc:1828, relayed by `deliver!` in
  * theourgia.sc); `init`, which the thin client runs in-process through
- * `core.sc` (`local-verbs`, theourgia.sc:60), exits by the same predicate
- * there (core.sc:530) -- and that
+ * `core.sc` (`local-verbs`, theourgia.sc:65), exits by the same predicate
+ * there (core.sc:591) -- and that
  * predicate lives in the core precisely so that a shell and a client
  * cannot come to different opinions. So this file never decides success
  * from the head symbol -- `(ok ...)` on a non-zero exit is a core that
@@ -32,7 +32,7 @@
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
  * client is forced to hold a second opinion. The core says an answer is
- * text, items or a single datum (rpc.sc:147-153), and `render-human`
+ * text, items or a single datum (rpc.sc:150-156), and `render-human`
  * (render.sc:57) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it
@@ -62,7 +62,7 @@ export interface Answer {
    * THE OUTER FORM, WHEN THE REQUEST ASKED FOR THE MACHINE RENDERING.
    *
    * NOTE: `--wire` WRAPS AN ANSWER AND THE HUMAN RENDERING DROPS WHAT IS
-   * ROUND IT. Measured on the pinned core: a commit answers
+   * ROUND IT. Measured on a core pinned before F100b (877f0da or earlier): a commit answers
    * `(ok (events ...) (cursor ...) (replay #f))` by default and
    * `(ok (items (ok (events ...) (cursor ...) (replay #f))) (behind ...))`
    * with the flag -- and `render-human` (render.sc:57) renders only

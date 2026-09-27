@@ -78,11 +78,11 @@ import { Counting } from '../support/counting';
 import { SpawnSpy } from '../support/spawn-spy';
 import { SaveOutcome, Saver, Settle } from '../../src/saver';
 import { LosesTheAnswer } from '../support/lossy';
-import { answerOf, initWire, readEvent } from '../../src/wire';
+import { answerOf, initWire, isSym, readEvent } from '../../src/wire';
 import { Working } from '../../src/working';
 import { recordFor } from '../../src/record';
 import { digestOfBytes } from '../../src/publication';
-import { CorePin, RealStore, checkCorePin, daemonsUnder, pinCore } from '../support/real-core';
+import { CorePin, RealStore, checkCorePin, daemonsUnder, pinCore, stopDaemonsFor } from '../support/real-core';
 import { entriesIn } from '../support/run-root';
 import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
@@ -1183,7 +1183,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
 
   /*
    * WHERE THE USER'S OWN SOCKETS LIVE, spelled the way the core spells
-   * it (`run-root`, client.sc:67-69) rather than the way this file would like to.
+   * it (`run-root`, client.sc:72-74) rather than the way this file would like to.
    * NEVER: Not read from `THEOURGIA_RUN`: this process may well have one
    * set, and then this would be measuring the fixture's directory
    * against itself and could never fail.
@@ -1539,5 +1539,70 @@ describe('plugin-r2 T2 a commit through the real core says who landed behind it'
     } finally {
       store.dispose();
     }
+  });
+});
+
+/*
+ * THE F100b RE-PIN: A STORE GONE FROM UNDER A KNOWN CURSOR, MET BY THE
+ * REQUEST THAT STARTS THE DAEMON. (ruled by the main session 2026-09-27)
+ * A first save establishes the cursor; the store's daemon is stopped and the
+ * store directory moved away; the next save's `set` starts a daemon, which
+ * cannot find the store. On f5ebd58 the client answers that start as
+ * `(error serve-start-failed (kind store-not-found) ...)` -- read here, the
+ * reading this cell exists for -- and the save must stop at once with the
+ * sentence that points at the setting, as it did when the core answered
+ * `store-not-found` as its own head. (A FIRST save against a missing store
+ * never gets this far: its `check` fails first and is reported as "the
+ * store did not answer `check`", on either core.)
+ */
+describe('re-pin f5ebd58 a store gone from under a known cursor stops at once', function () {
+  this.timeout(120000);
+  let store: RealStore;
+  let pinned: CorePin | undefined;
+  let moved: string | null = null;
+
+  before(async () => {
+    pinned = pinCore();
+    await initWire();
+    store = await RealStore.make('vscode-gone');
+    await store.importMarkdown('doc.md', DOC);
+  });
+
+  after(() => {
+    try {
+      if (moved !== null && fs.existsSync(moved)) {
+        fs.renameSync(moved, store.store);
+      }
+      store?.dispose();
+    } finally {
+      checkCorePin(pinned);
+    }
+  });
+
+  it('parks the save with the settings sentence, and the start failure names store-not-found as its kind', async () => {
+    const id = await idOfSection(store, 'Two');
+    const outbox = new Outbox(path.join(store.root, 'outbox.json'));
+    outbox.load();
+    const saver = new Saver(store.client, outbox, settling(outbox), IGNORED_DURABILITY);
+    const first = await saver.save(id, 'src', 'body2\n');
+    assert.strictEqual(first.status, 'saved', `the first save did not establish a cursor: ${first.message}`);
+
+    const stopped = stopDaemonsFor(store.store);
+    assert.ok(stopped.asked > 0, 'no daemon was running for the store, so this cell measures no start');
+    assert.strictEqual(stopped.left, 0, 'the daemon is still running, so the next save starts nothing');
+    moved = `${store.store}.gone`;
+    fs.renameSync(store.store, moved);
+
+    const second = await saver.save(id, 'src', 'body3\n');
+    const datum = (second as { answer?: unknown }).answer as Parameters<typeof answerOf>[0];
+    const form = answerOf(datum, 'error');
+    const kind = form === null ? null : form.value('kind');
+    assert.ok(
+      Array.isArray(datum) && isSym(datum[1], 'serve-start-failed') && kind !== null && kind.read && isSym(kind.value, 'store-not-found'),
+      `the start did not fail as serve-start-failed of kind store-not-found: ${JSON.stringify(datum, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}`
+    );
+    assert.strictEqual(second.status, 'refused', second.message);
+    assert.strictEqual((second as { keptForAPerson?: true }).keptForAPerson, true, 'it was retried instead of parked');
+    assert.match(second.message, /the store directory in theourgia\.store does not exist/);
   });
 });

@@ -683,7 +683,10 @@ describe('plugin-r3 no sixth route into a clause', function () {
       'reads a structural mark, `(orphan "a.1")`, by head: the head is the KIND of the mark and ' +
       'this dispatches on it. Nothing here searches a sequence for a named element.',
     'saver.ts:saysAnOperatorSettledIt':
-      'as `saysNobodyKnows` -- position one of the same verified form, against one name.'
+      'as `saysNobodyKnows` -- position one of the same verified form, against one name.',
+    'saver.ts:asItsKind':
+      'as `saysNobodyKnows` -- position one of the same verified form, against one name ' +
+      '(`serve-start-failed`); the `kind` clause itself is read through `answerOf`\'s `value`.'
   };
 
   const root = path.join(__dirname, '..', '..', '..');
