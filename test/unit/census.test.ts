@@ -78,7 +78,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['brief-current.test.ts', 6],
   ['brief-lease.test.ts', 8],
   ['brief-migration.test.ts', 7],
-  ['brief-outline.test.ts', 8],
+  ['brief-outline.test.ts', 9],
   ['brief-reconcile.test.ts', 17],
   ['brief-shared-state.test.ts', 6],
   ['brief-temporary.test.ts', 7],
@@ -160,7 +160,7 @@ const AT_LEAST: Array<[string, number]> = [
    * the editor at their levels.
    */
   ['notices.test.ts', 2],
-  ['outline.test.ts', 48],
+  ['outline.test.ts', 51],
   ['ownership.test.ts', 18],
   ['publication.test.ts', 101],
   /*

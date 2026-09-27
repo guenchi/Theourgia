@@ -486,15 +486,15 @@ by hand.
 outbox is built on that feature, so against such a core every save is refused. A usage line
 can also mean an argument the core did not expect, so the message names both.
 
-**A nested document is reported but not shown.** The core lists one under `conflicts`, and
-its recursive walk stops at a doc-kind child — `project.sc` says "a walk stops at one",
-because a nested document has its own file and descending would write its sections twice. It
-is therefore absent from its parent's expansion, and `nested-document` is not a mark that
-puts a block in the root listing either — so while its parent is alive, the only sign of one
-is the conflict count. Delete that parent and it becomes an orphan as well, and *that* mark
-does put it in the root listing, where it shows with both marks. What a nested document
-*means* is still open in the core's own design; this is pinned as current behaviour, not
-endorsed.
+**A nested document is shown under its parent, with its mark.** The write path refuses a
+document anywhere but the top level, so a nested one exists only in history made before that
+rule or elsewhere. The pinned core (F85, theourgia f5ebd58) treats it as a block like any
+other: it is in its parent's recursive read, and it is reported once under `conflicts` as
+`nested-document`. So it appears in the outline where it is, as a child carrying that mark,
+never hidden. `nested-document` is not a mark that puts a block in the root listing; delete
+the parent and the block becomes an orphan as well, and *that* mark does put it there, where
+it shows with both marks. (An older core's walk stopped at such a child and the outline could
+not show it; queue item 48 moved these cells to the current behaviour.)
 
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of

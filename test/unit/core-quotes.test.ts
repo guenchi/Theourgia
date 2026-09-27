@@ -35,26 +35,17 @@ import * as path from 'path';
 const STILL_SS = new Set(['build.ss']);
 
 /*
- * AND IN test/ (queue item 37), TWO MORE THAT ARE NOT QUOTATIONS OF A CORE FILE,
- * and one that is owned by another item:
+ * AND IN test/ (queue item 37), ONE MORE THAT IS NOT A QUOTATION OF A CORE FILE:
  *
  *   - `core-refusals.ss` is a file of THIS repository (test/support/), a
  *     script the refusal census runs with `--script`; its name is its own.
- *   - outline.test.ts's sentence quoting the old `project` source pins an older core's
- *     behaviour (a recursive walk stopping at a nested document) that the
- *     pinned core no longer has (F85 R1-R3); queue item 48 rewrites those
- *     cells, and this exception goes with it. It is keyed by the sentence,
- *     not by its line, so an edit above it does not move it; an exception
- *     that matches nothing is itself a failure, so it cannot outlive item 48.
+ *
+ * An exception owned by another item is keyed by its sentence and fails when
+ * it matches nothing; the one item 48 owned is gone with item 48's rewrite,
+ * and the list is empty.
  */
 const REPOSITORY_SS = new Set(['core-refusals.ss']);
-const OWNED_ELSEWHERE: Array<{ file: string; text: string; owner: string }> = [
-  /*
-   * The text is put together so that this file does not itself spell the name
-   * this cell looks for.
-   */
-  { file: 'unit/outline.test.ts', text: 'project' + '.ss says "a walk stops at one"', owner: 'queue item 48' }
-];
+const OWNED_ELSEWHERE: Array<{ file: string; text: string; owner: string }> = [];
 
 describe('plugin-r3 19 the core is quoted by the names its files have', () => {
   /*

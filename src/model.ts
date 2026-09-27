@@ -435,10 +435,12 @@ export class StoreModel {
      * holds and cannot show, and without asking, a marked block would be
      * drawn as an ordinary child with no warning on it at all.
      *
-     * A NESTED DOCUMENT IS NOT WHAT THIS IS FOR, and the comment here
-     * used to say it was. The core's walk stops at a doc-kind child, so
-     * one never arrives through this path; what does arrive marked is
-     * any child the store reports under `conflicts` for another reason.
+     * A NESTED DOCUMENT ARRIVES THIS WAY TOO. The pinned core (F85,
+     * f5ebd58) returns it in its parent's recursive read like any other
+     * block and reports it under `conflicts`, so it comes out of here as a
+     * child carrying `nested-document`, as does any child the store
+     * reports under `conflicts` for another reason. (An older core's walk
+     * stopped at a doc-kind child and it never arrived here.)
      */
     /*
      * A REFUSAL HERE COSTS THE MARKS AND NOT THE CHILDREN. Which blocks

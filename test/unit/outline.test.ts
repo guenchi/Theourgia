@@ -240,23 +240,15 @@ describe('O2 a node is expanded when it is opened and not before', () => {
     });
 
     /*
-     * `nested-document` HAS NO CELL HERE, and the variant is skipped
-     * BEFORE the cell is registered rather than returning from inside
-     * it. A test that returns early still reports as passing, and a
-     * green line saying "carries nested-document down to a child" -- for
-     * a case the core cannot produce and this cell never checked -- is a
-     * worse thing to leave behind than no line at all.
-     *
-     * The reason it has none: the core's recursive walk STOPS at a
-     * doc-kind child (project.ss says "a walk stops at one", because a
-     * nested document has its own file and descending would write its
-     * sections twice), so one never arrives through this path. What does
-     * happen to it is in its own block below.
+     * `nested-document` HAS THIS CELL TOO (queue item 48). It was skipped
+     * while the core's recursive walk stopped at a document below the
+     * root; the pinned core (F85 R1-R3: project.sc:67-79, `read
+     * --recursive` through `subtree-ids`, rpc.sc:1167) answers such a
+     * block under its parent like any other and reports it once under
+     * `conflicts`, so it arrives through this path carrying its mark
+     * (measured on the pin: its own test one-subtree.sc, rows F85-1 and
+     * F85-4).
      */
-    if (mark === 'nested-document') {
-      continue;
-    }
-
     it(`carries ${mark} down to a child as well as to a root`, async () => {
       const subtree = [
         '((id . "p.1") (deleted . #f) (fields (title . "Parent")) (position root . 0) (edges))',
@@ -272,24 +264,23 @@ describe('O2 a node is expanded when it is opened and not before', () => {
   }
 
   /*
-   * WHAT REALLY HAPPENS TO A NESTED DOCUMENT, pinned as the current
-   * behaviour and not as the desired one. The core reports it under
-   * `conflicts` and omits it from the parent's recursive walk, and
-   * `nested-document` is not a mark that puts a block in the root
-   * listing -- so it is in neither place the tree draws from, and the
-   * only sign of it is the conflict count in the status bar. Whether
-   * that is right depends on what a nested document MEANS, which the
-   * core's own README says is still open.
+   * WHAT HAPPENS TO A NESTED DOCUMENT (queue item 48). The write path
+   * refuses a document below the root, so one exists only in history made
+   * before that rule or elsewhere; the pinned core then treats it as a block
+   * like any other -- it is in its parent's recursive read -- and reports it
+   * once, as `(nested-document <id>)` (F85 R1-R3). The tree shows it where it
+   * is, as a child, with that conflict's mark; it never hides it.
+   * `nested-document` is still not a mark that puts a block in the root
+   * listing.
    */
-  describe('a nested document is reported but not shown', () => {
+  describe('a nested document is shown under its parent, with its mark', () => {
     /*
      * WITH ONE WAY IN, and it was missing from this account. A nested
      * document whose parent is then deleted is reported by the core as
      * BOTH an orphan and a nested document -- the two are computed
      * independently -- and the orphan mark is one that puts a block in
-     * the root listing. So it does reach the tree, as a marked root.
-     * "The only sign is the conflict count" was true only while its
-     * parent was alive.
+     * the root listing. So it reaches the tree as a marked root too, besides
+     * being shown under its parent while the parent is alive.
      */
     it('does reach the root listing once its parent is deleted', async () => {
       core = new FakeCore([
@@ -308,17 +299,47 @@ describe('O2 a node is expanded when it is opened and not before', () => {
       assert.strictEqual(roots[0].orphan, true);
     });
 
-    it('is absent from its parent\'s children, because the core does not return it', async () => {
+    it('is among its parent\'s children, carrying its mark, as the core returns it', async () => {
       const subtree = [
-        '((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges))'
+        '((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges))',
+        '((id . "n.1") (deleted . #f) (fields (title . "Inner") (kind . doc)) (position "p.1" . 0) (edges))'
       ].join('\n');
       core = new FakeCore([
         { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
         { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 }
       ]);
       const listing = await model().childrenOf('p.1');
-      assert.deepStrictEqual(listing.nodes, [], 'the walk returned a block the core stops at');
+      assert.deepStrictEqual(listing.nodes.map((n) => n.id), ['n.1'], 'the nested document is not shown under its parent');
+      assert.deepStrictEqual(listing.nodes[0].marks, ['nested-document'], 'it is shown without the mark the core reported');
       assert.strictEqual(listing.marksKnown, true);
+    });
+
+    /*
+     * AND ITS PARENT CAN BE OPENED (review r1 #1). A parent the tree could
+     * not expand would hide the child as surely as a walk that dropped it;
+     * no cell looked at `mayHaveChildren` until this one.
+     */
+    it('leaves its parent openable, and opening it shows the nested document with its mark', async () => {
+      const subtree = [
+        '((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges))',
+        '((id . "n.1") (deleted . #f) (fields (title . "Inner") (kind . doc)) (position "p.1" . 0) (edges))'
+      ].join('\n');
+      core = new FakeCore([
+        { match: ['outline'], stdout: '- p.1  Parent\n', rc: 0 },
+        { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 },
+        { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
+        {
+          match: ['read', 'p.1'],
+          stdout: '(ok ((id . "p.1") (deleted . #f) (fields (title . "Parent") (kind . doc)) (position root . 0) (edges)))\n',
+          rc: 0
+        }
+      ]);
+      const roots = (await model().roots()).nodes;
+      assert.deepStrictEqual(roots.map((n) => n.id), ['p.1']);
+      assert.strictEqual(roots[0].mayHaveChildren, true, 'the parent cannot be opened, so its nested document is never shown');
+      const listing = await model().childrenOf('p.1');
+      assert.deepStrictEqual(listing.nodes.map((n) => n.id), ['n.1']);
+      assert.deepStrictEqual(listing.nodes[0].marks, ['nested-document']);
     });
 
     it('is not promoted into the root listing by its mark either', async () => {
@@ -685,12 +706,12 @@ describe('a row in the listing must be a block that is actually at the top level
 
   /*
    * THE CELL THAT USED TO BE HERE SCRIPTED A NESTED DOCUMENT INTO A
-   * SUBTREE ANSWER and asserted that it arrived marked. The core's walk
-   * stops at a doc-kind child, so it never arrives at all -- the cell
-   * was describing a core that does not exist, and it was left behind
-   * when its replacement was written. What a marked child really looks
-   * like is covered by the table above, one cell per mark; what happens
-   * to a nested document is covered in its own block.
+   * SUBTREE ANSWER and asserted that it arrived marked, at a time when the
+   * core's walk stopped at a doc-kind child and it never arrived at all;
+   * it was retired then. On the pinned core (F85, f5ebd58) it does arrive,
+   * and what a marked child looks like -- a nested document included -- is
+   * covered by the table above, one cell per mark, and by the block about
+   * nested documents.
    */
 
   it('refuses rather than reporting no conflicts when the store would not say', async () => {

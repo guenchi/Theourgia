@@ -33,7 +33,7 @@ function gate(){let release,enter;const promise=new Promise(r=>release=r),entere
 const docs=[];
 const vs = {
  EventEmitter:class{constructor(){this.event=()=>disposable;}fire(){}dispose(){}},
- TreeItem:class{constructor(label){this.label=label;}},ThemeIcon:class{},ThemeColor:class{},
+ TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
  languages:{setTextDocumentLanguage:async d=>d},
  window:{createStatusBarItem:()=>({show(){},dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
@@ -84,6 +84,8 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  if(verb==='commit'&&process.argv[3]==='notice-behind') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (behind (("w" . 1) ("other" . 2))))\n',stderr:''};
  if(verb==='commit'&&process.argv[3]==='notice-refused') return {argv:[verb,...args],rc:1,stdout:'(error cursor-unreachable (after ("w" . 999)) (writing ("w" . 8)))\n',stderr:''};
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
+ // Queue item 48 (review r1 #2): the store reports a.2, a child of a.1, as a nested document.
+ if(verb==='conflicts'&&process.argv[3]==='outline-nested') return {argv:[verb,...args],rc:0,stdout:'(nested-document "a.2")\n',stderr:''};
 
  const read=`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)))\n`;
  // NEVER: THE SUBTREE INCLUDES THE BLOCK IT IS UNDER. Measured against the
@@ -418,6 +420,18 @@ async function main(){
   if(blocker)blocker.release();else pickGate.release(choices[0]);
   const notice=await pending;
   return {notice,a,b,beforeA,afterA:tree(path.dirname(a)),beforeB,afterB:tree(path.dirname(b)),messages,requests,channels};
+ }
+ // Queue item 48 (review r1 #2): the tree item the editor would draw for a nested document
+ // under its parent -- the parent's and the child's -- with the icon and tooltip it carries.
+ if(scenario==='outline-nested'){
+  const roots=await provider.getChildren();
+  const root=roots.find(n=>n.id==='a.1');
+  const rootItem=root?provider.getTreeItem(root):null;
+  const children=root?await provider.getChildren(root):[];
+  const child=children.find(n=>n.id==='a.2');
+  const item=child?provider.getTreeItem(child):null;
+  return {rootCollapsible:rootItem&&rootItem.collapsibleState,childIds:children.map(n=>n.id),marks:child?child.marks:null,
+   icon:item&&item.iconPath?item.iconPath.id:null,tooltip:item?item.tooltip:null};
  }
  if(scenario==='outline-old-click'){
   const nodes=await provider.getChildren();
