@@ -1660,6 +1660,8 @@
 ;;   source in another subdirectory is outside the scan and outside the row
 ;;   that names the scanned files. That is F64, not F65.
 ;;
+;; refusal.sc since F100b M3a (L). NOTE: a named list like this is what F64
+;; replaced elsewhere; that this one should come from the tree is queued.
 (want "GATE-C the scanned source files, named"
       ;; Compared as sorted BASENAMES, so the expectation does not depend on
       ;; which directory a source sits in: `mcp/server.sc` sorts among the
@@ -1679,7 +1681,7 @@
         "datum-project.sc" "digest.sc" "eval-context.sc" "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "ffi.sc" "json.sc"
         "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"
-        "operation-packet.sc" "proc.sc" "project.sc" "reduce.sc" "regex.sc"
+        "operation-packet.sc" "proc.sc" "project.sc" "reduce.sc" "refusal.sc" "regex.sc"
         "render.sc" "request.sc" "rpc.sc" "sched.sc" "server.sc"
         "source-lex.sc" "store.sc" "text-code.sc" "theourgia.sc" "theourgiad.sc" "trace.sc"
         "view.sc" "wire.sc" "working.sc"))

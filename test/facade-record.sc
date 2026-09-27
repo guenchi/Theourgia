@@ -27,7 +27,10 @@
 (import (chezscheme) (theourgia ffi) (theourgia sched) (theourgia answers)
         ;; F100b M2a's two helper rows (H5, H7).
         (only (theourgia daemon) write-report-line!)
-        (only (theourgia client) next-attempt-token select-report))
+        (only (theourgia client) next-attempt-token select-report)
+        ;; F100b M3a's helper rows (H6).
+        (only (theourgia refusal) refusal-object refusal-result-json refusal-error-json)
+        (only (theourgia json) string->json json->string json-ref*))
 
 (define bad 0)
 (define rows 0)
@@ -242,6 +245,163 @@
               (string->number (substring a 0 8) 16) (string->number (substring b 0 8) 16))
         (list #t #t #f (get-process-id) (get-process-id))))
 
+;; ---- F100b M3a: refusal-json (item 8), H6 --------------------------------
+;;
+;; Each kind rendered as the MCP shell renders it, compared as PARSED JSON
+;; with the members sorted by key, so the rows pin the members and their
+;; values, not the order json->string happens to write them in.
+(define (sorted-object x)
+  (cond
+    ((and (list? x) (pair? x) (for-all (lambda (m) (and (pair? m) (string? (car m)))) x))
+     (list-sort (lambda (a b) (string<? (car a) (car b)))
+                (map (lambda (m) (cons (car m) (sorted-object (cdr m)))) x)))
+    ((vector? x) (vector-map sorted-object x))
+    (else x)))
+(define (rendered d . opt)
+  (sorted-object (string->json (json->string (apply refusal-object d opt)))))
+(define (datum-text d) (call-with-string-output-port (lambda (p) (write d p))))
+(define (expect . members) (sorted-object members))
+(let ((d '(error unreadable (path "/p") (reason "Permission denied") (errno EACCES))))
+  (want "H6 unreadable: kind, path, reason, errno as its NAME, and the datum written; nothing else"
+        (rendered d)
+        (expect (cons "kind" "unreadable") (cons "path" "/p") (cons "reason" "Permission denied")
+                (cons "errno" "EACCES") (cons "datum" (datum-text d)))))
+(let ((d '(error unwritable (op mkdir) (path "/d") (reason "Permission denied") (errno 13))))
+  (want "H6 unwritable: op, and a NUMBER errno stays a number"
+        (rendered d)
+        (expect (cons "kind" "unwritable") (cons "op" "mkdir") (cons "path" "/d")
+                (cons "reason" "Permission denied") (cons "errno" 13) (cons "datum" (datum-text d)))))
+(let ((d '(error incomplete (failed (path "/m") (reason "Permission denied") (errno EACCES))
+                 (written ((create "/l") (link "/a" "/b"))))))
+  (want "H6 incomplete: failed's clauses flattened to the top level, no `failed` member, written an array of arrays of strings"
+        (rendered d)
+        (expect (cons "kind" "incomplete") (cons "path" "/m") (cons "reason" "Permission denied")
+                (cons "errno" "EACCES") (cons "written" (vector (vector "create" "/l") (vector "link" "/a" "/b")))
+                (cons "datum" (datum-text d)))))
+(let ((d '(error serve-start-failed (kind incomplete)
+                 (failed (path "/m") (reason "Permission denied") (errno EACCES))
+                 (written ((create "/k/.socket.lock"))) (attempt "0123456789abcdef") (exit 75)
+                 (client-written ((mkdir "/k"))))))
+  (want "H6 serve-start-failed: the kind its (kind K) clause names, the report's clauses, attempt, exit and client-written"
+        (rendered d)
+        (expect (cons "kind" "incomplete") (cons "path" "/m") (cons "reason" "Permission denied")
+                (cons "errno" "EACCES") (cons "written" (vector (vector "create" "/k/.socket.lock")))
+                (cons "attempt" "0123456789abcdef") (cons "exit" 75)
+                (cons "client-written" (vector (vector "mkdir" "/k")))
+                (cons "datum" (datum-text d)))))
+(let ((d '(error serve-start-failed (kind exited) (signal 9) (attempt "0123456789abcdef"))))
+  (want "H6 a signal status: signal, no exit"
+        (rendered d)
+        (expect (cons "kind" "exited") (cons "signal" 9) (cons "attempt" "0123456789abcdef")
+                (cons "datum" (datum-text d)))))
+(let ((d '(error store-not-found (store "/s") (attempt "0123456789abcdef"))))
+  (want "H6 a clause item 8 does not name (store) is in the datum only; a short write's errno #f is null"
+        (list (rendered d)
+              (let ((w '(error unwritable (op write) (path "/w") (reason "short write") (errno #f))))
+                (json-ref* (string->json (json->string (refusal-object w))) "errno")))
+        (list (expect (cons "kind" "store-not-found") (cons "attempt" "0123456789abcdef") (cons "datum" (datum-text d)))
+              'null)))
+(let ((d '(error unreadable (path "/s/./store") (reason "Permission denied") (errno EACCES))))
+  (want "H6 origin: a constructed transport refusal carries origin transport; the same datum without it carries none"
+        (list (rendered d '() 'transport) (rendered d))
+        (list (expect (cons "kind" "unreadable") (cons "path" "/s/./store") (cons "reason" "Permission denied")
+                      (cons "errno" "EACCES") (cons "origin" "transport") (cons "datum" (datum-text d)))
+              (expect (cons "kind" "unreadable") (cons "path" "/s/./store") (cons "reason" "Permission denied")
+                      (cons "errno" "EACCES") (cons "datum" (datum-text d))))))
+;; EVERY KIND A PRODUCER IN THIS TREE GIVES renders as itself, bare and
+;; wrapped in serve-start-failed (F100b M3a reviews r1 F2, r2 F1).
+;; THE LIST IS DERIVED FROM THE SOURCE where a kind is spelled as a literal
+;; in one of five spellings: `(list 'error '<k>`, `` `(error <k> ``,
+;; `'(error <k>`, `(list (quote error) (quote <k>` and `(cons 'error (cons
+;; '<k>`, in the tree's .sc files and mcp/server.sc. A kind a producer adds
+;; in one of these spellings is covered without an edit here; a sixth
+;; spelling is not (M3b review r1, F2: the last two were found that way). The scan is a superset: a few of its
+;; symbols are not refusals (mcp/server.sc's own `(list 'error 'null ...)`
+;; frame, say), and they render as themselves too, which is all the row asks.
+;; The kinds that are COMPUTED, not spelled, are listed with their producers:
+;; answers.sc:91 absent (from an errno), :92 unwritable; client.sc:615
+;; timeout and :635 exited (clauses the client builds). And one kind that
+;; no producer gives: describe-refused, the P7 stub's fixture (its E12 row),
+;; kept as an arbitrary kind.
+(define (scanned-kinds)
+  (let* ((files (append (map (lambda (n) (string-append "../" n))
+                             (filter (lambda (n) (let ((k (string-length n)))
+                                                   (and (> k 3) (string=? (substring n (- k 3) k) ".sc"))))
+                                     (directory-list "..")))
+                        (list "../mcp/server.sc")))
+         (markers '("(list 'error '" "`(error " "'(error " "(list (quote error) (quote " "(cons 'error (cons '"))
+         (kind-char? (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9) (char=? c #\-)))))
+    (fold-left
+      (lambda (acc f)
+        (let ((t (call-with-input-file f get-string-all)))
+          (fold-left
+            (lambda (acc m)
+              (let loop ((i 0) (acc acc))
+                (let ((at (let scan ((j i))
+                            (cond ((> (+ j (string-length m)) (string-length t)) #f)
+                                  ((and (char=? (string-ref t j) (string-ref m 0))
+                                        (string=? (substring t j (+ j (string-length m))) m))
+                                   j)
+                                  (else (scan (+ j 1)))))))
+                  (if (not at)
+                      acc
+                      (let* ((from (+ at (string-length m)))
+                             (to (let run ((k from)) (if (and (< k (string-length t)) (kind-char? (string-ref t k))) (run (+ k 1)) k)))
+                             (k (substring t from to)))
+                        (loop to (if (and (> (string-length k) 0) (char<=? #\a (string-ref k 0) #\z)
+                                          (not (member (string->symbol k) acc)))
+                                     (cons (string->symbol k) acc)
+                                     acc)))))))
+            acc markers)))
+      '() files)))
+(define producer-kinds
+  (let ((scanned (scanned-kinds)))
+    (append scanned
+            (filter (lambda (k) (not (memq k scanned))) '(absent unwritable timeout exited describe-refused)))))
+(want "H6 the kind scan finds the producers' literal kinds (a CONTROL on the scan itself: it must see these)"
+      (filter (lambda (k) (not (memq k producer-kinds)))
+              '(socket-dir-missing serve-busy serve-path-occupied store-not-found store-load-failed store-busy
+                draining bad-request transport-unknown transport-store-mismatch unreadable incomplete
+                ;; one kind from each of the two later spellings (store.sc)
+                unknown-tag resolved-executed))
+      '())
+(want "H6 every kind a producer gives renders as its own kind, bare and wrapped in serve-start-failed"
+      (filter (lambda (k)
+                (not (and (equal? (cdr (assoc "kind" (refusal-object (list 'error k '(path "/p")))))
+                                  (symbol->string k))
+                          (equal? (cdr (assoc "kind" (refusal-object
+                                                       (list 'error 'serve-start-failed (list 'kind k)
+                                                             '(attempt "0123456789abcdef") '(exit 75)))))
+                                  (symbol->string k)))))
+              producer-kinds)
+      '())
+(let ((d '(error serve-start-failed (kind timeout) (pid 4242) (log "/k/serve.log"))))
+  (want "H6 timeout (item 4): kind timeout; pid and log are not members of item 8, so they are in the datum only"
+        (rendered d)
+        (expect (cons "kind" "timeout") (cons "datum" (datum-text d)))))
+(want "H6 unavailable: exactly kind and datum, nothing else (J3)"
+      (rendered '(unavailable))
+      (expect (cons "kind" "unavailable") (cons "datum" "(unavailable)")))
+;; AGGREGATION (c): the MCP process's own entries join the answer and the
+;; kind is recomputed. No production route has such entries (D22), so this
+;; row is the combination's only coverage.
+(let ((d '(error unreadable (path "/p") (reason "Permission denied") (errno EACCES))))
+  (want "H6 aggregation (c): a non-empty record of the MCP process makes unreadable incomplete, its entries in written"
+        (rendered d '((create "/x")))
+        (let ((c '(error incomplete (failed (path "/p") (reason "Permission denied") (errno EACCES)) (written ((create "/x"))))))
+          (expect (cons "kind" "incomplete") (cons "path" "/p") (cons "reason" "Permission denied")
+                  (cons "errno" "EACCES") (cons "written" (vector (vector "create" "/x")))
+                  (cons "datum" (datum-text c))))))
+(let* ((d '(error unreadable (path "/p") (reason "Permission denied") (errno EACCES)))
+       (obj (sorted-object (string->json (json->string (refusal-object d))))))
+  (want "H6 the tools/call RESULT and the tools/list ERROR, parsed: text and data carry the datum and the object"
+        (list (sorted-object (string->json (refusal-result-json d)))
+              (sorted-object (string->json (refusal-error-json d))))
+        (list (expect (cons "content" (vector (expect (cons "type" "text") (cons "text" (datum-text d)))))
+                      (cons "isError" #t)
+                      (cons "_meta" (expect (cons "refusal" obj))))
+              (expect (cons "code" -32000) (cons "message" "core did not start") (cons "data" obj)))))
+
 ;; ---- F100b M2b1: select-report, waitpid-status, the hold seam ----------------
 ;;
 ;; H3 (item 3, D10, E10): select-report of bytes, a byte offset and a token.
@@ -316,6 +476,14 @@
       (let ((text "(error old (attempt \"0123456789abcdef\"))\n(error x"))
         (select-report (u8 text) (- (string-length text) 3) T))
       #f)
+;; F111 (M3b): invalid UTF-8 is neither a raise nor a report. The decode has
+;; no guard now (utf8->string gives U+FFFD, the M3a r1 reading), so a line
+;; holding an invalid byte is refused by readable-shape?, and a later whole
+;; line is still read.
+(want "H3 invalid bytes: an invalid byte before T's report on one line is not a report; a line of a truncated sequence before T's line is skipped"
+      (list (select-report (u8-list->bytevector (cons #xFF (bytevector->u8-list (u8 "(error a (attempt \"0123456789abcdef\"))\n")))) 0 T)
+            (select-report (u8-list->bytevector (append (list #xE2 #x82 10) (bytevector->u8-list (u8 "(error b (attempt \"0123456789abcdef\"))\n")))) 0 T))
+      '(#f (error b (attempt "0123456789abcdef"))))
 (want "H3 an offset past the end of the bytes: #f, although the bytes carry T's report"
       (let ((b (u8 "(error a (attempt \"0123456789abcdef\"))\n")))
         (select-report b (+ (bytevector-length b) 10) T))

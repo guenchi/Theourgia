@@ -24,7 +24,9 @@
         ;; NOTE: THE PRODUCT'S OWN SPAWN, used by MC-11's control to make a
         ;; child that nothing waits for -- the only way this fixture can
         ;; produce one, measured.
-        (only (theourgia ffi) spawn-detached! reap-children!))
+        (only (theourgia ffi) spawn-detached! reap-children!)
+        ;; F100b M3a's P7 rows: the key directory the client derives.
+        (only (theourgia client) socket-path))
 
 (define bad 0)
 (define rows 0)
@@ -164,6 +166,12 @@
           (else (loop (json-ref* v (car ks)) (cdr ks))))))
 
 (define (code-of line) (field line "error" "code"))
+;; isError AS WRITTEN, or `absent` (F100b M3a review r1, F1): `field` answers #f
+;; both for `"isError":false` and for no isError at all, so a row expecting
+;; false would pass a result that dropped the member.
+(define (is-error-of line)
+  (let ((r (field line "result")))
+    (if (and (pair? r) (assoc "isError" r)) (cdr (assoc "isError" r)) 'absent)))
 (define (id-of line) (field line "id"))
 
 (system (string-append "rm -rf " here " " sock-here "; mkdir -p " here "/store " sock-here))
@@ -272,7 +280,7 @@
 
 (let ((out (talk (list hello ready (call-tool "theourgia_read" '("nope.1"))))))
   (want "MC-03 a core refusal comes back as a successful text result"
-        (list (field (cadr out) "result" "isError")
+        (list (is-error-of (cadr out))
               (if (contains? (text-of (cadr out)) "unknown-id") 'the-core-refusal
                   (list 'said (text-of (cadr out)))))
         '(#f the-core-refusal)))
@@ -312,7 +320,7 @@
                        (call-tool "theourgia_insert"
                                   '("--title" "(error transport-unknown (reason lost-answer))"))))))
   (want "MC-03 TWIN: a payload that reads like a transport failure is still a result"
-        (list (field (cadr out) "result" "isError")
+        (list (is-error-of (cadr out))
               (if (starts-with-text? (text-of (cadr out)) "(ok") 'still-a-result
                   (list 'said (text-of (cadr out)))))
         '(#f still-a-result)))
@@ -492,16 +500,16 @@
     ;; NOTE: IT IS `tools/list` THAT SHOWS THIS, not a tool call: the shell
     ;; asks the server for its catalogue before it can turn a tool name
     ;; into a verb, so a server that will not start is met at that step.
+    ;; F100b M3a (L): the shape is item 8's ERROR -32000 "core did not
+    ;; start", and the server's own reason is the refusal object's kind.
     (want "MC-07 a server that would not start is reported in its own words"
           (let* ((out (talk (list hello ready
                                   "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/list\"}")
                             (string-append here "/store") regular))
-                 (message (or (field (cadr out) "error" "message") "")))
-            (list (if (contains? message "serve-path-occupied") 'the-servers-reason
-                      (list 'said message))
-                  (if (contains? message "not carried out") 'and-says-it-did-not-run
-                      (list 'said message))))
-          '(the-servers-reason and-says-it-did-not-run))
+                 (line (cadr out)))
+            (list (field line "error" "code") (field line "error" "message")
+                  (field line "error" "data" "kind")))
+          '(-32000 "core did not start" "serve-path-occupied"))
 
     ;; NEVER: AND THE TWIN: the sentence about an unknown outcome still exists,
     ;; for the case where it is true. Without this row the one above is
@@ -945,11 +953,13 @@
   ;; NEVER: AND IT SAYS THE TOOL DID NOT RUN. "Something went wrong" leaves
   ;; the caller to decide whether to try again, which is the one thing it
   ;; must not have to guess about.
-  (want "MC-09 and it says the request was not carried out"
-        (if (and (string? message) (contains? message "not carried out"))
-            'said-it-did-not-run
-            (list 'said message))
-        'said-it-did-not-run)
+  ;; F100b M3a (L): the shape is item 8's tools/call RESULT with isError, and
+  ;; "it did not run" is its refusal: a start that failed, in the datum.
+  (want "MC-09 and it says the request was not carried out: a RESULT with isError whose refusal is a failed start"
+        (list (field reply "result" "isError")
+              (let ((d (field reply "result" "_meta" "refusal" "datum")))
+                (and (string? d) (starts-with-text? d "(error serve-start-failed"))))
+        '(#t #t))
   ;; NEVER: THE TWIN: tools/list, the same failure, the same shape. The two
   ;; branched differently for a whole release -- one of them handled all
   ;; three outcomes and the other did not -- so the rows have to compare
@@ -958,12 +968,14 @@
                            "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/list\"}")
                      (string-append here "/store") badsock))
          (lmessage (field (cadr lout) "error" "message")))
+    ;; F100b M3a (L): tools/list's ERROR -32000 names the same kind as the
+    ;; tool call's refusal, so the two still say the same thing.
     (want "MC-09 TWIN: tools/list fails the same way for the same reason"
           (list (if (contains? (cadr lout) "\"id\":42") 'echoed (list 'said (cadr lout)))
-                (if (and (string? lmessage) (contains? lmessage "not carried out"))
-                    'said-it-did-not-run
-                    (list 'said lmessage)))
-          '(echoed said-it-did-not-run))))
+                (field (cadr lout) "error" "code") lmessage
+                (let ((k (field (cadr lout) "error" "data" "kind")))
+                  (and (string? k) (equal? k (field reply "result" "_meta" "refusal" "kind")))))
+          '(echoed -32000 "core did not start" #t))))
 
 ;; ---- MC-10 who refused: the core, or the daemon carrying the request -----
 ;;
@@ -1026,9 +1038,13 @@
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    (want "MC-10 a daemon that declined to carry the request is a JSON-RPC error"
-          (if (field reply "error" "message") 'an-error (list 'said reply))
-          'an-error))
+    ;; F100b M3a (L): the daemon's refusal is item 8's tools/call RESULT with
+    ;; isError, and origin transport says who refused. It is never a result
+    ;; the tool gave: isError is true and the refusal is the daemon's.
+    (want "MC-10 a daemon that declined to carry the request is a RESULT with isError, its refusal the daemon's (origin transport)"
+          (list (field reply "result" "isError") (field reply "result" "_meta" "refusal" "kind")
+                (field reply "result" "_meta" "refusal" "origin"))
+          '(#t "draining" "transport")))
 
   ;; NEVER: THE TWIN, AND IT IS THE RULE THAT MUST NOT BREAK. A core refusal
   ;; is a SUCCESSFUL call: the tool ran and its answer is no. A build that
@@ -1038,10 +1054,16 @@
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    (want "MC-10 TWIN: a core refusal is still a successful tool call"
+    ;; isError false TOO (F100b M3a): the daemon's refusal is now a RESULT
+    ;; as well, so "not a JSON-RPC error" no longer tells the two apart.
+    (want "MC-10 TWIN: a core refusal is still a successful tool call (isError false)"
           (list (if (field reply "error" "message") 'AN-ERROR 'a-result)
-                (if (contains? reply "unknown-id") 'carries-the-refusal (list 'said reply)))
-          '(a-result carries-the-refusal)))
+                ;; IN THE RESULT'S TEXT (M3a review r2, F2), not anywhere in
+                ;; the frame: a reply with no content could carry the words in
+                ;; another member.
+                (let ((t (text-of reply))) (if (and (string? t) (contains? t "unknown-id")) 'carries-the-refusal (list 'said reply)))
+                (is-error-of reply))
+          '(a-result carries-the-refusal #f)))
 
   ;; NEVER: AND THE FIELD IS WHAT DECIDES, NOT THE WORDS. The two rows above
   ;; use a transport refusal that SAYS `draining` and a core refusal that
@@ -1052,17 +1074,18 @@
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    (want "MC-10 the same words marked as the core's are a successful call"
-          (if (field reply "error" "message") 'AN-ERROR 'a-result)
-          'a-result))
+    (want "MC-10 the same words marked as the core's are a successful call (isError false), carrying the core's words"
+          (list (if (field reply "error" "message") 'AN-ERROR 'a-result) (is-error-of reply)
+                (let ((t (text-of reply))) (if (and (string? t) (contains? t "(error draining)")) 'carries-the-words (list 'said reply))))
+          '(a-result #f carries-the-words)))
 
   (peer-answering "(answer (stdout \\\"(error draining)\\\") (stderr \\\"\\\") (exit 1) (origin transport))")
   (let ((reply (call-through)))
     (system (string-append "pkill -f " opeer " 2>/dev/null"))
     (system (string-append "rm -f " osock))
-    (want "MC-10 and the same words marked as the transport's are an error"
-          (if (field reply "error" "message") 'an-error (list 'said reply))
-          'an-error)))
+    (want "MC-10 and the same words marked as the transport's are a refusal the daemon made (isError, origin transport)"
+          (list (field reply "result" "isError") (field reply "result" "_meta" "refusal" "origin"))
+          '(#t "transport"))))
 
 ;; NEVER: AN INTEGER-VALUED ID IS AN ID, HOWEVER IT WAS SPELLED. Requiring an
 ;; exact integer rejected `2.0` -- ordinary JSON for the number two -- and
@@ -1164,6 +1187,243 @@
             (list 'answered-anyway (cadr out))
             'treated-as-a-notification))
       'treated-as-a-notification)
+
+;; ---- F100b M3a: P7, the shell's refusals (item 8, point 7) -------------------
+;;
+;; Brief v7's P7 rows, WITHOUT the transport-refusal row, which is dropped as
+;; unreachable (ruling, brief :876-881): H6 measures `origin` from a
+;; constructed refusal. Each store lives under this run's directory, so the
+;; teardown below takes down any daemon a row started.
+(printf "== F100b M3a: P7 ==\n")
+(putenv "THEOURGIA_RUN" (string-append sock-here "/run"))
+(system (string-append "mkdir -p " sock-here "/run"))
+(define p7-n 0)
+(define (p7-store!)
+  (set! p7-n (+ p7-n 1))
+  (let* ((d (string-append here "/p7-" (number->string p7-n)))
+         (s (string-append d "/parent/store")))
+    (system (string-append "mkdir -p " s))
+    (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "scheme --script ../core.sc init --store " s " > /dev/null 2>&1"))
+    s))
+(define (p7-parent s) (substring s 0 (- (string-length s) (string-length "/store"))))
+(define (p7-key-dir s) (let ((p (socket-path s))) (substring p 0 (- (string-length p) (string-length "/socket")))))
+;; The P6 setup: meta.sexp at 000; with pre-create? the key directory and
+;; its lock are made first, so neither the client nor main records one.
+(define (p7-unreadable! pre-create?)
+  (let ((s (p7-store!)))
+    (when pre-create?
+      (system (string-append "mkdir -p " (p7-key-dir s) " && touch " (p7-key-dir s) "/.socket.lock")))
+    (system (string-append "chmod 000 " s "/meta.sexp"))
+    s))
+(define (p7-restore! s) (system (string-append "chmod 644 " s "/meta.sexp")))
+(define (call-frame id) (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id)
+                                       ",\"method\":\"tools/call\",\"params\":{\"name\":\"theourgia_read\",\"arguments\":{\"argv\":[\"root\"]}}}"))
+(define (list-frame id) (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (number->string id) ",\"method\":\"tools/list\"}"))
+(define (refusal-of line) (field line "result" "_meta" "refusal"))
+(define (member-of* obj key) (and (pair? obj) (let ((m (assoc key obj))) (and m (cdr m)))))
+(define (hex16? t) (and (string? t) (= 16 (string-length t))
+                        (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f))) (string->list t))))
+;; After the handshake the store's parent is made 000, then one request.
+(define (after-handshake-000 s frame)
+  (let ((sh (start-shell s)))
+    (send-frame! sh hello) (read-frame sh)
+    (send-frame! sh ready)
+    (system (string-append "chmod 000 " (p7-parent s)))
+    (send-frame! sh frame)
+    (let ((line (read-frame sh)))
+      (system (string-append "chmod 755 " (p7-parent s)))
+      (close-input! sh)
+      (let drain () (unless (eof-object? (read-frame sh)) (drain)))
+      line)))
+
+;; local, tools/call: no daemon, the parent at 000; the server's argv cannot
+;; be derived, and the table's answer is a tool RESULT (point 7, E11).
+(let* ((s (p7-store!)) (line (after-handshake-000 s (call-frame 51))) (r (refusal-of line)))
+  (want "P7 local tools/call: a RESULT with isError and _meta.refusal {kind unreadable, path <store>, reason, errno EACCES}, id 51"
+        (list (field line "id") (field line "result" "isError")
+              (member-of* r "kind") (member-of* r "path") (member-of* r "reason") (member-of* r "errno"))
+        (list 51 #t "unreadable" s "Permission denied" "EACCES")))
+;; local, tools/list (E11): the same setup answers the tools/list ERROR.
+(let* ((s (p7-store!)) (line (after-handshake-000 s (list-frame 52))))
+  (want "P7 local tools/list: ERROR -32000 \"core did not start\" with data.kind unreadable and data.path <store>, id 52"
+        (list (field line "id") (field line "error" "code") (field line "error" "message")
+              (field line "error" "data" "kind") (field line "error" "data" "path"))
+        (list 52 -32000 "core did not start" "unreadable" s)))
+;; tools/list start-failed: the P6-unreadable store.
+(let* ((s (p7-unreadable! #t))
+       (out (talk (list hello ready (list-frame 53)) s))
+       (line (and (pair? (cdr out)) (cadr out)))
+       (data (and line (field line "error" "data"))))
+  (p7-restore! s)
+  (want "P7 tools/list start-failed: ERROR -32000 with data {kind unreadable, path meta.sexp, reason, errno EACCES, a 16-hex attempt, exit 75}"
+        (list (field line "error" "code") (field line "error" "message")
+              (member-of* data "kind") (member-of* data "path") (member-of* data "reason")
+              (member-of* data "errno") (hex16? (member-of* data "attempt")) (member-of* data "exit"))
+        (list -32000 "core did not start" "unreadable" (string-append s "/meta.sexp") "Permission denied" "EACCES" #t 75)))
+;; tools/call, the catalogue site: the same store; the catalogue's own start fails.
+(let* ((s (p7-unreadable! #t))
+       (out (talk (list hello ready (call-frame 54)) s))
+       (line (and (pair? (cdr out)) (cadr out)))
+       (r (and line (refusal-of line))))
+  (p7-restore! s)
+  (want "P7 tools/call at the catalogue site: a RESULT, isError, _meta.refusal.kind unreadable with a 16-hex attempt"
+        (list (field line "result" "isError") (member-of* r "kind") (hex16? (member-of* r "attempt")))
+        (list #t "unreadable" #t)))
+;; two starts, one shell (E9): two tools/call on the P6-unreadable store.
+(let* ((s (p7-unreadable! #t))
+       (out (talk (list hello ready (call-frame 55) (call-frame 56)) s))
+       (r1 (and (>= (length out) 3) (refusal-of (cadr out))))
+       (r2 (and (>= (length out) 3) (refusal-of (caddr out)))))
+  (p7-restore! s)
+  (want "P7 two starts in one shell: two RESULT refusals whose attempts are 16-hex and differ"
+        (list (hex16? (member-of* r1 "attempt")) (hex16? (member-of* r2 "attempt"))
+              (and (string? (member-of* r1 "attempt")) (not (equal? (member-of* r1 "attempt") (member-of* r2 "attempt")))))
+        '(#t #t #t)))
+;; client-written rendered: the P6-incomplete store (the key directory
+;; absent, the run root present), so the client makes the key directory and
+;; main makes the lock.
+(let* ((s (p7-unreadable! #f)) (kd (p7-key-dir s))
+       (out (talk (list hello ready (call-frame 57)) s))
+       (r (and (pair? (cdr out)) (refusal-of (cadr out)))))
+  (p7-restore! s)
+  (want "P7 client-written rendered: _meta.refusal client-written [[mkdir <key>]] and written [[create <key>/.socket.lock]]"
+        (list (member-of* r "kind") (member-of* r "client-written") (member-of* r "written"))
+        (list "incomplete" (vector (vector "mkdir" kd)) (vector (vector "create" (string-append kd "/.socket.lock"))))))
+
+;; ---- a stub daemon that answers `describe` once --------------------------
+;;
+;; It listens on the store's socket path, reads one request frame (up to its
+;; newline), and answers with an envelope whose stdout is the given text. With
+;; unlink-first (the J2 tool-site row) it closes its listener and unlinks the
+;; socket BEFORE writing the answer, so no second connection can be accepted
+;; and lost. It appends one line to its log per answer and exits.
+(define stub-py (string-append here "/stub.py"))
+(call-with-output-file stub-py
+  (lambda (o)
+    (put-string o (string-append
+      "import os, socket, sys\n"
+      "path, text_file, log, unlink_first = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == '1'\n"
+      "text = open(text_file).read()\n"
+      "esc = text.replace('\\\\', '\\\\\\\\').replace('\"', '\\\\\"')\n"
+      "env = '(answer (stdout \"' + esc + '\") (stderr \"\") (exit 0) (origin core))\\n'\n"
+      "s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+      "s.bind(path); s.listen(1)\n"
+      "open(log, 'a').write('listening\\n')\n"
+      "c, _ = s.accept()\n"
+      "buf = b''\n"
+      "while not buf.endswith(b'\\n'):\n"
+      "    chunk = c.recv(65536)\n"
+      "    if not chunk: break\n"
+      "    buf += chunk\n"
+      "if unlink_first:\n"
+      "    s.close(); os.unlink(path)\n"
+      "c.sendall(env.encode()); c.close()\n"
+      "if not unlink_first:\n"
+      "    s.close(); os.unlink(path)\n"
+      "open(log, 'a').write('answered\\n')\n")))
+  'truncate)
+(define (start-stub! s name text unlink-first?)
+  (let ((tf (string-append here "/" name ".stdout")) (log (string-append here "/" name ".log")))
+    (call-with-output-file tf (lambda (o) (put-string o text)) 'truncate)
+    ;; THE KEY DIRECTORY FIRST: a store without the P6 setup has none, and a
+    ;; bind there fails, so the shell would start a real daemon and the stub
+    ;; would never be asked (the base reading showed it: 0 answers).
+    (system (string-append "mkdir -p " (p7-key-dir s)))
+    (system (string-append "python3 " stub-py " " (socket-path s) " " tf " " log " " (if unlink-first? "1" "0") " &"))
+    (let up ((k 0))
+      (cond ((file-exists? (socket-path s)) #t)
+            ((> k 100) #f)
+            (else (system "sleep 0.05") (up (+ k 1)))))
+    log))
+(define (log-lines log) (let ((t (file-text log))) (length (filter (lambda (l) (string=? l "answered")) (let split ((cs (string->list t)) (cur '()) (acc '()))
+                                                                                                        (cond ((null? cs) (reverse (if (null? cur) acc (cons (list->string (reverse cur)) acc))))
+                                                                                                              ((char=? (car cs) #\newline) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
+                                                                                                              (else (split (cdr cs) (cons (car cs) cur) acc))))))))
+
+;; tools/call, the tool site (D20, E1, J2): the stub answers the catalogue
+;; once and is gone; the tool's own request finds no socket and starts one
+;; on the P6-unreadable store, which fails. The stub's log shows ONE answer,
+;; so the refusal came from the tool request, not the catalogue.
+(let* ((s (p7-unreadable! #t))
+       (log (start-stub! s "j2" "(ok (verbs (read (route daemon) (description \"r\"))) (protocol \"p\"))" #t))
+       (out (talk (list hello ready (call-frame 58)) s))
+       (line (and (pair? (cdr out)) (cadr out)))
+       (r (and line (refusal-of line))))
+  (p7-restore! s)
+  (want "P7 tools/call at the tool site: the stub answered the catalogue once, and the tool's start failure is a RESULT with kind unreadable and an attempt"
+        (list (log-lines log) (field line "result" "isError") (member-of* r "kind") (hex16? (member-of* r "attempt")))
+        (list 1 #t "unreadable" #t)))
+;; broken catalogue (PR-12 cat): exactly the unavailable object.
+(let* ((s (p7-store!))
+       (log (start-stub! s "cat" "(ok (verbs (read (usage (read <id>))" #f))
+       (out (talk (list hello ready (list-frame 59)) s))
+       (line (and (pair? (cdr out)) (cadr out))))
+  (want "P7 broken catalogue: tools/list ERROR -32000 whose data is exactly {kind unavailable, datum (unavailable)}"
+        (list (log-lines log) (field line "error" "code")
+              (let ((d (field line "error" "data")))
+                (and (pair? d) (list-sort (lambda (a b) (string<? (car a) (car b))) d))))
+        (list 1 -32000 '(("datum" . "(unavailable)") ("kind" . "unavailable")))))
+;; a PARSED core error (E12): describe answered with (error describe-refused
+;; (path "/x")) is refused with its own kind, not flattened to unavailable.
+(let* ((s (p7-store!))
+       (log (start-stub! s "perr" "(error describe-refused (path \"/x\"))" #f))
+       (out (talk (list hello ready (list-frame 60)) s))
+       (line (and (pair? (cdr out)) (cadr out))))
+  (want "P7 a parsed core error from describe: tools/list ERROR -32000 with data.kind describe-refused and data.path /x"
+        (list (log-lines log) (field line "error" "code") (field line "error" "data" "kind") (field line "error" "data" "path"))
+        (list 1 -32000 "describe-refused" "/x")))
+
+;; ---- F100b M3b: F for the shell (F110, point 7) -----------------------------
+;;
+;; On success inputs the shell's answers carry no record: no written, no
+;; client-written, and no _meta -- in the JSON text (the keys, quoted), and in
+;; the parsed result object, which has no _meta member and no isError set
+;; true (ruling Q-M3b-2), so a shell that moved a refusal out of the text into
+;; a member cannot pass.
+;; THE WHOLE PARSED RESULT IS WALKED (M3b review r2, F1): member names are
+;; compared AFTER the parser has decoded them, so an escaped spelling such as
+;; "\u0077ritten" is the name it spells, at any depth. The substring
+;; checks stay as a second, textual reading.
+(define (record-member-anywhere? v)
+  (cond
+    ((and (pair? v) (list? v) (for-all (lambda (m) (and (pair? m) (string? (car m)))) v))
+     (exists (lambda (m) (or (member (car m) '("written" "client-written" "_meta"))
+                             (record-member-anywhere? (cdr m))))
+             v))
+    ((vector? v) (exists record-member-anywhere? (vector->list v)))
+    (else #f)))
+(define (no-record-member? line)
+  (let ((r (field line "result")))
+    (and (string? line)
+         (not (contains? line "\"written\""))
+         (not (contains? line "\"client-written\""))
+         (not (contains? line "\"_meta\""))
+         (pair? r)
+         (not (record-member-anywhere? r))
+         (not (eq? #t (and (assoc "isError" r) (cdr (assoc "isError" r))))))))
+;; AND IN THE ANSWER ITSELF (M3b review r1, F1): a tool result's text is the
+;; core's Scheme answer, and a record there is a clause of that datum, not a
+;; JSON key.
+;; EVERY content item's text is decoded (M3b review r2, F2), not only the
+;; first, and none may carry a written or client-written clause.
+(define (text-carries-record? line)
+  (let ((content (field line "result" "content")))
+    (and (vector? content)
+         (exists (lambda (item)
+                   (let* ((t (and (pair? item) (json-ref* item "text")))
+                          (d (and (string? t) (guard (e (#t #f)) (read (open-string-input-port t))))))
+                     (and (list? d)
+                          (exists (lambda (c) (and (pair? c) (memq (car c) '(written client-written)) #t)) (cdr d)))))
+                 (vector->list content)))))
+(let* ((out (talk (list hello ready (list-frame 61) (call-tool "theourgia_outline" '()))))
+       (listing (and (>= (length out) 3) (cadr out)))
+       (called (and (>= (length out) 3) (caddr out))))
+  (want "F the MCP shell on success: tools/list and a tools/call answer carry no written, client-written or _meta, no isError true, and the tool's answer datum no record clause"
+        (list (and listing (vector? (field listing "result" "tools")) (no-record-member? listing))
+              (and called (starts-with-text? (text-of called) "(ok (text") (no-record-member? called)
+                   (not (text-carries-record? called))))
+        '(#t #t)))
 
 ;; ---- teardown ---------------------------------------------------------------
 ;;

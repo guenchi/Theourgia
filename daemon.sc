@@ -157,7 +157,12 @@
         (let poll ((told 0))
           (sleep-ms drain-poll-ms)
           (cond
-            ((>= sigterm-count 2) (send main-pid (list 'signal 'again)) (poll 2))
+            ;; `again` IS SENT ONCE (F112). It used to be sent on every poll
+            ;; once the count reached 2 -- a second path to the same exit that
+            ;; masked the ready clause's remembered `again` (MD-3, the
+            ;; startup-exit design R5). The mailbox is reliable: one send is
+            ;; enough, and after it the loop only polls.
+            ((and (>= sigterm-count 2) (< told 2)) (send main-pid (list 'signal 'again)) (poll 2))
             ((and (>= sigterm-count 1) (= told 0))
              (send main-pid (list 'signal 'drain))
              (poll 1))

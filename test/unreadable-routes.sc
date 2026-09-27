@@ -421,7 +421,9 @@
     (let ((r (origin-and-datum (raw-frame sock dot 'read "root"))))
       (chmod! "755" (parent-of s))
       (stop-daemon! "P2b" s)
-      (want "CONTROL P2b the dot spelling, the parent readable, is the same store: the core answers"
+      ;; F (F110, point 2b): this row compares the WHOLE answer on the success
+      ;; input, so it is also the route's F row: no record clause (ruling Q-M3b-1).
+      (want "F / CONTROL P2b the dot spelling, the parent readable, is the same store: the core answers"
             control '(core (error unknown-id "root" (nearest ()))))
       (want "P2b the dot spelling under a 000 parent is refused by the transport with the table's unreadable"
             r (list 'transport (list 'error 'unreadable (list 'path dot) (list 'reason denied) '(errno EACCES)))))))
@@ -1353,9 +1355,9 @@
           ((>= (* k 100) limit-ms) #f)
           (else (system "sleep 0.1") (loop (+ k 1))))))
 (define (just-drain? ks) (equal? ks '(drain)))
-;; After a second TERM the signal watcher sends `again` on every poll, so
-;; the trace is one drain and then again, again, ...
-(define (drain-then-again? ks) (and (pair? ks) (eq? (car ks) 'drain) (pair? (cdr ks)) (for-all (lambda (k) (eq? k 'again)) (cdr ks))))
+;; After a second TERM the signal watcher sends `again` ONCE (F112), so the
+;; trace is exactly drain, again. It used to be sent on every poll.
+(define (drain-then-again? ks) (equal? ks '(drain again)))
 (define (term! store) (for-each (lambda (p) (system (string-append "kill -TERM " (number->string p)))) (daemon-pids store)))
 (define (finish-held! h)
   (touch! (car h))
@@ -1394,10 +1396,13 @@
        (seen1 (begin (term! s) (wait-for-kinds (caddr h) just-drain? 5000)))
        (seen2 (begin (term! s) (wait-for-kinds (caddr h) drain-then-again? 5000)))
        (waiting (still-held? s h))
+       ;; READ AGAIN AFTER THE SETTLE: a watcher that resent `again` would
+       ;; show a third kind by now, although the first reading saw two.
+       (kinds-after (trace-kinds (caddr h)))
        (rc (finish-held! h)))
-  (want "S-b two TERMs while the store is held: drain then again traced BEFORE the release and the daemon is still waiting then; after ready: second-signal, rc 75, no listener, no socket"
-        (list held seen1 seen2 waiting rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
-        (list #t #t #t #t 75 '((exiting (reason second-signal))) #f)))
+  (want "S-b two TERMs while the store is held: exactly drain then again (sent once) traced BEFORE the release and the daemon is still waiting then; after ready: second-signal, rc 75, no listener, no socket"
+        (list held seen1 seen2 waiting kinds-after rc (datums-of-text (text-of-file (cadr h))) (file-exists? sock))
+        (list #t #t #t #t '(drain again) 75 '((exiting (reason second-signal))) #f)))
 
 (let* ((s (m1-store!)) (d (m2-sock-dir! "sc")) (sock (string-append d "/sock")))
   (system (string-append "touch " d "/.sock.lock"))
@@ -1414,6 +1419,21 @@
                 (list (list 'error 'unreadable (list 'path (string-append s "/meta.sexp")) (list 'reason denied) '(errno EACCES) '(attempt #f))
                       '(exiting (reason store-actor-down)))
                 #f))))
+
+;; F (F110, point 8): theourgiad's report channel after --detach is the log.
+;; A thin client's first start detaches a daemon whose serve.log begins with
+;; its serving line, and on this success that line carries no written,
+;; client-written or attempt clause (serving is not a startup report).
+(let* ((s (m1-store!))
+       (r (client-read "" s))
+       (lp (string-append (key-dir s) "/serve.log"))
+       (first (let ((ds (filter pair? (line-datums lp)))) (and (pair? ds) (car ds)))))
+  (stop-daemon! "F detach" s)
+  (want "F a detached start's serve.log: its first datum is serving, with no written, client-written or attempt clause; the thin answer carries none either"
+        (list (and (pair? first) (car first))
+              (and (pair? first) (or (clause-of first 'written) (clause-of first 'client-written) (clause-of first 'attempt)) #t)
+              (carries-a-record? (cadr r)))
+        '(serving #f #f)))
 
 (want "the daemons M1's rows started were one process each, by the exact argv line"
       daemon-counts (map (lambda (c) (cons (car c) 1)) daemon-counts))

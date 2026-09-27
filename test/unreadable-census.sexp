@@ -755,8 +755,13 @@
   ("mcp/server.sc" (answer-one) 4 guard
    (#t)
    unrelated a
-   "mcp"
-   (e (#t (list (quote error) (quote null) -32603 "Core transport unavailable"))))
+   "mcp: a raise inside a request; one the table classifies is answered by it in the request's shape (F100b point 7), any other keeps -32603"
+   (e (#t (or (classified-raise e parsed) (list (quote error) (quote null) -32603 "Core transport unavailable")))))
+  ("mcp/server.sc" (refusal-datum) 1 guard
+   (#t)
+   unrelated a
+   "mcp: a transport refusal's text that does not read is not a refusal datum (peer text); not a filesystem read"
+   (e (#t #f)))
   ("request.sc" (membership) 1 guard
    (#t)
    unrelated a
@@ -1040,12 +1045,7 @@
   ("client.sc" (line-datum) 1 guard
    (#t)
    unrelated a
-   "select-report: a line whose bytes are not UTF-8 is not a report (peer text); not a filesystem read"
-   (e (#t #f)))
-  ("client.sc" (line-datum) 2 guard
-   (#t)
-   unrelated a
-   "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read"
+   "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read. The decode's own guard went with F111: utf8->string never raises"
    (e (#t #f)))
   )
 

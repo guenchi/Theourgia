@@ -685,12 +685,17 @@
   ;; A LINE IS A REPORT ONLY IF IT IS ONE DATUM (M2b1 review r1, F1): text
   ;; after the datum, even an unmatched parenthesis, makes the whole line
   ;; not a report, so a second read must find the end.
+  ;; NO GUARD AROUND THE DECODE (F111; F100b M3a r1's reading): Chez's
+  ;; utf8->string never raises on invalid bytes, it gives U+FFFD for a lone
+  ;; continuation byte, an overlong form and a truncated sequence. Outside a
+  ;; string, readable-shape? refuses a line holding one; inside a string it is
+  ;; an ordinary character and the line reads as it did before (M3b review
+  ;; r1, F3). A guard with no case behind it is not kept.
   (define (line-datum bytes from to)
-    (let ((text (guard (e (#t #f))
-                  (let ((b (make-bytevector (- to from))))
-                    (bytevector-copy! bytes from b 0 (- to from))
-                    (utf8->string b)))))
-      (and text (readable-shape? text)
+    (let ((text (let ((b (make-bytevector (- to from))))
+                  (bytevector-copy! bytes from b 0 (- to from))
+                  (utf8->string b))))
+      (and (readable-shape? text)
            (guard (e (#t #f))
              (let* ((port (open-string-input-port text))
                     (d (read port)))

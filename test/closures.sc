@@ -221,9 +221,11 @@
 
 ;; (theourgia answers) is in it since F100b item 6: the client's own
 ;; failures are answered by the table (classify-failure).
+;; (theourgia refusal) is in it since F100b M3a: the shell renders every
+;; refusal through one object (item 8; ruling Q-M3-1).
 (want "C-1 and the shell's closure is exactly what it should be"
       (closure-of-all shell-imports)
-      '(answers arguments client digest ffi json render trace))
+      '(answers arguments client digest ffi json refusal render trace))
 
 
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------

@@ -52,6 +52,11 @@
         ;; in this shell's closure through `(theourgia client)`, which is
         ;; what opens the socket and starts the daemon.
         (only (theourgia ffi) reap-children!)
+        ;; F100b item 8: a refusal is answered through ONE renderer, and a
+        ;; filesystem condition raised inside a request is answered by the
+        ;; table (point 7).
+        (only (theourgia refusal) refusal-result-json refusal-error-json)
+        (only (theourgia answers) classify-failure)
         (theourgia json)
         (theourgia arguments))
 
@@ -119,7 +124,10 @@
 ;; NOTE: AND IT IS ASKED OF THE DAEMON, which is what makes `tools/list` the
 ;; call that starts one when there is none.
 ;;
-;; Answers `(ok <entries>)` or `(unavailable)`. NEVER: NOT an empty list on
+;; Answers `(ok <entries>)`, `(unavailable)` for a catalogue that does not
+;; read, `(refused <datum> <origin>)` for a refusal of `describe` (origin
+;; `transport` or #f, F100b E12), or a start-failed / not-sent /
+;; transport-lost outcome as itself. NEVER: NOT an empty list on
 ;; failure: an empty tool list is a valid answer meaning "this server has
 ;; no tools", and a client that got one would stop asking.
 (define (catalogue store actor socket)
@@ -128,7 +136,19 @@
         ;; NOTE: A SERVER THAT WOULD NOT START IS CARRIED THROUGH AS ITSELF.
         ;; Flattened to `unavailable` here, its reason would be lost one
         ;; layer before the place that reports it.
-        (if (memq (car answer) '(start-failed not-sent)) answer (list 'unavailable))
+        ;; A REFUSAL THE TRANSPORT MADE IS CARRIED THROUGH TOO (F100b E12),
+        ;; as `(refused <datum> transport)`.
+        (cond
+          ((memq (car answer) '(start-failed not-sent)) answer)
+          ;; NEVER: A LOST ANSWER IS NOT AN UNREADABLE CATALOGUE. The request
+          ;; went out and its answer did not come back: whether it ran is
+          ;; unknown. Folded into `unavailable` it was answered as "core did
+          ;; not start" (F100b M3a r1, MC-07 TWIN), which says something the
+          ;; shell does not know.
+          ((eq? 'transport-lost (car answer)) answer)
+          ((and (eq? 'transport-refusal (car answer)) (refusal-datum (cadr answer)))
+           => (lambda (d) (list 'refused d 'transport)))
+          (else (list 'unavailable)))
         (let ((datum (guard (e (#t #f))
                        ;; NEVER: THE GUARD BELONGS TO THE READER, NOT TO THE
                        ;; ENVELOPE. The shape check ran over the envelope,
@@ -140,13 +160,30 @@
                        (let ((inner (cadr answer)))
                          (and (readable-shape? inner)
                               (read (open-string-input-port inner)))))))
-          (if (not (and (pair? datum) (eq? 'ok (car datum))))
-              (list 'unavailable)
+          (cond
+            ;; A PARSED `(error ...)` IS THE CORE'S REFUSAL OF `describe`, NOT
+            ;; AN UNREADABLE CATALOGUE (F100b E12): it is carried as
+            ;; `(refused <datum> #f)` and answered with its own kind.
+            ((refusal-datum? datum) (list 'refused datum #f))
+            ((not (and (pair? datum) (eq? 'ok (car datum))))
+              (list 'unavailable))
+            (else
               (let ((verbs (assq 'verbs (cdr datum)))
                     (protocol (assq 'protocol (cdr datum))))
                 (if (not (and verbs protocol (string? (cadr protocol))))
                     (list 'unavailable)
-                    (list 'ok (tools-from (cdr verbs) (cadr protocol))))))))))
+                    (list 'ok (tools-from (cdr verbs) (cadr protocol)))))))))))
+
+;; `(error <symbol> ...)`, the shape of every refusal datum.
+(define (refusal-datum? d)
+  (and (list? d) (>= (length d) 2) (eq? 'error (car d)) (symbol? (cadr d))))
+
+;; The refusal datum a transport refusal's text carries, or #f. The text is
+;; peer text: it is asked before it is read.
+(define (refusal-datum text)
+  (and (string? text) (readable-shape? text)
+       (let ((d (guard (e (#t #f)) (read (open-string-input-port text)))))
+         (and (refusal-datum? d) d))))
 
 (define (tools-from entries protocol)
   (let loop ((es entries) (out '()))
@@ -199,6 +236,10 @@
   (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (id-json identity)
                  ",\"error\":{\"code\":" (json-number code)
                  ",\"message\":" (json->string message) "}}"))
+
+(define (error-object-frame identity error-json)
+  (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (id-json identity)
+                 ",\"error\":" error-json "}"))
 
 (define (result-frame identity body)
   (string-append "{\"jsonrpc\":\"2.0\",\"id\":" (id-json identity)
@@ -641,15 +682,23 @@
          ((string=? method "tools/list")
           (if (not (null? params))
               (list 'error identity -32602 "Pagination is not available")
+              ;; F100b item 8: a refusal is an ERROR -32000 "core did not
+              ;; start" whose data is the refusal object; not-sent keeps its
+              ;; -32603 sentence (M3 ruling Q-M3-2).
               (let ((listing (catalogue store actor socket)))
                 (cond
                   ((eq? 'start-failed (car listing))
-                   (list 'error identity -32603 (start-failure-message (cadr listing))))
+                   (list 'error-object identity (refusal-error-json (cadr listing))))
+                  ((eq? 'refused (car listing))
+                   (list 'error-object identity (refusal-error-json (cadr listing) '() (caddr listing))))
                   ((eq? 'not-sent (car listing))
                    (list 'error identity -32603 (not-sent-message (cadr listing))))
-                  ((eq? 'unavailable (car listing))
+                  ;; The answer was lost: execution may be unknown, as before.
+                  ((eq? 'transport-lost (car listing))
                    (list 'error identity -32603
                          "Core answer unavailable; execution may be unknown"))
+                  ((eq? 'unavailable (car listing))
+                   (list 'error-object identity (refusal-error-json '(unavailable))))
                   (else (list 'result identity (tools-json (cadr listing))))))))
          ((string=? method "tools/call") (do-call store actor socket identity params))
          (else (list 'error identity -32601 "Method not found")))))))
@@ -707,20 +756,32 @@
            ;; the guard around the request answered with a null id and a
            ;; sentence naming nothing. `tools/list` has always branched on
            ;; all three; this is the same branching.
+           ;; F100b item 8: THE CALL REACHED THE SHELL, so a store condition
+           ;; is a tool RESULT with isError and the refusal object, never a
+           ;; protocol error. not-sent keeps its -32603 sentence (M3 rulings
+           ;; Q-M3-2, Q-M3-6).
            ((eq? 'start-failed (car listing))
-            (list 'error identity -32603 (start-failure-message (cadr listing))))
+            (list 'result identity (refusal-result-json (cadr listing))))
+           ((eq? 'refused (car listing))
+            (list 'result identity (refusal-result-json (cadr listing) '() (caddr listing))))
            ((eq? 'not-sent (car listing))
             (list 'error identity -32603 (not-sent-message (cadr listing))))
+           ;; The catalogue's answer was lost: the TOOL was certainly not sent,
+           ;; and that is what this says, as before.
+           ((eq? 'transport-lost (car listing))
+            (list 'error identity -32603
+                  (string-append "The tool catalogue could not be read, so \""
+                                 name "\" was not sent and was not carried out")))
            ;; NEVER: AND THE TOOL WAS NOT SENT. Reading the catalogue is a step
            ;; BEFORE the tool's own request, which happens further down: if
            ;; this step fails the tool never went out at all, so "execution
            ;; may be unknown" -- the sentence that used to be here -- says
            ;; the one thing that is certainly untrue. What may be unknown
            ;; is the fate of `describe`, and nobody asked for that.
+           ;; The tool was still not sent: the unavailable object says the
+           ;; catalogue could not be read, and its datum is `(unavailable)`.
            ((eq? 'unavailable (car listing))
-            (list 'error identity -32603
-                  (string-append "The tool catalogue could not be read, so \""
-                                 name "\" was not sent and was not carried out")))
+            (list 'result identity (refusal-result-json '(unavailable))))
            (else
              (let ((entry (assoc name (cadr listing))))
                (if (not entry)
@@ -739,12 +800,20 @@
                        ;; text -- a caller told its request had been carried
                        ;; out and answered. The envelope now says which side
                        ;; spoke, and only the core's answers are results.
+                       ;; REACHED WHEN THE DAEMON DECLINES AFTER ANSWERING
+                       ;; `describe`: a daemon that starts draining between
+                       ;; the two refuses the tool with origin transport, and
+                       ;; MC-10 measures it (M3a r1 found this reachable; the
+                       ;; brief's ruling had taken it as a race). Rendered
+                       ;; through the same object, with origin transport.
+                       ((and (eq? 'transport-refusal (car outcome)) (refusal-datum (cadr outcome)))
+                        => (lambda (d) (list 'result identity (refusal-result-json d '() 'transport))))
                        ((eq? 'transport-refusal (car outcome))
                         (list 'error identity -32603
                               (string-append "The store's server did not carry out the request: "
                                              (cadr outcome))))
                        ((eq? 'start-failed (car outcome))
-                        (list 'error identity -32603 (start-failure-message (cadr outcome))))
+                        (list 'result identity (refusal-result-json (cadr outcome))))
                        ((eq? 'not-sent (car outcome))
                         (list 'error identity -32603 (not-sent-message (cadr outcome))))
                        (else
@@ -811,6 +880,22 @@
                    (exit 0))
                (loop (append-bytes buffered chunk)))))))))
 
+;; POINT 7 (F100b): A FILESYSTEM CONDITION RAISED INSIDE A REQUEST -- the
+;; server's argv derived from an unreadable store, say -- is answered by the
+;; table, in the shape of the request's method: the tools/call RESULT for
+;; tools/call, the tools/list ERROR otherwise (E11). The record is the MCP
+;; process's own, empty (D22), combined through the same renderer. A raise
+;; the table does not classify keeps -32603.
+(define (classified-raise e parsed)
+  (let ((d (classify-failure e '())))
+    (and d
+         (let* ((id (and (object? parsed) (member-of parsed "id")))
+                (identity (if (or (string? id) (number? id)) id 'null))
+                (method (and (object? parsed) (member-of parsed "method"))))
+           (if (equal? method "tools/call")
+               (list 'result identity (refusal-result-json d))
+               (list 'error-object identity (refusal-error-json d)))))))
+
 (define (answer-one store actor socket line)
   (let* ((text (guard (inner (#t 'bad)) (utf8->string line)))
          (parsed (if (eq? text 'bad)
@@ -820,11 +905,13 @@
                        (guard (e (#t #f)) (top-level-member-text text "id"))))
     (if (eq? parsed 'bad)
         (say (error-frame 'null -32700 "Parse error"))
-        (let ((answer (guard (e (#t (list 'error 'null -32603 "Core transport unavailable")))
+        (let ((answer (guard (e (#t (or (classified-raise e parsed)
+                                        (list 'error 'null -32603 "Core transport unavailable"))))
                         (handle store actor socket parsed))))
           (case (car answer)
             ((silent) (if #f #f))
             ((result) (say (result-frame (cadr answer) (caddr answer))))
+            ((error-object) (say (error-object-frame (cadr answer) (caddr answer))))
             (else (say (error-frame (cadr answer) (caddr answer) (cadddr answer)))))))))
 
 ;; ---- argv --------------------------------------------------------------------
