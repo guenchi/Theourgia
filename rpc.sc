@@ -562,8 +562,10 @@
   (define outline-usage
     '(outline ["--depth" <n>] ["--with-keywords"]))
 
+  ;; --under IS OPTIONAL, and its absence is root (parse-insert); the usage
+  ;; says so by bracketing it like every other optional part.
   (define insert-usage
-    '(insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)
+    '(insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
              ("--keywords" <text>)))
 
   (define (unknown-id state id)

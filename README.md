@@ -448,12 +448,12 @@ store's id and the writer the caller was given. It also writes
 
 ### `insert`
 
-    (insert "--under" <id> ("--after" <id>) "--title" <text> ("--text" <text>)
+    (insert ("--under" <id>) ("--after" <id>) "--title" <text> ("--text" <text>)
             ("--keywords" <text>))
 
-Adds a block under an existing one. `--after` places it among that
-parent's children; without it the block goes last. `--text` gives the
-block its `src` in the same request.
+Adds a block under an existing one. Without --under the block goes under root.
+`--after` places it among that parent's children; without it the block goes
+last. `--text` gives the block its `src` in the same request.
 
 `--keywords` gives it the words it should be found by -- three to eight
 of them, comma separated, as the protocol above says. NEVER: The value is
@@ -484,7 +484,12 @@ keeps whatever kind it carries, including one a later version introduced.
 
     (move <id> <parent> ("--after" <id>))
 
-Re-parents a block. `root` is spelled as the word, not as an id.
+Re-parents a block. `root` is spelled as the word, not as an id. A block
+cannot be moved under itself or under one of its own descendants: that
+move is refused as `(error would-cycle (id <id>) (parent <parent>)
+(through (<parent> ... <id>)))`, naming the chain, and nothing is
+written. Two writers whose moves are each legal on their own can still
+make a cycle together; that one is shown by `conflicts` after the merge.
 
 ### `del <id>`
 
@@ -498,7 +503,9 @@ changes is what the outline and the reads answer.
     (link <from> <rel> <to>)
 
 Adds a typed edge between two blocks. `<rel>` is a name of the caller's
-choosing; the store does not interpret it.
+choosing; the store does not interpret it. The answer carries
+`(matched 1)` when that edge already existed and `(matched 0)` when it is
+new.
 
 ### `unlink <from> <rel> <to>`
 
@@ -506,7 +513,10 @@ choosing; the store does not interpret it.
 
 Removes that edge. NOTE: The three positionals are the same three `link`
 takes, in the same order, and getting them out of order is not an error
-the store can see.
+the store can see -- but the answer says what it found: `(matched 1)` when
+the edge was there, `(matched 0)` when it was not. A `(matched 0)` unlink
+is still recorded: an edge another writer made that this one has not seen
+is not removed by it.
 
 ### `def`
 
@@ -735,7 +745,9 @@ they changed, the import is refused `(error stale-baseline (path <path>)
 
     (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>))
 
-Writes the store out as source. NEVER: `--datum` and `--raw` together are
+Writes the store out as source. Without `--datum` it writes the text-mode
+files -- the blocks `import-code` made without `--datum`; a store with no
+text-mode files answers `(ok (files 0))`. NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".
 

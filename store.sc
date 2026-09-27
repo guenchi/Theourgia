@@ -2411,6 +2411,42 @@
       (and b (let ((p (assq 'position (cdr b))))
                (and p (cadr p))))))
 
+  ;; NEVER: ONE WRITER CANNOT PUT A BLOCK UNDER ITSELF. A move whose parent
+  ;; is the block, or one of its descendants in the reduction this write is
+  ;; checked against, is refused here, with the chain from the parent up to
+  ;; the block. Two writers whose moves are each legal in their own history
+  ;; can still make a cycle together; that one is a structural conflict
+  ;; after the merge, as designed, and not this rule's.
+  ;; THE WALK goes up settled parents from `parent`, and STOPS WITHOUT A
+  ;; REFUSAL at root, at a position in conflict (the store does not choose
+  ;; a candidate), at a block the reduction does not hold, and at a block
+  ;; already visited (a cycle that is not this move's). A deleted ancestor
+  ;; is a step: deletion keeps the position.
+  ;; -> the chain `(<parent> ... <id>)`, or #f.
+  (define (move-cycle state id parent)
+    (cond
+      ((eq? parent 'root) #f)
+      ((equal? parent id) (list id))
+      (else
+       (let walk ((x parent) (chain (list parent)) (seen (list parent)))
+         (let ((b (state-read state x)))
+           (and b
+                (let ((pos (cdr (assq 'position b))))
+                  (and (pair? pos) (not (eq? (car pos) 'conflict))
+                       (let ((up (car pos)))
+                         (cond
+                           ((or (eq? up 'root) (equal? up "root")) #f)
+                           ((equal? up id) (reverse (cons id chain)))
+                           ((member up seen) #f)
+                           (else (walk up (cons up chain) (cons up seen)))))))))))))
+
+  ;; HOW MANY LOGICAL EDGES A link OR unlink FINDS, before it is applied:
+  ;; 0 or 1, since two link records of one (rel . to) are one edge.
+  (define (edges-matched state payload)
+    (let* ((b (state-read state (cadr payload)))
+           (edges (if b (cdr (assq 'edges b)) '())))
+      (if (member (cons (caddr payload) (cadddr payload)) edges) 1 0)))
+
   (define (document? state id)
     (let ((e (assq 'kind (block-fields state id))))
       (and e (eq? (cdr e) 'doc))))
@@ -2545,6 +2581,9 @@
              ((and (not (eq? parent 'root)) (not (known? state parent))) (missing parent))
              ((nested-document? state parent (block-fields state id))
               (list 'error 'doc-must-be-top-level (list 'parent parent)))
+             ((move-cycle state id parent)
+              => (lambda (chain)
+                   (list 'error 'would-cycle (list 'id id) (list 'parent parent) (list 'through chain))))
              (else
               (let ((ord (ord-for state parent after)))
                 (if (and (pair? ord) (memq (car ord) '(error refused)))
@@ -4073,6 +4112,10 @@
                                   (if (pair? why) why (list why)))))
                       (else
                         (let* ((deps (deps-for-payload state writer payload))
+                               ;; COUNTED BEFORE THE RECORD IS APPLIED: what the
+                               ;; writer's link or unlink found, not what it left.
+                               (matched (and (memq (car payload) '(link unlink))
+                                             (edges-matched state payload)))
                                (frame (make-frame (view-revision v) (view-epoch v)
                                                   writer seq actor deps payload))
                                (outcome (session-append! s frame)))
@@ -4104,11 +4147,19 @@
                                 (reduce-apply! state writer seq deps payload actor)
                                 (session-applied! s (session-epoch s)
                                                   (reduce-applied-cut state))
-                                (list 'ok
-                                      (list 'events (list (cons writer seq)))
-                                      (state-section state payload writer seq)
-                                      (list 'cursor (cons writer seq))
-                                      (list 'replay #f))))))))))))))
+                                ;; NEVER: A link OR unlink SAYS WHAT IT MATCHED.
+                                ;; An unlink that names no edge is still a
+                                ;; record (the set semantics: an edge the
+                                ;; writer has not seen survives it), and
+                                ;; `(matched 0)` is how the caller learns it
+                                ;; changed nothing here.
+                                (append
+                                  (list 'ok
+                                        (list 'events (list (cons writer seq)))
+                                        (state-section state payload writer seq)
+                                        (list 'cursor (cons writer seq))
+                                        (list 'replay #f))
+                                  (if matched (list (list 'matched matched)) '()))))))))))))))
 
   ;; ---- init ----------------------------------------------------------------
 

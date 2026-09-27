@@ -221,6 +221,11 @@
    unrelated a
    "datum marker"
    (e (#t #f)))
+  ("datum-project.sc" (parse-file) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (eq? (cadr e) (quote bad-source))))
+   unrelated a
+   "a bad-source refusal from the lexer is re-raised with (path <rel>) appended so the answer names the file; not about an unreadable entry"
+   (e ((and (pair? e) (eq? (car e) (quote error)) (pair? (cdr e)) (eq? (cadr e) (quote bad-source))) (raise (append e (list (list (quote path) rel)))))))
   ("datum-project.sc" (answer) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))))
    unrelated a

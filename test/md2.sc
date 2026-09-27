@@ -18,7 +18,8 @@
 (import (chezscheme) (theourgia project) (theourgia store) (theourgia reduce)
         (theourgia log) (theourgia ffi) (theourgia md)
         (only (theourgia code-project) code-safe-path?)
-        (only (theourgia rpc) rpc-dispatch))
+        (only (theourgia rpc) rpc-dispatch)
+        (only (theourgia wire) encode-record storable-encode))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -1372,20 +1373,23 @@
 (define rows15 (state-outline (open-and-reduce d15)))
 (define child15 (caddr (car (filter (lambda (r) (not (eq? 'root (car r)))) rows15))))
 (define grand15 (caddr (car (filter (lambda (r) (equal? (car r) child15)) rows15))))
-;; The move goes through the ordinary write route, which ACCEPTS it: a block
-;; moved under its own child is a cycle the store does not refuse, and the
-;; reduction resolves it by relocating the blocks to root. That is the point
-;; of this case -- nothing here is forced through a back door.
+;; The move comes from ANOTHER WRITER'S PUBLISHED RECORD: one writer's move
+;; under its own child is refused at write time, and a record that arrives
+;; through publish is not checked that way. It is published with a
+;; dependency on the local writer's end, as a mirror's is, and it makes the
+;; cycle; the reduction resolves it by relocating the blocks to root. That
+;; is the point of this case.
 (define move15
-  (car (with-store-write d15
-         (lambda (s v) (list (list 'move child15 grand15 #f)))
-         "tester")))
+  (let* ((cut (reduce-applied-cut (open-and-reduce d15)))
+         (bytes (encode-record 1 1757300000001 "peer" (list (car cut))
+                               (storable-encode (list 'move child15 grand15 1)))))
+    (log-publish! d15 "zzzzzzzz" 1 bytes (segment-sha bytes))))
 
-(want "F42 the store accepts a move that makes a cycle, which is what strands the blocks"
+(want "the store accepts another writer's move that makes a cycle, which is what strands the blocks"
       (list (car move15)
             (length (filter (lambda (r) (eq? 'root (car r)))
                             (state-outline (open-and-reduce d15)))))
-      (list 'ok 3))
+      (list 'published 3))
 
 (want "F42 blocks that belong to no document are named too, and the sum still closes"
       (let* ((answer (export-md d15 out15))

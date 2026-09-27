@@ -491,6 +491,20 @@
 ;; its whole subtree. Listing it again under `orphans:` said the same
 ;; block was in two places, and the walk added for the row above turned
 ;; one duplicated row into a duplicated subtree.
+;; ONE WRITER CANNOT MAKE THIS CYCLE ANY MORE: a move under a block's own
+;; descendant is refused at write time. A record that arrives through
+;; publish is not checked that way, and that is how these rows get their
+;; store: the cycle-making move is another writer's record, published with a
+;; dependency on the local writer's end, as a mirror's is. The other writer
+;; sorts after the local one, so writer-of still names the local writer.
+(define other-seq 0)
+(define (other-writer-move! store id parent)
+  (set! other-seq (+ other-seq 1))
+  (let* ((local (writer-of store))
+         (end (let ((p (assoc local (reduce-applied-cut (open-and-reduce store))))) (if p (cdr p) 0)))
+         (bytes (encode-record other-seq (+ 1757300000000 other-seq) "peer" (list (cons local end))
+                               (storable-encode (list 'move id parent 1)))))
+    (log-publish! store "zzzzzzzz" other-seq bytes (segment-sha bytes))))
 (define d3c (test-dir "cli1cycle"))
 (putenv "THEOURGIA_HOME" (string-append scratch "/home3c"))
 (run d3c "init")
@@ -500,7 +514,7 @@
 (define cB (string-append (writer-of d3c) ".2"))
 (run d3c (string-append "insert --under " cB " --title C"))
 (define cC (string-append (writer-of d3c) ".3"))
-(run d3c (string-append "move " cA " " cB))
+(other-writer-move! d3c cA cB)
 (run d3c (string-append "del " cA))
 (want "a block the tree drew as a conflict is not repeated under orphans"
       (out-of (run d3c "outline"))
@@ -522,7 +536,7 @@
         ;; happened.
         (let ((x (id-of (run d3c "insert --under root --title X"))))
           (let ((y (id-of (run d3c (string-append "insert --under " x " --title Y")))))
-            (run d3c (string-append "move " x " " y))
+            (other-writer-move! d3c x y)
             (let loop ((ls (lines-of (out-of (run d3c "outline")))) (found #f))
               (cond ((null? ls) found)
                     ((and (substring-at? (car ls) x) (substring-at? (car ls) "conflict"))

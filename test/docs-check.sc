@@ -602,6 +602,27 @@
                 'in-the-description 'MISSING-FROM-DESCRIPTION))
       '(in-the-readme-section in-the-description))
 
+;; ---- two README sentences the product's behaviour depends on ---------------
+;;
+;; NOTE: LITERAL, BECAUSE THE NAMES ROW CANNOT SEE THEM. The usage rows above
+;; compare option names, and `--under` is named whether it is bracketed or
+;; not; whether insert's usage says it is optional, and whether export-code
+;; says which files it writes by default, is only in the words.
+(define (readme-section heading)
+  (let ((at (index-of readme heading 0)))
+    (and at
+         (let ((end (index-of readme "\n### " (+ at 5))))
+           (substring readme at (or end (string-length readme)))))))
+(want "insert's README usage brackets --under as optional, and says where the block goes without it"
+      (let ((sec (readme-section "### `insert`")))
+        (list (and sec (contains? sec "(insert (\"--under\" <id>)") #t)
+              (and sec (contains? (squashed sec) "Without --under the block goes under root.") #t)))
+      '(#t #t))
+(want "export-code's README section says it writes the text-mode files by default, and (files 0) when there are none"
+      (let ((sec (readme-section "### `export-code`")))
+        (and sec (contains? (squashed sec) "Without `--datum` it writes the text-mode files -- the blocks `import-code` made without `--datum`; a store with no text-mode files answers `(ok (files 0))`.") #t))
+      #t)
+
 ;; ---- the environment variables it lists ---------------------------------------
 ;;
 ;; NOTE: THE TRUTH SOURCE IS NOT ONLY THE LIBRARIES. `THEOURGIA_LIBDIR` has
