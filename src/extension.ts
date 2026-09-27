@@ -35,7 +35,7 @@ import {MIGRATE_BLOCK} from './commands';
 import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
-import { Client } from './client';
+import { Client, Note } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
 import { Node, StoreModel } from './model';
 import { Outbox } from './outbox';
@@ -64,6 +64,7 @@ import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
   StatusFacts,
+  incompleteWarning,
   nodeTooltip,
   notABlockNotice,
   reconcileChoiceNotice,
@@ -96,25 +97,62 @@ function readConfig(): CoreConfig {
   };
 }
 
-class OutlineProvider implements vscode.TreeDataProvider<Node> {
-  private readonly changed = new vscode.EventEmitter<Node | undefined>();
+/*
+ * THE ROW THAT SAYS A LISTING COULD NOT SEE EVERY WRITER. It is drawn first,
+ * above the blocks the listing did get, and opens nothing: it is a
+ * statement about the listing, not a block.
+ */
+interface IncompleteRow {
+  incompleteText: string;
+  under: string | null;
+}
+
+type OutlineElement = Node | IncompleteRow;
+
+function isIncompleteRow(element: OutlineElement): element is IncompleteRow {
+  return (element as IncompleteRow).incompleteText !== undefined;
+}
+
+/*
+ * THE BANNER OVER AN EDITOR WHOSE TEXT CAME FROM A READING THAT COULD NOT SEE
+ * EVERY WRITER: a decoration before the first line, as information. The text
+ * itself is not touched -- what is shown is what the other writers wrote,
+ * and what is saved is what the person writes.
+ */
+function showIncompleteBanner(editor: vscode.TextEditor, notes: Note[], keep: vscode.Disposable[]): void {
+  const banner = vscode.window.createTextEditorDecorationType({
+    before: {
+      contentText: incompleteWarning(notes),
+      color: new vscode.ThemeColor('editorInfo.foreground'),
+      margin: '0 1em 0 0'
+    }
+  });
+  keep.push(banner);
+  editor.setDecorations(banner, [new vscode.Range(0, 0, 0, 0)]);
+}
+
+class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
+  private readonly changed = new vscode.EventEmitter<OutlineElement | undefined>();
   public readonly onDidChangeTreeData = this.changed.event;
   private model: StoreModel | null;
   private readonly failed: (e: unknown) => void;
   private readonly unknownMarks: () => void;
   private readonly generation: () => number;
+  private readonly noted: (notes: Note[] | null) => void;
   private readonly nodeGenerations = new WeakMap<Node, number>();
 
   constructor(
     model: StoreModel | null,
     failed: (e: unknown) => void,
     unknownMarks: () => void,
-    generation: () => number
+    generation: () => number,
+    noted: (notes: Note[] | null) => void = () => undefined
   ) {
     this.model = model;
     this.failed = failed;
     this.unknownMarks = unknownMarks;
     this.generation = generation;
+    this.noted = noted;
   }
 
   public use(model: StoreModel | null): void {
@@ -135,7 +173,21 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     return this.nodeGenerations.get(node);
   }
 
-  public getTreeItem(node: Node): vscode.TreeItem {
+  public getTreeItem(element: OutlineElement): vscode.TreeItem {
+    if (isIncompleteRow(element)) {
+      /*
+       * INFORMATION, NOT AN ERROR, AND NOTHING TO OPEN. The rows below it
+       * are the store's answer; this one says whose writing is not in
+       * them.
+       */
+      const row = new vscode.TreeItem(element.incompleteText, vscode.TreeItemCollapsibleState.None);
+      row.id = `theourgia.incomplete:${element.under ?? ''}`;
+      row.iconPath = new vscode.ThemeIcon('info');
+      row.tooltip = element.incompleteText;
+      row.contextValue = 'theourgia.incomplete';
+      return row;
+    }
+    const node = element;
     const item = new vscode.TreeItem(
       node.title.length > 0 ? node.title : node.id,
       node.mayHaveChildren
@@ -172,10 +224,14 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     return item;
   }
 
-  public async getChildren(node?: Node): Promise<Node[]> {
+  public async getChildren(element?: OutlineElement): Promise<OutlineElement[]> {
     if (this.model === null) {
       return [];
     }
+    if (element !== undefined && isIncompleteRow(element)) {
+      return [];
+    }
+    const node = element as Node | undefined;
     /*
      * WHAT THIS REQUEST IS ABOUT IS DECIDED BEFORE IT IS MADE. A
      * settings change replaces the model while a request is still
@@ -187,6 +243,7 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     const asked = this.generation();
     let nodes: Node[];
     let marksKnown: boolean;
+    let notes: Note[] | null;
     try {
       if (node === undefined) {
         /*
@@ -202,10 +259,12 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
         const listing = await this.model.roots();
         nodes = listing.nodes;
         marksKnown = listing.marksKnown;
+        notes = listing.notes;
       } else {
         const listing = await this.model.childrenOf(node.id);
         nodes = listing.nodes;
         marksKnown = listing.marksKnown;
+        notes = listing.notes;
       }
     } catch (e) {
       if (asked === this.generation()) {
@@ -220,7 +279,17 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
      * either way, so the fact travels with the listing and not with the
      * nodes.
      */
-    if (!marksKnown && asked === this.generation()) {
+    /*
+     * NOTE: MARKS UNKNOWN BECAUSE A WRITER COULD NOT BE READ ARE NOT MARKS
+     * THAT COULD NOT BE ASKED FOR. The first is said by the notes -- the
+     * row above the blocks and the status bar's marker -- and the conflict
+     * count the store gave for the writers it did read stands; the second
+     * is a failure, and clears the count.
+     */
+    if (asked === this.generation()) {
+      this.noted(notes);
+    }
+    if (!marksKnown && notes === null && asked === this.generation()) {
       this.unknownMarks();
     }
     if (asked !== this.generation()) {
@@ -229,7 +298,10 @@ class OutlineProvider implements vscode.TreeDataProvider<Node> {
     for (const returned of nodes) {
       this.nodeGenerations.set(returned, asked);
     }
-    return nodes;
+    if (notes === null) {
+      return nodes;
+    }
+    return [{ incompleteText: incompleteWarning(notes), under: node === undefined ? null : node.id }, ...nodes];
   }
 }
 
@@ -377,7 +449,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       conflicts = null;
       paint();
     },
-    () => generation
+    () => generation,
+    (notes) => noteReading(notes)
   );
 
   let config = readConfig();
@@ -396,6 +469,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * words, or null when the last asking worked. See StatusFacts.
    */
   let unreachable: string | null = null;
+  /*
+   * THE WRITERS THE LAST READING COULD NOT SEE. Every reading the window
+   * shows sets it -- the tree, the conflict count, a search, a document,
+   * a block, the store's check -- so the marker stays while the last one
+   * was incomplete and goes with the first complete one. A save says what
+   * it was told in a message and does not set it: the save's report can
+   * arrive after the window has moved to another store, and a marker set
+   * then would describe the wrong one.
+   */
+  let incomplete: Note[] | null = null;
+  function noteReading(notes: Note[] | null): void {
+    incomplete = notes;
+    paint();
+  }
   /*
    * WHICH SETTINGS A REQUEST WAS MADE UNDER. Every request here is
    * awaited, and a setting can change while one is in flight: a block
@@ -448,6 +535,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * are in, is a reading somebody would act on.
      */
     unreachable = null;
+    incomplete = null;
     config = readConfig();
     /*
      * NOTE: THE DIRECTORY IS PROBED HERE, and this call is the reason the
@@ -663,6 +751,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        */
       pending: outbox === null ? null : outbox.pendingCount,
       blocked: saver?.blockedBecause ?? null,
+      incomplete,
       unreachable
     };
   }
@@ -698,7 +787,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const asking = model;
     void integrity.check({
       store: config.store,
-      ask: () => asking.storeVerdict(),
+      ask: async () => {
+        const asked = generation;
+        const verdict = await asking.storeVerdict();
+        if (asked !== generation) {
+          return verdict;
+        }
+        if (verdict.known) {
+          noteReading(verdict.notes ?? null);
+        }
+        return verdict;
+      },
       show,
       generation: () => generation,
       record: (line) => channel.appendLine(line)
@@ -719,8 +818,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const asked = generation;
     let found: number | null;
     let because: string | null = null;
+    let notes: Note[] | null = incomplete;
     try {
-      found = await model.conflictCount();
+      const reading = await model.conflictReading();
+      found = reading.count;
+      notes = reading.notes;
     } catch (e) {
       found = null;
       /*
@@ -737,6 +839,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     conflicts = found;
     unreachable = because;
+    incomplete = notes;
     paint();
   }
 
@@ -787,7 +890,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     views.show(uri, composed.text);
     const document = await vscode.workspace.openTextDocument(uri);
-    await vscode.window.showTextDocument(document, { preview: false });
+    const editor = await vscode.window.showTextDocument(document, { preview: false });
+    const notes = composed.notes ?? null;
+    if (asked === generation) {
+      noteReading(notes);
+    }
+    if (notes !== null) {
+      showIncompleteBanner(editor, notes, context.subscriptions);
+    }
   }
 
   async function openBlock(id: string, sourceGeneration?: number): Promise<void> {
@@ -808,8 +918,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      * which of them finished first. See src/open.ts.
      */
     let block;
+    let notes: Note[] | null;
     try {
-      block = await model.blockOf(id);
+      const reading = await model.blockReading(id);
+      block = reading.block;
+      notes = reading.notes;
     } catch (e) {
       reportFailure(e);
       return;
@@ -897,7 +1010,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const opened = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
     await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
-    await vscode.window.showTextDocument(opened, { preview: false });
+    const editor = await vscode.window.showTextDocument(opened, { preview: false });
+    if (asked === generation) {
+      noteReading(notes);
+    }
+    if (notes !== null) {
+      showIncompleteBanner(editor, notes, context.subscriptions);
+    }
   }
 
   /*
@@ -1399,6 +1518,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       show({ level: 'information', text: outcome.behind });
     }
     /*
+     * AND A SAVE TAKEN BY A STORE THAT COULD NOT READ EVERY WRITER SAYS SO,
+     * after the save's own notice: the save went through, so this asks
+     * nothing of the user and is information.
+     *
+     * NEVER: A SAVE DOES NOT SET THE STATUS BAR'S MARKER. This report is made
+     * after a wait with no check of which store the window is on, so a
+     * marker set here could describe a store the window has left; the
+     * readings that set it each check first.
+     */
+    const notes = outcome.notes ?? null;
+    if (notes !== null) {
+      show({ level: 'information', text: incompleteWarning(notes) });
+    }
+    /*
      * NOTE: AND WHAT THE QUEUE COULD NOT PROMISE, ON THE SAME ROAD. (queue
      * item 3) The save stands -- its entry was written -- but the
      * directory could not be flushed, so the entry may not survive a power
@@ -1469,10 +1602,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * starts, which is when the search is about the store it is about.
        */
       const asked = generation;
-      return runSearch(model, {
+      const searching = model;
+      return runSearch(searching === null ? null : {
+        search: (query: string) => searching.search(query),
+        searchReading: async (query: string) => {
+          const searched = generation;
+          const reading = await searching.searchReading(query);
+          if (searched !== generation) {
+            return reading;
+          }
+          noteReading(reading.notes);
+          return reading;
+        }
+      }, {
         ask: (prompt: string) =>
           Promise.resolve(vscode.window.showInputBox({ prompt, placeHolder: 'stale baseline' })),
-        pick: async (hits: Hit[], placeHolder: string) => {
+        pick: async (hits: Hit[], placeHolder: string, title?: string) => {
           const picked = await vscode.window.showQuickPick(
             hits.map((hit) => ({
               label: hit.id,
@@ -1480,7 +1625,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
               detail: hit.note,
               value: hit
             })),
-            { placeHolder, matchOnDetail: true }
+            title === undefined ? { placeHolder, matchOnDetail: true } : { placeHolder, title, matchOnDetail: true }
           );
           return picked?.value;
         },

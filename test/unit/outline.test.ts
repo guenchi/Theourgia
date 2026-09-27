@@ -28,6 +28,15 @@ import { TransportError } from '../../src/transport';
 import { initWire } from '../../src/wire';
 import { FakeCore } from '../support/fake';
 
+/*
+ * THE OUTLINE AS THE CORE ANSWERS IT OVER `--wire`, which is how the model
+ * asks for it: the text inside one `(ok (text ...))` form. The rows are the
+ * same bytes the human route prints.
+ */
+function outlineOverWire(text: string): string {
+  return `(ok (text ${JSON.stringify(text)}))\n`;
+}
+
 describe('O1 the outline is read for the one field a title cannot forge', () => {
   it('reads the ids and their depths', () => {
     const rows = parseOutline('- a.1  T one\n  - a.2  Two  three\n- b.1  X  conflict\n');
@@ -140,7 +149,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('asks for the top level with a depth limit, and confirms each id', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n- b.1  Other\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n- b.1  Other\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 },
       { match: ['read', 'b.1'], stdout: `${BLOCK_OF['b.1']}\n`, rc: 0 }
@@ -162,7 +171,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
    */
   it('refuses a listing naming a block the store does not have', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  second line\n- fake.1  invented\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  second line\n- fake.1  invented\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 },
       { match: ['read', 'fake.1'], stdout: '(error unknown-id "fake.1" (nearest ("a.1")))\n', rc: 1 }
@@ -199,7 +208,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
   for (const { item, mark, promotesToRoot } of MARKS) {
     it(`reads ${item} as the ${mark} mark, and says so by name`, async () => {
       core = new FakeCore([
-        { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+        { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
         { match: ['conflicts'], stdout: `${item}\n`, rc: 0 },
         { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
       ]);
@@ -223,7 +232,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
     it(`${promotesToRoot ? 'lets' : 'does not let'} ${mark} put a block in the root listing`, async () => {
       core = new FakeCore([
-        { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+        { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
         { match: ['conflicts'], stdout: `${item}\n`, rc: 0 },
         { match: ['read', 'a.1'], stdout: `${CHILD_OF_A1}\n`, rc: 0 }
       ]);
@@ -284,7 +293,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
      */
     it('does reach the root listing once its parent is deleted', async () => {
       core = new FakeCore([
-        { match: ['outline'], stdout: 'orphans:\n- n.1  Inner\n', rc: 0 },
+        { match: ['outline'], stdout: outlineOverWire('orphans:\n- n.1  Inner\n'), rc: 0 },
         { match: ['conflicts'], stdout: '(orphan "n.1")\n(nested-document "n.1")\n', rc: 0 },
         {
           match: ['read', 'n.1'],
@@ -325,7 +334,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
         '((id . "n.1") (deleted . #f) (fields (title . "Inner") (kind . doc)) (position "p.1" . 0) (edges))'
       ].join('\n');
       core = new FakeCore([
-        { match: ['outline'], stdout: '- p.1  Parent\n', rc: 0 },
+        { match: ['outline'], stdout: outlineOverWire('- p.1  Parent\n'), rc: 0 },
         { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 },
         { match: ['read', 'p.1', '--recursive'], stdout: `${subtree}\n`, rc: 0 },
         {
@@ -344,7 +353,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
     it('is not promoted into the root listing by its mark either', async () => {
       core = new FakeCore([
-        { match: ['outline'], stdout: '- n.1  Inner\n', rc: 0 },
+        { match: ['outline'], stdout: outlineOverWire('- n.1  Inner\n'), rc: 0 },
         { match: ['conflicts'], stdout: '(nested-document "n.1")\n', rc: 0 },
         {
           match: ['read', 'n.1'],
@@ -381,7 +390,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('keeps every mark a block carries, not the last one read', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(orphan "a.1")\n(nested-document "a.1")\n', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
@@ -395,7 +404,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('says both when a block is marked and also has a field with candidates', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(orphan "a.1")\n', rc: 0 },
       {
         match: ['read', 'a.1'],
@@ -414,7 +423,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('does not mark a root whose title merely ends in the word', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Design notes  conflict\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Design notes  conflict\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       {
         match: ['read', 'a.1'],
@@ -432,7 +441,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('makes no mark out of an item that names no block, or a head it does not know', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       {
         match: ['conflicts'],
         stdout:
@@ -487,7 +496,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
    */
   it('says the marks are known when it could read all of them', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(orphan "a.1")\n', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
@@ -498,7 +507,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
 
   it('keeps a field conflict distinct from a structural one', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       {
         match: ['read', 'a.1'],
@@ -605,7 +614,7 @@ describe('a row in the listing must be a block that is actually at the top level
    */
   it('refuses a listing that names an existing block which is somebody\'s child', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Parent\n- a.2  invented\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Parent\n- a.2  invented\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 },
       { match: ['read', 'a.2'], stdout: `${CHILD}\n`, rc: 0 }
@@ -624,7 +633,7 @@ describe('a row in the listing must be a block that is actually at the top level
    */
   it('refuses a row whose block has moved since the listing was taken', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.2  Old root\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.2  Old root\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       { match: ['read', 'a.2'], stdout: `${CHILD}\n`, rc: 0 }
     ]);
@@ -640,7 +649,7 @@ describe('a row in the listing must be a block that is actually at the top level
    */
   it('lists an orphan although its position still names a block that is gone', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: 'orphans:\n- a.2  Kid\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('orphans:\n- a.2  Kid\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(orphan "a.2")\n', rc: 0 },
       { match: ['read', 'a.2'], stdout: `${CHILD}\n`, rc: 0 }
     ]);
@@ -656,7 +665,7 @@ describe('a row in the listing must be a block that is actually at the top level
    */
   it('refuses a row whose block cannot say where it sits', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.2  Moved twice\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.2  Moved twice\n'), rc: 0 },
       { match: ['conflicts'], stdout: '', rc: 0 },
       {
         match: ['read', 'a.2'],
@@ -673,7 +682,7 @@ describe('a row in the listing must be a block that is actually at the top level
 
   it('lists a block with an unsettled position when the store has marked it', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.2  Moved twice\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.2  Moved twice\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(conflict "a.2" unplaced)\n', rc: 0 },
       {
         match: ['read', 'a.2'],
@@ -716,7 +725,7 @@ describe('a row in the listing must be a block that is actually at the top level
 
   it('refuses rather than reporting no conflicts when the store would not say', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 },
       { match: ['read', 'a.1'], stdout: `${BLOCK_OF['a.1']}\n`, rc: 0 }
     ]);
@@ -859,7 +868,7 @@ describe('marks that could not be asked for are shown as unknown, not as none', 
    */
   it('still refuses the root listing when the marks cannot be asked for', async () => {
     core = new FakeCore([
-      { match: ['outline'], stdout: '- a.1  Doc\n', rc: 0 },
+      { match: ['outline'], stdout: outlineOverWire('- a.1  Doc\n'), rc: 0 },
       { match: ['conflicts'], stdout: '(error no-store "/tmp/store")\n', rc: 1 },
       {
         match: ['read', 'a.1'],

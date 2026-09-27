@@ -31,6 +31,8 @@
  */
 
 import { Datum, answerOf, asInteger, isList, isSym } from './wire';
+import { Note } from './client';
+import { incompleteWarning } from './status';
 
 export interface Hit {
   id: string;
@@ -250,13 +252,23 @@ export function knownVerbs(answer: Datum): Set<string> | null {
  */
 export interface Asking {
   ask(prompt: string): Promise<string | undefined>;
-  pick(hits: Hit[], placeHolder: string): Promise<Hit | undefined>;
+  /*
+   * `title`, when given, is shown above the picker: it is where a search
+   * that could not see every writer says so while the hits are chosen.
+   */
+  pick(hits: Hit[], placeHolder: string, title?: string): Promise<Hit | undefined>;
   say(text: string, level: 'information' | 'error'): void;
   open(id: string): Promise<void>;
 }
 
 export interface Searcher {
   search(query: string): Promise<Hit[]>;
+  /*
+   * THE HITS AND THE WRITERS THE SEARCH COULD NOT SEE. Preferred when a
+   * searcher has it; a searcher with `search` alone is one whose readings
+   * are taken as complete.
+   */
+  searchReading?(query: string): Promise<{ hits: Hit[]; notes: Note[] | null }>;
 }
 
 export type SearchOutcome =
@@ -292,12 +304,30 @@ export async function runSearch(
     return { did: 'nothing', because: 'empty-query' };
   }
   let hits: Hit[];
+  let notes: Note[] | null = null;
   try {
-    hits = await model.search(query);
+    if (model.searchReading !== undefined) {
+      const reading = await model.searchReading(query);
+      hits = reading.hits;
+      notes = reading.notes;
+    } else {
+      hits = await model.search(query);
+    }
   } catch (e) {
     const because = e instanceof Error ? e.message : String(e);
     editor.say(`the search for "${query}" did not happen: ${because}`, 'error');
     return { did: 'failed', query, because };
+  }
+  /*
+   * A SEARCH THAT COULD NOT SEE EVERY WRITER SAYS SO WHERE ITS RESULT IS
+   * SHOWN: as the message when nothing matched, before the one hit it
+   * opens, and above the picker when there are several. As information,
+   * never as an error: the hits are the store's answer.
+   */
+  const warning = notes === null ? null : incompleteWarning(notes);
+  if (hits.length === 0 && warning !== null) {
+    editor.say(`${warning} Nothing in what was read matches "${query}".`, 'information');
+    return { did: 'nothing', because: 'no-hits', query };
   }
   if (hits.length === 0) {
     /*
@@ -313,6 +343,9 @@ export async function runSearch(
    * them to agree with a decision already made.
    */
   if (hits.length === 1) {
+    if (warning !== null) {
+      editor.say(warning, 'information');
+    }
     await editor.open(hits[0].id);
     return { did: 'opened', id: hits[0].id, query, of: 1 };
   }
@@ -339,7 +372,9 @@ export async function runSearch(
    * ruling that `hitsOf` does not open envelopes, not a special case for
    * one number. Ruled by the main session, 2026-09-21.
    */
-  const chosen = await editor.pick(hits, `${hits.length} shown for "${query}", most relevant first`);
+  const placeHolder = `${hits.length} shown for "${query}", most relevant first`;
+  const chosen =
+    warning === null ? await editor.pick(hits, placeHolder) : await editor.pick(hits, placeHolder, warning);
   if (chosen === undefined) {
     return { did: 'nothing', because: 'cancelled' };
   }

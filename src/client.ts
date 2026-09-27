@@ -47,7 +47,7 @@
 
 import { CoreConfig } from './config';
 import { RawResult, Transport, TransportError, transportFor } from './transport';
-import { AnswerParseError, Datum, answerOf, parseAnswers } from './wire';
+import { AnswerParseError, Datum, answerOf, isList, parseAnswers } from './wire';
 
 export type AnswerKind = 'text' | 'items' | 'datum';
 
@@ -79,6 +79,134 @@ export interface Answer {
    */
   envelope: Datum | null;
   stderr: string;
+  /*
+   * WHAT THE READING COULD NOT SEE. Null when the store read every
+   * writer; otherwise one note per writer it could not read, taken out
+   * of the answer by `splitIncomplete` before any parser sees it.
+   * Optional only so that an answer written by hand in a test still
+   * type-checks; every answer `interpret` builds carries it.
+   */
+  notes?: Note[] | null;
+}
+
+/*
+ * ONE WRITER A READING COULD NOT SEE: the core's `(unreadable (writer w)
+ * (path p) (reason r))`, one of the notes of an `(incomplete ...)`
+ * clause.
+ */
+export interface Note {
+  writer: string;
+  path: string;
+  reason: string;
+}
+
+/*
+ * A READING THAT COULD NOT SEE EVERY WRITER SAYS SO IN ONE CLAUSE.
+ *
+ * The core appends `(incomplete (unreadable (writer w) (path p) (reason
+ * r)) ...)` to every answer built from a load that could not read a
+ * writer, whatever the answer's head: an `ok`, a `check`, a refusal.
+ * The rows beside it are still the store's answer -- everything the
+ * other writers wrote -- so the clause is taken out here, once, and
+ * travels beside the body as notes. A parser handed the body never meets
+ * it, and a view handed the notes cannot mistake the reading for a
+ * complete one.
+ *
+ * NEVER: A CLAUSE THIS CLIENT CANNOT READ IS NOT DROPPED. A note missing
+ * its writer, path or reason, or two such clauses in one answer, is a
+ * refusal naming the clause: dropping it would show the reading as
+ * complete, which is the one thing it is not.
+ *
+ * NOTE: THE CLAUSE IS LOOKED FOR AMONG THE ELEMENTS AFTER THE HEAD, never
+ * at the head's position. `(error incomplete (failed ...) (written
+ * ...))` is a refusal KIND spelled with the same word, and it is a name
+ * in position 1, not a list headed by it.
+ */
+export function splitIncomplete(datum: Datum, verb: string, detail = ''): { body: Datum; notes: Note[] | null } {
+  if (!isList(datum)) {
+    return { body: datum, notes: null };
+  }
+  const at: number[] = [];
+  datum.forEach((part, index) => {
+    if (index > 0 && answerOf(part, 'incomplete') !== null) {
+      at.push(index);
+    }
+  });
+  if (at.length === 0) {
+    return { body: datum, notes: null };
+  }
+  if (at.length > 1) {
+    throw incompleteRefused(verb, `it carries ${at.length} incomplete clauses where one was expected`, detail);
+  }
+  return {
+    body: datum.filter((_, index) => index !== at[0]),
+    notes: notesOf(datum[at[0]], verb, detail)
+  };
+}
+
+/*
+ * THE SAME CLAUSE AS ITS OWN LINE. The human rendering of an items answer
+ * prints the items one per line and then the clause as a line of its
+ * own (render.sc), so there it is the LAST datum of the list rather than
+ * an element of one. Only the last: a clause anywhere else is not where
+ * the core puts it, and is left for the parsers to refuse.
+ */
+export function splitTrailingIncomplete(
+  data: Datum[],
+  verb: string,
+  detail = ''
+): { body: Datum[]; notes: Note[] | null } {
+  const last = data.length > 0 ? data[data.length - 1] : null;
+  if (last === null || answerOf(last, 'incomplete') === null) {
+    return { body: data, notes: null };
+  }
+  return { body: data.slice(0, -1), notes: notesOf(last, verb, detail) };
+}
+
+function notesOf(clause: Datum, verb: string, detail: string): Note[] {
+  const parts = isList(clause) ? clause.slice(1) : [];
+  if (parts.length === 0) {
+    throw incompleteRefused(verb, 'its incomplete clause names no writer', detail);
+  }
+  return parts.map((part, index) => {
+    const note = answerOf(part, 'unreadable');
+    if (note === null) {
+      throw incompleteRefused(verb, `note ${index + 1} of its incomplete clause is not a writer's note`, detail);
+    }
+    const field = (name: string): string => {
+      const value = note.value(name);
+      if (!value.read || typeof value.value !== 'string') {
+        throw incompleteRefused(verb, `note ${index + 1} of its incomplete clause has no ${name}`, detail);
+      }
+      return value.value;
+    };
+    return { writer: field('writer'), path: field('path'), reason: field('reason') };
+  });
+}
+
+function incompleteRefused(verb: string, why: string, detail: string): TransportError {
+  return new TransportError(
+    'unreadable',
+    `the core answered the ${verb} with a reading that could not see every writer, and ${why}`,
+    detail
+  );
+}
+
+/*
+ * NOTES FROM SEVERAL ANSWERS, ONCE EACH. A view built from several
+ * requests -- the tree asks for the outline, the marks and every block --
+ * shows one warning per writer, not one per request.
+ */
+export function mergeNotes(...lists: Array<Note[] | null | undefined>): Note[] | null {
+  const out: Note[] = [];
+  for (const list of lists) {
+    for (const note of list ?? []) {
+      if (!out.some((n) => n.writer === note.writer && n.path === note.path && n.reason === note.reason)) {
+        out.push(note);
+      }
+    }
+  }
+  return out.length === 0 ? null : out;
 }
 
 const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff']);
@@ -217,18 +345,36 @@ export class Client {
 export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: string[] = []): Answer {
   const ok = raw.rc === 0;
   if (!ok) {
+    /*
+     * A REFUSAL CAN CARRY THE CLAUSE TOO, inside its own form: it is
+     * taken out and the refusal is kept, so what classifies a refusal
+     * sees the refusal and nothing appended to it.
+     */
+    const refusal = readData(raw, verb, args);
+    const split = refusal.length === 1 ? splitIncomplete(refusal[0], verb, raw.stdout) : null;
     return {
       argv: raw.argv,
       rc: raw.rc,
       ok,
       kind: 'datum',
       text: raw.stdout,
-      answers: readData(raw, verb, args),
+      answers: split === null ? refusal : [split.body],
       envelope: null,
-      stderr: raw.stderr
+      stderr: raw.stderr,
+      notes: split === null ? null : split.notes
     };
   }
   if (kind === 'text') {
+    /*
+     * NEVER: THE CLAUSE IS NOT LOOKED FOR IN TEXT. On the human route it is
+     * a line after the text, and a line of text can say anything -- a
+     * title carrying a newline included. A text answer that has to be
+     * read for it is asked for with `--wire`, where the text is a string
+     * inside the form and the clause sits beside it.
+     */
+    if (args.includes('--wire')) {
+      return textFromWire(raw, verb, args);
+    }
     return {
       argv: raw.argv,
       rc: raw.rc,
@@ -237,10 +383,23 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
       text: raw.stdout,
       answers: [],
       envelope: null,
-      stderr: raw.stderr
+      stderr: raw.stderr,
+      notes: null
     };
   }
-  const read = readData(raw, verb, args);
+  const whole = readData(raw, verb, args);
+  /*
+   * THE CLAUSE COMES OFF BEFORE ANYTHING IS UNWRAPPED. Under `--wire`, and
+   * for any single-datum answer, it is an element of the one outer form;
+   * on the human route of an items answer it is the last line.
+   */
+  const outer =
+    whole.length === 1 && (args.includes('--wire') || kind === 'datum')
+      ? splitIncomplete(whole[0], verb, raw.stdout)
+      : null;
+  const trailing = outer === null && kind === 'items' ? splitTrailingIncomplete(whole, verb, raw.stdout) : null;
+  const read = outer !== null ? [outer.body] : trailing !== null ? trailing.body : whole;
+  const notes = outer !== null ? outer.notes : trailing !== null ? trailing.notes : null;
   /*
    * THE UNWRAPPING TURNS ON THE REQUEST, NOT ON THE SHAPE.
    *
@@ -307,7 +466,45 @@ export function interpret(raw: RawResult, verb: string, kind: AnswerKind, args: 
     text: raw.stdout,
     answers,
     envelope,
-    stderr: raw.stderr
+    stderr: raw.stderr,
+    notes
+  };
+}
+
+/*
+ * A TEXT ANSWER ASKED FOR WITH `--wire`: `(ok (text "...") ...)`. The
+ * clause comes off the form, and the text is the string inside it -- the
+ * same bytes the human route would have printed, without the line after.
+ */
+function textFromWire(raw: RawResult, verb: string, args: string[]): Answer {
+  const whole = readData(raw, verb, args);
+  if (whole.length !== 1) {
+    throw new TransportError(
+      'unreadable',
+      `the core answered the ${verb} with ${whole.length} data where one text form was expected`,
+      raw.stdout
+    );
+  }
+  const split = splitIncomplete(whole[0], verb, raw.stdout);
+  const form = answerOf(split.body, 'ok');
+  const text = form === null ? null : form.value('text');
+  if (text === null || !text.read || typeof text.value !== 'string') {
+    throw new TransportError(
+      'unreadable',
+      `the core answered the ${verb} with a form that holds no text`,
+      raw.stdout
+    );
+  }
+  return {
+    argv: raw.argv,
+    rc: raw.rc,
+    ok: true,
+    kind: 'text',
+    text: text.value,
+    answers: [],
+    envelope: split.body,
+    stderr: raw.stderr,
+    notes: split.notes
   };
 }
 

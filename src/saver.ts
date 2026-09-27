@@ -46,7 +46,7 @@
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import { Client } from './client';
+import { Client, Note } from './client';
 import { Outbox, OutboxEntry, Receipt } from './outbox';
 import { behindNotice } from './status';
 import { SendRecord } from './record';
@@ -159,6 +159,12 @@ export interface SaveOutcome {
    * more thing to be wrong about; this is the sender saying what it did.
    */
   keptForAPerson?: true;
+  /*
+   * THE WRITERS THE STORE COULD NOT READ WHILE IT TOOK THIS SAVE. The save
+   * went through -- the core allows a write on such a store and says so
+   * in its answer -- and this is what it said, for the person to see.
+   */
+  notes?: Note[] | null;
   /*
    * NOTE: THE ENTRY NEVER REACHED THE QUEUE, AND A NUMBER WAS ALREADY
    * SPENT ON IT. (section 13.1, I7)
@@ -2071,7 +2077,8 @@ export class Saver {
           ? 'the store had already applied this request'
           : 'saved',
         answer: datum,
-        ...(behind === null ? {} : { behind })
+        ...(behind === null ? {} : { behind }),
+        ...((answer.notes ?? null) === null ? {} : { notes: answer.notes })
       };
     }
 

@@ -45,7 +45,7 @@
  * It carries the depth, because past six levels the heading cannot.
  */
 
-import { Client } from './client';
+import { Client, Note } from './client';
 import { Block, readBlock } from './blocks';
 import { TransportError } from './transport';
 import { Datum } from './wire';
@@ -134,7 +134,7 @@ export function shiftHeadings(src: string, by: number): Shifted {
 }
 
 export type Composed =
-  | { ok: true; title: string; text: string }
+  | { ok: true; title: string; text: string; notes?: Note[] | null }
   | { ok: false; reason: string; ids: string[] };
 
 /*
@@ -295,7 +295,12 @@ export async function documentOf(client: Client, id: string): Promise<Composed> 
       answer.text
     );
   }
-  return composeDocument(id, answer.answers);
+  /*
+   * THE WRITERS THE SUBTREE COULD NOT SEE GO WITH THE DOCUMENT, so the view
+   * that shows it can say so above the text.
+   */
+  const composed = composeDocument(id, answer.answers);
+  return composed.ok ? { ...composed, notes: answer.notes ?? null } : composed;
 }
 
 /*

@@ -229,6 +229,7 @@ const AT_LEAST: Array<[string, number]> = [
    * named still written down. And in item 33, 19 -> 55: what `show` and
    * `record` return (C1-C7, C9-C36; C6 is two cells).
    */
+  ['incomplete.test.ts', 24],
   ['integrity.test.ts', 55],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,

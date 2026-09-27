@@ -42,7 +42,7 @@
  * `ord` is the first.
  */
 
-import { Client } from './client';
+import { Client, Note, mergeNotes } from './client';
 import { Block, isTopLevel, parentOf, readBlock, stringField, titleOf, hasFieldConflict } from './blocks';
 import { parseOutline } from './outline';
 import { TransportError } from './transport';
@@ -81,8 +81,8 @@ export const ROOT_MARKS: StructuralMark[] = ['cycle', 'unplaced', 'orphan'];
  * A STORE'S CONDITION, AS `check` STATES IT, or why it could not be read.
  */
 export type StoreVerdict =
-  | { known: true; verdict: string }
-  | { known: false; because: string };
+  | { known: true; verdict: string; notes?: Note[] | null }
+  | { known: false; because: string; notes?: Note[] | null };
 
 /*
  * THE VERDICT OUT OF A `check` ANSWER.
@@ -98,7 +98,12 @@ export type StoreVerdict =
  * `verdict` clause, two of them, or one that is not a symbol is a named
  * unknown, never a verdict this client made up.
  */
-export function verdictOf(answers: Datum[]): StoreVerdict {
+export function verdictOf(answers: Datum[], notes: Note[] | null = null): StoreVerdict {
+  const verdict = verdictOfCheck(answers);
+  return notes === null ? verdict : { ...verdict, notes };
+}
+
+function verdictOfCheck(answers: Datum[]): StoreVerdict {
   if (answers.length !== 1) {
     return { known: false, because: `check answered with ${answers.length} data where one was expected` };
   }
@@ -119,6 +124,13 @@ export function verdictOf(answers: Datum[]): StoreVerdict {
 export interface ChildListing {
   nodes: Node[];
   marksKnown: boolean;
+  /*
+   * THE WRITERS THIS LISTING COULD NOT SEE, from every answer it was built
+   * from (the outline or subtree, the marks, the blocks). Null when every
+   * writer was read. The rows are still the store's answer; the notes say
+   * whose writing is not in them.
+   */
+  notes: Note[] | null;
 }
 
 export interface Node {
@@ -214,7 +226,7 @@ export class StoreModel {
    * no promise about which rows survived it.
    */
   public async roots(): Promise<ChildListing> {
-    const answer = await this.client.request('outline', ['--depth', '1']);
+    const answer = await this.client.request('outline', ['--depth', '1', '--wire']);
     /*
      * NEVER: THE EXIT CODE IS READ BEFORE THE TEXT IS.
      *
@@ -255,9 +267,12 @@ export class StoreModel {
      */
     const read = await this.structuralMarks();
     const marks = read.marks;
+    let notes = mergeNotes(answer.notes, read.notes);
     const out: Node[] = [];
     for (const row of rows) {
-      const block = await this.blockOf(row.id);
+      const reading = await this.blockReading(row.id);
+      notes = mergeNotes(notes, reading.notes);
+      const block = reading.block;
       if (block === null) {
         throw new TransportError(
           'unreadable',
@@ -303,7 +318,7 @@ export class StoreModel {
       }
       out.push(nodeFromBlock(block, found));
     }
-    return { nodes: out, marksKnown: read.complete };
+    return { nodes: out, marksKnown: read.complete, notes };
   }
 
   /*
@@ -337,6 +352,7 @@ export class StoreModel {
   public async structuralMarks(): Promise<{
     marks: Map<string, StructuralMark[]>;
     complete: boolean;
+    notes: Note[] | null;
   }> {
     const answer = await this.client.request('conflicts', []);
     /*
@@ -354,7 +370,13 @@ export class StoreModel {
       );
     }
     const out = new Map<string, StructuralMark[]>();
-    let complete = true;
+    /*
+     * NEVER: A READING THAT COULD NOT SEE A WRITER DOES NOT KNOW THAT
+     * WRITER'S MARKS. The marks read here are the other writers' only, so
+     * "none" would draw every block as sound on the strength of an answer
+     * that says it is not the whole store.
+     */
+    let complete = (answer.notes ?? null) === null;
     for (const item of answer.answers) {
       const mark = readMark(item);
       /*
@@ -396,7 +418,7 @@ export class StoreModel {
         out.set(mark.id, already);
       }
     }
-    return { marks: out, complete };
+    return { marks: out, complete, notes: answer.notes ?? null };
   }
 
   /*
@@ -454,8 +476,10 @@ export class StoreModel {
      * from a row a title invented, and the listing is refused instead.
      */
     let marks: Map<string, StructuralMark[]> | null;
+    let marksNotes: Note[] | null = null;
     try {
       const read = await this.structuralMarks();
+      marksNotes = read.notes;
       /*
        * NOTE: AN INCOMPLETE READING IS REPORTED AS AN UNKNOWN ONE. Half
        * the marks and a `marksKnown` of true would be the map looking
@@ -549,7 +573,7 @@ export class StoreModel {
         answer.text
       );
     }
-    return { nodes, marksKnown: marks !== null };
+    return { nodes, marksKnown: marks !== null, notes: mergeNotes(answer.notes, marksNotes) };
   }
 
   /*
@@ -566,6 +590,15 @@ export class StoreModel {
    * here. Found in a review round, ruled by the main session.
    */
   public async blockOf(id: string): Promise<Block | null> {
+    return (await this.blockReading(id)).block;
+  }
+
+  /*
+   * THE BLOCK AND WHAT ITS READING COULD NOT SEE. What opens a block for a
+   * person reads this one, so an editor opened from a store missing a
+   * writer carries the notes with it.
+   */
+  public async blockReading(id: string): Promise<{ block: Block | null; notes: Note[] | null }> {
     const answer = await this.client.request('read', [id]);
     if (!answer.ok) {
       const said = answer.answers.length > 0 ? answer.answers[0] : null;
@@ -585,7 +618,7 @@ export class StoreModel {
         said.length >= 3 &&
         said[2] === id
       ) {
-        return null;
+        return { block: null, notes: answer.notes ?? null };
       }
       throw new TransportError(
         'unreadable',
@@ -643,7 +676,7 @@ export class StoreModel {
     if (block.id !== id) {
       return unreadable(`a record for ${block.id}`);
     }
-    return block;
+    return { block, notes: answer.notes ?? null };
   }
 
   /*
@@ -662,6 +695,15 @@ export class StoreModel {
    * is here so that no caller can arrive at a different rule.
    */
   public async search(query: string): Promise<Hit[]> {
+    return (await this.searchReading(query)).hits;
+  }
+
+  /*
+   * THE HITS AND WHAT THE SEARCH COULD NOT SEE. The search a person runs
+   * reads this one: hits from a store missing a writer are still hits,
+   * and the notes say whose writing was not searched.
+   */
+  public async searchReading(query: string): Promise<{ hits: Hit[]; notes: Note[] | null }> {
     const answer = await this.client.request('search', [query]);
     /*
      * NEVER: THE EXIT CODE IS READ BEFORE THE BYTES ARE.
@@ -688,7 +730,7 @@ export class StoreModel {
         answer.text
       );
     }
-    return rankHits(hits);
+    return { hits: rankHits(hits), notes: answer.notes ?? null };
   }
 
   /*
@@ -735,10 +777,20 @@ export class StoreModel {
     } catch (e) {
       return { known: false, because: e instanceof Error ? e.message : String(e) };
     }
-    return verdictOf(answer.answers);
+    return verdictOf(answer.answers, answer.notes ?? null);
   }
 
   public async conflictCount(): Promise<number> {
+    return (await this.conflictReading()).count;
+  }
+
+  /*
+   * THE COUNT AND WHAT IT COULD NOT SEE. The clause is not an item -- the
+   * client took it off the answer -- so it is never counted as a conflict;
+   * and a count taken without a writer is that writer's conflicts short,
+   * which the notes say.
+   */
+  public async conflictReading(): Promise<{ count: number; notes: Note[] | null }> {
     const answer = await this.client.request('conflicts', []);
     if (!answer.ok) {
       throw new TransportError(
@@ -747,7 +799,7 @@ export class StoreModel {
         answer.text
       );
     }
-    return answer.answers.length;
+    return { count: answer.answers.length, notes: answer.notes ?? null };
   }
 }
 

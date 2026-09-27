@@ -34,6 +34,7 @@ import { Datum, answerOf, asInteger, cdrOf, isDotted, isList, readEvent } from '
 import { TakeoverLedger } from './sessions';
 import { StoreVerdict, StructuralMark } from './model';
 import { Unrecorded } from './saving';
+import { Note } from './client';
 
 export interface StatusFacts {
   store: string;
@@ -66,6 +67,30 @@ export interface StatusFacts {
    * that has been fixed -- which is the same defect the other way round.
    */
   unreachable: string | null;
+  /*
+   * THE WRITERS THE LAST READING COULD NOT SEE, or null when it saw them
+   * all. Set by every reading the window shows and cleared by the first
+   * complete one. Optional so that facts written by hand elsewhere still
+   * read as complete.
+   */
+  incomplete?: Note[] | null;
+}
+
+/*
+ * WHAT A PERSON IS TOLD WHEN A READING COULD NOT SEE EVERY WRITER.
+ *
+ * NEVER: THE WORD IS NOT "UNREADABLE". Said of a reading it sounds like the
+ * store itself cannot be read, which is the opposite of what happened:
+ * everything the other writers wrote is here. The sentence names the
+ * writer that could not be read, where, and why, and claims no
+ * completeness for the rest either -- a listing is bounded by its depth
+ * and a search by its hit limit whatever the writers.
+ */
+export function incompleteWarning(notes: Note[]): string {
+  const who = notes
+    .map((note) => `writer ${note.writer} could not be read (${note.path}: ${note.reason})`)
+    .join('; ');
+  return `Incomplete: ${who}. What you see is what the other writers wrote, within the usual limits.`;
 }
 
 export interface StatusLine {
@@ -89,6 +114,10 @@ export function statusLine(facts: StatusFacts): StatusLine {
   if (facts.blocked !== null) {
     parts.push('$(circle-slash)');
   }
+  const incomplete = facts.incomplete ?? null;
+  if (incomplete !== null) {
+    parts.push('$(warning) incomplete');
+  }
   const tooltip = [
     `store: ${facts.store}`,
     `actor: ${facts.actor}`,
@@ -97,7 +126,9 @@ export function statusLine(facts: StatusFacts): StatusLine {
       ? 'conflicts: unknown, the store could not be asked'
       : facts.conflicts > 0
         ? say(facts.conflicts, '1 conflict reported by the store', `${facts.conflicts} conflicts reported by the store`)
-        : 'no conflicts',
+        : incomplete !== null
+          ? 'no conflicts among the writers that could be read'
+          : 'no conflicts',
     facts.pending === null
       ? 'the outbox could not be read, so no save will be sent and what it holds is not known'
       : facts.pending > 0
@@ -113,7 +144,8 @@ export function statusLine(facts: StatusFacts): StatusLine {
      * would be a second opinion about a sentence that already names the
      * one thing to do about it.
      */
-    ...(facts.unreachable === null ? [] : [`the store could not be reached: ${facts.unreachable}`])
+    ...(facts.unreachable === null ? [] : [`the store could not be reached: ${facts.unreachable}`]),
+    ...(incomplete === null ? [] : [incompleteWarning(incomplete)])
   ].join('\n');
   return {
     text: parts.join(' '),
@@ -124,7 +156,8 @@ export function statusLine(facts: StatusFacts): StatusLine {
       facts.pending === null ||
       facts.pending > 0 ||
       facts.blocked !== null ||
-      facts.unreachable !== null
+      facts.unreachable !== null ||
+      incomplete !== null
   };
 }
 

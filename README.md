@@ -496,6 +496,17 @@ the parent and the block becomes an orphan as well, and *that* mark does put it 
 it shows with both marks. (An older core's walk stopped at such a child and the outline could
 not show it; queue item 48 moved these cells to the current behaviour.)
 
+**When a writer cannot be read.** A store whose log for one writer cannot be read -- a
+directory without permission, a disk that answers with an error -- still answers every read
+with everything the other writers wrote, and says which writer it could not see. The
+extension shows those rows as usual and says so beside them, as information and never as an
+error: the outline's first row, above the blocks; the search's message, or the picker's title
+when there are several hits; a line before the text of a document or a block opened from it;
+a message after a save the store took; and `incomplete` in the status bar until a reading
+sees every writer again. Each names the writer, the path and the reason. While a writer is
+missing, the marks on blocks are shown as not known, and the conflict count is the other
+writers' count, since the missing writer's conflicts are not in it. Saving goes on as usual.
+
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of
 these cells once reported `the core exited 255 without an answer`, and a probe built to fish

@@ -31,12 +31,23 @@ const workingNotes=new Map();let workingVersion=0;
 const disposable = {dispose(){}};
 function gate(){let release,enter;const promise=new Promise(r=>release=r),entered=new Promise(r=>enter=r);return {promise,release,entered,enter};}
 const docs=[];
+// The banners the extension decorates editors with, and the status bar item it
+// paints: what a person would see, recorded so a scenario can read it back.
+const decorations=[];const statusItem={show(){},dispose(){}};
+// A real core's client, when a scenario builds one: the extension then talks to
+// a real store through the shipping transport, and only the VS Code API here is
+// the stand-in.
+let realClient=null;
+// Whether the incomplete-tree stand-in answers as a store missing a writer;
+// turned off to show what a complete reading does to the marker.
+let incompleteOn=true;
 const vs = {
  EventEmitter:class{constructor(){this.event=()=>disposable;}fire(){}dispose(){}},
  TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
- TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p})},
+ TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p}),from:o=>({...o,toString(){return `${o.scheme}:${o.path}?${o.query}`;}})},
+ Range:class{constructor(a,b,c,d){this.start={line:a,character:b};this.end={line:c,character:d};}},
  languages:{setTextDocumentLanguage:async d=>d},
- window:{createStatusBarItem:()=>({show(){},dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
+ window:{createStatusBarItem:()=>statusItem,createTextEditorDecorationType:options=>({options,dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
   // no cell could tell a warning from an alarm. The other editor double was
@@ -46,7 +57,7 @@ const vs = {
   showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
   showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});messages.push(m);if(process.argv[3]==='integrity-show-throws')throw new Error('the editor threw');return process.argv[3]==='integrity-show-rejects'?Promise.reject(new Error('the editor refused the warning')):Promise.resolve(undefined);},
   showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
-  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>d},
+  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})})},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
   registerTextDocumentContentProvider:()=>disposable,onDidCloseTextDocument:()=>disposable,
@@ -63,7 +74,7 @@ accepting.acceptSave=parts=>{const result=accept(parts);acceptances.push(result)
 const {Client}=require(path.join(out,'client.js'));
 const {Working}=require(path.join(out,'working.js')),workingRead=Working.prototype.read;
 Working.prototype.read=async function(...args){const reading=await workingRead.apply(this,args);if(afterRead){const held=afterRead;afterRead=null;held.enter();await held.promise;}return reading;};
-Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
+Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',send:async(verb,args)=>{
  requests.push({store:cfg.store,verb,args});
  if(requestGate && verb===requestGate.verb && (!requestGate.working || args.includes('--working-info'))){const held=requestGate;requestGate=null;held.enter();await held.promise;}
  const byVerb=verbGates[verb];
@@ -82,8 +93,19 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  // Queue item 39: in notice-behind a commit succeeds and says who else landed; in
  // notice-refused the store refuses it. Every other scenario keeps `unknown`.
  if(verb==='commit'&&process.argv[3]==='notice-behind') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (behind (("w" . 1) ("other" . 2))))\n',stderr:''};
+ // A commit the store took while it could not read one writer: the answer
+ // carries the clause after its own.
+ if(verb==='commit'&&process.argv[3]==='incomplete-save') return {argv:[verb,...args],rc:0,stdout:'(ok (items (ok (events (("w" . 1))) (state (("a.1" . "hhh"))) (cursor ("w" . 1)) (replay #f))) (incomplete (unreadable (writer "zzzzzzzz") (path "/stores/A/writers/zzzzzzzz") (reason "Permission denied"))))\n',stderr:''};
  if(verb==='commit'&&process.argv[3]==='notice-refused') return {argv:[verb,...args],rc:1,stdout:'(error cursor-unreachable (after ("w" . 999)) (writing ("w" . 8)))\n',stderr:''};
  if(verb==='commit') return {argv:[verb,...args],rc:1,stdout:'(error unknown (reason schedule))\n',stderr:''};
+ // A store that could not read one writer: every answer carries the clause the
+ // core appends, after the rows it did read.
+ if(process.argv[3]==='incomplete-tree'&&incompleteOn){
+  const clause='(incomplete (unreadable (writer "zzzzzzzz") (path "/stores/A/writers/zzzzzzzz") (reason "Permission denied")))';
+  if(verb==='outline')return {argv:[verb,...args],rc:0,stdout:`(ok (text "- a.1  ${title}\\n") ${clause})\n`,stderr:''};
+  if(verb==='conflicts')return {argv:[verb,...args],rc:0,stdout:`${clause}\n`,stderr:''};
+  if(verb==='read'&&args.length===1)return {argv:[verb,...args],rc:0,stdout:`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)) ${clause})\n`,stderr:''};
+ }
  // Queue item 48 (review r1 #2): the store reports a.2, a child of a.1, as a nested document.
  if(verb==='conflicts'&&process.argv[3]==='outline-nested') return {argv:[verb,...args],rc:0,stdout:'(nested-document "a.2")\n',stderr:''};
 
@@ -95,7 +117,7 @@ Client.fromConfig=cfg=>new Client({kind:'schedule',send:async(verb,args)=>{
  // it, correctly, because an answer that never mentions the block is not an
  // answer about that block.
  const recursive=`((id . \"a.1\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position root . 0) (edges))\n((id . \"a.2\") (deleted . #f) (fields (heading-src . \"# ${title}\\n\") (src . \"body\\n\") (title . \"${title}\")) (position \"a.1\" . 0) (edges))\n`;
- const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?`- a.1  ${title}\n`:verb==='read'?read:verb==='check'?(process.argv[3].startsWith('integrity-show')?'(check (writers (("w" (end 0)))) (verdict damaged))\n':'(check (writers (("w" (end 0)))) (verdict ok))\n'):verb==='set'?(process.argv[3]==='durability-order'?'(ok (events (("w" . 1))) (state (("a.9" . "hhh"))) (cursor ("w" . 1)) (replay #f))\n':'(error unknown (reason schedule))\n'):'';
+ const stdout=verb==='read'&&args.includes('--recursive')?recursive:verb==='conflicts'&&process.argv[3].includes('unknown')?'(error unavailable)\n':verb==='outline'?(args.includes('--wire')?`(ok (text "- a.1  ${title}\\n"))\n`:`- a.1  ${title}\n`):verb==='read'?read:verb==='check'?(process.argv[3].startsWith('integrity-show')?'(check (writers (("w" (end 0)))) (verdict damaged))\n':'(check (writers (("w" (end 0)))) (verdict ok))\n'):verb==='set'?(process.argv[3]==='durability-order'?'(ok (events (("w" . 1))) (state (("a.9" . "hhh"))) (cursor ("w" . 1)) (replay #f))\n':'(error unknown (reason schedule))\n'):'';
  // Queue item 46, E7: in durability-order a `set` is answered ok, so the settle writes the queue.
  const setOk=verb==='set'&&process.argv[3]==='durability-order';
  return {argv:[verb,...args],rc:verb==='set'&&!setOk||verb==='conflicts'&&process.argv[3].includes('unknown')?1:0,stdout,stderr:''};}});
@@ -142,7 +164,7 @@ async function main(){
  if(scenario.startsWith('integrity-show'))process.on('unhandledRejection',(reason,promise)=>unhandledSeen.add(promise));
  await require(path.join(out,'extension.js')).activate({globalStorageUri:{fsPath:storage},subscriptions:[]});
  // Queue item 39: one save of the opened block, and what the editor was shown.
- if(scenario==='notice-behind'||scenario==='notice-refused'){
+ if(scenario==='notice-behind'||scenario==='notice-refused'||scenario==='incomplete-save'){
   await commands.get('theourgia.openBlock')('a.1');
   const a=files(storage).find(p=>p.endsWith('.md'));const body='# Alpha\nfirst A\n';fs.writeFileSync(a,body);
   shown.length=0;
@@ -423,6 +445,47 @@ async function main(){
  }
  // Queue item 48 (review r1 #2): the tree item the editor would draw for a nested document
  // under its parent -- the parent's and the child's -- with the icon and tooltip it carries.
+ // A listing from a store that could not read one writer, as the tree shows it:
+ // each item's label, whether it opens anything, its icon, and what the window
+ // raised meanwhile.
+ const drawn=async()=>(await provider.getChildren()).map(n=>{const item=provider.getTreeItem(n);return {label:item.label,command:item.command?item.command.command:null,icon:item.iconPath?item.iconPath.id:null,contextValue:item.contextValue??null};});
+ if(scenario==='incomplete-tree'){
+  shown.length=0;
+  const items=await drawn();
+  const whileIncomplete={text:statusItem.text,tooltip:statusItem.tooltip};
+  incompleteOn=false;
+  const after=await drawn();
+  return {items,shown:shown.slice(),status:whileIncomplete,after,statusAfter:{text:statusItem.text,tooltip:statusItem.tooltip}};
+ }
+ // The same through the REAL core: a real store with a second writer's
+ // directory chmod 000, reached through the shipping transport and its daemon.
+ // The editor host cannot read a tree item or a decoration back, so this
+ // stand-in window is the only place those can be looked at.
+ if(scenario==='incomplete-real'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const store=await real.RealStore.make();
+  let locked=null;
+  try{
+   const made=await store.client.request('insert',['--under','root','--title','Alpha','--text','a needle here\n']);
+   if(!made.ok)throw new Error(`the real store did not take a block: ${made.text}`);
+   locked=path.join(store.store,'writers','zzzzzzzz');
+   fs.mkdirSync(locked);fs.writeFileSync(path.join(locked,'000001.sexp'),'');fs.chmodSync(locked,0o000);
+   realClient=new Client(store.transport());
+   change(store.store);
+   shown.length=0;
+   const roots=await provider.getChildren();
+   const items=roots.map(n=>{const item=provider.getTreeItem(n);return {label:item.label,command:item.command?item.command.command:null,icon:item.iconPath?item.iconPath.id:null};});
+   const daemons=real.daemonsMatching(store.store).length;
+   const runEntries=fs.readdirSync(store.runRoot).length;
+   const block=roots.find(n=>n.incompleteText===undefined);
+   if(block!==undefined)await commands.get('theourgia.openAsDocument')(block);
+   return {local:store.env.THEOURGIA_LOCAL??null,daemons,runEntries,items,shown:shown.slice(),decorations:decorations.slice(),status:{text:statusItem.text}};
+  }finally{
+   if(locked!==null)fs.chmodSync(locked,0o755);
+   realClient=null;
+   store.dispose();
+  }
+ }
  if(scenario==='outline-nested'){
   const roots=await provider.getChildren();
   const root=roots.find(n=>n.id==='a.1');

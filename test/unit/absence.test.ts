@@ -81,11 +81,12 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers TRUE -- "this file may hold work". A document with no marker was written by ' +
     'something this version does not know about, and the safe answer is the one that stops it ' +
     'being overwritten.',
-  'extension.ts#getChildren: if (node === undefined) { const listing = await this.model.roots(); nodes = listing.nodes; marksKnown = listing.marksKnown; } else { const listing = await this.model.childrenOf(node.id); nodes = listing.nodes; marksKnown = listing.marksKnown; }':
+  'extension.ts#getChildren: if (node === undefined) { const listing = await this.model.roots(); nodes = listing.nodes; marksKnown = listing.marksKnown; notes = listing.notes; } else { const listing = await this.model.childrenOf(node.id); nodes = listing.nodes; marksKnown = listing.marksKnown; notes = listing.notes; }':
     'answers an empty list to the TREE, and reports through `failed` -- except when the store ' +
     'changed under it, which is the one case that skips the report. The reporting call is ' +
     'conditional, so the rule no longer exempts it; the condition is `asked === generation()`, ' +
-    'and when that is false nothing this listing drew is on the screen to be wrong about.',
+    'and when that is false nothing this listing drew is on the screen to be wrong about. ' +
+    '(Re-keyed: the listing now also hands on the writers it could not read.)',
   'fsops.ts#syncDirectory: handle = fs.openSync(directory, \'r\');':
     'answers NULL for a directory that will not open for flushing. Some filesystems refuse to ' +
     'open a directory for reading, and a warning on every write there would teach people to ' +
