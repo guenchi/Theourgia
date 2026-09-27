@@ -357,9 +357,11 @@
 ;; THE LAYOUT IS SECTION 4.1 EXACTLY, named file by file. A row that
 ;; only checked "the directory is not empty" would pass for a store
 ;; missing the lock, which is the one file that must never be replaced.
+;; The store's .gitignore is part of that layout: init writes it, and it
+;; keeps this instance's own files out of a commit.
 (want "the directory holds exactly the files section 4.1 names"
       (files-under d1)
-      (string-append "./instance.sexp\n./lock\n./meta.sexp\n"
+      (string-append "./.gitignore\n./instance.sexp\n./lock\n./meta.sexp\n"
                      "./writers/" the-writer "/000001.sexp\n"
                      "./writers/" the-writer "/owner.sexp\n"))
 (want "and the current segment is empty, not absent"

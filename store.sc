@@ -2569,7 +2569,9 @@
   ;; of the shape this library promises.
   (define (remedy-for why)
     (case why
-      ((integrity registry-ahead missing-generation) 'adopt)
+      ;; no-instance: a checkout of a store kept in git has no
+      ;; instance.sexp until adopt mints one.
+      ((integrity registry-ahead missing-generation no-instance) 'adopt)
       ((registry-inside-store) 'move-the-registry-outside-the-store)
       (else #f)))
 
@@ -4148,6 +4150,23 @@
          (car ws))
         (else (loop (cdr ws))))))
 
+  ;; THE PATTERNS A STORE'S .gitignore HOLDS, anchored at the store: the
+  ;; instance identity, the evidence checkpoint, snapshots, each writer's
+  ;; working area and draft lock, and retained atomic-write temporaries
+  ;; anywhere below the store -- EXCEPT a writer's incoming/ files, which
+  ;; the negation brings back: a staged candidate kept there after a failure
+  ;; is evidence the request index scans and a replay answers from, so a
+  ;; checkout without it could answer a request differently.
+  (define store-gitignore
+    (string-append
+      "/instance.sexp\n"
+      "/request-index.sexp\n"
+      "/snap/\n"
+      "/writers/*/working/\n"
+      "/writers/*/draft.lock\n"
+      "*.tmp-*\n"
+      "!/writers/*/incoming/*\n"))
+
   (define (store-init! store)
     (cond
       ((not (eq? (entry-type (string-append store "/meta.sexp")) 'absent))
@@ -4169,6 +4188,16 @@
          ;; overwrite-entry!, the door's truncating open (F100a): created
          ;; empty, or emptied in place with its inode kept, as before.
          (overwrite-entry! (string-append store "/lock") (make-bytevector 0))
+         ;; A STORE KEPT IN GIT: what this INSTANCE owns, or can rebuild,
+         ;; stays out of a checkout -- its identity, the evidence
+         ;; checkpoint, snapshots, the working areas and their locks, and
+         ;; the temporaries an atomic write keeps after a failure. The log
+         ;; itself, and everything else, travels with `git add <store>`.
+         ;; It is written BEFORE meta.sexp, so a store whose init failed
+         ;; part-way already keeps a retained temporary out of a commit.
+         (atomic-write! (string-append store "/.gitignore")
+                        (string->utf8 store-gitignore)
+                        'registry)
          (atomic-write! (string-append store "/meta.sexp")
                         (string->utf8 (string-append "((format 1) (store-id \"" sid "\"))\n"))
                         'registry)

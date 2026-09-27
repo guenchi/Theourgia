@@ -4850,11 +4850,29 @@
   ;; in. The conditions can hold at once, and taking one as THE reason
   ;; discards the protection the others give: a caller who says "damage"
   ;; skips the rollback check that only the registry can make.
+  ;; IS THE NAME instance.sexp IN THE STORE'S DIRECTORY? The listing sees a
+  ;; link itself, where a stat follows it. A listing that cannot be read
+  ;; counts the name as PRESENT, so adopt falls through to the answer it
+  ;; gave before the name was asked about: minting an identity needs proof
+  ;; that none is there, and an unreadable directory gives none.
+  (define (instance-entry-listed? store)
+    (guard (e ((unreadable-entry? e) #t))
+      (and (member "instance.sexp" (directory-entries store)) #t)))
+
   (define (adopt-needed? store)
     (let* ((id (verify-instance store))
            (writer (local-writer-name store)))
       (cond
         ((and (pair? id) (eq? (car id) 'mismatch)) (list 'identity (cadr id)))
+        ;; A CHECKOUT OF A STORE KEPT IN GIT HAS NO instance.sexp: its
+        ;; local writer travelled, its identity did not, so adopt mints one
+        ;; exactly as for a copied store. The NAME must be absent from the
+        ;; store's directory: a present instance.sexp that parses to #f, or
+        ;; a symlink that points nowhere, also verifies as absent -- a stat
+        ;; follows the link -- and minting over either would replace an
+        ;; entry this path cannot explain. The listing sees the link itself.
+        ((and (eq? id 'absent) writer (not (instance-entry-listed? store)))
+         (list 'identity 'instance-absent))
         ((not writer) (list 'no-local-writer))
         ((let ((r (retired-of store writer))) (and r #t)) (list 'retired))
         (else
@@ -5241,8 +5259,14 @@
             (step-owner-installed! store new instance tx old)
             (step-successor-backfilled! store old new)
             (step-transition-complete! store-id instance tx)
-            (list 'adopted (list 'from old) (list 'to new)
-                  (list 'prefix seg off seq) (list 'reason (car why)))))))
+            (append
+              (list 'adopted (list 'from old) (list 'to new)
+                    (list 'prefix seg off seq) (list 'reason (car why)))
+              ;; WHICH IDENTITY: beside the reason, the field that
+              ;; did not match, or instance-absent for a checkout.
+              (if (eq? (car why) 'identity)
+                  (list (list 'identity (cadr why)))
+                  '()))))))
 
   ;; A RECOVERY ADOPT KEEPS THE NONCE; AN IDENTITY MISMATCH MINTS ONE
   ;; FIRST, before the registry is consulted, so a copied store's old

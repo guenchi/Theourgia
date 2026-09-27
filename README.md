@@ -440,7 +440,8 @@ across two verbs.
     (init)
 
 Creates a store in the directory named by `--store`, and answers with the
-store's id and the writer the caller was given.
+store's id and the writer the caller was given. It also writes
+`<store>/.gitignore`; see [A store in git](#a-store-in-git).
 
 ### `insert`
 
@@ -743,7 +744,86 @@ replaying the whole log.
 
 Takes over a store that belongs to another machine's registry entry --
 after a move or a restore, where the store is here but its recorded owner
-is not.
+is not. When the reason is the store's identity, the answer says which
+part of it: `(reason identity) (identity <field>)`, where `<field>` is
+`machine`, `device`, `inode`, `nonce`, or `instance-absent` for a checkout
+that has no `instance.sexp` yet.
+
+## A store in git
+
+A store can live in a git repository for backup, restore and moving it
+between machines, with one writer. `init` writes `<store>/.gitignore`, and
+it keeps out what belongs to this copy of the store rather than to its
+history:
+
+    /instance.sexp
+    /request-index.sexp
+    /snap/
+    /writers/*/working/
+    /writers/*/draft.lock
+    *.tmp-*
+    !/writers/*/incoming/*
+
+`instance.sexp` is this copy's identity. `request-index.sexp` is a
+checkpoint of the evidence index; it records this instance's files and is
+rebuilt from the log, and written again at the next `snapshot`. Snapshots
+are rebuilt the same way. The working areas and draft locks are one
+machine's drafts. The `*.tmp-*` files are the temporaries an atomic write
+keeps after a failure, for a reader -- except under a writer's `incoming/`,
+which the last line brings back: a candidate staged there and kept after a
+failure is evidence a replay is answered from, so it travels with the log.
+
+Everything else travels: `meta.sexp`, `lock`, and every writer's
+segments and records (`owner.sexp`, `published.sexp`, `retired.sexp`,
+`quarantine.sexp`, `uncertain.sexp`), with `damaged/`, `incoming/` and
+`blobs/`. Git carries no empty directory, so those three travel when they
+hold something; a missing one reads as empty.
+
+Add the store as a whole, never named files:
+
+    git add <store>
+
+A segment rolls over after 1 MiB or an hour, so a list of named files
+misses the segment that rolled since. A store made before this `.gitignore`
+existed takes the file by hand.
+
+Restoring or moving is: clone, read, adopt, write. A clone has no
+`instance.sexp`, so reads work and the first write is refused:
+
+    (error refused no-instance (remedy adopt))
+
+`adopt` gives the checkout an identity of its own, retires the old
+generation of the writer and installs its successor, and writes from then
+on land in the new generation. A checkout is adopted this way -- for a
+missing `instance.sexp` -- only when that name is absent from the store's
+directory, not merely unreadable or a link that points nowhere, and only
+when the directory can be listed: if it cannot, `adopt` answers as it would
+for a store that has an identity. (A copy whose `instance.sexp` does not
+match, such as the stale copy below, is adopted for that mismatch.)
+
+A request answered before the restore is not replayed on the checkout: a
+retry of it answers `(error unknown (replay-barrier-failed ...))`, before
+`adopt` and after it, where the original store would answer that it has
+already run. `unknown` is the store declining to guess, not a failure of
+the request; check the store's contents before sending it again.
+
+A copy that still exists under its old identity keeps writing to the old
+generation. Once it pulls the restored copy's commit, it holds the
+successor's owner and the predecessor's retirement, and its next write is
+refused by name:
+
+    (error refused (instance nonce))
+
+It has to adopt, or stop. Git will also show its own segment as diverged:
+two copies writing the same store is not what this supports. Writing from
+two machines is a separate design.
+
+The `lock` file is part of the store and is never recreated except by
+`init`. If a checkout lacks it, a read in the calling process answers
+`absent` on the lock's path; through a daemon, the start fails as
+`(error serve-start-failed (kind store-busy) ...)`, which is misleading --
+nobody holds the store, the lock file is missing. Either way,
+`touch <store>/lock` restores it.
 
 ## Requests and replay
 

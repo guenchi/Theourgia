@@ -337,6 +337,11 @@
    conservative a
    "F77b R2g, by ruling (F100a): three sites, one rule -- log.sc's local-writer-name and barrier-artefacts and working.sc's writer-for read an owner.sexp or retired.sexp that cannot be stat'ed as absent, as the native presence test they replace did; the only places an unreadable entry still reads as absent"
    (e ((unreadable-entry? e) #f)))
+  ("log.sc" (instance-entry-listed?) 1 guard
+   ((unreadable-entry? e))
+   conservative a
+   "a store directory that cannot be listed counts instance.sexp as present, so adopt keeps the answer it gave before the name was asked about: minting an identity needs proof that none is there"
+   (e ((unreadable-entry? e) #t)))
   ("log.sc" (atomic-write!) 1 guard
    (#t)
    propagate b
