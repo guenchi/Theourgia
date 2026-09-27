@@ -14,7 +14,7 @@
 ;; limitations under the License.
 (library (theourgia working)
   (export working-write! working-read working-discard! working-list working-commit!
-          working-restore! working-snapshot working-baseline
+          working-restore! working-snapshot working-baseline working-state
           ;; NOTE: EXPORTED SO THAT NOBODY WRITES THIS PATH OUT A SECOND
           ;; TIME. The daemon has a seam that has to park inside exactly
           ;; the lock a write takes, and a seam holding a path spelled
@@ -31,7 +31,8 @@
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
                 hold-point!
                 entry-type list-entries read-entry unreadable-entry? unreadable-entry-path
-                unreadable-entry-reason fs-error? fs-error-op fs-error-errno))
+                unreadable-entry-reason fs-error? fs-error-op fs-error-errno)
+          (only (theourgia datum-code) datum-source-read))
 
   ;; NEVER: A DRAFT OR A DIRECTORY THIS PROCESS CANNOT READ IS NOT ONE THAT IS
   ;; NOT THERE (U10, F77b). Presence is R1's question: absence (ENOENT,
@@ -563,9 +564,11 @@
             (list 'ok writer
                   (with-draft-lock store writer
                     (lambda ()
-                      (map (lambda (e)
-                             (list (list-ref e 3) (list-ref e 4) (list-ref e 5) (list-ref e 7)))
-                           (active-entries store writer state)))))))))))))
+                      (map entry-draft (active-entries store writer state)))))))))))))
+
+  ;; The four fields of an entry a view carries: id, version, base, bytes.
+  (define (entry-draft e)
+    (list (list-ref e 3) (list-ref e 4) (list-ref e 5) (list-ref e 7)))
 
   ;; THE BASELINE OF A WRITER'S WORKING VIEW: the join of the cuts its
   ;; live drafts were written against.
@@ -600,8 +603,123 @@
             (list 'ok writer
                   (with-draft-lock store writer
                     (lambda ()
-                      (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
-                                 '() (active-entries store writer state)))))))))))))
+                      (entries-cut (active-entries store writer state)))))))))))))
+
+  (define (entries-cut entries)
+    (fold-left (lambda (acc e) (cut-join acc (list-ref e 6))) '() entries))
+
+  ;; ---- the working view as a reduction -------------------------------------
+  ;;
+  ;; NEVER: ONE VIEW, THE ONE `eval --working` RUNS ON (design 7.5.21, F17). The
+  ;; committed side is the state at the writer's baseline -- the join of
+  ;; its drafts' cuts, `working-baseline` -- and every block with a live
+  ;; draft reads as that draft. A writer with no drafts has an empty
+  ;; baseline and gets the current state, as eval does.
+  ;;
+  ;; NOTE: THE DRAFTS AND THE BASELINE ARE TAKEN UNDER ONE LOCK, so the cut
+  ;; is the join of exactly the drafts that are overlaid. Taking them under
+  ;; two locks, as the eval route does, lets a write land between the two.
+  ;;
+  ;; NEVER: THE STATE IS COPIED, NOT CHANGED. open-and-reduce may hand back a
+  ;; state other readers hold; the copy goes through the snapshot rows, and
+  ;; a drafted block gets a new field list, so nothing the original shares
+  ;; is touched.
+  ;;
+  ;; NOTE: ONE STORED FIELD IS REPLACED PER DRAFT, the one the draft's bytes
+  ;; stand for. A text block's `src` keeps the type it has in the committed
+  ;; state: a bytevector stays bytes, a string reads the draft as UTF-8;
+  ;; what is derived from it (a code block's name) comes from the view
+  ;; layer, which derives it from the new src. A datum block stores no src:
+  ;; its draft is read as its `body` (design 7.5.21, "datum blocks use the body in
+  ;; the draft"), exactly one form, and a draft that does not read is
+  ;; refused by name rather than left out of the view. A block with neither
+  ;; is left as it is, the rule eval-context's `with-draft` applies.
+  ;;
+  ;; KEY: A DRAFT CANNOT INSERT A BLOCK -- working-write! refuses an id the
+  ;; state does not hold -- so the view has the committed state's blocks.
+  (define (working-state store state supplied)
+    (needing-writer supplied (lambda ()
+    (problem (lambda ()
+      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+        (cond
+          ((not writer) (invalid-writer))
+          (else
+            (let* ((entries (with-draft-lock store writer
+                              (lambda () (active-entries store writer state))))
+                   (cut (entries-cut entries))
+                   (drafts (map entry-draft entries))
+                   (base (if (null? cut) (open-and-reduce store) (open-and-reduce store cut))))
+              (if (not (reduction? base))
+                  (list 'error 'working-unavailable (list 'reason 'unavailable-cut) (list 'cut cut))
+                  (let ((fields (draft-fields base drafts)))
+                    (if (eq? (car fields) 'error)
+                        fields
+                        (list 'ok writer (overlay-drafts base (cdr fields)) drafts)))))))))))))
+
+  ;; `(ok (<id> <field> . <value>) ...)`, the stored field each draft
+  ;; replaces, or the refusal of the first draft that does not read.
+  (define (draft-fields base drafts)
+    (let loop ((ds drafts) (acc '()))
+      (if (null? ds)
+          (cons 'ok (reverse acc))
+          (let* ((id (car (car ds))) (bytes (cadddr (car ds)))
+                 (b (state-read base id))
+                 (fs (if (and (pair? b) (assq 'fields b)) (cdr (assq 'fields b)) '()))
+                 (src (assq 'src fs)))
+            (cond
+              ((and (equal? (assq 'mode fs) '(mode . datum)) (assq 'body fs))
+               (let ((body (draft-body id bytes)))
+                 (if (eq? (car body) 'error)
+                     body
+                     (loop (cdr ds) (cons (cons id (cons 'body (cadr body))) acc)))))
+              (src
+               (loop (cdr ds)
+                     (cons (cons id (cons 'src (if (bytevector? (cdr src)) bytes (utf8->string bytes))))
+                           acc)))
+              (else (loop (cdr ds) acc)))))))
+
+  (define (draft-body id bytes)
+    (define (refused reason)
+      (list 'error 'working-draft-unreadable (list 'block id) reason))
+;; NOTE: ONLY THE READER'S REFUSAL IS CAUGHT. datum-source-read answers
+    ;; every failure of the text as an `(error bad-source ...)` list -- its
+    ;; own guard turns any other condition into `(reason reader-rejected)` --
+    ;; so that list is the one thing a draft that does not read can raise,
+    ;; and a catch-all here would only hide what is not the draft's fault.
+    (guard (e ((and (pair? e) (eq? (car e) 'error))
+               (refused (or (assq 'reason (filter pair? e)) '(reason reader-rejected)))))
+      (let ((forms (datum-source-read bytes)))
+        (if (= (length forms) 1)
+            (list 'body (car (car forms)))
+            (refused '(reason expected-one-form))))))
+
+;; NOTE: A STORED FIELD IS A REGISTER, NOT A VALUE: `(name (value writer .
+  ;; seq) ...)`, one candidate per concurrent write (reduce.sc; measured,
+  ;; `(src ("" "ka7a7y1s" . 1))`). The first version wrote `(src . bytes)`
+  ;; into the rows and the rebuilt state raised "not a proper list". The
+  ;; view's register holds ONE candidate: the draft's value, carrying the
+  ;; provenance of the committed candidate it stands over -- the draft
+  ;; settles the field for this writer, as a commit of it would.
+  (define (drafted-register f value)
+    (let ((candidates (cdr f)))
+      (list (car f)
+            (cons value (if (and (pair? candidates) (pair? (car candidates)))
+                            (cdr (car candidates))
+                            (cons "" 0))))))
+
+  (define (overlay-drafts base replacements)
+    (rows->state
+      (map (lambda (row)
+             (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
+               (if (not r) row
+                   (list 'block (cadr row)
+                         (map (lambda (part)
+                                (if (eq? (car part) 'fields)
+                                    (cons 'fields (map (lambda (f) (if (and (pair? f) (eq? (car f) (cadr r))) (drafted-register f (cddr r)) f))
+                                                       (cdr part)))
+                                    part))
+                              (caddr row))))))
+           (state->rows base))))
 
   (define (working-list store state supplied)
     (needing-writer supplied (lambda ()

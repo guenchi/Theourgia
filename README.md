@@ -576,6 +576,28 @@ drafts a commit took and a later retraction gave back -- so `--writer`
 selects whose list is searched, and the same version can be unknown to
 one writer and restorable by another.
 
+### The working view on disk
+
+`export-md --working` and `export-code --working` write the working view:
+the committed side and the drafts are the ones `eval --working` uses (no
+`--cut`, no `--latest`). Two things differ today: a code block's text keeps
+its stored bytes in the files where eval reads it as a string, and a datum
+block's draft is written as its body, which eval does not do yet. The
+committed side is PINNED the same way as eval's -- it
+is the state at the join of the writer's own drafts' cuts, so a commit
+another writer made after those drafts is not in the files -- and every
+block with a draft is written as that draft. A writer with no drafts gets
+the current committed state, byte for byte what the plain export writes.
+
+A successful answer is the plain export's answer with two clauses after
+it: `(cut <cut>)`, the committed cut the view stands on, and `(working #t)`.
+A refusal carries neither.
+Without `--working` neither clause is there and the answer is unchanged.
+
+A draft replaces a block's text; it cannot add a block (`write` refuses an
+id the store does not hold), so the files hold the committed blocks and no
+others. `--cut` is not accepted by the export verbs.
+
 ### `drafts`
 
     (drafts ("--writer" <name>))
@@ -617,10 +639,14 @@ file that has disappeared from the directory leaves its blocks alone.
 
 ### `export-md`
 
-    (export-md <dir> ("--with-ids"))
+    (export-md <dir> ("--with-ids") ("--working") ("--writer" <name>))
 
 Writes the store out as Markdown. `--with-ids` keeps each block's id in
 the text, so the result can be imported back onto the same blocks.
+
+`--working` writes the writer's working view instead of the committed store
+(see "The working view on disk" below); `--writer` selects whose drafts, with
+`--working`, and is accepted and ignored without it.
 
 The answer counts the files written. Every block this projection should have
 written and did not is listed after that count, with a reason:
@@ -677,11 +703,16 @@ dropped with neither.
 
 ### `export-code`
 
-    (export-code <dir> ("--raw") ("--datum"))
+    (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>))
 
 Writes the store out as source. NEVER: `--datum` and `--raw` together are
 refused with `(error bad-request incompatible-projection-options)`: they
 are two different projections and there is no answer to "both".
+
+`--working` writes the writer's working view instead of the committed store,
+in any of the three projections (see "The working view on disk" below);
+`--writer` selects whose drafts, with `--working`, and is accepted and
+ignored without it.
 
 ### `split-suggest`
 
@@ -1357,11 +1388,11 @@ was found rather than left for a reader to discover.
     rewrites `<home>/instances.sexp` whole, and entries for stores that
     have been deleted stay in it marked `active`. Measured on the
     development machine: 319 KB, 5421 records, all `active`.
-  * **`W11-export-working` and `W11-cut-plus-working` have no cells.**
-    They belong to verbs the working-view fixture does not drive
-    (`export-code`, and `eval --cut` combined with a view beyond the one
-    row that covers it). Recorded in `test/eval-working.sc` beside the
-    rows that do exist.
+  * **The export verbs take no `--cut`.** `export-md --working` and
+    `export-code --working` stand on the writer's pinned baseline, as
+    `eval --working` does without options; a historical cut with drafts
+    over it (`eval --cut ... --working`) has no export. The rows for the
+    working exports are in `test/export-working.sc`.
   * **Twenty fixtures define `want` as a procedure**, which evaluates
     both arguments before the call: a row that raises ends the file
     rather than failing. `run-fixtures.sh` counts and names them on every

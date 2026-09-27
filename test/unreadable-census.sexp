@@ -112,7 +112,7 @@
    refuse a
    "socket-dir-refusal: a --socket whose directory cannot be searched answers (error unreadable (path ...) (reason ...)) before a daemon is started or anything created (F15)"
    (e ((unreadable-entry? e) (list (quote error) (quote unreadable) (list (quote path) (unreadable-entry-path e)) (list (quote reason) (unreadable-entry-reason e))))))
-  ("project.sc" (export-md) 1 guard
+  ("project.sc" (export-md-view) 1 guard
    ((unreadable-entry? e) (fs-error? e))
    refuse a
    "export-md: a target whose listing, directory creation or file write fails -- the unreadable-entry and the door's durable-error this guard catches -- answers (error unreadable (path ...) (reason ...) (written ...)), not internal (F98; the durable clause replaced an i/o-error clause when the writes went through the door). Filed as REFUSE, and it differs from that category's definition (refused before any mutation) in one way: files already written to the export target stay there, and (written ...) names them. export-md does not write the store"
@@ -917,6 +917,11 @@
    propagate b
    "working-write!: the historical reduction at the provenance cut; incomplete and unreadable propagate instead of reading as no parent; a bad cut stays #f"
    (failure (#t #f)))
+  ("working.sc" (draft-body) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "working view: a datum draft the reader refuses is refused by name (F17)"
+   (e ((and (pair? e) (eq? (car e) (quote error))) (refused (or (assq (quote reason) (filter pair? e)) (quote (reason reader-rejected)))))))
   ("working.sc" (working-restore!) 1 guard
    (#t)
    propagate b

@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia code-project)
-  (export import-code export-code code-field code-children code-files read-code-bytes
+  (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
@@ -156,10 +156,16 @@
           (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
               (list 'ok (cons 'items results))
               (if (= (length results) 1) (car results) (batch-answer results)))))))
+;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-md-view: `view` hands
+  ;; back the reduction to project, the committed state or a writer's
+  ;; working view.
   (define (export-code store dir raw?)
+    (export-code-view store dir raw? (lambda () (open-and-reduce store))))
+
+  (define (export-code-view store dir raw? view)
     (answer
       (lambda ()
-        (let* ((state (open-and-reduce store)) (cut (reduce-applied-cut state))
+        (let* ((state (view)) (cut (reduce-applied-cut state))
                (files (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state)))
                (paths '())
                (outputs

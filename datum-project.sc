@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia datum-project)
-  (export import-datum export-datum def-datum)
+  (export import-datum export-datum export-datum-view def-datum)
   (import (rnrs) (theourgia datum-code) (theourgia datum-match) (theourgia datum-metadata)
           (theourgia code-project) (theourgia code-markers) (theourgia text-code) (theourgia languages)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
@@ -145,10 +145,14 @@
           (if (= (length results) 1) (car results) (batch-answer results)))))
   (define (import-datum store dir actor req)
     (answer (lambda () (execute store actor (frozen-operation store req (lambda () (capture-import store dir)))))))
+;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-code-view.
   (define (export-datum store dir)
+    (export-datum-view store dir (lambda () (open-and-reduce store))))
+
+  (define (export-datum-view store dir view)
     (answer
       (lambda ()
-        (let* ((state (open-and-reduce store)) (paths '())
+        (let* ((state (view)) (paths '())
                (outputs (map
                  (lambda (id)
                    (let ((path (code-field state id 'path)))

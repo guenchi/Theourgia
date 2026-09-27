@@ -23,7 +23,7 @@
 ;; 2.4 exists, and it is why a parser that understands very little is
 ;; enough for a projection that loses nothing.
 (library (theourgia project)
-  (export export-md import-md md-tree subtree-ids block-text md-kinds)
+  (export export-md export-md-view import-md md-tree subtree-ids block-text md-kinds)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs hashtables)
           (rnrs unicode)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
@@ -261,10 +261,17 @@
                    (list 'reason 'not-a-directory)
                    (list 'dir dir)))))
 
+;; NOTE: THE VIEW IS A PARAMETER (F17). `export-md` exports the committed
+  ;; state; `export-md-view` exports whatever reduction `view` hands it --
+  ;; the writer's working view for `--working`. `view` is called after the
+  ;; directory is checked, so a bad directory is answered before the store
+  ;; is opened on both routes, as it was on the one route before.
   (define (export-md store dir . opts)
+    (export-md-view dir (lambda () (open-and-reduce store)) (and (pair? opts) (car opts))))
+
+  (define (export-md-view dir view recover?)
     (require-md-directory dir)
-    (let* ((recover? (and (pair? opts) (car opts)))
-           (state (open-and-reduce store))
+    (let* ((state (view))
            (docs (md-tree state))
            (path-of (lambda (id) (text-field (state-read state id) 'path)))
            (winner (make-hashtable string-hash string=?))

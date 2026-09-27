@@ -69,6 +69,31 @@
                   (map (lambda (p) (list (car p) (cdr p))) detail)
                   '()))))
 
+;; ---- exporting a writer's working view (F17) -------------------------------
+  ;;
+  ;; NEVER: THE VIEW IS working.sc's `working-state`, the one reduction a
+  ;; writer's drafts make over its baseline; no export rebuilds it.
+  ;;
+  ;; NOTE: THE VIEW IS TAKEN WHEN THE EXPORTER ASKS FOR IT, after its own
+  ;; checks, so a directory that is not one is answered as the plain
+  ;; export answers it. A refusal from the view (no writer, drafts that
+  ;; cannot be read) is raised there and is the export's answer.
+  ;;
+  ;; NOTE: THE CLAUSES GO AFTER THE EXISTING ONES, and only on this route:
+  ;; `(cut <c>)` is the committed cut the view stands on, `(working #t)`
+  ;; says the files are a view and not the committed state. A plain export
+  ;; answers byte for byte as before.
+  (define (working-export store state writer export)
+    (let* ((view #f)
+           (a (export (lambda ()
+                        (let ((w (working-state store state writer)))
+                          (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                          (set! view (caddr w))
+                          view)))))
+      (if (and view (pair? a) (eq? 'ok (car a)))
+          (append a (list (list 'cut (reduce-applied-cut view)) '(working #t)))
+          a)))
+
   (define (guarded thunk)
     (guard (e ((and (list? e) (pair? e) (eq? (car e) 'error)) e)
               ;; A FILESYSTEM FAILURE IS NOT ANSWERED HERE (F100b, D7): it
@@ -779,13 +804,13 @@
       (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"])
             "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither."
             #f 'daemon)
-      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"])
+      (list 'export-code '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])
             "Write the store's source back out to a directory." #f 'daemon)
       (list 'def '(def <name> ["--under" <library>] <source>)
             "Define or replace one named definition." #f 'daemon)
       (list 'import-md '(import-md <dir> ["--allow-delete"])
             "Read a directory of markdown into the store." #f 'daemon)
-      (list 'export-md '(export-md <dir> ["--with-ids"])
+      (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])
             "Write the store out as markdown." #f 'daemon)
       (list 'adopt '(adopt)
             "Take in records that are on disk but not yet in the log." #f 'daemon)
@@ -995,9 +1020,15 @@
                   (guarded (lambda ()
                     (cond ((and (argument-option options "--datum") (argument-option options "--raw"))
                            '(error bad-request incompatible-projection-options))
+                          ((argument-option options "--working")
+                           (working-export store state writer
+                             (lambda (view)
+                               (if (argument-option options "--datum")
+                                   (export-datum-view store (car args) view)
+                                   (export-code-view store (car args) (argument-option options "--raw") view)))))
                           ((argument-option options "--datum") (export-datum store (car args)))
                           (else (export-code store (car args) (argument-option options "--raw"))))))
-                  (usage '(export-code <dir> ["--raw"] ["--datum"])))))
+                  (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])))))
       (cons 'def
             (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
@@ -1014,8 +1045,12 @@
       (cons 'export-md
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
-                  (usage '(export-md <dir> ["--with-ids"]))
-                  (guarded (lambda () (export-md store (car args) (argument-option options "--with-ids")))))))
+                  (usage '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>]))
+                  (guarded (lambda ()
+                    (if (argument-option options "--working")
+                        (working-export store state writer
+                          (lambda (view) (export-md-view (car args) view (argument-option options "--with-ids"))))
+                        (export-md store (car args) (argument-option options "--with-ids"))))))))
       (cons 'adopt
             (lambda (store actor args req options state writer cwd)
               (if (not (null? args))

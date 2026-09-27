@@ -103,7 +103,7 @@
         ;; so a version could never be restored into a named writer's
         ;; slot from the command line. Same shape as the `eval` entry
         ;; below -- a handler reading an option this table does not list.
-        ((read drafts discard restore) '("--writer"))
+        ((read drafts discard restore export-code export-md) '("--writer"))
         ;; NOTE: ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the
@@ -154,8 +154,8 @@
       ((write) '("--rebase"))
       ((import-md) '("--allow-delete"))
       ((import-code) '("--allow-delete" "--datum"))
-      ((export-code) '("--raw" "--datum"))
-      ((export-md) '("--with-ids"))
+      ((export-code) '("--raw" "--datum" "--working"))
+      ((export-md) '("--with-ids" "--working"))
       (else '()))))
 
   ;; `--` ENDS THE OPTIONS AND NOTHING AFTER IT IS ONE. It is kept as a

@@ -354,9 +354,11 @@
 ;; ---- what is NOT covered here ------------------------------------------------
 ;;
 ;; NEVER: `W11-export-working` AND `W11-cut-plus-working` BELONG TO VERBS THIS
-;; FIXTURE DOES NOT DRIVE (`export-code`, and `eval --cut` combined with a
-;; view beyond the row above). They are named here so their absence is a
-;; decision on the record rather than an oversight.
+;; FIXTURE DOES NOT DRIVE. They are in `test/export-working.sc` (F17), which
+;; drives `export-md --working` and `export-code --working`. `eval --cut`
+;; combined with a view beyond the row above is still not covered, and the
+;; export verbs take no `--cut`: named here so the absence is a decision on
+;; the record rather than an oversight.
 
 (system (string-append "rm -rf " here))
 (printf "rows: ~a\n~a failures\neval-working complete\n" rows bad)
