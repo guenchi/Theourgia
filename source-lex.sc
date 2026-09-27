@@ -67,13 +67,24 @@
   ;; #; contents are scanned for unsafe tokens even though they are discarded.
   (define (source-ledger bytes)
     (unless (and (bytevector? bytes) (<= (bytevector-length bytes) 1048576)) (source-error 'input-limit 0))
-    (let ((s (safe-utf8 bytes)) (comments '()) (discards '()) (prefixes 0))
+    (let ((s (safe-utf8 bytes)) (comments '()) (discards '()) (prefixes 0) (run-start #f))
       (unless s (source-error 'invalid-utf8 0))
       (let ((n (string-length s)))
         (define (at? p i) (string-prefix-at? s p i))
+        ;; NEVER: THE LIMIT IS ON A RUN OF CONSECUTIVE PREFIXES, NOT ON THE FILE'S
+        ;; TOTAL (F51). What a prefix can cost -- a quotation nested inside a
+        ;; quotation, a discard of a discard -- grows with the run; a total
+        ;; counted every quote in a thousand-line library, and log.sc was
+        ;; refused at 43 percent of its length. The run is reset by any token
+        ;; that is not a prefix (`end-run!`); whitespace and comments between
+        ;; two prefixes do not end it. The refusal names the run's first prefix.
         (define (prefix! i)
+          (unless run-start (set! run-start i))
           (set! prefixes (+ prefixes 1))
-          (when (> prefixes 256) (source-error 'prefix-limit i)))
+          (when (> prefixes 256) (source-error 'prefix-limit run-start)))
+        (define (end-run!)
+          (set! prefixes 0)
+          (set! run-start #f))
         (define (delimiter? c) (or (char-whitespace? c) (memv c '(#\( #\) #\[ #\] #\{ #\} #\" #\; #\' #\` #\, #\|))))
         (define (quoted-end start endchar)
           (let loop ((i (+ start 1)))
@@ -99,6 +110,16 @@
                                (else (hex (+ j 1)))))
                        (loop (min n (+ i 2)))))
                   (else (loop (+ i 1))))))
+        ;; The end of a character literal's name: the literal's own character
+        ;; is taken whatever it is, and a name (`#\space`, `#\x41`) runs to the
+        ;; next delimiter. NEVER: NO ESCAPE RULE HERE (F51). The name was scanned
+        ;; with atom-end, whose `\` skips the character after it, so `#\\)`
+        ;; swallowed its `)` and the ledger lost count of the depth for the rest
+        ;; of the file -- measured as `unbalanced` at the last byte of client,
+        ;; code-project, mcp/server, md, regex and this file.
+        (define (char-name-end start)
+          (let loop ((i start))
+            (if (or (= i n) (delimiter? (string-ref s i))) i (loop (+ i 1)))))
         (let loop ((i 0) (depth 0))
           (cond
             ((= i n)
@@ -110,7 +131,8 @@
             ((at? "#;" i) (prefix! i) (set! discards (cons i discards)) (loop (+ i 2) depth))
             ((at? "#\\" i)
              (when (= (+ i 2) n) (source-error 'invalid-character i))
-             (let ((end (if (delimiter? (string-ref s (+ i 2))) (+ i 3) (atom-end (+ i 2)))))
+             (end-run!)
+             (let ((end (if (delimiter? (string-ref s (+ i 2))) (+ i 3) (char-name-end (+ i 3)))))
                (when (> (- end i) 256) (source-error 'token-limit i))
                (loop end depth)))
             ((char=? (string-ref s i) #\;)
@@ -118,13 +140,20 @@
                (if (or (= j n) (memv (string-ref s j) '(#\newline #\return)))
                    (begin (set! comments (cons (list i j) comments)) (loop j depth)) (line (+ j 1)))))
             ((memv (string-ref s i) '(#\" #\|))
+             (end-run!)
              (loop (quoted-end i (string-ref s i)) depth))
-            ((memv (string-ref s i) '(#\( #\[ #\{)) (loop (+ i 1) (+ depth 1)))
+            ((memv (string-ref s i) '(#\( #\[ #\{)) (end-run!) (loop (+ i 1) (+ depth 1)))
             ((memv (string-ref s i) '(#\) #\] #\}))
              (when (= depth 0) (source-error 'unbalanced i))
+             (end-run!)
              (loop (+ i 1) (- depth 1)))
+            ;; `,@` IS ONE PREFIX (r1 review): read as `,` and then an atom
+            ;; `@`, the atom ended the run, and 257 of them passed the limit.
+            ((and (char=? (string-ref s i) #\,) (< (+ i 1) n) (char=? (string-ref s (+ i 1)) #\@))
+             (prefix! i) (loop (+ i 2) depth))
             ((memv (string-ref s i) '(#\' #\` #\,)) (prefix! i) (loop (+ i 1) depth))
             (else
+             (end-run!)
              (let* ((end (atom-end i)) (token (substring s i end)))
                (when (= i end) (source-error 'unsupported-token i))
                (when (> (- end i) 4096) (source-error 'token-limit i))

@@ -202,6 +202,11 @@
    unrelated a
    "frame parse"
    (e (#t (quote not-a-datum))))
+  ("datum-code.sc" (discarded-datum) 1 guard
+   ((lexical-violation? e))
+   unrelated a
+   "discard window: a truncated read means grow the window"
+   (e ((lexical-violation? e) #f)))
   ("datum-code.sc" (datum-source-read) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))) #t)
    unrelated a

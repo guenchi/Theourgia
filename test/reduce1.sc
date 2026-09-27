@@ -426,7 +426,7 @@
 ;; and 1/2 the mediant is 2/7, while 1/3 is simpler and sits in the same
 ;; gap. Repeated, that is exactly the denominator growth the rule exists
 ;; to avoid.
-(want "the simplest rational in the gap, not the mediant of its ends"
+(want "the simplest rational in the gap, not the mediant of its ends (section-13 L5)"
       (list (ord-between 0 1) (ord-between 0 1/2) (ord-between 0 1/3)
             (ord-between 1/5 1/2) (ord-between 1/4 1/2)
             (ord-between -1/2 -1/5) (ord-between -1/2 1/2))
@@ -443,7 +443,7 @@
       (list (ord-between 3 #f) (ord-between #f 1) (ord-between #f #f)
             (ord-between 5/2 #f))
       (list 4 0 0 3))
-(want "a gap that needs a denominator past the limit is refused"
+(want "a gap that needs a denominator past the limit is refused (section-13 L16)"
       (let ((tiny (/ 1 (expt 2 128))))
         (ord-between 0 tiny))
       '(refused too-deep))
@@ -1143,7 +1143,7 @@
         (list (cut-usable? r '(("a" . 1)))
               (cut-usable? r '(("b" . 5)))))
       (list 'usable '(unusable not-received)))
-(want "a cut that omits a premise of what it contains is unusable"
+(want "a cut that omits a premise of what it contains is unusable (section-13 L17)"
       (let ((r (reduce-empty)))
         (feed! r
                '("a" 1 () (put ((kind . section))))

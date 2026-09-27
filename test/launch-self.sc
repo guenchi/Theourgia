@@ -318,7 +318,33 @@
   (want "LS-12 a census that is empty (ps printing nothing, exit 0) is unknown, never clean"
         (let ((ls (lines-of (slurp (string-append d "/result2")))))
           (find (lambda (l) (starts-with? l "cleanup ")) ls))
-        "cleanup unknown"))
+        "cleanup unknown")
+  ;; F103: AND THE RESULT SAYS WHY. A note names what the census lacked.
+  (want "F103 LS-12 the empty census's result carries a note saying ps exited 0 without W in its table"
+        (let ((ls (lines-of (slurp (string-append d "/result2")))))
+          (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
+                                      (contains? l "ps exited 0 but its table did not show")))
+                     ls)
+               #t))
+        #t))
+
+;; F103: A ps THAT FAILS, WITH A LINE ON STDERR. The census turns unknown, and
+;; the note carries the exit code and that line: before F103 the census's
+;; stderr went to /dev/null and nothing said why cleanup was unknown.
+(let* ((d (case!))
+       (shim (string-append d "/shim")))
+  (sh "mkdir -p " shim)
+  (spit! (string-append shim "/ps") "#!/bin/sh\necho 'ps: probe shim refused' >&2\nexit 3\n")
+  (sh "chmod +x " shim "/ps")
+  (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
+      d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
+  (let ((ls (lines-of (slurp (string-append d "/result")))))
+    (want "CONTROL F103 a census whose ps exits 3 is unknown"
+          (find (lambda (l) (starts-with? l "cleanup ")) ls)
+          "cleanup unknown")
+    (want "F103 its result carries a note with ps's exit code and its stderr line"
+          (filter (lambda (l) (starts-with? l "note census unknown: ")) ls)
+          '("note census unknown: ps exited 3; ps stderr tail: ps: probe shim refused"))))
 (let* ((d (case!))
        (shim (string-append d "/shim")))
   (sh "mkdir -p " shim)
@@ -333,7 +359,51 @@
             (list (let ((ls (lines-of (slurp (string-append d "/result")))))
                     (find (lambda (l) (starts-with? l "cleanup ")) ls))
                   (< elapsed 60000))
-            '("cleanup unknown" #t)))))
+            '("cleanup unknown" #t))
+      (want "F103 LS-13 the hung census's result carries a note saying ps did not finish before the deadline"
+            (let ((ls (lines-of (slurp (string-append d "/result")))))
+              (and (find (lambda (l) (and (starts-with? l "note census unknown: ")
+                                          (contains? l "ps did not finish before the deadline")))
+                         ls)
+                   #t))
+            #t))))
+
+;; GUARD (sb4 r4): ps's stderr is a FILE, as the base's /dev/null was a
+;; place a write always lands. The shim prints ps's real table, closes its
+;; stdout, then writes one megabyte to stderr and exits 0 only if that write
+;; succeeded. With stderr on a pipe (r3) the census read once and closed it,
+;; the write met EPIPE and the census answered unknown; on a file it lands,
+;; and the census is clean. The shim's perl ignores SIGPIPE, so a closed
+;; reader shows as a failed write and exit 9, not as a signal.
+(let* ((d (case!))
+       (shim (string-append d "/shim"))
+       (real-ps (let ((f (string-append d "/real-ps")))
+                  (sh "command -v ps > " f)
+                  (car (lines-of (slurp f))))))
+  (sh "mkdir -p " shim)
+  (spit! (string-append shim "/ps")
+         (string-append "#!/bin/sh\n"
+                        real-ps " \"$@\" || exit $?\n"
+                        "exec 1>&-\n"
+                        "perl -e '$SIG{PIPE} = \"IGNORE\"; print STDERR \"x\" x 1048576 or exit 9; close STDERR or exit 9; exit 0' || exit 9\n"
+                        "exit 0\n"))
+  (sh "chmod +x " shim "/ps")
+  (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
+      d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
+  (want "F103 GUARD a ps that writes a megabyte to stderr after closing stdout still gives a clean census, with no note"
+        (let ((ls (lines-of (slurp (string-append d "/result")))))
+          (list (find (lambda (l) (starts-with? l "cleanup ")) ls)
+                (filter (lambda (l) (starts-with? l "note census")) ls)))
+        '("cleanup clean" ()))
+  ;; NEVER: THE FILE IS REMOVED. One is made per census, beside --result; a
+  ;; launch makes several, and none may be left in the directory.
+  (want "F103 no census stderr file is left beside the result"
+        (let ((f (string-append d "/ls.txt")))
+          (sh "ls " d " > " f)
+          (filter (lambda (l) (let ((k (string-length "result.census-")))
+                                (and (>= (string-length l) k) (string=? (substring l 0 k) "result.census-"))))
+                  (lines-of (slurp f))))
+        '()))
 
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)

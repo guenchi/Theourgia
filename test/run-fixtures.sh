@@ -163,6 +163,9 @@ trap 'remove_roots $?' EXIT
 # removal line were written into the fixture's output file (measured).
 tracked_w=""
 tracked_name=""
+# Set here as well, so a value inherited from the environment is never
+# named as a launch this run made (r2 review).
+last_ran=""
 tracked_id=""
 tracked_result=""
 launch_n=0
@@ -289,6 +292,7 @@ run_tracked() {
   wait "$tracked_w"
   rt_st=$?
   tracked_w=""
+  last_ran=$tracked_name
   rt_was_aborted=$aborted
   if read_result "$tracked_result" "$tracked_id" "$tracked_name" && [ -n "$rr_status" ]; then
     rt_st=$rr_status
@@ -361,6 +365,17 @@ stop_watcher() {
 on_signal() {
   trap '' INT TERM HUP
   echo "SIGNALLED: stopping the running launch and the probe, counting this run's processes, then removing its roots"
+  # THE LAUNCH THE SIGNAL CUT IS NAMED, AS AN ABORT IS (F104, I3). SIGNALLED
+  # alone left a reader of the log unable to tell which launch was cut. The
+  # name is the running launch's; between launches no launch was cut, and
+  # the line says so and names the last launch that ran to its end. It is not
+  # tracked_name: that is set before a launch starts, so a signal in between
+  # would have named a launch that never ran (r1 review).
+  if [ -n "$tracked_w" ]; then
+    echo "ABORTED AT $tracked_name: signal $(($1 - 128))"
+  else
+    echo "ABORTED AT (no launch running; the last to run was ${last_ran:-none}): signal $(($1 - 128))"
+  fi
   if [ -n "$tracked_w" ]; then
     stop_watcher
     tracked_w=""

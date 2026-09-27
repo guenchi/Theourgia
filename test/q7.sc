@@ -263,7 +263,7 @@
 ;; THE SECOND SENDING IS THE WHOLE POINT. Same who, same verb, same
 ;; arguments, same cursor, same id -- so it is the same request, and the
 ;; store says the work is done rather than doing it again.
-(want "the same request again is a replay, not a second block"
+(want "the same request again is a replay, not a second block (section-13 L21)"
       (list (let ((a (send! d1 (req-of "r-1" AFTER1 "One") "One")))
               (list (car a) (cadr a)))
             (titles-of (open-and-reduce d1)))
@@ -279,7 +279,7 @@
 ;; AND THE SAME ID OVER DIFFERENT CONTENT IS THE ERROR THAT MATTERS. The
 ;; client reused a name; executing would append something its author
 ;; never asked for under an id that already names something else.
-(want "the same id over different content is refused"
+(want "the same id over different content is refused (section-13 L21)"
       (let ((a (send! d1 (req-of "r-1" AFTER1 "Two") "Two")))
         (list (car a) (cadr a)))
       '(error req-mismatch))
@@ -295,7 +295,7 @@
 ;; exactly the case where absence proves nothing, because the stretch is
 ;; where the evidence would be.
 (uncertain-write! d2 W2 (list (list W2 0 40)) 'commit)
-(want "no evidence, and the positions it could occupy are in doubt"
+(want "no evidence, and the positions it could occupy are in doubt (section-13 L21)"
       (let ((a (send! d2 (req-of "r-1" (cons W2 0) "One") "One")))
         (list (car a) (cadr a) (caddr a)))
       (list 'error 'unknown (list 'range-overlaps (list W2 0 40))))

@@ -235,14 +235,14 @@
 
 (printf "== P1: the ten outcomes of a comparison ==\n")
 (want "a brand new segment is installed" (why (pub (fresh!) 1 (recs 1 2))) '(published 1))
-(want "the same bytes again are finished, not re-installed"
+(want "the same bytes again are finished, not re-installed (section-13 L15)"
       (let ((d (fresh!))) (pub d 1 (recs 1 2)) (why (pub d 1 (recs 1 2)))) '(idempotent 1))
 (want "a candidate shorter than what is here is incomplete"
       (let ((d (fresh!))) (pub d 1 (recs 1 2)) (why (pub d 1 (recs 1 1)))) '(incomplete 1))
 (want "a candidate longer than a sealed segment is unmergeable"
       (let ((d (fresh!))) (pub d 1 (recs 1 2)) (why (pub d 1 (recs 1 3))))
       'newer-history-unmergeable)
-(want "a record that disagrees forks the history at its sequence"
+(want "a record that disagrees forks the history at its sequence (section-13 L15)"
       (let ((d (fresh!)))
         (pub d 1 (recs 1 2))
         (why (pub d 1 (cat (rec 1 '(put ((kind . section)))) (rec 2 '(put ((kind . other))))))))

@@ -240,15 +240,31 @@
 
 ;; The first indented block after a verb's heading, as text, or #f when the
 ;; section has none before the next heading.
+;;
+;; NOTE: A BLANK LINE DOES NOT END AN INDENTED BLOCK when the next non-blank
+;; line is still indented; that is Markdown's rule, and the block a reader
+;; sees. Ending at the first blank line let a datum written after one escape
+;; the one-datum check. Blank lines at the block's end are not part of it.
+;; A blank line is spaces or tabs, and is kept as it is written, so an
+;; offset after it is the offset in the source (r2 review).
+(define (blank-line? l)
+  (for-all (lambda (c) (or (char=? c #\space) (char=? c #\tab))) (string->list l)))
 (define (first-block-after ls)
   (let skip ((ls ls))
     (cond ((null? ls) #f)
           ((and (starts-with? (car ls) "#") (not (starts-with? (car ls) "####"))) #f)
           ((starts-with? (car ls) "    ")
            (let take ((ls ls) (acc '()))
-             (if (and (pair? ls) (starts-with? (car ls) "    "))
-                 (take (cdr ls) (cons (car ls) acc))
-                 (fold-left (lambda (s l) (string-append s l "\n")) "" (reverse acc)))))
+             (cond ((and (pair? ls) (starts-with? (car ls) "    "))
+                    (take (cdr ls) (cons (car ls) acc)))
+                   ((and (pair? ls) (blank-line? (car ls))
+                         (let next ((rest (cdr ls)))
+                           (cond ((null? rest) #f)
+                                 ((blank-line? (car rest)) (next (cdr rest)))
+                                 (else (starts-with? (car rest) "    ")))))
+                    (take (cdr ls) (cons (car ls) acc)))
+                   (else
+                    (fold-left (lambda (s l) (string-append s l "\n")) "" (reverse acc))))))
           (else (skip (cdr ls))))))
 
 ;; Every name in a form: strings, symbols, anything that is not a pair.
@@ -268,26 +284,74 @@
            (let ((s (symbol->string x)))
              (or (string=? s "...") (starts-with? s "<"))))))
 
-;; `(verb . datum)` for every verb section whose first block reads as a form
-;; headed by the verb's name and spelled in usage names only, and `(verb .
-;; #f)` for every other section.
-(define section-usage-blocks
-  (let loop ((ls (lines-of readme)) (out '()))
+;; The character offset in `text` at which a second datum begins, after the
+;; first one is read, or #f when only whitespace and comments follow it. A
+;; comment is not a datum (r1 review): a `;` line, a `#| |#` block (nested),
+;; and a datum discarded with `#;` are skipped, and the offset names the datum
+;; after them. A text that does not read at all has no first datum and
+;; answers #f here; the row about usage forms reports that section.
+(define (second-datum-offset text)
+  (guard (e (#t #f))
+    (let ((port (open-string-input-port text)) (n (string-length text)))
+      (define (at i) (and (< i n) (string-ref text i)))
+      (read port)
+      (let skip ()
+        (let ((i (port-position port)) (c (peek-char port)))
+          (cond ((eof-object? c) #f)
+                ((char-whitespace? c) (read-char port) (skip))
+                ((char=? c #\;)
+                 (let line () (let ((d (read-char port))) (unless (or (eof-object? d) (char=? d #\newline)) (line))))
+                 (skip))
+                ((and (char=? c #\#) (eqv? (at (+ i 1)) #\|))
+                 (let block ((j (+ i 2)) (depth 1))
+                   (cond ((>= j n) (set-port-position! port n))
+                         ((and (eqv? (at j) #\|) (eqv? (at (+ j 1)) #\#))
+                          (if (= depth 1) (set-port-position! port (+ j 2)) (block (+ j 2) (- depth 1))))
+                         ((and (eqv? (at j) #\#) (eqv? (at (+ j 1)) #\|)) (block (+ j 2) (+ depth 1)))
+                         (else (block (+ j 1) depth))))
+                 (skip))
+                ((and (char=? c #\#) (eqv? (at (+ i 1)) #\;))
+                 (set-port-position! port (+ i 2))
+                 (read port)
+                 (skip))
+                (else i)))))))
+
+(want "F104 CONTROL: comments after the usage form are not a second datum, and a datum after them is named at its own offset"
+      (list (second-datum-offset "(move <id>) ; a note\n")
+            (second-datum-offset "(move <id>) #| a #| nested |# note |#")
+            (second-datum-offset "(move <id>) #;(discarded form)")
+            (second-datum-offset "(move <id>) ; a note\n <bogus>"))
+      (list #f #f #f 22))
+
+;; `(verb datum extra)` for every verb section of `text`: `datum` is the
+;; section's first block read as a form headed by the verb's name and spelled
+;; in usage names only, or #f; `extra` is the offset within that block of a
+;; second datum, or #f.
+(define (usage-blocks-of text)
+  (let loop ((ls (lines-of text)) (out '()))
     (cond
       ((null? ls) (reverse out))
       ((heading-verb (car ls))
        => (lambda (v)
             (let* ((verb (string->symbol v))
-                   (text (first-block-after (cdr ls)))
-                   (datum (and text
+                   (block (first-block-after (cdr ls)))
+                   (datum (and block
                                (guard (e (#t #f))
-                                 (read (open-string-input-port text))))))
+                                 (read (open-string-input-port block))))))
               (loop (cdr ls)
-                    (cons (cons verb (and (pair? datum) (eq? (car datum) verb)
-                                          (for-all usage-name? (names-in (cdr datum)))
-                                          datum))
+                    (cons (list verb
+                                (and (pair? datum) (eq? (car datum) verb)
+                                     (for-all usage-name? (names-in (cdr datum)))
+                                     datum)
+                                (and block (second-datum-offset block)))
                           out)))))
       (else (loop (cdr ls) out)))))
+
+;; `(verb . datum)` for every verb section whose first block reads as a form
+;; headed by the verb's name and spelled in usage names only, and `(verb .
+;; #f)` for every other section.
+(define section-usage-blocks
+  (map (lambda (s) (cons (car s) (cadr s))) (usage-blocks-of readme)))
 
 ;; The product's own usage form for a verb, or #f.
 (define (program-usage-form verb)
@@ -345,6 +409,79 @@
       (list (>= (length compared) 20)
             (names-missing-from (product-usage-form 'insert) '(insert "--under" <id> ("--bogus"))))
       '(#t ("--bogus")))
+
+;; NEVER: THE USAGE BLOCK HOLDS EXACTLY ONE DATUM (F104, I2). The comparison
+;; above reads the block's first datum and nothing after it, so a second form
+;; written into the same block -- an extra placeholder, an option the verb
+;; does not take -- was compared with nothing and turned no row red. A second
+;; datum is red here, with the verb and its offset in the block.
+(define (sections-with-a-second-datum text)
+  (fold-left (lambda (acc s) (if (caddr s) (append acc (list (list (car s) (caddr s)))) acc))
+             '() (usage-blocks-of text)))
+
+(want "F104 every verb section's usage block holds exactly one datum"
+      (sections-with-a-second-datum readme)
+      '())
+
+;; A README copy with `<bogus>` written after move's usage form, in the same
+;; block: the check names move and the offset where `<bogus>` begins.
+(define (with-second-datum text verb extra)
+  (let* ((heading (string-append "### `" verb "`"))
+         (at (index-of text heading 0))
+         (form (and at (index-of text "\n    (" at)))
+         (end (and form (index-of text "\n" (+ form 1)))))
+    (and end (string-append (substring text 0 end) " " extra (substring text end (string-length text))))))
+
+(want "F104 CONTROL: a README copy with a second datum in move's usage block is red, naming move and the offset"
+      (let ((copy (with-second-datum readme "move" "<bogus>")))
+        (and copy (sections-with-a-second-datum copy)))
+      (let* ((copy (with-second-datum readme "move" "<bogus>"))
+             (block (first-block-after
+                      (cdr (let find ((ls (lines-of copy)))
+                             (if (equal? (heading-verb (car ls)) "move") ls (find (cdr ls))))))))
+        (list (list 'move (and block (index-of block "<bogus>" 0))))))
+
+;; A README copy with a blank line after move's usage form and then an
+;; indented line in the same block. The expected offset is counted from the
+;; form's own line, not from the function under test: the form line, its
+;; newline, the blank line's newline, and four spaces of indent.
+(define (with-line-after-blank text verb line)
+  (let* ((heading (string-append "### `" verb "`"))
+         (at (index-of text heading 0))
+         (form (and at (index-of text "\n    (" at)))
+         (end (and form (index-of text "\n" (+ form 1)))))
+    (and end (list (string-append (substring text 0 end) "\n\n    " line
+                                  (substring text end (string-length text)))
+                   (- end (+ form 1))))))
+
+(want "F104 CONTROL: a second datum after a blank line inside move's usage block is red, naming move and the offset"
+      (let ((copy (with-line-after-blank readme "move" "<bogus>")))
+        (and copy (sections-with-a-second-datum (car copy))))
+      (let ((copy (with-line-after-blank readme "move" "<bogus>")))
+        (and copy (list (list 'move (+ (cadr copy) 1 1 4))))))
+
+;; The blank line is a single tab (r2 review): still blank, still inside the
+;; block, and kept as written, so the offset counts it -- the form line, its
+;; newline, the tab and its newline, and four spaces of indent.
+(define (with-line-after-tab text verb line)
+  (let* ((heading (string-append "### `" verb "`"))
+         (at (index-of text heading 0))
+         (form (and at (index-of text "\n    (" at)))
+         (end (and form (index-of text "\n" (+ form 1)))))
+    (and end (list (string-append (substring text 0 end) "\n\t\n    " line
+                                  (substring text end (string-length text)))
+                   (- end (+ form 1))))))
+
+(want "F104 CONTROL: a second datum after a tab-only blank line inside move's usage block is red, at its source offset"
+      (let ((copy (with-line-after-tab readme "move" "<bogus>")))
+        (and copy (sections-with-a-second-datum (car copy))))
+      (let ((copy (with-line-after-tab readme "move" "<bogus>")))
+        (and copy (list (list 'move (+ (cadr copy) 1 2 4))))))
+
+(want "F104 CONTROL: a comment after a blank line inside move's usage block is not a second datum"
+      (let ((copy (with-line-after-blank readme "move" "; a note")))
+        (and copy (sections-with-a-second-datum (car copy))))
+      '())
 
 
 ;; ---- DOC-4: the options every verb takes ---------------------------------------

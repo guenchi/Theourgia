@@ -1061,6 +1061,13 @@
         (want "RS-15 within twenty seconds of TERM the runner has stopped with 143 and said SIGNALLED"
               (list done (rc-of c) (and (line-with c "SIGNALLED") #t))
               '(#t 143 #t))
+        ;; F104 (I3): AND IT NAMES THE LAUNCH THE SIGNAL CUT. TERM reaches the
+        ;; runner while `wait` holds the run open (it wrote `started`), so the
+        ;; line names wait and the signal's number. Without it SIGNALLED alone
+        ;; did not say which launch was cut.
+        (want "F104 RS-15 the signalled run names the launch the signal cut: ABORTED AT wait: signal 15"
+              (and (line-with c "ABORTED AT wait: signal 15") #t)
+              #t)
         (when (and r (starts-with? (car r) (string-append (cadr c) "/run-"))) (sh "rm -rf " (car r)))
         (when (and r (starts-with? (cadr r) "/tmp/ths.") (<= (string-length (cadr r)) 20)) (sh "rm -rf " (cadr r)))))))
 

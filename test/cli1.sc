@@ -1351,7 +1351,7 @@
                  (cons (if (and (pair? r) (eq? (car r) 'ok)) (cadr r) r) acc))))
         (else (loop (+ i 1) start acc))))))
 
-(want "a hundred records, numbered one to a hundred with no gap and no repeat"
+(want "a hundred records, numbered one to a hundred with no gap and no repeat (section-13 L6)"
       (let ((seqs (seqs-of d4)))
         (list (length seqs)
               (equal? seqs (let build ((k 100) (out '()))
@@ -1525,7 +1525,7 @@
 ;; it is not: with the product's lock removed and the barrier kept, the
 ;; second writer walks in while the first is still parked inside.
 (define noflock-report (two-writers "noflock"))
-(want "with the lock removed the second writer gets in early and never waits"
+(want "with the lock removed the second writer gets in early and never waits (section-13 L6)"
       (list (field-in noflock-report "EARLY") (field-in noflock-report "WAITED"))
       (list 1 0))
 

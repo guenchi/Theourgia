@@ -129,16 +129,93 @@ for my $name (qw(INT TERM HUP)) {
 # the census pid (Apple's ps can print nothing and exit 0). Returns undef
 # when it is not valid, otherwise a list of [pid, command] for the live
 # (non-zombie) members of group $g.
+#
+# EVERY WAY IT TURNS UNKNOWN WRITES A NOTE (F103), with ps's exit code and
+# the last 200 bytes of its stderr, so a result that says `cleanup unknown`
+# also says why. It used to say nothing: the census's stderr went to
+# /dev/null and every failure path returned undef in silence, so a run that
+# stopped on "the members of its group could not be read" left no cause to
+# read. Identical notes are written once.
+my $CENSUS_ERR_TAIL = 200;
+sub census_note {
+  my ($what, $err) = @_;
+  my $tail = defined $err ? $err : '';
+  $tail = substr($tail, -$CENSUS_ERR_TAIL) if length($tail) > $CENSUS_ERR_TAIL;
+  $tail =~ s/\s+$//;
+  my $n = "census unknown: $what; ps stderr tail: " . (length($tail) ? $tail : '(empty)');
+  push @notes, $n unless grep { $_ eq $n } @notes;
+  return undef;
+}
+# PS'S STDERR GOES TO A FILE, NOT A PIPE (sb4 r4). On the base it went to
+# /dev/null; a pipe changed what ps met when it wrote there -- it could
+# block, fill, or be closed under it (EPIPE) -- and three review rounds each
+# found a drain policy that traded one of those for another. A regular file
+# does none of them, so ps behaves as it did on the base -- short of a full
+# disk, or a file-size limit below what ps writes on its own errors, the two
+# limits a regular file has and /dev/null does not -- and the loop below
+# reads stdout only, as the base's did. The file is made
+# beside --result, one per census, read for its tail once the census is
+# decided, and removed. A file that cannot be made leaves ps's stderr at
+# /dev/null, as on the base, and the note says so.
+my $census_seq = 0;
+sub census_errfile {
+  $census_seq++;
+  my $path = "$opt{result}.census-$$-$census_seq";
+  my $fh;
+  unless (sysopen($fh, $path, POSIX::O_RDWR() | POSIX::O_CREAT() | POSIX::O_EXCL(), 0600)) {
+    return (undef, undef, "(not captured: $!)");
+  }
+  return ($fh, $path, undef);
+}
+# THE TAIL IS READ THROUGH THE HANDLE THAT MADE THE FILE, NOT BY ITS NAME,
+# and at most $CENSUS_ERR_TAIL bytes of it (r4 review). Opening the name
+# again followed whatever the name pointed at by then -- a symlink or a
+# FIFO put in its place -- and reading to end of file followed a
+# descendant of ps that was still appending. The size is taken once; one
+# bounded read ends it. A read that fails says so in the tail, and a name
+# that cannot be removed is a note of its own.
+sub census_errtail {
+  my ($fh, $path) = @_;
+  my $tail;
+  my $size = (stat($fh))[7];
+  if (!defined $size) {
+    $tail = "(not read: $!)";
+  } else {
+    my $from = $size > $CENSUS_ERR_TAIL ? $size - $CENSUS_ERR_TAIL : 0;
+    my $got = sysseek($fh, $from, 0) ? sysread($fh, my $buf, $size - $from) : undef;
+    $tail = defined $got ? $buf : "(not read: $!)";
+  }
+  close $fh;
+  unless (unlink $path) {
+    my $n = "census stderr file not removed: $path: $!";
+    push @notes, $n unless grep { $_ eq $n } @notes;
+  }
+  return $tail;
+}
 sub census {
   my ($g, $deadline_of_caller) = @_;
-  pipe(my $r, my $w) or return undef;
+  my ($efh, $epath, $uncaptured) = census_errfile();
+  my ($members, $what) = census_run($g, $deadline_of_caller, $efh);
+  my $tail = defined $epath ? census_errtail($efh, $epath) : $uncaptured;
+  return $members if defined $members;
+  return census_note($what, $tail);
+}
+# Answers (members) for a valid census, or (undef, what) naming why not.
+sub census_run {
+  my ($g, $deadline_of_caller, $efh) = @_;
+  pipe(my $r, my $w) or return (undef, "could not start ps (pipe: $!)");
   my $pid = fork;
-  return undef unless defined $pid;
+  unless (defined $pid) {
+    my $why = "could not start ps (fork: $!)";
+    close $r; close $w;
+    return (undef, $why);
+  }
   if ($pid == 0) {
     POSIX::setpgid(0, 0);
     close $r;
     open(STDOUT, '>&', $w) or POSIX::_exit(126);
-    open(STDERR, '>', '/dev/null');
+    if ($efh) { open(STDERR, '>&', $efh) or POSIX::_exit(126); }
+    else { open(STDERR, '>', '/dev/null'); }
     open(STDIN, '<', '/dev/null');
     {
       no warnings 'exec';
@@ -155,15 +232,17 @@ sub census {
   my $rin = '';
   vec($rin, fileno($r), 1) = 1;
   my $eof = 0;
+  # $ended says why the loop stopped when stdout had not ended.
+  my $ended = '';
   while (!$eof) {
     my $left = $until - now();
-    last if $left <= 0;
+    if ($left <= 0) { $ended = 'deadline'; last; }
     my $rout;
     my $n = select($rout = $rin, undef, undef, $left);
-    next if $n < 0 && $!{EINTR};
-    last if $n <= 0;
+    if ($n < 0) { next if $!{EINTR}; $ended = "select failed: $!"; last; }
+    if ($n == 0) { $ended = 'deadline'; last; }
     my $got = sysread($r, my $buf, 65536);
-    if (!defined $got) { next if $!{EINTR}; last; }
+    if (!defined $got) { next if $!{EINTR}; $ended = "reading ps's output failed: $!"; last; }
     if ($got == 0) { $eof = 1; last; }
     $text .= $buf;
   }
@@ -186,8 +265,21 @@ sub census {
   }
   # NEVER AN UNBOUNDED REAP: a ps that will not be reaped is left, and
   # this census is unknown.
-  unless ($reaped) { kill 'KILL', -$pid; kill 'KILL', $pid; return undef; }
-  return undef unless $eof && defined $st && $st == 0;
+  unless ($reaped) {
+    kill 'KILL', -$pid; kill 'KILL', $pid;
+    # A ps that ran into the deadline is also the one left unreaped (the reap
+    # window ends at the same deadline), and "did not finish" is the cause:
+    # the note says both.
+    return (undef, $eof ? "ps could not be reaped by the deadline"
+                 : $ended eq 'deadline' ? "ps did not finish before the deadline, and could not be reaped by it"
+                 : "$ended, and ps could not be reaped by the deadline");
+  }
+  my $how = ($st & 127) ? "was killed by signal " . ($st & 127) : "exited " . ($st >> 8);
+  unless ($eof) {
+    return (undef, $ended eq 'deadline' ? "ps did not finish before the deadline (ps $how)"
+                                        : "$ended (ps $how)");
+  }
+  return (undef, "ps $how") unless $st == 0;
   my ($has_w, $has_c) = (0, 0);
   my @members;
   for my $line (split /\n/, $text) {
@@ -197,8 +289,13 @@ sub census {
     $has_c = 1 if $p == $census_pid;
     push @members, [$p, $comm] if $pg == $g && $stat !~ /^Z/;
   }
-  return undef unless $has_w && $has_c;
-  return \@members;
+  unless ($has_w && $has_c) {
+    my $missing = !$has_w && !$has_c ? "W ($W) or the census pid ($census_pid)"
+                : !$has_w ? "W ($W)" : "the census pid ($census_pid)";
+    my $lines = () = $text =~ /\n/g;
+    return (undef, "ps exited 0 but its table did not show $missing ($lines lines)");
+  }
+  return (\@members);
 }
 
 # Sleep for $secs, all of it: a signal that cuts the sleep short does not

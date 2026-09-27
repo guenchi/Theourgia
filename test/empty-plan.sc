@@ -35,7 +35,7 @@
 (define segment (string-append (writer-directory store writer) "/000001.sexp"))
 (define (bytes) (call-with-port (open-file-input-port segment) get-bytevector-all))
 (define before (bytes))
-(want "QE-01 retry replays the same plan"
+(want "QE-01 retry replays the same plan (section-13 L21)"
       (exists (lambda (a) (and (has-field a 'replay #t) (has-field a 'event event)))
               (answer-items (call))) #t)
 (want "QE-01 retry appends nothing" (bytes) before)

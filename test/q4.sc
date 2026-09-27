@@ -301,7 +301,7 @@
 ;; that something once wrote that index down -- which is exactly the
 ;; question `item-naming-missing` asks, and why THAT function must go on
 ;; counting plan records while this one must not.
-(want "TWIN: the receipt alone, with nothing naming an index, is still planned"
+(want "TWIN: the receipt alone, with nothing naming an index, is still planned (section-13 L21)"
       (state 2 (list (receipt-record (receipt (list (cons 0 (cons W 13)) (cons 1 (cons W 14)))))))
       '(planned))
 ;; TWIN: THE SAME RECORDS WITH THE SLOT AN EXECUTION USES. Without this

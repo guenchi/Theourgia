@@ -200,7 +200,7 @@
 (define retry (cli-retry))
 (printf "retry observation ~s\n" retry)
 (want "W4\" the retry succeeds" (and (pair? retry) (eq? 'ok (car retry))) #t)
-(want "W4\" it completed the plan's own text, not the later draft" (src A) "frozen text")
+(want "W4\" it completed the plan's own text, not the later draft (section-13 L21)" (src A) "frozen text")
 (want "W4\" the plan now has its member"
       (map (lambda (e) (actor-sub (ev-actor e)))
            (store-evidence store (cons writer "R1")))

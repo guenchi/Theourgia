@@ -469,7 +469,7 @@
 ;; through reset-done (no reset is pending).
 (build!)
 (define delivered-after-reload '())
-(want "records published mid-session reach the reducer"
+(want "records published mid-session reach the reducer (section-13 L5')"
       (parameterize ((log-clock (lambda () fixed-ts)))
         (let ((s (log-begin d (lambda (w seg off seq . rest)
                                 (set! delivered-after-reload

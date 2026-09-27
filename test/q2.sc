@@ -490,7 +490,7 @@
 ;; AND IT NAMES THE LAST SUB-OPERATION -- the furthest point the promise
 ;; has to reach, and the record a caller must make durable before
 ;; repeating the word.
-(want "the whole plan present is a replay, named at its last sub-operation"
+(want "the whole plan present is a replay, named at its last sub-operation (section-13 L21)"
       (decide (list (plan-ev two) (ev 14 0 '(set "b" "t" "x")) (ev 15 1 '(set "c" "t" "y"))) 2)
       '(replay ("w3kxxxxx" . 15)))
 ;; A REQUEST OF EXACTLY ONE SUB-OPERATION HAS NO PLAN, and an empty plan

@@ -110,6 +110,8 @@ differences — and is never an error.
     (read <id> ("--md") ("--recursive") ("--writer" <name>)
           ("--working") ("--working-info"))
 
+It answers:
+
     (ok (<block>))        |  (ok (items <block> ...))  |  (ok (text "<markdown>"))
 
 What a block says. Without options it is one block as data; `--md` gives its own
@@ -156,6 +158,8 @@ is made of rather than changing what is read.
 
     (refs <id>)
 
+It answers:
+
     (ref (from <id>) (rel <rel>) (via link|md))
 
 What points **at** this block, from the two places a reference can live. A `link`
@@ -171,6 +175,8 @@ returns about the block.
 ### `search`
 
     (search <query> ("--all"))
+
+It answers:
 
     (hit <id> <score> "<snippet>" (fields (<field> ...)))
     --all           every hit, not just the best ten
@@ -257,6 +263,8 @@ answer with items writes the items and nothing else.
 
     (grep <pattern> ("--under" <id>) ("--all"))
 
+It answers:
+
     (match <id> <line-no> "<text>")
     --under <id>    only the block given and what is under it
     --all           no limit on how many lines come back
@@ -293,6 +301,8 @@ The query is only ever text: nothing in it reaches a numeric parser.
 
     (whereis <name>)
 
+It answers:
+
     (def <id> (library <lib>) (name <sym>) (kind code))
     (export <lib-id> (library <lib>) (name <sym>))
 
@@ -315,6 +325,8 @@ then those containing the query, then those within a couple of typing errors.
 
     (log (<id>))
 
+It answers:
+
     (entry (event <writer> <seq>) (ts <ms>) (actor "<name>") (verb <verb>))
 
 What this store has applied, in the order it was delivered. Given an id, only the
@@ -329,6 +341,8 @@ already covers — which would produce a log that silently began in the middle.
 ### `tag`
 
     (tag (<name>))
+
+It answers:
 
     (tag (name "<name>") (cut ((<writer> . <seq>) ...)))
 
@@ -346,6 +360,8 @@ uniqueness constraint.
 ### `diff`
 
     (diff <cut> <cut>)
+
+It answers:
 
     (added <id>) | (removed <id>) | (changed <id> <field>)
 
@@ -399,6 +415,8 @@ writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 ### `conflicts`
 
     (conflicts)
+
+It answers:
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
 

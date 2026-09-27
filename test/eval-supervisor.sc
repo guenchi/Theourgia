@@ -116,10 +116,49 @@
 ;; (error eval-worker-unavailable (reason no-ready)), and that is a different
 ;; fact from an answer that came back without naming its limit. Both used to
 ;; read UNNAMED, so a red row could not say which had happened.
-(define (limit-reading out limit-text)
-  (cond ((contains? out limit-text) 'named-the-limit)
-        ((contains? out "(error eval-worker-unavailable (reason no-ready))") 'no-ready)
-        (else 'UNNAMED)))
+;;
+;; NEVER: THE CLAUSE IS COMPARED AS A DATUM, NOT FOUND AS A SUBSTRING (F104,
+;; I5). The text "(limit 1)" was searched for in the whole output, so a
+;; stdout that printed it -- the output of an ok answer is text inside it --
+;; read named-the-limit for an answer that named no limit at all. The answer is read -- the first datum of the
+;; output headed `ok` or `error`; stderr shares the output -- and the clause
+;; is looked for among its clauses with equal?.
+(define (answer-datum out)
+  (guard (e (#t #f))
+    (let ((port (open-string-input-port out)))
+      (let loop ()
+        (let ((d (read port)))
+          (cond ((eof-object? d) #f)
+                ((and (pair? d) (memq (car d) '(ok error))) d)
+                (else (loop))))))))
+
+(define (clauses-of d)
+  (if (list? d) (filter pair? (cdr d)) '()))
+
+(define (limit-reading out limit-clause)
+  (let ((d (answer-datum out)))
+    (cond ((member limit-clause (clauses-of d)) 'named-the-limit)
+          ((and d (eq? (car d) 'error) (pair? (cdr d)) (eq? (cadr d) 'eval-worker-unavailable)
+                (member '(reason no-ready) (clauses-of d)))
+           'no-ready)
+          (else 'UNNAMED))))
+
+;; GUARD, green on the base: the substring the base looked for includes the
+;; closing parenthesis, so "(limit 1)" was never found in "(limit 10)". The
+;; row is kept so a later matcher that drops the parenthesis is red. The row
+;; after it is the one the base fails.
+(want "F104 GUARD (green on the base): a reading for (limit 1) is not satisfied by an answer naming (limit 10)"
+      (limit-reading "(error eval-limit (resource time) (limit 10))\n" '(limit 1))
+      'UNNAMED)
+
+(want "F104 a reading for (limit 1) is not satisfied by an ok answer whose stdout prints (limit 1)"
+      (limit-reading "(ok (values (3)) (stdout \"(limit 1)\") (stderr \"\"))\n" '(limit 1))
+      'UNNAMED)
+
+(want "F104 CONTROL TWIN: the answer that names (limit 1) reads named-the-limit, and no-ready reads no-ready"
+      (list (limit-reading "(error eval-limit (resource time) (limit 1))\n" '(limit 1))
+            (limit-reading "(theourgia machine-home \"/x\")\n(error eval-worker-unavailable (reason no-ready))\n" '(limit 1)))
+      '(named-the-limit no-ready))
 
 (define finite-slow "(let loop ((i 0)) (if (< i 2000000000) (loop (+ i 1)) 3))")
 
@@ -132,7 +171,7 @@
 (want "SUP-01 a deadline already past stops a worker that would have answered (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (cli "eval" "--timeout-ms" "1" "(+ 1 2)")))
         (list (if (contains? out "(resource time)") 'time (list 'said out))
-              (limit-reading out "(limit 1)")))
+              (limit-reading out '(limit 1))))
       '(time named-the-limit))
 
 ;; ---- the memory branch --------------------------------------------------------
@@ -145,7 +184,7 @@
 (want "SUP-02 a budget below the worker's real size stops it at a sample (the second reading is no-ready when the worker never said ready, UNNAMED when it answered without naming the limit)"
       (let ((out (cli "eval" "--memory-bytes" "1048576" "--timeout-ms" "30000" finite-slow)))
         (list (if (contains? out "(resource memory)") 'memory (list 'said out))
-              (limit-reading out "(limit 1048576)")))
+              (limit-reading out '(limit 1048576))))
       '(memory named-the-limit))
 
 ;; ---- the twin -----------------------------------------------------------------

@@ -71,6 +71,36 @@
                          (collect (cdr rs) (cons (substring text (car row) (caddr row)) out))
                          (apply string-append out)))))))
         (else (loop (cdr rows) (cons (car rows) previous))))))
+  ;; Read the datum that follows a discard at offset. Copying the rest of the
+  ;; text for every discard made a file of many discards quadratic, so the
+  ;; datum is read from a window that doubles until the datum ends strictly
+  ;; before the window's edge. A datum that ends before the edge reads the
+  ;; same from the window as from the whole text: the reader has seen every
+  ;; character it would see, including the delimiter after an atom. An eof,
+  ;; a lexical error or an end at the edge may be the window's doing, so the
+  ;; window grows; the last try is the whole rest of the text, whose answer
+  ;; (datum, eof or error) is final.
+  ;;
+  ;; NOTE: ONLY LEXICAL VIOLATIONS ARE CAUGHT. Chez's reader raises a datum
+  ;; cut short (a list, string, block comment, vector, number or character
+  ;; left open) as one condition that is both a lexical violation and an
+  ;; i/o read error, "unexpected end-of-file reading"; that is the
+  ;; truncation, and it means grow. The filter is by condition type, not by
+  ;; origin: a lexical violation raised by anything else inside the read (a
+  ;; reader observer, say) also grows the window, and the last try raises it
+  ;; as the whole text would. Any other condition -- the observers today
+  ;; raise a plain symbol -- goes on at once. The window is a string, so no
+  ;; filesystem condition can arise here.
+  (define (discarded-datum text offset)
+    (let ((n (string-length text)))
+      (let grow ((size 64))
+        (let ((edge (+ offset size)))
+          (if (>= edge n)
+              (source-reader-at text offset)
+              (let ((a (guard (e ((lexical-violation? e) #f)) (source-reader-next (source-reader-open (substring text offset edge))))))
+                (if (and a (not (eof-object? a)) (< (caddr a) size))
+                    a
+                    (grow (* size 2)))))))))
   (define (datum-source-read bytes . context)
     (guard (e ((and (pair? e) (eq? (car e) 'error)) (raise e))
               (#t (raise '(error bad-source (reason reader-rejected)))))
@@ -78,7 +108,7 @@
              (reader (source-reader-open text)) (lines (char-lines text))
              (discarded
                (map (lambda (start)
-                      (let ((a (source-reader-at text (+ start 2))))
+                      (let ((a (discarded-datum text (+ start 2))))
                         (when (eof-object? a) (raise '(error bad-source (reason missing-discarded-datum))))
                         (list start (+ start 2 (caddr a))))) (caddr ledger))))
         (define (inside-discard? offset)
