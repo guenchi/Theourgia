@@ -46,6 +46,7 @@ import * as assert from 'assert';
 import {execFileSync} from 'child_process';
 import {readFileSync, readdirSync} from 'fs';
 import * as path from 'path';
+import * as ts from 'typescript';
 import { NOT_A_WRITES_ANSWER, classifyRefusal } from '../../src/saver';
 import { initWire, parseAnswers } from '../../src/wire';
 
@@ -224,6 +225,32 @@ describe('re-pin f5ebd58: what this extension sends keeps two answers out of its
   });
 
   /*
+   * QUEUE ITEM 13: IMPORTED SOURCE THAT IS NOT UTF-8 IS STORED AND CANNOT BE
+   * FOUND. `import-code` without `--datum` on a file whose bytes are not
+   * valid UTF-8 puts the block in the store, and none of its text is
+   * visible to `search` or `grep` (core F61, not fixed). The only signal is
+   * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
+   * grep answer (store.sc:1361 `search-report`, store.sc:1754 `report`).
+   * This extension sends neither import verb today, so the symptom is out of
+   * its reach. The day it grows a command that imports a file or a
+   * directory, that command ships with a reading of that count -- the user
+   * imported the file, sees it in the tree and cannot find it by searching,
+   * and nothing else says why -- or it ships saying that it cannot explain
+   * this. The cell is the tripwire for that day, not a measurement.
+   */
+  it('sends no `import-code` or `import-md` (queue item 13: an import ships with the unreadable-blocks count)', () => {
+    const { verbs, unread } = verbsSent();
+    assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
+    assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
+    const imports = ['import-code', 'import-md'].filter((verb) => verbs.has(verb));
+    assert.deepStrictEqual(
+      imports,
+      [],
+      'this extension now sends an import verb: read and show (scanned ... (unreadable-blocks m)) with it, or say it cannot (queue item 13)'
+    );
+  });
+
+  /*
    * A `--socket` in an argument list is a quoted string, '--socket' or
    * "--socket"; the backquoted `--socket` of a comment or a provenance row is
    * prose and is not counted.
@@ -234,5 +261,88 @@ describe('re-pin f5ebd58: what this extension sends keeps two answers out of its
       .map(({ name }) => name);
     assert.ok(sources().length > 0, 'no source file was read');
     assert.deepStrictEqual(found, [], 'a source file spells --socket, so socket-dir-missing can answer it');
+  });
+});
+
+/*
+ * QUEUE ITEM 12: TWO WORDS THAT BOTH SAY "UNREADABLE", ABOUT DIFFERENT
+ * THINGS. The core's `(scanned ... (unreadable-blocks m))` counts the blocks
+ * of one search or grep answer whose text is not valid UTF-8 (store.sc:1361
+ * `search-report`, store.sc:1754 `report`). This client's
+ * `TransportError('unreadable', ...)` (the `TransportFailure` union in
+ * transport.ts) means that this client could not read the SHAPE of an
+ * answer. The core named its clause with a unit, `-blocks`, so that the two
+ * do not merge.
+ *
+ * They cannot meet today: no request this extension makes asks for that
+ * clause. The requirement is for the day somebody renders the number: the
+ * rendered words for `(unreadable-blocks m)` are "blocks whose text could
+ * not be decoded" -- "N blocks whose text could not be decoded" -- and never
+ * "N unreadable blocks", which a reader of this tree would take for the
+ * other failure. That sentence belongs beside the `TransportFailure` union
+ * when the rendering is written.
+ *
+ * The cell reads every string and template text in src/ with the TypeScript
+ * parser, so comments (this one included) are prose and are not read. The
+ * clause's own name as a whole string, 'unreadable-blocks', is how a caller
+ * looks the clause up and is not a rendering; any other string holding
+ * "unreadable block(s)" or "unreadable-block(s)" is.
+ */
+describe('queue item 12: the unreadable-blocks count is never rendered with this client\'s word', () => {
+  const SRC = path.join(__dirname, '..', '..', '..', 'src');
+
+  function renderings(name: string, text: string): { found: string[]; read: number } {
+    const found: string[] = [];
+    let read = 0;
+    const parsed = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isStringLiteral(node) ||
+        ts.isNoSubstitutionTemplateLiteral(node) ||
+        ts.isTemplateHead(node) ||
+        ts.isTemplateMiddle(node) ||
+        ts.isTemplateTail(node)
+      ) {
+        read += 1;
+        const said = node.text;
+        if (said !== 'unreadable-blocks' && /unreadable[\s-]+blocks?\b/i.test(said)) {
+          found.push(`${name}: ${JSON.stringify(said)}`);
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(parsed);
+    return { found, read };
+  }
+
+  it('finds no string in src/ that says "unreadable blocks" (the rendered words are "blocks whose text could not be decoded")', () => {
+    /*
+     * THE READER FIRST, on a source written here: a template rendering the
+     * count is found, the clause's name alone is not, and a comment is not.
+     */
+    const probe = renderings(
+      'probe.ts',
+      "// 3 unreadable blocks\nconst a = `${n} unreadable blocks`;\nconst b = 'unreadable-blocks';\nconst c = `${n} unreadable-blocks`;\n"
+    );
+    assert.deepStrictEqual(
+      probe.found,
+      ['probe.ts: " unreadable blocks"', 'probe.ts: " unreadable-blocks"'],
+      'the reader does not find what it exists to find'
+    );
+    const names = readdirSync(SRC).filter((name) => name.endsWith('.ts')).sort();
+    assert.ok(names.length > 0, 'no source file was read');
+    let read = 0;
+    const found: string[] = [];
+    for (const name of names) {
+      const one = renderings(name, readFileSync(path.join(SRC, name), 'utf8'));
+      read += one.read;
+      found.push(...one.found);
+    }
+    assert.ok(read > 100, `only ${read} strings were read in src/`);
+    assert.deepStrictEqual(
+      found,
+      [],
+      'a string in src/ renders the core\'s unreadable-blocks count with this client\'s word "unreadable"; say "blocks whose text could not be decoded" (queue item 12)'
+    );
   });
 });

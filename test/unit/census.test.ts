@@ -195,7 +195,7 @@ const AT_LEAST: Array<[string, number]> = [
    * ADDED in round 39: the refusal kinds the core makes, read from the
    * core, against the table that sorts them.
    */
-  ['refusals.test.ts', 5],
+  ['refusals.test.ts', 7],
   /*
    * ADDED in plugin-r2: the gate that keeps comments in ASCII, and the
    * cell that proves the gate can tell a comment from a string.
