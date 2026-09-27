@@ -78,12 +78,10 @@ export const MIGRATE_BLOCK: CommandName = {
 /*
  * FINDING A BLOCK BY WHAT IS IN IT.
  *
- * NOTE: THERE IS NO "GO TO DEFINITION" COMMAND HERE, and its absence is
- * deliberate. That one wants the core's `whereis`, which the core does
- * not have yet; a command contributed anyway would answer "not
- * implemented" -- a promise with nobody's name on it, and a stub is a
- * thing nobody goes back to remove. The extension asks the core what it
- * can do instead, and the entry appears the day the verb does.
+ * NOTE: FINDING WHERE A NAME IS DEFINED IS A DIFFERENT QUESTION, and the
+ * store answers it with `whereis`: `GO_TO_DEFINITION` below, and the
+ * editor's own Go to Definition on a block, both ask it (src/definition.ts).
+ * A search finds text; it does not say which block defines a name.
  */
 export const SEARCH_BLOCKS: CommandName = {
   id: 'theourgia.search',
@@ -100,8 +98,18 @@ export const OPEN_AS_DOCUMENT: CommandName = {
   title: 'theourgia: Open as Document'
 };
 
+/*
+ * WHERE THE NAME UNDER THE CURSOR IS DEFINED, as the store's `whereis`
+ * answers it. See `src/definition.ts`.
+ */
+export const GO_TO_DEFINITION: CommandName = {
+  id: 'theourgia.goToDefinition',
+  title: 'theourgia: Go to Definition'
+};
+
 export const COMMANDS: CommandName[] = [
   OPEN_AS_DOCUMENT,
+  GO_TO_DEFINITION,
   SEARCH_BLOCKS,
   MIGRATE_BLOCK,
   REFRESH_OUTLINE,

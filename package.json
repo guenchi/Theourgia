@@ -40,6 +40,10 @@
         "title": "theourgia: Open as Document"
       },
       {
+        "command": "theourgia.goToDefinition",
+        "title": "theourgia: Go to Definition"
+      },
+      {
         "command": "theourgia.search",
         "title": "theourgia: Search Blocks",
         "icon": "$(search)"

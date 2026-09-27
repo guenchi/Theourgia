@@ -209,7 +209,7 @@ export function mergeNotes(...lists: Array<Note[] | null | undefined>): Note[] |
   return out.length === 0 ? null : out;
 }
 
-const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff']);
+const ITEM_VERBS = new Set(['refs', 'search', 'log', 'conflicts', 'diff', 'whereis']);
 
 /*
  * THE CRITERION IS "APPENDS A RECORD", not "is a verb I thought of".
@@ -252,6 +252,7 @@ export function appendsARecord(verb: string, args: string[]): boolean {
 
 const KNOWN_VERBS = new Set([
   'write', 'commit', 'drafts', 'discard',
+  'whereis',
   'init',
   'insert',
   'set',

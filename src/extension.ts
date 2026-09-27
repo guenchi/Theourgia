@@ -43,6 +43,7 @@ import { activateCore } from './activate';
 import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
 import { projectionNameFor } from './projection-name';
 import {
+  GO_TO_DEFINITION,
   OPEN_AS_DOCUMENT,
   OPEN_BLOCK,
   OTHER_SESSIONS,
@@ -54,6 +55,15 @@ import {
 } from './commands';
 import { Choice, Chooser, Destination, chooseAndRecover, destinationFor } from './recovery';
 import { Hit, runSearch } from './search';
+import {
+  DefinitionAnswer,
+  DefinitionRecord,
+  definitionsOf,
+  identifierAt,
+  noDefinitionNotice,
+  recordLabel,
+  targetLine
+} from './definition';
 import { IntegrityWatch } from './integrity';
 import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
@@ -109,6 +119,15 @@ async function showInLanguageOf(document: vscode.TextDocument, block: Block): Pr
   } catch (e) {
     await vscode.languages.setTextDocumentLanguage(document, 'plaintext');
   }
+}
+
+/*
+ * WHAT OPENING A BLOCK SHOWED: the file, and how long the prefix is that the
+ * editor shows before the block's source.
+ */
+interface OpenedBlock {
+  uri: vscode.Uri;
+  prefixLength: number;
 }
 
 /*
@@ -914,7 +933,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   }
 
-  async function openBlock(id: string, sourceGeneration?: number): Promise<void> {
+  /*
+   * NOTE: OPENING ANSWERS WHAT IT OPENED -- the file shown and the length of
+   * the prefix the editor shows before the source -- so that go to
+   * definition can place a line in it. The command ignores the answer.
+   */
+  async function openBlock(id: string, sourceGeneration?: number): Promise<OpenedBlock | undefined> {
     if (sourceGeneration !== undefined && sourceGeneration !== generation) {
       vscode.window.showWarningMessage('theourgia: the store changed after this outline item was created. Refresh the outline and select the block again.');
       return;
@@ -984,6 +1008,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     const directory = sessions.directoryFor(sessionId, storeHash(store), id);
     const prefix = prefixOf(block);
+    let shownPrefix = prefix;
 
     /*
      * THE PUBLICATION AND EVERYTHING THAT READS IT ARE ON ONE CHAIN,
@@ -1000,6 +1025,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        */
       const expected = publisher.revisionIn(directory);
       const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,prefix);
+      shownPrefix = projection.prefix;
       return publisher.publish({directory,storeId:store,blockId:id,prefix:projection.prefix,
         text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
     }).catch((e: unknown) => {
@@ -1029,6 +1055,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       if (outcome.file !== null) {
         const already = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
         await vscode.window.showTextDocument(already, { preview: false });
+        /*
+         * THE FILE KEPT, WITH THE PREFIX IT WAS WRITTEN WITH: its record says
+         * which, and a draft left in it is what the person sees.
+         */
+        const kept = publisher.sidecarOf(outcome.file)?.prefix ?? shownPrefix;
+        return { uri: already.uri, prefixLength: kept.length };
       }
       return;
     }
@@ -1042,7 +1074,130 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (notes !== null) {
       showIncompleteBanner(editor, notes, context.subscriptions);
     }
+    return { uri: opened.uri, prefixLength: shownPrefix.length };
   }
+
+  /*
+   * WHERE A DEFINITION RECORD OPENS: the block's file and the line in it.
+   * The line is found in the document as it is displayed -- a draft with
+   * lines of its own included -- after the prefix the editor shows; an
+   * export opens its library's first line, because it names no line.
+   */
+  async function definitionTarget(record: DefinitionRecord): Promise<{ uri: vscode.Uri; line: number } | undefined> {
+    const asked = generation;
+    const opened = await openBlock(record.id);
+    if (asked !== generation) {
+      return undefined;
+    }
+    if (opened === undefined) {
+      return undefined;
+    }
+    const document = await vscode.workspace.openTextDocument(opened.uri);
+    if (asked !== generation) {
+      return undefined;
+    }
+    return { uri: opened.uri, line: targetLine(record, document.getText(), opened.prefixLength) };
+  }
+
+  /*
+   * GO TO DEFINITION, AS A COMMAND: the name under the cursor, the store's
+   * answer, a picker when there are several, and the chosen one opened at
+   * its line. A name nobody defines is said, with the nearest ones.
+   */
+  async function goToDefinition(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (editor === undefined || client === null) {
+      vscode.window.showInformationMessage('theourgia: open a block and put the cursor on a name first.');
+      return;
+    }
+    const at = editor.selection.active;
+    const name = identifierAt(editor.document.getText(), at.line, at.character);
+    if (name === null) {
+      vscode.window.showInformationMessage('theourgia: there is no name under the cursor.');
+      return;
+    }
+    const asked = generation;
+    let answer: DefinitionAnswer;
+    try {
+      answer = await definitionsOf(client, name);
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    if (asked !== generation) {
+      return;
+    }
+    if (answer.notes !== null) {
+      show({ level: 'information', text: incompleteWarning(answer.notes) });
+    }
+    if (!('found' in answer)) {
+      vscode.window.showInformationMessage(`theourgia: ${noDefinitionNotice(name, answer.nearest)}`);
+      return;
+    }
+    let chosen = answer.found[0];
+    if (answer.found.length > 1) {
+      const picked = await vscode.window.showQuickPick(
+        answer.found.map((record) => ({ label: recordLabel(record), description: record.id, record })),
+        { title: name }
+      );
+      if (asked !== generation) {
+        return;
+      }
+      if (picked === undefined) {
+        return;
+      }
+      chosen = picked.record;
+    }
+    const target = await definitionTarget(chosen);
+    if (asked !== generation) {
+      return;
+    }
+    if (target === undefined) {
+      return;
+    }
+    await vscode.window.showTextDocument(target.uri, {
+      preview: false,
+      selection: new vscode.Range(target.line, 0, target.line, 0)
+    });
+  }
+
+  /*
+   * THE EDITOR'S OWN GO TO DEFINITION, on a block's file and on a document
+   * view: the same answer, as locations. Only definitions are locations; an
+   * export names no line, and a name nobody defines has none.
+   *
+   * NOTE: A BLOCK'S FILE IS SELECTED BY WHERE IT IS, NOT BY ITS LANGUAGE. A
+   * prose block opens as markdown and a code block in its own language, and
+   * both are this extension's files under its storage.
+   */
+  const definitions: vscode.DefinitionProvider = {
+    provideDefinition: async (document: vscode.TextDocument, position: vscode.Position) => {
+      const name = identifierAt(document.getText(), position.line, position.character);
+      const asking = client;
+      if (name === null || asking === null) {
+        return undefined;
+      }
+      const asked = generation;
+      const answer = await definitionsOf(asking, name);
+      if (asked !== generation) {
+        return undefined;
+      }
+      if (!('found' in answer)) {
+        return undefined;
+      }
+      const locations: vscode.Location[] = [];
+      for (const record of answer.found.filter((r) => r.kind === 'def')) {
+        const target = await definitionTarget(record);
+        if (asked !== generation) {
+          return undefined;
+        }
+        if (target !== undefined) {
+          locations.push(new vscode.Location(target.uri, new vscode.Position(target.line, 0)));
+        }
+      }
+      return locations;
+    }
+  };
 
   /*
    * X1c: THE WAY OUT THE REFUSALS NAME.
@@ -1583,6 +1738,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       await refreshConflicts();
     }),
     command(OPEN_BLOCK.id, openBlock),
+    command(GO_TO_DEFINITION.id, goToDefinition),
+    vscode.languages.registerDefinitionProvider(
+      [
+        { scheme: 'file', pattern: new vscode.RelativePattern(storage, '**') },
+        { scheme: DOCUMENT_SCHEME }
+      ],
+      definitions
+    ),
     vscode.workspace.registerTextDocumentContentProvider(DOCUMENT_SCHEME, views),
     vscode.workspace.onDidCloseTextDocument((closed) => {
       if (closed.uri.scheme === DOCUMENT_SCHEME) {

@@ -134,6 +134,7 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['damaged-check.test.ts', 12],
   ['decoding.test.ts', 12],
+  ['definition.test.ts', 14],
   ['dependency-sexpr.test.ts', 15],
   /*
    * ADDED in plugin-r3 item 6: a subtree composed as one read-only

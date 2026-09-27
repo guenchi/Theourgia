@@ -33,7 +33,16 @@ function gate(){let release,enter;const promise=new Promise(r=>release=r),entere
 const docs=[];
 // The banners the extension decorates editors with, and the status bar item it
 // paints: what a person would see, recorded so a scenario can read it back.
-const decorations=[];const statusItem={show(){},dispose(){}};
+// Where showTextDocument was asked to show something, and at which line.
+const shownAt=[];
+function sameUri(a,b){if(!a||!b)return false;if(a.fsPath!==undefined||b.fsPath!==undefined)return a.fsPath===b.fsPath;return a.scheme===b.scheme&&a.path===b.path&&a.query===b.query;}
+// A document selected by a provider's selector, as VS Code selects one:
+// scheme, language and a pattern's base, each only when the filter names it.
+function selects(selector,doc){const filters=Array.isArray(selector)?selector:[selector];return filters.some(f=>(f.scheme===undefined||f.scheme===(doc.uri.scheme||'file'))&&(f.language===undefined||f.language===doc.languageId)&&(f.pattern===undefined||String(doc.uri.fsPath||'').startsWith(f.pattern.base)));}
+const decorations=[];const definitionProviders=[];
+// Documents a scenario shows as the editor holds them (a dirty draft, a view):
+// openTextDocument answers these before reading a file.
+const displayed=[];const statusItem={show(){},dispose(){}};
 // Every document shown, with the language mode it was shown in.
 const shownDocs=[];
 // A real core's client, when a scenario builds one: the extension then talks to
@@ -48,8 +57,12 @@ const vs = {
  TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p}),from:o=>({...o,toString(){return `${o.scheme}:${o.path}?${o.query}`;}})},
  Range:class{constructor(a,b,c,d){this.start={line:a,character:b};this.end={line:c,character:d};}},
- // The language mode a document was given, kept on the document.
- languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language})},
+ // The editor's definition dispatch: providers registered with their
+ // selectors, and a document matched to them as VS Code matches one.
+ languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language}),registerDefinitionProvider:(selector,provider)=>{definitionProviders.push({selector,provider});return disposable;}},
+ RelativePattern:class{constructor(base,pattern){this.base=base;this.pattern=pattern;}},
+ Position:class{constructor(line,character){this.line=line;this.character=character;}},
+ Location:class{constructor(uri,range){this.uri=uri;this.range=range;}},
  window:{createStatusBarItem:()=>statusItem,createTextEditorDecorationType:options=>({options,dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
@@ -60,12 +73,19 @@ const vs = {
   showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
   showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});messages.push(m);if(process.argv[3]==='integrity-show-throws')throw new Error('the editor threw');return process.argv[3]==='integrity-show-rejects'?Promise.reject(new Error('the editor refused the warning')):Promise.resolve(undefined);},
   showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
-  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>(shownDocs.push({fsPath:d&&d.uri?d.uri.fsPath:null,languageId:d?d.languageId:null}),Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})}))},
+  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async(d,options)=>{shownAt.push({fsPath:d&&d.fsPath!==undefined?d.fsPath:(d&&d.uri?d.uri.fsPath:null),line:options&&options.selection?options.selection.start.line:null});shownDocs.push({fsPath:d&&d.uri?d.uri.fsPath:null,languageId:d?d.languageId:null});return Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})});}},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
   registerTextDocumentContentProvider:()=>disposable,onDidCloseTextDocument:()=>disposable,
-  openTextDocument:async uri=>({uri,isDirty:false,getText:()=>fs.readFileSync(uri.fsPath,'utf8')})},
- commands:{registerCommand:(n,f)=>{commands.set(n,f);return disposable;}}
+  openTextDocument:async uri=>displayed.find(d=>sameUri(d.uri,uri))||({uri,isDirty:false,getText:()=>fs.readFileSync(uri.fsPath,'utf8')})},
+ commands:{registerCommand:(n,f)=>{commands.set(n,f);return disposable;},
+  // The editor's own dispatch for a definition request, over the providers
+  // registered for the document; and a symbol provider that answers a
+  // misleading line, which nothing that finds a definition may consult.
+  executeCommand:async(id,...args)=>{
+   if(id==='vscode.executeDefinitionProvider'){const [uri,position]=args;const doc=displayed.find(d=>sameUri(d.uri,uri));if(!doc)throw new Error('no displayed document for the definition request');const out=[];for(const {selector,provider} of definitionProviders){if(!selects(selector,doc))continue;const got=await provider.provideDefinition(doc,position,{});if(got)out.push(...(Array.isArray(got)?got:[got]));}return out;}
+   if(id==='vscode.executeDocumentSymbolProvider')return [{name:'alpha',range:{start:{line:0,character:0},end:{line:0,character:0}}}];
+   const f=commands.get(id);return f?f(...args):undefined;}}
 };
 const originalLoad=Module._load;
 Module._load=function(name,...rest){if(name==='vscode')return vs;return originalLoad.call(this,name,...rest);};
@@ -578,6 +598,78 @@ async function main(){
    return {srcHex:src.toString('hex'),rereadHex,exportedHex,afterSave,bomHex:bom.toString('hex'),bomFileStartsWithMark:bomText.charCodeAt(0)===0xfeff,
     afterBomSave,bomExportedHex,markRefusal};
   }finally{realClient=null;imported.store.dispose();fs.rmSync(imported.dir,{recursive:true,force:true});fs.rmSync(exportDir,{recursive:true,force:true});}
+ }
+ // A REAL store holding a datum library that exports `alpha` and a text block
+ // defining `alpha` on its third line, both imported through the core's own
+ // `import-code` (sent through the transport: this extension sends no import).
+ const definitionStore=async real=>{
+  const store=await real.RealStore.make();
+  const lib=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-def-lib-'));
+  fs.writeFileSync(path.join(lib,'probe.sls'),'(library (probe d)\n  (export alpha)\n  (import (rnrs)))\n');
+  const text=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-def-text-'));
+  fs.writeFileSync(path.join(text,'alpha.ss'),';; one\n;; two\n(define alpha 1)\n');
+  const transport=store.transport();
+  const a=await transport.send('import-code',[lib,'--datum']);
+  if(a.rc!==0)throw new Error(`the library was not imported: ${a.stdout}${a.stderr}`);
+  const b=await transport.send('import-code',[text]);
+  if(b.rc!==0)throw new Error(`the text source was not imported: ${b.stdout}${b.stderr}`);
+  return {store,dirs:[lib,text]};
+ };
+ // Go to definition as a command: the picker's rows, and where the chosen
+ // definition opened, with the file it opened.
+ if(scenario==='definition-command'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const {store,dirs}=await definitionStore(real);
+  try{
+   realClient=new Client(store.transport());
+   change(store.store);
+   vs.window.activeTextEditor={document:{uri:{fsPath:'/nowhere/use.md'},languageId:'markdown',isDirty:false,getText:()=>'(display alpha)\n'},selection:{active:{line:0,character:10}}};
+   pickGate=gate();
+   // NEVER: WAIT ON THE PICKER ALONE. A command that fails before it asks
+   // leaves the picker unopened; waiting on it then ends the process with
+   // the store's daemon still running, because the finally below never runs.
+   const running=commands.get('theourgia.goToDefinition')();
+   const items=await Promise.race([pickGate.entered,running.then(()=>null)]);
+   if(items===null){pickGate=null;return {labels:[],kinds:[],opened:null,fileText:null,shown:shown.slice()};}
+   const def=items.find(i=>i.record.kind==='def');
+   pickGate.release(def);
+   await running;
+   pickGate=null;
+   const last=shownAt[shownAt.length-1]||null;
+   return {labels:items.map(i=>i.label),kinds:items.map(i=>i.record.kind),opened:last,fileText:last&&last.fsPath?fs.readFileSync(last.fsPath,'utf8'):null,shown:shown.slice()};
+  }finally{realClient=null;store.dispose();for(const d of dirs)fs.rmSync(d,{recursive:true,force:true});}
+ }
+ // The editor's own Go to Definition, through its dispatch, from a block's
+ // file, from a document view, and from the block's file with a dirty draft
+ // one line longer than the store's.
+ if(scenario==='definition-provider'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const {store,dirs}=await definitionStore(real);
+  try{
+   realClient=new Client(store.transport());
+   change(store.store);
+   const found=await realClient.request('whereis',['alpha','--wire']);
+   const defId=found.answers.filter(i=>Array.isArray(i)&&i[0]&&i[0].name==='def').map(i=>i[1])[0];
+   const opened=await commands.get('theourgia.openBlock')(defId);
+   const file=opened.uri.fsPath;
+   const fileText=fs.readFileSync(file,'utf8');
+   const where=text=>{const lines=text.split('\n');const line=lines.findIndex(l=>l.includes('(define alpha'));return {line,character:lines[line].indexOf('alpha')+1};};
+   const ask=async(doc,at)=>(await vs.commands.executeCommand('vscode.executeDefinitionProvider',doc.uri,new vs.Position(at.line,at.character))).map(l=>({fsPath:l.uri.fsPath,line:l.range.line}));
+   const block={uri:{fsPath:file},languageId:'markdown',isDirty:false,getText:()=>fileText};
+   displayed.push(block);
+   const inBlock=await ask(block,where(fileText));
+   displayed.length=0;
+   const view={uri:{scheme:'theourgia-document',path:'/alpha.md',query:'q'},languageId:'markdown',isDirty:false,getText:()=>'# Alpha\n(display alpha)\n'};
+   displayed.push(view);
+   const inView=await ask(view,{line:1,character:10});
+   displayed.length=0;
+   const dirtyText=fileText.slice(0,opened.prefixLength)+';; a line of the draft\n'+fileText.slice(opened.prefixLength);
+   const dirty={uri:{fsPath:file},languageId:'markdown',isDirty:true,getText:()=>dirtyText};
+   displayed.push(dirty);docs.push(dirty);
+   const inDraft=await ask(dirty,where(dirtyText));
+   displayed.length=0;docs.length=0;
+   return {file,defLine:where(fileText).line,inBlock,inView,inDraft,providers:definitionProviders.length};
+  }finally{realClient=null;store.dispose();for(const d of dirs)fs.rmSync(d,{recursive:true,force:true});}
  }
  if(scenario==='outline-nested'){
   const roots=await provider.getChildren();

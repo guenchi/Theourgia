@@ -514,6 +514,13 @@ are not UTF-8 does not open: the store says so by name (`non-text-projection`), 
 such a field refuses with `text-not-utf8`, the field, the block and the offset of the first byte that
 does not decode. A file that begins with a byte-order mark is not saved.
 
+**Go to definition.** On a name in a block, "theourgia: Go to Definition" -- or the editor's own Go to
+Definition -- asks the store's `whereis` which block defines it. One answer opens that block at the
+line of its `(define ...)`, found in the text as it is shown, a draft included; several are listed with
+their library and kind, or `export` for a library that exports the name, which opens at the library's first
+line. A name nobody defines is said, with the nearest names the store knows. The line search reads `;` and
+`#| |#` comments as comments; a `#;` datum comment is not recognised.
+
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of
 these cells once reported `the core exited 255 without an answer`, and a probe built to fish

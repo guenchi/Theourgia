@@ -187,11 +187,11 @@ export function rankHits(hits: Hit[]): Hit[] {
 /*
  * EVERY VERB THE CORE SAID IT HAS.
  *
- * NOTE: WHY THIS EXISTS AT ALL. The definition search wants `whereis`,
- * which the core does not have yet. This extension does not contribute a
- * command that answers "not implemented": that is a promise with nobody
- * responsible for it, and a stub is a thing nobody goes back to remove.
- * It asks instead, and the entry appears the day the verb does.
+ * NOTE: NOTHING IS SHOWN OR HIDDEN BY THIS. A command whose verb the pinned
+ * core lacks is a command the core refuses by name, and that refusal is
+ * what the person sees; a catalogue consulted first would be a second
+ * answer to the same question. Definitions go through `whereis`
+ * (src/definition.ts), which the pinned core has.
  *
  * NULL MEANS THE CATALOGUE COULD NOT BE READ -- a refused `describe`, a
  * shape this build does not know -- and an empty set means a core that

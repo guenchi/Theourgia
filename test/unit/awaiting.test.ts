@@ -533,6 +533,11 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
     'composed from, captured before the first wait; they write nothing, and the text they show ' +
     'is the one composed from that store. A settings change during them leaves a tab that names ' +
     'the store it came from (queue item 6)',
+  goToDefinition:
+    'its last wait shows the block file the definition target opened, at the line found in that file as it is ' +
+    'displayed. The target captured the store before its own first wait (openBlock), checks the generation after ' +
+    'each of its waits, and nothing is written after it; a settings change during the show leaves a tab naming ' +
+    'the block it came from, as openAsDocument does',
   reconcileBlock:
     'XR-01 activation schedules bind both waits to the selected file directory and preserve ' +
     'the other store on real disk; XR-03 protects the offered bytes, XR-05 makes owner denial ' +
