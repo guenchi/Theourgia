@@ -589,6 +589,19 @@
                 'in-the-description 'MISSING-FROM-DESCRIPTION))
       '(in-the-readme-section in-the-description))
 
+;; NOTE: WHICH FILES import-code --datum READS, AND HOW A REFUSAL NAMES ITS
+;; FILE, IN BOTH PLACES, compared as the sentence above is. What the answer
+;; does is held by datum-import.sc's selection rows, not here.
+(define datum-selection-phrase
+  "only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause.")
+(want "which files import-code --datum reads, and the file a refusal names, are in the README's import-code section and in the verb's catalogue description"
+      (list (if (and import-code-section (contains? (squashed import-code-section) datum-selection-phrase))
+                'in-the-readme-section 'MISSING-FROM-README-SECTION)
+            (if (and import-code-description
+                     (contains? (squashed import-code-description) datum-selection-phrase))
+                'in-the-description 'MISSING-FROM-DESCRIPTION))
+      '(in-the-readme-section in-the-description))
+
 ;; ---- the environment variables it lists ---------------------------------------
 ;;
 ;; NOTE: THE TRUTH SOURCE IS NOT ONLY THE LIBRARIES. `THEOURGIA_LIBDIR` has

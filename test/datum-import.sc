@@ -145,5 +145,123 @@
       (warnings-of (import-one! "f19-lead"
                                 ";; leading comment\n(library (demo lead)\n  (export g)\n  (import (rnrs))\n  (define (g x) (* x 2)))\n"))
       '())
+;; ---- which files a datum import reads -------------------------------------
+;;
+;; NEVER: A DATUM IMPORT READS SCHEME FILES ONLY, AND SAYS WHICH IT DID NOT.
+;; A file is Scheme when the language table gives its path the scheme entry:
+;; ss, sc, scm, sls, matched exactly and case-sensitively, the suffix after
+;; the last dot of the file's own name. Every other regular file the walk
+;; returns (it does not enter a name that starts with a dot) is listed in
+;; `(skipped ...)`, in the walk's order, and the clause is absent when
+;; nothing was skipped. A file the reader refuses is named by `(path ...)`.
+(define (sel-area! name)
+  (let* ((area (string-append root "/" name)) (store (string-append area "/store")) (input (string-append area "/input")))
+    (mkdir-p! (string-append input "/sub"))
+    (rpc-dispatch store '(init) "test")
+    (cons store input)))
+;; a.sc and sub/d.sls are Scheme; b.md, c.txt, e.SC and an extensionless f
+;; are not -- e.SC and f hold Scheme text, so only the name decides.
+(define (mixed-dir! input)
+  (write! (string-append input "/a.sc") "(library (sel a) (export x) (import (rnrs)) (define x 1))\n")
+  (write! (string-append input "/b.md") "# A heading\n\ntext\n")
+  (write! (string-append input "/c.txt") "plain text\n")
+  (write! (string-append input "/sub/d.sls") "(library (sel d) (export y) (import (rnrs)) (define y 2))\n")
+  (write! (string-append input "/e.SC") "(library (sel e) (export z) (import (rnrs)) (define z 3))\n")
+  (write! (string-append input "/f") "(library (sel f) (export w) (import (rnrs)) (define w 4))\n"))
+(define (clause a head)
+  (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
+(define (head-of a)
+  (cond ((not (pair? a)) a)
+        ((and (eq? (car a) 'error) (pair? (cdr a))) (list 'error (cadr a)))
+        (else (car a))))
+(define (datum-library-paths store)
+  (let ((state (open-and-reduce store)))
+    (list-sort string<?
+      (map (lambda (id) (code-field state id 'path))
+           (filter (lambda (id) (and (eq? (code-field state id 'kind) 'library) (eq? (code-field state id 'mode) 'datum)))
+                   (map cadr (state-datum state)))))))
+(define (block-count store) (length (state-datum (open-and-reduce store))))
+(define (cut-of store) (reduce-applied-cut (open-and-reduce store)))
+
+;; D1: the Scheme files are imported, the rest listed.
+(let* ((sa (sel-area! "sel-d1")) (store (car sa)) (input (cdr sa)))
+  (mixed-dir! input)
+  (let ((a (rpc-dispatch store (list 'import-code input "--datum") "test")))
+    (want "D1 a datum import of a mixed directory answers ok, imports a.sc and sub/d.sls, and lists b.md, c.txt, e.SC and f as skipped"
+          (list (head-of a) (datum-library-paths store) (clause a 'skipped))
+          '(ok ("a.sc" "sub/d.sls") (skipped ("b.md" "c.txt" "e.SC" "f"))))))
+
+;; D2: a refusal names its file, and nothing is imported (the refusal comes
+;; before any write).
+(let* ((sa (sel-area! "sel-d2")) (store (car sa)) (input (cdr sa))
+       (bad-text ";; a comment\n(define x 1)\n# not a datum\n")
+       (k (let loop ((i 0)) (if (char=? (string-ref bad-text i) #\#) i (loop (+ i 1))))))
+  (write! (string-append input "/a.sc") bad-text)
+  (write! (string-append input "/b.sc") "(library (sel b) (export x) (import (rnrs)) (define x 1))\n")
+  (let* ((before (list (block-count store) (cut-of store)))
+         (a (rpc-dispatch store (list 'import-code input "--datum") "test")))
+    (want "D2 a file the reader refuses is named: bad-source with its reason, offset and (path \"a.sc\"), and nothing is imported"
+          (list a (equal? before (list (block-count store) (cut-of store))) (datum-library-paths store))
+          (list (list 'error 'bad-source '(reason unsupported-reader-dispatch) (list 'character-offset k) '(path "a.sc"))
+                #t '()))))
+
+;; D3: def reads its source from an argument, so its refusal has no file to
+;; name, and keeps the lexer's shape. PIN: the base answers the same.
+(let* ((sa (sel-area! "sel-d3")) (store (car sa))
+       (a (rpc-dispatch store (list 'def "x" ";; a comment\n(define x 1)\n# not a datum\n") "test")))
+  (want "D3 PIN def with the same bad source refuses bad-source with no path clause"
+        (list (head-of a) (clause a 'path))
+        '((error bad-source) #f)))
+
+;; D4: nothing to read. WITHOUT a request identity: ok with no items, every
+;; file listed, and the store unchanged -- the no-op is visible by its list.
+;; (With --req an empty plan is written; that is another row's.)
+(let* ((sa (sel-area! "sel-d4")) (store (car sa)) (input (cdr sa)))
+  (write! (string-append input "/b.md") "# A heading\n")
+  (write! (string-append input "/c.txt") "plain text\n")
+  (let* ((before (list (block-count store) (cut-of store)))
+         (a (rpc-dispatch store (list 'import-code input "--datum") "test")))
+    (want "D4 a datum import of a directory with no Scheme file answers ok, no items, every file skipped, and writes nothing"
+          (list (head-of a) (clause a 'items) (clause a 'skipped) (equal? before (list (block-count store) (cut-of store))))
+          '(ok (items) (skipped ("b.md" "c.txt")) #t))))
+
+;; D5: nothing skipped, no clause. The ok and the imports are asserted first,
+;; so an answer that refused cannot pass for one without the clause.
+(let* ((sa (sel-area! "sel-d5")) (store (car sa)) (input (cdr sa)))
+  (write! (string-append input "/a.sc") "(library (sel a) (export x) (import (rnrs)) (define x 1))\n")
+  (write! (string-append input "/b.sc") "(library (sel b) (export y) (import (rnrs)) (define y 2))\n")
+  (let ((a (rpc-dispatch store (list 'import-code input "--datum") "test")))
+    (want "D5 PIN a directory of Scheme files only answers ok, imports each, and carries no skipped clause"
+          (list (head-of a) (datum-library-paths store) (clause a 'skipped))
+          '(ok ("a.sc" "b.sc") #f))))
+
+;; D7: THE SELECTION READS THE TABLE AS IT IS NOW. Scheme registered again,
+;; its extensions kept and one more property added, is still Scheme: a.sc is
+;; read. The table is put back as it was, whatever the import answered.
+(let* ((sa (sel-area! "sel-d7")) (store (car sa)) (input (cdr sa)) (original (language-for-name 'scheme)))
+  (write! (string-append input "/a.sc") "(library (sel a) (export x) (import (rnrs)) (define x 1))\n")
+  (let ((a (dynamic-wind
+             (lambda () (register-language! (cons '(review-note #t) original)))
+             (lambda () (rpc-dispatch store (list 'import-code input "--datum") "test"))
+             (lambda () (register-language! original)))))
+    (want "D7 with Scheme registered again, extensions unchanged and a property added, a.sc is still read and imported"
+          (list (head-of a) (datum-library-paths store) (clause a 'skipped))
+          '(ok ("a.sc") #f))))
+
+;; D6: PIN, the text import is not this rule's: over the same mixed
+;; directory it imports every file, with the language the table gives the
+;; path, and none for a path the table does not know.
+(let* ((sa (sel-area! "sel-d6")) (store (car sa)) (input (cdr sa)))
+  (mixed-dir! input)
+  (let* ((a (rpc-dispatch store (list 'import-code input) "test"))
+         (state (open-and-reduce store))
+         (files (filter (lambda (id) (and (eq? (code-field state id 'kind) 'file) (eq? (code-field state id 'mode) 'text)))
+                        (map cadr (state-datum state)))))
+    (want "D6 PIN the text import over the mixed directory imports every file, lang scheme or markdown by the table, none for c.txt, e.SC and f"
+          (list (head-of a)
+                (list-sort (lambda (x y) (string<? (car x) (car y)))
+                           (map (lambda (id) (list (code-field state id 'path) (code-field state id 'lang))) files)))
+          '(ok (("a.sc" scheme) ("b.md" markdown) ("c.txt" #f) ("e.SC" #f) ("f" #f) ("sub/d.sls" scheme))))))
+
 (printf "~a failures\ndatum-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

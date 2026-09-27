@@ -32,8 +32,16 @@
     (let ((b (string->utf8 doc)))
       (utf8->string (apply bytes-append
         (map (lambda (r) (if (control (byte-slice b (car r) (cadr r))) #vu8() (byte-slice b (car r) (caddr r)))) (byte-lines b))))))
+  ;; NEVER: A REFUSAL NAMES ITS FILE. The lexer's bad-source carries a
+  ;; reason and an offset and no path, and an import reads many files: the
+  ;; refusal is raised again with `(path <rel>)` appended, so the answer says
+  ;; which file it is about. def reads its source from an argument and keeps
+  ;; the lexer's shape.
   (define (parse-file rel bytes)
-    (let* ((context (datum-source-read bytes 'context)) (top (car context))
+    (let* ((context (guard (e ((and (pair? e) (eq? (car e) 'error) (pair? (cdr e)) (eq? (cadr e) 'bad-source))
+                               (raise (append e (list (list 'path rel))))))
+                      (datum-source-read bytes 'context)))
+           (top (car context))
            (comments (cadr context)) (text (list-ref context 3))
            (wrapper? (and (= (length top) 1) (list? (caar top)) (pair? (caar top)) (eq? (caaar top) 'library)))
            (body (and wrapper? (caar top)))
@@ -94,8 +102,21 @@
 
   (define (code-fields row)
     (list '(kind . code) '(mode . datum) '(lang . chez) (cons 'body (cadr row)) (cons 'doc (caddr row))))
+  ;; NEVER: A DATUM IMPORT READS SCHEME FILES ONLY, and says which it did not
+  ;; read. A file is Scheme when the language table, AS IT IS NOW, gives its
+  ;; path the entry whose lang is "scheme" (its extensions, matched exactly);
+  ;; every other regular file the walk returns is captured, in the walk's
+  ;; order, as the skipped list beside the warnings. The table is the one
+  ;; supplier of the selection: there is no second list of extensions here,
+  ;; and no entry held from load time, which a later register-language! of
+  ;; Scheme would leave behind.
+  (define (scheme-file? rel)
+    (let ((e (language-for-path rel)))
+      (and e (equal? (language-property e 'lang #f) "scheme"))))
   (define (capture-import store dir)
-    (let* ((inputs (map (lambda (rel) (parse-file rel (read-code-bytes (string-append dir "/" rel)))) (code-input-files dir)))
+    (let* ((files (code-input-files dir))
+           (skipped (filter (lambda (rel) (not (scheme-file? rel))) files))
+           (inputs (map (lambda (rel) (parse-file rel (read-code-bytes (string-append dir "/" rel)))) (filter scheme-file? files)))
            (intents '()) (baselines '()) (memberships '()) (seen '()))
       (define (emit! intent) (set! intents (append intents (list intent))) (- (length intents) 1))
       (define (field-changes! state id fields)
@@ -150,7 +171,8 @@
                         (set! previous target))
                       (set! previous (list 'from (emit! (list 'insert parent previous (code-fields row))))))) entries matched)))) inputs)
       (list intents baselines memberships (apply append (map (lambda (i) (list-ref i 4)) inputs))
-            (map (lambda (i) (list (car i) (list-ref i 5))) inputs))))
+            (map (lambda (i) (list (car i) (list-ref i 5))) inputs)
+            skipped)))
   (define (execute store actor packet)
     (let* ((captured (cadr packet))
            (results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
@@ -158,8 +180,13 @@
                (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
                    (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
                                             (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children)))) (caddr captured)))) #t)))
+      ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED, and only
+      ;; on an answer that succeeded. A packet captured before the list
+      ;; existed has five slots, and def's has five: neither gains one.
       (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
-          (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
+          (append (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
+                  (let ((skipped (and (> (length captured) 5) (list-ref captured 5))))
+                    (if (pair? skipped) (list (list 'skipped skipped)) '())))
           (if (= (length results) 1) (car results) (batch-answer results)))))
   (define (import-datum store dir actor req)
     (answer (lambda () (execute store actor (frozen-operation store req (lambda () (capture-import store dir)))))))

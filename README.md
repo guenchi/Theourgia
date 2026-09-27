@@ -700,7 +700,13 @@ one block per top-level form -- rather than as text. With `--datum`, the
 whole-line ; comments directly above a form become its doc; a ; comment
 inside a form is dropped, and the answer warns with its line and column. A
 #| |# block comment, and any comment inside a datum discarded with #;, is
-dropped with neither.
+dropped with neither. With `--datum`, only Scheme files are read: those the
+language table gives to Scheme by extension (ss, sc, scm, sls, matched
+exactly); every other file the directory walk returns (it does not
+enter a name that starts with a dot) is listed, in the order it was walked,
+in the answer's skipped clause, which is there only when something
+was skipped. A file the reader refuses is named in the refusal's path
+clause.
 
 ### `export-code`
 
