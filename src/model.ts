@@ -90,7 +90,7 @@ export type StoreVerdict =
  * NEVER: THE EXIT CODE IS NOT ASKED. The core's `rpc-ok?` makes `check` a
  * failure exactly when its verdict is not `ok`, so a damaged store answers
  * with a non-zero exit AND a complete `(check ... (verdict damaged))` --
- * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:312). A reader that required `ok`
+ * measured in the pinned core's `rpc.sc` (`rpc-ok?`, rpc.sc:338). A reader that required `ok`
  * would read "could not ask" on precisely the occasion it exists for.
  * The form's head is what says whether this is an answer at all.
  *
@@ -435,8 +435,8 @@ export class StoreModel {
      * holds and cannot show, and without asking, a marked block would be
      * drawn as an ordinary child with no warning on it at all.
      *
-     * A NESTED DOCUMENT ARRIVES THIS WAY TOO. The pinned core (F85,
-     * f5ebd58) returns it in its parent's recursive read like any other
+     * A NESTED DOCUMENT ARRIVES THIS WAY TOO. The pinned core
+     * (cba98ae) returns it in its parent's recursive read like any other
      * block and reports it under `conflicts`, so it comes out of here as a
      * child carrying `nested-document`, as does any child the store
      * reports under `conflicts` for another reason. (An older core's walk

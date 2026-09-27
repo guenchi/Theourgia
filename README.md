@@ -488,7 +488,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (F85, theourgia f5ebd58) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia cba98ae) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete

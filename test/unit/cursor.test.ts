@@ -193,7 +193,7 @@ describe('Q3 the first cursor, before any answer has been heard', () => {
  * (local-writer "xihfjyym") (writers (("xihfjyym" ...))) ...)` -- a top-level
  * clause beside `writers`, position not promised, taken by name; absent
  * altogether when there is none. Measured present in 877f0da
- * (store.sc:4294).
+ * (store.sc:4435).
  */
 describe('plugin-r3 2 the local writer, when the core names it', () => {
   before(async () => {

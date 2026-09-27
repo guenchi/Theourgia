@@ -176,7 +176,7 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
  * starts sending the one or passing the other, which is the day those rows
  * become false.
  */
-describe('re-pin f5ebd58: what this extension sends keeps two answers out of its reach', () => {
+describe('re-pin: what this extension sends keeps these answers out of its reach', () => {
   const SRC = path.join(__dirname, '..', '..', '..', 'src');
   const sources = (): Array<{ name: string; text: string }> =>
     readdirSync(SRC)
@@ -230,7 +230,7 @@ describe('re-pin f5ebd58: what this extension sends keeps two answers out of its
    * valid UTF-8 puts the block in the store, and none of its text is
    * visible to `search` or `grep` (core F61, not fixed). The only signal is
    * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
-   * grep answer (store.sc:1361 `search-report`, store.sc:1754 `report`).
+   * grep answer (store.sc:1423 `search-report`, store.sc:1816 `report`).
    * This extension sends neither import verb today, so the symptom is out of
    * its reach. The day it grows a command that imports a file or a
    * directory, that command ships with a reading of that count -- the user
@@ -251,6 +251,32 @@ describe('re-pin f5ebd58: what this extension sends keeps two answers out of its
   });
 
   /*
+   * THE TWO PROVENANCE ROWS READ AT THE cba98ae RE-PIN STAY TRUE ONLY WHILE THIS
+   * EXTENSION SENDS NONE OF THE CORE'S UNDECLARED VERBS. `incomplete-reduction`
+   * is refused only to a verb that does not declare it accepts a store
+   * missing a writer, and `working-draft-unreadable` is reached only through
+   * `export-md`/`export-code --working`; both verbs are on the core's own
+   * list (rpc.sc:1760). The list is READ FROM THE PINNED CORE, not copied
+   * here, so a verb the core adds to it is checked without an edit in this
+   * file. A tripwire, not a measurement: green today.
+   */
+  it('sends none of the core\'s undeclared verbs (the only verbs refused incomplete-reduction)', () => {
+    const rpc = readFileSync(path.join(coreSources().directory, 'rpc.sc'), 'utf8');
+    const listed = /\(define undeclared-verbs '\(([^)]*)\)\)/.exec(rpc);
+    assert.ok(listed !== null, 'the pinned core defines no undeclared-verbs list this cell can read');
+    const undeclared = listed[1].trim().split(/\s+/);
+    assert.ok(undeclared.includes('export-md'), `the list read is not the one this cell is about: ${undeclared}`);
+    const { verbs, unread } = verbsSent();
+    assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
+    assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
+    assert.deepStrictEqual(
+      undeclared.filter((verb) => verbs.has(verb)),
+      [],
+      'this extension now sends a verb the core refuses with incomplete-reduction on a store missing a writer: sort that refusal in saver.ts and show its notes'
+    );
+  });
+
+  /*
    * A `--socket` in an argument list is a quoted string, '--socket' or
    * "--socket"; the backquoted `--socket` of a comment or a provenance row is
    * prose and is not counted.
@@ -267,8 +293,8 @@ describe('re-pin f5ebd58: what this extension sends keeps two answers out of its
 /*
  * QUEUE ITEM 12: TWO WORDS THAT BOTH SAY "UNREADABLE", ABOUT DIFFERENT
  * THINGS. The core's `(scanned ... (unreadable-blocks m))` counts the blocks
- * of one search or grep answer whose text is not valid UTF-8 (store.sc:1361
- * `search-report`, store.sc:1754 `report`). This client's
+ * of one search or grep answer whose text is not valid UTF-8 (store.sc:1423
+ * `search-report`, store.sc:1816 `report`). This client's
  * `TransportError('unreadable', ...)` (the `TransportFailure` union in
  * transport.ts) means that this client could not read the SHAPE of an
  * answer. The core named its clause with a unit, `-blocks`, so that the two

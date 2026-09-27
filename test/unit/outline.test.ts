@@ -243,7 +243,7 @@ describe('O2 a node is expanded when it is opened and not before', () => {
      * `nested-document` HAS THIS CELL TOO (queue item 48). It was skipped
      * while the core's recursive walk stopped at a document below the
      * root; the pinned core (F85 R1-R3: project.sc:67-79, `read
-     * --recursive` through `subtree-ids`, rpc.sc:1167) answers such a
+     * --recursive` through `subtree-ids`, rpc.sc:1203) answers such a
      * block under its parent like any other and reports it once under
      * `conflicts`, so it arrives through this path carrying its mark
      * (measured on the pin: its own test one-subtree.sc, rows F85-1 and
@@ -708,7 +708,7 @@ describe('a row in the listing must be a block that is actually at the top level
    * THE CELL THAT USED TO BE HERE SCRIPTED A NESTED DOCUMENT INTO A
    * SUBTREE ANSWER and asserted that it arrived marked, at a time when the
    * core's walk stopped at a doc-kind child and it never arrived at all;
-   * it was retired then. On the pinned core (F85, f5ebd58) it does arrive,
+   * it was retired then. On the pinned core (cba98ae) it does arrive,
    * and what a marked child looks like -- a nested document included -- is
    * covered by the table above, one cell per mark, and by the block about
    * nested documents.
