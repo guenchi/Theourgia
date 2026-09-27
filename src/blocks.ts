@@ -294,8 +294,96 @@ export function fieldConflict(value: Datum): FieldConflict | null {
   return null;
 }
 
-export function stringField(block: Block, name: string): string {
+/*
+ * A FIELD THAT HOLDS BYTES WHICH ARE NOT UTF-8 TEXT, refused by name: which
+ * field, of which block, and the offset of the first byte that does not
+ * decode. Never read as an empty field and never decoded with replacement
+ * characters: either would show a document that is not what the store
+ * holds.
+ */
+export class TextNotUtf8 extends Error {
+  public readonly field: string;
+  public readonly id: string;
+  public readonly offset: number;
+
+  constructor(field: string, id: string, offset: number) {
+    super(`text-not-utf8: the ${field} of ${id} is not UTF-8 text (the byte at offset ${offset} does not decode)`);
+    this.name = 'TextNotUtf8';
+    this.field = field;
+    this.id = id;
+    this.offset = offset;
+  }
+}
+
+/*
+ * A FIELD AS TEXT, THE ONE DECODER FOR EVERY FIELD READER.
+ *
+ * A string is itself. Bytes -- how the core stores a text-mode code block's
+ * source and the doc derived from it -- decode as UTF-8, and a decode
+ * failure is `TextNotUtf8`. Anything else (absent, a conflict, a datum) is
+ * answered as it is, so that each reader keeps its own rule for those: a
+ * field reader answers "", the document view refuses a field that is there
+ * and is not text.
+ */
+export function textOf(block: Block, name: string): Datum {
   const value = block.fields.get(name);
+  if (!(value instanceof Uint8Array)) {
+    return value;
+  }
+  const bad = firstInvalidUtf8(value);
+  if (bad >= 0) {
+    throw new TextNotUtf8(name, block.id, bad);
+  }
+  return Buffer.from(value).toString('utf8');
+}
+
+/*
+ * THE OFFSET OF THE FIRST BYTE THAT DOES NOT BEGIN, OR CONTINUE, A VALID
+ * UTF-8 SEQUENCE; -1 when every byte does. Overlong forms, surrogates and
+ * code points past U+10FFFF are invalid, as a fatal decoder counts them.
+ */
+export function firstInvalidUtf8(bytes: Uint8Array): number {
+  let at = 0;
+  while (at < bytes.length) {
+    const b = bytes[at];
+    let need = 0;
+    let min = 0;
+    let code = 0;
+    if (b < 0x80) {
+      at += 1;
+      continue;
+    } else if (b >= 0xc2 && b <= 0xdf) {
+      need = 1;
+      min = 0x80;
+      code = b & 0x1f;
+    } else if (b >= 0xe0 && b <= 0xef) {
+      need = 2;
+      min = 0x800;
+      code = b & 0x0f;
+    } else if (b >= 0xf0 && b <= 0xf4) {
+      need = 3;
+      min = 0x10000;
+      code = b & 0x07;
+    } else {
+      return at;
+    }
+    for (let k = 1; k <= need; k += 1) {
+      const next = bytes[at + k];
+      if (next === undefined || (next & 0xc0) !== 0x80) {
+        return at;
+      }
+      code = (code << 6) | (next & 0x3f);
+    }
+    if (code < min || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+      return at;
+    }
+    at += need + 1;
+  }
+  return -1;
+}
+
+export function stringField(block: Block, name: string): string {
+  const value = textOf(block, name);
   if (typeof value === 'string') {
     return value;
   }
@@ -303,11 +391,11 @@ export function stringField(block: Block, name: string): string {
 }
 
 export function titleOf(block: Block): string {
-  const value = block.fields.get('title');
+  const value = textOf(block, 'title');
   if (typeof value === 'string') {
     return value;
   }
-  const path = block.fields.get('path');
+  const path = textOf(block, 'path');
   if (typeof path === 'string') {
     return path;
   }
@@ -363,6 +451,31 @@ export function documentFor(block: Block, store: string): BlockDocument {
   const src = stringField(block, 'src');
   const prefix = front + headingSrc;
   return { id: block.id, store, prefix, front, headingSrc, src, text: prefix + src };
+}
+
+/*
+ * THE EDITOR'S LANGUAGE MODE FOR A BLOCK: a code block's own `lang`, a prose
+ * block markdown. A code block with no lang is plain text.
+ */
+export function languageModeOf(block: Block): string {
+  const kind = block.fields.get('kind');
+  const lang = block.fields.get('lang');
+  const code = (isSym(kind) && kind.name === 'code') || kind === 'code';
+  if (!code) {
+    return 'markdown';
+  }
+  return isSym(lang) ? lang.name : typeof lang === 'string' && lang.length > 0 ? lang : 'plaintext';
+}
+
+/*
+ * THE PREFIX ALONE -- front matter and heading -- for a caller that does not
+ * show the source from this record. Opening a block takes its text from the
+ * core's working read, which decodes the source itself and refuses a
+ * source that is not UTF-8 by name; decoding it here first would answer
+ * that refusal with this client's instead.
+ */
+export function prefixOf(block: Block): string {
+  return stringField(block, 'front') + stringField(block, 'heading-src');
 }
 
 export type SplitResult =

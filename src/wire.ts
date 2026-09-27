@@ -159,12 +159,79 @@ export function parseAnswers(stdout: string): Datum[] {
       continue;
     }
     try {
-      out.push(sexpr.read(line));
+      out.push(sexpr.read(withBytesAsBase64(line)));
     } catch (e) {
       throw new AnswerParseError(e as Error & { position?: number }, i + 1, line);
     }
   }
   return out;
+}
+
+/*
+ * A BYTEVECTOR AS THE CORE PRINTS IT, `#vu8(59 59 32 ...)`, AND AS THE READER
+ * TAKES ONE, `#vu8"<base64>"`.
+ *
+ * The core writes a text-mode code block's `src` and `doc` as bytes, in
+ * Chez's spelling; the reader this extension parses with knows bytes only
+ * in its base64 spelling, and refused the other as "bad # literal", so no
+ * such block could be opened. Each `#vu8(` literal outside a string is
+ * rewritten here, before the reader sees the line, and arrives as the one
+ * node kind the reader gives bytes: a Uint8Array.
+ *
+ * NEVER: A LITERAL THAT IS NOT BYTES IS NOT GUESSED AT. A number outside
+ * 0-255, anything that is not a number, or a missing `)` is a refusal
+ * naming its position in the line, as the reader's own refusals are.
+ */
+export function withBytesAsBase64(line: string): string {
+  let out = '';
+  let at = 0;
+  let inString = false;
+  while (at < line.length) {
+    const c = line[at];
+    if (inString) {
+      out += c;
+      if (c === '\\' && at + 1 < line.length) {
+        out += line[at + 1];
+        at += 2;
+        continue;
+      }
+      if (c === '"') {
+        inString = false;
+      }
+      at += 1;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      at += 1;
+      continue;
+    }
+    if (line.startsWith('#vu8(', at)) {
+      const close = line.indexOf(')', at + 5);
+      if (close < 0) {
+        throw bytesRefused('a bytevector with no closing parenthesis', at);
+      }
+      const inside = line.slice(at + 5, close).trim();
+      const bytes: number[] = [];
+      for (const word of inside.length === 0 ? [] : inside.split(/\s+/)) {
+        if (!/^\d{1,3}$/.test(word) || Number(word) > 255) {
+          throw bytesRefused(`a bytevector holding ${JSON.stringify(word)}, which is not a byte`, at);
+        }
+        bytes.push(Number(word));
+      }
+      out += `#vu8"${Buffer.from(bytes).toString('base64')}"`;
+      at = close + 1;
+      continue;
+    }
+    out += c;
+    at += 1;
+  }
+  return out;
+}
+
+function bytesRefused(message: string, position: number): Error & { position: number } {
+  return Object.assign(new Error(`${message} @${position}`), { position });
 }
 
 /*

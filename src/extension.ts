@@ -29,7 +29,7 @@
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { documentFor } from './blocks';
+import { Block, documentFor, languageModeOf, prefixOf } from './blocks';
 import {Working} from './working';
 import {MIGRATE_BLOCK} from './commands';
 import {digestOfBytes} from './publication';
@@ -95,6 +95,20 @@ function readConfig(): CoreConfig {
     writer: settings.get<string>('writer', ''),
     timeoutMs: settings.get<number>('timeoutMs', DEFAULT_TIMEOUT_MS)
   };
+}
+
+/*
+ * A CODE BLOCK IS SHOWN IN ITS OWN LANGUAGE (`languageModeOf`, blocks.ts); an
+ * editor that knows no mode by that name shows plain text rather than
+ * markdown, which would read the code as prose.
+ */
+async function showInLanguageOf(document: vscode.TextDocument, block: Block): Promise<void> {
+  const mode = languageModeOf(block);
+  try {
+    await vscode.languages.setTextDocumentLanguage(document, mode);
+  } catch (e) {
+    await vscode.languages.setTextDocumentLanguage(document, 'plaintext');
+  }
 }
 
 /*
@@ -969,7 +983,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // identity again inside the save chain, before numbering (XO-01/02/10).
 
     const directory = sessions.directoryFor(sessionId, storeHash(store), id);
-    const document = documentFor(block, store);
+    const prefix = prefixOf(block);
 
     /*
      * THE PUBLICATION AND EVERYTHING THAT READS IT ARE ON ONE CHAIN,
@@ -985,10 +999,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * record moved while the working copy was read.
        */
       const expected = publisher.revisionIn(directory);
-      const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,document.prefix);
+      const projection = await new Working(reading, `window-${sessionId.toLowerCase()}`).read(id,prefix);
       return publisher.publish({directory,storeId:store,blockId:id,prefix:projection.prefix,
         text:projection.prefix+projection.body,cursor:null,projection:projection.source,expected});
+    }).catch((e: unknown) => {
+      /*
+       * A READING THE CORE REFUSED IS SAID BY NAME -- a text-mode block whose
+       * bytes are not UTF-8 is `working-unavailable non-text-projection` --
+       * and nothing is opened: an empty editor would read as an empty block.
+       */
+      reportFailure(e);
+      return null;
     });
+    if (outcome === null) {
+      return;
+    }
 
     if (!outcome.published) {
       vscode.window.showWarningMessage(outcome.because==='dirty-document'
@@ -1009,7 +1034,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
 
     const opened = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.file));
-    await vscode.languages.setTextDocumentLanguage(opened, 'markdown');
+    await showInLanguageOf(opened, block);
     const editor = await vscode.window.showTextDocument(opened, { preview: false });
     if (asked === generation) {
       noteReading(notes);

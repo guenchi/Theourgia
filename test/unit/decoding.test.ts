@@ -652,6 +652,9 @@ describe('plugin-r3 no sixth route into a clause', function () {
    * adds to it.
    */
   const NOT_LOOKING_FOR_A_CLAUSE: Record<string, string> = {
+    'blocks.ts:languageModeOf.code':
+      "reads a block's FIELD VALUES -- its kind, a symbol, compared with `code`, and its lang, a symbol whose " +
+      'name is the language -- to choose an editor mode. No answer form and no clause is looked for.',
     'saver.ts:instanceMismatchOf':
       'asks what sits at POSITION 2 of an `(error refused ...)`, because the ruling classifies ' +
       'an instance mismatch by position 2 (queue item 7). The clause found there is then read ' +

@@ -73,6 +73,9 @@ const WITHOUT_THE_CHECK: Record<string, string> = {
     'The save persists into the captured working namespace, verifies readback, rechecks the projection and checks live queue store in acceptSave before numbering. Its result uses the captured Saver; XO-01/02/10 and WS-28/31 cover these boundaries.',
   activate:
     'the extension is being built; there is no earlier generation for anything to have changed from',
+  showInLanguageOf:
+    'it sets the language mode of the document it is handed and decides nothing; its caller, openBlock, ' +
+    'captured the store before its first wait and opened that document from it',
   pick: 'it returns the user’s answer and decides nothing; its caller holds the generation',
   confirm: 'as pick',
   open:

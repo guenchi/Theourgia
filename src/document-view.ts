@@ -46,7 +46,7 @@
  */
 
 import { Client, Note } from './client';
-import { Block, readBlock } from './blocks';
+import { Block, TextNotUtf8, readBlock, textOf } from './blocks';
 import { TransportError } from './transport';
 import { Datum } from './wire';
 
@@ -142,12 +142,17 @@ export type Composed =
  * with two candidate values arrives as a conflict, not a string, and
  * reading it as '' would show a body with nothing in it -- the one reading
  * nobody would question.
+ *
+ * NOTE: THE DECODING IS THE SHARED ONE (`textOf`, blocks.ts), so bytes --
+ * a text-mode code block's source -- are text here exactly as they are in
+ * the block editor. Only the rule for a field that is absent, or there and
+ * not text, is this view's.
  */
-function textOf(block: Block, name: string): string | null {
+function fieldText(block: Block, name: string): string | null {
   if (!block.fields.has(name)) {
     return '';
   }
-  const value = block.fields.get(name);
+  const value = textOf(block, name);
   return typeof value === 'string' ? value : null;
 }
 
@@ -168,6 +173,22 @@ function refused(reason: string, ids: string[]): Composed {
  * would read as complete.
  */
 export function composeDocument(rootId: string, records: Datum[]): Composed {
+  /*
+   * A FIELD WHOSE BYTES ARE NOT UTF-8 REFUSES THE DOCUMENT BY NAME: which
+   * field, which block, and where the bytes stop decoding. A document
+   * missing a block's text would read as that block being empty.
+   */
+  try {
+    return composeFrom(rootId, records);
+  } catch (e) {
+    if (e instanceof TextNotUtf8) {
+      return refused(`the ${e.field} of a block is not UTF-8 text (text-not-utf8, byte ${e.offset})`, [e.id]);
+    }
+    throw e;
+  }
+}
+
+function composeFrom(rootId: string, records: Datum[]): Composed {
   const blocks: Block[] = [];
   for (const record of records) {
     const block = readBlock(record);
@@ -231,18 +252,18 @@ export function composeDocument(rootId: string, records: Datum[]): Composed {
     return refused(`these blocks cannot be placed under ${rootId}`, unplaced);
   }
   const notText = blocks
-    .filter((b) => ['title', 'path', 'src', 'front'].some((name) => textOf(b, name) === null))
+    .filter((b) => ['title', 'path', 'src', 'front'].some((name) => fieldText(b, name) === null))
     .map((b) => b.id);
   if (notText.length > 0) {
     return refused('these blocks have a title, body or front matter that is not text', notText);
   }
   const headingTitle = (block: Block): string => {
-    const title = textOf(block, 'title') as string;
+    const title = fieldText(block, 'title') as string;
     /*
      * A LONE CARRIAGE RETURN ENDS A LINE TOO (review r1 of item 6): a title
      * holding one would otherwise start a second, unmoved heading of its own.
      */
-    return (title.length > 0 ? title : (textOf(block, 'path') as string)).replace(/\r\n|\r|\n/g, ' ');
+    return (title.length > 0 ? title : (fieldText(block, 'path') as string)).replace(/\r\n|\r|\n/g, ' ');
   };
   const parts: string[] = [];
   /*
@@ -250,7 +271,7 @@ export function composeDocument(rootId: string, records: Datum[]): Composed {
    * top of a file. Only the opened block can carry it -- the core's walk
    * stops at a document nested inside a section.
    */
-  const front = textOf(root, 'front') as string;
+  const front = fieldText(root, 'front') as string;
   if (front.length > 0) {
     parts.push(front.endsWith('\n') ? front : `${front}\n`);
   }
@@ -261,7 +282,7 @@ export function composeDocument(rootId: string, records: Datum[]): Composed {
     if (title.length > 0) {
       parts.push(`${'#'.repeat(Math.min(depth + 1, DEEPEST_HEADING))} ${title}\n`);
     }
-    const body = shiftHeadings(textOf(block, 'src') as string, depth);
+    const body = shiftHeadings(fieldText(block, 'src') as string, depth);
     let text = body.text;
     if (text.length > 0 && !text.endsWith('\n')) {
       text += '\n';

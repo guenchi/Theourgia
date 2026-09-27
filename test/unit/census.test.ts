@@ -83,6 +83,7 @@ const AT_LEAST: Array<[string, number]> = [
   ['brief-shared-state.test.ts', 6],
   ['brief-temporary.test.ts', 7],
   ['brief-working.test.ts', 2],
+  ['bytes.test.ts', 14],
   ['brief-write-boundaries.test.ts', 13],
   ['activation.test.ts', 4],
   ['answering.test.ts', 27],

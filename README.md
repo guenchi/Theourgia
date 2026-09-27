@@ -507,6 +507,13 @@ sees every writer again. Each names the writer, the path and the reason. While a
 missing, the marks on blocks are shown as not known, and the conflict count is the other
 writers' count, since the missing writer's conflicts are not in it. Saving goes on as usual.
 
+**Code blocks.** A text-mode code block -- one `import-code` made from a source file -- keeps its
+source as bytes, and it opens as that source, decoded as UTF-8, in the editor mode its `lang` names
+(plain text when the editor knows no such mode). Line ends are kept as they are. A block whose bytes
+are not UTF-8 does not open: the store says so by name (`non-text-projection`), and a view that reads
+such a field refuses with `text-not-utf8`, the field, the block and the offset of the first byte that
+does not decode. A file that begins with a byte-order mark is not saved.
+
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of
 these cells once reported `the core exited 255 without an answer`, and a probe built to fish

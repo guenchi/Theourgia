@@ -34,6 +34,8 @@ const docs=[];
 // The banners the extension decorates editors with, and the status bar item it
 // paints: what a person would see, recorded so a scenario can read it back.
 const decorations=[];const statusItem={show(){},dispose(){}};
+// Every document shown, with the language mode it was shown in.
+const shownDocs=[];
 // A real core's client, when a scenario builds one: the extension then talks to
 // a real store through the shipping transport, and only the VS Code API here is
 // the stand-in.
@@ -46,7 +48,8 @@ const vs = {
  TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p}),from:o=>({...o,toString(){return `${o.scheme}:${o.path}?${o.query}`;}})},
  Range:class{constructor(a,b,c,d){this.start={line:a,character:b};this.end={line:c,character:d};}},
- languages:{setTextDocumentLanguage:async d=>d},
+ // The language mode a document was given, kept on the document.
+ languages:{setTextDocumentLanguage:async(d,language)=>Object.assign(d,{languageId:language})},
  window:{createStatusBarItem:()=>statusItem,createTextEditorDecorationType:options=>({options,dispose(){}}),createOutputChannel:()=>({appendLine(line){outputLines.push(line);},show(){},dispose(){}}),registerTreeDataProvider:(n,p)=>{provider=p;return disposable;},
   // NEVER: THE CHANNEL IS KEPT. All three pushed the bare text, so routing an
   // error through showInformationMessage left every observation identical and
@@ -57,7 +60,7 @@ const vs = {
   showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
   showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});messages.push(m);if(process.argv[3]==='integrity-show-throws')throw new Error('the editor threw');return process.argv[3]==='integrity-show-rejects'?Promise.reject(new Error('the editor refused the warning')):Promise.resolve(undefined);},
   showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
-  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})})},
+  showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async d=>(shownDocs.push({fsPath:d&&d.uri?d.uri.fsPath:null,languageId:d?d.languageId:null}),Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})}))},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
   registerTextDocumentContentProvider:()=>disposable,onDidCloseTextDocument:()=>disposable,
@@ -485,6 +488,96 @@ async function main(){
    realClient=null;
    store.dispose();
   }
+ }
+ // A REAL store holding text sources imported through the core's own
+ // `import-code` (sent through the transport: this extension sends no import),
+ // with the code blocks under each file, by the file's path.
+ const importedStore=async(real,sources)=>{
+  const {readBlock}=require(path.join(out,'blocks.js'));
+  const store=await real.RealStore.make();
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-bytes-'));
+  for(const [name,bytes] of Object.entries(sources))fs.writeFileSync(path.join(dir,name),bytes);
+  const transport=store.transport();
+  const made=await transport.send('import-code',[dir]);
+  if(made.rc!==0)throw new Error(`the sources were not imported: ${made.stdout}${made.stderr}`);
+  const client=new Client(transport);
+  const outline=await transport.send('outline',[]);
+  const fileIds=outline.stdout.split('\n').map(l=>(/^- (\S+)/.exec(l)||[])[1]).filter(Boolean);
+  const codeOf={};
+  for(const id of fileIds){
+   const r=await client.request('read',[id,'--recursive']);
+   const blocks=r.answers.map(readBlock).filter(Boolean);
+   const file=blocks.find(b=>b.id===id);
+   const name=file?file.fields.get('path'):null;
+   if(typeof name==='string')codeOf[path.basename(name)]=blocks.filter(b=>b.id!==id).map(b=>b.id);
+  }
+  return {store,dir,transport,client,codeOf};
+ };
+ const srcBytesOf=async(transport,id)=>{
+  const {parseAnswers}=require(path.join(out,'wire.js'));const {readBlock}=require(path.join(out,'blocks.js'));
+  const r=await transport.send('read',[id]);const form=parseAnswers(r.stdout)[0];const block=readBlock(form[1]);
+  const src=block?block.fields.get('src'):null;return src instanceof Uint8Array?Buffer.from(src).toString('hex'):String(src);
+ };
+ // A text-mode block opened through the tree's command: the text it shows, in
+ // the block's language; and a block whose bytes are not UTF-8, refused by name.
+ if(scenario==='bytes-open'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const good=Buffer.from(';; \u4e2d\u6587\r\n(define alpha 1)\r\n','utf8');
+  const bad=Buffer.from([0x28,0x64,0x65,0x66,0x69,0x6e,0x65,0x20,0x62,0x20,0x22,0xff,0x22,0x29,0x0a]);
+  const imported=await importedStore(real,{'good.ss':good,'bad.ss':bad});
+  try{
+   realClient=imported.client;
+   change(imported.store.store);
+   shown.length=0;
+   await commands.get('theourgia.openBlock')(imported.codeOf['good.ss'][0]);
+   const goodShown=shownDocs[shownDocs.length-1]||null;
+   const goodFile=goodShown&&goodShown.fsPath?fs.readFileSync(goodShown.fsPath):null;
+   const goodErrors=shown.filter(n=>n.level==='error');
+   shown.length=0;
+   const before=shownDocs.length;
+   await commands.get('theourgia.openBlock')(imported.codeOf['bad.ss'][0]);
+   return {codeOf:imported.codeOf,goodHex:good.toString('hex'),goodFileHex:goodFile?goodFile.toString('hex'):null,
+    languageId:goodShown?goodShown.languageId:null,goodErrors,badShown:shown.slice(),badOpened:shownDocs.length-before};
+  }finally{realClient=null;imported.store.dispose();fs.rmSync(imported.dir,{recursive:true,force:true});}
+ }
+ // The save round trip on the real core: a text-mode block opened, saved
+ // unchanged and committed reads back as the same bytes and exports as the
+ // same file; a buffer that begins with a byte-order mark is refused; a source
+ // imported WITH a mark re-saves and exports with it.
+ if(scenario==='bytes-save'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const src=Buffer.from(';; one\n(define alpha 1)\n','utf8');
+  const bom=Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(';; bom\n(define beta 2)\n','utf8')]);
+  const imported=await importedStore(real,{'alpha.ss':src,'bom.ss':bom});
+  const exportDir=fs.mkdtempSync(path.join(os.tmpdir(),'theourgia-bytes-export-'));
+  try{
+   realClient=imported.client;
+   change(imported.store.store);
+   const alphaId=imported.codeOf['alpha.ss'][0];
+   await commands.get('theourgia.openBlock')(alphaId);
+   const file=shownDocs[shownDocs.length-1].fsPath;
+   const text=fs.readFileSync(file,'utf8');
+   shown.length=0;
+   await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>text});
+   const afterSave=shown.slice();
+   const rereadHex=await srcBytesOf(imported.transport,alphaId);
+   const bomId=imported.codeOf['bom.ss'][0];
+   await commands.get('theourgia.openBlock')(bomId);
+   const bomFile=shownDocs[shownDocs.length-1].fsPath;
+   const bomText=fs.readFileSync(bomFile,'utf8');
+   shown.length=0;
+   await savedHandler({uri:{fsPath:bomFile},isDirty:false,getText:()=>bomText});
+   const afterBomSave=shown.slice();
+   const ex=await imported.transport.send('export-code',[exportDir,'--raw']);
+   const exportedHex=ex.rc===0&&fs.existsSync(path.join(exportDir,'alpha.ss'))?fs.readFileSync(path.join(exportDir,'alpha.ss')).toString('hex'):`export rc ${ex.rc}: ${ex.stdout}${ex.stderr}`;
+   const bomExportedHex=ex.rc===0&&fs.existsSync(path.join(exportDir,'bom.ss'))?fs.readFileSync(path.join(exportDir,'bom.ss')).toString('hex'):null;
+   fs.writeFileSync(file,Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(text,'utf8')]));
+   shown.length=0;
+   await savedHandler({uri:{fsPath:file},isDirty:false,getText:()=>'\ufeff'+text});
+   const markRefusal=shown.slice();
+   return {srcHex:src.toString('hex'),rereadHex,exportedHex,afterSave,bomHex:bom.toString('hex'),bomFileStartsWithMark:bomText.charCodeAt(0)===0xfeff,
+    afterBomSave,bomExportedHex,markRefusal};
+  }finally{realClient=null;imported.store.dispose();fs.rmSync(imported.dir,{recursive:true,force:true});fs.rmSync(exportDir,{recursive:true,force:true});}
  }
  if(scenario==='outline-nested'){
   const roots=await provider.getChildren();
