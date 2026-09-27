@@ -31,6 +31,11 @@
 ;;;     -> (error unwritable (op o) (path p) (reason r) (errno n))
 ;;;   either, non-empty record
 ;;;     -> (error incomplete (failed <the clauses above>) (written <record>))
+;;;   incomplete-reduction (F77c: a reduction missing a writer, refused to
+;;;   a caller that did not declare it accepts one)
+;;;     -> (error incomplete-reduction (notes <clause> ...)), a NAMED
+;;;        outcome: a non-empty record joins it through with-written, as
+;;;        any other named outcome's does
 ;;;   anything else -> #f (the caller keeps its own answer for it)
 ;;; An unreadable-entry's clauses carry no `op` (its reason is strerror
 ;;; text and names no verb; ruling D2). THE errno CLAUSE CARRIES WHAT THE
@@ -59,7 +64,8 @@
           (only (theourgia ffi)
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason
                 unreadable-entry-errno
-                fs-error? fs-error-op fs-error-target fs-error-errno errno-text))
+                fs-error? fs-error-op fs-error-target fs-error-errno errno-text)
+          (only (theourgia incomplete) incomplete-reduction? incomplete-reduction-answer))
 
   (define absence-errnos '(ENOENT ENOTDIR))
 
@@ -95,6 +101,7 @@
   (define (classify-failure c record)
     (let ((clauses (failure-clauses c)))
       (cond
+        ((incomplete-reduction? c) (with-written (incomplete-reduction-answer c) record))
         ((not clauses) #f)
         ((null? record) (cons* 'error (failure-kind c) clauses))
         (else (list 'error 'incomplete (cons 'failed clauses) (list 'written record))))))

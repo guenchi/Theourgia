@@ -41,7 +41,10 @@
         (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record)
         (only (theourgia answers) classify-failure combine-report)
         (only (theourgia working) working-snapshot working-baseline)
-        (only (theourgia store) open-and-reduce))
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia log) load-listener-add! load-declaration-set! load-refused?
+              merge-unreadable incomplete-clause)
+        (only (theourgia incomplete) incomplete-accepted))
 
 ;; ---- what this program does NOT load until it has to -----------------------
 ;;
@@ -346,6 +349,40 @@
     (write c port)
     (get)))
 
+;; THE EVAL ROUTE'S OWN SCOPE (F77c; design review r2, finding 4; code review
+;; r1). This process obtains state twice before the worker exists -- the
+;; cut's baseline and the working view. The store string it hands those two
+;; is a copy only this request holds, carrying eval's DECLARATION (eval
+;; carries what its reduction is missing into its answer) and a listener for
+;; the NOTES those loads hear. It names no refusal of its own: eval declares,
+;; so no load here is refused for being incomplete, and working.sc's
+;; `problem` already names an entry it could not read (code review r1: an
+;; override here changed a healthy store's answer and added nothing).
+;; -> (values key heard-thunk)
+(define (eval-scope store)
+  (let ((key (string-copy store)) (heard '()))
+    (load-listener-add! key
+      (lambda (event)
+        (unless (load-refused? event)
+          (set! heard (merge-unreadable heard event)))))
+    (load-declaration-set! key incomplete-accepted)
+    (values key (lambda () heard))))
+
+;; ONE incomplete CLAUSE PER ANSWER (code review r1): the notes this process
+;; heard join the answer's own clause -- the worker's, when it heard any --
+;; rather than adding a second one.
+(define (with-heard-clause answer heard)
+  (if (or (null? heard) (not (and (pair? answer) (list? answer))))
+      answer
+      (let* ((old (find (lambda (c) (and (pair? c) (eq? (car c) 'incomplete))) (cdr answer)))
+             (field (lambda (u k) (let ((c (assq k (cdr u)))) (and c (cadr c)))))
+             (old-notes (if old
+                            (map (lambda (u) (list (field u 'writer) (field u 'path) (field u 'reason)))
+                                 (cdr old))
+                            '())))
+        (append (remp (lambda (c) (eq? c old)) answer)
+                (list (incomplete-clause (merge-unreadable old-notes heard)))))))
+
 (define (eval-view nodes store cut)
   (if (not (argument-option nodes "--working"))
       (list 'working #f #f '())
@@ -387,9 +424,9 @@
         (let ((timeout (eval-number nodes "--timeout-ms" 3000 1 60000))
               (memory (eval-number nodes "--memory-bytes" 268435456 1048576 2147483648))
               (output (eval-number nodes "--output-bytes" 65536 128 1048576))
-              (store (or (argument-option nodes "--store") (getenv "THEOURGIA_STORE") "."))
-              (cut (eval-cut nodes (or (argument-option nodes "--store")
-                                       (getenv "THEOURGIA_STORE") ".")))
+              (store (or (argument-option nodes "--store") (getenv "THEOURGIA_STORE") ".")))
+         (let-values (((key heard) (eval-scope store)))
+         (let ((cut (eval-cut nodes key))
               (under (or (argument-option nodes "--under") ""))
               (wire? (argument-option nodes "--wire")))
           (cond
@@ -401,16 +438,21 @@
              (finish (list 'error 'bad-request '(reason cut-and-latest)
                            (list 'usage eval-usage))
                      wire?))
+            ;; THESE EXITS COME AFTER THE CUT'S BASELINE LOAD, so they too carry
+            ;; what this process heard (F77c code review r3); with nothing heard
+            ;; the answer is unchanged.
             ((not (and timeout memory output))
-             (finish (list 'error 'bad-request '(reason eval-arguments)
-                           (list 'usage eval-usage))
+             (finish (with-heard-clause
+                       (list 'error 'bad-request '(reason eval-arguments)
+                             (list 'usage eval-usage))
+                       (heard))
                      wire?))
             ((and (pair? cut) (eq? (car cut) 'refused))
-             (finish (append (cadr cut) '((during cut))) wire?))
+             (finish (with-heard-clause (append (cadr cut) '((during cut))) (heard)) wire?))
             (else
              (let ((source (read-source nodes)))
                (if (> (string-length source) 1048576)
-                   (finish '(error bad-source (reason input-limit)) wire?)
+                   (finish (with-heard-clause '(error bad-source (reason input-limit)) (heard)) wire?)
                    ;; THE RECORD CROSSES INTO THE SCHEDULER (F100b point 3):
                    ;; what this process changed before it -- the cut's draft
                    ;; lock, say -- is handed to the boot actor as its
@@ -423,11 +465,16 @@
                        (lambda ()
                          (with-mutation-record
                            (lambda ()
+                             ;; EVERY EXIT CARRIES WHAT THIS PROCESS HEARD (F77c
+                             ;; code review r2): a failure after the baseline
+                             ;; consumed a reduction missing a writer says so too.
                              (guard (e ((classify-failure e (mutation-record))
-                                        => (lambda (a) (finish a wire?))))
-                               (let ((view (eval-view nodes store cut)))
-                                 (if (and (pair? view) (eq? (car view) 'refused))
-                                     (finish (append (cadr view) '((during view))) wire?)
+                                        => (lambda (a) (finish (with-heard-clause a (heard)) wire?))))
+                               (let ((view (eval-view nodes key cut)))
+                                 (cond
+                                   ((and (pair? view) (eq? (car view) 'refused))
+                                     (finish (with-heard-clause (append (cadr view) '((during view))) (heard)) wire?))
+                                   (else
                                      ;; TRIPWIRE, NOT A MEASUREMENT (AG-b, D22): of the
                                      ;; aggregation rule, only the attachment to a named
                                      ;; outcome has a production case here (P3-d,
@@ -438,6 +485,9 @@
                                      ;; (PR-08/09). H2 in test/facade-record.sc carries
                                      ;; that rule.
                                      (finish
+                                       ;; The worker's answer, with the notes this
+                                       ;; process heard merged into its one clause.
+                                       (with-heard-clause
                                        (combine-report
                                          ((later '(theourgia eval-supervise) 'supervise-eval)
                                            (list (cons 'store store) (cons 'cut cut) (cons 'under under)
@@ -449,8 +499,9 @@
                                                  (cons 'scheme (scheme-binary))
                                                  (cons 'worker (beside-this-program "eval-worker.sc"))))
                                          (mutation-record))
-                                       wire?)))))
-                           before-scheduler))))))))))))
+                                       (heard))
+                                       wire?))))))
+                           before-scheduler))))))))))))))
 
 ;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
 ;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS

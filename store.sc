@@ -18,6 +18,11 @@
 ;; hand back the state. The write side is a separate section.
 (library (theourgia store)
   (export store-resident-cache! open-and-reduce with-store-write store-publish-hook!
+          obtain-state seal-state sealed-state? sealed-state-unsealed? store-withhold-hook!
+          state-incomplete-notes
+          ;; The interface pinned at dispatch (F77c; cells v3e look these up
+          ;; in this library): re-exported from (theourgia incomplete).
+          incomplete-accepted incomplete-reduction? incomplete-reduction-notes
           defs-index defs-index-build-count defs-index-skipped-count name-bearing-kinds
           text-decode-skipped-count prepared-generation-count prepared-token-now
           prepared-hit-count prepared-miss-count
@@ -33,9 +38,13 @@
           (theourgia evidence-index)
           (only (theourgia wire) decode-line storable-decode)
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
+          (only (rnrs records syntactic) define-record-type fields mutable)
           (only (theourgia log)
                 log-open load-deliver! load-commit! load-fingerprint remember-load-unreadable!
                 load-unreadable session-load
+                unreadable-behind merge-unreadable
+                tell-load-notes! tell-load-refused! load-declaration-of
+                session-delivered? session-reset-pending load-outcome
                 load-snapshot-cut load-snapshot-rows
                 log-begin log-end! session-view session-view-refusal session-append! session-applied!
                 session-epoch make-frame atomic-write! segment-file-name
@@ -54,6 +63,8 @@
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia answers) with-written)
+          (only (theourgia incomplete) declared? make-incomplete-reduction
+                incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
                 file-is-directory? report-fault? trace-event! entry-type overwrite-entry!)
@@ -159,8 +170,8 @@
                       (and (not (eq? (discovery-origin prefix) 'unreadable))
                            (= (if p (cdr p) 0) (discovery-end-seq prefix)))))
                   (load-writers ls))))
-  (define (replay store cut)
-    (let* ((ls (log-open store))
+  (define (replay store cut . declaration)
+    (let* ((ls (log-open store (and (pair? declaration) (car declaration))))
            (key (and resident-enabled? (not cut) (load-fingerprint ls)))
            (previous (and key (hashtable-ref residents store #f)))
            (cached (and previous (equal? (car previous) key) (cdr previous)))
@@ -192,15 +203,66 @@
   ;; about the records that exist, not about the ones the cut selects --
   ;; asking it of the restricted reduction would call every cut closed,
   ;; because the premises it omits were never read.
+  ;;
+  ;; THE UNDECLARED FORM (F77c). open-and-reduce says nothing about
+  ;; accepting a reduction that is missing a writer, so on an incomplete
+  ;; store it is refused -- unless the request it runs in declared (plan
+  ;; amendment A2: the declaration rides on the store object the dispatcher
+  ;; owns). A caller that has not been handed a declaration fails CLOSED.
   (define (open-and-reduce store . rest)
+    (apply obtain-state store #f #f rest))
+
+  ;; ---- obtaining state (F77c, F77 R2e) --------------------------------------
+  ;;
+  ;; A SUPPLIED STATE IS HANDED ON SEALED. The daemon's published state, and
+  ;; any state a caller gives rpc dispatch, reach a handler as a sealed
+  ;; value holding the reduction and its notes. Nothing that reads a
+  ;; reduction accepts a seal, so a handler that used one without unsealing
+  ;; it fails on the first row that reaches it, not quietly. POSSESSING A
+  ;; STATE IS NOT CONSUMING IT (design review r2): a verb that never unseals
+  ;; is never refused for holding one, and its answer carries no clause.
+  (define-record-type sealed-state (fields state notes (mutable unsealed?)))
+  ;; The interface name (F77c): a reduction's notes, '() when it is complete.
+  ;; Defined here and not in (theourgia log): the cells import the log library
+  ;; whole and look this name up for themselves.
+  (define (state-incomplete-notes value) (unreadable-behind value))
+  (define (seal-state state extra-notes)
+    (make-sealed-state state (merge-unreadable (unreadable-behind state) extra-notes) #f))
+
+  ;; THE ONE UNSEALER, AND THE ONE PLACE A CONSUMER OBTAINS STATE.
+  ;; (obtain-state store supplied declaration . cut)
+  ;;   supplied: a sealed state, a bare reduction, or #f (then it loads)
+  ;;   declaration: incomplete-accepted, or anything else for "not declared";
+  ;;     the request's own declaration (A2) counts as well
+  ;; A state missing a writer is handed to a declared consumer, which tells
+  ;; the request's listener what it is missing -- exactly as a load does, so
+  ;; a nested dispatch's unsealing reaches the enclosing answer -- and is
+  ;; refused to any other, the refusal told to the listener first.
+  ;; A CUT IS A DIFFERENT REDUCTION: it is always loaded, never taken from
+  ;; a supplied state (see reduction-for in the rpc layer).
+  (define (obtain-state store supplied declaration . rest)
     (let ((cut (if (null? rest) #f (car rest))))
-      (if (not cut)
-          (replay store #f)
-          (let* ((whole (replay store #f))
-                 (verdict (cut-usable? whole cut)))
-            (if (eq? verdict 'usable)
-                (replay store cut)
-                verdict)))))
+      (if (and supplied (not cut))
+          (let* ((is-sealed (sealed-state? supplied))
+                 (state (if is-sealed (sealed-state-state supplied) supplied))
+                 (notes (if is-sealed (sealed-state-notes supplied) (unreadable-behind supplied))))
+            (when is-sealed (sealed-state-unsealed?-set! supplied #t))
+            (cond
+              ((null? notes) state)
+              ((or (declared? declaration) (declared? (load-declaration-of store)))
+               (tell-load-notes! store notes)
+               state)
+              (else
+               (let ((c (make-incomplete-reduction notes)))
+                 (tell-load-refused! store c)
+                 (raise c)))))
+          (if (not cut)
+              (replay store #f declaration)
+              (let* ((whole (replay store #f declaration))
+                     (verdict (cut-usable? whole cut)))
+                (if (eq? verdict 'usable)
+                    (replay store cut declaration)
+                    verdict))))))
 
   ;; ---- the write side ------------------------------------------------------
 
@@ -2913,10 +2975,25 @@
   ;; the reduction is the only place left that can say a writer is
   ;; missing; the session's load at the moment of publishing is the one
   ;; the state was delivered from.
+  ;; THE GATE (F77c, design reviews r4 and r5): a session whose load was not
+  ;; delivered -- aborted, or waiting on a reset -- has a partial state, and
+  ;; a partial state is never published, whatever stopped it (ruling
+  ;; Q-r5-1). The previous publication stays, the withholding is traced by
+  ;; name, and the withhold hook asks for a fresh fold, which is judged like
+  ;; any other load.
   (define (publish-after state s thunk)
     (let ((answers (thunk)))
-      (remember-load-unreadable! state (session-load s))
-      (publish-hook state)
+      (if (session-delivered? s)
+          (begin
+            (remember-load-unreadable! state (session-load s))
+            (publish-hook state))
+          (begin
+            (trace-event! 'publish-withheld
+                          (if (session-reset-pending s)
+                              'reset-pending
+                              (load-outcome (session-load s)))
+                          #f)
+            (withhold-hook)))
       answers))
 
   ;; NEVER: A PLAIN VARIABLE SET ONCE, NEVER: NOT A PARAMETER. A parameter would
@@ -2936,6 +3013,14 @@
     (unless (procedure? procedure)
       (assertion-violation 'store-publish-hook! "not a procedure" procedure))
     (set! publish-hook procedure))
+  ;; WHAT A WITHHELD PUBLICATION ASKS FOR, set once like the publish hook.
+  ;; The daemon's store process asks itself to reload; a CLI run holds no
+  ;; publication and does nothing.
+  (define withhold-hook (lambda () (if #f #f)))
+  (define (store-withhold-hook! procedure)
+    (unless (procedure? procedure)
+      (assertion-violation 'store-withhold-hook! "not a procedure" procedure))
+    (set! withhold-hook procedure))
 
   (define (with-store-write store proc . rest)
     (let ((actor (if (null? rest) "unknown" (car rest)))

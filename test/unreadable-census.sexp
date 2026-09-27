@@ -165,8 +165,8 @@
   ("daemon.sc" (probe-for-outside-change!) 1 guard
    (#t)
    fact c
-   "refresh guard: failed snapshot visible in the answer (R1a)"
-   (e (#t was)))
+   "refresh guard: a failed snapshot keeps the previous one and is traced probe-failed by name (R1a; F77c ruling 4)"
+   (e (#t (trace-event! (quote probe-failed) (condition-text e) #f) was)))
   ("daemon.sc" (store-loop) 1 guard
    (#t)
    propagate c
@@ -175,8 +175,8 @@
   ("daemon.sc" (store-loop) 2 guard
    (#t)
    fact c
-   "refresh guard: failed reload visible (R1a)"
-   (e (#t (if #f #f))))
+   "refresh guard: a failed reload keeps the previous publication and is traced reload-failed with the table's answer or the condition's text (R1a; F77c ruling 4)"
+   (e (#t (trace-event! (quote reload-failed) (or (classify-failure e (quote ())) (condition-text e)) #f))))
   ("daemon.sc" (answer-for) 1 guard
    ((and (pair? e) (eq? (quote error) (car e))) (unreadable-entry? e) #t)
    refuse c
@@ -243,10 +243,10 @@
    "eval"
    (e (#t #f)))
   ("eval-worker.sc" (answer) 1 guard
-   ((worker-refusal? e) (classify-failure e (mutation-record)) (condition? e) #t)
+   ((and refused (classify-failure refused (mutation-record))) (worker-refusal? e) (classify-failure e (mutation-record)) (condition? e) #t)
    refuse a
-   "eval: the worker's own refusals are a private record answered as they are (F92); a filesystem failure -- an entry the worker's load could not read, writers/ itself included (F79), or a durable-error -- answers by the one table with the worker's record (F100b point 5); a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
-   (e ((worker-refusal? e) (worker-refusal-answer e)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
+   "eval: a load refused in this worker names the answer by its own condition, whatever a catch-all made of it (F77c); the worker's own refusals are a private record answered as they are (F92); a filesystem failure -- an entry the worker's load could not read, writers/ itself included (F79), or a durable-error -- answers by the one table with the worker's record (F100b point 5); a condition is eval-exception with the fixed message, and any other raised value is carried as data by raised-answer (F92, F93)"
+   (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((worker-refusal? e) (worker-refusal-answer e)) ((classify-failure e (mutation-record)) => (lambda (a) a)) ((condition? e) (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))) (#t (raised-answer e))))
   ("eval-worker.sc" (worker-step) 1 guard
    ((and (pair? e) (eq? (car e) (quote error))) (or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) #t)
    propagate a
@@ -433,15 +433,20 @@
    "physical-of: a current segment that is there and will not open leaves the writer no-append-target, the answer a mirror gets; the segment-unreadable note names it and the session gate refuses the writer (K12)"
    (e ((unreadable-entry? e) (quote no-append-target))))
   ("log.sc" (open-load) 1 guard
-   ((unreadable-entry? e) #t)
-   propagate a
-   "open-load parses the store meta.sexp: an unreadable meta.sexp is raised to the answering point's table (F100b PRE-1/P5); a parse failure is #f as before"
-   (e ((unreadable-entry? e) (raise e)) (#t #f)))
-  ("log.sc" (open-load) 2 guard
    (#t)
    propagate c
-   "re-raises after unlock"
-   (e (#t (when lock ((current-lock-release) lock)) (raise e))))
+   "open-load's ONE exit handler (F77c, design reviews r5b and r6): tells the listener a refusal, releases the lock open-load owns quietly, re-raises the original condition"
+   (e (#t (open-load-refused! store e owned) (raise e))))
+  ("log.sc" (open-load-refused!) 1 guard
+   (#t)
+   unrelated a
+   "cleanup: the owned lock's release is quiet, so it can replace neither the escaping condition nor the notification (F77c, design review r6)"
+   (x (#t (if #f #f))))
+  ("log.sc" (open-load-body) 1 guard
+   ((unreadable-entry? e) #t)
+   propagate a
+   "open-load parses the store meta.sexp: an unreadable meta.sexp is raised to the answering point's table (F100b PRE-1/P5), through open-load's exit handler, which tells the listener (F77c); a parse failure is #f as before"
+   (e ((unreadable-entry? e) (raise e)) (#t #f)))
   ("log.sc" (store-key) 1 guard
    (#t)
    unrelated a
@@ -705,8 +710,13 @@
   ("log.sc" (load-deliver!) 1 guard
    (#t)
    propagate b
-   "load-deliver! re-raises (delivery barrier)"
-   (e (#t (finish-abort! ls (quote deliver-barrier-failed)) (raise e))))
+   "load-deliver! re-raises (delivery barrier); the condition is kept as the abort's cause, and an unreadable one is told to the listener (F77c)"
+   (e (#t (finish-abort! ls (quote deliver-barrier-failed) e) (raise e))))
+  ("log.sc" (deliver-after-barrier!) 1 guard
+   (#t)
+   propagate b
+   "the delivery's escaping condition is kept for finish-abort! in the unwind, then re-raised (F77c, design review r5)"
+   (e (#t (vector-set! escaped 0 e) (raise e))))
   ("markers.sc" (safe-utf8) 1 guard
    (#t)
    unrelated a
@@ -970,8 +980,8 @@
   ("core.sc" (eval-and-exit!) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
-   "F100b point 3, the boot: a filesystem failure inside the scheduler answers by the one table with the boot's record (the pre-scheduler record handed in as its initial entries, AG-b-1/AG-b-2); anything else propagates"
-   (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire?)))))
+   "F77c (code review r2): the answer also carries the notes this process heard; F100b point 3, the boot: a filesystem failure inside the scheduler answers by the one table with the boot's record (the pre-scheduler record handed in as its initial entries, AG-b-1/AG-b-2); anything else propagates"
+   (e ((classify-failure e (mutation-record)) => (lambda (a) (finish (with-heard-clause a (heard)) wire?)))))
   ("core.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a
@@ -983,10 +993,10 @@
    "F100b point 2b: the store check's stat failing answers the table's kind with an empty record, as the transport's refusal (P2b); anything else propagates"
    (e ((classify-failure e (quote ())) => (lambda (a) a))))
   ("rpc.sc" (rpc-dispatch-parsed) 1 guard
-   ((classify-failure e (mutation-record)))
+   ((and refused (classify-failure refused (mutation-record))) (classify-failure e (mutation-record)))
    refuse a
-   "F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a nested dispatch opens no scope; anything else propagates"
-   (e ((classify-failure e (mutation-record)) => (lambda (a) a))))
+   "F77c: a load this dispatch's listener heard refused names the answer by that refusal's own answer, whatever a catch-all made of the raise; F100b point 1: the owning dispatch answers a filesystem failure by the one table with its record (P1-a, P1-b, P1-c); a nested dispatch opens no scope; anything else propagates"
+   (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a)) ((classify-failure e (mutation-record)) => (lambda (a) a))))
   ("theourgia.sc" (main) 1 guard
    ((classify-failure e (mutation-record)))
    refuse a

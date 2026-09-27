@@ -182,7 +182,7 @@
 ;; failures are answered by the table (classify-failure).
 (want "C-1 and its closure is exactly what it should be"
       (closure 'client)
-      '(answers client digest ffi render trace))
+      '(answers client digest ffi incomplete render trace))
 
 ;; KEY: THE CONTROL ROW. Without it every row above is also passed by a
 ;; walker that found no edges at all -- which is the state this file
@@ -225,7 +225,7 @@
 ;; refusal through one object (item 8; ruling Q-M3-1).
 (want "C-1 and the shell's closure is exactly what it should be"
       (closure-of-all shell-imports)
-      '(answers arguments client digest ffi json refusal render trace))
+      '(answers arguments client digest ffi incomplete json refusal render trace))
 
 
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------
@@ -264,7 +264,7 @@
 
 (want "C-2 and the client program's closure is exactly what it should be"
       (closure-of-all program-imports)
-      '(answers arguments client digest ffi render trace))
+      '(answers arguments client digest ffi incomplete render trace))
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

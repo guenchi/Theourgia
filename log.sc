@@ -72,6 +72,10 @@
           log-open log-open-in-session load-prefix load-writers load-integrity load-fingerprint
           load-unreadable load-listener-add! load-listener-remove! load-listener-of
           remember-load-unreadable! unreadable-behind incomplete-clause merge-unreadable
+          load-refused? load-refused-condition tell-load-refused!
+          tell-load-notes! remember-unreadable-notes!
+          load-declaration-set! load-declaration-of
+          session-delivered? snapshot-unreadable-notes
           local-writer-of
           log-begin log-end! session? session-store session-epoch session-writer
           session-append!
@@ -99,6 +103,9 @@
   (import (chezscheme)
           (theourgia ffi)
           (theourgia trace)
+          (only (theourgia incomplete)
+                declared? make-incomplete-reduction incomplete-reduction?
+                incomplete-note-clauses)
           (only (theourgia crc32) crc32-hex)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia wire)
@@ -405,11 +412,17 @@
                   (map (lambda (name) (path-snapshot (string-append path "/" name)))
                        names))))))
 
+  ;; EACH WRITER'S ENTRY IS KEYED BY ITS WRITER, `(writer . entry)` (F77c,
+  ;; design review r2): the daemon's probe hands the markers in it to the
+  ;; answer it is about to give, and a marker says which writer only if
+  ;; its entry does. Two snapshots compare as before -- equal? on the
+  ;; whole value -- so the key changes nothing about the probe's question.
   (define (store-state-snapshot store)
     (cons
       (path-snapshot (string-append store "/writers"))
       (map
         (lambda (writer)
+          (cons writer
           ;; A writer that cannot be read is recorded as the marker, whole.
           (guard (e ((unreadable-entry? e) (unreadable-marker e)))
           (let* ((dir (writer-directory store writer))
@@ -423,8 +436,40 @@
                   (path-snapshot (string-append dir "/" (segment-file-name current)))
                   (cons 'no-segment #f))
               (directory-snapshot (string-append dir "/damaged"))
-              (directory-snapshot (string-append dir "/incoming"))))))
+              (directory-snapshot (string-append dir "/incoming")))))))
         (store-writers store))))
+
+  ;; EVERY MARKER IN A SNAPSHOT, AS NOTES (F77c, design reviews r2 and r3):
+  ;; `(writer path reason)` triples, the form load-unreadable gives, one per
+  ;; marker at any depth of a writer's entry -- the whole writer, or a file
+  ;; under it (its metadata, its current segment, damaged/, incoming/).
+  ;; THE SNAPSHOT IS A FINGERPRINT, NOT A COMPLETENESS CHECK: it takes the
+  ;; current segment's version (a stat, and an open and a seek for its size
+  ;; -- no byte is read) and only lists the older ones, so an older segment
+  ;; that cannot be read leaves no marker here, and neither does a current
+  ;; one whose open and seek succeed and whose read would fail. What it finds is
+  ;; an early notice; the guarantee is the published state's own notes.
+  (define (snapshot-unreadable-notes snapshot)
+    (define (markers x)
+      (cond
+        ((and (pair? x) (eq? (car x) 'unreadable) (pair? (cdr x)) (pair? (cddr x))
+              (string? (cadr x)))
+         (list (cdr x)))
+        ((pair? x) (append (markers (car x)) (markers (cdr x))))
+        (else '())))
+    (if (pair? snapshot)
+        (fold-left
+          (lambda (acc entry)
+            (if (and (pair? entry) (string? (car entry)))
+                (fold-left (lambda (acc m)
+                             (let ((note (list (car entry) (car m) (cadr m))))
+                               (if (member note acc) acc (append acc (list note)))))
+                           acc
+                           (markers (cdr entry)))
+                acc))
+          '()
+          (cdr snapshot))
+        '()))
 
   ;; ---- the manifest -------------------------------------------------------
 
@@ -1559,7 +1604,11 @@
   ;; the store actually needed.
   (define-record-type load-session
     (fields store (mutable lock) (mutable prefixes) (mutable state)
-            (mutable outcome) (mutable snapshot) (mutable barriered)))
+            (mutable outcome) (mutable snapshot) (mutable barriered)
+            ;; WHY AN ABORTED LOAD ABORTED (F77c): the unreadable-entry that
+            ;; stopped it, the scanner's verdict on readable bytes, or #f.
+            ;; The outcome stays what it was; this is kept beside it.
+            (mutable abort-cause)))
 
   ;; THE WRITERS A LOAD COULD NOT READ, as (writer path reason), in the
   ;; order the load holds them: what an answer built from this load must
@@ -1604,6 +1653,21 @@
   (define (load-listener-add! store proc) (hashtable-set! load-listeners store proc))
   (define (load-listener-remove! store) (hashtable-delete! load-listeners store))
   (define (load-listener-of store) (hashtable-ref load-listeners store #f))
+
+  ;; THE REQUEST'S DECLARATION RIDES ON THE SAME OBJECT (F77c, plan
+  ;; amendment A2): the store string the dispatcher copied and owns. The
+  ;; dispatcher sets it for the extent of each verb from the verb's class;
+  ;; open-load reads it when its caller gave no declaration of its own. It is
+  ;; lexical in the way the listener is -- the object is threaded from the
+  ;; route as an argument -- and two requests never hold the same object. A
+  ;; string nobody registered has none, so a load outside any request is
+  ;; undeclared: it fails closed.
+  (define load-declarations (make-weak-eq-hashtable))
+  (define (load-declaration-set! store declaration)
+    (if declaration
+        (hashtable-set! load-declarations store declaration)
+        (hashtable-delete! load-declarations store)))
+  (define (load-declaration-of store) (hashtable-ref load-declarations store #f))
   ;; ONE ENTRY PER WRITER, the first report of it kept, in the order heard.
   (define (merge-unreadable known found)
     (fold-left (lambda (acc u) (if (assoc (car u) acc) acc (append acc (list u))))
@@ -1615,11 +1679,7 @@
   ;; rpc dispatch and the eval worker (K14).
   (define (incomplete-clause unreadable)
     (and (pair? unreadable)
-         (cons 'incomplete
-               (map (lambda (u)
-                      (list 'unreadable (list 'writer (car u))
-                            (list 'path (cadr u)) (list 'reason (caddr u))))
-                    unreadable))))
+         (cons 'incomplete (incomplete-note-clauses unreadable))))
 
   ;; A VALUE BUILT FROM A LOAD -- a reduction -- keeps what that load could
   ;; not read, for whoever answers from it later. Weak, so a value nobody
@@ -1632,23 +1692,83 @@
           (hashtable-delete! built-from-incomplete value))))
   (define (unreadable-behind value)
     (hashtable-ref built-from-incomplete value '()))
+  ;; A VALUE DERIVED FROM A REDUCTION KEEPS THE REDUCTION'S NOTES (F77c,
+  ;; design review r1): a copy built from a base's rows is missing whatever
+  ;; the base was missing, and a later judgment of the copy must see it.
+  (define (remember-unreadable-notes! value notes)
+    (if (pair? notes)
+        (hashtable-set! built-from-incomplete value notes)
+        (hashtable-delete! built-from-incomplete value)))
+
+  ;; A LOAD THAT WAS REFUSED TELLS ITS LISTENER SO, with the condition it
+  ;; was refused with (F77c). The request that owns the listener answers
+  ;; with that condition's own answer, whatever a catch-all between the
+  ;; load and the answer made of the raise. A listener tells the two
+  ;; events apart by this record: notes arrive as a list of triples.
+  (define-record-type load-refused (fields condition))
+  (define (tell-load-refused! store c)
+    (let ((listener (load-listener-of store)))
+      (when listener (listener (make-load-refused c)))))
 
   (define (tell-load-listener! store ls)
-    (let ((listener (load-listener-of store))
-          (found (load-unreadable ls)))
+    (tell-load-notes! store (load-unreadable ls)))
+  ;; THE SAME REPORT FOR NOTES THAT DID NOT COME FROM A LOAD: a supplied
+  ;; state unsealed by a declared consumer tells its listener what the
+  ;; state is missing, exactly as a load would (F77c, design review r3).
+  (define (tell-load-notes! store found)
+    (let ((listener (load-listener-of store)))
       (when (and listener (pair? found))
         (listener found))))
 
-  (define (log-open store)
+  ;; THE DECLARATION IS AN OPTIONAL LAST ARGUMENT, and its absence is "not
+  ;; declared" (F77c, plan amendment A1): a caller that says nothing is
+  ;; refused an incomplete load and is unchanged on a complete one.
+  (define (log-open store . declaration)
     (trace-event! 'log-open store #f)
-    (open-load store 'acquire-shared))
+    (open-load store 'acquire-shared (and (pair? declaration) (car declaration))))
 
-  (define (log-open-in-session store)
-    (open-load store 'held-exclusive))
+  (define (log-open-in-session store . declaration)
+    (open-load store 'held-exclusive (and (pair? declaration) (car declaration))))
 
-  (define (open-load store lock-context)
+  ;; ONE EXIT HANDLER OVER THE WHOLE LOAD (F77c; design review r5b). Every
+  ;; condition that leaves open-load -- the metadata read, enumeration,
+  ;; discovery, snapshot selection, the declaration check -- passes one
+  ;; handler, and it is the only place that tells the listener "refused"
+  ;; and the only place that releases what open-load acquired. The lock is
+  ;; held in a cell that is #f until the acquisition succeeds and stays #f
+  ;; for a lock the caller holds (held-exclusive): open-load never releases
+  ;; a borrowed lock. On a normal return the lock passes to the load, and
+  ;; load-commit! or finish-abort! releases it.
+  ;;
+  ;; THE ORDER IS NOTIFY, RELEASE, RE-RAISE (design review r6): a release
+  ;; that fails is quiet, so it can neither skip the notification nor
+  ;; replace the condition that is leaving.
+  ;;
+  ;; A LOAD MISSING A WRITER IS REFUSED TO A CALLER THAT DID NOT DECLARE IT
+  ;; ACCEPTS ONE (F77 R2e). The check comes after snapshot selection -- a
+  ;; snapshot failure keeps its precedence -- and before the ordinary
+  ;; notification, so a load is either told refused or told its notes,
+  ;; never both. The check only raises; the handler does the rest.
+  (define (open-load store lock-context declaration)
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
+    (let ((owned (vector #f)))
+      (guard (e (#t (open-load-refused! store e owned) (raise e)))
+        (open-load-body store lock-context declaration owned))))
+
+  (define (open-load-refused! store e owned)
+    (dynamic-wind
+      (lambda () (if #f #f))
+      (lambda ()
+        (when (or (unreadable-entry? e) (incomplete-reduction? e))
+          (tell-load-refused! store e)))
+      (lambda ()
+        (let ((lock (vector-ref owned 0)))
+          (when lock
+            (vector-set! owned 0 #f)
+            (guard (x (#t (if #f #f))) ((current-lock-release) lock)))))))
+
+  (define (open-load-body store lock-context declaration owned)
     (let ((meta-path (string-append store "/meta.sexp")))
       (unless (entry-present? meta-path)
         (raise (make-log-error 'meta #f #f #f (list (cons 'path meta-path)))))
@@ -1668,15 +1788,26 @@
         (let ((lock (if (eq? lock-context 'acquire-shared)
                         ((current-lock-acquire) (string-append store "/lock") 'shared)
                         #f)))
-          (guard (e (#t (when lock ((current-lock-release) lock)) (raise e)))
-            (let* ((writers (store-writers store))
-                   (prefixes (map (lambda (w)
-                                    (cons w (discover-prefix store w lock-context)))
-                                  writers)))
-              (let ((ls (make-load-session store lock prefixes '() 'open #f '())))
-                (load-session-snapshot-set! ls (select-snapshot store prefixes))
-                (tell-load-listener! store ls)
-                ls)))))))
+          (vector-set! owned 0 lock)
+          (let* ((writers (store-writers store))
+                 (prefixes (map (lambda (w)
+                                  (cons w (discover-prefix store w lock-context)))
+                                writers)))
+            ;; THE WINDOW RIGHT AFTER DISCOVERY, before snapshot selection, the
+            ;; declaration check and the delivery barrier, for the rows that
+            ;; change a segment inside it (F77c D-barrier) or park two loads
+            ;; side by side (D-interleave).
+            (hold-point! 'after-discovery)
+            (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f)))
+              (load-session-snapshot-set! ls (select-snapshot store prefixes))
+              (let ((notes (load-unreadable ls)))
+                ;; An explicit declaration only ADDS to the request's (A2).
+                (when (and (pair? notes)
+                           (not (declared? declaration))
+                           (not (declared? (load-declaration-of store))))
+                  (raise (make-incomplete-reduction notes))))
+              (tell-load-listener! store ls)
+              ls))))))
 
 
   ;; ---- the write session (section 5.2 / 5.2-prime) --------------------------
@@ -1791,7 +1922,11 @@
             ;; or #f. A store with no readable local writer and an unreadable
             ;; one may be looking at its own writer through a directory it
             ;; cannot read; it does not go on as if it had none.
-            unreadable-refusal))
+            unreadable-refusal
+            ;; WHAT THE CALLER DECLARED (F77c): incomplete-accepted or #f.
+            ;; A reload inside the session opens its load with the same
+            ;; declaration the session was begun with.
+            declaration))
 
   ;; DELIVERY IMPLIES DURABILITY, so the barrier is the session's
   ;; obligation and it runs before the first callback -- not per record,
@@ -1984,7 +2119,8 @@
   ;; raising, and the first version cleared the store flag while leaving
   ;; the flock held -- the worst of both, since the next log-begin then
   ;; passes the guard and blocks forever on a lock no one will release.
-  (define (log-begin store on-deliver)
+  (define (log-begin store on-deliver . declaration-opt)
+    (define declaration (and (pair? declaration-opt) (car declaration-opt)))
     (unless (procedure? on-deliver)
       (assertion-violation 'log-begin "on-deliver must be a procedure" on-deliver))
     (claim-store! store 'log-begin)
@@ -2005,7 +2141,7 @@
               ;; promise, doing the same flushes twice and making a case
               ;; that counts them read differently for no reason the
               ;; store cares about.
-              (let ((ls (open-load store 'held-exclusive)))
+              (let ((ls (open-load store 'held-exclusive declaration)))
                 (let* ((found (session-writer-of store ls))
                        (stopped (and found (segment-unreadable-refusal ls found)))
                        (local (and (not stopped) found))
@@ -2028,7 +2164,7 @@
                                         (metadata-versions store)
                                         #f '() '() '() '() #f 1
                                         (and end (+ end 1)) #f
-                                        refusal)))
+                                        refusal declaration)))
                   ;; THE SESSION'S OWN METADATA BARRIER IS NOT RUN HERE
                   ;; EITHER. Its obligation was "before the first
                   ;; callback", and the delivery barrier now runs before
@@ -2037,6 +2173,11 @@
                   ;; inherits instead is the RECORD of them, so its first
                   ;; append flushes what the delivery barrier did not.
                   (deliver-into! s)
+                  ;; A SESSION DOES NOT WRITE ON A PARTIAL STATE (F77c, plan
+                  ;; amendment A3): an initial delivery that an unreadable
+                  ;; entry aborted is refused here, before any intent is
+                  ;; resolved against it; the unwind below releases the lock.
+                  (refuse-unreadable-abort! ls)
                   (session-barriered-set! s (load-session-barriered ls))
                   (vector-set! handed-over 0 #t)
                   s)))))
@@ -2560,7 +2701,7 @@
   ;; against it.
   (define (reload! s)
     (let* ((store (session-store s))
-           (fresh (open-load store 'held-exclusive)))
+           (fresh (open-load store 'held-exclusive (session-declaration s))))
       (for-each (lambda (e) (trace-event! 'catch-up (car e) #f))
                 (load-session-prefixes fresh))
       (session-load-set! s fresh)
@@ -5314,6 +5455,16 @@
                     (reload! s))
                   (append-after-barrier! s frame)))))))
 
+  ;; A SESSION HANDS ITS STATE OUTWARD ONLY WHEN ITS LOAD WAS DELIVERED
+  ;; (F77c; design reviews r4 and r5): not aborted, and no reset pending.
+  ;; ONE predicate, asked by both points that hand a session's state out --
+  ;; the publication after a write (store.sc publish-after) and the
+  ;; snapshot (session-snapshot!). A partial state is never published and
+  ;; never installed, whatever stopped its delivery.
+  (define (session-delivered? s)
+    (and (eq? (load-session-outcome (session-load s)) 'open)
+         (not (session-reset-pending s))))
+
   (define (append-after-barrier! s frame)
     (if (session-reset-pending s)
         ;; A STRUCTURED READINESS REFUSAL, naming the state. Not `unseen`
@@ -5440,6 +5591,7 @@
         ;; outright would also refuse a cut at records an earlier
         ;; request made durable, which this failure says nothing about.
         ((begin (guard (e (#t #f)) (session-commit! s)) #f) #f)
+        ((not (session-delivered? s)) (list 'refused 'not-delivered))
         ((not (view? v)) (list 'refused 'not-a-view))
         ((not (valid-cut? cut)) (list 'refused 'malformed-cut))
         ((not (list? rows)) (list 'refused 'malformed-rows))
@@ -6031,7 +6183,21 @@
         ((eq? o 'open) (if #f #f))
         (else (assertion-violation who "this load has already finished" o)))))
 
+  ;; A LOAD ABORTED BY AN ENTRY IT COULD NOT READ IS REFUSED BY THAT ENTRY
+  ;; (F77c), so the table names it `unreadable`. ONE RULE, two places that
+  ;; would otherwise use the load: a reader's load-commit! and a session's
+  ;; log-begin (plan amendment A3, the build half of F124). Any other
+  ;; aborted load goes on as it always has -- a reader meets
+  ;; check-terminal!'s assertion, a session continues and the publication
+  ;; gate withholds it: a readable cause (damaged, short or torn bytes) is
+  ;; F125's, not this item's.
+  (define (refuse-unreadable-abort! ls)
+    (let ((o (load-session-outcome ls)) (cause (load-session-abort-cause ls)))
+      (when (and (pair? o) (eq? (car o) 'aborted) (unreadable-entry? cause))
+        (raise cause))))
+
   (define (load-commit! ls)
+    (refuse-unreadable-abort! ls)
     (check-terminal! 'load-commit! ls)
     (load-session-outcome-set! ls 'committed)
     (release-load! ls)
@@ -6041,7 +6207,15 @@
     (check-terminal! 'load-abort! ls)
     (finish-abort! ls reason))
 
-  (define (finish-abort! ls reason)
+  ;; EVERY ABORT PASSES HERE, and this is where its cause is kept and where
+  ;; a load stopped by an entry it could not read tells its listener so
+  ;; (F77c) -- BEFORE the release, so a release that fails cannot skip the
+  ;; notification (design review r6). The returned outcome is unchanged.
+  (define (finish-abort! ls reason . cause-opt)
+    (let ((cause (and (pair? cause-opt) (car cause-opt))))
+      (load-session-abort-cause-set! ls cause)
+      (when (unreadable-entry? cause)
+        (tell-load-refused! (load-session-store ls) cause)))
     (load-session-state-set! ls '())
     (load-session-outcome-set! ls (list 'aborted reason))
     (release-load! ls)
@@ -6125,23 +6299,31 @@
   ;; aborted, its lock released, and the condition raised.
   (define (load-deliver! ls cut on-deliver)
     (check-terminal! 'load-deliver! ls)
-    (guard (e (#t (finish-abort! ls 'deliver-barrier-failed) (raise e)))
+    (guard (e (#t (finish-abort! ls 'deliver-barrier-failed e) (raise e)))
       (deliver-barrier! ls cut))
+    ;; THE WINDOW BETWEEN THE BARRIER AND DELIVERY, for the rows that change
+    ;; a segment after the barrier has read it (F77c D-deliver).
+    (hold-point! 'after-barrier)
     (deliver-after-barrier! ls cut on-deliver))
 
   (define (deliver-after-barrier! ls cut on-deliver)
     (load-session-outcome-set! ls 'delivering)
-    (let ((finished (vector #f)))
+    (let ((finished (vector #f))
+          ;; THE CONDITION THAT ESCAPED, kept for finish-abort! (design
+          ;; review r5): the unwind below sees no condition of its own. A
+          ;; continuation that leaves without one keeps #f.
+          (escaped (vector #f)))
       (dynamic-wind
         (lambda () (if #f #f))
         (lambda ()
-          (let ((r (deliver-all ls cut on-deliver)))
+          (let ((r (guard (e (#t (vector-set! escaped 0 e) (raise e)))
+                     (deliver-all ls cut on-deliver))))
             (vector-set! finished 0 #t)
             r))
         (lambda ()
           (unless (vector-ref finished 0)
             (when (eq? (load-session-outcome ls) 'delivering)
-              (finish-abort! ls 'delivery-escaped)))))))
+              (finish-abort! ls 'delivery-escaped (vector-ref escaped 0))))))))
 
   (define (deliver-all ls cut on-deliver)
     (let loop ((ws (load-session-prefixes ls)))
@@ -6155,10 +6337,12 @@
                 (p (cdar ws))
                 (from (let ((e (assoc writer cut))) (if e (cdr e) 0)))
                 (r (deliver-writer ls writer p from on-deliver)))
+           ;; THE RETURNED VALUE IS UNCHANGED (test/log7.sc pins it); the
+           ;; cause travels to finish-abort! beside it (F77c).
            (if (eq? r 'ok)
                (loop (cdr ws))
                (begin
-                 (finish-abort! ls (list 'delivery-failed writer))
+                 (finish-abort! ls (list 'delivery-failed writer) (cadr r))
                  (list 'delivery-failed writer))))))))
 
   (define (segment-holding ranges seq)
@@ -6198,7 +6382,11 @@
                                       (cdr buf)
                                       (read-segment store writer seg))))
                       (cond
-                        ((unreadable-segment? bytes) 'failed)
+                        ;; A FAILURE CARRIES ITS CAUSE to deliver-all (F77c):
+                        ;; the entry that could not be read, rebuilt as the
+                        ;; condition ffi raises, or the scanner's verdict.
+                        ((unreadable-segment? bytes)
+                         (list 'failed (make-unreadable-entry (cadr bytes) (caddr bytes) (cadddr bytes))))
                         (else
                          ;; THE SCANNER'S VERDICT IS THE POINT OF CALLING
                          ;; IT. Discarding it meant only a literal
@@ -6249,6 +6437,6 @@
                            ;; becomes possible again.
                            (cond
                              ((and reached (>= reached needed)) (loop (cdr rs)))
-                             (else 'failed)))))))))))))
+                             (else (list 'failed (list 'scanner outcome needed)))))))))))))))
 ))
 )

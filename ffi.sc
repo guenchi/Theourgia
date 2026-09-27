@@ -1990,7 +1990,8 @@
          read-fail-after readdir-fail-after
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
-         lseek-fail mkdir-fail client-extra-child store-raise-early))
+         lseek-fail mkdir-fail client-extra-child store-raise-early
+         reload-raise probe-raise))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2227,7 +2228,8 @@
      ;; unknown fault: a hold aimed at nothing would read, in a test log,
      ;; exactly like a hold that never came.
      (define known-hold-stages
-       '(client-scan report-write bind write-after-create publish-after-link store-start))
+       '(client-scan report-write bind write-after-create publish-after-link store-start
+         after-discovery after-barrier))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond

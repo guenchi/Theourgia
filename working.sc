@@ -24,6 +24,7 @@
   (import (rnrs) (theourgia store) (theourgia reduce) (theourgia baseline)
           (theourgia wire) (theourgia digest)
           (only (theourgia log) store-writers writer-directory atomic-write!
+                remember-unreadable-notes! unreadable-behind
                 directory-entry-durable! present-or-unreadable-skip?)
           (only (theourgia answers) with-written)
           (only (theourgia ffi) mutation-record)
@@ -329,7 +330,7 @@
       (lambda ()
     (problem
       (lambda ()
-        (let* ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store)))
+        (let* ((writer (requested-writer store supplied)) (state (obtain-state store state #f))
                (hash (and (pair? provenance) (car provenance)))
                (cut-text (and (pair? provenance) (pair? (cdr provenance)) (cadr provenance)))
                (parent-writer (and (>= (length provenance) 4) (list-ref provenance 2)))
@@ -439,7 +440,7 @@
     (problem
       (lambda ()
         (let* ((writer (requested-writer store supplied))
-               (state (and writer (or state (open-and-reduce store))))
+               (state (and writer (obtain-state store state #f)))
                (found (and state
                            (find (lambda (r) (equal? version (cadr (car r))))
                                  (state-revoked state writer)))))
@@ -476,7 +477,7 @@
   (define (working-read store state supplied id . information)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else
@@ -557,7 +558,7 @@
   (define (working-snapshot store state supplied)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else
@@ -596,7 +597,7 @@
   (define (working-baseline store state supplied)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else
@@ -640,7 +641,7 @@
   (define (working-state store state supplied)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else
@@ -707,7 +708,15 @@
                             (cdr (car candidates))
                             (cons "" 0))))))
 
+  ;; THE OVERLAY KEEPS ITS BASE'S NOTES (F77c, design review r1): it is a
+  ;; new value built from the base's rows, and whatever the base was
+  ;; missing it is missing too.
   (define (overlay-drafts base replacements)
+    (let ((overlay (overlay-drafts-rows base replacements)))
+      (remember-unreadable-notes! overlay (unreadable-behind base))
+      overlay))
+
+  (define (overlay-drafts-rows base replacements)
     (rows->state
       (map (lambda (row)
              (let ((r (and (eq? (car row) 'block) (assoc (cadr row) replacements))))
@@ -724,7 +733,7 @@
   (define (working-list store state supplied)
     (needing-writer supplied (lambda ()
     (problem (lambda ()
-      (let ((writer (requested-writer store supplied)) (state (or state (open-and-reduce store))))
+      (let ((writer (requested-writer store supplied)) (state (obtain-state store state #f)))
         (cond
           ((not writer) (invalid-writer))
           (else

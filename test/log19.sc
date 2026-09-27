@@ -35,7 +35,8 @@
 ;; candidate and the same code publish it when nothing is armed.
 
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
-        (only (theourgia digest) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex)
+        (only (theourgia incomplete) incomplete-accepted))
 
 ;; THE WORK DIRECTORY IS DECIDED AT RUN TIME. Every fixture used to name
 ;; an absolute path under one session's scratchpad. That is green only
@@ -544,8 +545,11 @@
 ;; published nothing -- the very answer an unreadable directory used to
 ;; get. So this row reads what is known of it. The permission is restored
 ;; on the way out whatever happens, so the row after it starts readable.
+;; THESE LOADS DECLARE (F77c, plan amendment A1): they open a store with
+;; a writer they cannot read on purpose, to read what the load says of it;
+;; undeclared, the open would now be refused before it could say anything.
 (define (open-and-report-origin)
-  (let* ((ls (log-open d))
+  (let* ((ls (log-open d incomplete-accepted))
          (p (load-prefix ls M))
          (origin (if p (discovery-origin p) 'no-prefix))
          (kinds (map (lambda (e) (log-error-kind (cdr e))) (load-integrity ls))))
@@ -565,7 +569,7 @@
 (want "the note names the file and what the system said about it"
       (begin (build!) (child-says #f 1 (recs 1 3))
              (unreadable-manifest! M)
-             (let* ((ls (log-open d))
+             (let* ((ls (log-open d incomplete-accepted))
                     (detail (let ((es (load-integrity ls)))
                               (if (null? es) 'none (log-error-detail (cdr (car es)))))))
                (load-abort! ls 'probe)
@@ -580,9 +584,12 @@
 ;; not open cannot be flushed, cannot be compared against the versions
 ;; the session remembers, and cannot be promised durable -- so the append
 ;; is refused before anything is reserved, and the log does not grow.
+;; The session declares for the same reason (F77c, A1): the row reads how a
+;; session refuses a writer it cannot read, which an undeclared session would
+;; not reach.
 (define (append-once)
   (guard (e (#t (list 'raised)))
-    (let* ((s (log-begin d (lambda args 'applied)))
+    (let* ((s (log-begin d (lambda args 'applied) incomplete-accepted))
            (v (session-view s))
            (r (if v
                   (session-append! s (make-frame (view-revision v) (view-epoch v)

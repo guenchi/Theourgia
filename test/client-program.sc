@@ -1053,7 +1053,7 @@
 ;; failures are answered by the table (classify-failure).
 (want "IMPORTS and the client's closure is exactly what it should be"
       (closure-from 'client)
-      '(answers client digest ffi render trace))
+      '(answers client digest ffi incomplete render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.sc`; what IT reaches is a separate fact from what the
@@ -1076,7 +1076,7 @@
             (else
              (let ((edges (cond ((assq (car todo) import-graph) => cdr) (else '()))))
                (loop (append edges (cdr todo)) (cons (car todo) seen)))))))
-      '(answers arguments client digest ffi render trace))
+      '(answers arguments client digest ffi incomplete render trace))
 
 
 (kill-daemons!)

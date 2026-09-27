@@ -64,9 +64,11 @@
           (only (theourgia client) socket-path envelope-version)
           (only (theourgia render) render-wire render-human answer-printing!)
           (only (theourgia working) draft-lock-path)
-          (only (theourgia store) open-and-reduce store-publish-hook!)
-          (only (theourgia log) store-state-snapshot
+          (only (theourgia store) store-publish-hook! obtain-state seal-state
+                store-withhold-hook!)
+          (only (theourgia log) store-state-snapshot snapshot-unreadable-notes
                 unreadable-entry? unreadable-entry-path unreadable-entry-reason)
+          (only (theourgia incomplete) incomplete-accepted)
           (only (theourgia arguments) parse-arguments argument-option)
           ;; KEY: THE SAME LEXICAL RULE GUARDS BOTH DIRECTIONS. A request and
           ;; a reply are read by the same reader, and what that reader must
@@ -446,6 +448,11 @@
            ;; the count is read by a process, and the process is here.
            (watch-for-signals! me)
            (let* ((store-pid (spawn (lambda () (store-loop store me))))
+                  ;; A WITHHELD PUBLICATION ASKS FOR A FRESH FOLD (F77c): a
+                  ;; write whose session was not delivered publishes nothing,
+                  ;; and the store process is asked to reload, which is
+                  ;; judged like any other load.
+                  (_ (store-withhold-hook! (lambda () (send store-pid (list 'reload)))))
                   (smon (monitor store-pid))
                   (st (make-main-state lock socket store store-pid #f main-record attempt)))
              (state-roles-set! st (list (cons store-pid 'store)))
@@ -649,7 +656,7 @@
        (let* ((known (assoc name (state-writers st)))
               (pid (if known
                        (cdr known)
-                       (let ((p (spawn (lambda () (writer-loop (state-store st) name)))))
+                       (let ((p (spawn (lambda () (writer-loop (state-store st) name (state-store-pid st))))))
                          (monitor p)
                          (state-writers-set! st (cons (cons name p) (state-writers st)))
                          (state-roles-set! st (cons (cons p (list 'writer name)) (state-roles st)))
@@ -965,10 +972,40 @@
   ;; lock on the read path and hand back the delay this whole arrangement
   ;; exists to remove. Being one commit behind is the documented
   ;; behaviour; being slow is not.
+  ;;
+  ;; F77c: WHAT IT FOUND IS HANDED TO THE READ IT RUNS FOR. A changed
+  ;; snapshot's unreadable markers go, as notes, to the answer about to be
+  ;; given from the old publication (ruling Q-r2-1 (b)): a declared read
+  ;; says a writer has gone unreadable, an undeclared consumer refuses, and
+  ;; nobody waits for the fold. The markers are an EARLY NOTICE, not a
+  ;; completeness check -- the snapshot opens and seeks only the current
+  ;; segment and reads no bytes -- and an answer from a complete publication
+  ;; without one is one commit behind, as documented. -> the notes, '() when
+  ;; nothing changed.
+  ;; A PROBE THAT FAILS keeps the previous snapshot, as it always did, and
+  ;; now says so by name (ruling 4); `probe-raise` makes it fail.
   (define (probe-for-outside-change! store store-pid)
     (let ((was (published-snapshot)))
-      (when (and was (not (equal? was (guard (e (#t was)) (store-state-snapshot store)))))
-        (send store-pid (list 'reload)))))
+      (if (not was)
+          '()
+          (let ((now (guard (e (#t (trace-event! 'probe-failed (condition-text e) #f) was))
+                       (when (eq? (theourgia-fault) 'probe-raise)
+                         (raise (make-message-condition "injected probe raise")))
+                       (store-state-snapshot store))))
+            (if (equal? was now)
+                '()
+                (begin
+                  (when store-pid (send store-pid (list 'reload)))
+                  (snapshot-unreadable-notes now)))))))
+
+  ;; ONE WAY TO ANSWER FROM THE PUBLISHED STATE (F77c, design review r2):
+  ;; probe, then hand the publication SEALED with what the probe found. The
+  ;; connection's local reads and the writer processes both come here; the
+  ;; census row pins (published-state) to this one reader.
+  (define (answer-published store store-pid parsed actor writer piped cwd)
+    (let ((notes (probe-for-outside-change! store store-pid))
+          (state (published-state)))
+      (answer-for store parsed actor (and state (seal-state state notes)) writer piped cwd)))
 
   ;; ---- the store process -------------------------------------------------
   ;;
@@ -1033,7 +1070,10 @@
                        (guard (e (#t (cons e (mutation-record))))
                          (unless (store-here? store)
                            (raise (list 'error 'store-not-found (list 'store store))))
-                         (publish! store (open-and-reduce store))
+                         ;; THE DAEMON DECLARES: it holds the state and answers
+                         ;; nothing from it itself; every consumer of the
+                         ;; publication judges it when it unseals (F77c).
+                         (publish! store (obtain-state store #f incomplete-accepted))
                          #f)))))
       (when failure
         (let ((e (car failure)) (record (cdr failure)))
@@ -1052,8 +1092,16 @@
       (receive
         ;; Somebody outside changed the store. Fold it again, under the
         ;; lock, and publish what came back.
+        ;; A FOLD THAT FAILS keeps the previous publication and says so by
+        ;; name (F77c, ruling 4): the table's answer for the condition, or
+        ;; its text. `reload-raise` makes it fail.
         (`(reload)
-         (guard (e (#t (if #f #f))) (publish! store (open-and-reduce store)))
+         (guard (e (#t (trace-event! 'reload-failed
+                                     (or (classify-failure e '()) (condition-text e))
+                                     #f)))
+           (when (eq? (theourgia-fault) 'reload-raise)
+             (raise (make-message-condition "injected reload raise")))
+           (publish! store (obtain-state store #f incomplete-accepted)))
          (loop))
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
          ;; NEVER: AND A WAY TO MAKE THIS ONE DIE TOO. The store process is
@@ -1170,7 +1218,7 @@
         (sleep-ms hold-ms)
         ((current-lock-release) l))))
 
-  (define (writer-loop store name)
+  (define (writer-loop store name store-pid)
     (let loop ()
       (receive
         (`(request ,from ,seq ,ticket ,main-pid ,parsed ,actor ,writer ,piped ,cwd)
@@ -1207,7 +1255,7 @@
                  (set! writer-hold-name name)
                  (park-in-draft-lock store name
                                      (if (eq? (theourgia-fault) 'writer-hold-long) 12000 1500)))
-               (let ((answer (answer-for store parsed actor (published-state) writer piped cwd)))
+               (let ((answer (answer-published store store-pid parsed actor writer piped cwd)))
                  (executed! main-pid ticket)
                  (send from (list 'answer seq answer 'core))))
              (send from (list 'answer seq draining-answer 'transport)))
@@ -1573,7 +1621,6 @@
            ;; exchange cannot be written out as the answer to this one.
            (if (conn-local-read? request)
                (begin
-                 (probe-for-outside-change! (ctx-store ctx) (ctx-store-pid ctx))
                  ;; NEVER: A WAY TO BE INSIDE A CONNECTION-LOCAL READ WHILE
                  ;; SOMETHING ELSE HAPPENS. These reads are answered by
                  ;; this process without asking main, so the claim that a
@@ -1593,7 +1640,7 @@
                    (set! conn-hold-pending #f)
                    (sleep-ms (if (eq? (theourgia-fault) 'conn-hold-long) 9000 2500)))
                  (write-answer ctx seq
-                               (answer-for (ctx-store ctx) request actor (published-state)
+                               (answer-published (ctx-store ctx) (ctx-store-pid ctx) request actor
                                            (frame-field 'writer parsed)
                                            (frame-field 'stdin parsed)
                                            (frame-field 'cwd parsed))

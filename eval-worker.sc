@@ -66,7 +66,9 @@
 (import (chezscheme) (theourgia datum-code) (theourgia store) (theourgia reduce)
         (theourgia eval-context) (theourgia code-project)
         (only (theourgia log) load-listener-add! merge-unreadable incomplete-clause
-              unreadable-entry? unreadable-entry-path unreadable-entry-reason)
+              unreadable-entry? unreadable-entry-path unreadable-entry-reason
+              load-declaration-set! load-refused? load-refused-condition)
+        (only (theourgia incomplete) incomplete-accepted)
         (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU fs-error? with-mutation-record mutation-record)
         (only (theourgia answers) classify-failure))
 
@@ -279,13 +281,22 @@
 ;; the last one is the whole of it; an evaluation stopped by a limit after
 ;; the load has already said it.
 (define heard '())
+;; A LOAD THAT WAS REFUSED is heard too (F77c), and names the answer below
+;; whatever a catch-all between it and here made of the raise.
+(define refused #f)
 (load-listener-add! store
-  (lambda (found)
-    (let ((merged (merge-unreadable heard found)))
-      (unless (equal? merged heard)
-        (set! heard merged)
-        (let ((clause (incomplete-clause heard)))
-          (when clause (say-datum! clause)))))))
+  (lambda (event)
+    (if (load-refused? event)
+        (unless refused (set! refused (load-refused-condition event)))
+        (let ((merged (merge-unreadable heard event)))
+          (unless (equal? merged heard)
+            (set! heard merged)
+            (let ((clause (incomplete-clause heard)))
+              (when clause (say-datum! clause))))))))
+;; EVAL DECLARES (F77c): it carries what its reduction is missing into its
+;; answer, through the notes above. The declaration rides on the same
+;; string the listener does, which only this process holds.
+(load-declaration-set! store incomplete-accepted)
 
 (define (answer)
   ;; NEVER: AN ENTRY THAT CANNOT BE READ IS NAMED, BEFORE THE CATCH-ALL (F79),
@@ -298,7 +309,9 @@
   ;; durable-error and no non-empty record reach here today; the table
   ;; answers them the day one does.
   (with-mutation-record (lambda ()
-  (guard (e ((worker-refusal? e) (worker-refusal-answer e))
+  (let ((a
+  (guard (e ((and refused (classify-failure refused (mutation-record))) => (lambda (a) a))
+            ((worker-refusal? e) (worker-refusal-answer e))
             ((classify-failure e (mutation-record)) => (lambda (a) a))
             ;; A CONDITION -- (car '()), an assertion -- keeps today's answer.
             ((condition? e) '(error eval-exception (kind raised) (message "Evaluation raised an exception")))
@@ -350,7 +363,8 @@
         ;; input; this is what the store resolved it to.
         (list 'ok (list 'values vs)
               (list 'working-view working-writer (reduce-applied-cut state)
-                    (map (lambda (d) (cons (car d) (cadr d))) drafts)))))))))
+                    (map (lambda (d) (cons (car d) (cadr d))) drafts))))))))
+    (if refused (classify-failure refused (mutation-record)) a)))))
 
 (say-datum! (answer))
 (flush-output-port user-out)

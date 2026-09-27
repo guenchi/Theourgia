@@ -28,7 +28,8 @@
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch rpc-ok?)
         (theourgia log)
-        (only (theourgia wire) encode-record))
+        (only (theourgia wire) encode-record)
+        (only (theourgia incomplete) incomplete-accepted))
 
 (define bad 0)
 (define rows 0)
@@ -442,11 +443,11 @@
 (let* ((s (fresh-store!))
        (_ (publish-mirror! s))
        (dir (wdir s M))
+       ;; THE ENTRIES ARE KEYED, (writer . entry) (F77c): the entry is found
+       ;; by its writer, not by its position beside store-writers.
        (entry-of (lambda (snap)
-                   (let loop ((ws (store-writers s)) (es (cdr snap)))
-                     (cond ((or (null? ws) (null? es)) #f)
-                           ((equal? (car ws) M) (car es))
-                           (else (loop (cdr ws) (cdr es)))))))
+                   (let ((e (and (pair? snap) (assoc M (cdr snap)))))
+                     (and e (cdr e)))))
        (healthy (caught (entry-of (store-state-snapshot s)))))
   (want "CONTROL the healthy entry has the five parts log.sc builds"
         (and (list? healthy) (length healthy))
@@ -458,11 +459,14 @@
     (want "U4a during the failure the entry is (unreadable <dir> <reason>), and two snapshots are equal"
           (if (and (pair? a) (eq? (car a) 'RAISED))
               a
+              ;; THE MARKER'S WHOLE SHAPE (F77c code review r2): exactly
+              ;; (unreadable <dir> <reason>), the reason a string.
               (let ((e (entry-of a)))
                 (list (and (pair? e) (car e))
                       (and (pair? e) (pair? (cdr e)) (equal? (cadr e) dir))
+                      (and (list? e) (= (length e) 3) (string? (caddr e)))
                       (equal? a b))))
-          '(unreadable #t #t))
+          '(unreadable #t #t #t))
     (want "U4a after restoration the entry has the healthy shape again"
           (let ((e (caught (entry-of (store-state-snapshot s)))))
             (and (list? e) (length e)))
@@ -473,8 +477,11 @@
 ;; coordinates; under R2d those raise on an unreadable writer, so the
 ;; fingerprint must say `unreadable` for it instead -- and differ from the
 ;; healthy one, so nothing built while the writer was readable is reused.
+;; THESE LOADS DECLARE (F77c, plan amendment A1): they open a store whose
+;; mirror cannot be read on purpose, to read what the load says of it;
+;; undeclared, the open would now be refused before it could say anything.
 (define (fingerprint store)
-  (let ((ls (log-open store)))
+  (let ((ls (log-open store incomplete-accepted)))
     (let ((f (load-fingerprint ls)))
       (load-abort! ls 'probe)
       f)))
@@ -622,7 +629,7 @@
         (list (rpc-ok? snap) selected)
         '(#t #t))
   (chmod! "000" dir)
-  (let ((r (caught (let ((ls (log-open s)))
+  (let ((r (caught (let ((ls (log-open s incomplete-accepted)))
                      (let ((c (load-snapshot-cut ls))
                            (origin (discovery-origin (load-prefix ls M))))
                        (load-abort! ls 'probe)

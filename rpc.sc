@@ -50,6 +50,7 @@
           (only (theourgia datum-code) datum-source-read)
           (only (theourgia ffi) read-entry entry-type fs-error? with-mutation-record mutation-record)
           (only (theourgia answers) classify-failure)
+          (only (theourgia incomplete) incomplete-accepted)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -1587,8 +1588,13 @@
   ;; historical cut is asking for a DIFFERENT reduction and still opens
   ;; the log for it; passing this one there would answer a question about
   ;; the past with the present.
+  ;;
+  ;; F77c: THE STATE A HANDLER IS GIVEN IS SEALED, and this unseals it --
+  ;; or loads -- through obtain-state, which judges it against the
+  ;; request's declaration. A verb that never calls this never consumes
+  ;; the state and is never refused for holding it.
   (define (reduction-for store state)
-    (or state (open-and-reduce store)))
+    (obtain-state store state #f))
 
   ;; ---- the envelope a request travels in ----------------------------------
   ;;
@@ -1706,21 +1712,35 @@
     (let* ((own? (and (string? store) (not (load-listener-of store))))
            (key (if own? (string-copy store) store))
            (heard '())
-           (hear! (lambda (found) (set! heard (merge-unreadable heard found)))))
+           (refused #f)
+           ;; TWO EVENTS REACH THE LISTENER (F77c): a load's notes, and a
+           ;; load that was refused -- the first refusal is kept.
+           (hear! (lambda (event)
+                    (if (load-refused? event)
+                        (unless refused (set! refused (load-refused-condition event)))
+                        (set! heard (merge-unreadable heard event))))))
       (let ((answer (if own?
                         (with-mutation-record
                           (lambda ()
-                            (guard (e ((classify-failure e (mutation-record)) => (lambda (a) a)))
-                              (dynamic-wind
-                                (lambda () (load-listener-add! key hear!))
-                                (lambda () (apply dispatch-verb key verb nodes actor rest))
-                                (lambda () (load-listener-remove! key))))))
+                            ;; A REFUSED LOAD NAMES THE ANSWER, whatever a
+                            ;; catch-all between it and here made of the
+                            ;; raise: the refusal's own answer, with this
+                            ;; dispatch's record (F77c; design review r6).
+                            ;; A consumer that wants to go on without a
+                            ;; writer must declare; catching the refusal and
+                            ;; carrying on is not a way round it.
+                            (let ((a (guard (e ((and refused (classify-failure refused (mutation-record)))
+                                                => (lambda (a) a))
+                                               ((classify-failure e (mutation-record)) => (lambda (a) a)))
+                                       (dynamic-wind
+                                         (lambda () (load-listener-add! key hear!))
+                                         (lambda () (apply dispatch-verb key verb nodes actor rest))
+                                         (lambda () (load-listener-remove! key))))))
+                              (if refused (classify-failure refused (mutation-record)) a))))
                         (apply dispatch-verb key verb nodes actor rest))))
-        (with-incomplete-clause
-          answer
-          (merge-unreadable heard
-                            (let ((state (and (pair? rest) (car rest))))
-                              (if state (unreadable-behind state) '())))))))
+        ;; The notes come from what the scope HEARD: loads, and supplied
+        ;; states a consumer unsealed (obtain-state tells the listener).
+        (with-incomplete-clause answer heard))))
 
   (define (with-incomplete-clause answer unreadable)
     (let ((clause (incomplete-clause unreadable)))
@@ -1728,8 +1748,34 @@
           (append answer (list clause))
           answer)))
 
+  ;; ---- the declaration (F77c) ---------------------------------------------
+  ;;
+  ;; A VERB EITHER CARRIES WHAT ITS REDUCTION IS MISSING INTO ITS ANSWER --
+  ;; rpc-dispatch-parsed appends the clause to every answer built from a
+  ;; load that could not read a writer -- or it writes a projection, a
+  ;; snapshot or records from the reduction, and then it may not build on
+  ;; one that is missing a writer. These are the second kind; every other
+  ;; verb declares. A verb that builds no reduction declares too, and it
+  ;; makes no difference: it never loads.
+  (define undeclared-verbs '(export-code export-md import-md import-code def snapshot))
+  (define (verb-declaration verb)
+    (if (memq verb undeclared-verbs) #f incomplete-accepted))
+
+  ;; THE DECLARATION RIDES ON THE REQUEST'S STORE OBJECT for the extent of
+  ;; the verb (plan amendment A2), and the outer one is put back on the way
+  ;; out -- a normal return AND an escape -- so a nested verb of another
+  ;; class is judged by its own class and leaves its caller's intact.
+  (define (with-verb-declaration store verb thunk)
+    (let ((outer (load-declaration-of store)))
+      (dynamic-wind
+        (lambda () (load-declaration-set! store (verb-declaration verb)))
+        thunk
+        (lambda () (load-declaration-set! store outer)))))
+
   (define (dispatch-verb store verb nodes actor . rest)
-    (let* ((state (and (pair? rest) (car rest)))
+    (let* ((state (let ((s (and (pair? rest) (car rest))))
+                    ;; SEALED: see reduction-for.
+                    (and s (if (sealed-state? s) s (seal-state s '())))))
            (default-writer (and (pair? rest) (pair? (cdr rest)) (cadr rest)))
            ;; NEVER: WHAT THE CALLER PIPED IN, AND WHERE THE CALLER WAS. Both
            ;; are facts about the process that made the request, and on
@@ -1829,9 +1875,11 @@
         ((and after (not id)) '(error bad-request cursor-without-req))
         ((and id (not (req-id-ok? id))) '(error bad-request malformed-req-id))
         ((eq? after 'malformed) '(error bad-request malformed-cursor))
-        (else ((cdr entry) store actor args
-               (and id (make-write-request actor verb (argument-strings options) id after))
-               options state writer cwd)))))
+        (else (with-verb-declaration store verb
+                (lambda ()
+                  ((cdr entry) store actor args
+                   (and id (make-write-request actor verb (argument-strings options) id after))
+                   options state writer cwd)))))))
 
   ;; `<writer>:<seq>`, BY SHAPE AND NEVER THROUGH `read`. The reader
   ;; implements the whole of Scheme's numeric syntax, and `#e1e99999999`
