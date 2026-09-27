@@ -23,7 +23,7 @@
 ;; 2.4 exists, and it is why a parser that understands very little is
 ;; enough for a projection that loses nothing.
 (library (theourgia project)
-  (export export-md export-md-view import-md md-tree subtree-ids block-text md-kinds)
+  (export export-md export-md-view import-md import-md-report md-tree subtree-ids block-text md-kinds)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting) (rnrs hashtables)
           (rnrs unicode)
           (rnrs io ports) (rnrs io simple) (rnrs files) (rnrs bytevectors)
@@ -661,52 +661,108 @@
   ;; directory may be a partial copy, or a sync may be half finished --
   ;; and a tombstone is permanent. So absence is reported by default and
   ;; acted on only when the caller says to.
-  (define (import-md store dir . opts)
+  ;;
+  ;; NEVER: A DOCUMENT THE DIRECTORY DOES NOT HOLD IS REPORTED, NOT REFUSED.
+  ;; The directory ADDS and UPDATES: its files are imported, a document
+  ;; whose file it lacks is left alone, and the report names it,
+  ;; `(absent (files (<path> ...)))`. Refusing the whole import there made
+  ;; the only remedy on offer the deletion of that document.
+  ;; A SECTION a PRESENT file no longer holds is different: that file is
+  ;; the whole document, its author removed the section, and the import
+  ;; still refuses would-delete for it until --allow-delete is given.
+  ;; With --allow-delete the documents the directory lacks are deleted
+  ;; after the imports, as before, and the report is
+  ;; `(deleted (files (<path> ...)))`, read from the deletions that RAN: a
+  ;; batch stops at its first error, and a deletion planned after it did
+  ;; not happen.
+  ;; -> (results report), report #f or the one clause above.
+  (define (import-md-report store dir . opts)
     (require-md-directory dir)
     (let* ((actor (if (pair? opts) (car opts) "unknown"))
            (allow-delete? (and (pair? opts) (pair? (cdr opts)) (cadr opts)))
-           (files (md-files dir)))
+           (files (md-files dir))
+           (absent '())
+           (doc-deletions '()))
 ;; THE OFFSET IS THREADED BECAUSE `from` COUNTS THE WHOLE BATCH. Each
       ;; file's intents are built on their own, so a file's doc is its
       ;; own intent 0 -- but the batch concatenates them, and the second
       ;; file's `(from 0)` then names the FIRST file's doc. Every
       ;; section of every file after the first was hung under the wrong
       ;; document, and the export put them all in one file.
-      (with-store-write store
-        (lambda (state view)
-          (let ((gone (missing-blocks state dir files)))
-            (cond
-              ((and (pair? gone) (not allow-delete?))
-               (list (list 'error 'would-delete
-                           (list 'blocks gone)
-                           (list 'remedy 'allow-delete))))
-              (else
-               (let loop ((fs files) (base 0) (out '()))
-                 (if (null? fs)
-                     (append (apply append (reverse out))
-                             (map (lambda (id) (list 'del id)) gone))
-                     (let ((is (file-intents state dir (car fs) base)))
-                       (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
-        actor)))
+      (let ((results
+              (with-store-write store
+                (lambda (state view)
+                  (let* ((docs (absent-documents state files))
+                         (gone-sections (missing-sections state dir files)))
+                    (set! absent (map cadr docs))
+                    (set! doc-deletions '())
+                    (cond
+                      ((and (pair? gone-sections) (not allow-delete?))
+                       (list (list 'error 'would-delete
+                                   (list 'blocks gone-sections)
+                                   (list 'remedy 'allow-delete))))
+                      (else
+                       (let loop ((fs files) (base 0) (out '()))
+                         (if (null? fs)
+                             (let* ((imports (apply append (reverse out)))
+                                    ;; Sections first, so a document is never
+                                    ;; tombstoned before its children.
+                                    (section-dels
+                                      (map (lambda (id) (list 'del id))
+                                           (append gone-sections
+                                                   (if allow-delete? (apply append (map caddr docs)) '()))))
+                                    (doc-dels (if allow-delete? (map (lambda (d) (list 'del (car d))) docs) '()))
+                                    (first-doc (+ (length imports) (length section-dels))))
+                               (set! doc-deletions
+                                 (let number ((ds docs) (k first-doc) (acc '()))
+                                   (if (or (null? ds) (not allow-delete?)) (reverse acc)
+                                       (number (cdr ds) (+ k 1) (cons (cons (cadr (car ds)) k) acc)))))
+                               (append imports section-dels doc-dels))
+                             (let ((is (file-intents state dir (car fs) base)))
+                               (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
+                actor)))
+        (list results
+              (if allow-delete?
+                  (let ((ran (filter (lambda (d)
+                                       (let ((k (cdr d)))
+                                         (and (< k (length results))
+                                              (let ((r (list-ref results k))) (and (pair? r) (eq? (car r) 'ok))))))
+                                     doc-deletions)))
+                    (and (pair? ran) (list 'deleted (list 'files (map car ran)))))
+                  (and (pair? absent) (list 'absent (list 'files absent))))))))
 
-  ;; Every document whose file is gone, and every section of a surviving
-  ;; document that nothing in the file matches. Sections come first so a
-  ;; document is never tombstoned before its children.
-  (define (missing-blocks state dir files)
-    (let loop ((bs (state-datum state)) (docs '()) (sections '()))
-      (cond
-        ((null? bs) (append (reverse sections) (reverse docs)))
-        (else
-         (let* ((id (cadr (car bs)))
-                (b (state-read state id)))
-           (cond
-             ((not (eq? 'doc (kind-of b))) (loop (cdr bs) docs sections))
-             ((not (member (text-field b 'path) files))
-              (loop (cdr bs) (cons id docs)
-                    (append (reverse (doc-sections-of state id)) sections)))
-             (else
-              (loop (cdr bs) docs
-                    (append (reverse (unmatched-sections state dir id b)) sections)))))))))
+  ;; The results alone, for a caller that reads only them.
+  (define (import-md store dir . opts)
+    (car (apply import-md-report store dir opts)))
+
+  ;; Every LIVE document whose file the directory does not hold, as
+  ;; `(<doc-id> <path> (<section-id> ...))`, in the store's order. A deleted
+  ;; document is not one the store holds: it is neither reported nor
+  ;; deleted again.
+  (define (live-doc? b) (and (eq? 'doc (kind-of b)) (not (cdr (assq 'deleted b)))))
+  (define (absent-documents state files)
+    (let loop ((bs (state-datum state)) (out '()))
+      (if (null? bs)
+          (reverse out)
+          (let* ((id (cadr (car bs))) (b (state-read state id)))
+            (loop (cdr bs)
+                  (if (and (live-doc? b) (not (member (text-field b 'path) files)))
+                      (cons (list id (text-field b 'path) (doc-sections-of state id)) out)
+                      out))))))
+
+  ;; Every section of a document whose file is PRESENT that nothing in the
+  ;; file matches. A document's kind decides here, as before, deleted or not:
+  ;; a deleted document whose file is still there keeps its sections under
+  ;; the section rule.
+  (define (missing-sections state dir files)
+    (let loop ((bs (state-datum state)) (sections '()))
+      (if (null? bs)
+          (reverse sections)
+          (let* ((id (cadr (car bs))) (b (state-read state id)))
+            (loop (cdr bs)
+                  (if (and (eq? 'doc (kind-of b)) (member (text-field b 'path) files))
+                      (append (reverse (unmatched-sections state dir id b)) sections)
+                      sections))))))
 
   (define (unmatched-sections state dir doc-id b)
     (let* ((rel (text-field b 'path))

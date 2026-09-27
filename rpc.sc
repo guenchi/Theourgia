@@ -1040,10 +1040,15 @@
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))
                   (usage '(import-md <dir> ["--allow-delete"]))
+                  ;; THE RESULTS STAY THE SECOND ELEMENT, judged one by one
+                  ;; as before; what the directory lacked, or what was
+                  ;; deleted, is a clause beside them, there only when
+                  ;; there is something to say.
                   (guarded (lambda ()
-                             (list 'import
-                                   (import-md store (car args) actor
-                                              (argument-option options "--allow-delete"))))))))
+                             (let ((r (import-md-report store (car args) actor
+                                                        (argument-option options "--allow-delete"))))
+                               (append (list 'import (car r))
+                                       (if (cadr r) (list (cadr r)) '()))))))))
       (cons 'export-md
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))

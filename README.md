@@ -639,7 +639,14 @@ present and empty: a field that is always there says nothing.
     (import-md <dir> ("--allow-delete"))
 
 Reads a directory of Markdown into the store. Without `--allow-delete` a
-file that has disappeared from the directory leaves its blocks alone.
+file that has disappeared from the directory leaves its blocks alone: the
+other files are still imported, and the answer lists the absent ones
+under absent, `(import <results> (absent (files (<path> ...))))`. With
+`--allow-delete` those documents are deleted after the imports, and the
+answer lists the ones whose deletion ran under
+`(deleted (files (<path> ...)))`. Either clause is there only when it has
+a file to name. A section that has disappeared from a file that is still
+there is refused as `would-delete` until `--allow-delete` is given.
 
 ### `export-md`
 

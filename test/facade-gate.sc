@@ -1038,8 +1038,8 @@
         (census-ask st 'publish "mirrorzz" "1" file)))))
     ;; IMPORT-MD'S OWN SETUP: a fresh store holding one document at seed.md
     ;; with two sections, exported and imported back. Not the common seed:
-    ;; a deleted document there would be counted as missing by the import
-    ;; and omitted by the export, and the import would answer would-delete.
+    ;; the import's answer here is the plain one, every document of the
+    ;; store in the directory it reads, so nothing is reported absent.
     ;; The directory is made first (F82).
     (cons 'import-md (lambda (st x)
       (census-ask st 'init)

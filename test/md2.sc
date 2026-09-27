@@ -17,7 +17,8 @@
 ;; A3 (bytes), A3' (a local edit costs one record) and A6 (identity).
 (import (chezscheme) (theourgia project) (theourgia store) (theourgia reduce)
         (theourgia log) (theourgia ffi) (theourgia md)
-        (only (theourgia code-project) code-safe-path?))
+        (only (theourgia code-project) code-safe-path?)
+        (only (theourgia rpc) rpc-dispatch))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -462,14 +463,32 @@
               (map (lambda (b) (f (cadr b)))
                    (filter (lambda (b) (not (cadr (assq 'deleted (cddr b)))))
                            (state-datum (open-and-reduce d)))))))))
-(want "a file that disappeared is named, not tombstoned, until it is allowed"
-      (gone! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n")
-                   (cons "b.md" "# B\nbody b\n"))
-             (lambda (src) (system (string-append "rm " src "/b.md"))))
-      (list (list 'error 'would-delete '(blocks (b5 b4)) '(remedy allow-delete))
-            2
+;; A FILE THAT DISAPPEARED IS REPORTED, NOT REFUSED: the import of the
+;; others goes on, the document is left, and the report names it; it is
+;; deleted, and reported deleted, only when that is allowed.
+(define (gone-file! setup-files remove)
+  (let* ((t (fresh-case! setup-files))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (remove src)
+    (let* ((before (records d))
+           (reported (import-md-report d src "t"))
+           (after-report (records d))
+           (allowed (import-md-report d src "t" #t)))
+      (let ((f (labeller d)))
+        (list (cadr reported) (- after-report before) (cadr allowed)
+              (map (lambda (b) (f (cadr b)))
+                   (filter (lambda (b) (not (cadr (assq 'deleted (cddr b)))))
+                           (state-datum (open-and-reduce d)))))))))
+(want "a file that disappeared is reported absent and left, writing nothing; allowed, it is deleted and reported deleted"
+      (gone-file! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n")
+                        (cons "b.md" "# B\nbody b\n"))
+                  (lambda (src) (system (string-append "rm " src "/b.md"))))
+      (list '(absent (files ("b.md")))
+            0
+            '(deleted (files ("b.md")))
             '(b1 b2 b3)))
-(want "a section that disappeared is named the same way"
+(want "a section that disappeared from a file still there is refused would-delete with the remedy, not tombstoned"
       (gone! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n"))
              (lambda (src) (put! (string-append src "/a.md") "# A\nbody a\n")))
       (list (list 'error 'would-delete '(blocks (b3)) '(remedy allow-delete))
@@ -1387,6 +1406,99 @@
             3 4
             1
             #t))
+
+(printf "== a directory adds to the store; what it lacks is reported ==\n")
+;; NEVER: A DIRECTORY OF DOCUMENTS ADDS AND UPDATES. A document of the store
+;; whose file the directory does not hold is left alone and named under
+;; `absent`; with --allow-delete it is deleted and named under `deleted`,
+;; read from the deletions that ran. The results stay the answer's second
+;; element, each judged on its own.
+(define (live-doc-of d path)
+  (let ((state (open-and-reduce d)))
+    (find (lambda (id)
+            (let ((b (state-read state id)))
+              (and b (not (cdr (assq 'deleted b)))
+                   (let ((fs (cdr (assq 'fields b))))
+                     (and (equal? (cdr (or (assq 'kind fs) '(kind . #f))) 'doc)
+                          (equal? (cdr (or (assq 'path fs) '(path . #f))) path))))))
+          (map cadr (state-datum state)))))
+(define (subtree-hashes d id)
+  (let ((state (open-and-reduce d)))
+    (map (lambda (b) (block-hash state b)) (cons id (subtree-ids state id)))))
+;; -> (src store) holding docs A (a.md) and B (b.md), then a directory
+;; that no longer holds a.md and holds a new c.md.
+(define (absent-case!)
+  (let* ((t (fresh-case! (list (cons "a.md" "# A\nbody a\n## A2\nsub\n") (cons "b.md" "# B\nbody b\n"))))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (system (string-append "rm " src "/a.md"))
+    (put! (string-append src "/c.md") "# C\nbody c\n")
+    t))
+(define (all-ok? results) (and (list? results) (for-all (lambda (r) (and (pair? r) (eq? (car r) 'ok))) results)))
+
+;; V1: the answer as a caller gets it.
+(define v1 (absent-case!))
+(define v1-a (live-doc-of (cdr v1) "a.md"))
+(define v1-b (live-doc-of (cdr v1) "b.md"))
+(define v1-hashes (list (subtree-hashes (cdr v1) v1-a) (subtree-hashes (cdr v1) v1-b)))
+(define v1-answer (caught (rpc-dispatch (cdr v1) (list 'import-md (car v1)) "t")))
+(want "V1 a directory holding B and a new C: import, every result ok, C imported, A and B untouched, and (absent (files (\"a.md\"))) exactly"
+      (list (car v1-answer) (all-ok? (cadr v1-answer)) (and (live-doc-of (cdr v1) "c.md") #t)
+            (equal? v1-hashes (list (subtree-hashes (cdr v1) v1-a) (subtree-hashes (cdr v1) v1-b)))
+            (cddr v1-answer))
+      '(import #t #t #t ((absent (files ("a.md"))))))
+
+;; V4: the export after V1 writes the three documents.
+(define v4-out (string-append (car v1) "-out"))
+(system (string-append "mkdir -p " v4-out))
+(want "V4 export-md after V1 writes exactly a.md, b.md and c.md"
+      (begin (export-md (cdr v1) v4-out) (list-sort string<? (directory-list v4-out)))
+      '("a.md" "b.md" "c.md"))
+
+;; V2: the same, allowed to delete.
+(define v2 (absent-case!))
+(define v2-a (live-doc-of (cdr v2) "a.md"))
+(define v2-b (live-doc-of (cdr v2) "b.md"))
+(define v2-b-hashes (subtree-hashes (cdr v2) v2-b))
+(define v2-report (caught (import-md-report (cdr v2) (car v2) "t" #t)))
+(want "V2 with --allow-delete: C imported, A deleted, B untouched, (deleted (files (\"a.md\"))) and no absent clause"
+      (list (all-ok? (car v2-report)) (and (live-doc-of (cdr v2) "c.md") #t) (live-doc-of (cdr v2) "a.md")
+            (equal? v2-b-hashes (subtree-hashes (cdr v2) v2-b)) (cadr v2-report))
+      '(#t #t #f #t (deleted (files ("a.md")))))
+
+;; V2b: a deletion planned after a file that fails did not run, and is not
+;; reported. B becomes ambiguous (a third identical section), A is gone.
+(define v2b (fresh-case! (list (cons "a.md" "# A\nbody a\n") (cons "b.md" "# T\nsame\n# T\nsame\n"))))
+(import-md (cdr v2b) (car v2b) "t")
+(system (string-append "rm " (car v2b) "/a.md"))
+(put! (string-append (car v2b) "/b.md") "# T\nsame\n# T\nsame\n# T\nsame\n")
+(define v2b-report (caught (import-md-report (cdr v2b) (car v2b) "t" #t)))
+(want "V2b with --allow-delete, a file that fails stops the batch: A is not deleted and no deleted clause is reported"
+      (list (exists (lambda (r) (and (pair? r) (eq? (car r) 'error))) (car v2b-report))
+            (and (live-doc-of (cdr v2b) "a.md") #t)
+            (cadr v2b-report))
+      '(#t #t #f))
+
+;; V3: CONTROL, nothing absent, no clause.
+(define v3 (fresh-case! (list (cons "a.md" "# A\nbody a\n") (cons "b.md" "# B\nbody b\n"))))
+(import-md (cdr v3) (car v3) "t")
+(want "V3 CONTROL a directory holding every document of the store answers with no absent clause"
+      (let ((r (import-md-report (cdr v3) (car v3) "t"))) (list (all-ok? (car r)) (cadr r)))
+      '(#t #f))
+
+;; V6 PIN: A DELETED DOCUMENT WHOSE FILE IS STILL THERE KEEPS THE SECTION RULE.
+;; It is not absent (it is not live), and its file is present, so a section
+;; removed from that file is still refused would-delete, as it always was.
+(define v6 (fresh-case! (list (cons "a.md" "# A\nbody a\n## S\nsection\n"))))
+(import-md (cdr v6) (car v6) "t")
+(define v6-doc (live-doc-of (cdr v6) "a.md"))
+(rpc-dispatch (cdr v6) (list 'del v6-doc) "t")
+(put! (string-append (car v6) "/a.md") "# A\nbody a\n")
+(want "V6 PIN a deleted document whose file is still there: a section removed from the file is refused would-delete"
+      (let* ((r (caught (import-md-report (cdr v6) (car v6) "t")))
+             (first (and (pair? r) (pair? (car r)) (car (car r)))))
+        (and (pair? first) (pair? (cdr first)) (list (car first) (cadr first))))
+      '(error would-delete))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
