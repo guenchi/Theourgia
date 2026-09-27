@@ -26,7 +26,9 @@
 
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia ffi)
         (only (theourgia crc32) crc32-string-hex)
-        (only (theourgia digest) sha256 bytevector->hex))
+        (only (theourgia digest) sha256 bytevector->hex)
+        (only (theourgia reduce) draft-version)
+        (only (theourgia working) working-list))
 
 (define (test-dir name)
   (let* ((root (let ((v (getenv "THEOURGIA_TEST_ROOT")))
@@ -1021,6 +1023,119 @@
 (want "the writer refuses a request actor whose identity origin is not a string"
       (encodes? 1 1757300000001 (list "agent" (cons 42 "req-1") 'single "fp" #f (cons "w" 1)) '() '(set "t" x "x"))
       'refused)
+
+;; ---- the trace rows' reach, drafts under publish, a mirror already poisoned ---
+
+(printf "== what the trace rows see, drafts under publish, held poison ==\n")
+
+;; NEVER: THE TRACE ROWS SEE EVERY MUTATING DOOR. E7 and M9 decide "nothing
+;; was changed" from trace events whose op is in `mutating-ops`. A door that
+;; records a mutation (ffi.sc's `note!`) but traces it under an op this list
+;; does not name would be invisible to them. The list of such ops is read
+;; from ffi.sc as data, at run time: for every definition whose body calls
+;; `note!`, the ops of the `trace-event!` calls in that body. A new door with
+;; a new op turns this row red rather than passing through E7 unseen.
+;;
+;; ITS REACH IS SYNTACTIC: it sees a `(note! ...)` written inside a
+;; `(define (name ...) ...)` form and a trace op written as a quoted symbol.
+;; A door that notes through a helper, computes its op, or is defined as
+;; `(define name (lambda ...))` contributes no op, and the control of five
+;; still passes; such a door is outside what this row reads.
+;;
+;; NOTE: A FAILED WRITE IS NOTED, AND ITS FAILING CHUNK IS NOT TRACED
+;; (write-all!): each chunk that succeeds is traced as `write`, and a later
+;; chunk can then fail after earlier ones reached the file, which is traced
+;; only as far as those chunks. That is a reading about the failure path;
+;; this row is about op names.
+(define (forms-in x)
+  (cond ((pair? x) (cons x (append (forms-in (car x)) (forms-in (cdr x)))))
+        (else '())))
+(define (headed? f name) (and (pair? f) (eq? (car f) name)))
+(define (quoted-sym x) (and (pair? x) (eq? (car x) 'quote) (pair? (cdr x)) (symbol? (cadr x)) (cadr x)))
+(define ffi-door-ops
+  (let* ((lib (call-with-input-file "../ffi.sc"
+                (lambda (p)
+                  (let loop ()
+                    (let ((x (read p)))
+                      (if (and (pair? x) (eq? (car x) 'library)) x (if (eof-object? x) #f (loop))))))))
+         (defines (filter (lambda (f) (and (headed? f 'define) (pair? (cdr f)) (pair? (cadr f))))
+                          (if lib (forms-in lib) '()))))
+    (fold-left
+      (lambda (acc d)
+        (let ((fs (forms-in d)))
+          (if (exists (lambda (f) (headed? f 'note!)) fs)
+              (fold-left (lambda (acc f)
+                           (let ((op (and (headed? f 'trace-event!) (pair? (cdr f)) (quoted-sym (cadr f)))))
+                             (if (and op (not (memq op acc))) (append acc (list op)) acc)))
+                         acc fs)
+              acc)))
+      '() defines)))
+(printf "   (reading: ops traced by ffi doors that record a mutation: ~s)\n" ffi-door-ops)
+(want "every op an ffi door that records a mutation traces is one E7/M9 count as mutating"
+      (list (>= (length ffi-door-ops) 5)
+            (filter (lambda (op) (not (memq op mutating-ops))) ffi-door-ops))
+      '(#t ()))
+
+;; NEVER: PUBLISH DOES NOT CONSUME A WRITER'S DRAFTS. A publish for writer M
+;; lands M's received history. The drafts under writers/<writer>/working --
+;; the view `--working` reads -- are not its to touch: neither M's, in the
+;; directory the publish writes into, nor the local writer's.
+;; Each writer gets one draft, written as working.sc writes one (the
+;; envelope `(working 1 <writer> <block> <version> <based-on> <cut> <bytes>)`
+;; under the block's name, its version from reduce.sc's draft-version), so
+;; the product lists it. The row reads the product's own list
+;; (working-list) and the directory's bytes before and after the publish.
+;; The first value is the CONTROL that the product saw the drafts at all.
+(define (listing-with-bytes dir)
+  (if (file-directory? dir)
+      (map (lambda (f) (cons f (call-with-port (open-file-input-port (string-append dir "/" f)) get-bytevector-all)))
+           (list-sort string<? (directory-list dir)))
+      'NO-DIRECTORY))
+(define (plant-draft! d writer block)
+  (let* ((wd (string-append d "/writers/" writer "/working"))
+         (bytes (bytevector 1 2))
+         (based (make-string 64 #\a))
+         (cut '())
+         (entry (list 'working 1 writer block (draft-version bytes based cut) based cut bytes)))
+    (system (string-append "mkdir -p " wd))
+    (put! (string-append wd "/" block) (string->utf8 (sexpr->string-extended (storable-encode entry))))
+    wd))
+(define (drafts-listed d writer)
+  (let ((a (working-list d #f writer)))
+    (if (and (pair? a) (eq? (car a) 'ok) (pair? (cdr a)) (pair? (cadr a)) (eq? (car (cadr a)) 'items))
+        (map (lambda (it) (cadr (assq 'block (cdr it))))
+             (filter (lambda (it) (and (pair? it) (eq? (car it) 'draft))) (cdr (cadr a))))
+        a)))
+(want "a publish for a writer leaves the drafts the product lists, for that writer and the local one, and their bytes, as they were"
+      (let* ((d (fresh!))
+             (mwd (plant-draft! d M "b.1"))
+             (wwd (plant-draft! d W "c.1")))
+        (let* ((listed-before (list (drafts-listed d M) (drafts-listed d W)))
+               (bytes-before (list (listing-with-bytes mwd) (listing-with-bytes wwd)))
+               (answer (pub d (good 1)))
+               (bytes-after (list (listing-with-bytes mwd) (listing-with-bytes wwd)))
+               (listed-after (list (drafts-listed d M) (drafts-listed d W))))
+          (list listed-before answer (equal? bytes-before bytes-after) (equal? listed-before listed-after))))
+      '((("b.1") ("c.1")) (published 1) #t #t))
+
+;; KNOWN OPEN, STATED: A MIRROR THAT ALREADY HOLDS POISON. Publish refuses to
+;; ACCEPT a record its reader refuses; it does not repair one a store
+;; accepted before that rule. The row pins what such a mirror answers
+;; today, so a change to that answer is a decision somebody makes, not a
+;; drift. Today: the reader stops at the held segment's second record, a
+;; clean segment 2 published after it answers `(published 2)`, and the held
+;; segment still stops the reader afterwards -- the later segment is
+;; accepted and does not repair the one before it. The first two values
+;; were read on the row's first run and pinned from that reading; the third
+;; is the row's claim that nothing was repaired.
+(want "KNOWN OPEN a mirror holding poison stays as it was: the reader stops at the poison, a clean later segment is published, and the poison is still there after it"
+      (let ((d (fresh!)))
+        (plant! d held 1 2)
+        (let* ((before (reader-reason (call-with-port (open-file-input-port (held-file d)) get-bytevector-all)))
+               (answer (log-publish! d M 2 (good 3) (sha-of (good 3))))
+               (after (reader-reason (call-with-port (open-file-input-port (held-file d)) get-bytevector-all))))
+          (list before answer after)))
+      '((frame payload-not-a-form 50) (published 2) (frame payload-not-a-form 50)))
 
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
