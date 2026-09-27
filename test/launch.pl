@@ -192,13 +192,46 @@ sub census_errtail {
   }
   return $tail;
 }
+# ONE RETRY WHEN PS MISSES ITS DEADLINE. A ps that has not finished
+# its table in time is, on this machine, most often a slow ps and not a
+# wedged one (RS-14, LS-8: "ps did not finish before the deadline"), and one
+# more attempt settles it. Only a miss is retried; anything else (an exit
+# code, a missing row, a failed read) is an answer, not a delay.
+#
+# NEVER PAST THE LAUNCH'S DEADLINE, BUT PAST A PHASE'S. Every census runs under a caller's deadline no longer than the
+# census bound -- quiet_by is called with GRACE (2 s) for the grace poll and
+# with D1 and D2 (5 s) by stop_group and the anchor's stop -- so a miss has
+# always spent the caller's whole window, and a retry held to that window
+# could never run. The retry therefore runs under the census bound and the
+# launch's absolute deadline ($deadline, from --limit) only: a phase's
+# deadline is local, and the retry may exceed the window of those callers by
+# at most $CENSUS_BOUND, never past $deadline. It is not a bound on W's total:
+# the stop polls after W's own deadline keep their D1 and D2
+# windows, as on the base, and there the launch deadline has passed, so a
+# census there is not retried -- it makes one attempt, as without the retry. The
+# note carries both attempts' elapsed times; a second miss is unknown, as a
+# first miss was before.
+sub census_attempt {
+  my ($g, $deadline_of_caller) = @_;
+  my $t0 = now();
+  my ($efh, $epath, $uncaptured) = census_errfile();
+  my ($members, $what, $missed) = census_run($g, $deadline_of_caller, $efh);
+  my $tail = defined $epath ? census_errtail($efh, $epath) : $uncaptured;
+  return ($members, $what, $missed, $tail, now() - $t0);
+}
 sub census {
   my ($g, $deadline_of_caller) = @_;
-  my ($efh, $epath, $uncaptured) = census_errfile();
-  my ($members, $what) = census_run($g, $deadline_of_caller, $efh);
-  my $tail = defined $epath ? census_errtail($efh, $epath) : $uncaptured;
+  my ($members, $what, $missed, $tail, $took) = census_attempt($g, $deadline_of_caller);
   return $members if defined $members;
-  return census_note($what, $tail);
+  return census_note($what, $tail) unless $missed && $deadline - now() > 0;
+  my ($m2, $what2, $missed2, $tail2, $took2) = census_attempt($g, $deadline);
+  my $times = sprintf("attempt 1 %.1f s, attempt 2 %.1f s", $took, $took2);
+  if (defined $m2) {
+    my $n = "census retried: attempt 1 did not finish before its deadline; $times";
+    push @notes, $n unless grep { $_ eq $n } @notes;
+    return $m2;
+  }
+  return census_note("$what2; on the second of two attempts ($times)", $tail2);
 }
 # Answers (members) for a valid census, or (undef, what) naming why not.
 sub census_run {
@@ -272,12 +305,14 @@ sub census_run {
     # the note says both.
     return (undef, $eof ? "ps could not be reaped by the deadline"
                  : $ended eq 'deadline' ? "ps did not finish before the deadline, and could not be reaped by it"
-                 : "$ended, and ps could not be reaped by the deadline");
+                 : "$ended, and ps could not be reaped by the deadline",
+            (!$eof && $ended eq 'deadline') ? 1 : 0);
   }
   my $how = ($st & 127) ? "was killed by signal " . ($st & 127) : "exited " . ($st >> 8);
   unless ($eof) {
     return (undef, $ended eq 'deadline' ? "ps did not finish before the deadline (ps $how)"
-                                        : "$ended (ps $how)");
+                                        : "$ended (ps $how)",
+            ($ended eq 'deadline') ? 1 : 0);
   }
   return (undef, "ps $how") unless $st == 0;
   my ($has_w, $has_c) = (0, 0);
@@ -318,7 +353,8 @@ sub nap {
 # -- or until $until. Answers ('empty'), ('occupied', members) or
 # ('unknown'). 'occupied' carries the last census's members, which may be
 # none when the deadline came before an empty census could be confirmed.
-# Neither a census nor a sleep runs past $until.
+# A sleep never runs past $until; a census that misses $until may retry once
+# past it, bounded by the launch's deadline (see census).
 sub quiet_by {
   my ($g, $until) = @_;
   my $last = [];

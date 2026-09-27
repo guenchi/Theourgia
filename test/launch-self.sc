@@ -405,6 +405,35 @@
                   (lines-of (slurp f))))
         '()))
 
+;; ONE RETRY WHEN PS MISSES THE CENSUS BOUND. The shim sleeps on
+;; its first call -- past the five-second bound -- and is the real ps on every
+;; later one. The census tries once more under the same bound, and the launch
+;; is clean; the result says a retry happened and how long each attempt
+;; took. Red on a launch.pl without the retry: unknown after one attempt.
+(let* ((d (case!))
+       (shim (string-append d "/shim"))
+       (real-ps (let ((f (string-append d "/real-ps")))
+                  (sh "command -v ps > " f)
+                  (car (lines-of (slurp f))))))
+  (sh "mkdir -p " shim)
+  (spit! (string-append shim "/ps")
+         (string-append "#!/bin/sh\n"
+                        "c=" d "/ps.count\n"
+                        "n=$(cat \"$c\" 2>/dev/null || echo 0); n=$((n + 1)); echo \"$n\" > \"$c\"\n"
+                        "if [ \"$n\" -eq 1 ]; then exec sleep 100; fi\n"
+                        "exec " real-ps " \"$@\"\n"))
+  (sh "chmod +x " shim "/ps")
+  (sh "cd " d " && PATH=" shim ":$PATH perl " launcher-path " --limit 30 --out " d "/out --result "
+      d "/result --id L" (number->string n) " -- sh -c 'exit 0' < /dev/null > " d "/w.log 2>&1")
+  (let ((ls (lines-of (slurp (string-append d "/result")))))
+    (want "CENSUS RETRY a census whose first ps misses the bound is retried once, and the launch is clean"
+          (find (lambda (l) (starts-with? l "cleanup ")) ls)
+          "cleanup clean")
+    (want "CENSUS RETRY the result says the census was retried, with both attempts' times"
+          (map (lambda (l) (and (contains? l "attempt 1") (contains? l "attempt 2")))
+               (filter (lambda (l) (starts-with? l "note census retried: ")) ls))
+          '(#t))))
+
 (printf "rows: ~a\n" rows)
 (printf "~a failures\n" bad)
 (sh "rm -rf " root)

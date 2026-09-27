@@ -469,8 +469,8 @@
 ;; ordered list of tests in the design's D4 order -- and a seeded generator of
 ;; sample vectors, and the two must return the same whole value (colour ratio
 ;; minima spreads plateaus) for every vector. The C4 rows above stay as the
-;; readable examples. (Main session, r3: the closing round for judge-rule
-;; coverage; a further gap of that class is queue item F109.)
+;; readable examples. C4a below adds four more generator axes of the same
+;; kind.
 ;;
 ;; THE GENERATOR: its own linear congruential generator, seed 20260926, 600
 ;; vectors, each arm's ten samples SHUFFLED. Boundaries it aims at: an arm's
@@ -602,6 +602,127 @@
               '(uncalibrated (spread a) (spread b) (plateau a) (plateau b) drift red green
                 red-hidden-by-unreadable (unsorted a) (unsorted b) (twice-min a) (twice-min b)))
       '())
+
+;; ---- C4a: four more generator axes -----------------------------------------------
+;;
+;; The same two judges and the same comparison, the whole value (colour ratio
+;; minima spreads plateaus), on four generated families the C4m generator does
+;; not aim at, each with one fixed sample row. A second stream of the same
+;; linear congruential generator, seed 20260927, so C4m's 600 vectors are the
+;; ones they always were. The model is the oracle: a disagreement on a new axis
+;; is a finding, reported and not fixed here.
+(set! model-state 20260927)
+(define (judge=model? a b c)
+  (let-values (((expected decided) (model-judge a b c)))
+    (equal? (f54-judge a b c) expected)))
+(define (model-decided a b c)
+  (let-values (((expected decided) (model-judge a b c))) decided))
+(define (disagreements vs)
+  (let ((d (filter (lambda (v) (not (judge=model? (car v) (cadr v) (caddr v)))) vs)))
+    (if (> (length d) 2) (list-head d 2) d)))
+(define (roomy-cal a b) (list (cons 'k (* 2 (/ (apply min a) (apply min b)))) (cons 'b (apply min b))))
+
+;; AXIS 1, ORDER: the judge's value does not depend on the order of a sample
+;; list. Each generated vector is judged as drawn, sorted up, sorted down, and
+;; with its upper median put first and its minimum sixth.
+(define (adversarial xs)
+  (let* ((s (list-sort < xs)) (m (car s)) (med (list-ref s (quotient (length s) 2)))
+         (rest (let drop ((l s) (gone '()))
+                 (cond ((null? l) '())
+                       ((and (not (memv 'm gone)) (= (car l) m)) (drop (cdr l) (cons 'm gone)))
+                       ((and (not (memv 'med gone)) (= (car l) med)) (drop (cdr l) (cons 'med gone)))
+                       (else (cons (car l) (drop (cdr l) gone)))))))
+    (append (list med) (list-head rest 4) (list m) (list-tail rest 4))))
+(define order-vectors (let loop ((i 0) (acc '())) (if (= i 150) (reverse acc) (loop (+ i 1) (cons (model-vector) acc)))))
+(define (orders v)
+  (let ((a (car v)) (b (cadr v)) (c (caddr v)))
+    (list (list (list-sort < a) (list-sort < b) c)
+          (list (list-sort > a) (list-sort > b) c)
+          (list (adversarial a) (adversarial b) c))))
+(want "C4a ORDER SAMPLE the upper median first and the minimum sixth is judged as the sorted list is"
+      (list (f54-judge '(140 160 140 140 160 100 160 140 160 100) '(220 220 220 220 220 220 220 220 220 220) (cal 1 220))
+            (f54-judge '(100 100 140 140 140 140 160 160 160 160) '(220 220 220 220 220 220 220 220 220 220) (cal 1 220)))
+      (let ((v (f54-judge '(100 100 140 140 140 140 160 160 160 160) '(220 220 220 220 220 220 220 220 220 220) (cal 1 220)))) (list v v)))
+(want "C4a ORDER (PIN) 150 generated vectors, each in three more orders: every order is judged as drawn, and the judge agrees with the model on each"
+      (list (filter (lambda (v) (not (for-all (lambda (o) (equal? (f54-judge (car o) (cadr o) (caddr o))
+                                                                   (f54-judge (car v) (cadr v) (caddr v))))
+                                              (orders v))))
+                    order-vectors)
+            (disagreements (apply append (map orders order-vectors))))
+      '(() ()))
+
+;; AXIS 2, PRECEDENCE: a red ratio behind each unreadable cause alone. K is half
+;; the ratio (red), and exactly one of arm A's spread, arm B's spread, arm A's
+;; plateau, arm B's plateau and the drift fails; the colour is unreadable and
+;; the model names that cause.
+(define (clean m) (make-list 10 m))
+(define (spread-bad m) (model-shuffle (append (make-list 4 m) (make-list 6 (* 2 m)))))
+(define (plateau-bad m) (model-shuffle (cons m (make-list 9 (* m 6/5)))))
+(define (precedence-vector cause)
+  (let* ((ma (* 10 (+ 40 (model-pick 60)))) (mb (* 10 (+ 20 (model-pick 40))))
+         (a (case cause ((spread-a) (spread-bad ma)) ((plateau-a) (plateau-bad ma)) (else (clean ma))))
+         (b (case cause ((spread-b) (spread-bad mb)) ((plateau-b) (plateau-bad mb)) (else (clean mb))))
+         (rec (if (eq? cause 'drift) (* 2 mb) mb)))
+    (list a b (list (cons 'k (/ (/ ma mb) 2)) (cons 'b rec)))))
+(define precedence-causes '((spread-a spread a) (spread-b spread b) (plateau-a plateau a) (plateau-b plateau b) (drift . drift)))
+(define precedence-vectors
+  (map (lambda (i) (let ((c (list-ref precedence-causes (mod i 5)))) (cons (cdr c) (precedence-vector (car c)))))
+       (iota 200)))
+(want "C4a PRECEDENCE SAMPLE a red ratio with arm A's plateau failing is unreadable, and the model names the plateau"
+      (let ((a '(100 120 120 120 120 120 120 120 120 120)) (b (make-list 10 200)) (c (cal 1/4 200)))
+        (list (car (f54-judge a b c)) (model-decided a b c)))
+      '(unreadable (plateau a)))
+(want "C4a PRECEDENCE (PIN) 200 red vectors, 40 per unreadable cause alone: each is unreadable, the model names its cause, and the judge agrees"
+      (list (filter (lambda (v) (not (and (eq? (car (f54-judge (cadr v) (caddr v) (cadddr v))) 'unreadable)
+                                          (equal? (model-decided (cadr v) (caddr v) (cadddr v)) (car v)))))
+                    precedence-vectors)
+            (disagreements (map cdr precedence-vectors)))
+      '(() ()))
+
+;; AXIS 3, SYMMETRY: every sample is kept on both arms alike. A generated arm
+;; shape goes on arm A against a clean B, then on arm B against a clean A; its
+;; spread or plateau fails on one arm exactly when it fails on the other.
+(define (arm-verdict decided arm)
+  (cond ((equal? decided (list 'spread arm)) 'spread)
+        ((equal? decided (list 'plateau arm)) 'plateau)
+        (else 'kept)))
+(define symmetry-shapes
+  (let loop ((i 0) (acc '()))
+    (if (= i 200) (reverse acc)
+        (loop (+ i 1) (cons (model-shuffle (vector->list (model-arm (* 10 (+ 20 (model-pick 40)))))) acc)))))
+(define (on-a s) (let ((b (clean 200))) (list s b (roomy-cal s b))))
+(define (on-b s) (let ((a (clean 400))) (list a s (roomy-cal a s))))
+(want "C4a SYMMETRY SAMPLE four minima and six at twice the minimum are unreadable on arm B as on arm A (no sample dropped)"
+      (let ((s '(100 200 100 200 200 100 200 200 100 200)))
+        (list (apply model-decided (on-a s)) (apply model-decided (on-b s))
+              (car (apply f54-judge (on-a s))) (car (apply f54-judge (on-b s)))))
+      '((spread a) (spread b) unreadable unreadable))
+(want "C4a SYMMETRY (PIN) 200 generated arm shapes, each on arm A and on arm B: the same verdict on both, and the judge agrees with the model"
+      (list (filter (lambda (s) (not (eq? (arm-verdict (apply model-decided (on-a s)) 'a)
+                                          (arm-verdict (apply model-decided (on-b s)) 'b))))
+                    symmetry-shapes)
+            (disagreements (append (map on-a symmetry-shapes) (map on-b symmetry-shapes))))
+      '(() ()))
+
+;; AXIS 4, THE DRIFT EDGE: min(B) any integer from 150 to 649, not only a
+;; multiple of 110, so the band's edges min(B) x 10/11 and x 11/10 fall
+;; between integers; the recorded b is taken at the last integer inside each
+;; edge and the first outside it, and at the exact rational edge.
+(define (drift-edge-vector)
+  (let* ((mb (+ 150 (model-pick 500)))
+         (lo (* mb 10/11)) (hi (* mb 11/10))
+         (rec (model-choose (list (ceiling lo) (- (ceiling lo) 1) (floor hi) (+ (floor hi) 1) lo hi)))
+         (a (clean (* 2 mb))) (b (clean mb)))
+    (list a b (list (cons 'k 3) (cons 'b rec)))))
+(define drift-vectors (let loop ((i 0) (acc '())) (if (= i 200) (reverse acc) (loop (+ i 1) (cons (drift-edge-vector) acc)))))
+(want "C4a DRIFT SAMPLE min(B) 103: recorded 113 is inside the band and 114 is not; 94 is inside and 93 is not"
+      (map (lambda (rec) (car (f54-judge (clean 206) (clean 103) (cal 3 rec)))) '(113 114 94 93))
+      '(green unreadable green unreadable))
+(want "C4a DRIFT (PIN) 200 vectors at the band's integer and rational edges: the judge agrees with the model, and both a drift and a green decision occurred"
+      (list (disagreements drift-vectors)
+            (let ((seen (map (lambda (v) (model-decided (car v) (cadr v) (caddr v))) drift-vectors)))
+              (list (and (member 'drift seen) #t) (and (memq 'green seen) #t))))
+      '(() (#t #t)))
 
 ;; ---- C4b: K is recorded, and derived from r0 and e ----------------------------
 (define recorded-in-file

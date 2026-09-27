@@ -120,31 +120,49 @@
 ;; up to the scope's own nesting level; a normal return always leaves one.
 (define program-seed 20260926)
 (define program-count 500)
-(define seed program-seed)
-(define (pick n)
-  (set! seed (mod (+ (* seed 1103515245) 12345) 2147483648))
-  (mod (quotient seed 65536) n))
+;; A GENERATOR IS A SEED AND WHETHER ITS RAISES CARRY A HANDLER PLAN.
+;; The plan-less generator draws exactly the numbers it always drew, so the
+;; 500 programs of SM-1..SM-4 are the ones they always were; the plans are a
+;; second stream with a seed of its own.
+(define (make-pick seed)
+  (lambda (n)
+    (set! seed (mod (+ (* seed 1103515245) 12345) 2147483648))
+    (mod (quotient seed 65536) n)))
 (define scope-exits '(normal raise escape))
-(define (gen-body level depth-left)
-  (let ((n (pick 5)))
+(define (generator pick plans?)
+  (define (gen-body level depth-left)
+    (let ((n (pick 5)))
+      (let loop ((i 0) (acc '()))
+        (if (= i n)
+            (reverse acc)
+            (loop (+ i 1)
+                  (cons (let ((r (pick 10)))
+                          (cond ((and (> depth-left 0) (< r 5)) (gen-scope (+ level 1) depth-left))
+                                ((< r 7) '(write))
+                                (else '(yield))))
+                        acc))))))
+  ;; A HANDLER PLAN: the steps the catching handler takes before it leaves,
+  ;; one to three, each an observation or a write (several observation
+  ;; points inside one handler).
+  (define (gen-plan)
+    (let ((n (+ 1 (pick 3))))
+      (let loop ((i 0) (acc '()))
+        (if (= i n) (reverse acc) (loop (+ i 1) (cons (if (= 0 (pick 2)) 'check 'write) acc))))))
+  (define (gen-scope level depth-left)
+    (let* ((exit (list-ref scope-exits (pick 3)))
+           (target (if (eq? exit 'normal) 1 (+ 1 (pick level))))
+           (reentry (= 0 (pick 2)))
+           (handoff (= 0 (pick 3)))
+           (body (gen-body level (- depth-left 1))))
+      (if (and plans? (eq? exit 'raise))
+          (list 'scope exit target reentry handoff body (gen-plan))
+          (list 'scope exit target reentry handoff body))))
+  (lambda () (gen-body 0 3)))
+(define (generate seed count plans?)
+  (let ((gen (generator (make-pick seed) plans?)))
     (let loop ((i 0) (acc '()))
-      (if (= i n)
-          (reverse acc)
-          (loop (+ i 1)
-                (cons (let ((r (pick 10)))
-                        (cond ((and (> depth-left 0) (< r 5)) (gen-scope (+ level 1) depth-left))
-                              ((< r 7) '(write))
-                              (else '(yield))))
-                      acc))))))
-(define (gen-scope level depth-left)
-  (let* ((exit (list-ref scope-exits (pick 3)))
-         (target (if (eq? exit 'normal) 1 (+ 1 (pick level))))
-         (reentry (= 0 (pick 2)))
-         (handoff (= 0 (pick 3))))
-    (list 'scope exit target reentry handoff (gen-body level (- depth-left 1)))))
-(define programs
-  (let loop ((i 0) (acc '()))
-    (if (= i program-count) (reverse acc) (loop (+ i 1) (cons (gen-body 0 3) acc)))))
+      (if (= i count) (reverse acc) (loop (+ i 1) (cons (gen) acc))))))
+(define programs (generate program-seed program-count #f))
 
 ;; ---- one program against the model ---------------------------------------
 ;;
@@ -204,6 +222,15 @@
           (set-box! installed (cons (list 'write p) (cons (list 'create p) (unbox installed)))))
         (check! (list 'write p))
         (capture-reentry!)))
+    ;; A WRITE IN A HANDLER: the raising scopes are all still installed, so it
+    ;; lands in the innermost one's box. It takes no re-entry point: a
+    ;; handler is left by its escape, never re-entered.
+    (define (handler-write!)
+      (let ((p (fresh-path)))
+        (make-one! p)
+        (when installed
+          (set-box! installed (cons (list 'write p) (cons (list 'create p) (unbox installed)))))
+        (check! (list 'handler-write p))))
     (define (yield-step!)
       (open-depth! (length frames))
       (let ((mine (length frames)) (theirs (other-depth)))
@@ -240,6 +267,7 @@
              (reentry (list-ref s 3))
              (handoff (list-ref s 4))
              (body (list-ref s 5))
+             (plan (if (> (length s) 6) (list-ref s 6) '()))
              (outer (cond ((not installed) 'none)
                           ((null? (unbox installed)) 'empty)
                           (else 'populated)))
@@ -266,6 +294,18 @@
                 (if (and (pair? e) (eq? (car e) 'scope-exit) (eqv? (cadr e) tag))
                     (begin
                       (check! (list 'handler tag))
+                      ;; THE PLAN, if the program carries one: more
+                      ;; observations, and writes, before anything unwinds.
+                      ;; The features are recorded here, where the plan runs:
+                      ;; a raise caught by an outer scope runs THAT scope's plan.
+                      (unless (null? plan)
+                        (feature! (list 'handler-points (length plan)))
+                        (feature! (list 'handler-write (and (memq 'write plan) #t))))
+                      (for-each (lambda (step)
+                                  (if (eq? step 'write)
+                                      (handler-write!)
+                                      (check! (list 'handler-point tag))))
+                                plan)
                       (kout 'raised))
                     (raise e)))
               (lambda ()
@@ -355,6 +395,73 @@
       (missing-features wanted-features process-features)
       '())
 
+;; ---- several observation points inside one handler --------------------------
+;;
+;; A second stream (its own seed) whose raises carry a handler plan: the
+;; catching handler observes again, and writes, before it leaves. The model
+;; is the one above: every raising scope is still installed in a handler,
+;; so a write there lands in the innermost one's box, and the exit then
+;; unwinds as always.
+(define plan-seed 20260927)
+(define plan-count 200)
+(define plan-programs (generate plan-seed plan-count #t))
+(define plan-results
+  (map (lambda (p) (run-safely p void (lambda (n) (void)) (lambda () 0))) plan-programs))
+(define plan-features (apply append (map cadr plan-results)))
+(printf "handler plans: ~a programs, ~a checks, seed ~a\n" plan-count (apply + (map caddr plan-results)) plan-seed)
+(want "SM-5 SAMPLE a raise whose handler observes, writes and observes again, before the exit: the record equals the model at each point"
+      (car (run-safely '((write) (scope raise 1 #f #f ((write) (scope normal 1 #f #t ((write)))) (check write check)))
+                       void (lambda (n) (void)) (lambda () 0)))
+      '())
+(want "SM-5 (PIN) generated programs whose handlers observe several times and write: the record equals the model after every step"
+      (first-few (apply append (map car plan-results)))
+      '())
+(want "SM-5 the generator produced handlers of one, two and three points, with and without a write"
+      (missing-features '((handler-points 1) (handler-points 2) (handler-points 3)
+                          (handler-write #t) (handler-write #f))
+                        plan-features)
+      '())
+
+;; ---- an owner in another process, modelled --------------------------------------
+;;
+;; Another process has an ffi of its own, and its record is not in this
+;; table at all. Modelled without spawning: the key is switched to a foreign
+;; one, a scope is opened under it and written to, then the key is switched
+;; back and one of the programs above runs inside that open foreign scope.
+;; Each side must not see the other: the program's record equals its model
+;; (the foreign scope is not installed for it), the foreign record is what
+;; its own writes made it, and both are closed afterwards. This runs before
+;; the scheduler starts, which installs its own key thunk.
+(define (run-under-foreign prog foreign-writes)
+  (let ((kf (list 'foreign-process)) (kl (list 'this-process)))
+    (mutation-set-self! (lambda () kf))
+    (let ((inside
+           (with-mutation-record
+             (lambda ()
+               (let loop ((i 0))
+                 (when (< i foreign-writes) (make-one! (fresh-path)) (loop (+ i 1))))
+               (let ((foreign-before (mutation-record)))
+                 (mutation-set-self! (lambda () kl))
+                 (let ((r (run-safely prog void (lambda (n) (void)) (lambda () 0))))
+                   (mutation-set-self! (lambda () kf))
+                   (list (car r) (length foreign-before) (equal? foreign-before (mutation-record)))))))))
+      (let ((foreign-closed (null? (mutation-record))))
+        (mutation-set-self! (lambda () kl))
+        (append inside (list foreign-closed (null? (mutation-record))))))))
+
+(want "SM-6 SAMPLE a program runs inside another process's open scope (two foreign writes): its record equals the model, the foreign record is untouched, both close"
+      (run-under-foreign '((write) (scope normal 1 #f #t ((write)))) 2)
+      '(() 4 #t #t #t))
+(define foreign-results
+  (map (lambda (p i) (run-under-foreign p (mod i 3)))
+       (list-head programs 120) (iota 120)))
+(want "SM-6 (PIN) the first 120 generated programs, each inside a foreign scope holding zero, one or two writes: every record equals its model, no foreign record moved, every scope closed"
+      (list (first-few (apply append (map car foreign-results)))
+            (for-all caddr foreign-results)
+            (for-all cadddr foreign-results)
+            (for-all (lambda (r) (list-ref r 4)) foreign-results))
+      '(() #t #t #t))
+
 ;; ---- in actors: three programs at a time, interleaved ----------------------
 (define (actor-yield!) (receive (after 1 'yielded)))
 ;; THE DEEPEST NESTING ANOTHER OWNER HAD OPEN at its last yield.
@@ -369,6 +476,58 @@
 ;; time; a (yield) step parks the actor for a millisecond, and the scheduler
 ;; also preempts on its timer, so the owners' scopes overlap. Each owner
 ;; checks its own record against its own model after every step.
+;; ---- an actor killed inside its scopes -----------------------------------------
+;;
+;; A killed actor's after-thunks are discarded, not run (igropyr actor.sc,
+;; @kill), so its scopes are never left: its entry in the record table is
+;; let go only because the table is weak and the actor's pcb becomes
+;; garbage. A weak pair watches the pcb. CONTROL: an actor killed with no
+;; scope open is reclaimed at all, so the row about scopes measures the
+;; table and not the scheduler. The owners still running are unaffected:
+;; main's record and a fresh actor's scope read as the model says.
+(define (killed-pcb-reclaimed? main depth writes)
+  (let* ((p (spawn (lambda ()
+                     (let open ((d depth))
+                       (if (> d 0)
+                           (with-mutation-record
+                             (lambda ()
+                               (let loop ((i 0)) (when (< i writes) (make-one! (fresh-path)) (loop (+ i 1))))
+                               (open (- d 1))))
+                           (begin (send main (list 'killed-ready))
+                                  (receive (after 60000 'gone))))))))
+         (wp (weak-cons p '())))
+    (receive (after 5000 #f) (`(killed-ready) #t))
+    (kill p 'scope-model)
+    (set! p #f)
+    (receive (after 50 'settled))
+    (collect (collect-maximum-generation))
+    (collect (collect-maximum-generation))
+    (bwp-object? (car wp))))
+
+(define (killed-actor-rows main)
+  (want "SM-7 CONTROL an actor killed with no scope open is reclaimed"
+        (killed-pcb-reclaimed? main 0 0)
+        #t)
+  (want "SM-7 SAMPLE an actor killed inside one scope holding a write is reclaimed: the record table does not keep its key"
+        (killed-pcb-reclaimed? main 1 1)
+        #t)
+  (want "SM-7 (PIN) actors killed inside one, two and three nested scopes, with and without writes, are all reclaimed"
+        (map (lambda (c) (list c (killed-pcb-reclaimed? main (car c) (cadr c))))
+             '((1 0) (2 0) (3 0) (1 2) (2 2) (3 2)))
+        (map (lambda (c) (list c #t)) '((1 0) (2 0) (3 0) (1 2) (2 2) (3 2))))
+  (want "SM-7 after the kills main's record is empty and a fresh actor's scope reads its own writes only"
+        (list (mutation-record)
+              (let ((me self))
+                (spawn (lambda ()
+                         (send me (list 'fresh
+                                        (with-mutation-record
+                                          (lambda ()
+                                            (let ((q (fresh-path)))
+                                              (make-one! q)
+                                              (equal? (mutation-record) (list (list 'create q) (list 'write q))))))))))
+                (receive (after 5000 'no-answer) (`(fresh ,ok) ok))))
+        '(() #t)))
+
 (define group-size 3)
 (define open-depths (make-eqv-hashtable))
 (start-scheduler
@@ -383,7 +542,8 @@
                     '())
               (want "SM-4 the interleaving happened: owners yielded with scopes open, and nested, while another owner had scopes open"
                     (missing-features actor-wanted-features (apply append (map cadr results)))
-                    '()))
+                    '())
+              (killed-actor-rows main))
             (let* ((group (if (> (length ps) group-size) (list-head ps group-size) ps))
                    (ids (iota (length group))))
               (for-each

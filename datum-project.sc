@@ -62,7 +62,11 @@
                  (set! markers (cons (list char-offset (cadr c)) markers)))))
             (set! char-offset (+ char-offset (string-length (utf8->string raw)))))) (byte-lines bytes))
       (when (and header (not (eq? (list-ref header 5) 'datum))) (projection-failure 'mode-mismatch))
-      (when (and header (not wrapper?)) (projection-failure 'missing-library-wrapper))
+      ;; NEVER: A PROGRAM MAY CARRY A HEADER, NOTHING ELSE UNWRAPPED MAY.
+      ;; An exported program comes back as its import form and its forms,
+      ;; under the same header a library carries; a file that is neither a
+      ;; library nor a program (no `(import ...)` first) is refused as before.
+      (when (and header (not wrapper?) (not plain-import?)) (projection-failure 'missing-library-wrapper))
       (let* ((assigned (make-vector (length forms) #f)) (form-vector (list->vector forms)))
         (for-each
           (lambda (m)
@@ -77,7 +81,13 @@
                 (else (find (+ i 1)))))) (reverse markers))
         (let ((fields (if wrapper?
                           (list (cons 'name (cadr body)) (cons 'exports (cdr (caddr body))) (cons 'imports (cdr (cadddr body))))
-                          (list (cons 'name (list (string->symbol rel))) '(exports) (cons 'imports (if plain-import? (cdaar top) '((rnrs))))))))
+                          (append (list (cons 'name (list (string->symbol rel))) '(exports) (cons 'imports (if plain-import? (cdaar top) '((rnrs)))))
+                                  ;; THE SHAPE IS RECORDED, NOT DERIVED FROM THE FILE LATER:
+                                  ;; a program -- a file whose first form is
+                                  ;; `(import ...)`, not `library` -- is exported as one.
+                                  ;; It is a field of the library block, so it is in the
+                                  ;; log and survives replay.
+                                  (if plain-import? (list '(shape . program)) '())))))
           (list rel header fields
                 (map (lambda (form id) (list id (car form) (clean-doc (cadr form)) (caddr form))) forms (vector->list assigned))
                 (apply append (map (lambda (f) (list-ref f 5)) forms)) bytes)))))
@@ -121,7 +131,15 @@
                    (matched (datum-match old entries))
                    (parent (or id (list 'from (emit! (list 'insert 'root #f (append '((kind . library) (mode . datum) (lang . chez)) (list (cons 'path rel)) fields))))))
                    (previous #f) (same-order? (equal? matched children)))
-              (when id (field-changes! state id (cons (cons 'path rel) fields)))
+              ;; A file that is a library now, over a block recorded as a program,
+              ;; says so: the shape is set back, as any other field that changed.
+              ;; ONLY THE VALUE THIS IMPORT WRITES IS RESET: a `shape` field that
+              ;; is not `program` was not written by this import and is left as
+              ;; it is.
+              (when id (field-changes! state id (cons (cons 'path rel)
+                                                      (if (and (not (assq 'shape fields)) (eq? (code-field state id 'shape) 'program))
+                                                          (cons '(shape . library) fields)
+                                                          fields))))
               (for-each (lambda (old-id) (unless (member old-id matched) (emit! (list 'del old-id)))) children)
               (for-each
                 (lambda (row target)
@@ -168,12 +186,21 @@
                                 (unless (datum-doc-format? doc) (projection-failure 'invalid-doc))
                                 (string-append (utf8->string (marker-line scheme-entry (string-append "@block " child)))
                                                doc (datum-print (code-field state child 'body))))) (code-children state id))))
-                       (list path (string->utf8 (string-append "#!chezscheme\n"
-                         (utf8->string (projection-header-line scheme-entry (list (store-id-of store) id (reduce-applied-cut state)) 'datum 0))
-                         "(library " (let ((s (datum-print (code-field state id 'name)))) (substring s 0 (- (string-length s) 1))) "\n"
-                         (datum-print (cons 'export (code-field state id 'exports)))
-                         (datum-print (cons 'import (code-field state id 'imports)))
-                         (apply string-append parts) ")\n"))))))
+                       ;; A PROGRAM IS WRITTEN BACK AS A PROGRAM: its import
+                       ;; form and its forms, under the same header, with no
+                       ;; `(library ...)` around them.
+                       (list path (string->utf8
+                         (if (eq? (code-field state id 'shape) 'program)
+                             (string-append "#!chezscheme\n"
+                               (utf8->string (projection-header-line scheme-entry (list (store-id-of store) id (reduce-applied-cut state)) 'datum 0))
+                               (datum-print (cons 'import (code-field state id 'imports)))
+                               (apply string-append parts))
+                             (string-append "#!chezscheme\n"
+                               (utf8->string (projection-header-line scheme-entry (list (store-id-of store) id (reduce-applied-cut state)) 'datum 0))
+                               "(library " (let ((s (datum-print (code-field state id 'name)))) (substring s 0 (- (string-length s) 1))) "\n"
+                               (datum-print (cons 'export (code-field state id 'exports)))
+                               (datum-print (cons 'import (code-field state id 'imports)))
+                               (apply string-append parts) ")\n")))))))
                  (filter (lambda (id) (eq? (code-field state id 'mode) 'datum)) (libraries state)))))
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (code-parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)

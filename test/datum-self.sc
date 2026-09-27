@@ -22,12 +22,12 @@
 ;; `prefix-limit` part of the way through: the limit counted every quote in
 ;; the file rather than a run of them.
 ;;
-;; F51-1 imports each source on its own and names every refusal. F51-2 exports
-;; what was imported and compares the forms Chez reads from the export with the
+;; The CENSUS row imports each source on its own and names every refusal. The
+;; ROUND TRIP rows compare the forms Chez reads from each export with the
 ;; forms it reads from the source. F51-3 and F51-4 pin the two causes on files
 ;; small enough to read.
 ;;
-;; NOTE: F51-2 COMPARES FORMS, NOT BYTES (main session ruling, 2026-09-26).
+;; NOTE: THE ROUND TRIP COMPARES FORMS, NOT BYTES.
 ;; `export-code --datum` reprints: it writes `#!chezscheme`, a projection
 ;; header, an `@block` marker before every form, and every form through
 ;; datum-print, and a `;` comment inside a form is dropped at import
@@ -35,15 +35,17 @@
 ;; byte, whatever the reader does, so the byte comparison is printed as a
 ;; reading and is not asserted.
 ;;
-;; NOTE: A PROGRAM IS EXPORTED AS A LIBRARY. export-datum writes every file as
-;; `(library <name> ...)`; a source whose first form is not `library` (a
-;; top-level program) therefore does not come back as it went in. That is
-;; outside the reader (queued as F113). The row names the programs it finds
-;; and pins that set, so a new program is seen and none is excused silently.
+;; NOTE: A PROGRAM IS EXPORTED AS A PROGRAM. Import records a file whose
+;; first form is `(import ...)` as `(shape . program)` on its library block,
+;; and export writes it back as its import form and its forms, with no
+;; `(library ...)` around them. The round trip therefore compares programs as
+;; well as libraries; the programs are still named and pinned, so a new one is seen.
 
 (import (chezscheme)
         (only (theourgia rpc) rpc-dispatch)
-        (only (theourgia datum-code) datum-source-read))
+        (only (theourgia datum-code) datum-source-read)
+        (only (theourgia store) open-and-reduce)
+        (only (theourgia reduce) state-datum state-read))
 
 (define bad 0)
 (define rows 0)
@@ -178,7 +180,7 @@
                  '() imported)
       '())
 
-;; ---- F51-2: what was imported comes back ------------------------------------------------
+;; ---- ROUND TRIP: what was imported comes back -------------------------------------------
 (define (forms-of path)
   (guard (e (#t (list 'UNREADABLE (if (message-condition? e) (condition-message e) e))))
     (call-with-input-file path
@@ -221,24 +223,86 @@
                                      (first-byte-difference (file-bytes source) (file-bytes exported)))))))))
     '() imported))
 
-(printf "== F51-2: an imported source exports to the same forms ==\n")
+(printf "== ROUND TRIP: an imported source exports to the same forms ==\n")
 (for-each (lambda (t)
             (printf "   ~a ~a: forms ~a; first differing byte ~a~a\n"
                     (cadr t) (car t) (if (caddr t) "equal" "DIFFER") (cadddr t)
-                    (if (eq? (cadr t) 'program) "  (program: export wraps as library)" "")))
+                    ""))
           round-trips)
 
-(want "F51-2 ROUND TRIP every imported library exports to forms equal? to its source's (differing: file)"
-      (map car (filter (lambda (t) (and (eq? (cadr t) 'library) (not (caddr t)))) round-trips))
+(want "ROUND TRIP every imported source, library or program, exports to forms equal? to its source's (differing: file)"
+      (map car (filter (lambda (t) (not (caddr t))) round-trips))
       '())
 
-;; NEVER: THE PROGRAMS ARE PINNED BY NAME. Their export differs by construction
-;; (F113), so the row above leaves them out -- and a file left out of a
-;; comparison has to be one somebody decided to leave out. A source the
-;; classification newly calls a program turns this row red.
-(want "F51-2 the sources classified as programs (export wraps as library, F113) are exactly these"
+;; NEVER: THE PROGRAMS ARE PINNED BY NAME. A source the classification newly
+;; calls a program turns this row red, so none joins the set unseen.
+(want "PROGRAMS the sources classified as programs are exactly these"
       (map car (filter (lambda (t) (eq? (cadr t) 'program)) round-trips))
       '("core.sc" "eval-worker.sc" "mcp/server.sc" "theourgia.sc" "theourgiad.sc"))
+
+;; THE EXPORT'S FIRST FORM says which shape it was written as -- `import`
+;; for a program, `library` for a library (TWIN: the wrapper is still there).
+(define (exported-head t)
+  (let ((r (assoc (car t) imported)))
+    (and r (first-form-head (string-append (cadr r) "/out/" (car t))))))
+(want "PROGRAM SHAPE every program is exported with its import form first and no library wrapper"
+      (map (lambda (t) (list (car t) (exported-head t)))
+           (filter (lambda (t) (eq? (cadr t) 'program)) round-trips))
+      (map (lambda (t) (list (car t) 'import))
+           (filter (lambda (t) (eq? (cadr t) 'program)) round-trips)))
+(want "PROGRAM SHAPE TWIN every library is still exported inside its (library ...) wrapper"
+      (filter (lambda (t) (not (eq? (exported-head t) 'library)))
+              (filter (lambda (t) (eq? (cadr t) 'library)) round-trips))
+      '())
+
+;; AN EXPORTED PROGRAM COMES BACK IN. It carries a header now, which an
+;; unwrapped file could not; imported into the store it came from, it
+;; answers ok.
+(want "PROGRAM SHAPE PIN: an exported program re-imports into its own store (green too when programs were exported as libraries)"
+      (let* ((r (assoc "theourgia.sc" imported))
+             (d (cadr r)))
+        (answer-head (rpc-dispatch (string-append d "/store") (list 'import-code (string-append d "/out") "--datum") "test")))
+      'ok)
+
+;; NEVER: ONLY THE SHAPE THE IMPORT WRITES IS RESET. A library block may
+;; carry a `shape` field the import did not write -- a caller can set any
+;; field that is not reserved. Re-importing that library's own export must
+;; leave it as it is, not set it to `library` because it is not absent.
+(want "PROGRAM SHAPE a library's shape field that the import did not write survives a re-import"
+      (let* ((r (assoc "text-code.sc" imported))
+             (d (cadr r))
+             (store (string-append d "/store"))
+             (id (let ((st (open-and-reduce store)))
+                   (find (lambda (id) (let* ((b (state-read st id)) (f (and b (assq 'fields b))))
+                                        (and f (equal? (assq 'kind (cdr f)) '(kind . library)))))
+                         (map cadr (state-datum st)))))
+             (out (string-append d "/out-legacy")))
+        (rpc-dispatch store (list 'set id "shape" "legacy") "test")
+        (sh "mkdir -p " (shell-quote out))
+        (rpc-dispatch store (list 'export-code out "--datum") "test")
+        (rpc-dispatch store (list 'import-code out "--datum") "test")
+        (let* ((b (state-read (open-and-reduce store) id))
+               (p (and b (assq 'shape (cdr (assq 'fields b))))))
+          (and p (cdr p))))
+      "legacy")
+
+;; NEVER: A HEADED FILE THAT IS NEITHER A LIBRARY NOR A PROGRAM IS STILL
+;; REFUSED. A program's header, over forms with no
+;; `(import ...)` first, is answered missing-library-wrapper, as it always was.
+(want "PROGRAM SHAPE a headed file that is neither a library nor a program is refused as missing-library-wrapper"
+      (let* ((r (assoc "theourgia.sc" imported))
+             (d (cadr r))
+             (header (let loop ((ls (file-lines (string-append d "/out/theourgia.sc"))))
+                       (cond ((null? ls) #f)
+                             ((starts-with? (car ls) ";; @file") (car ls))
+                             (else (loop (cdr ls))))))
+             (bad (string-append d "/bad")))
+        (sh "mkdir -p " (shell-quote bad))
+        (call-with-output-file (string-append bad "/theourgia.sc")
+          (lambda (p) (put-string p (string-append "#!chezscheme\n" (or header ";; no header found") "\n(define x 1)\n")))
+          'truncate)
+        (refusal-of (rpc-dispatch (string-append d "/store") (list 'import-code bad "--datum") "test")))
+      '(missing-library-wrapper #f))
 
 ;; ---- F51-3: the prefix limit is on a run ---------------------------------------------
 (define (read-answer text)

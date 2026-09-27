@@ -1,0 +1,1 @@
+(events (rule fixed) (applied (0 set "alpha.md#2" src "Edited body links [[@beta.md#1]].\n\n```\n[[@beta.md#1]]\n```\n") (1 set "beta.md#0" keywords "alpha, beta") (2 move "sub/zeta.md#3" "alpha.md#1" "alpha.md#4") (3 link "gamma.md#0" explains "alpha.md#1") (4 set "raw.md#2" title "Raw end renamed")) (skipped))
