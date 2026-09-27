@@ -223,8 +223,12 @@
 ;; will compute, so the retry sees it as its own accepted plan and takes
 ;; the completion path.
 
-(define (mismatch-store text-frozen text-named)
-  (let* ((d (string-append root "/mm" (number->string (string-length text-named))))
+;; `as-bytes`, when given and true, declares the frozen text as its UTF-8
+;; bytes -- the spelling a plan for a text-mode block carries since F119.
+(define (mismatch-store text-frozen text-named . as-bytes)
+  (let* ((bytes? (and (pair? as-bytes) (car as-bytes)))
+         (d (string-append root "/mm" (number->string (string-length text-named))
+                           (if bytes? "b" "")))
          (who "test"))
     (mkdir-p! d)
     (rpc-dispatch d '(init) "test")
@@ -252,7 +256,8 @@
              (args (cons w (list (string-append block "\x0;" real))))
              (fp (request-fingerprint who 'commit args after))
              (plan (list 'plan "MM" fp after
-                         (list (cons 0 (list 'set block 'src text-frozen)))
+                         (list (cons 0 (list 'set block 'src
+                                             (if bytes? (string->utf8 text-frozen) text-frozen))))
                          (list 'consumes w (list (list block named based-on cut)))))
              (actor (list who (cons w "MM") 'plan fp #f after))
              ;; PUBLISHED AS ANOTHER WRITER'S RECORD. A request's
@@ -291,6 +296,25 @@
                    (list (list-ref ok-mm 4))))
 (want "W6-consumes-version-mismatch TWIN: a matching pair completes"
       (and (pair? ok-answer) (eq? 'ok (car ok-answer))) #t)
+
+;; (c) THE SAME DISAGREEMENT, WITH THE TEXT DECLARED AS BYTES (F119 r1
+;; review). A plan for a text-mode block declares its src as bytes since
+;; F119; the check read only a string, so this plan completed with a
+;; version naming other bytes. Red on f5ebd58 too: there a plan spelled
+;; this way was never checked either.
+(define mmb (mismatch-store "the frozen text" "a different text" #t))
+(define mmb-log (string-append (writer-directory (list-ref mmb 0) (list-ref mmb 2)) "/000001.sexp"))
+(define (mmb-bytes)
+  (call-with-port (open-file-input-port mmb-log) get-bytevector-all))
+(define before-mmb (mmb-bytes))
+(define mmb-answer
+  (working-commit! (list-ref mmb 0) (list-ref mmb 2) (list (list-ref mmb 1)) "test"
+                   (make-write-request "test" 'commit (list (list-ref mmb 1)) "MM" (list-ref mmb 3))
+                   (list (list-ref mmb 4))))
+(want "W6-consumes-version-mismatch (bytes) the completion refuses a plan that declares bytes"
+      (list (car mmb-answer) (cadr mmb-answer) (caddr mmb-answer))
+      (list 'error 'consumes-version-mismatch (list 'block (list-ref mmb 1))))
+(want "W6-consumes-version-mismatch (bytes) TWIN: and it wrote nothing" (mmb-bytes) before-mmb)
 
 ;; ---- W4"-no-draft-read IS NOT HERE, AND THIS IS WHERE IT GOES --------------
 ;;

@@ -2365,6 +2365,44 @@
   ;; whole check before the sequence number is reserved: a refusal after
   ;; a reservation leaves a hole in the log that the next open has to
   ;; explain away.
+;; A `set` of a text-mode block's src given as a string. The src of such a
+  ;; block is its bytes; the string is written as its UTF-8. Only a proper,
+  ;; non-empty list is one: a malformed intent -- an improper tail (r1
+  ;; review), or an empty list, whose car would raise (r2 review) -- is left
+  ;; for the validator that refuses it.
+  (define (text-src-string? state i)
+    (and (pair? i) (list? i) (eq? (car i) 'set)
+         (pair? (cdr i)) (string? (cadr i))
+         (pair? (cddr i)) (eq? (caddr i) 'src)
+         (pair? (cdddr i)) (string? (cadddr i))
+         (known? state (cadr i))
+         (equal? (assq 'mode (block-fields state (cadr i))) '(mode . text))))
+
+  ;; THE ONE PLACE A TEXT-MODE SRC BECOMES BYTES, and the intent is otherwise
+  ;; returned as it is -- the same object, so nothing else about it changes.
+  ;; resolve asks it of every `set`; write-plan-then! asks it before the
+  ;; plan is written, against the state the plan starts from (F119). That
+  ;; settles a set of an existing text-mode block's src. It does not settle
+  ;; two others: a plan that first gives a block its mode and then sets its
+  ;; src (the declaration is read before the mode exists), and an `expect`
+  ;; wrapper with a fourth element, which is accepted by intent-reason but
+  ;; not rebuilt here, so its declaration stays the string it was (NOTES,
+  ;; KNOWN OPEN and ROUND 3).
+  ;;
+  ;; NEVER: A MALFORMED INTENT IS NOT REPAIRED HERE. An `expect` wrapper is
+  ;; rebuilt only when it is a proper three-element list and its intent
+  ;; changed; anything else goes on as it came, to be refused by
+  ;; run-intents! as before (F119 r1 review: `(expect H (set ...) . junk)`
+  ;; lost its tail and ran).
+  (define (canonical-intent state intent)
+    (cond
+      ((and (list? intent) (= 3 (length intent)) (eq? (car intent) 'expect))
+       (let ((inner (canonical-intent state (caddr intent))))
+         (if (eq? inner (caddr intent)) intent (list 'expect (cadr intent) inner))))
+      ((text-src-string? state intent)
+       (list 'set (cadr intent) 'src (string->utf8 (cadddr intent))))
+      (else intent)))
+
   (define (resolve state writer seq intent)
     (define (missing id)
       (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
@@ -2416,9 +2454,7 @@
                    (not (equal? (cdr (assq 'mode (block-fields state id)))
                                 (and (pair? (cdddr i)) (cadddr i)))))
               (list 'error 'mode-mismatch '(remedy create-new-file)))
-             ((and (eq? (caddr i) 'src) (pair? (cdddr i)) (string? (cadddr i))
-                   (equal? (assq 'mode (block-fields state id)) '(mode . text)))
-              (list 'set id 'src (string->utf8 (cadddr i))))
+             ((text-src-string? state i) (canonical-intent state i))
              ;; ANY NON-ROOT PARENT, not merely a parent that is itself a
              ;; document. `insert` and `move` refuse a document anywhere
              ;; but the root; asking only about the immediate parent let
@@ -3313,10 +3349,18 @@
                                    (cadr body)))
                        (text (and block (= 4 (length body)) (eq? 'src (caddr body))
                                   (cadddr body)))
+                       ;; EITHER SPELLING OF THE TEXT IS CHECKED. A plan
+                       ;; for a text-mode block declares its bytes (F119);
+                       ;; checking strings only let such a plan complete
+                       ;; with a version that named other bytes (F119 r1
+                       ;; review).
+                       (bytes (cond ((string? text) (string->utf8 text))
+                                    ((bytevector? text) text)
+                                    (else #f)))
                        (item (and block (assoc block items))))
-                  (if (and text item (string? text)
+                  (if (and bytes item
                            (not (equal? (cadr item)
-                                        (draft-version (string->utf8 text)
+                                        (draft-version bytes
                                                        (caddr item) (cadddr item)))))
                       block
                       (loop (cdr es))))))))))
@@ -3337,8 +3381,20 @@
                           (lambda (n) (request-actor req (list-ref indices n) plan-event))
                           (map cdr missing))))))
 
+  ;; NEVER: THE PLAN DECLARES WHAT ITS RECORDS WILL CARRY (F119), for a set of
+  ;; an existing text-mode block's src -- the case canonical-intent settles;
+  ;; its comment names the two it does not (a mode set earlier in the same
+  ;; plan, and an `expect` wrapper with a fourth element). The reducer
+  ;; holds each record of a plan to the plan's declared entry, verbatim for
+  ;; `set` (request.sc, intent-produced?). resolve writes a text-mode
+  ;; block's src as bytes, so a plan that declared the caller's string --
+  ;; a commit's draft, from working.sc entry-intent -- met a record that
+  ;; carried bytes: plan-mismatch, and the commit answered ok while its
+  ;; record waited in pending for ever. The intents are made canonical
+  ;; here, once, and both the plan and the run below use them.
   (define (write-plan-then! s state req intents . rest)
-    (let* ((entries (plan-entries intents))
+    (let* ((intents (map (lambda (i) (canonical-intent state i)) intents))
+           (entries (plan-entries intents))
            (consumes (and (pair? rest) (car rest)))
            ;; THE SIXTH ELEMENT IS WRITTEN ONLY WHEN THERE IS ONE. A plan
            ;; without it consumed nothing, which is exactly what every
