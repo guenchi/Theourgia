@@ -419,12 +419,15 @@ writing protocol text. It is set on `insert` and `write`. NOTE: It does not mean
 It answers:
 
     (conflict <id> cycle|unplaced) | (orphan <id>) | (pending (event <w> <seq>) (missing <w> <seq>))
+      | (duplicate-path <path> (ids (<id> ...)))
 
 What the store holds and cannot show: blocks in a structural conflict, blocks whose
 parent was deleted or never arrived, and records still waiting for premises. A record
 waiting on several premises is listed once for **each** — stopping at the first would
 send an operator to fetch one record and leave them where they started. A section with
-nothing in it prints nothing.
+nothing in it prints nothing. A path that two alive datum libraries, or two alive text
+files, both hold is listed as `duplicate-path` with every id that holds it: an export
+would write both to one file, and refuses.
 
 The structural conflicts are read from the same place `outline` reads them, so the two
 cannot disagree; `outline` prints the mark as a fourth column on that row.
@@ -708,6 +711,19 @@ in the answer's skipped clause, which is there only when something
 was skipped. A file the reader refuses is named in the refusal's path
 clause.
 
+With `--datum`, a file WITHOUT a projection header, whose path an alive
+datum library in the store already holds, updates that library rather
+than creating a second one: its forms are matched to the library's children as an
+exported file's would be, and nothing is deleted. A child the file does
+not hold is kept, and the answer names it in `(kept (ids (<id> ...)))`. A
+file WITH a header is the whole library, as before, and a child it omits
+is deleted. A path two libraries already hold is refused as
+`(error projection-invalid (reason duplicate-path) (path <path>) (ids
+(<id> ...)))`, and nothing is written. The libraries that held each path
+when the directory was read are checked again when the import writes; if
+they changed, the import is refused `(error stale-baseline (path <path>)
+(reason changed-claimants))`.
+
 ### `export-code`
 
     (export-code <dir> ("--raw") ("--datum") ("--working") ("--writer" <name>))
@@ -734,7 +750,12 @@ not write.
 
     (check)
 
-Reads the store and reports what does not hold together.
+Reads the store and reports what does not hold together. A path two alive
+datum libraries, or two alive text files, both hold is reported under
+`(paths ((duplicate-path <path> (ids (<id> ...))) ...))`, a clause that is
+there only when there is such a path. It is not damage and does not change
+the verdict: the log is whole; what the store holds is two identities for
+one path.
 
 ### `snapshot`
 

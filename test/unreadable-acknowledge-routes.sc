@@ -199,6 +199,7 @@
     ("core.sc" "eval-view" "open-and-reduce" 1 request)
     ("daemon.sc" "answer-published" "published-state" 1 published)
     ("daemon.sc" "store-loop" "obtain-state" 2 daemon)
+    ("datum-project.sc" "current" "open-and-reduce" 1 request)
     ("datum-project.sc" "def-datum" "open-and-reduce" 1 request)
     ("datum-project.sc" "export-datum" "open-and-reduce" 1 request)
     ("datum-project.sc" "field-changes!" "open-and-reduce" 1 request)

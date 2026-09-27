@@ -94,10 +94,16 @@
     (want "CD-12 doc-only edit is retained" (code-field state (car ids) 'doc) ";; changed doc\n")
     (want "CD-12 imports retain source order" (code-field state (list-ref c 2) 'imports) '((rnrs) (only (chezscheme) pretty-print)))
     (want "CD-12 exports update" (code-field state (list-ref c 2) 'exports) '(y))))
-(let* ((c (fresh)) (ids (list-ref c 3)))
+(let* ((c (fresh)) (ids (list-ref c 3)) (lib (list-ref c 2)))
   (edit! c '((#f (define x 42) "")) #f)
-  (want "CD-15 first import without cut only creates" (rpc-ok? (run c)) #t)
-  (want "CD-15 old omitted children remain" (code-children (open-and-reduce (car c)) (list-ref c 2)) ids))
+  (let* ((a (run c)) (state (open-and-reduce (car c))))
+    (want "CD-15 a file without a header, of a path the store holds, updates that library: one library at the path, the same id"
+          (list (and (pair? a) (car a)) (state-path-claimants state 'library 'datum "a.sc"))
+          (list 'ok (list lib)))
+    (want "CD-15 its one form updates the child it names, and every child it omits is kept, in place after it, and named"
+          (list (code-field state (car ids) 'body) (code-children state lib)
+                (let ((k (and (pair? a) (list? a) (assq 'kept (cdr a))))) k))
+          (list '(define x 42) ids (list 'kept (list 'ids (cdr ids)))))))
 (let* ((c (fresh)) (id (list-ref c 2)))
   (want "CD-17 explicit library def creates one form"
         (rpc-ok? (rpc-dispatch (car c) (list 'def "fresh" "--under" id "(define fresh 7)") "test")) #t)
@@ -262,6 +268,222 @@
                 (list-sort (lambda (x y) (string<? (car x) (car y)))
                            (map (lambda (id) (list (code-field state id 'path) (code-field state id 'lang))) files)))
           '(ok (("a.sc" scheme) ("b.md" markdown) ("c.txt" #f) ("e.SC" #f) ("f" #f) ("sub/d.sls" scheme))))))
+
+;; ---- a raw re-import of a path the store holds ------------------------------
+;;
+;; NEVER: A FILE WITHOUT A HEADER, OF A PATH THE STORE HOLDS, UPDATES THAT
+;; LIBRARY. None holds it: a new library. One holds it: that library, its
+;; forms matched as a headed file's are, nothing deleted -- what the file
+;; omits is kept and named in `(kept (ids (...)))`. Several hold it: refused
+;; by name, path and ids, nothing written. The holders are captured and
+;; checked again at the write. Every duplicate-path refusal names its path
+;; and ids; check and conflicts report a duplicated path.
+(define (safely thunk)
+  (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e)))) (thunk)))
+(define (answer-clause a head)
+  (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
+(define (answer-head a)
+  (cond ((not (pair? a)) a)
+        ((and (eq? (car a) 'error) (pair? (cdr a))) (list 'error (cadr a)))
+        (else (car a))))
+(define (deep-member? x tree)
+  (or (equal? x tree) (and (pair? tree) (or (deep-member? x (car tree)) (deep-member? x (cdr tree))))))
+;; -> (store input writer)
+(define (raw-area! name)
+  (let* ((area (string-append root "/" name)) (store (string-append area "/store")) (input (string-append area "/input")))
+    (mkdir-p! input)
+    (let ((init (rpc-dispatch store '(init) "test")))
+      (list store input (cadr (assq 'writer (cdr init)))))))
+(define p-text "(library (p) (export f g) (import (rnrs))\n(define (f) 1)\n(define (g) 2))\n")
+(define q-text "(library (q) (export h) (import (rnrs))\n(define (h) 3))\n")
+(define (import-raw! store dir . extra)
+  (safely (lambda () (rpc-dispatch store (append (list 'import-code dir "--datum") extra) "test"))))
+(define (holders store rel) (state-path-claimants (open-and-reduce store) 'library 'datum rel))
+(define (children-of store lib) (code-children (open-and-reduce store) lib))
+(define (seq-of store writer)
+  (let ((p (assoc writer (reduce-applied-cut (open-and-reduce store))))) (if p (cdr p) 0)))
+(define (cursor-after store writer) (string-append writer ":" (number->string (+ 1 (seq-of store writer)))))
+(define (second-library! store rel)
+  (with-store-write store
+    (lambda (s v) (list (list 'insert 'root #f (list '(kind . library) '(mode . datum) '(lang . chez) (cons 'path rel)))))
+    "other"))
+
+;; U1: the same raw directory imported twice is one library per path.
+(let* ((ra (raw-area! "u1")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") p-text)
+  (write! (string-append input "/q.sc") q-text)
+  (import-raw! store input)
+  (let* ((first (list (holders store "p.sc") (holders store "q.sc")))
+         (outline-before (state-outline (open-and-reduce store)))
+         (a (import-raw! store input))
+         (w (safely (lambda () (rpc-dispatch store '(whereis "f") "test")))))
+    (want "U1 a second raw import of the same directory answers ok, keeps one library per path by id, the outline as it was, no kept clause, and whereis finds one def"
+          (list (answer-head a) (equal? first (list (holders store "p.sc") (holders store "q.sc"))) (length (car first))
+                (equal? outline-before (state-outline (open-and-reduce store))) (answer-clause a 'kept)
+                (let ((it (answer-clause w 'items))) (and it (length (filter (lambda (r) (and (pair? r) (eq? (car r) 'def))) (cdr it))))))
+          '(ok #t 1 #t #f 1))))
+
+;; U2: an edited raw file: one body changed, one form added, one omitted.
+(let* ((ra (raw-area! "u2")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store input)
+  (let* ((lib (car (holders store "p.sc"))) (old (children-of store lib)) (f-id (car old)) (g-id (cadr old)))
+    (write! (string-append input "/p.sc") "(library (p) (export f k) (import (rnrs))\n(define (f) 10)\n(define (k) 4))\n")
+    (let* ((a (import-raw! store input)) (state (open-and-reduce store)) (now (code-children state lib)))
+      (want "U2 the library keeps its id; f keeps its identity with the new body; k is a new child; g is kept, named, and last"
+            (list (answer-head a) (holders store "p.sc") (code-field state f-id 'body) (length now) (car now)
+                  (and (pair? (cdr now)) (not (member (cadr now) old)) (code-field state (cadr now) 'body))
+                  (list-ref now (- (length now) 1)) (answer-clause a 'kept))
+            (list 'ok (list lib) '(define (f) 10) 3 f-id '(define (k) 4) g-id (list 'kept (list 'ids (list g-id))))))))
+
+;; U1b: a path is held per kind. (i) PIN: a text file block of p.sc does
+;; not make a raw datum import of p.sc an update: the first datum library
+;; is created, the text block left. (ii) with both, the datum import
+;; updates the library and leaves the text block.
+(let* ((ra (raw-area! "u1b")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") p-text)
+  (safely (lambda () (rpc-dispatch store (list 'import-code input) "test")))
+  (let* ((text-files (state-path-claimants (open-and-reduce store) 'file 'text "p.sc"))
+         (a (import-raw! store input)))
+    (want "U1b (i) PIN a store holding only a text file of p.sc: the datum import creates the first datum library, and the text file stays"
+          (list (answer-head a) (length (holders store "p.sc")) (state-path-claimants (open-and-reduce store) 'file 'text "p.sc"))
+          (list 'ok 1 text-files))
+    (let* ((lib (holders store "p.sc")) (b (import-raw! store input)))
+      (want "U1b (ii) with both, the datum import updates the library and leaves the text file"
+            (list (answer-head b) (holders store "p.sc") (state-path-claimants (open-and-reduce store) 'file 'text "p.sc"))
+            (list 'ok lib text-files)))))
+
+;; U3, U4, U5: a store already holding two datum libraries at one path.
+(let* ((ra (raw-area! "u3")) (store (car ra)) (input (cadr ra)) (out (string-append root "/u3-out")))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store input)
+  (second-library! store "p.sc")
+  (let* ((two (holders store "p.sc")) (before (reduce-applied-cut (open-and-reduce store)))
+         (a (import-raw! store input)))
+    (want "U3 a raw import of a path two libraries hold refuses duplicate-path with the path and both ids, and writes nothing"
+          (list a (equal? before (reduce-applied-cut (open-and-reduce store))) (length two))
+          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)) #t 2))
+    (mkdir-p! out)
+    (want "U4 export-code --datum of that store refuses with the path and both ids"
+          (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test")))
+          (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)))
+    (let ((conflicts (safely (lambda () (rpc-dispatch store '(conflicts) "test"))))
+          (check (safely (lambda () (rpc-dispatch store '(check) "test")))))
+      (want "U5 conflicts lists the duplicated path; check lists it under paths, and its verdict is still ok"
+            (list (deep-member? (list 'duplicate-path "p.sc" (list 'ids two)) conflicts)
+                  (deep-member? (list 'paths (list (list 'duplicate-path "p.sc" (list 'ids two)))) check)
+                  (deep-member? '(verdict ok) check))
+            '(#t #t #t)))))
+
+;; U4b: two TEXT files sharing a path: the text export names the path and
+;; both ids.
+(let* ((ra (raw-area! "u4b")) (store (car ra)) (input (cadr ra)) (out (string-append root "/u4b-out")))
+  (write! (string-append input "/x.py") "def one():\n    return 1\n")
+  (safely (lambda () (rpc-dispatch store (list 'import-code input) "test")))
+  (with-store-write store
+    (lambda (s v) (list (list 'insert 'root #f (list '(kind . file) '(mode . text) '(path . "x.py") '(lang . python)))))
+    "other")
+  (let ((two (state-path-claimants (open-and-reduce store) 'file 'text "x.py")))
+    (mkdir-p! out)
+    (want "U4b export-code of two text files sharing a path refuses with the path and both ids"
+          (list (safely (lambda () (rpc-dispatch store (list 'export-code out) "test"))) (length two))
+          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "x.py") (list 'ids two)) 2))))
+
+;; U6 PIN: the headed round trip -- export, then import the export -- is
+;; still idempotent.
+(let* ((ra (raw-area! "u6")) (store (car ra)) (input (cadr ra)) (out (string-append root "/u6-out")))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store input)
+  (mkdir-p! out)
+  (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test")))
+  (want "U6 PIN importing the export back answers ok with no items and no warnings"
+        (import-raw! store out)
+        '(ok (items) (warnings ()))))
+
+;; U7, U7b, U7c: the capture and the write, apart. The first call carries a
+;; request identity and a cursor one past the writer's end, so it captures
+;; and is then refused before writing (the cursor cannot be reached); the
+;; change between the two is what makes the cursor reachable; the retry,
+;; the same request, writes from the captured packet. Its preflight runs
+;; against the CHANGED state -- the write session's own reduction, after the
+;; change -- while its baselines and holders are the capture's: that
+;; difference is what these rows measure.
+(define (interleaved! name setup! between! dir-text)
+  (let* ((ra (raw-area! name)) (store (car ra)) (input (cadr ra)) (w (caddr ra)))
+    (setup! store input)
+    (write! (string-append input (car dir-text)) (cadr dir-text))
+    (let* ((cursor (cursor-after store w))
+           (first (import-raw! store input "--req" name "--cursor" cursor)))
+      (between! store input)
+      (list first (import-raw! store input "--req" name "--cursor" cursor) store))))
+;; U7: another write to the matched library between capture and write.
+(let ((r (interleaved! "u7"
+           (lambda (store input) (write! (string-append input "/p.sc") p-text) (import-raw! store input))
+           (lambda (store input)
+             (let ((f-id (car (children-of store (car (holders store "p.sc"))))))
+               (with-store-write store (lambda (s v) (list (list 'set f-id 'doc ";; changed\n"))) "other")))
+           (list "/p.sc" "(library (p) (export f g) (import (rnrs))\n(define (f) 100)\n(define (g) 2))\n"))))
+  (want "U7 a raw re-import whose matched library changed between capture and write is refused stale-baseline; still one library"
+        (list (answer-head (car r)) (answer-head (cadr r)) (length (holders (caddr r) "p.sc")))
+        '((error cursor-unreachable) (error stale-baseline) 1)))
+;; U7b: a second library takes the path between capture and write.
+(let ((r (interleaved! "u7b"
+           (lambda (store input) (write! (string-append input "/p.sc") p-text) (import-raw! store input))
+           (lambda (store input) (second-library! store "p.sc"))
+           (list "/p.sc" "(library (p) (export f g) (import (rnrs))\n(define (f) 100)\n(define (g) 2))\n"))))
+  (want "U7b a second library taking the path between capture and write refuses stale-baseline, changed-claimants"
+        (list (answer-head (car r)) (cadr r))
+        '((error cursor-unreachable) (error stale-baseline (path "p.sc") (reason changed-claimants)))))
+;; U7c: two imports of one NEW path: both capture no holder, B writes, then A.
+(let ((r (interleaved! "u7c"
+           (lambda (store input) #t)
+           (lambda (store input) (import-raw! store input))
+           (list "/n.sc" "(library (n) (export m) (import (rnrs))\n(define (m) 5))\n"))))
+  (want "U7c of two imports of one new path, the second to write refuses stale-baseline, changed-claimants, and one library holds it"
+        (list (answer-head (car r)) (cadr r) (length (holders (caddr r) "n.sc")))
+        '((error cursor-unreachable) (error stale-baseline (path "n.sc") (reason changed-claimants)) 1)))
+
+;; U2c: a raw file that holds only the library's SECOND form. That form is
+;; placed first and the kept first form follows it: the file's order, then
+;; what it kept.
+(let* ((ra (raw-area! "u2c")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store input)
+  (let* ((lib (car (holders store "p.sc"))) (old (children-of store lib)) (f-id (car old)) (g-id (cadr old)))
+    (write! (string-append input "/p.sc") "(library (p) (export g) (import (rnrs))\n(define (g) 20))\n")
+    (let ((a (import-raw! store input)))
+      (want "U2c a raw file holding only the second form: that form first, the kept first form after it, and named"
+            (list (answer-head a) (children-of store lib) (answer-clause a 'kept))
+            (list 'ok (list g-id f-id) (list 'kept (list 'ids (list f-id))))))))
+
+;; U2d: a raw file that holds only a NEW form. The new form comes first, and
+;; both old forms are kept after it, in their order.
+(let* ((ra (raw-area! "u2d")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store input)
+  (let* ((lib (car (holders store "p.sc"))) (old (children-of store lib)))
+    (write! (string-append input "/p.sc") "(library (p) (export k) (import (rnrs))\n(define (k) 4))\n")
+    (let* ((a (import-raw! store input)) (now (children-of store lib)))
+      (want "U2d a raw file holding only a new form: the new form first, both old forms kept after it, in order, and named"
+            (list (answer-head a) (length now) (and (pair? now) (not (member (car now) old))) (and (pair? now) (cdr now))
+                  (answer-clause a 'kept))
+            (list 'ok 3 #t old (list 'kept (list 'ids old)))))))
+
+;; U8 PIN: an import of headed files loads nothing it did not load before.
+;; A headed file of ANOTHER store, imported where the writers cannot be
+;; read, is refused foreign-store, before any read of the writers.
+(let* ((ra (raw-area! "u8a")) (store-a (car ra)) (input (cadr ra)) (out (string-append root "/u8-out"))
+       (rb (raw-area! "u8b")) (store-b (car rb)))
+  (write! (string-append input "/p.sc") p-text)
+  (import-raw! store-a input)
+  (mkdir-p! out)
+  (safely (lambda () (rpc-dispatch store-a (list 'export-code out "--datum") "test")))
+  (system (string-append "chmod 000 " store-b "/writers"))
+  (let ((a (import-raw! store-b out)))
+    (system (string-append "chmod 755 " store-b "/writers"))
+    (want "U8 PIN a headed file of another store, where the writers cannot be read, is refused foreign-store, not unreadable"
+          (list (answer-head a) (answer-clause a 'reason))
+          '((error projection-invalid) (reason foreign-store)))))
 
 (printf "~a failures\ndatum-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

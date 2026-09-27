@@ -113,24 +113,55 @@
   (define (scheme-file? rel)
     (let ((e (language-for-path rel)))
       (and e (equal? (language-property e 'lang #f) "scheme"))))
+  ;; NEVER: A FILE WITHOUT A HEADER WHOSE PATH THE STORE HOLDS UPDATES THAT
+  ;; LIBRARY; it is not a second copy of it. The path is resolved against
+  ;; the alive datum libraries of the committed reduction captured here:
+  ;; none is a new library, as before; one is that library, updated through
+  ;; the same matching as a headed file, with its baselines taken at this
+  ;; reduction's cut; more than one is refused by name, path and ids.
+  ;; RAW NEVER DELETES: a child the file does not hold is kept and named in
+  ;; the answer's `kept` clause, where a headed file (an export, which is
+  ;; the whole library) deletes it.
+  ;; THE HOLDERS ARE CAPTURED FOR EVERY RAW FILE, none included, and the
+  ;; write checks them again: another library that took the path after the
+  ;; capture, or a second import of the same new path that wrote first,
+  ;; refuses the write stale-baseline, changed-claimants.
   (define (capture-import store dir)
     (let* ((files (code-input-files dir))
            (skipped (filter (lambda (rel) (not (scheme-file? rel))) files))
            (inputs (map (lambda (rel) (parse-file rel (read-code-bytes (string-append dir "/" rel)))) (filter scheme-file? files)))
-           (intents '()) (baselines '()) (memberships '()) (seen '()))
+           (current-cache #f)
+           (intents '()) (baselines '()) (memberships '()) (seen '()) (claims '()) (kept '()))
       (define (emit! intent) (set! intents (append intents (list intent))) (- (length intents) 1))
+      ;; THE COMMITTED REDUCTION A RAW FILE IS RESOLVED AGAINST, loaded the
+      ;; first time a file without a header asks for it and never before:
+      ;; an import of headed files alone loads nothing it did not load
+      ;; before, so its refusals keep their order (foreign-store before any
+      ;; read of the writers).
+      (define (current)
+        (or current-cache (begin (set! current-cache (open-and-reduce store)) current-cache)))
       (define (field-changes! state id fields)
         (for-each (lambda (p) (unless (equal? (cdr p) (code-field state id (car p))) (emit! (list 'set id (car p) (cdr p))))) fields))
       (for-each
         (lambda (input)
           (let* ((rel (car input)) (header (cadr input)) (fields (caddr input)) (entries (list-ref input 3))
-                 (id (and header (list-ref header 3))) (cut (and header (list-ref header 4)))
-                 (state (and header (begin
-                          (unless (equal? (list-ref header 2) (store-id-of store)) (projection-failure 'foreign-store))
-                          (let ((s (open-and-reduce store cut)))
-                            (unless (reduction? s) (projection-failure 'unavailable-cut)) s))))
+                 (claimants (and (not header) (state-path-claimants (current) 'library 'datum rel)))
+                 (raw-target (and claimants (= (length claimants) 1) (car claimants)))
+                 (id (if header (list-ref header 3) raw-target))
+                 (cut (if header (list-ref header 4) (and raw-target (reduce-applied-cut (current)))))
+                 (state (cond
+                          (header
+                           (unless (equal? (list-ref header 2) (store-id-of store)) (projection-failure 'foreign-store))
+                           (let ((s (open-and-reduce store cut)))
+                             (unless (reduction? s) (projection-failure 'unavailable-cut)) s))
+                          (raw-target (current))
+                          (else #f)))
                  (children (if state (code-children state id) '())))
-            (when header
+            (when claimants
+              (when (> (length claimants) 1)
+                (projection-failure 'duplicate-path (list 'path rel) (list 'ids claimants)))
+              (set! claims (append claims (list (list rel claimants)))))
+            (when id
               (when (member id seen) (projection-failure 'duplicate-file))
               (set! seen (cons id seen))
               (unless (alive? state id) (projection-failure 'tombstone))
@@ -151,7 +182,16 @@
             (let* ((old (map (lambda (b) (list b (code-field state b 'body) (or (code-field state b 'doc) "") (datum-names (code-field state b 'body)))) children))
                    (matched (datum-match old entries))
                    (parent (or id (list 'from (emit! (list 'insert 'root #f (append '((kind . library) (mode . datum) (lang . chez)) (list (cons 'path rel)) fields))))))
-                   (previous #f) (same-order? (equal? matched children)))
+                   (omitted (filter (lambda (old-id) (not (member old-id matched))) children))
+                   (previous #f)
+                   ;; A raw update keeps what it omits AFTER what it holds, so its
+                   ;; order is unchanged only when the file adds nothing and the
+                   ;; children already read so. A new form is placed by the
+                   ;; chain like every other, so any new form means the chain.
+                   (same-order? (if header
+                                    (equal? matched children)
+                                    (and (not (memv #f matched))
+                                         (equal? children (append matched omitted))))))
               ;; A file that is a library now, over a block recorded as a program,
               ;; says so: the shape is set back, as any other field that changed.
               ;; ONLY THE VALUE THIS IMPORT WRITES IS RESET: a `shape` field that
@@ -161,7 +201,9 @@
                                                       (if (and (not (assq 'shape fields)) (eq? (code-field state id 'shape) 'program))
                                                           (cons '(shape . library) fields)
                                                           fields))))
-              (for-each (lambda (old-id) (unless (member old-id matched) (emit! (list 'del old-id)))) children)
+              (if header
+                  (for-each (lambda (old-id) (emit! (list 'del old-id))) omitted)
+                  (set! kept (append kept omitted)))
               (for-each
                 (lambda (row target)
                   (if target
@@ -169,24 +211,42 @@
                         (field-changes! state target (filter (lambda (p) (memq (car p) '(body doc))) (code-fields row)))
                         (unless same-order? (emit! (list 'move target parent previous)))
                         (set! previous target))
-                      (set! previous (list 'from (emit! (list 'insert parent previous (code-fields row))))))) entries matched)))) inputs)
+                      (set! previous (list 'from (emit! (list 'insert parent previous (code-fields row))))))) entries matched)
+              ;; WHAT A RAW FILE KEPT GOES AFTER WHAT IT HOLDS: once the file's
+              ;; forms are placed, each kept child follows the last one placed,
+              ;; in its own order, so a kept child that stood first does not
+              ;; stay in front of them.
+              (unless (or header same-order?)
+                (for-each (lambda (k) (emit! (list 'move k parent previous)) (set! previous k)) omitted))))) inputs)
       (list intents baselines memberships (apply append (map (lambda (i) (list-ref i 4)) inputs))
             (map (lambda (i) (list (car i) (list-ref i 5))) inputs)
-            skipped)))
+            (list 'skipped skipped)
+            (list 'claimants claims)
+            (list 'kept kept))))
+  ;; A packet's tagged slot after the fifth, or #f: a packet captured
+  ;; before these slots existed, and def's, have five.
+  (define (packet-extra captured tag)
+    (let ((x (and (> (length captured) 5) (assq tag (list-tail captured 5)))))
+      (and x (cadr x))))
   (define (execute store actor packet)
     (let* ((captured (cadr packet))
            (results (with-store-write store (lambda (state view) (car captured)) actor (car packet)
              (lambda (state)
                (or (exists (lambda (b) (baseline-refusal state (car b) (cadr b) (caddr b))) (cadr captured))
                    (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
-                                            (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children)))) (caddr captured)))) #t)))
-      ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED, and only
-      ;; on an answer that succeeded. A packet captured before the list
-      ;; existed has five slots, and def's has five: neither gains one.
+                                            (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children)))) (caddr captured))
+                   (exists (lambda (c) (and (not (equal? (cadr c) (state-path-claimants state 'library 'datum (car c))))
+                                            (list 'error 'stale-baseline (list 'path (car c)) '(reason changed-claimants))))
+                           (or (packet-extra captured 'claimants) '())))) #t)))
+      ;; THE SKIPPED AND KEPT CLAUSES ARE THERE ONLY WHEN THEY NAME SOMETHING,
+      ;; and only on an answer that succeeded. A packet captured before these
+      ;; slots existed has five, and def's has five: neither gains one.
       (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
           (append (list 'ok (cons 'items results) (list 'warnings (list-ref captured 3)))
-                  (let ((skipped (and (> (length captured) 5) (list-ref captured 5))))
-                    (if (pair? skipped) (list (list 'skipped skipped)) '())))
+                  (let ((skipped (packet-extra captured 'skipped)))
+                    (if (pair? skipped) (list (list 'skipped skipped)) '()))
+                  (let ((kept (packet-extra captured 'kept)))
+                    (if (pair? kept) (list (list 'kept (list 'ids kept))) '())))
           (if (= (length results) 1) (car results) (batch-answer results)))))
   (define (import-datum store dir actor req)
     (answer (lambda () (execute store actor (frozen-operation store req (lambda () (capture-import store dir)))))))
@@ -202,7 +262,9 @@
                  (lambda (id)
                    (let ((path (code-field state id 'path)))
                      (unless (code-safe-path? path) (projection-failure 'unsafe-path))
-                     (when (member path paths) (projection-failure 'duplicate-path))
+                     (when (member path paths)
+                       (projection-failure 'duplicate-path (list 'path path)
+                                           (list 'ids (state-path-claimants state 'library 'datum path))))
                      (set! paths (cons path paths))
                      (let ((parts
                        (map (lambda (child)

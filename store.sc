@@ -1973,6 +1973,9 @@
         ;; show the way its own rules say it should, which is exactly
         ;; what this verb is for.
         (map (lambda (id) (list (quote nested-document) id)) nested)
+        ;; TWO IDENTITIES FOR ONE PATH: two alive datum libraries, or two
+        ;; alive text files, that an export would write to the same file.
+        (state-duplicated-paths state)
         (apply append
                (map (lambda (rec)
                       (let ((writer (car rec)) (seq (cadr rec)) (deps (caddr rec)))
@@ -4432,7 +4435,15 @@
            ;; something it cannot show: two records in one slot, or a
            ;; record whose plan never declared the slot it claims. An
            ;; operator running `check` on such a store was told `ok`.
-           (notes (reduce-noted (open-and-reduce store)))
+           (state (open-and-reduce store))
+           (notes (reduce-noted state))
+           ;; A PATH TWO LIBRARIES, OR TWO FILES, HOLD IS REPORTED, AND IT IS
+           ;; NOT DAMAGE: the log is whole and every record applies; what the
+           ;; store holds is two identities for one path, which an export
+           ;; refuses. The clause is there only when there is such a path, as
+           ;; local-writer is there only when there is a writer, so a store
+           ;; without one answers exactly as before.
+           (duplicated (state-duplicated-paths state))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4471,7 +4482,9 @@
             ;; from the inside -- which is exactly why it is worth
             ;; saying out loud.
             (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
-            (list 'notes notes)
+            (list 'notes notes))
+        (if (pair? duplicated) (list (list 'paths duplicated)) '())
+        (list
             (list 'verdict (if (or damaged? (pair? notes) (registry-inside-store?))
                                'damaged 'ok))))))
 

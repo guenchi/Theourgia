@@ -46,6 +46,7 @@
           known-kinds kind-known?
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
+          state-path-claimants state-duplicated-paths
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -1878,6 +1879,46 @@
   (define (state-datum r)
     (list-sort (lambda (x y) (string<? (cadr x) (cadr y)))
                (map (lambda (e) (block->datum r (car e) (cdr e))) (reduction-blocks r))))
+
+  ;; NEVER: WHO HOLDS A PATH IS ASKED HERE, AND ONLY HERE. An import that
+  ;; resolves a file to the library it updates, an export that refuses two
+  ;; blocks of one path, a write that rechecks what an import captured, and
+  ;; `check` and `conflicts` all ask the same question; one answer keeps
+  ;; them from disagreeing about what "holds a path" means.
+  ;; A holder is an ALIVE block whose stored kind, mode and path are the
+  ;; ones asked for: a datum library and a text file of one path are two
+  ;; different questions, not a duplicate.
+  ;; -> the holders' ids, sorted.
+  (define (state-path-claimants r kind mode rel)
+    (list-sort string<?
+      (filter (lambda (id)
+                (let ((b (state-read r id)))
+                  (and b (not (cdr (assq 'deleted b)))
+                       (let ((fs (cdr (assq 'fields b))))
+                         (define (field k) (let ((p (assq k fs))) (and p (cdr p))))
+                         (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
+                              (equal? (field 'path) rel))))))
+              (map car (reduction-blocks r)))))
+
+  ;; -> `((duplicate-path <rel> (ids (<id> ...))) ...)`, sorted by path, for
+  ;; every path two or more alive datum libraries, or two or more alive text
+  ;; files, hold.
+  (define (state-duplicated-paths r)
+    (let loop ((ids (map car (reduction-blocks r))) (seen '()))
+      (if (pair? ids)
+          (let* ((b (state-read r (car ids)))
+                 (fs (and b (not (cdr (assq 'deleted b))) (cdr (assq 'fields b))))
+                 (field (lambda (k) (let ((p (and fs (assq k fs)))) (and p (cdr p)))))
+                 (key (and fs (member (list (field 'kind) (field 'mode)) '((library datum) (file text)))
+                           (string? (field 'path))
+                           (list (field 'kind) (field 'mode) (field 'path)))))
+            (loop (cdr ids) (if (and key (not (member key seen))) (cons key seen) seen)))
+          (list-sort (lambda (a b) (string<? (cadr a) (cadr b)))
+            (filter values
+              (map (lambda (key)
+                     (let ((holders (state-path-claimants r (car key) (cadr key) (caddr key))))
+                       (and (> (length holders) 1) (list 'duplicate-path (caddr key) (list 'ids holders)))))
+                   seen))))))
 
   ;; THE TOKEN IS PER BLOCK. Section 9.2 pins the datum for ONE block,
   ;; and case R10 requires that a change to a different block leave the
