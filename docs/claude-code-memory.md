@@ -16,8 +16,12 @@ working drafts, not as a finished product surface.
 ## 1. Migrating an existing markdown memory
 
 Give this to an agent together with the list of files to migrate. One agent
-per group of files works; several agents may write into one store at the same
-time, each under its own writer id.
+per group of files works, and several agents may insert into one store at the
+same time. `THEOURGIA_WRITER` does not give each agent its own ids: it names
+the agent's stream of DRAFTS (write, restore, discard, drafts), while
+`insert` commits at once and every block it makes takes its id from the
+store's own writer, created by `init` (one per copy of the store, whatever
+the number of agents); each record carries the agent's `THEOURGIA_ACTOR`.
 
 ```
 You are moving an existing markdown memory into a theourgia store through
@@ -42,14 +46,22 @@ Write protocol:
     the title, its name and type belong in the keywords.
   - A memory file is usually one block. A file holding several independent
     dated instances that together exceed the limit is split by instance,
-    each block titled with the file's name.
+    each block titled with the file's name and the instance's date; an
+    instance whose heading has no date is titled with the heading's text.
+    An instance larger than the limit stays one block: do not cut it in the
+    middle of what it argues.
 
-Per file:
-  theourgia insert --store $STORE --under <parent-id> --title "<title>" \
-    --keywords "<k1>, <k2>, ..." --text "<body verbatim>" --wire
-A success answers (ok (events ...) (state ((<id> . <hash>))) ...); record
-<id>. Record any other answer verbatim, with the command minus the body;
-retry at most once.
+Per file, one insert, run from a script as an argument list -- never through
+a shell, which would change a body holding a backtick or a $:
+  ["theourgia", "insert", "--store", STORE, "--under", "<parent-id>",
+   "--title", "<title>", "--keywords", "<k1>, <k2>, ...",
+   "--text", "<body verbatim>", "--wire"]
+The body is one element of that list, whatever its size (a 9 KB body has
+gone through this way). A success answers
+  (ok (events ...) (state (("<id>" . "<hash>"))) ...)
+with the id and the hash as strings; record <id> without the quotes. Record
+any other answer verbatim, with the command minus the body; retry at most
+once.
 
 Ledger (write it to <ledger path> as JSON):
   {"group": ..., "files": [{"file": ..., "chars": n,
