@@ -105,7 +105,7 @@
           (theourgia trace)
           (only (theourgia incomplete)
                 declared? make-incomplete-reduction incomplete-reduction?
-                incomplete-note-clauses)
+                incomplete-note-clauses incomplete-refused refusing-notes)
           (only (theourgia crc32) crc32-hex)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia wire)
@@ -884,7 +884,15 @@
             (immutable current-buffer raw-current-buffer)
             (immutable torn raw-torn)
             integrity quarantine retired versions
-            (immutable retired-tail raw-retired-tail)))
+            (immutable retired-tail raw-retired-tail)
+            ;; THE ERROR THAT DECIDED THE EXTENT, or #f: the one integrity
+            ;; error whose branch stopped discovery (a writer has at most one,
+            ;; since discovery stops at the first). The diagnostics that leave
+            ;; the extent alone are never it, and neither is a rule that
+            ;; lowers the extent without detecting damage -- a quarantine or
+            ;; retirement ceiling, the recoverable tail of the current
+            ;; segment, an unlisted mirror file, an unfinished publication.
+            cut))
 
   ;; KEY: AN UNREADABLE DISCOVERY HAS NO COORDINATES. A writer whose
   ;; directory could not be read has an origin of `unreadable` and one
@@ -933,7 +941,7 @@
                                           (list (cons 'path path)
                                                 (cons 'reason reason)
                                                 (cons 'errno errno))))
-                    #f #f '() #f))
+                    #f #f '() #f #f))
 
   ;; RETIRED-TAIL IS INFORMATION, NOT A DIAGNOSTIC. It is #f, or
   ;; (segment offset): the position at which a retired writer's file goes
@@ -1063,7 +1071,7 @@
       (list-entries (writer-directory store writer))
       (let ((origin (origin-of store writer)))
         (if (eq? origin 'incomplete-publication)
-            (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f)
+            (make-discovery origin #f #f 0 '() #f #f #f '() #f #f '() #f #f)
             (validate store writer origin lock-context)))))
 
   (define (validate store writer origin lock-context)
@@ -1080,10 +1088,17 @@
            (versions (list (cons 'manifest (manifest-version store writer))
                            (cons 'retired (and retired (car (reverse retired))))
                            (cons 'quarantine (and quarantine (car quarantine)))))
-           (errs (vector '()))
+           ;; slot 0: the integrity errors, newest first; slot 1: the cut
+           (errs (vector '() #f))
            (note! (lambda (kind seg off detail)
                     (vector-set! errs 0 (cons (make-log-error kind writer seg off detail)
-                                              (vector-ref errs 0))))))
+                                              (vector-ref errs 0)))))
+           ;; AN ERROR THAT DECIDES THE EXTENT: recorded like any other, and
+           ;; kept as this writer's cut. Only the branches that stop here
+           ;; call it.
+           (cut! (lambda (kind seg off detail)
+                   (note! kind seg off detail)
+                   (vector-set! errs 1 (car (vector-ref errs 0))))))
       (cond
         ;; THE WRITER STOPS BEFORE IT, AND THE OPEN DOES NOT. Nothing
         ;; this writer holds is delivered, because what a store cannot
@@ -1093,10 +1108,10 @@
          (let ((v (cdr (assq 'manifest versions))))
            (unreadable-discovery writer (cadr v) (caddr v) (cadddr v))))
         ((eq? manifest 'malformed)
-         (note! 'manifest #f #f '())
+         (cut! 'manifest #f #f '())
          (finish origin 0 '() #f #f errs quarantine retired versions))
         ((and retired (eq? (car retired) 'malformed))
-         (note! 'retired-malformed #f #f '())
+         (cut! 'retired-malformed #f #f '())
          (finish origin 0 '() #f #f errs quarantine retired versions))
         (else
          (let* ((present (enumerate-segment-files store writer))
@@ -1234,7 +1249,7 @@
              (cond
                ((null? ss)
                 (when stop-before
-                  (note! 'manifest-missing-segment stop-before #f '()))
+                  (cut! 'manifest-missing-segment stop-before #f '()))
                 (verify-retired! end)
                 (finish-with origin end ranges
                              (physical-of store writer origin retired
@@ -1248,7 +1263,7 @@
                        (want (manifest-hash manifest seg)))
                   (cond
                     ((unreadable-segment? bytes)
-                     (note! 'segment-unreadable seg #f
+                     (cut! 'segment-unreadable seg #f
                             (list (cons 'path (list-ref bytes 1))
                                   (cons 'reason (list-ref bytes 2))
                                   (cons 'errno (list-ref bytes 3))))
@@ -1261,7 +1276,7 @@
                     ;; Records inside a hash-mismatched file are repair
                     ;; EVIDENCE only: not in end-*, never delivered.
                     ((and want (not (string=? want (segment-sha bytes))))
-                     (note! 'manifest-hash seg 0 (list (cons 'expected want)))
+                     (cut! 'manifest-hash seg 0 (list (cons 'expected want)))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
                                   buffer torn errs quarantine retired versions #f))
@@ -1277,7 +1292,7 @@
                           (let ((declared (manifest-range manifest seg))
                                 (held (segment-edge-seqs bytes)))
                             (not (and declared held (equal? declared held)))))
-                     (note! 'manifest-range seg 0
+                     (cut! 'manifest-range seg 0
                             (list (cons 'declared (manifest-range manifest seg))))
                      (finish-with origin end ranges
                                   (physical-of store writer origin retired highest)
@@ -1386,7 +1401,7 @@
                           ;; file's identity is in doubt, so no record
                           ;; in it is history. Here the file is the
                           ;; right one and the damage is local.
-                          (note-error! note! (cadr outcome))
+                          (note-error! cut! (cadr outcome))
                           (let ((last (caddr outcome)))
                             (finish-with origin
                                          (if last
@@ -1416,7 +1431,8 @@
 
   (define (finish origin end-seq ranges phys buffer errs quarantine retired versions)
     (make-discovery origin #f #f end-seq ranges phys buffer #f
-                 (reverse (vector-ref errs 0)) quarantine retired versions #f))
+                 (reverse (vector-ref errs 0)) quarantine retired versions #f
+                 (vector-ref errs 1)))
 
   ;; THE QUARANTINED SUFFIX IS EXCLUDED FROM THE EXTENT ITSELF, not
   ;; merely from snapshot eligibility -- otherwise ordinary replay
@@ -1433,7 +1449,8 @@
     (make-discovery origin
                  (and end (car end)) (and end (cadr end)) (if end (caddr end) 0)
                  (reverse ranges) phys buffer torn
-                 (reverse (vector-ref errs 0)) quarantine retired versions tail))
+                 (reverse (vector-ref errs 0)) quarantine retired versions tail
+                 (vector-ref errs 1)))
 
   ;; ---- the pieces validate leans on ----------------------------------------
 
@@ -1610,30 +1627,49 @@
             ;; The outcome stays what it was; this is kept beside it.
             (mutable abort-cause)))
 
-  ;; THE WRITERS A LOAD COULD NOT READ, as (writer path reason), in the
-  ;; order the load holds them: what an answer built from this load must
-  ;; say it is missing (K10). Two ways to be missing something: the whole
-  ;; writer (origin unreadable, the note naming what failed), or a segment
-  ;; that stopped it where it stands (a segment-unreadable note naming the
-  ;; segment, K11) -- its readable prefix is delivered, the rest is not.
+  ;; THE WRITERS A LOAD IS MISSING, in the order the load holds them: what
+  ;; an answer built from this load must say (K10). Three ways to be
+  ;; missing something: the whole writer could not be read (origin
+  ;; unreadable, the note naming what failed); a segment could not be read
+  ;; and stopped the writer where it stands (segment-unreadable, K11); or
+  ;; readable damage CUT the writer's history -- its prefix is delivered,
+  ;; the rest is not. The last two are the writer's discovery-cut, the one
+  ;; error that decided its extent.
   (define (load-unreadable ls)
-    (fold-right
-      (lambda (entry out)
-        (let ((p (cdr entry)))
-          (define (named note)
-            (let ((detail (log-error-detail note)))
-              (list (car entry) (cdr (assq 'path detail)) (cdr (assq 'reason detail)))))
-          (if (eq? (discovery-origin p) 'unreadable)
-              (cons (named (unreadable-note p)) out)
-              (append (map named
-                           (filter (lambda (note)
-                                     (and (eq? (log-error-kind note) 'segment-unreadable)
-                                          (pair? (log-error-detail note))
-                                          (assq 'path (log-error-detail note))))
-                                   (discovery-integrity p)))
-                      out))))
-      '()
-      (load-session-prefixes ls)))
+    (let ((store (load-session-store ls)))
+      (fold-right
+        (lambda (entry out)
+          (let ((writer (car entry)) (p (cdr entry)))
+            (cond
+              ((eq? (discovery-origin p) 'unreadable)
+               (let ((detail (log-error-detail (unreadable-note p))))
+                 (cons (list writer (cdr (assq 'path detail)) (cdr (assq 'reason detail))) out)))
+              ((discovery-cut p) => (lambda (e) (cons (cut-note store writer p e) out)))
+              (else out))))
+        '()
+        (load-session-prefixes ls))))
+
+  ;; THE NOTE FOR A CUT, ITS PATH AND REASON DERIVED FROM THE KIND, never
+  ;; read from the error's detail (only segment-unreadable carries a path
+  ;; there; a malformed manifest carries nothing). segment-unreadable keeps
+  ;; the triple it has always had, the system's reason from its detail; any
+  ;; other cut gains (cut <kind> <after>), after being the last sequence the
+  ;; writer kept (0 when none). The path is the segment's file for a
+  ;; segment's damage, the manifest for a malformed manifest or a segment it
+  ;; lists and the directory lacks (such a segment's number need not have a
+  ;; file name at all), and retired.sexp for a malformed retirement.
+  (define (cut-note store writer p e)
+    (let ((kind (log-error-kind e)) (detail (log-error-detail e)))
+      (if (and (eq? kind 'segment-unreadable) (pair? detail) (assq 'path detail))
+          (list writer (cdr (assq 'path detail)) (cdr (assq 'reason detail)))
+          (list writer
+                (case kind
+                  ((manifest manifest-missing-segment) (manifest-path store writer))
+                  ((retired-malformed) (writer-file store writer "retired.sexp"))
+                  (else (string-append (writer-directory store writer) "/"
+                                       (segment-file-name (log-error-segment e)))))
+                (symbol->string kind)
+                (list 'cut kind (discovery-end-seq p))))))
 
   ;; KEY: A LOAD TELLS THE REQUEST IT SERVES WHICH WRITERS IT COULD NOT
   ;; READ. The dispatcher registers a listener under the store string it
@@ -1710,8 +1746,6 @@
     (let ((listener (load-listener-of store)))
       (when listener (listener (make-load-refused c)))))
 
-  (define (tell-load-listener! store ls)
-    (tell-load-notes! store (load-unreadable ls)))
   ;; THE SAME REPORT FOR NOTES THAT DID NOT COME FROM A LOAD: a supplied
   ;; state unsealed by a declared consumer tells its listener what the
   ;; state is missing, exactly as a load would (F77c, design review r3).
@@ -1745,10 +1779,12 @@
   ;; replace the condition that is leaving.
   ;;
   ;; A LOAD MISSING A WRITER IS REFUSED TO A CALLER THAT DID NOT DECLARE IT
-  ;; ACCEPTS ONE (F77 R2e). The check comes after snapshot selection -- a
-  ;; snapshot failure keeps its precedence -- and before the ordinary
-  ;; notification, so a load is either told refused or told its notes,
-  ;; never both. The check only raises; the handler does the rest.
+  ;; ACCEPTS ONE. The check comes right after discovery, before snapshot
+  ;; selection, so a refusing note wins over a snapshot failure. A load that
+  ;; is not refused tells its notes there, before the snapshot is read; a
+  ;; snapshot failure after that is told refused as well, and the request's
+  ;; answer is that refusal carrying the notes. The check only raises; the
+  ;; handler does the rest.
   (define (open-load store lock-context declaration)
     (unless (string? store)
       (assertion-violation 'log-open "store must be a path string" store))
@@ -1799,14 +1835,30 @@
             ;; side by side (D-interleave).
             (hold-point! 'after-discovery)
             (let ((ls (make-load-session store lock prefixes '() 'open #f '() #f)))
-              (load-session-snapshot-set! ls (select-snapshot store prefixes))
-              (let ((notes (load-unreadable ls)))
+              ;; Only the notes that refuse this consumer refuse it -- a cut
+              ;; refuses the strict declaration alone (incomplete.sc,
+              ;; refusing-notes) -- and the refusal names EVERY note of the
+              ;; load, so a cut beside an unreadable writer is never lost.
+              ;;
+              ;; BEFORE THE SNAPSHOT IS READ. Discovery has already found what
+              ;; the load is missing, and a snapshot that cannot be read
+              ;; aborts the load with a condition of its own: told here, the
+              ;; notes reach the request's answer beside that refusal, as
+              ;; they reach any answer given after a load; told after, they
+              ;; were lost with the aborted load. A refusing note therefore
+              ;; wins over an unreadable snapshot.
+              (let* ((notes (load-unreadable ls))
+                     (refusing (refusing-notes
+                                 notes
+                                 (or (eq? declaration incomplete-refused)
+                                     (eq? (load-declaration-of store) incomplete-refused)))))
                 ;; An explicit declaration only ADDS to the request's (A2).
-                (when (and (pair? notes)
+                (when (and (pair? refusing)
                            (not (declared? declaration))
                            (not (declared? (load-declaration-of store))))
-                  (raise (make-incomplete-reduction notes))))
-              (tell-load-listener! store ls)
+                  (raise (make-incomplete-reduction notes)))
+                (tell-load-notes! store notes))
+              (load-session-snapshot-set! ls (select-snapshot store prefixes))
               ls))))))
 
 

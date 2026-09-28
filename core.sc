@@ -44,7 +44,7 @@
         (only (theourgia store) open-and-reduce)
         (only (theourgia log) load-listener-add! load-declaration-set! load-refused?
               merge-unreadable incomplete-clause)
-        (only (theourgia incomplete) incomplete-accepted)
+        (only (theourgia incomplete) incomplete-accepted clause->note)
         (only (theourgia languages) language-for-name language-runner))
 
 ;; ---- what this program does NOT load until it has to -----------------------
@@ -371,15 +371,15 @@
 
 ;; ONE incomplete CLAUSE PER ANSWER (code review r1): the notes this process
 ;; heard join the answer's own clause -- the worker's, when it heard any --
-;; rather than adding a second one.
+;; rather than adding a second one. The worker's clauses come back to notes
+;; through clause->note, the inverse of their spelling, so a cut keeps its
+;; kind and its after through the merge.
 (define (with-heard-clause answer heard)
   (if (or (null? heard) (not (and (pair? answer) (list? answer))))
       answer
       (let* ((old (find (lambda (c) (and (pair? c) (eq? (car c) 'incomplete))) (cdr answer)))
-             (field (lambda (u k) (let ((c (assq k (cdr u)))) (and c (cadr c)))))
              (old-notes (if old
-                            (map (lambda (u) (list (field u 'writer) (field u 'path) (field u 'reason)))
-                                 (cdr old))
+                            (filter (lambda (n) n) (map clause->note (cdr old)))
                             '())))
         (append (remp (lambda (c) (eq? c old)) answer)
                 (list (incomplete-clause (merge-unreadable old-notes heard)))))))

@@ -41,8 +41,9 @@
         (only (theourgia ffi) unreadable-entry? unreadable-entry-path current-lock-release)
         (only (theourgia client) call! envelope-version socket-path serve-log-path)
         (only (theourgia render) render-wire)
-        (only (theourgia wire) encode-record)
-        (only (theourgia reduce) block-id))
+        (only (theourgia wire) encode-record storable-encode)
+        (only (theourgia crc32) crc32-string-hex)
+        (only (theourgia reduce) block-id reduce-applied-cut state-read))
 
 (define bad 0)
 (define rows 0)
@@ -146,6 +147,12 @@
   (let ((ev (and (pair? answer) (assq 'events (cdr answer)))))
     (and ev (let ((e (car (cadr ev)))) (block-id (car e) (cdr e))))))
 (define (fresh-store!)
+  (fresh-store-publishing!
+    (list (encode-record 1 1757300000001 "peer" '() '(set "t" x "x"))
+          (encode-record 2 1757300000002 "peer" '() '(set "t" y "y")))))
+;; The same store with the mirror's records given: record k published as
+;; the mirror's segment k.
+(define (fresh-store-publishing! mirror-records)
   (set! n (+ n 1))
   (let* ((d (string-append root "/s" (number->string n)))
          (st (string-append d "/store")))
@@ -154,11 +161,11 @@
     (let* ((init (ask st 'init))
            (w (cadr (assq 'writer (cdr init))))
            (B (new-id (ask st 'insert "--under" "root" "--title" "Beta" "--text" "a needle")))
-           (_ (ask st 'write B "draft text" "--writer" w))
-           (r1 (encode-record 1 1757300000001 "peer" '() '(set "t" x "x")))
-           (r2 (encode-record 2 1757300000002 "peer" '() '(set "t" y "y"))))
-      (log-publish! st M 1 r1 (segment-sha r1))
-      (log-publish! st M 2 r2 (segment-sha r2))
+           (_ (ask st 'write B "draft text" "--writer" w)))
+      (let loop ((rs mirror-records) (k 1))
+        (unless (null? rs)
+          (log-publish! st M k (car rs) (segment-sha (car rs)))
+          (loop (cdr rs) (+ k 1))))
       (list st w B (string-append d "/ext")))))
 (define (mirror-dir st) (writer-directory st M))
 (define (older-segment st) (string-append (mirror-dir st) "/" (segment-file-name 1)))
@@ -1122,6 +1129,364 @@
       (want "D-interleave an undeclared export and a declared search held together are judged each by its own class"
             (list start-held export-held search-held (head-of e) (head-of s) (incomplete-paths s))
             (list #t #t #t '(error incomplete-reduction) 'ok (list (mirror-dir st)))))))
+
+;; =============================================================================
+(printf "== K: damage that cuts a writer's history is said ==\n")
+;; Readable damage stops a writer's discovery at the error that decided its
+;; extent; the answer says so with a `cut` note -- the writer, the path, the
+;; kind and after, the last sequence kept -- where it used to say nothing.
+;; Every damaged fixture keeps valid records before the cut and asserts the
+;; writer's applied sequence (what is kept) beside the note.
+(define (k-bytes p) (call-with-port (open-file-input-port p) get-bytevector-all))
+(define (k-put! p bv) (call-with-port (open-file-output-port p (file-options no-fail)) (lambda (o) (put-bytevector o bv))))
+(define (k-cat . bs) (call-with-bytevector-output-port (lambda (o) (for-each (lambda (b) (put-bytevector o b)) bs))))
+;; The writer's applied sequence in a reduction built under the declaration
+;; that accepts an incomplete one, 0 when the writer contributed nothing.
+(define (k-applied st writer)
+  (dynamic-wind
+    (lambda () (load-declaration-set! st incomplete-accepted))
+    (lambda () (let ((c (assoc writer (reduce-applied-cut (open-and-reduce st))))) (if c (cdr c) 0)))
+    (lambda () (load-declaration-set! st #f))))
+(define (k-notes a) (let ((c (clause-of a 'incomplete))) (if c (cdr c) 'no-clause)))
+(define (k-field c k) (let ((f (and (pair? c) (list? c) (assq k (cdr c))))) (and f (cadr f))))
+(define (k-cut w path kind after)
+  (list 'cut (list 'writer w) (list 'path path) (list 'reason (symbol->string kind)) (list 'kind kind) (list 'after after)))
+;; Which of the writer's records 1..n made their block, in the same
+;; reduction: the content kept, beside the extent k-applied reads.
+(define (k-kept st writer seqs)
+  (dynamic-wind
+    (lambda () (load-declaration-set! st incomplete-accepted))
+    (lambda () (let ((r (open-and-reduce st))) (filter (lambda (k) (and (state-read r (block-id writer k)) #t)) seqs)))
+    (lambda () (load-declaration-set! st #f))))
+(define (k-has-block? st id)
+  (dynamic-wind
+    (lambda () (load-declaration-set! st incomplete-accepted))
+    (lambda () (and (state-read (open-and-reduce st) id) #t))
+    (lambda () (load-declaration-set! st #f))))
+;; Which of the writer's records 1..n an outline names by block id. The
+;; outline is text, one "- <id>  <title>" line per block, so the id is
+;; looked for between those delimiters, not as a quoted string.
+(define (k-listed a writer seqs)
+  (filter (lambda (k) (has-substring? (format "~a" a) (string-append "- " (block-id writer k) "  "))) seqs))
+;; The integrity kinds check reports for a writer, in its order, or NO-REPORT.
+(define (k-integrity-kinds ck writer)
+  (let* ((report (k-writer-report ck writer))
+         (i (and (list? report) (assq 'integrity (cdr report)))))
+    (if (and i (list? (cadr i))) (map car (cadr i)) 'NO-REPORT)))
+;; #t when kind a comes before kind b in a list of kinds.
+(define (k-before? kinds a b)
+  (and (list? kinds)
+       (let ((ta (memq a kinds))) (and ta (memq b (cdr ta)) #t))))
+;; A RECORD THAT MAKES A BLOCK: a section under the root, so its presence in
+;; a reduction, an outline or an evaluation is the record's presence. Every
+;; record of a damaged fixture below is one of these, so the extent is
+;; measured over records that exist, not over records the reducer set
+;; aside as malformed.
+(define (k-rec who n)
+  (encode-record n (+ 1757300000000 n) who '()
+                 (list 'put (list (cons 'kind 'section) (cons 'title (string-append "k." (number->string n)))
+                                  '(parent . root) (cons 'ord n)))))
+(define (k-fresh-store!) (fresh-store-publishing! (list (k-rec "peer" 1) (k-rec "peer" 2))))
+(define (three-segment-store!) (fresh-store-publishing! (list (k-rec "peer" 1) (k-rec "peer" 2) (k-rec "peer" 3))))
+;; The writer's report in a check answer: (<writer> (end n) (torn b) (integrity (...))).
+(define (k-writer-report ck writer)
+  (let find ((x ck))
+    (cond ((and (pair? x) (eq? (car x) 'writers) (list? x) (= 2 (length x)) (list? (cadr x))) (assoc writer (cadr x)))
+          ((pair? x) (or (find (car x)) (find (cdr x))))
+          (else #f))))
+(define (mirror-seg st k) (string-append (mirror-dir st) "/" (segment-file-name k)))
+(define (manifest-of st) (string-append (mirror-dir st) "/published.sexp"))
+;; The first hex digit of a line's CRC changed to another hex digit, so the
+;; line still frames and its check fails.
+(define (crc-flipped bv start)
+  (let ((c (bytevector-copy bv)))
+    (bytevector-u8-set! c start (if (= (bytevector-u8-ref c start) 48) 49 48))
+    c))
+(define (last-line-start bv)
+  (let loop ((i (- (bytevector-length bv) 2)))
+    (cond ((< i 0) 0) ((= (bytevector-u8-ref bv i) 10) (+ i 1)) (else (loop (- i 1))))))
+
+;; A STORE BUILT BY HAND around one owned writer, for the damage only the
+;; local writer's own scan meets (no manifest is read for it): the bytes of
+;; every segment are written here, so each `after` is known exactly.
+(define HB "k3m9x2qa")
+(define (hb-rec n) (k-rec "agent" n))
+(define hb-n 0)
+(define (hb-store!)
+  (set! hb-n (+ hb-n 1))
+  (let* ((d (string-append root "/hb" (number->string hb-n))) (st (string-append d "/store")))
+    (sh "mkdir -p " (quoted (string-append st "/writers/" HB)) " " (quoted (string-append d "/home")))
+    (putenv "THEOURGIA_HOME" (string-append d "/home"))
+    (k-put! (string-append st "/meta.sexp") (string->utf8 "((format 1) (store-id \"hb\"))\n"))
+    (k-put! (string-append st "/lock") (make-bytevector 0))
+    (k-put! (string-append st "/writers/" HB "/owner.sexp") (string->utf8 "((machine \"m\"))\n"))
+    st))
+(define (hb-seg st n) (string-append st "/writers/" HB "/" (segment-file-name n)))
+(define (hb-seg! st n . bvs) (k-put! (hb-seg st n) (apply k-cat bvs)))
+(define (hb-file! st name text) (k-put! (string-append st "/writers/" HB "/" name) (string->utf8 text)))
+(define hb-R (bytevector-length (hb-rec 1)))
+
+;; K1: a mirror's older segment with one byte changed -- manifest-hash --
+;; read in process, through a local eval, and through the daemon.
+;; The evaluation reads the three blocks itself: which of them this
+;; reduction holds, as the evaluated code sees them.
+(define k1-source
+  (string-append "(map (lambda (i) (and (block i) #t)) (list "
+                 (format "~s ~s ~s" (block-id M 1) (block-id M 2) (block-id M 3)) "))"))
+(let* ((c (three-segment-store!)) (st (car c)) (seg2 (mirror-seg st 2)))
+  (damage! seg2)
+  (let* ((a (ask st 'outline))
+         (ev (let ((out (string-append root "/k1-eval.out")))
+               (sh local " scheme --script ../core.sc eval --store " (quoted st) " " (quoted k1-source) " --wire > " out " 2> /dev/null < /dev/null")
+               (first-datum-of out))))
+    (want "K1 a mirror's older segment damaged: an in-process outline is ok with ONE clause, ONE cut note (the mirror, the segment, manifest-hash, after 1); record 1 kept, 2 and 3 not -- in the reduction and in the outline"
+          (list (head-of a) (incomplete-clause-count a) (k-notes a) (k-applied st M) (k-kept st M '(1 2 3)) (k-listed a M '(1 2 3)))
+          (list 'ok 1 (list (k-cut M seg2 'manifest-hash 1)) 1 '(1) '(1)))
+    (want "K1 a local eval of that store answers ok with the same ONE cut note, and the evaluated code sees record 1's block and not 2's or 3's"
+          (list (head-of ev) (incomplete-clause-count ev) (k-notes ev) (clause-of ev 'values))
+          (list 'ok 1 (list (k-cut M seg2 'manifest-hash 1)) '(values ((#t #f #f)))))))
+;; THE DAEMON ROUTE, NOT THE LOCAL ONE: THEOURGIA_LOCAL sends every verb to
+;; the in-process server, so it is removed from the client's environment,
+;; and the row asserts a daemon for this store was running and wrote its
+;; serve log -- the local route starts neither.
+(let* ((c (three-segment-store!)) (st (car c)))
+  (set! e-stores (cons st e-stores))
+  (damage! (mirror-seg st 2))
+  (let* ((r (client "env -u THEOURGIA_LOCAL" "outline" "--store" st))
+         (served (list (pair? (daemon-pids st)) (file-exists? (serve-log-path st)))))
+    (stop-daemon! st)
+    (want "K1 through the daemon: a daemon served it, ok with the same ONE cut note, and the outline names record 1's block and not 2's or 3's"
+          (list served (head-of (cadr r)) (incomplete-clause-count (cadr r)) (k-notes (cadr r)) (k-listed (cadr r) M '(1 2 3)))
+          (list '(#t #t) 'ok 1 (list (k-cut M (mirror-seg st 2) 'manifest-hash 1)) '(1)))))
+
+;; K1b: the ACTIVE, NON-RETIRED local writer's own older segment (a second
+;; segment written after it, so it is sealed; no manifest is read for it),
+;; its last record's CRC changed: a crc cut after the record before it. A
+;; write on that store is refused as today, integrity.
+(let* ((c (fresh-store!)) (st (car c)) (w (cadr c)) (beta (caddr c))
+       (gamma (new-id (ask st 'insert "--under" "root" "--title" "Gamma"))))
+  (let* ((last (k-applied st w))
+         (seg1 (string-append (writer-directory st w) "/" (segment-file-name 1)))
+         (bv (k-bytes seg1)))
+    (k-put! (string-append (writer-directory st w) "/" (segment-file-name 2))
+            (encode-record (+ last 1) 1757300000009 "peer" '() '(set "t" q "q")))
+    (k-put! seg1 (crc-flipped bv (last-line-start bv)))
+    (let* ((a (ask st 'outline)) (kept (k-applied st w))
+           (blocks (list (and beta (k-has-block? st beta)) (and gamma (k-has-block? st gamma))))
+           (wr (ask st 'insert "--under" "root" "--title" "Refused")))
+      (want "K1b the local writer's older segment, its last record's CRC changed: ONE cut note, kind crc, after = the record before it, which is kept (Beta's block present, Gamma's -- the damaged record's -- absent); a write is refused integrity"
+            (list (head-of a) (k-notes a) kept blocks (head-of wr) (and (pair? wr) (> (length wr) 2) (caddr wr)))
+            (list 'ok (list (k-cut w seg1 'crc (- last 1))) (- last 1) '(#t #f) '(error refused) 'integrity)))))
+
+;; K1c: a mirror's LISTED segment file removed; and its manifest made
+;; malformed. Both paths are the manifest's.
+(let* ((c (three-segment-store!)) (st (car c)))
+  (sh "rm -f " (quoted (mirror-seg st 2)))
+  (let ((a (ask st 'outline)))
+    (want "K1c a mirror's listed segment removed: ONE cut note, kind manifest-missing-segment, the manifest's path, after 1; record 1 kept, 2 and 3 not"
+          (list (head-of a) (k-notes a) (k-applied st M) (k-kept st M '(1 2 3)))
+          (list 'ok (list (k-cut M (manifest-of st) 'manifest-missing-segment 1)) 1 '(1)))))
+(let* ((c (k-fresh-store!)) (st (car c)))
+  (k-put! (manifest-of st) (string->utf8 "(\n"))
+  (let ((a (ask st 'outline)))
+    (want "K1c a mirror's manifest made malformed: ONE cut note, kind manifest, the manifest's path, after 0; nothing of the mirror kept"
+          (list (head-of a) (k-notes a) (k-applied st M) (k-kept st M '(1 2)))
+          (list 'ok (list (k-cut M (manifest-of st) 'manifest 0)) 0 '()))))
+
+;; K1e: the kind matrix. On the local writer's older segment (a second one
+;; follows it): frame, seq, torn-in-sealed. On a mirror: manifest-range (the
+;; hash intact, the declared range of the last segment widened) and
+;; retired-malformed.
+(let ((st (hb-store!)))
+  (hb-seg! st 1 (hb-rec 1) (hb-rec 2) (string->utf8 (string-append (crc32-string-hex "(") " (\n")))
+  (hb-seg! st 2 (hb-rec 4))
+  (let ((a (ask st 'outline)))
+    (want "K1e frame (a checked line whose text does not parse): ONE cut note, kind frame, after 2"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 4)))
+          (list 'ok (list (k-cut HB (hb-seg st 1) 'frame 2)) 2 '(1 2)))))
+(let ((st (hb-store!)))
+  (hb-seg! st 1 (hb-rec 1) (hb-rec 2) (hb-rec 4))
+  (hb-seg! st 2 (hb-rec 5))
+  (let ((a (ask st 'outline)))
+    (want "K1e seq (a record whose sequence skips): ONE cut note, kind seq, after 2"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 4 5)))
+          (list 'ok (list (k-cut HB (hb-seg st 1) 'seq 2)) 2 '(1 2)))))
+(let ((st (hb-store!)))
+  (hb-seg! st 1 (hb-rec 1) (hb-rec 2) (string->utf8 "abc"))
+  (hb-seg! st 2 (hb-rec 3))
+  (let ((a (ask st 'outline)))
+    (want "K1e torn-in-sealed (an older segment ending without a newline): ONE cut note, kind torn-in-sealed, after 2"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 3)))
+          (list 'ok (list (k-cut HB (hb-seg st 1) 'torn-in-sealed 2)) 2 '(1 2)))))
+(let* ((c (three-segment-store!)) (st (car c))
+       (h (lambda (k) (segment-sha (k-bytes (mirror-seg st k))))))
+  (k-put! (manifest-of st) (string->utf8 (format "((1 ~s 1 1) (2 ~s 2 2) (3 ~s 3 4))\n" (h 1) (h 2) (h 3))))
+  (let ((a (ask st 'outline)))
+    (want "K1e manifest-range (segment 3's declared range widened, its hash intact): ONE cut note, kind manifest-range, segment 3, after 2"
+          (list (head-of a) (k-notes a) (k-applied st M) (k-kept st M '(1 2 3)))
+          (list 'ok (list (k-cut M (mirror-seg st 3) 'manifest-range 2)) 2 '(1 2)))))
+(let* ((c (k-fresh-store!)) (st (car c)) (retired (string-append (mirror-dir st) "/retired.sexp")))
+  (k-put! retired (string->utf8 "(\n"))
+  (let ((a (ask st 'outline)))
+    (want "K1e retired-malformed on a mirror: ONE cut note, kind retired-malformed, retired.sexp's path, after 0"
+          (list (head-of a) (k-notes a) (k-applied st M) (k-kept st M '(1 2)))
+          (list 'ok (list (k-cut M retired 'retired-malformed 0)) 0 '()))))
+
+;; K1d NEGATIVE CONTROL: a retired-mismatch -- the declared offset ends
+;; record 3 while the declared seq is 2, the segment published -- is a
+;; diagnostic that leaves the extent (3) alone: no clause. That the
+;; diagnostic was produced at all is read from check's integrity report, so
+;; the row does not pass on a store where it never was.
+(let ((st (hb-store!)))
+  (hb-seg! st 1 (hb-rec 1) (hb-rec 2) (hb-rec 3))
+  (hb-file! st "retired.sexp" (string-append "((prefix 1 " (number->string (* 3 hb-R)) " 2) (tx \"t1\"))\n"))
+  (hb-file! st "published.sexp" (format "((1 ~s 1 3))\n" (segment-sha (k-bytes (hb-seg st 1)))))
+  (let* ((a (ask st 'outline))
+         (report (k-writer-report (ask st 'check) HB))
+         (kinds (let ((i (and (list? report) (assq 'integrity (cdr report)))))
+                  (if (and i (list? (cadr i))) (map car (cadr i)) 'NO-REPORT))))
+    (want "K1d a retired-mismatch is diagnosed (check's report names it), leaves the extent and the content alone, and carries no clause"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 3)) (and (list? kinds) (memq 'retired-mismatch kinds) #t))
+          (list 'ok 'no-clause 3 '(1 2 3) #t))))
+
+;; K1g PROVENANCE: a retired local segment, unpublished, holding record 1, a
+;; record 2 whose CRC fails and record 3, retirement declared at 3 with an
+;; offset beyond the file: retired-beyond-file is recorded BEFORE the scan,
+;; and the cut is the crc that stopped it, after 1.
+(let ((st (hb-store!)))
+  (let ((r2 (hb-rec 2)))
+    (hb-seg! st 1 (hb-rec 1) (crc-flipped r2 0) (hb-rec 3)))
+  (hb-file! st "retired.sexp" (string-append "((prefix 1 " (number->string (* 10 hb-R)) " 3) (tx \"t1\"))\n"))
+  (let ((a (ask st 'outline))
+        (kinds (k-integrity-kinds (ask st 'check) HB)))
+    (want "K1g the cut is the error that decided the extent (crc, after 1), not the first one recorded (retired-beyond-file, which check reports before the crc): ONE cut note; record 1 kept"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 3)) (k-before? kinds 'retired-beyond-file 'crc))
+          (list 'ok (list (k-cut HB (hb-seg st 1) 'crc 1)) 1 '(1) #t))))
+
+;; K1f STOP PRECEDENCE: a quarantine with fork 2, record 1 valid, damage at
+;; record 3: the scan stops at 1 before it reaches the damage, and there is
+;; no cut (a pin).
+(let ((st (hb-store!)))
+  (let ((r3 (hb-rec 3)))
+    (hb-seg! st 1 (hb-rec 1) (hb-rec 2) (crc-flipped r3 0)))
+  (hb-file! st "quarantine.sexp" "((format 1) (fork 2))\n")
+  (let ((a (ask st 'outline)))
+    (want "K1f a quarantine that stops the scan before the damage: extent 1, no clause"
+          (list (head-of a) (k-notes a) (k-applied st HB) (k-kept st HB '(1 2 3)))
+          (list 'ok 'no-clause 1 '(1)))))
+
+;; K2 export-code refuses, naming the cut; K3 conflicts and check.
+(let* ((c (three-segment-store!)) (st (car c)) (x (cadddr c)) (seg2 (mirror-seg st 2)) (out (string-append x "/k2-out"))
+       (sha2 (segment-sha (k-bytes seg2))))
+  (damage! seg2)
+  (let* ((a (ask st 'export-code out))
+         (cf (ask st 'conflicts))
+         (ck (ask st 'check)))
+    (want "K2 export-code refuses incomplete-reduction whose notes hold the cut (kind manifest-hash) and writes no file"
+          (list (head-of a)
+                (let ((ns (and (pair? a) (list? a) (> (length a) 2) (caddr a)))) (and (pair? ns) (eq? (car ns) 'notes) (cdr ns)))
+                (file-exists? out))
+          (list '(error incomplete-reduction) (list (k-cut M seg2 'manifest-hash 1)) #f))
+    ;; CHECK'S REPORT IS TODAY'S, FIELD BY FIELD: the writer's end, torn,
+    ;; and the one integrity error with its kind, segment, offset and the
+    ;; hash the manifest expected (the segment's before the damage).
+    (want "K3 conflicts lists (cut <writer> <path> <kind> <after>); check reports the mirror as today, field by field (end 1, not torn, the manifest-hash error on segment 2 at offset 0 expecting the published hash), and its answer carries the cut clause"
+          (list (has-substring? (format "~s" cf) (format "~s" (list 'cut M seg2 'manifest-hash 1)))
+                (k-writer-report (without-incomplete ck) M)
+                (k-notes ck))
+          (list #t
+                (list M '(end 1) '(torn #f) (list 'integrity (list (list 'manifest-hash '(segment 2) '(offset 0) (list 'expected sha2)))))
+                (list (k-cut M seg2 'manifest-hash 1))))))
+
+;; K4: the local writer's CURRENT segment ending in a residual without a
+;; newline, as a crash leaves it: recovery, not damage -- no clause.
+(let* ((c (fresh-store!)) (st (car c)) (w (cadr c)) (beta (caddr c))
+       (delta (new-id (ask st 'insert "--under" "root" "--title" "Delta")))
+       (seg1 (string-append (writer-directory st w) "/" (segment-file-name 1)))
+       (last (k-applied st w)))
+  (k-put! seg1 (k-cat (k-bytes seg1) (string->utf8 "abc")))
+  (let ((a (ask st 'outline)))
+    (want "K4 a torn end of the local writer's current segment is recovery: no clause, nothing lost (the extent, Beta's block and Delta's -- the last record's -- present)"
+          (list (head-of a) (k-notes a) (k-applied st w)
+                (and beta (k-has-block? st beta)) (and delta (k-has-block? st delta)))
+          (list 'ok 'no-clause last #t #t))))
+
+;; K5: two damaged mirrors and one unreadable mirror -> ONE clause, three
+;; notes; one mirror with two damaged older segments -> one note, the
+;; earlier cut.
+;; Each damaged mirror keeps its first record: the damage is in its SECOND
+;; segment, so each cut has a prefix to keep and an exact `after`.
+(let* ((c (k-fresh-store!)) (st (car c)) (My "zzzzzzzy") (Mx "zzzzzzzx")
+       (My-seg2 (string-append (writer-directory st My) "/" (segment-file-name 2))))
+  (log-publish! st My 1 (k-rec "peer" 1) (segment-sha (k-rec "peer" 1)))
+  (log-publish! st My 2 (k-rec "peer" 2) (segment-sha (k-rec "peer" 2)))
+  (log-publish! st Mx 1 (k-rec "peer" 1) (segment-sha (k-rec "peer" 1)))
+  (damage! (mirror-seg st 2))
+  (damage! My-seg2)
+  (chmod! "000" (writer-directory st Mx))
+  (let ((a (ask st 'outline)))
+    (chmod! "700" (writer-directory st Mx))
+    (let ((kept (list (k-kept st M '(1 2)) (k-kept st My '(1 2)))))
+      (want "K5 two damaged mirrors and one unreadable mirror: ONE clause, three notes -- the unreadable one naming its writer, the two cuts whole (writer, segment 2, manifest-hash, after 1) -- and each damaged mirror's record 1 kept, record 2 not"
+            (list (head-of a) (incomplete-clause-count a)
+                  (and (list? (k-notes a))
+                       (map (lambda (n) (if (eq? (car n) 'cut) n (list (car n) (k-field n 'writer)))) (k-notes a)))
+                  kept)
+            (list 'ok 1
+                  (list (list 'unreadable Mx) (k-cut My My-seg2 'manifest-hash 1) (k-cut M (mirror-seg st 2) 'manifest-hash 1))
+                  '((1) (1)))))))
+(let* ((c (three-segment-store!)) (st (car c)))
+  (damage! (mirror-seg st 2))
+  (damage! (mirror-seg st 3))
+  (let ((a (ask st 'outline)))
+    (want "K5 one mirror with two damaged segments: ONE note, the earlier cut (segment 2, after 1), and record 1 kept, 2 and 3 not"
+          (list (head-of a) (k-notes a) (k-kept st M '(1 2 3)))
+          (list 'ok (list (k-cut M (mirror-seg st 2) 'manifest-hash 1)) '(1)))))
+
+;; K6: eval --working on K1's store -- the parent's load and the worker's
+;; both hear the cut, and the parent's merge keeps its kind and after.
+(let* ((c (three-segment-store!)) (st (car c)) (w (cadr c)) (seg2 (mirror-seg st 2)))
+  (damage! seg2)
+  (let ((r (eval-early st w '("1") #f)))
+    (want "K6 eval --working: ONE clause whose single note is the cut, kind and after intact through the parent's merge"
+          (list (head-of (cadr r)) (incomplete-clause-count (cadr r)) (k-notes (cadr r)))
+          (list 'ok 1 (list (k-cut M seg2 'manifest-hash 1))))))
+
+;; K7: an unreadable older segment is still spelled `unreadable`: the tag,
+;; the path and the reason asserted explicitly.
+(let* ((c (fresh-store!)) (st (car c)) (seg (older-segment st)))
+  (chmod! "000" seg)
+  (let ((a (ask st 'outline)))
+    (chmod! "600" seg)
+    (want "K7 an unreadable older segment keeps its unreadable note (today's path and reason, no kind, no after)"
+          (list (head-of a) (k-notes a))
+          (list 'ok (list (list 'unreadable (list 'writer M) (list 'path seg) (list 'reason "Permission denied")))))))
+
+;; K8: the healthy local writer stays writable beside a cut mirror.
+(let* ((c (three-segment-store!)) (st (car c)) (seg2 (mirror-seg st 2)))
+  (damage! seg2)
+  (let* ((a (ask st 'insert "--under" "root" "--title" "Kept"))
+         (id (new-id a)))
+    (want "K8 a declared insert by the healthy local writer beside the cut mirror: ok, its record appended (its block read back from a new reduction), and the mirror's cut carried"
+          (list (head-of a) (and id (k-has-block? st id)) (k-notes a))
+          (list 'ok #t (list (k-cut M seg2 'manifest-hash 1))))))
+
+;; K9: an unreadable snapshot beside a cut mirror. The snapshot is taken
+;; while the store is whole, then the mirror's second segment is damaged and
+;; the snapshot made unreadable. The load finds the cut in discovery and
+;; tells the request before it reads the snapshot, so the answer is the
+;; snapshot's own refusal and still carries the cut.
+(let* ((c (three-segment-store!)) (st (car c)) (seg2 (mirror-seg st 2))
+       (snap (begin (ask st 'snapshot)
+                    (let ((fs (guard (e (#t '())) (directory-list (string-append st "/snap")))))
+                      (and (= 1 (length fs)) (string-append st "/snap/" (car fs)))))))
+  (damage! seg2)
+  (when snap (chmod! "000" snap))
+  (let ((a (ask st 'outline)))
+    (when snap (chmod! "600" snap))
+    (want "K9 an unreadable snapshot beside a cut mirror: the answer is the snapshot's refusal, naming it, and carries the cut"
+          (list (and snap #t) a)
+          (list #t (append (unreadable-answer snap) (list (list 'incomplete (k-cut M seg2 'manifest-hash 1))))))))
 
 (for-each stop-daemon! e-stores)
 (printf "rows: ~a\n" rows)

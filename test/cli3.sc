@@ -3134,9 +3134,17 @@
                                    (else (loop (+ i 1))))))))
                (list (has "(end 2)") (has "(unusable "))))
       (list #t #t))
-(want "and writing is refused rather than proceeding from a state nothing can rebuild"
+;; The refusal comes after a load, so it carries the load's incomplete
+;; clause like every other answer: the writer's history is cut at the
+;; damaged record, after 2.
+(want "and writing is refused rather than proceeding from a state nothing can rebuild, the refusal carrying the cut"
       (car (lines-of (run d10 "insert" "--under" "root" "--title" "four")))
-      '(error refused integrity (remedy adopt)))
+      (let ((w (writer-of-id s1)))
+        (list 'error 'refused 'integrity '(remedy adopt)
+              (list 'incomplete
+                    (list 'cut (list 'writer w)
+                          (list 'path (string-append d10 "/writers/" w "/" (segment-file-name 1)))
+                          '(reason "crc") '(kind crc) '(after 2))))))
 
 (printf "\n== the batch verb's request identity survives the command line ==\n")
 ;; STDIN IS ONE ARGUMENT ARRIVING ANOTHER WAY, and the command used to

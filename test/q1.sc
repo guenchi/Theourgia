@@ -371,6 +371,14 @@
     (system (string-append "mkdir -p " dir))
     (put! (string-append dir "/" (segment-file-name 1)) bytes)
     (write-manifest! d writer (list (list 1 (segment-sha bytes) 1 1)))))
+;; THE CUT A FRAME ERROR IN A MIRROR'S FIRST RECORD MAKES: nothing of the
+;; mirror kept, so an outline answered from that store says so on a line of
+;; its own after its text (the incomplete clause, rendered as a datum).
+(define (first-record-cut d writer)
+  (list 'incomplete
+        (list 'cut (list 'writer writer)
+              (list 'path (string-append (writer-directory d writer) "/" (segment-file-name 1)))
+              '(reason "frame") '(kind frame) '(after 0))))
 (define (planted? d writer bytes)
   (and (equal? (slurp (string-append (writer-directory d writer) "/" (segment-file-name 1)))
                bytes)
@@ -455,10 +463,11 @@
                    (writers (cadr (assq 'writers (cdr c))))
                    (mirror (assoc "mirrorzz" writers)))
               (list (cadr (assq 'integrity (cdr mirror)))
-                    (length (lines-of (run d "outline")))))))
+                    (let ((ls (lines-of (run d "outline"))))
+                      (if (equal? ls (list (first-record-cut d "mirrorzz"))) 'the-cut-alone ls))))))
       (list (list (list 'frame (list 'segment 1) (list 'offset 0)
                         (list 'reason 'deps-malformed)))
-            0))
+            'the-cut-alone))
 ;; TWIN: WELL-FORMED DEPENDENCIES STILL SCHEDULE. Without this the row
 ;; above is also passed by a build that calls every dependency list
 ;; malformed -- which would stop every batch in the product.
@@ -773,8 +782,13 @@
                    (ls (lines-of (run d "outline"))))
               (list (and (pair? wrote) (car wrote))
                     (length ls)
-                    (and (pair? (car ls)) (eq? (car (car ls)) 'error))))))
-      (list 'ok 2 #f))
+                    (and (pair? (car ls)) (eq? (car (car ls)) 'error))
+                    ;; Two block lines ("- <id>  <title>", read as the symbol -)
+                    ;; and then the clause.
+                    (and (= 3 (length ls))
+                         (eq? (list-ref ls 0) '-) (eq? (list-ref ls 1) '-)
+                         (equal? (list-ref ls 2) (first-record-cut d "mirrorzz")))))))
+      (list 'ok 3 #f #t))
 ;; AND A SNAPSHOT DOES NOT ERASE THE OBSERVATION. The notes are about
 ;; records the snapshot's cut COVERS, and replay skips everything
 ;; covered -- so leaving them out of the rows meant taking a snapshot

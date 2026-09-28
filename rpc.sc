@@ -51,7 +51,7 @@
           (only (theourgia datum-code) datum-source-read)
           (only (theourgia ffi) read-entry entry-type fs-error? with-mutation-record mutation-record)
           (only (theourgia answers) classify-failure)
-          (only (theourgia incomplete) incomplete-accepted)
+          (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
@@ -1766,8 +1766,11 @@
   ;; verb declares. A verb that builds no reduction declares too, and it
   ;; makes no difference: it never loads.
   (define undeclared-verbs '(export-code export-md import-md import-code def snapshot))
+  ;; THE UNDECLARED VERBS ARE STRICT: a cut refuses them before they build
+  ;; anything (the load raises), where every consumer outside a request
+  ;; still loads a cut store as it always has.
   (define (verb-declaration verb)
-    (if (memq verb undeclared-verbs) #f incomplete-accepted))
+    (if (memq verb undeclared-verbs) incomplete-refused incomplete-accepted))
 
   ;; THE DECLARATION RIDES ON THE REQUEST'S STORE OBJECT for the extent of
   ;; the verb (plan amendment A2), and the outer one is put back on the way

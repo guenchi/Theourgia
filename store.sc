@@ -63,7 +63,7 @@
                 session-writer discovery-physical-current discovery-segment-ranges
                 view-revision view-epoch view-writer view-expect-seq)
           (only (theourgia answers) with-written)
-          (only (theourgia incomplete) declared? make-incomplete-reduction
+          (only (theourgia incomplete) declared? make-incomplete-reduction incomplete-refused refusing-notes
                 incomplete-accepted incomplete-reduction? incomplete-reduction-notes)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) mkdir-p! wall-clock-ms process-id directory-entries
@@ -247,15 +247,22 @@
                  (state (if is-sealed (sealed-state-state supplied) supplied))
                  (notes (if is-sealed (sealed-state-notes supplied) (unreadable-behind supplied))))
             (when is-sealed (sealed-state-unsealed?-set! supplied #t))
-            (cond
-              ((null? notes) state)
-              ((or (declared? declaration) (declared? (load-declaration-of store)))
-               (tell-load-notes! store notes)
-               state)
-              (else
-               (let ((c (make-incomplete-reduction notes)))
-                 (tell-load-refused! store c)
-                 (raise c)))))
+            (let ((refusing (refusing-notes
+                              notes
+                              (or (eq? declaration incomplete-refused)
+                                  (eq? (load-declaration-of store) incomplete-refused)))))
+              (cond
+                ((null? notes) state)
+                ((or (declared? declaration) (declared? (load-declaration-of store))
+                     (null? refusing))
+                 (tell-load-notes! store notes)
+                 state)
+                (else
+                 ;; Refused by the refusing notes, naming every note the
+                 ;; state holds (as open-load does).
+                 (let ((c (make-incomplete-reduction notes)))
+                   (tell-load-refused! store c)
+                   (raise c))))))
           (if (not cut)
               (replay store #f declaration)
               (let* ((whole (replay store #f declaration))
@@ -1990,7 +1997,17 @@
         ;; to be applied silently and change nothing, so an older build
         ;; reading a newer store reported a state missing those records
         ;; without saying anything was missing.
-        (reduce-noted state))))
+        (reduce-noted state)
+        ;; A WRITER WHOSE HISTORY WAS CUT BY DAMAGE is the same kind of
+        ;; fact: the store holds records after the cut and cannot show
+        ;; them. One row per cut writer, from the reduction's notes:
+        ;; (cut <writer> <path> <kind> <after>).
+        (apply append
+               (map (lambda (n)
+                      (if (and (list? n) (= (length n) 4) (pair? (cadddr n)) (eq? (car (cadddr n)) (quote cut)))
+                          (list (list (quote cut) (car n) (cadr n) (cadr (cadddr n)) (caddr (cadddr n))))
+                          (quote ())))
+                    (unreadable-behind state))))))
 
 
   ;; ---- diff -----------------------------------------------------------------

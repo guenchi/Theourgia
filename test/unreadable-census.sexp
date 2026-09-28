@@ -1115,6 +1115,7 @@
     retired
     versions
     (immutable retired-tail raw-retired-tail)
+    cut
     )
   (wrappers
     (raw-end-segment discovery-end-segment)

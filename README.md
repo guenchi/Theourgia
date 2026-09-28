@@ -944,6 +944,30 @@ reason wherever it finds a new way to be unsure:
 A store that answered `ok` to any of these would be guessing, and the whole point
 of holding a request id is to not have to.
 
+An answer built from history the store could not wholly read carries an
+`incomplete` clause, one entry per writer it is missing:
+
+    (incomplete (unreadable (writer <w>) (path <p>) (reason <r>)) ...
+                (cut (writer <w>) (path <p>) (reason <kind>) (kind <kind>) (after <n>)) ...)
+
+`unreadable` names a writer, or a segment of one, that could not be read.
+`cut` names a writer whose history was cut by damage the store could read --
+a segment whose hash or declared range the manifest does not vouch for, a
+listed segment that is missing, a record whose check fails or that does not
+parse or follow its predecessor, a sealed segment that ends mid-record, a
+malformed manifest or retirement -- with the kind of damage and `after`, the
+last sequence kept. The records up to `after` are delivered; nothing after
+the cut is. A verb that must not act on a partial history -- `export-code`,
+`export-md`, `import-md`, `import-code`, `def`, `snapshot` -- refuses instead,
+`(error incomplete-reduction (notes ...))` with the same entries, before
+it writes a record or a snapshot. A cut refuses nothing else: every other
+operation reads a cut store as it always has (a write whose own writer's
+history is damaged is refused `integrity`), and every answer given after a
+load carries the clause, a refusal included.
+`conflicts` lists each cut as `(cut <writer> <path> <kind> <after>)`. The
+torn end of a writer's current segment after a crash is recovery, not
+damage, and is not reported.
+
 The question is asked of the **successor chain**, not of one writer. A cursor on
 a writer that has since been retired is measured against the generations that
 succeeded it too, because a request written against a retired cursor could have
