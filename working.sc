@@ -27,6 +27,7 @@
                 remember-unreadable-notes! unreadable-behind
                 directory-entry-durable! present-or-unreadable-skip?)
           (only (theourgia answers) with-written)
+          (only (theourgia arguments) working-id?)
           (only (theourgia ffi) mutation-record)
           (only (theourgia ffi) directory-entries file-is-directory? mkdir-p!
                 process-id wall-clock-ms unlink! file-ensure! with-exclusive-lock barrier!
@@ -81,11 +82,9 @@
   (define (version-ok? entry)
     (equal? (list-ref entry 4)
             (content-version (list-ref entry 7) (list-ref entry 5) (list-ref entry 6))))
-  (define (safe-id? x)
-    (and (string? x) (> (string-length x) 0) (<= (string-length x) 128)
-         (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
-                                  (memv c '(#\- #\_ #\.)))) (string->list x))
-         (not (member x '("." "..")))))
+  ;; THE RULE IS arguments.sc's `working-id?`, shared with the MCP shell,
+  ;; which checks its writer at start without loading this library.
+  (define safe-id? working-id?)
   ;; R2g's SKIP, KEPT AS RULED (F77b), THROUGH THE DOOR (F100a): an owner.sexp
   ;; or retired.sexp that cannot be stat'ed reads as absent, by
   ;; present-or-unreadable-skip?, defined once in log.sc for both R2g sites.

@@ -221,12 +221,14 @@ the current conversation.
 ### 2.4 The MCP route instead of the shell
 
 If the agent host speaks MCP rather than a shell, register the shell once.
-The shell takes the store, and optionally the actor, as arguments; the
-writer id comes only from the environment variable `THEOURGIA_WRITER`, which
-the host sets in the server's environment:
+The shell takes the store, and optionally the actor, as arguments. The host
+configures nothing per session: each session gets its own writer id, so two
+sessions, or two agents with the same actor name, do not share a draft
+stream unless the host gives them one fixed name (within one machine's
+process ids; see the limit in `mcp/README.md`):
 
 ```
-claude mcp add theourgia -e THEOURGIA_WRITER=<agent name> -- \
+claude mcp add theourgia -- \
   theourgia-mcp --store /path/to/memory-store --actor <agent name>
 ```
 
@@ -237,19 +239,30 @@ or, in an MCP configuration file:
   "mcpServers": {
     "theourgia": {
       "command": "theourgia-mcp",
-      "args": ["--store", "/path/to/memory-store", "--actor", "<agent name>"],
-      "env": { "THEOURGIA_WRITER": "<agent name>" }
+      "args": ["--store", "/path/to/memory-store", "--actor", "<agent name>"]
     }
   }
 }
 ```
 
+The writer id is decided once, when the shell starts: `THEOURGIA_WRITER` if
+the host sets it (and it is not empty); otherwise `--writer <name>`;
+otherwise one derived for the session, `<actor>-<start>-<pid>` (the actor
+reduced to what a writer id may hold, the start instant in milliseconds in
+base 36, the shell's process id). The `initialize` answer's instructions end
+with a sentence naming it. A host sets a writer only when it wants a fixed
+name. The drafts of an ended session stay under its writer: read them with
+`drafts --writer <that writer>`, or take them over by starting the next
+session with `THEOURGIA_WRITER=<that writer>` (or `--writer`). A name a
+writer cannot have is refused when the shell starts, with its usage line and
+exit 2. The details are in `mcp/README.md`, "Whose drafts".
+
 The store must exist first (`theourgia init`, by hand): the shell has no
 local route and does not offer `init` as a tool. The tool list and the write
 protocol then come from the store itself (`describe`); the CLAUDE.md text
 above stays the same with `theourgia_<verb>` tools, each taking
-`{"argv": [...]}`, in place of the commands. A host that gives several agents
-the same actor name must still give each its own `THEOURGIA_WRITER`.
+`{"argv": [...]}`, in place of the commands, except its Identity line: over
+MCP the shell sets the writer, and the instructions say which.
 
 Every answer arrives as a tool result. A refusal by the store --
 `(error unknown-id ...)`, say -- is the answer to the question asked: a

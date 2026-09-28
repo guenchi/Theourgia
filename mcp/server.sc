@@ -72,6 +72,15 @@
     "Core refusals are successful transport results. "
     "Eval is available only in the local CLI."))
 
+;; THE SESSION'S WRITER IS SAID TO THE CLIENT: the three sentences above,
+;; unchanged, and one more naming the writer this run chose and how an
+;; earlier session's drafts are reached.
+(define (session-instructions)
+  (string-append instructions
+                 " This session's writer is " (shell-writer)
+                 "; drafts left by an earlier session are read with"
+                 " `drafts --writer <that session's writer>`."))
+
 ;; ---- naming a tool ----------------------------------------------------------
 ;;
 ;; NEVER: A VERB IS NOT ALWAYS A LEGAL TOOL NAME, and the ones that are not
@@ -721,7 +730,7 @@
                   "{\"protocolVersion\":" (json->string protocol-version)
                   ",\"capabilities\":{\"tools\":{}}"
                   ",\"serverInfo\":{\"name\":\"theourgia\",\"version\":\"1\"}"
-                  ",\"instructions\":" (json->string instructions) "}"))))))
+                  ",\"instructions\":" (json->string (session-instructions)) "}"))))))
 
 (define (do-call store actor socket identity params)
   (let* ((name (member-of params "name"))
@@ -916,28 +925,70 @@
 
 ;; ---- argv --------------------------------------------------------------------
 
-;; NOTE: AN UNSET WRITER STAYS UNSET, and does NOT fall back to the actor.
-;; §7.6.50 v247 says both "the default actor IS the writer, one name per
-;; agent" and "a draft verb with no writer bound is refused" -- and if
-;; the writer fell back to the actor it would never be unbound, so the
-;; refusal could not happen and the row asserting it could not be
-;; written. The reading that keeps both statements meaningful is this
-;; one: a host that wants one name passes it twice.
+;; THE SHELL NEVER SENDS writer #f. A session without a writer could not
+;; write drafts unless each call carried `--writer`, and the remedy on offer -- one configured name per
+;; host entry -- gave every session of that host the same writer, the case
+;; in which a later draft replaces an earlier one without a word. The
+;; writer is decided once, at start: THEOURGIA_WRITER when it is set and
+;; not empty; else `--writer`; else one derived for this run.
 ;;
-;; NEVER: AND THE OTHER READING IS THE DANGEROUS ONE. Falling back would mean
-;; two shells that were each given only an actor quietly share a draft
-;; space if the host happened to give them the same actor name -- which
-;; is the exact failure v247 exists to stop, reintroduced by a
-;; convenience.
+;; NEVER: NOT THE ACTOR ALONE. Two sessions given the same actor would share
+;; a draft space, the failure a writer exists to prevent. The derived name
+;; is the actor, reduced to what a writer id may hold, then this run's
+;; start instant in milliseconds in base 36 and its pid: two shells alive
+;; at once in one pid namespace differ by pid, and a name repeats only if a
+;; pid is reused in the same millisecond of a clock that went back.
+;;
+;; NEVER: EVERY SUPPLIED WRITER IS CHECKED AT START, the one not chosen too.
+;; An unusable name used to be refused per write, after the session had
+;; started and the client had been told nothing; a bad value in either
+;; place is a mistake in how the shell was started, answered where it was
+;; made. An empty THEOURGIA_WRITER is unset, not bad.
 (define (environment-writer)
   (let ((e (getenv "THEOURGIA_WRITER"))) (and e (> (string-length e) 0) e)))
 
-(define (shell-writer) (environment-writer))
+(define session-writer #f)
+
+(define (shell-writer) session-writer)
+
+;; The actor as the start of a writer id: lower case, every character a
+;; writer id may not hold made "-", runs of "-" made one, "-" and "." taken
+;; off both ends, "agent" if nothing is left, at most 40 characters.
+(define (actor-part actor)
+  (let* ((mapped (map (lambda (c)
+                        (let ((c (char-downcase c)))
+                          (if (or (char<=? #\a c #\z) (char<=? #\0 c #\9) (memv c '(#\. #\_ #\-)))
+                              c
+                              #\-)))
+                      (string->list actor)))
+         (collapsed (let loop ((cs mapped) (out '()))
+                      (cond ((null? cs) (reverse out))
+                            ((and (char=? (car cs) #\-) (pair? out) (char=? (car out) #\-))
+                             (loop (cdr cs) out))
+                            (else (loop (cdr cs) (cons (car cs) out))))))
+         (trim (lambda (cs)
+                 (let loop ((cs cs))
+                   (if (and (pair? cs) (memv (car cs) '(#\- #\.))) (loop (cdr cs)) cs))))
+         (trimmed (reverse (trim (reverse (trim collapsed)))))
+         (text (if (null? trimmed) "agent" (list->string trimmed))))
+    (if (> (string-length text) 40) (substring text 0 40) text)))
+
+(define (derived-writer actor)
+  (let* ((t (current-time 'time-utc))
+         (ms (+ (* (time-second t) 1000) (quotient (time-nanosecond t) 1000000))))
+    (string-append (actor-part actor)
+                   "-" (string-downcase (number->string ms 36))
+                   "-" (number->string (get-process-id)))))
 
 (define (environment-actor)
   (or (let ((e (getenv "THEOURGIA_ACTOR"))) (and e (> (string-length e) 0) e))
       (let ((u (getenv "USER"))) (and u (> (string-length u) 0) u))
       "cli"))
+
+(define (usage-exit)
+  (display "usage: theourgia-mcp --store <path> [--socket P] [--actor A] [--writer W]\n"
+           (current-error-port))
+  (exit 2))
 
 (define (main argv)
   ;; NEVER: ONCE, BEFORE THE FIRST FRAME IS ANSWERED. The shell returns the
@@ -945,24 +996,39 @@
   ;; decided here, in the same place and the same way as in the CLI and
   ;; the daemon.
   (answer-printing!)
-  (let ((nodes (parse-arguments 'serve argv)))
-    (if (and (pair? nodes) (eq? (car nodes) 'error))
-        (begin (say (error-frame 'null -32600 "Invalid arguments")) (exit 2))
-        (let* ((store (argument-option nodes "--store"))
-               (actor (or (argument-option nodes "--actor") (environment-actor)))
-               (socket (or (argument-option nodes "--socket")
-                           ;; NEVER: THE SHARED RULE. This defaulted to
-                           ;; `<store>/socket`, a third spelling of a
-                           ;; path that has one function for it.
-                           (and store (socket-path store)))))
-          (if (not store)
-              (begin (display "usage: theourgia-mcp --store <path> [--socket P] [--actor A]\n"
-                              (current-error-port))
-                     (exit 2))
-              ;; NOTE: NO SCHEDULER. Reaching a daemon used to need one,
-              ;; because the socket went through the actor system; the
-              ;; client's calls are plain blocking reads and writes, so
-              ;; the loop runs here.
-              (serve store actor socket))))))
+  (let ((nodes (parse-shell-arguments argv)))
+    (cond
+      ;; `--writer` given without its value is a mistake in how the shell was
+      ;; started: the usage line, before any frame. Every other parse error
+      ;; answers the frame below, as it always did.
+      ((equal? nodes '(error bad-request missing-option-value "--writer"))
+       (usage-exit))
+      ((and (pair? nodes) (eq? (car nodes) 'error))
+       (say (error-frame 'null -32600 "Invalid arguments")) (exit 2))
+      (else
+        (let ((store (argument-option nodes "--store"))
+              (actor (or (argument-option nodes "--actor") (environment-actor)))
+              (env (environment-writer))
+              (opt (argument-option nodes "--writer")))
+          ;; THE SUPPLIED WRITERS ARE CHECKED BEFORE ANYTHING IS LOOKED AT ON
+          ;; DISK. Resolving the default socket stats the store, which can
+          ;; raise; a bad writer is a mistake in how the shell was started,
+          ;; and its answer is the usage line whatever the store is.
+          (cond
+            ((not store) (usage-exit))
+            ((and env (not (working-id? env))) (usage-exit))
+            ((and opt (not (working-id? opt))) (usage-exit))
+            (else
+             (let ((socket (or (argument-option nodes "--socket")
+                               ;; NEVER: THE SHARED RULE. This defaulted to
+                               ;; `<store>/socket`, a third spelling of a
+                               ;; path that has one function for it.
+                               (socket-path store))))
+               (set! session-writer (or env opt (derived-writer actor)))
+               ;; NOTE: NO SCHEDULER. Reaching a daemon used to need one,
+               ;; because the socket went through the actor system; the
+               ;; client's calls are plain blocking reads and writes, so
+               ;; the loop runs here.
+               (serve store actor socket)))))))))
 
 (main (cdr (command-line)))

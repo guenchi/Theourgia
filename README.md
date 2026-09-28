@@ -1694,6 +1694,7 @@ the transport's tag rather than on the answer's text.
 | `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. No source file here reads them; `eval --lang` WRITES them for its launcher, from the running process's own library directories and extensions (see `--lang`). |
 | `THEOURGIA_STORE` | `core.sc`, `theourgiad.sc` | the store to use when `--store` is absent. Falls back to `.` |
 | `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
+| `THEOURGIA_WRITER` | `core.sc`, `theourgia.sc`, `mcp/server.sc` | whose drafts a request reads and writes. Unset or empty, the command line sends no writer, and a draft verb without `--writer` is refused `writer-required`; the MCP shell takes `--writer`, else derives a writer for the session (`mcp/README.md`, "Whose drafts"). The shell checks it at start and answers its usage line, exit 2, for a name a writer cannot have |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |

@@ -26,7 +26,9 @@
         ;; produce one, measured.
         (only (theourgia ffi) spawn-detached! reap-children!)
         ;; F100b M3a's P7 rows: the key directory the client derives.
-        (only (theourgia client) socket-path))
+        (only (theourgia client) socket-path)
+        ;; The shell's own option table, probed as data.
+        (only (theourgia arguments) parse-arguments))
 
 (define bad 0)
 (define rows 0)
@@ -94,8 +96,16 @@
 ;; what came back, and only then decide what to send next -- a helper that
 ;; wrote everything and read everything could not ask those questions.
 (define (start-shell . options)
-  (let* ((store (if (pair? options) (car options) (string-append here "/store")))
-         (socket (and (pair? options) (pair? (cdr options)) (cadr options)))
+  (start-shell* (if (pair? options) (car options) (string-append here "/store"))
+                (and (pair? options) (pair? (cdr options)) (cadr options))
+                "" ""))
+
+;; NOTE: `launch` goes before `scheme` (an `env ...` prefix: which
+;; THEOURGIA_WRITER the shell sees), `extra` after the options the fixture
+;; always passes. The shell is EXEC'd, so the pid the port answers is the
+;; shell's own, which a derived writer carries.
+(define (start-shell* store socket launch extra)
+  (let* ((store store)
          ;; NEVER: THE RUN ROOT IS THE FIXTURE'S, NOT THE USER'S. The shell
          ;; now starts a daemon when it cannot reach one, and a daemon
          ;; puts its socket and its log under the run root -- which
@@ -106,14 +116,16 @@
          ;; running when it is done.
          (command (string-append
                     "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                    "THEOURGIA_RUN=" sock-here "/run "
+                    "THEOURGIA_RUN=" sock-here "/run exec " launch
                     "scheme --script " shell " --store " store
                     (if socket (string-append " --socket " socket) "")
+                    extra
                     " 2>>" here "/shell.err")))
     (let-values (((to from errs pid) (open-process-ports command 'line (native-transcoder))))
       (list to from pid))))
 
 (define (shell-in s) (car s))
+(define (shell-pid s) (caddr s))
 (define (shell-out s) (cadr s))
 
 (define (send-frame! s text)
@@ -127,14 +139,19 @@
 
 ;; One conversation: write these frames, close stdin, read every line.
 (define (talk frames . options)
-  (let ((s (apply start-shell options)))
-    (for-each (lambda (f) (send-frame! s f)) frames)
-    (close-input! s)
-    (let loop ((out '()))
-      (let ((line (read-frame s)))
-        (if (eof-object? line)
-            (reverse out)
-            (loop (cons line out)))))))
+  (drain (apply start-shell options) frames))
+
+(define (talk* frames store socket launch extra)
+  (drain (start-shell* store socket launch extra) frames))
+
+(define (drain s frames)
+  (for-each (lambda (f) (send-frame! s f)) frames)
+  (close-input! s)
+  (let loop ((out '()))
+    (let ((line (read-frame s)))
+      (if (eof-object? line)
+          (reverse out)
+          (loop (cons line out))))))
 
 (define hello
   (string-append "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":"
@@ -809,13 +826,21 @@
             ((> k 200) 'never)
             (else (system "sleep 0.05") (up (+ k 1))))))
 
+  ;; NOTE: BOTH ROUTES NAME THE WRITER `w`, EACH THE WAY IT TAKES ONE. The
+  ;; shell never sends writer #f: without a writer it derives one for its
+  ;; session, which the command line does not, and the two envelopes would
+  ;; differ in that one field for a reason this row is not about. The
+  ;; command line's envelope carries only its `--writer` option (it does not
+  ;; read THEOURGIA_WRITER), and that option stays in its arguments; so the
+  ;; command line is given `--writer w`, and the shell is started with
+  ;; `--writer w` and called with the same arguments.
   (start-capture! seen-cli)
   (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
-                         "scheme --script ../core.sc read x.1 --wire --store " cstore
+                         "scheme --script ../core.sc read x.1 --writer w --wire --store " cstore
                          " --socket " csock " > /dev/null 2>&1"))
   (system (string-append "pkill -f " peer " 2>/dev/null"))
   (start-capture! seen-mcp)
-  (talk (list hello ready (call-tool "theourgia_read" '("x.1"))) cstore csock)
+  (talk* (list hello ready (call-tool "theourgia_read" '("x.1" "--writer" "w"))) cstore csock "env -u THEOURGIA_WRITER " " --writer w")
   (system (string-append "pkill -f " peer " 2>/dev/null"))
 
 ;; NOTE: THE COMMAND LINE IS DRIVEN WITH `--wire` HERE, and that is not a
@@ -834,13 +859,12 @@
   ;; NEVER: AND IT IS THE ENVELOPE THE DAEMON PARSES, spelled out here once so
   ;; that "both sent the same thing" cannot be satisfied by both sending
   ;; the same wrong thing.
-  ;; NOTE: THE FIELDS ARE SPELLED OUT, INCLUDING THE ONES THAT ARE #f.
-  ;; `writer`, `cwd` and `stdin` are absent here as a VALUE and not by
-  ;; being left out: an envelope whose length varied with what the caller
-  ;; happened to have would be one the reader had to guess about. Neither
-  ;; route binds a writer in this row, so both say #f, and a build that
-  ;; started omitting the field would fail here rather than at the far
-  ;; end of a parse.
+  ;; NOTE: THE FIELDS ARE SPELLED OUT, INCLUDING THE ONE THAT IS #f.
+  ;; `stdin` is absent here as a VALUE and not by being left out: an
+  ;; envelope whose length varied with what the caller happened to
+  ;; have would be one the reader had to guess about. The writer is the one
+  ;; both routes were given, `w`, and a build that started omitting the
+  ;; field would fail here rather than at the far end of a parse.
   ;; NOTE: THE STORE TRAVELS BY ITS RESOLVED NAME, so the expectation is the
   ;; resolved one -- and it is resolved by the SHELL, not by the library
   ;; under test. Asking `client.sc` what it would produce would compare
@@ -853,7 +877,7 @@
         (file-text seen-mcp)
         (string-append "(request 1 \"" (resolved-by-the-shell cstore) "\" \""
                        (or (getenv "THEOURGIA_ACTOR") (getenv "USER") "cli")
-                       "\" #f wire \"" (resolved-by-the-shell ".") "\" #f read \"x.1\")\n")))
+                       "\" \"w\" wire \"" (resolved-by-the-shell ".") "\" #f read \"x.1\" \"--writer\" \"w\")\n")))
 
 ;; ---- MC-08 two ways a well-formed request was mishandled --------------------
 ;;
@@ -1424,6 +1448,397 @@
               (and called (starts-with-text? (text-of called) "(ok (text") (no-record-member? called)
                    (not (text-carries-record? called))))
         '(#t #t)))
+
+;; ---- MW: whose drafts a session writes -----------------------------------------
+;;
+;; NEVER: THE SHELL NEVER SENDS writer #f. Without THEOURGIA_WRITER a session
+;; could not write drafts unless each call carried `--writer`, and the one
+;; remedy on offer gave every session of a host one writer. The writer is
+;; decided once at start -- the variable, else `--writer`, else one derived
+;; from the actor, the start instant and the pid -- said in `instructions`,
+;; carried on every frame, and checked at start.
+
+;; The three sentences the shell has always answered with, byte for byte.
+(define base-instructions
+  (string-append
+    "Tools return the unmodified core command answer as S-expression text. "
+    "Core refusals are successful transport results. "
+    "Eval is available only in the local CLI."))
+(define writer-sentence-head " This session's writer is ")
+(define writer-sentence-tail
+  "; drafts left by an earlier session are read with `drafts --writer <that session's writer>`.")
+
+;; The writer the initialize answer names, or #f when the instructions are
+;; not the three sentences followed by exactly the writer sentence.
+(define (announced line)
+  (let ((t (field line "result" "instructions"))
+        (head (string-append base-instructions writer-sentence-head)))
+    (and (string? t) (starts-with-text? t head)
+         (let* ((rest (substring t (string-length head) (string-length t)))
+                (n (string-length rest)) (m (string-length writer-sentence-tail)))
+           (and (> n m)
+                (string=? (substring rest (- n m) n) writer-sentence-tail)
+                (substring rest 0 (- n m)))))))
+
+;; `<actor>-<base 36>-<pid>` split at its last two "-", or #f.
+(define (name-parts name)
+  (let* ((cs (string->list name))
+         (dashes (let loop ((i 0) (cs cs) (out '()))
+                   (cond ((null? cs) out)
+                         ((char=? (car cs) #\-) (loop (+ i 1) (cdr cs) (cons i out)))
+                         (else (loop (+ i 1) (cdr cs) out))))))
+    (and (>= (length dashes) 2)
+         (let ((last (car dashes)) (before (cadr dashes)))
+           (list (substring name 0 before)
+                 (substring name (+ before 1) last)
+                 (substring name (+ last 1) (string-length name)))))))
+
+(define (epoch-ms)
+  (let ((t (current-time 'time-utc)))
+    (+ (* (time-second t) 1000) (quotient (time-nanosecond t) 1000000))))
+
+;; working.sc's rule for a writer id, COPIED: a row that asked the product's
+;; own predicate would agree with any change to it.
+(define (writer-id-copy? x)
+  (and (string? x) (> (string-length x) 0) (<= (string-length x) 128)
+       (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
+                                (memv c '(#\- #\_ #\.)))) (string->list x))
+       (not (member x '("." "..")))))
+
+(define no-writer "env -u THEOURGIA_WRITER ")
+
+;; A store of its own, with one block to write drafts on.
+(define wstore (string-append here "/wstore"))
+(system (string-append "mkdir -p " wstore))
+(system (string-append
+          "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+          "scheme --script ../core.sc init --store " wstore " > /dev/null 2>&1"))
+(cli-answer wstore '("insert" "--title" "MW-BLOCK" "--text" "mwblock line"))
+(cli-answer wstore '("insert" "--title" "MW-SECOND" "--text" "mwsecond line"))
+(define (block-by-grep word)
+  (let ((answer (guard (e (#t #f)) (read (open-input-string (cli-answer wstore (list "grep" word)))))))
+    (let find ((x answer))
+      (cond ((and (pair? x) (eq? (car x) 'match) (pair? (cdr x)) (string? (cadr x))) (cadr x))
+            ((pair? x) (or (find (car x)) (find (cdr x))))
+            (else #f)))))
+(define wblock (block-by-grep "mwblock"))
+(define wblock2 (block-by-grep "mwsecond"))
+
+;; A PEER THAT ANSWERS EVERY FRAME AND RECORDS EVERY FRAME, describe
+;; included, and counts the connections it accepted. The envelope rows'
+;; capture stub answers describe without recording it and answers nothing
+;; else, so a session could not go on past its first call.
+(define wsock (string-append sock-here "/mw.sock"))
+(define wpeer (string-append here "/mw-peer.sc"))
+(define wframes (string-append here "/mw-peer.frames"))
+(define wconns (string-append here "/mw-peer.conns"))
+(define (reply-text stdout)
+  (string-append (format "~s" (list 'answer (list 'stdout stdout) (list 'stderr "") (list 'exit 0))) "\n"))
+(define wcatalogue
+  (reply-text
+    (string-append
+      "(ok (verbs "
+      "(read (usage (read <id>)) (description \"Read a block.\") (protocol #f) (route daemon)) "
+      "(write (usage (write <id> <text>)) (description \"Write a draft.\") (protocol #f) (route daemon)) "
+      "(drafts (usage (drafts)) (description \"List drafts.\") (protocol #f) (route daemon))) "
+      "(protocol \"P\"))\n")))
+(define (start-wpeer!)
+  (system (string-append "pkill -f " wpeer " 2>/dev/null; rm -f " wsock " " wframes " " wconns))
+  (call-with-output-file wpeer
+    (lambda (port)
+      (for-each (lambda (l) (display l port) (newline port))
+        (list "(import (chezscheme) (theourgia sched) (theourgia net))"
+              (string-append "(define catalogue-reply (string->utf8 " (format "~s" wcatalogue) "))")
+              (string-append "(define ok-reply (string->utf8 " (format "~s" (reply-text "(ok)\n")) "))")
+              "(define (asks-to-describe? bv)"
+              "  (let* ((t (utf8->string bv)) (n (string-length t)))"
+              "    (let loop ((i 0))"
+              "      (cond ((> (+ i 8) n) #f)"
+              "            ((string=? (substring t i (+ i 8)) \"describe\") #t)"
+              "            (else (loop (+ i 1)))))))"
+              "(start-scheduler"
+              "  (lambda ()"
+              (string-append "    (listen! \"" wsock "\" 16)")
+              "    (let serve ()"
+              "      (receive (after 20000 (exit 0))"
+              (string-append
+                "               (`(accepted ,ref)"
+                " (call-with-output-file \"" wconns "\" (lambda (p) (put-string p \"c\\n\")) 'append)"
+                " (conn-read-start! ref) (serve))")
+              (string-append
+                "               (`(data ,r ,bv)"
+                " (call-with-output-file \"" wframes "\" (lambda (p) (put-string p (utf8->string bv))) 'append)"
+                " (conn-write! r (if (asks-to-describe? bv) catalogue-reply ok-reply) 'last)"
+                " (serve))")
+              "               (`(written ,r ,t ,st) (conn-close! r) (serve))"
+              "               (`(eof ,r) (serve))"
+              "               (`#(DOWN ,w ,y) (serve))))))")))
+    'truncate)
+  (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                         "scheme --script " wpeer " > /dev/null 2>&1 &"))
+  (let up ((k 0))
+    (cond ((file-exists? wsock) 'up)
+          ((> k 200) 'never)
+          (else (system "sleep 0.05") (up (+ k 1))))))
+(define (stop-wpeer!) (system (string-append "pkill -f " wpeer " 2>/dev/null")))
+;; Every frame the peer recorded, as data: (request <n> <store> <actor>
+;; <writer> <mode> <cwd> <stdin> <verb> <arg> ...).
+(define (recorded-frames)
+  (let ((p (open-input-string (file-text wframes))))
+    (let loop ((out '()))
+      (let ((d (guard (e (#t (eof-object))) (read p))))
+        (if (eof-object? d) (reverse out) (loop (cons d out)))))))
+(define (frame-writer f) (and (list? f) (> (length f) 8) (list-ref f 4)))
+(define (frame-verb f) (and (list? f) (> (length f) 8) (list-ref f 8)))
+(define (line-count path)
+  (let ((t (file-text path)))
+    (let loop ((cs (string->list t)) (n 0))
+      (cond ((null? cs) n) ((char=? (car cs) #\newline) (loop (cdr cs) (+ n 1))) (else (loop (cdr cs) n))))))
+
+;; W1 (a): the derived writer is named and carried on every frame.
+(start-wpeer!)
+(let* ((t0 (epoch-ms))
+       (s (start-shell* wstore wsock no-writer " --actor alpha")))
+  (send-frame! s hello)
+  (let ((init (read-frame s)))
+    (send-frame! s ready)
+    (send-frame! s (call-tool "theourgia_write" '("x.1" "t")))
+    (read-frame s)
+    (system "sleep 0.01")
+    (send-frame! s (call-tool "theourgia_drafts" '()))
+    (read-frame s)
+    (close-input! s)
+    (let loop () (unless (eof-object? (read-frame s)) (loop)))
+    (let* ((t1 (epoch-ms))
+           (name (announced init))
+           (parts (and name (name-parts name)))
+           (frames (recorded-frames)))
+      (stop-wpeer!)
+      (want "W1 (a) with no THEOURGIA_WRITER and no --writer the shell names alpha-<start in base 36>-<its pid> after the three sentences, and describe, write and drafts all carry it"
+            (list (and parts (car parts))
+                  (and parts (equal? (caddr parts) (number->string (shell-pid s))))
+                  (and parts (let ((ms (string->number (cadr parts) 36))) (and ms (<= t0 ms t1))))
+                  (map frame-verb frames)
+                  (and name (for-all (lambda (f) (equal? (frame-writer f) name)) frames)))
+            (list "alpha" #t #t '(describe write describe drafts) #t)))))
+
+;; W1 (b): the draft round trip against the real daemon.
+(let* ((out (talk* (list hello ready
+                         (call-tool "theourgia_write" (list wblock "mw1b bytes"))
+                         (call-tool "theourgia_drafts" '()))
+                   wstore #f no-writer " --actor alpha")))
+  (want "W1 (b) the derived session writes a draft and its drafts list it"
+        (list (and (>= (length out) 3) (starts-with-text? (text-of (cadr out)) "(ok"))
+              (and (>= (length out) 3) (string? wblock) (contains? (text-of (caddr out)) wblock)))
+        '(#t #t)))
+
+;; The `(version ...)` clause a write answered with, or #f.
+(define (answered-version text)
+  (let ((d (and (string? text) (guard (e (#t #f)) (read (open-input-string text))))))
+    (let find ((x d))
+      (cond ((and (pair? x) (eq? (car x) 'version) (pair? (cdr x))) (cadr x))
+            ((pair? x) (or (find (car x)) (find (cdr x))))
+            (else #f)))))
+
+;; W2: two sessions, one actor, alive at once.
+(let* ((a (start-shell* wstore #f no-writer " --actor alpha")))
+  (send-frame! a hello)
+  (let* ((a-init (read-frame a))
+         (crossed (let ((t (epoch-ms))) (let wait () (if (= (epoch-ms) t) (wait) 'crossed))))
+         (b (start-shell* wstore #f no-writer " --actor alpha")))
+    (send-frame! b hello)
+    (let* ((b-init (read-frame b))
+           (na (announced a-init)) (nb (announced b-init))
+           (pa (and na (name-parts na))) (pb (and nb (name-parts nb))))
+      (send-frame! a ready) (send-frame! b ready)
+      (send-frame! a (call-tool "theourgia_write" (list wblock "mw2 bytes of A")))
+      (let ((wa (read-frame a)))
+        (send-frame! b (call-tool "theourgia_write" (list wblock "mw2 bytes of B")))
+        (let ((wb (read-frame b)))
+          (send-frame! a (call-tool "theourgia_read" (list wblock "--working")))
+          (let ((ra (read-frame a)))
+            (send-frame! b (call-tool "theourgia_read" (list wblock "--working")))
+            (let ((rb (read-frame b)))
+              (close-input! a) (close-input! b)
+              (let loop () (unless (eof-object? (read-frame a)) (loop)))
+              (let loop () (unless (eof-object? (read-frame b)) (loop)))
+              (want "W2 two sessions of one actor get writers that differ in instant and in pid, and each writes and reads back its own draft of one block"
+                    (list (and pa pb (string=? (car pa) "alpha") (string=? (car pb) "alpha"))
+                          (and pa pb (not (string=? (cadr pa) (cadr pb))))
+                          (and pa pb (not (string=? (caddr pa) (caddr pb))))
+                          (starts-with-text? (text-of wa) "(ok")
+                          (starts-with-text? (text-of wb) "(ok")
+                          (let ((va (answered-version (text-of wa))) (vb (answered-version (text-of wb))))
+                            (and va vb (not (equal? va vb))))
+                          (contains? (text-of ra) "mw2 bytes of A")
+                          (contains? (text-of rb) "mw2 bytes of B"))
+                    '(#t #t #t #t #t #t #t #t)))))))))
+
+;; W3: precedence, read from the frames.
+(define (session-with launch extra)
+  (start-wpeer!)
+  (let* ((out (talk* (list hello ready (call-tool "theourgia_write" '("x.1" "t"))) wstore wsock launch extra))
+         (frames (recorded-frames)))
+    (stop-wpeer!)
+    (list (and (pair? out) (announced (car out)))
+          (map frame-writer frames))))
+(want "W3 THEOURGIA_WRITER wins over --writer: the sentence and every frame name w1"
+      (session-with "env THEOURGIA_WRITER=w1 " " --writer w2 --actor alpha")
+      '("w1" ("w1" "w1")))
+(want "W3 --writer alone is the session's writer: w2"
+      (session-with no-writer " --writer w2 --actor alpha")
+      '("w2" ("w2" "w2")))
+(want "W3 with neither, the derived writer, and the frames carry it"
+      (let* ((r (session-with no-writer " --actor alpha")) (name (car r)) (parts (and name (name-parts name))))
+        (list (and parts (car parts)) (and name (equal? (cadr r) (list name name)))))
+      '("alpha" #t))
+
+;; W4: the derived writer is a writer id, whatever the actor.
+(for-each
+  (lambda (actor prefix)
+    (let* ((out (talk* (list hello ready (call-tool "theourgia_write" (list wblock "mw4")))
+                       wstore #f no-writer (string-append " --actor " (shell-quote actor))))
+           (name (and (pair? out) (announced (car out)))))
+      (want (string-append "W4 the actor " (format "~s" (if (> (string-length actor) 20) (substring actor 0 20) actor))
+                           " gives a writer id of at most 128 characters starting " prefix ", and a write under it succeeds")
+            (list (writer-id-copy? name)
+                  (and name (<= (string-length name) 128))
+                  (and name (starts-with-text? name prefix))
+                  (and (>= (length out) 2) (starts-with-text? (text-of (cadr out)) "(ok")))
+            '(#t #t #t #t))))
+  (list "Louis de Guenchy!" "" "!!!" ".." (make-string 200 #\a))
+  (list "louis-de-guenchy-" "agent-" "agent-" "agent-" (string-append (make-string 40 #\a) "-")))
+
+;; W5: an ended session's drafts, from another session.
+(let* ((a-out (talk* (list hello ready (call-tool "theourgia_write" (list wblock "mw5 from A")))
+                     wstore #f no-writer " --actor alpha"))
+       (a-name (and (pair? a-out) (announced (car a-out))))
+       (b-out (talk* (list hello ready
+                           (call-tool "theourgia_drafts" (list "--writer" (or a-name "none")))
+                           (call-tool "theourgia_write" (list (or wblock2 "none") "mw5 from B"))
+                           (call-tool "theourgia_drafts" '()))
+                     wstore #f no-writer " --actor alpha"))
+       (b-name (and (pair? b-out) (announced (car b-out))))
+       (c-out (talk* (list hello ready (call-tool "theourgia_drafts" '()))
+                     wstore #f (string-append "env THEOURGIA_WRITER=" (or a-name "none") " ") " --actor gamma")))
+  (want "W5 a later session reads an ended one's drafts with drafts --writer, keeps its own writer after that call (its own draft listed, not the other's), and a session started as that writer lists them"
+        (list (and a-name b-name (not (string=? a-name b-name)))
+              (and (>= (length b-out) 4) (string? wblock) (contains? (text-of (cadr b-out)) wblock))
+              (and (>= (length b-out) 4) (string? wblock) (string? wblock2)
+                   (starts-with-text? (text-of (caddr b-out)) "(ok")
+                   (starts-with-text? (text-of (cadddr b-out)) "(ok")
+                   (contains? (text-of (cadddr b-out)) wblock2)
+                   (not (contains? (text-of (cadddr b-out)) wblock)))
+              (and (pair? c-out) (equal? (announced (car c-out)) a-name))
+              (and (>= (length c-out) 2) (string? wblock) (contains? (text-of (cadr c-out)) wblock)))
+        '(#t #t #t #t #t)))
+
+;; W6: a writer that cannot be one is refused at start, before any frame.
+;; -> (exit-status stdout stderr connections)
+(define (run-shell-once launch extra)
+  (let ((in (string-append here "/mw6.in")) (out (string-append here "/mw6.out"))
+        (err (string-append here "/mw6.err")) (rc (string-append here "/mw6.rc")))
+    (start-wpeer!)
+    (call-with-output-file in
+      (lambda (p) (for-each (lambda (f) (put-string p f) (newline p))
+                            (list hello ready (call-tool "theourgia_read" '("x.1")))))
+      'truncate)
+    (system (string-append "rm -f " out " " err " " rc "; "
+                           "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                           "THEOURGIA_RUN=" sock-here "/run " launch
+                           "scheme --script " shell " --store " wstore " --socket " wsock extra
+                           " < " in " > " out " 2> " err "; echo $? > " rc))
+    (stop-wpeer!)
+    (list (let ((t (file-text rc))) (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) t))
+          (file-text out) (file-text err) (line-count wconns))))
+(define (refused-at-start r)
+  (list (car r) (cadr r) (contains? (caddr r) "usage: theourgia-mcp") (cadddr r)))
+(want "W6 --writer \"Bad Id\" is refused at start: exit 2, the usage line, no frame, no connection"
+      (refused-at-start (run-shell-once no-writer " --writer 'Bad Id'"))
+      '("2" "" #t 0))
+(want "W6 --writer with no value is refused at start the same way"
+      (refused-at-start (run-shell-once no-writer " --writer"))
+      '("2" "" #t 0))
+(want "W6 THEOURGIA_WRITER=\"Bad Id\" with no option is refused at start the same way"
+      (refused-at-start (run-shell-once "env 'THEOURGIA_WRITER=Bad Id' " ""))
+      '("2" "" #t 0))
+(want "W6 a bad --writer is refused even when THEOURGIA_WRITER would have won"
+      (refused-at-start (run-shell-once "env THEOURGIA_WRITER=w1 " " --writer 'Bad Id'"))
+      '("2" "" #t 0))
+(want "W6 an empty THEOURGIA_WRITER is unset, not bad: the shell starts, derives, and reaches its socket"
+      (let* ((r (run-shell-once "env THEOURGIA_WRITER= " " --actor alpha"))
+             (first-line (let ((t (cadr r))) (let loop ((i 0)) (cond ((>= i (string-length t)) t) ((char=? (string-ref t i) #\newline) (substring t 0 i)) (else (loop (+ i 1)))))))
+             (name (announced first-line)))
+        (list (car r) (and name (name-parts name) (car (name-parts name))) (> (cadddr r) 0)))
+      '("0" "alpha" #t))
+(want "W6 a valid --writer starts normally, is named in the instructions (which the base does not do), and reaches its socket"
+      (let* ((r (run-shell-once no-writer " --writer w6"))
+             (first-line (let ((t (cadr r))) (let loop ((i 0)) (cond ((>= i (string-length t)) t) ((char=? (string-ref t i) #\newline) (substring t 0 i)) (else (loop (+ i 1))))))))
+        (list (car r) (announced first-line) (> (cadddr r) 0)))
+      '("0" "w6" #t))
+
+;; W6 PINS: every other parse error answers as it always did -- the -32600
+;; frame on stdout, exit 2 -- and an option the daemon's table declares is
+;; still parsed as one: the shell's table declares everything serve's did.
+(define (answered-frame r)
+  (list (car r) (contains? (cadr r) "\"code\":-32600") (contains? (caddr r) "usage: theourgia-mcp") (cadddr r)))
+(want "W6 PIN --actor without a value answers the -32600 frame, not the usage line, and exits 2"
+      (answered-frame (run-shell-once no-writer " --actor"))
+      '("2" #t #f 0))
+(want "W6 PIN --detach given twice is still a duplicate option: the -32600 frame, exit 2"
+      (answered-frame (run-shell-once no-writer " --detach --detach"))
+      '("2" #t #f 0))
+
+;; W6: the writer is checked before the store is looked at. Resolving the
+;; default socket stats the store, and a store under a directory that cannot
+;; be searched makes that raise; the bad writer is still answered with the
+;; usage line.
+(want "W6 a bad --writer with no --socket and a store under an unsearchable directory is still refused at start with the usage line, exit 2"
+      (let* ((denied (string-append here "/mw6-denied")) (store (string-append denied "/child"))
+             (err (string-append here "/mw6d.err")) (rc (string-append here "/mw6d.rc")))
+        (system (string-append "mkdir -p " store "; chmod 000 " denied))
+        (system (string-append "rm -f " err " " rc "; "
+                               "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' "
+                               "THEOURGIA_RUN=" sock-here "/run " no-writer
+                               "scheme --script " shell " --store " store " --writer 'Bad Id'"
+                               " < /dev/null > /dev/null 2> " err "; echo $? > " rc))
+        (system (string-append "chmod 755 " denied))
+        (list (let ((t (file-text rc))) (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) t))
+              (contains? (file-text err) "usage: theourgia-mcp")))
+      '("2" #t))
+
+;; The shell's parser, asked through the library's environment: a name the
+;; base does not export would stop this whole file from loading there, and a
+;; base run has to read row by row.
+(define (parse-shell-arguments args)
+  ((eval 'parse-shell-arguments (environment '(theourgia arguments))) args))
+
+;; W7: the shell's own parser, beside the verb tables, not in them. The
+;; command line and the RPC route parse a request's options before they ask
+;; whether its verb exists, so a key in the verb tables would answer a request
+;; for the unknown verb `mcp` from the shell's options.
+(want "W7 PIN a request for the unknown verb mcp, with --log or with --writer, is answered unknown-verb as on the base"
+      (list (contains? (cli-answer wstore '("mcp" "--log")) "(error unknown-verb")
+            (contains? (cli-answer wstore '("mcp" "--writer")) "(error unknown-verb"))
+      '(#t #t))
+(want "W7 --writer is an option of the shell's parser, a positional of serve's table and of the verb mcp, and the daemon's usage is unchanged"
+      (list (parse-shell-arguments '("--writer" "w"))
+            (parse-arguments 'serve '("--writer" "w"))
+            (parse-arguments 'mcp '("--writer" "w"))
+            (call-with-input-file "../theourgiad.sc"
+              (lambda (p)
+                (let loop ()
+                  (let ((d (read p)))
+                    (cond ((eof-object? d) 'no-serve-usage)
+                          ((and (pair? d) (eq? (car d) 'define) (pair? (cdr d)) (eq? (cadr d) 'serve-usage))
+                           (cadr (caddr d)))
+                          (else (loop))))))))
+      (list '((option "--writer" "w"))
+            '((pos "--writer") (pos "w"))
+            '((pos "--writer") (pos "w"))
+            '(serve [<store>] ["--socket" <path>]
+                    ["--detach" "--log" <path> (started-by-a-client-not-by-hand)]
+                    ["--attempt" <token> (started-by-a-client-not-by-hand)])))
 
 ;; ---- teardown ---------------------------------------------------------------
 ;;

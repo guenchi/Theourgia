@@ -1,10 +1,46 @@
 # The MCP shell
 
-`theourgia-mcp --store <path> [--socket <path>] [--actor <name>]` speaks
-MCP `2025-11-25` over stdio, in front of the same dispatcher the command
-line uses.
+`theourgia-mcp --store <path> [--socket <path>] [--actor <name>] [--writer <name>]`
+speaks MCP `2025-11-25` over stdio, in front of the same dispatcher the
+command line uses. These are the options the shell reads; the command
+line's common options (`--req`, `--cursor`, `--wire`) and the daemon's
+(`--log`, `--attempt`, `--detach`) are parsed too, as they always were,
+and change nothing here.
 
     scheme --script mcp/server.sc --store /path/to/store
+
+## Whose drafts
+
+Every request the shell sends carries a writer, and it is decided once,
+when the shell starts: `THEOURGIA_WRITER` when it is set and not empty;
+otherwise `--writer <name>`; otherwise a writer derived for this session,
+`<actor>-<start>-<pid>`. `<actor>` is the shell's actor in lower case,
+every character a writer id may not hold made `-`, runs of `-` made one,
+`-` and `.` taken off both ends, `agent` if nothing is left, at most 40
+characters; `<start>` is the moment the shell started, in milliseconds,
+in base 36; `<pid>` is the shell's process id. For example
+`guenchi-m0k3f1a2-84389`. A host configures nothing per session unless it
+wants a fixed name.
+
+The writer is said to the client: `initialize`'s `instructions` ends with
+"This session's writer is <w>; drafts left by an earlier session are read
+with `drafts --writer <that session's writer>`." A tool call's own
+`--writer` overrides the session's writer for that call and only that
+call. A later session takes over an earlier one's drafts by starting with
+`THEOURGIA_WRITER=<that name>` (or `--writer`).
+
+A writer given by the environment or by `--writer` is checked when the
+shell starts, the one not chosen too: a name a writer cannot have (1 to
+128 characters of `a-z`, `0-9`, `.`, `_`, `-`, and not `.` or `..`), or
+`--writer` without a value, answers the usage line on stderr and exit 2
+before any frame is read. An empty `THEOURGIA_WRITER` counts as unset.
+
+NOTE: Two sessions alive at once differ by pid, among processes sharing
+one pid namespace (one machine, outside containers, in general). A
+derived name repeats only if a pid is reused in the same millisecond of a
+clock that went back -- after a reboot with the clock reset, say -- and
+then the new session binds the old session's drafts. That is the limit,
+stated rather than claimed away.
 
 ## What a tool returns
 

@@ -45,7 +45,7 @@
 (library (theourgia arguments)
   (export argument-option-list parse-arguments argument-option argument-remove argument-positionals
           argument-strings argument-stdin argument-wants-stdin?
-          argument-stdin-placeholder?)
+          argument-stdin-placeholder? working-id? parse-shell-arguments)
   (import (rnrs base) (rnrs lists))
 
   ;; WARNING -- THESE TWO TABLES ARE A SECOND PLACE THAT KNOWS THE COMMAND LINE.
@@ -169,25 +169,49 @@
   ;; the same strings and so take the SAME fingerprint. Keeping the node
   ;; is what lets the two spellings stay distinguishable.
   (define (parse-arguments verb args)
+    (parse-with (value-options verb) (flag-options verb) (repeatable-options verb) args))
+
+  ;; THE MCP SHELL'S ARGUMENTS ARE NOT A VERB REQUEST, so they are not parsed
+  ;; through a verb's key. A key the shell used would be one any request
+  ;; could spell as a verb, and the command line and the RPC route parse a
+  ;; request's options before they ask whether its verb exists: a request
+  ;; for the unknown verb `mcp` would have been answered from the shell's
+  ;; table. The shell takes what `serve` takes, which is what it was parsed
+  ;; with before, and `--writer`.
+  (define (parse-shell-arguments args)
+    (parse-with (append (value-options 'serve) '("--writer")) (flag-options 'serve) '() args))
+
+  (define (parse-with value-opts flag-opts repeatable args)
     (let loop ((xs args) (seen '()) (out '()) (literal? #f))
       (cond
         ((null? xs) (reverse out))
         (literal? (loop (cdr xs) seen (cons (list 'pos (car xs)) out) #t))
         ((string=? (car xs) "--")
          (loop (cdr xs) seen (cons '(end) out) #t))
-        ((or (member (car xs) (value-options verb))
-             (member (car xs) (flag-options verb)))
+        ((or (member (car xs) value-opts)
+             (member (car xs) flag-opts))
          (cond
            ((and (member (car xs) seen)
-                 (not (member (car xs) (repeatable-options verb))))
+                 (not (member (car xs) repeatable)))
             (list 'error 'bad-request 'duplicate-option (car xs)))
-           ((member (car xs) (flag-options verb))
+           ((member (car xs) flag-opts)
             (loop (cdr xs) (cons (car xs) seen) (cons (list 'flag (car xs)) out) #f))
            ((null? (cdr xs))
             (list 'error 'bad-request 'missing-option-value (car xs)))
            (else (loop (cddr xs) (cons (car xs) seen)
                        (cons (list 'option (car xs) (cadr xs)) out) #f))))
         (else (loop (cdr xs) seen (cons (list 'pos (car xs)) out) #f)))))
+
+  ;; AN ID THE WORKING LAYER ACCEPTS, A WRITER'S OR A BLOCK'S: 1 to 128
+  ;; characters of [a-z0-9._-], and not "." or "..". It is defined here and
+  ;; not in working.sc because the MCP shell checks the writer it will use
+  ;; at start, and the shell loads the argument tables but not the core;
+  ;; working.sc imports it, so the two cannot disagree.
+  (define (working-id? x)
+    (and (string? x) (> (string-length x) 0) (<= (string-length x) 128)
+         (for-all (lambda (c) (or (char<=? #\a c #\z) (char<=? #\0 c #\9)
+                                  (memv c '(#\- #\_ #\.)))) (string->list x))
+         (not (member x '("." "..")))))
 
   (define (argument-option nodes name)
     (let ((n (find (lambda (n) (and (memq (car n) '(option flag))
