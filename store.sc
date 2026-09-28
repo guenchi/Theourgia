@@ -4509,8 +4509,8 @@
            ;; NOT DAMAGE: the log is whole and every record applies; what the
            ;; store holds is two identities for one path, which an export
            ;; refuses. The clause is there only when there is such a path, as
-           ;; local-writer is there only when there is a writer, so a store
-           ;; without one answers exactly as before.
+           ;; local-writer is there only when there is a writer, and the
+           ;; verdict is then `duplicates` unless the store is damaged.
            (duplicated (state-duplicated-paths state))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
@@ -4552,9 +4552,13 @@
             (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
             (list 'notes notes))
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
+        ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
+        ;; `ok`. A health verb that answered ok, and exited 0, on a store an
+        ;; export refuses said nothing; any verdict but ok exits 1.
         (list
-            (list 'verdict (if (or damaged? (pair? notes) (registry-inside-store?))
-                               'damaged 'ok))))))
+            (list 'verdict (cond ((or damaged? (pair? notes) (registry-inside-store?)) 'damaged)
+                                 ((pair? duplicated) 'duplicates)
+                                 (else 'ok)))))))
 
   ;; A SNAPSHOT THAT CANNOT BE USED IS NOT DAMAGE TO THE STORE -- the log
   ;; still loads and the state is still right, it just has to be rebuilt

@@ -159,7 +159,7 @@
                  (children (if state (code-children state id) '())))
             (when claimants
               (when (> (length claimants) 1)
-                (projection-failure 'duplicate-path (list 'path rel) (list 'ids claimants)))
+                (duplicate-path-failure (current) rel claimants))
               (set! claims (append claims (list (list rel claimants)))))
             (when id
               (when (member id seen) (projection-failure 'duplicate-file))
@@ -263,8 +263,7 @@
                    (let ((path (code-field state id 'path)))
                      (unless (code-safe-path? path) (projection-failure 'unsafe-path))
                      (when (member path paths)
-                       (projection-failure 'duplicate-path (list 'path path)
-                                           (list 'ids (state-path-claimants state 'library 'datum path))))
+                       (duplicate-path-failure state path (state-path-claimants state 'library 'datum path)))
                      (set! paths (cons path paths))
                      (let ((parts
                        (map (lambda (child)

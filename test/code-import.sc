@@ -127,5 +127,26 @@
   (want "CT-12 explicit in-place mode change is refused"
         (map cadr (with-store-write (car c) (lambda (s v) (list (list 'set (list-ref c 2) 'mode 'datum))) "test"))
         '(mode-mismatch)))
+;; Y5: two text paths, each held by two file blocks. The text export
+;; refuses once with the same shape as the datum projection: a duplicated
+;; path and its own ids, every duplicated path with its ids, and the remedy.
+(let* ((c (fresh)) (store (car c)) (out (string-append (cadr c) "/y5-out")))
+  (with-store-write store
+    (lambda (s v) (list '(insert root #f ((kind . file) (mode . text) (path . "a.py") (lang . python)))
+                        '(insert root #f ((kind . file) (mode . text) (path . "b.py") (lang . python)))))
+    "test")
+  (let* ((st (open-and-reduce store))
+         (ha (state-path-claimants st 'file 'text "a.py"))
+         (hb (state-path-claimants st 'file 'text "b.py"))
+         (a (rpc-dispatch store (list 'export-code out) "test"))
+         (clause (lambda (head) (and (list? a) (assq head (filter pair? a))))))
+    (want "Y5 export-code of two text paths each held twice refuses once: a duplicated path with its own ids, both paths with their ids, and the remedy"
+          (list (and (pair? a) (car a)) (clause 'reason)
+                (let ((p (clause 'path)) (i (clause 'ids)))
+                  (and p i (equal? (cadr i) (state-path-claimants st 'file 'text (cadr p)))))
+                (clause 'paths) (clause 'remedy) (length ha) (length hb))
+          (list 'error '(reason duplicate-path) #t
+                (list 'paths (list (list "a.py" (list 'ids ha)) (list "b.py" (list 'ids hb))))
+                '(remedy del-all-but-one-per-path) 2 2))))
 (printf "~a failures\ncode-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

@@ -758,9 +758,8 @@ than creating a second one: its forms are matched to the library's children as a
 exported file's would be, and nothing is deleted. A child the file does
 not hold is kept, and the answer names it in `(kept (ids (<id> ...)))`. A
 file WITH a header is the whole library, as before, and a child it omits
-is deleted. A path two libraries already hold is refused as
-`(error projection-invalid (reason duplicate-path) (path <path>) (ids
-(<id> ...)))`, and nothing is written. The libraries that held each path
+is deleted. A path two libraries already hold is refused, and nothing is
+written; see "A path several blocks hold" below. The libraries that held each path
 when the directory was read are checked again when the import writes; if
 they changed, the import is refused `(error stale-baseline (path <path>)
 (reason changed-claimants))`.
@@ -780,6 +779,23 @@ in any of the three projections (see "The working view on disk" below);
 `--writer` selects whose drafts, with `--working`, and is accepted and
 ignored without it.
 
+#### A path several blocks hold
+
+An export that meets a path two or more blocks hold -- two alive datum
+libraries, or two alive text files -- and a raw `import-code --datum` of
+such a path, refuse once, naming every such path in the store:
+
+    (error projection-invalid (reason duplicate-path) (path <path>) (ids (<id> ...))
+           (paths ((<path> (ids (<id> ...))) ...)) (remedy del-all-but-one-per-path))
+
+`path` and `ids` are the first one met; `paths` is all of them, as `check`
+lists them. The remedy is one `del <id>` for every holder but one, per path.
+It does not say which to keep: there is no oldest holder across writers,
+and the newer copy may be the corrected one. Tell the copies apart with
+`read <id> --recursive` (a plain `read` shows a library's own fields, not
+its children's bodies, and an export refuses while the duplicates are
+there) before any `del`, which is permanent.
+
 ### `split-suggest`
 
     (split-suggest <file> ("--output" <review-file>))
@@ -796,9 +812,13 @@ not write.
 Reads the store and reports what does not hold together. A path two alive
 datum libraries, or two alive text files, both hold is reported under
 `(paths ((duplicate-path <path> (ids (<id> ...))) ...))`, a clause that is
-there only when there is such a path. It is not damage and does not change
-the verdict: the log is whole; what the store holds is two identities for
-one path.
+there only when there is such a path. It is not damage -- the log is whole;
+what the store holds is two identities for one path -- but an export
+refuses it, so the verdict says it. The verdict is `damaged` when a
+writer's log fails its integrity check, the reduction could not apply a
+record, or the registry is inside the store; otherwise `duplicates` when
+there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
+way out of `duplicates` is under "A path several blocks hold".
 
 ### `snapshot`
 

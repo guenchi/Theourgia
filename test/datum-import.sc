@@ -353,27 +353,33 @@
             (list (answer-head b) (holders store "p.sc") (state-path-claimants (open-and-reduce store) 'file 'text "p.sc"))
             (list 'ok lib text-files)))))
 
-;; U3, U4, U5: a store already holding two datum libraries at one path.
+;; U3, U4, U5: a store already holding two datum libraries at one path. A
+;; duplicate-path refusal names every duplicated path and the remedy, and
+;; check's verdict on such a store is `duplicates`, which is not a success.
 (let* ((ra (raw-area! "u3")) (store (car ra)) (input (cadr ra)) (out (string-append root "/u3-out")))
   (write! (string-append input "/p.sc") p-text)
   (import-raw! store input)
   (second-library! store "p.sc")
   (let* ((two (holders store "p.sc")) (before (reduce-applied-cut (open-and-reduce store)))
          (a (import-raw! store input)))
-    (want "U3 a raw import of a path two libraries hold refuses duplicate-path with the path and both ids, and writes nothing"
+    (want "U3 a raw import of a path two libraries hold refuses duplicate-path with the path and both ids, every duplicated path, and the remedy, and writes nothing"
           (list a (equal? before (reduce-applied-cut (open-and-reduce store))) (length two))
-          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)) #t 2))
+          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)
+                      (list 'paths (list (list "p.sc" (list 'ids two)))) '(remedy del-all-but-one-per-path))
+                #t 2))
     (mkdir-p! out)
-    (want "U4 export-code --datum of that store refuses with the path and both ids"
+    (want "U4 export-code --datum of that store refuses with the path and both ids, every duplicated path, and the remedy"
           (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test")))
-          (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)))
+          (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc") (list 'ids two)
+                (list 'paths (list (list "p.sc" (list 'ids two)))) '(remedy del-all-but-one-per-path)))
     (let ((conflicts (safely (lambda () (rpc-dispatch store '(conflicts) "test"))))
           (check (safely (lambda () (rpc-dispatch store '(check) "test")))))
-      (want "U5 conflicts lists the duplicated path; check lists it under paths, and its verdict is still ok"
+      (want "U5 conflicts lists the duplicated path; check lists it under paths, its verdict is duplicates, and it is not a success"
             (list (deep-member? (list 'duplicate-path "p.sc" (list 'ids two)) conflicts)
                   (deep-member? (list 'paths (list (list 'duplicate-path "p.sc" (list 'ids two)))) check)
-                  (deep-member? '(verdict ok) check))
-            '(#t #t #t)))))
+                  (deep-member? '(verdict duplicates) check)
+                  (rpc-ok? check))
+            '(#t #t #t #f)))))
 
 ;; U4b: two TEXT files sharing a path: the text export names the path and
 ;; both ids.
@@ -385,9 +391,151 @@
     "other")
   (let ((two (state-path-claimants (open-and-reduce store) 'file 'text "x.py")))
     (mkdir-p! out)
-    (want "U4b export-code of two text files sharing a path refuses with the path and both ids"
+    (want "U4b export-code of two text files sharing a path refuses with the path and both ids, every duplicated path, and the remedy"
           (list (safely (lambda () (rpc-dispatch store (list 'export-code out) "test"))) (length two))
-          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "x.py") (list 'ids two)) 2))))
+          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "x.py") (list 'ids two)
+                      (list 'paths (list (list "x.py" (list 'ids two)))) '(remedy del-all-but-one-per-path))
+                2))))
+
+;; Y: A STORE HOLDING TWO DUPLICATED PATHS, p.sc held by two libraries and
+;; q.sc by three, each holder with a body of its own. The later holders are
+;; imported under other paths and given p.sc and q.sc by `set`, the way a
+;; block acquires a path after it is made.
+(define (lib-text name f n)
+  (string-append "(library (" name ") (export " f ") (import (rnrs))\n(define (" f ") " n "))\n"))
+;; -> store
+(define (duplicated-store! name)
+  (let* ((ra (raw-area! name)) (store (car ra)) (input (cadr ra))
+         (alt (string-append root "/" name "-alt")))
+    (mkdir-p! alt)
+    (write! (string-append input "/p.sc") (lib-text "p" "f" "1"))
+    (write! (string-append input "/q.sc") (lib-text "q" "h" "3"))
+    (import-raw! store input)
+    (write! (string-append alt "/p2.sc") (lib-text "p" "f" "100"))
+    (write! (string-append alt "/q2.sc") (lib-text "q" "h" "30"))
+    (write! (string-append alt "/q3.sc") (lib-text "q" "h" "300"))
+    (import-raw! store alt)
+    (for-each (lambda (from to)
+                (let ((id (car (holders store from))))
+                  (with-store-write store (lambda (s v) (list (list 'set id 'path to))) "test")))
+              '("p2.sc" "q2.sc" "q3.sc") '("p.sc" "q.sc" "q.sc"))
+    store))
+(define (both-paths store)
+  (list 'paths (list (list "p.sc" (list 'ids (holders store "p.sc")))
+                     (list "q.sc" (list 'ids (holders store "q.sc"))))))
+
+;; Y1: the export refuses once and names every duplicated path.
+(let* ((store (duplicated-store! "y1")) (out (string-append root "/y1-out")))
+  (mkdir-p! out)
+  (let ((a (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test")))))
+    (want "Y1 export-code --datum refuses once: a duplicated path with its own ids, both duplicated paths with all their ids under paths, and the remedy"
+          (list (answer-head a) (answer-clause a 'reason)
+                (let ((p (answer-clause a 'path)) (i (answer-clause a 'ids)))
+                  (and p i (equal? (cadr i) (holders store (cadr p)))))
+                (answer-clause a 'paths) (answer-clause a 'remedy)
+                (length (holders store "p.sc")) (length (holders store "q.sc")) (directory-list out))
+          (list '(error projection-invalid) '(reason duplicate-path) #t (both-paths store)
+                '(remedy del-all-but-one-per-path) 2 3 '()))))
+
+;; Y2: a raw import of one of those paths refuses with the same shape.
+(let* ((store (duplicated-store! "y2")) (in2 (string-append root "/y2-in")))
+  (mkdir-p! in2)
+  (write! (string-append in2 "/p.sc") (lib-text "p" "f" "7"))
+  (let* ((before (reduce-applied-cut (open-and-reduce store))) (a (import-raw! store in2)))
+    (want "Y2 a raw import of one duplicated path refuses with that path and its ids, both duplicated paths, and the remedy, and writes nothing"
+          (list a (equal? before (reduce-applied-cut (open-and-reduce store))))
+          (list (list 'error 'projection-invalid '(reason duplicate-path) '(path "p.sc")
+                      (list 'ids (holders store "p.sc")) (both-paths store) '(remedy del-all-but-one-per-path))
+                #t))))
+
+;; Y3: check says it in its verdict: damaged, then duplicates, then ok.
+(let* ((store (duplicated-store! "y3")) (c (safely (lambda () (rpc-dispatch store '(check) "test")))))
+  (want "Y3 check on a store with duplicated paths: verdict duplicates, not a success, the paths as before"
+        (list (answer-clause c 'verdict) (rpc-ok? c) (answer-clause c 'paths))
+        (list '(verdict duplicates) #f
+              (list 'paths (list (list 'duplicate-path "p.sc" (list 'ids (holders store "p.sc")))
+                                 (list 'duplicate-path "q.sc" (list 'ids (holders store "q.sc"))))))))
+(let* ((ra (raw-area! "y3b")) (store (car ra)) (input (cadr ra)))
+  (write! (string-append input "/p.sc") (lib-text "p" "f" "1"))
+  (import-raw! store input)
+  (let ((c (safely (lambda () (rpc-dispatch store '(check) "test")))))
+    (want "Y3 PIN check on a store without duplicated paths: verdict ok, a success, no paths clause"
+          (list (answer-clause c 'verdict) (rpc-ok? c) (answer-clause c 'paths))
+          '((verdict ok) #t #f))))
+;; Damage wins: the last record of the store's writer, in its last segment,
+;; is corrupted after the duplicates were written, so they are still there
+;; to report.
+(let* ((store (duplicated-store! "y3c"))
+       (c (safely
+            (lambda ()
+              (rpc-dispatch store '(insert "--under" "root" "--title" "last") "test")
+              (let* ((w (car (cadr (assq 'writers (cdr (rpc-dispatch store '(check) "test"))))))
+                     (dir (string-append store "/writers/" (car w)))
+                     (last (apply max (filter values (map segment-file-number (directory-list dir)))))
+                     (seg (string-append dir "/" (segment-file-name last)))
+                     (bytes (call-with-port (open-file-input-port seg) get-bytevector-all)))
+                (call-with-port (open-file-output-port seg (file-options no-fail))
+                  (lambda (p)
+                    (put-bytevector p
+                      (let ((o (bytevector-copy bytes)) (k (- (bytevector-length bytes) 20)))
+                        (bytevector-u8-set! o k (if (= 98 (bytevector-u8-ref o k)) 99 98))
+                        o))))
+                (rpc-dispatch store '(check) "test"))))))
+  (want "Y3 check on a damaged store with duplicated paths: verdict damaged, the paths still reported"
+        (list (answer-clause c 'verdict) (rpc-ok? c) (and (answer-clause c 'paths) #t))
+        '((verdict damaged) #f #t)))
+
+;; Y4: the way out, driven from the refusal. For each path it names, every
+;; id but one is deleted -- the one kept is chosen here, the newer holder of
+;; p.sc and the middle one of q.sc's three, so that no fixed rule passes by
+;; luck -- and the export then writes the survivors' bodies and none of the
+;; deleted ones'.
+(let* ((store (duplicated-store! "y4")) (out (string-append root "/y4-out")))
+  (mkdir-p! out)
+  (let* ((refusal (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test"))))
+         (paths (let ((p (answer-clause refusal 'paths))) (if p (cadr p) '())))
+         (st (open-and-reduce store))
+         (body-of (lambda (id) (let ((cs (code-children st id))) (and (pair? cs) (code-field st (car cs) 'body)))))
+         (kept (map (lambda (entry)
+                      (let ((ids (cadr (cadr entry))))
+                        (cons (car entry)
+                              (if (equal? (car entry) "p.sc")
+                                  (find (lambda (id) (equal? (body-of id) '(define (f) 100))) ids)
+                                  (cadr ids)))))
+                    paths))
+         (dels (apply append
+                      (map (lambda (entry)
+                             (let ((k (cdr (assoc (car entry) kept))))
+                               (filter (lambda (id) (not (equal? id k))) (cadr (cadr entry)))))
+                           paths)))
+         (deleted (map (lambda (id) (safely (lambda () (rpc-dispatch store (list 'del id) "test")))) dels))
+         (exported (safely (lambda () (rpc-dispatch store (list 'export-code out "--datum") "test"))))
+         (text (lambda (rel)
+                 (let ((f (string-append out "/" rel)))
+                   (if (file-exists? f)
+                       (utf8->string (call-with-port (open-file-input-port f) get-bytevector-all))
+                       ""))))
+         (has? (lambda (t needle)
+                 (let ((n (string-length needle)))
+                   (let loop ((i 0))
+                     (cond ((> (+ i n) (string-length t)) #f)
+                           ((string=? (substring t i (+ i n)) needle) #t)
+                           (else (loop (+ i 1))))))))
+         (q-kept (let ((e (assoc "q.sc" kept))) (and e (cdr e))))
+         (q-line (lambda (id) (let ((b (body-of id))) (if b (format "~s" b) "no body"))))
+         (check (safely (lambda () (rpc-dispatch store '(check) "test")))))
+    (want "Y4 deleting all but one holder per path, as the refusal lists them, lets the export write the survivors' bodies and none of the deleted ones', and check answers ok"
+          (list (length paths) (length dels)
+                (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) deleted)
+                (answer-head exported)
+                (list-sort string<? (directory-list out))
+                (and (has? (text "p.sc") "(define (f) 100)") (not (has? (text "p.sc") "(define (f) 1)")))
+                (and q-kept (has? (text "q.sc") (q-line q-kept))
+                     (for-all (lambda (id) (or (equal? id q-kept) (not (has? (text "q.sc") (q-line id)))))
+                              (let ((e (assoc "q.sc" paths))) (if e (cadr (cadr e)) '())))
+                     #t)
+                (answer-clause check 'verdict) (rpc-ok? check))
+          (list 2 3 #t 'ok '("p.sc" "q.sc") #t #t '(verdict ok) #t))))
 
 ;; U6 PIN: the headed round trip -- export, then import the export -- is
 ;; still idempotent.

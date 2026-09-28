@@ -14,7 +14,7 @@
 ;; limitations under the License.
 (library (theourgia code-project)
   (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
-          code-input-files code-safe-path? code-parent-directory)
+          code-input-files code-safe-path? code-parent-directory duplicate-path-failure)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
@@ -162,6 +162,17 @@
   (define (export-code store dir raw?)
     (export-code-view store dir raw? (lambda () (open-and-reduce store))))
 
+  ;; A PATH SEVERAL BLOCKS HOLD IS REFUSED WITH EVERY SUCH PATH IN THE STORE,
+  ;; and the way out. `path` and `ids` are the first one met, as before;
+  ;; `paths` is the whole list `check` reports, so a user who fixes one path
+  ;; does not run again only to meet the next. The remedy is one `del` per
+  ;; surplus holder, and it does not say which: there is no oldest holder
+  ;; across writers, and the newer copy may be the corrected one.
+  (define (duplicate-path-failure state rel ids)
+    (projection-failure 'duplicate-path (list 'path rel) (list 'ids ids)
+                        (list 'paths (map cdr (state-duplicated-paths state)))
+                        (list 'remedy 'del-all-but-one-per-path)))
+
   (define (export-code-view store dir raw? view)
     (answer
       (lambda ()
@@ -180,8 +191,7 @@
                                                  (list child src))) (code-children state id))))
                           (unless (relative-safe? rel) (projection-failure 'unsafe-path))
                           (when (member rel paths)
-                            (projection-failure 'duplicate-path (list 'path rel)
-                                                (list 'ids (state-path-claimants state 'file 'text rel))))
+                            (duplicate-path-failure state rel (state-path-claimants state 'file 'text rel)))
                           (set! paths (cons rel paths))
                           (list rel (if raw? (apply bytes-append (map cadr entries))
                                         (projection-encode entry (list (store-id-of store) id cut) entries))))) files)))
