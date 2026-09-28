@@ -3142,6 +3142,19 @@
          (car es))
         (else (loop (cdr es))))))
 
+  ;; THE ENTRY registry-update WOULD CHANGE: a water mark under the key.
+  ;; registry-entry above also answers a keyed row too short to be one,
+  ;; which registry-update leaves alone -- so a caller that asks "is there
+  ;; an entry to raise" and then raises through registry-update must ask
+  ;; with this, or a malformed row answers yes and nothing is raised.
+  (define (registry-water-mark reg store-id instance writer)
+    (find (lambda (e)
+            (and (water-mark-entry? e)
+                 (equal? (car e) store-id)
+                 (equal? (cadr e) instance)
+                 (equal? (caddr e) writer)))
+          reg))
+
   (define (registry-authorised reg store-id instance writer)
     (let ((e (registry-entry reg store-id instance writer)))
       (and e (list-ref e 3))))
@@ -3163,11 +3176,25 @@
   ;; yet cannot have written anything, so there is nothing to note.
   (define (registry-note-written reg store-id instance writer seq)
     (registry-update reg store-id instance writer
-                     (lambda (e) (list store-id instance writer
-                                       (max seq (list-ref e 3))
-                                       (list-ref e 4)
-                                       (max seq (list-ref e 5))))
+                     (written-raised store-id instance writer seq)
                      #f))
+
+  ;; THE SAME RAISE, CREATING THE ENTRY WHEN THERE IS NONE: the count an
+  ;; acknowledgement needs. `authorised` and `written` both start at seq,
+  ;; in the documented shape (state `active` in field 4). Only the
+  ;; acknowledgement of a flushed record (note-written-for!) creates.
+  (define (registry-acknowledge-written reg store-id instance writer seq)
+    (registry-update reg store-id instance writer
+                     (written-raised store-id instance writer seq)
+                     (list store-id instance writer seq 'active seq)))
+
+  ;; ONE RAISE FOR BOTH: authorised and written each to seq by max, every
+  ;; other field left alone.
+  (define (written-raised store-id instance writer seq)
+    (lambda (e) (list store-id instance writer
+                      (max seq (list-ref e 3))
+                      (list-ref e 4)
+                      (max seq (list-ref e 5)))))
 
   ;; ONE MERGE, TWO CALLERS. Both raise a number in place and both have
   ;; to leave every other field of the entry alone; two copies of that
@@ -6023,17 +6050,49 @@
   ;; `store-id-of` answers "unknown" when the metadata will not read and
   ;; `instance-nonce` answers #f -- both of which are honest for a reader
   ;; and neither of which is a key. Keyed by one of those, the update
-  ;; matches no entry, and `registry-update` with no `absent` clause
-  ;; returns the registry untouched: the write is acknowledged, the
-  ;; written frontier never moves, and a store later restored to an
-  ;; earlier sequence walks past the rollback check that frontier exists
-  ;; to fail. The acknowledged request then runs a second time, which is
-  ;; the one outcome this whole mechanism exists to prevent.
+  ;; would match none of the store's real entries and create one under a
+  ;; name nothing reads: the write is acknowledged, the store's written
+  ;; frontier never moves, and a store later restored to an earlier
+  ;; sequence walks past the rollback check that frontier exists to fail.
+  ;; The acknowledged request then runs a second time, which is the one
+  ;; outcome this whole mechanism exists to prevent. So the identity is
+  ;; refused by name before the registry is written.
   ;;
-  ;; AND AN UPDATE THAT MATCHED NOTHING IS NOT AN UPDATE. Silence there
-  ;; reads exactly like success, so it is made loud: this is a barrier
-  ;; obligation, and an obligation that cannot be discharged has to say
-  ;; so rather than be skipped.
+  ;; AN ACKNOWLEDGEMENT CREATES THE COUNT IT NEEDS. Under the store's real
+  ;; identity, a record this log holds and the barrier just flushed is
+  ;; counted even when no entry exists for (store-id, nonce, writer): after
+  ;; an identity adopt every earlier writer is under a nonce the registry
+  ;; holds no water mark for (only the adopt's generation), and a replay of
+  ;; its record would otherwise never be answered. The writer may be a mirror: the entry records that this
+  ;; instance acknowledged held history, not ownership -- it creates no
+  ;; owner file and no generation record and lets no session write as that
+  ;; writer. It is scoped to this instance's nonce, so a copy under another
+  ;; instance never touches these entries. Called only AFTER the flush
+  ;; returned (store.sc's barrier-for), so a failed flush creates nothing.
+  ;; resume-uncertain! reads the entry's `authorised` like a reservation's.
+  ;;
+  ;; NEVER: AN ENTRY IS CREATED ONLY FOR AN INSTANCE THIS MACHINE MINTED.
+  ;; Two conditions, and each refuses a case the other lets through:
+  ;; - verify-instance answers ok. "This instance's nonce" is the key only
+  ;;   when the instance really is this one: a copy that kept another
+  ;;   store's instance.sexp carries that store's nonce, and counting under
+  ;;   it would write into the other instance's entries.
+  ;; - this machine's registry holds a generation record for (store-id,
+  ;;   nonce): the adopt that minted the instance recorded it here, which is
+  ;;   the witness that the registry has not been lost since. A registry
+  ;;   that lost its entries (and so its generations) must not be re-seeded
+  ;;   by a replay: the entry would start at the replayed record, and a
+  ;;   store later restored to an earlier sequence would walk past the
+  ;;   rollback check the lost entry existed to fail.
+  ;; Otherwise the acknowledgement is refused by name, as it was before
+  ;; entries could be created. An entry that exists is raised as before,
+  ;; and that is the common case, so the checks are paid only when there is
+  ;; none: the raise is tried under the machine lock first, and only an
+  ;; absent entry leaves the lock, verifies the instance and takes it again
+  ;; to look for the generation and create (an entry another process
+  ;; created meanwhile is then raised by max, as any other). verify-instance
+  ;; is asked OUTSIDE the machine lock: on a fresh machine home it mints the
+  ;; machine id under that same lock.
   (define (note-written-for! store writer seq)
     ;; A RENDEZVOUS BEFORE THE IDENTITY IS READ, because no fault can
     ;; reach these two reads. They go through `read-whole`, which opens a
@@ -6050,25 +6109,31 @@
           'note-written-for!
           "cannot raise the written frontier without the store's identity"
           (list store (list 'store-id id) (list 'instance nonce))))
-      (parameterize ((current-machine-home (machine-home)))
-        (with-machine-lock
-          (lambda ()
-            (let* ((reg (read-registry))
-                   (next (registry-note-written reg id nonce writer seq)))
-              (unless (registry-has-entry? next id nonce writer)
-                (assertion-violation
-                  'note-written-for!
-                  "no registry entry to raise the written frontier on"
-                  (list store id nonce writer seq)))
-              (write-registry! next)))))))
-
-  (define (registry-has-entry? reg store-id instance writer)
-    (exists (lambda (e)
-              (and (water-mark-entry? e)
-                   (equal? (car e) store-id)
-                   (equal? (cadr e) instance)
-                   (equal? (caddr e) writer)))
-            reg))
+      (let ((raised?
+              (parameterize ((current-machine-home (machine-home)))
+                (with-machine-lock
+                  (lambda ()
+                    (let ((reg (read-registry)))
+                      (and (registry-water-mark reg id nonce writer)
+                           (begin (write-registry! (registry-note-written reg id nonce writer seq))
+                                  #t))))))))
+        (unless raised?
+          (unless (eq? (verify-instance store) 'ok)
+            (assertion-violation
+              'note-written-for!
+              "no registry entry to raise the written frontier on"
+              (list store id nonce writer seq)))
+          (parameterize ((current-machine-home (machine-home)))
+            (with-machine-lock
+              (lambda ()
+                (let ((reg (read-registry)))
+                  (unless (or (registry-water-mark reg id nonce writer)
+                              (pair? (generations-of reg id nonce)))
+                    (assertion-violation
+                      'note-written-for!
+                      "no registry entry to raise the written frontier on"
+                      (list store id nonce writer seq)))
+                  (write-registry! (registry-acknowledge-written reg id nonce writer seq))))))))))
 
   (define (close-quietly fd) (guard (e (#t (if #f #f))) (fd-close fd)))
 

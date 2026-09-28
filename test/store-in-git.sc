@@ -39,7 +39,7 @@
         (only (theourgia client) socket-path)
         (only (theourgia reduce) block-id)
         (only (theourgia wire) storable-decode storable-encode)
-        (only (theourgia log) store-id-of)
+        (only (theourgia log) store-id-of verify-instance)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (igropyr sexpr) string->sexpr-extended sexpr->string-extended))
 
@@ -447,13 +447,11 @@
 ;; checkpoint exists. A clone carries no checkpoint, has none after a read,
 ;; and has one only after its own first snapshot.
 ;;
-;; A REPLAY OF A REQUEST MADE BEFORE THE RESTORE ANSWERS unknown ON THE CLONE,
-;; before adopt and after it, pinned as measured. The replay barrier raises
-;; the request writer's written frontier in the machine registry: without an
-;; instance there is no identity to raise it under, and after adopt the
-;; writer that answered is the retired predecessor, which the new home's
-;; registry has no entry for. unknown is a non-answer -- the store does not
-;; guess -- where the original answers (replay #t).
+;; A REPLAY OF A REQUEST MADE BEFORE THE RESTORE answers unknown on the clone
+;; before adopt -- without an instance there is no identity to count the
+;; acknowledgement under, and the store does not guess -- and after adopt it
+;; answers as the original does, (replay #t): the acknowledgement creates the
+;; count it needs under the new instance (the P rows below read that count).
 (let* ((h (home! "g7")) (hc (home! "g7c")) (repo (string-append root "/g7")) (s (string-append repo "/store"))
        (clone (string-append root "/g7-clone")) (sc (string-append clone "/store")))
   (sh "mkdir -p " (quoted s))
@@ -502,11 +500,304 @@
                   carried after-read (head-of adopt) after-replay (head-of snapc) (checkpoint?)
                   ck-datum? (has-substring? ck sc))
             (list 'ok 'ok 'ok #t #f #f 'ok #f 'ok #t #t #t))
-      (want "G7 a pre-restore request replays (replay #t) on the original and answers unknown on the clone, before adopt and after it (as measured; the store does not guess)"
-            (list (clause-of replay-original 'replay) before-adopt replay-clone)
+      (want "G7 a pre-restore request replays (replay #t) on the original; on the clone it answers unknown before adopt and (replay #t) after it"
+            (list (clause-of replay-original 'replay) before-adopt (head-of replay-clone) (clause-of replay-clone 'replay))
             (list '(replay #t)
                   '(error unknown (replay-barrier-failed "cannot raise the written frontier without the store's identity"))
-                  '(error unknown (replay-barrier-failed "no registry entry to raise the written frontier on")))))))
+                  'ok '(replay #t))))))
+
+;; ---- P: a pre-restore request is replayed after an identity adopt ---------------
+;; The original O answers three tracked requests (R1 at sequence 2, R2 at 3,
+;; R3 at 4). A clone C is adopted by identity, so every writer of O is under a
+;; nonce C's machine registry holds no water mark for (only the adopt's
+;; generation). A replay then acknowledges a
+;; record this log holds and the barrier flushed, and the acknowledgement
+;; creates the count it needs: the entry (store-id nonce writer seq active seq)
+;; under C's NEW nonce, raised by max afterwards.
+(define (read-sexpr-file p)
+  (guard (e (#t 'UNREADABLE))
+    (if (file-exists? p) (string->sexpr-extended (text-of-file p)) 'ABSENT)))
+(define (marks-of home)
+  (let ((r (read-sexpr-file (string-append home "/instances.sexp"))))
+    (cond ((eq? r 'ABSENT) '())
+          ((list? r) (filter (lambda (e) (and (list? e) (pair? e) (string? (car e)))) r))
+          (else r))))
+(define (gens-of home)
+  (let ((r (read-sexpr-file (string-append home "/instances.sexp"))))
+    (if (list? r) (filter (lambda (e) (and (pair? e) (eq? (car e) 'gen))) r) '())))
+(define (marks-for home id nonce writer)
+  (let ((ms (marks-of home)))
+    (if (list? ms)
+        (filter (lambda (e) (and (equal? (car e) id) (equal? (cadr e) nonce) (equal? (caddr e) writer))) ms)
+        ms)))
+(define (nonce-of store)
+  (let ((d (read-sexpr-file (string-append store "/instance.sexp"))))
+    (and (list? d)
+         (let ((c (find (lambda (x) (and (list? x) (= 2 (length x)) (eq? (car x) 'nonce))) d)))
+           (and c (cadr c))))))
+;; (ask-rc env home store verb args...) -> (rc answer), with extra environment.
+(define (ask-rc env home store verb . args)
+  (let* ((out (string-append root "/ask-rc.out"))
+         (rc (sh "THEOURGIA_LOCAL=1 THEOURGIA_HOME=" (quoted home) " " env " scheme --script ../core.sc " verb " "
+                 (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                 "--store " (quoted store) " --wire > " (quoted out) " 2> /dev/null < /dev/null")))
+    (list rc (guard (e (#t 'UNREADABLE))
+               (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d))))))
+(define (exit-of rc) (if (> rc 255) (quotient rc 256) rc))
+
+(define p-repo (string-append root "/p-orig"))
+(define sO (string-append p-repo "/store"))
+(define hO (home! "pO"))
+(sh "mkdir -p " (quoted sO))
+(git p-repo "init" "-q")
+(define wO (writer-of (ask hO sO "init")))
+(ask hO sO "insert" "--under" "root" "--title" "Plain" "--text" "p")
+;; A tracked request is replayed with its own id and the cursor it was sent with.
+(define (tracked-args req cursor) (list "insert" "--under" "root" "--title" req "--text" req "--req" req "--cursor" cursor))
+(define (send! home store req cursor) (apply ask home store (tracked-args req cursor)))
+(define cur1 (string-append wO ":1"))
+(define cur2 (string-append wO ":2"))
+(define cur3 (string-append wO ":3"))
+(define r1-original (send! hO sO "PR1" cur1))
+(define r2-original (send! hO sO "PR2" cur2))
+(define r3-original (send! hO sO "PR3" cur3))
+(want "P setup: the original answers three tracked requests at sequences 2, 3 and 4"
+      (map (lambda (a) (clause-of a 'events)) (list r1-original r2-original r3-original))
+      (list (list 'events (list (cons wO 2))) (list 'events (list (cons wO 3))) (list 'events (list (cons wO 4)))))
+(git p-repo "add" "store")
+(git p-repo "commit" "-q" "-m" "store")
+(define (clone-of repo name)
+  (let ((c (string-append root "/" name)))
+    (sh git-env " git clone -q " (quoted repo) " " (quoted c) " > /dev/null 2>&1")
+    c))
+(define cC (clone-of p-repo "p-clone"))
+(define sC (string-append cC "/store"))
+(define hC (home! "pC"))
+(define idO (store-id-of sO))
+(want "P4 before adopt the replay is refused by name (no identity yet)"
+      (send! hC sC "PR2" cur2)
+      '(error unknown (replay-barrier-failed "cannot raise the written frontier without the store's identity")))
+(define adoptC (ask hC sC "adopt"))
+(define nC (nonce-of sC))
+(define marks-before (marks-of hC))
+(define entry-before (marks-for hC idO nC wO))
+(define r2-replay (send! hC sC "PR2" cur2))
+(define entry-after (marks-for hC idO nC wO))
+(want "P1 after an identity adopt the replay answers as the original did: ok, (replay #t), (event (w-old . 3))"
+      (list (head-of adoptC) (clause-of adoptC 'identity) (head-of r2-replay) (clause-of r2-replay 'replay)
+            (clause-of r2-replay 'event))
+      (list 'ok '(identity instance-absent) 'ok '(replay #t) (list 'event (cons wO 3))))
+(want "P2 the registry held no entry for (id, new nonce, w-old) before the replay and exactly one after, the whole entry (id nonce w-old 3 active 3); entries under any other nonce are unchanged"
+      (list (and nC #t) entry-before entry-after
+            (equal? (filter (lambda (e) (not (equal? (cadr e) nC))) (if (list? marks-before) marks-before '()))
+                    (filter (lambda (e) (not (equal? (cadr e) nC))) (let ((m (marks-of hC))) (if (list? m) m '())))))
+      (list #t '() (list (list idO nC wO 3 'active 3)) #t))
+(send! hC sC "PR3" cur3)
+(define entry-m (marks-for hC idO nC wO))
+(send! hC sC "PR1" cur1)
+(define entry-k (marks-for hC idO nC wO))
+(want "P3 a replay of a later record raises written (and authorised) to 4; a replay of an earlier one leaves it at 4 (max)"
+      (list entry-m entry-k)
+      (list (list (list idO nC wO 4 'active 4)) (list (list idO nC wO 4 'active 4))))
+
+;; P5: A RECOVERY ADOPT UNDER THE SAME NONCE. The local writer's log is
+;; restored from end 10 to a consistent prefix 6 (its segment copied at 6
+;; and put back), keeping the tracked request at 4; the registry says 10, so
+;; adopt answers registry-ahead and keeps the instance. The replay of the
+;; request at 4 answers ok, and the entry is never lowered.
+(define s5 (string-append root "/p5/store"))
+(define h5 (home! "p5"))
+(sh "mkdir -p " (quoted s5))
+(define w5 (writer-of (ask h5 s5 "init")))
+(for-each (lambda (t) (ask h5 s5 "insert" "--under" "root" "--title" t "--text" t)) '("a" "b" "c"))
+(define r5 (send! h5 s5 "PR5" (string-append w5 ":3")))
+(for-each (lambda (t) (ask h5 s5 "insert" "--under" "root" "--title" t "--text" t)) '("e" "f"))
+(define seg5 (string-append s5 "/writers/" w5 "/000001.sexp"))
+(sh "cp -p " (quoted seg5) " " (quoted (string-append root "/p5-seg-at-6")))
+(for-each (lambda (t) (ask h5 s5 "insert" "--under" "root" "--title" t "--text" t)) '("g" "h" "i" "j"))
+(define id5 (store-id-of s5))
+(define n5 (nonce-of s5))
+(define mark5-before (marks-for h5 id5 n5 w5))
+(sh "cp -p " (quoted (string-append root "/p5-seg-at-6")) " " (quoted seg5))
+(define adopt5 (ask h5 s5 "adopt"))
+;; THE INSTANCE CHECK, ASKED IN THIS PROCESS under p5's machine home: the
+;; recovery adopt kept the instance, so it still verifies -- the replay
+;; below raises an entry that exists and creates nothing.
+(define verify5
+  (let ((old (getenv "THEOURGIA_HOME")))
+    (putenv "THEOURGIA_HOME" h5)
+    (let ((v (guard (e (#t 'RAISED)) (verify-instance s5))))
+      (putenv "THEOURGIA_HOME" (or old ""))
+      v)))
+(define r5-replay (send! h5 s5 "PR5" (string-append w5 ":3")))
+(define mark5-after (marks-for h5 id5 n5 w5))
+(want "P5 setup: the request was at 4, the registry said authorised 10 and written 10 before the restore, and the instance still verifies after the recovery adopt"
+      (list (clause-of r5 'events)
+            (and (pair? mark5-before) (list-ref (car mark5-before) 3))
+            (and (pair? mark5-before) (list-ref (car mark5-before) 5))
+            verify5)
+      (list (list 'events (list (cons w5 4))) 10 10 'ok))
+(want "P5 a recovery adopt (reason registry-ahead, no identity clause, the nonce kept), then the replay of the request at 4 answers ok (replay #t)"
+      (list (head-of adopt5) (clause-of adopt5 'reason) (clause-of adopt5 'identity) (equal? (nonce-of s5) n5)
+            (head-of r5-replay) (clause-of r5-replay 'replay) (clause-of r5-replay 'event))
+      (list 'ok '(reason registry-ahead) #f #t 'ok '(replay #t) (list 'event (cons w5 4))))
+(define (count-of ms) (if (list? ms) (length ms) ms))
+(want "P5 the entry is not lowered: exactly one entry before and after; authorised as before, written max(before, 4)"
+      (list (count-of mark5-before) (count-of mark5-after)
+            (and (pair? mark5-after) (list (list-ref (car mark5-after) 3) (list-ref (car mark5-after) 5))))
+      (list 1 1
+            (if (pair? mark5-before)
+                (list (list-ref (car mark5-before) 3) (max 4 (list-ref (car mark5-before) 5)))
+                'NO-ENTRY-BEFORE)))
+
+;; P6: FAIL CLOSED AT THE FLUSH. On a fresh identity-adopted clone, the
+;; replay's commit-stage fsync of the segment holding the record is made to
+;; fail: the answer is unknown (the guard turns the raise into it), exit 1,
+;; no written clause, and NO entry for w-old appears under the new nonce --
+;; the count is created only after the flush returned.
+(define c6 (clone-of p-repo "p6-clone"))
+(define s6 (string-append c6 "/store"))
+(define h6 (home! "p6"))
+(ask h6 s6 "adopt")
+(define n6 (nonce-of s6))
+(define r6 (apply ask-rc (string-append "THEOURGIA_INJECT=on THEOURGIA_FAULT=fsync-fail@commit:file="
+                                        s6 "/writers/" wO "/000001.sexp")
+                  h6 s6 (tracked-args "PR2" cur2)))
+(want "P6 an injected fsync failure at the replay's flush: unknown (replay-barrier-failed \"unexpected failure\"), exit 1, no written clause, and no entry for w-old under the new nonce"
+      (list (cadr r6) (exit-of (car r6)) (clause-of (cadr r6) 'written) (and n6 #t) (marks-for h6 idO n6 wO))
+      (list '(error unknown (replay-barrier-failed "unexpected failure")) 1 #f #t '()))
+
+;; P7: A MIRROR'S RECORD. A first clone C1 is adopted (writer w2) and answers
+;; a tracked request; w2's segment is published into O, so O holds w2 as a
+;; mirror. A second clone C2 of O is adopted, and the replay of that request
+;; answers ok naming (w2 . k); C2's registry gains (id, nonce, w2) with
+;; written k, and no owner file and no generation record for w2.
+;; THE REQUEST'S CURSOR IS ON w2, NOT ON THE ORIGINAL'S WRITER. The identity
+;; adopt records the original's writer as uncertain above the clone's copy
+;; of it, open at the top -- the original may have gone on writing -- so a
+;; new request whose cursor is on that writer cannot be told from one that
+;; ran there, and is answered unknown (range-overlaps). A request sent to
+;; the clone speaks to its own writer, from its start.
+(define c71 (clone-of p-repo "p7-first"))
+(define s71 (string-append c71 "/store"))
+(define h71 (home! "p71"))
+(define adopt71 (ask h71 s71 "adopt"))
+(define w2 (let ((c (clause-of adopt71 'to))) (and c (cadr c))))
+(define cur7 (string-append (or w2 "none") ":0"))
+(define r7 (send! h71 s71 "PR7" cur7))
+(define k7 (let ((c (clause-of r7 'events))) (and c (pair? (cadr c)) (cdar (cadr c)))))
+(define pub7 (ask hO sO "publish" (or w2 "none") "1" (string-append s71 "/writers/" (or w2 "none") "/000001.sexp")))
+(git p-repo "add" "store")
+(git p-repo "commit" "-q" "-m" "mirror")
+(define c72 (clone-of p-repo "p7-second"))
+(define s72 (string-append c72 "/store"))
+(define h72 (home! "p72"))
+(define adopt72 (ask h72 s72 "adopt"))
+(define n72 (nonce-of s72))
+(define r7-replay (send! h72 s72 "PR7" cur7))
+(want "P7 setup: the first clone answers the request as w2, and O publishes w2's segment"
+      (list (and w2 (not (equal? w2 wO))) (and k7 #t) (head-of pub7))
+      (list #t #t 'ok))
+(want "P7 a mirror's record replays on the second clone: ok (replay #t) (event (w2 . k)); the entry (id nonce w2 k active k); no owner file and no generation record for w2"
+      (list (head-of r7-replay) (clause-of r7-replay 'replay) (clause-of r7-replay 'event)
+            (marks-for h72 idO n72 w2)
+            (file-exists? (string-append s72 "/writers/" (or w2 "none") "/owner.sexp"))
+            (filter (lambda (g) (member w2 g)) (gens-of h72)))
+      (list 'ok '(replay #t) (list 'event (cons w2 k7)) (list (list idO n72 w2 k7 'active k7)) #f '()))
+
+;; P8: TWO IDENTITY ADOPTS ON ONE MACHINE. C's adopted store is committed and
+;; cloned again (D), adopted by identity under the SAME machine home as C; the
+;; replay of the original's request answers ok and creates the entry under
+;; D's newest nonce only -- C's entry is untouched.
+(git cC "add" "store")
+(git cC "commit" "-q" "-m" "adopted")
+(define cD (clone-of cC "p8-clone"))
+(define sD (string-append cD "/store"))
+(define adoptD (ask hC sD "adopt"))
+(define nD (nonce-of sD))
+(define entry-D-before (marks-for hC idO nD wO))
+(define rD (send! hC sD "PR2" cur2))
+(want "P8 a checkout of a checkout: the replay answers ok, the entry under the newest nonce is absent before it and created by it, and the previous checkout's entry is unchanged"
+      (list (head-of adoptD) (and nD (not (equal? nD nC))) entry-D-before (head-of rD) (clause-of rD 'replay)
+            (marks-for hC idO nD wO) (marks-for hC idO nC wO))
+      (list 'ok #t '() 'ok '(replay #t) (list (list idO nD wO 3 'active 3)) (list (list idO nC wO 4 'active 4))))
+
+;; P9: A COPY THAT KEEPS instance.sexp IS NOT AN IDENTITY. C's adopted store
+;; is copied file by file, as rsync would, instance.sexp included, and the
+;; copy is used under a fresh machine home without an adopt. The identity
+;; file is present but names another machine and another inode, so the
+;; replay is refused by name as it was before replays could create an
+;; entry, and no entry is created.
+(define s9 (string-append root "/p9-copy/store"))
+(define h9 (home! "p9"))
+(sh "mkdir -p " (quoted (string-append root "/p9-copy")) "; cp -Rp " (quoted sC) " " (quoted s9))
+(define r9 (send! h9 s9 "PR2" cur2))
+;; The refusal's first three elements: a refusal also lists, in its written
+;; clause, what it created on the way (the fresh home's lock), which is not
+;; what these rows are about.
+(define (refusal-of a) (if (and (list? a) (>= (length a) 3)) (list-head a 3) a))
+(want "P9 an rsync-style copy under a fresh home: instance.sexp is carried, the replay is refused by name, and the home's registry holds no entry"
+      (list (equal? (nonce-of s9) nC) (refusal-of r9) (marks-of h9))
+      (list #t '(error unknown (replay-barrier-failed "no registry entry to raise the written frontier on")) '()))
+
+;; P9b: THE SAME COPY UNDER A HOME THAT HOLDS THE WITNESS. The home carries
+;; C's machine id and C's generation records for (id, nC) and no water mark,
+;; so the generation condition holds and only the instance check can refuse:
+;; the copy's instance.sexp names C's inode, not the copy's. The replay is
+;; refused by name and the home gains no water mark.
+(define s9b (string-append root "/p9b-copy/store"))
+(define h9b (home! "p9b"))
+(define gens9b (filter (lambda (g) (and (equal? (list-ref g 1) idO) (equal? (list-ref g 2) nC))) (gens-of hC)))
+(sh "mkdir -p " (quoted (string-append root "/p9b-copy")) "; cp -Rp " (quoted sC) " " (quoted s9b)
+    "; cp -p " (quoted (string-append hC "/machine.sexp")) " " (quoted (string-append h9b "/machine.sexp")))
+(call-with-output-file (string-append h9b "/instances.sexp") (lambda (o) (write gens9b o) (newline o)))
+(define r9b (send! h9b s9b "PR2" cur2))
+(want "P9b a copy under a home holding this machine's id and the instance's generation: refused by name, and no water mark appears"
+      (list (pair? gens9b) (equal? (nonce-of s9b) nC) (refusal-of r9b) (marks-of h9b))
+      (list #t #t '(error unknown (replay-barrier-failed "no registry entry to raise the written frontier on")) '()))
+
+;; P10: A KEYED ROW TOO SHORT TO BE A WATER MARK. A fresh identity-adopted
+;; clone's registry is given (id nonce w-old 12) -- four fields under the
+;; replay's key, which the raise leaves alone. It reads as NO entry: with the
+;; adopt's generation present the replay creates the proper entry beside it;
+;; in a home holding the row and this machine's id but no generation, the
+;; replay is refused by name and the registry is left as it was.
+(define (append-registry-row! home row)
+  (let* ((r (read-sexpr-file (string-append home "/instances.sexp")))
+         (rows (if (list? r) r '())))
+    (call-with-output-file (string-append home "/instances.sexp")
+      (lambda (o) (write (append rows (list row)) o) (newline o))
+      'replace)))
+(define c10 (clone-of p-repo "p10-clone"))
+(define s10 (string-append c10 "/store"))
+(define h10 (home! "p10"))
+(define adopt10 (ask h10 s10 "adopt"))
+(define n10 (nonce-of s10))
+(append-registry-row! h10 (list idO n10 wO 12))
+(define r10 (send! h10 s10 "PR2" cur2))
+(want "P10 a four-field row under the key is no entry: with the generation present the replay answers ok and creates the proper entry beside the row"
+      (list (head-of adopt10) (head-of r10) (clause-of r10 'replay) (marks-for h10 idO n10 wO))
+      (list 'ok 'ok '(replay #t) (list (list idO n10 wO 12) (list idO n10 wO 3 'active 3))))
+(define h10b (home! "p10b"))
+(sh "cp -p " (quoted (string-append h10 "/machine.sexp")) " " (quoted (string-append h10b "/machine.sexp")))
+(append-registry-row! h10b (list idO n10 wO 12))
+;; ONLY THE GENERATION CONDITION CAN REFUSE HERE: the instance verifies
+;; under this home (asked in this process, as P5 does), and the home holds
+;; no generation. The registry is compared whole, before and after.
+(define verify10b
+  (let ((old (getenv "THEOURGIA_HOME")))
+    (putenv "THEOURGIA_HOME" h10b)
+    (let ((v (guard (e (#t 'RAISED)) (verify-instance s10))))
+      (putenv "THEOURGIA_HOME" (or old ""))
+      v)))
+(define registry10b-before (read-sexpr-file (string-append h10b "/instances.sexp")))
+(define r10b (send! h10b s10 "PR3" cur3))
+(want "P10b the same row in a home with this machine's id and no generation: the instance verifies, the replay is refused by name, and the registry is unchanged"
+      (list verify10b (gens-of h10b) (refusal-of r10b)
+            (equal? (read-sexpr-file (string-append h10b "/instances.sexp")) registry10b-before)
+            registry10b-before)
+      (list 'ok '() '(error unknown (replay-barrier-failed "no registry entry to raise the written frontier on"))
+            #t (list (list idO n10 wO 12))))
 
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
 (printf "\n~a failures\nrows: ~a\nstore-in-git complete\n" bad rows)

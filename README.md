@@ -847,11 +847,15 @@ when the directory can be listed: if it cannot, `adopt` answers as it would
 for a store that has an identity. (A copy whose `instance.sexp` does not
 match, such as the stale copy below, is adopted for that mismatch.)
 
-A request answered before the restore is not replayed on the checkout: a
-retry of it answers `(error unknown (replay-barrier-failed ...))`, before
-`adopt` and after it, where the original store would answer that it has
-already run. `unknown` is the store declining to guess, not a failure of
-the request; check the store's contents before sending it again.
+A request answered before the restore is replayed on the checkout once it
+is adopted: a retry of it answers as the original store would, that it has
+already run, `(ok (replay #t) (event (<writer> . <n>)))` -- the record is
+still in the log, so it is flushed and counted for this instance, even when
+its writer is retired or a mirror. Before `adopt` the checkout has no
+identity of its own yet, and the retry answers `(error unknown
+(replay-barrier-failed ...))`: `unknown` is the store declining to guess,
+not a failure of the request; adopt the checkout, or check the store's
+contents before sending it again.
 
 A copy that still exists under its old identity keeps writing to the old
 generation. Once it pulls the restored copy's commit, it holds the
@@ -1405,10 +1409,13 @@ written into its sibling `source/`. Fresh means this evaluation created
 the directory itself: a name already taken, by a file or a directory, is
 left alone and the next token is tried, and after eight taken names the
 answer is `(error spawn-refused (reason scratch-unavailable))`. The run
-root is resolved once, when the directory is claimed (its real path; one
-that cannot be resolved answers `scratch-unavailable` too), and the
-directory is removed through that resolved path, so a runner that rewrites
-a symbolic link on the way to the run root does not redirect the removal.
+root is made if missing and then resolved once, when the directory is
+claimed (its real path; one that cannot be resolved answers
+`scratch-unavailable` too -- unless making it already failed, as on a loop
+of symbolic links, which answers the filesystem refusal that names the
+entry and its path), and the directory is removed through that resolved
+path, so a runner that rewrites a symbolic link on the way to the run root
+does not redirect the removal.
 Replacing a real directory above the run root with a link needs write
 access to that directory's parent and is within the runner's reach
 described above. The runner's working directory is `tree/`, so the source

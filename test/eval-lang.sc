@@ -753,13 +753,21 @@
            (pid-hex (and (pair? out) (= (length out) 2) (cadr out))))
       (list (and (pair? out) (car out)) pid-hex run-c (text-of-file err)))))
 (define (scratch-name run-c pid-hex k) (string-append run-c "/eval-" pid-hex (hex8-of k)))
+;; The claim traces the RESOLVED run root (its real path), so a trace is
+;; looked for under the directory as `pwd -P` spells it: a fixture root
+;; reached through a link (/tmp on macOS) is spelled differently there.
+(define (resolved-dir p)
+  (let ((s (sh-out "cd " (quoted p) " && pwd -P")))
+    (if (and (> (string-length s) 0) (char=? (string-ref s (- (string-length s) 1)) #\newline))
+        (substring s 0 (- (string-length s) 1))
+        s)))
 (let* ((r (scratch-case "l22a" "(plant-file! 2)"))
        (pid-hex (cadr r)) (run-c (caddr r)))
   (want "L22 a file at the next scratch name survives, and the evaluation creates the name after it instead (and removes only that)"
         (and pid-hex
              (list (equal? (car r) '(error spawn-refused (reason scratch-unavailable)))
                    (text-of-file (scratch-name run-c pid-hex 2))
-                   (has-substring? (cadddr r) (string-append "(trace create " (scratch-name run-c pid-hex 3) " "))
+                   (has-substring? (cadddr r) (string-append "(trace create " (scratch-name (resolved-dir run-c) pid-hex 3) " "))
                    (eval-dirs-of run-c)))
         (list #f "planted" #t (list (string-append "eval-" (cadr r) (hex8-of 2))))))
 (let* ((r (scratch-case "l22b" "(plant-dir! 2)"))
@@ -767,7 +775,7 @@
   (want "L22 a directory at the next scratch name keeps its content, and the evaluation creates the name after it"
         (and pid-hex
              (list (text-of-file (string-append (scratch-name run-c pid-hex 2) "/keep"))
-                   (has-substring? (cadddr r) (string-append "(trace create " (scratch-name run-c pid-hex 3) " "))))
+                   (has-substring? (cadddr r) (string-append "(trace create " (scratch-name (resolved-dir run-c) pid-hex 3) " "))))
         (list "kept" #t)))
 (let* ((r (scratch-case "l22c" "(for-each plant-file! '(2 3 4 5 6 7 8 9))"))
        (pid-hex (cadr r)) (run-c (caddr r)))
