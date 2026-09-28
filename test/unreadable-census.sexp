@@ -54,6 +54,10 @@
   ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
   ("store.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("working.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("ffi.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("ffi.sc" (entry-name-type) entry-name-type 2 keep a "the predicate itself: the lstat door, a link answered as link and never followed")
+  ("eval-runner.sc" () entry-name-type 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("eval-runner.sc" (remove-tree!) entry-name-type 1 keep a "not writer layout: eval --lang's scratch directory, removed without entering a symbolic link")
   )
 
 (handlers
@@ -992,6 +996,31 @@
    refuse a
    "F100b point 3: a filesystem failure before the scheduler answers by the one table with main's record (P3-a); anything else propagates"
    (e ((classify-failure e (mutation-record)) => (lambda (a) (finish a wire-flag)))))
+  ("core.sc" (eval-foreign-and-exit!) 1 guard
+   ((classify-failure e (mutation-record)))
+   refuse a
+   "eval --lang, as the Scheme evaluation's boot: a filesystem failure inside the scheduler answers by the one table with the boot's record, carrying the notes this process heard; anything else propagates"
+   (e ((classify-failure e (mutation-record)) => done)))
+  ("eval-runner.sc" (cleanup!) 1 guard
+   (#t)
+   unrelated a
+   "the evaluation's scratch directory: a removal that fails is a trace line (eval-cleanup-failed) and does not change the answer"
+   (e (#t (trace-event! (quote eval-cleanup-failed) dir #f))))
+  ("eval-runner.sc" (reads-back?) 1 guard
+   (#t)
+   unrelated a
+   "the launcher's library path: a text the parameter will not read back is not representable, so the answer is #f and the caller refuses it by name; no filesystem is involved"
+   (e (#t #f)))
+  ("eval-runner.sc" (project-and-run) 1 guard
+   ((log-error? e))
+   refuse a
+   "eval --lang's projection: a store that cannot be loaded at all (meta.sexp missing, or not a store's) is raised as the export verb's own answer for it, describe-log-error's (error meta ...), which the exporter's wrapper carries out as projection-failed; anything else propagates"
+   (e ((log-error? e) (raise (describe-log-error e)))))
+  ("eval-runner-exec.sc" () 1 guard
+   (#t)
+   unrelated a
+   "the runner's launcher: exec returned after the interpreter was checked, so it exits 127 with no output (the one answer the evaluated side could also give)"
+   (e (#t (exit 127))))
   ("daemon.sc" (dispatch-frame) 1 guard
    ((classify-failure e (quote ())))
    refuse a

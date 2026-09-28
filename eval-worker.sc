@@ -69,7 +69,7 @@
               unreadable-entry? unreadable-entry-path unreadable-entry-reason
               load-declaration-set! load-refused? load-refused-condition)
         (only (theourgia incomplete) incomplete-accepted)
-        (only (theourgia ffi) setsid! setrlimit! RLIMIT_CPU fs-error? with-mutation-record mutation-record)
+        (only (theourgia ffi) isolate-evaluation! fs-error? with-mutation-record mutation-record)
         (only (theourgia answers) classify-failure))
 
 (define args (cdr (command-line)))
@@ -137,18 +137,11 @@
 
 ;; ---- the order that is the safety argument ----------------------------------
 
-(define pgid (setsid!))
-;; NOTE: THE CEILING IS ADDED TO THE CPU ALREADY SPENT. RLIMIT_CPU counts
-;; the process's whole life, and the imports above have used some of it
-;; before this line; the supervisor's wall budget for the evaluation starts
-;; at ready, so the CPU budget starts here too, or a start-up that was slow
-;; enough would leave a legal evaluation less CPU than wall time. The
-;; request is that much larger than the argument, so on a host whose
-;; inherited hard limit sits between the two it is refused where the bare
-;; argument would have fit; a refusal leaves the inherited limits in force,
-;; is said in the diag line below, and does not stop ready, as before.
-(define cpu-ceiling (+ cpu-seconds (div (+ (cpu-time) 999) 1000)))
-(define cpu-status (setrlimit! RLIMIT_CPU cpu-ceiling cpu-ceiling))
+;; The session and the CPU ceiling, shared with the runner's launcher: the
+;; ceiling is added to the CPU the imports above have already spent (see
+;; isolate-evaluation! in ffi.sc). A refusal leaves the inherited limits in
+;; force, is said in the diag line below, and does not stop ready.
+(define-values (pgid cpu-ceiling cpu-status) (isolate-evaluation! cpu-seconds))
 ;; NOTE: SAID OUT LOUD, so a row can read the ceiling this worker reports
 ;; having requested, and that the request came before any source was sent:
 ;; it precedes `ready`, and nothing is sent before ready. test/eval-ready.sc

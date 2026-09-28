@@ -367,8 +367,9 @@
 ;; directory itself as well as what is under it: a directory flush names the
 ;; directory, with no slash after it (ffi.sc fsync-dir!). The list is the
 ;; product's own trace vocabulary at 0ce3a02, less the events that only read.
+;; rmdir joins it with the scratch directory `eval --lang` removes.
 (define mutating-ops
-  '(create write rename fsync unlink link ftruncate copy barrier published registry-write))
+  '(create write rename fsync unlink rmdir link ftruncate copy barrier published registry-write))
 (define (touches? events d)
   (let ((under (mdir d)))
     (filter (lambda (ev)

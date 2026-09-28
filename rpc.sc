@@ -36,7 +36,8 @@
 (library (theourgia rpc)
   (export rpc-dispatch rpc-dispatch-parsed rpc-ok? rpc-verbs
           request-frame transport-unreachable?
-          count-argument outline-text write-protocol verb-catalogue)
+          count-argument outline-text write-protocol verb-catalogue
+          describe-log-error)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
           (only (theourgia client) request-frame verb-spelling-error)

@@ -111,7 +111,7 @@
         ;; with an exception instead of refusing an out-of-range limit.
         ;; The warning at the top of this file describes exactly that.
         ((eval) '("--cut" "--under" "--timeout-ms" "--memory-bytes"
-                  "--output-bytes" "--writer"))
+                  "--output-bytes" "--writer" "--lang"))
         (else '()))))
 
   ;; AN OPTION THAT MAY BE GIVEN MORE THAN ONCE.

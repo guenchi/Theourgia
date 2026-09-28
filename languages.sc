@@ -14,7 +14,7 @@
 ;; limitations under the License.
 (library (theourgia languages)
   (export language-table register-language! language-for-path
-    language-for-name language-property)
+    language-for-name language-property language-runner runner-valid?)
   ;; The entry accessor moved to (theourgia markers), which
   ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
   ;; (theourgia wire), and nothing else. That, not "it imports nothing",
@@ -42,6 +42,7 @@
               "(define x 1)"
               "(define-syntax m (syntax-rules () ((_ x) x)))")))
          ((lang "javascript") (extensions ("js" "mjs" "cjs")) (line-comment "//")
+           (runner ((argv ("node" "{file}")) (source-name "__eval.mjs")))
            (block-comment ("/*" "*/"))
            (def-heads
              ("^(?:export\\s+)?(?:async\\s+)?function\\s+([A-Za-z_$][A-Za-z0-9_$]*)"
@@ -74,6 +75,7 @@
                "type Count = number;"
                "function f(): void {}")))
          ((lang "python") (extensions ("py" "pyw")) (line-comment "#")
+           (runner ((argv ("python3" "{file}")) (source-name "__eval.py")))
            (block-comment #f)
            (def-heads
              ("^(?:async\\s+)?def\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\("
@@ -149,6 +151,7 @@
            (name-vectors
              ("class C {}" "interface I {}" "enum E { A }")))
          ((lang "shell") (extensions ("sh" "bash")) (line-comment "#")
+           (runner ((argv ("sh" "{file}")) (source-name "__eval.sh")))
            (block-comment #f)
            (def-heads
              ("^([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\\s*\\)\\s*\\{"
@@ -198,11 +201,28 @@
         (lambda (e)
           (member extension (language-property e 'extensions '())))
         (language-table))))
+  ;; HOW `eval --lang` RUNS A SOURCE IN THIS LANGUAGE, or #f: an alist of
+  ;; exactly (argv <strings>) and (source-name <one path component>). argv
+  ;; is a list, never a shell string; "{file}" in it stands for the source's
+  ;; absolute path and "{dir}" for the projection directory. A language with
+  ;; no runner is answered no-runner.
+  (define (language-runner entry) (language-property entry 'runner #f))
+  (define (runner-valid? r)
+    (and (list? r) (= (length r) 2)
+         (for-all (lambda (e) (and (pair? e) (pair? (cdr e)) (null? (cddr e)))) r)
+         (let ((argv (assq 'argv r)) (name (assq 'source-name r)))
+           (and argv name
+                (list? (cadr argv)) (pair? (cadr argv)) (for-all string? (cadr argv))
+                (let ((n (cadr name)))
+                  (and (string? n) (> (string-length n) 0)
+                       (not (member n '("." "..")))
+                       (not (memv #\/ (string->list n)))))))))
   (define (register-language! entry)
     (unless (and (list? entry)
                  (string? (language-property entry 'lang #f))
                  (list? (language-property entry 'extensions #f))
-                 (list? (language-property entry 'def-heads #f)))
+                 (list? (language-property entry 'def-heads #f))
+                 (let ((r (language-runner entry))) (or (not r) (runner-valid? r))))
       (assertion-violation 'register-language!
         "Invalid language entry"
         entry))

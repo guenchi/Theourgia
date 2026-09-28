@@ -174,9 +174,9 @@
 ;; NEVER: THE PROGRAMS ARE NOT LIBRARIES AND SO ARE NOT COMPILED, BUT THE
 ;; OUTPUT DIRECTORY IS USELESS WITHOUT THEM. `theourgia.sc` is the thin
 ;; client a user runs; it starts `theourgiad.sc` (the daemon) and `core.sc`
-;; (every other role) BESIDE ITSELF, `core.sc` starts `eval-worker.sc` the same
-;; way, and `mcp/server.sc` is the MCP shell, which starts `theourgiad.sc` one
-;; level up.
+;; (every other role) BESIDE ITSELF, `core.sc` starts `eval-worker.sc` and,
+;; for `eval --lang`, `eval-runner-exec.sc` the same way, and `mcp/server.sc`
+;; is the MCP shell, which starts `theourgiad.sc` one level up.
 ;; Measured on an output directory built before this: with the source tree
 ;; off the library path -- which is the whole point of shipping objects --
 ;; running the thin client from the output gives
@@ -192,7 +192,7 @@
 ;; NOTE: THE RELATIVE LAYOUT IS PART OF IT. `mcp/server.sc` has to land in
 ;; a `mcp/` directory under the package, because that is where its own
 ;; `beside-this-program` arithmetic expects to start from.
-(define programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "mcp/server.sc"))
+(define programs '("theourgia.sc" "core.sc" "theourgiad.sc" "eval-worker.sc" "eval-runner-exec.sc" "mcp/server.sc"))
 
 (define (copy-file! from to)
   (let ((in (open-file-input-port from))

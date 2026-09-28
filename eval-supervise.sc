@@ -58,7 +58,7 @@
           (only (theourgia sched) spawn receive send self sleep-ms monitor)
           (only (theourgia proc) spawn-worker! worker-write! worker-close-stdin!
                 worker-kill! worker-close! worker-rss worker-ref-pid)
-          (only (theourgia ffi) signal-pid!)
+          (only (theourgia ffi) signal-pid! process-alive-signal0? trace-event!)
           (only (theourgia render) render-wire))
 
   ;; NOTE: THE TWO CLOCKS ARE DIFFERENT AND BOTH ARE NEEDED. `ready-ms` is
@@ -120,6 +120,11 @@
   ;; to filter by ref -- which this `receive`, matching literal symbols and
   ;; bindings only, cannot express.
   (define (supervise-eval spec)
+    (if (spec-of spec 'runner-argv)
+        (supervise-runner spec)
+        (supervise-scheme spec)))
+
+  (define (supervise-scheme spec)
     (let ((store (spec-of spec 'store))
           (cut (spec-of spec 'cut))
           (under (spec-of spec 'under))
@@ -146,10 +151,152 @@
         ;; THE EVALUATION'S DEADLINE IS TAKEN AT READY, not here: what the
         ;; caller's timeout measures is the evaluation, and before ready
         ;; there is none.
-        (wait-for-ready pid me
+        (wait-for-ready pid me refused-reason
                         (lambda (ref pgid)
                           (run ref pgid me (+ (real-time) timeout-ms) source view
                                timeout-ms memory-bytes output-bytes))))))
+
+  ;; ---- a runner (eval --lang) --------------------------------------------
+  ;;
+  ;; KEY: THE SAME CLOCKS AND THE SAME HANDSHAKE AS THE WORKER, AND NO
+  ;; PROTOCOL AFTER IT. The launcher (eval-runner-exec.sc) says ready and
+  ;; waits for go exactly as the worker does; after go it becomes the
+  ;; interpreter, so what arrives on stdout and stderr is the interpreter's
+  ;; raw output and is collected as bytes. The spec carries the launcher's
+  ;; absolute path, the interpreter's argv, the cwd and the environment.
+  (define (supervise-runner spec)
+    (let* ((timeout-ms (spec-of spec 'timeout-ms))
+           (memory-bytes (spec-of spec 'memory-bytes))
+           (output-bytes (spec-of spec 'output-bytes))
+           (cpu-seconds (+ 1 (div (+ timeout-ms 999) 1000)))
+           (me self)
+           (pid (spawn-worker! (spec-of spec 'scheme)
+                               (append (list "scheme" "--script" (spec-of spec 'launcher)
+                                             (number->string cpu-seconds) "--")
+                                       (spec-of spec 'runner-argv))
+                               (list (cons 'cwd (spec-of spec 'cwd)) (cons 'env (spec-of spec 'env)))
+                               me)))
+      (wait-for-ready pid me runner-refused-reason
+                      (lambda (ref pgid)
+                        (worker-write! ref (string->utf8 (render-wire 'go)) 'go)
+                        (worker-close-stdin! ref)
+                        (collect-raw ref pgid (+ (real-time) timeout-ms) '() '() 0
+                                     (+ (real-time) rss-interval-ms)
+                                     memory-bytes output-bytes timeout-ms #f)))))
+
+  ;; NEVER: BEFORE READY THE LAUNCHER'S EXIT STATUS IS THE ONLY CHANNEL. A
+  ;; datum printed there is not read (wait-for-ready reads only ready), and
+  ;; nothing has run that the evaluated side controls, so status 3 --
+  ;; the launcher's "no executable interpreter" -- is unforgeable.
+  (define (runner-refused-reason reason)
+    (if (and (pair? reason) (eq? (car reason) 'exited) (pair? (cdr reason)) (eqv? (cadr reason) 3))
+        'interpreter-missing
+        (refused-reason reason)))
+
+  ;; NOTE: THE QUOTA COUNTS BYTES, per chunk as it arrives, both streams
+  ;; summed -- a runner's output has no framing to decode first -- and it
+  ;; stops the runner the moment the sum passes it, so one that prints past
+  ;; the quota and then sleeps with its pipes open is stopped by the quota,
+  ;; not the clock. The collected bytes are decoded once, at the end.
+  (define (collect-raw ref pgid deadline out err used next-rss
+                       memory-bytes output-bytes timeout-ms exited)
+    (cond
+      ((>= (real-time) deadline)
+       (stop-runner ref pgid (limit-answer 'time timeout-ms (decoded out))))
+      ((>= (real-time) next-rss)
+       (let ((rss (worker-rss ref)))
+         (if (and rss (> rss memory-bytes))
+             (stop-runner ref pgid (limit-answer 'memory memory-bytes (decoded out)))
+             (collect-raw ref pgid deadline out err used (+ (real-time) rss-interval-ms)
+                          memory-bytes output-bytes timeout-ms exited))))
+      (else
+       (receive
+         (after (min 25 (max 0 (- deadline (real-time))))
+                (collect-raw ref pgid deadline out err used next-rss
+                             memory-bytes output-bytes timeout-ms exited))
+         (`(worker-out ,r ,stream ,bv)
+          (let ((used (+ used (bytevector-length bv)))
+                (out (if (eq? stream 'stdout) (cons bv out) out))
+                (err (if (eq? stream 'stdout) err (cons bv err))))
+            (if (> used output-bytes)
+                (stop-runner ref pgid (limit-answer 'output output-bytes (decoded out)))
+                (collect-raw ref pgid deadline out err used next-rss
+                             memory-bytes output-bytes timeout-ms exited))))
+         (`(worker-eof ,r ,stream)
+          (collect-raw ref pgid deadline out err used next-rss memory-bytes output-bytes timeout-ms exited))
+         (`(worker-error ,r ,stream ,n)
+          (collect-raw ref pgid deadline out err used next-rss memory-bytes output-bytes timeout-ms exited))
+         (`(worker-exit ,r ,status ,signal)
+          (collect-raw ref pgid deadline out err used next-rss
+                       memory-bytes output-bytes timeout-ms (list status signal)))
+         ;; NEVER: THE GROUP IS SIGNALLED ON EVERY EXIT, THIS ONE INCLUDED,
+         ;; AND HERE IT IS WAITED FOR. The runner has exited and its streams
+         ;; are closed, but a child it started in the background, with its
+         ;; output sent elsewhere, is still a member of the group: left alone
+         ;; it would outlive the answer and the time limit, and run while the
+         ;; scratch directory is removed. Only the group is signalled -- the
+         ;; adapter is already down. A descendant that left the group
+         ;; (setsid) is out of reach here.
+         (`#(DOWN ,who ,reason)
+          (when pgid (stop-group-and-wait! pgid))
+          (list 'ok (list 'exit (exit-datum exited))
+                (list 'stdout (decoded out)) (list 'stderr (decoded err))))))))
+
+  ;; SIGKILL IS SENT, NOT AWAITED, so the group is asked afterwards whether it
+  ;; still has a member -- kill(-pgid, 0), which answers ESRCH once none is
+  ;; left -- every 10 ms, yielding between asks, until a DEADLINE on the
+  ;; clock group-wait-ms after the signal: counted in elapsed time, not in
+  ;; asks, so slow resumptions cannot stretch it. A group still there then
+  ;; is a trace line, eval-group-survived, and the answer goes out anyway:
+  ;; the wait is what lets the answer say the group was gone, and a group
+  ;; that will not go is reported, not hidden.
+  ;; NOTE: NO PROCESS A ROW CAN START OUTLASTS THE WAIT (SIGKILL cannot be
+  ;; caught), so end to end the trace is a tripwire. L21 evaluates this
+  ;; definition's own text with its free names stubbed and reads the order
+  ;; of its calls: gone at once, gone after one sleep, and never gone on a
+  ;; fake clock.
+  (define group-wait-ms 2000)
+  (define (stop-group-and-wait! pgid)
+    (signal-pid! (- pgid) sigkill)
+    (let ((deadline (+ (real-time) group-wait-ms)))
+      (let loop ()
+        (cond ((not (process-alive-signal0? (- pgid))) #t)
+              ((>= (real-time) deadline) (trace-event! 'eval-group-survived pgid #f) #f)
+              (else (sleep-ms 10) (loop))))))
+
+  ;; A limit stops the whole group and closes the adapter; there is no
+  ;; protocol to drain.
+  (define (stop-runner ref pgid answer)
+    (signal-group! ref pgid)
+    (worker-close! ref)
+    answer)
+
+  ;; The chunks, newest first, decoded as one whole (U+FFFD for an invalid
+  ;; sequence).
+  (define (decoded chunks)
+    (utf8->string (apply bytevector-append (reverse chunks))))
+
+  (define (bytevector-append . bvs)
+    (let* ((n (apply + (map bytevector-length bvs))) (out (make-bytevector n)))
+      (let loop ((bvs bvs) (at 0))
+        (if (null? bvs)
+            out
+            (begin (bytevector-copy! (car bvs) 0 out at (bytevector-length (car bvs)))
+                   (loop (cdr bvs) (+ at (bytevector-length (car bvs)))))))))
+
+  ;; The runner's exit: its status, or (signal <name>) when a signal ended
+  ;; it; `unknown` when the adapter ended without reporting one.
+  (define (exit-datum exited)
+    (cond ((not (pair? exited)) 'unknown)
+          ((and (cadr exited) (not (eqv? (cadr exited) 0))) (list 'signal (signal-name (cadr exited))))
+          (else (car exited))))
+
+  ;; The signals whose numbers every supported platform shares, by name; any
+  ;; other is reported by its number.
+  (define (signal-name n)
+    (let ((e (assv n '((1 . HUP) (2 . INT) (3 . QUIT) (4 . ILL) (6 . ABRT) (8 . FPE)
+                       (9 . KILL) (11 . SEGV) (13 . PIPE) (14 . ALRM) (15 . TERM)))))
+      (if e (cdr e) n)))
 
   (define (spec-of spec key)
     (let ((e (assq key spec))) (and e (cdr e))))
@@ -161,7 +308,7 @@
 
   ;; NEVER: BEFORE READY WE MAY KILL ONLY THE pid. There is no group yet, and
   ;; there is also nothing to escape: the worker has read no source.
-  (define (wait-for-ready pid me continue)
+  (define (wait-for-ready pid me refused continue)
     (let ((ready-deadline (+ (real-time) ready-ms)))
       (let wait ((ref #f))
         (receive
@@ -179,7 +326,10 @@
           ;; NEVER: A REFUSED SPAWN ARRIVES AS THE ADAPTER'S DOWN, and it is
           ;; the only thing that arrives: no ref, no I/O, nothing to kill.
           (`#(DOWN ,who ,reason)
-           (list 'error 'spawn-refused (list 'reason (reason-text reason))))))))
+           (list 'error 'spawn-refused (list 'reason (refused reason))))))))
+
+  ;; The reason a spawn was refused, as the worker path has always given it.
+  (define (refused-reason reason) (reason-text reason))
 
   (define (first-datum bv)
     (guard (e (#t #f)) (read (open-string-input-port (utf8->string bv)))))

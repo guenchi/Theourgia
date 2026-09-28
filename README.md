@@ -1276,9 +1276,9 @@ Run the suites from source (igropyr must be a sibling checkout):
 
 ### `eval`
 
-    (eval ("--cut" <cut>) ("--under" <library>) ("--working") ("--latest")
-          ("--writer" <name>) ("--timeout-ms" <n>) ("--memory-bytes" <n>)
-          ("--output-bytes" <n>) <source>)
+    (eval ("--lang" <language>) ("--cut" <cut>) ("--under" <library>)
+          ("--working") ("--latest") ("--writer" <name>) ("--timeout-ms" <n>)
+          ("--memory-bytes" <n>) ("--output-bytes" <n>) <source>)
 
 Evaluates one expression against what the store holds, in a child process
 that is given nothing else: no filesystem, no network, no way to reach
@@ -1309,9 +1309,10 @@ itself is not sent.
 
 **The limits, and their bounds**: `--timeout-ms` 1..60000 (default 3000),
 `--memory-bytes` 1 MiB..2 GiB (default 256 MiB), `--output-bytes`
-128..1 MiB (default 65536). The output quota counts DECODED user bytes
-across both streams -- what the user printed, not what the framing made
-of it. NOTE: The memory budget is read by sampling the child's resident size
+128..1 MiB (default 65536). For a Scheme evaluation the output quota counts
+the DECODED characters the user printed, across both streams -- what the
+user printed, not what the framing made of it. A `--lang` runner's quota
+counts bytes (below). NOTE: The memory budget is read by sampling the child's resident size
 every 50ms, so it applies to an evaluation that lasts at least that long;
 one that finishes sooner has already ended.
 
@@ -1330,6 +1331,88 @@ pin and evaluates against the current committed state. An explicit
 with `(error bad-request (reason cut-and-latest) ...)` rather than
 resolved by a precedence rule -- a rule would make one of the two
 spellings silently do nothing.
+
+#### `--lang`: another language
+
+`eval --lang <language> <source>` runs the source with the RUNNER the
+language table names for that language -- `node` for `javascript`,
+`python3` for `python`, `sh` for `shell` -- over a projection of the store.
+`--lang scheme` is the evaluation above, unchanged, with all its options.
+
+**Runners are off** unless the operator sets `THEOURGIA_RUNNERS=on` in the
+environment of the process that runs `eval`; otherwise the answer is
+`(error runners-disabled)`. A runner reaches the projection and whatever
+its interpreter can reach on this machine: the Scheme sandbox above does
+not apply to it. The interpreter is started with an environment made of
+`PATH`, `HOME` and `LANG` alone: nothing of the calling process's
+environment is inherited. The launcher that starts it is a Scheme program;
+it finds its libraries where the calling process found its own -- its
+`CHEZSCHEMELIBDIRS` and `CHEZSCHEMELIBEXTS` are written from that process's
+library directories (made absolute) and extensions, never from its
+environment -- so nothing the projection holds is ever loaded as a
+library.
+
+The store is projected by `export-code` with raw bytes (no markers) -- the
+committed state, or with `--working` the writer's working view -- into
+`tree/` of a fresh `eval-<token>/` under the run root, and the source is
+written into its sibling `source/`. Fresh means this evaluation created
+the directory itself: a name already taken, by a file or a directory, is
+left alone and the next token is tried, and after eight taken names the
+answer is `(error spawn-refused (reason scratch-unavailable))`. The
+runner's working directory is `tree/`, so the source reads projected files
+by relative paths; `{file}`, the source's path, is absolute. A relative
+module import from the source (`import './a.mjs'`, a Python sibling
+module) resolves against `source/`, not `tree/`: build absolute paths from
+the working directory for those. The directory is removed after the
+answer; a symbolic link the runner left in it is removed as a link and
+never followed. A removal that fails leaves the directory in place and the
+answer unchanged, and says so by the trace line `eval-cleanup-failed` when
+tracing is on. It is scratch: when a refusal carries a `written` clause,
+that clause names what this process changed in the store -- the draft lock
+a `--working` view may create -- never the directory made and removed
+around the run. What the runner itself writes, by any path it can reach,
+is not recorded there: it is part of the reach described above.
+
+    (ok (exit <n> | (signal <name>)) (stdout "...") (stderr "...")
+        (lang <language>) (projection (files <k>))
+        (working-view <writer> <cut> <drafts>))
+
+There is no `values` clause: another language returns no datum, so print
+what you want back. A non-zero exit is data, not an error. The output
+quota counts BYTES here, both streams together, and stops the runner the
+moment they pass it. However the runner ends, its whole process group is
+sent SIGKILL before the answer. When it exits on its own, the group is
+also waited for, up to 2 seconds, until no member is left, so a child it
+left running in the background is gone when the answer arrives; a group
+still there after the wait is reported by the trace line
+`eval-group-survived`, and the answer goes out anyway. On a limit the
+group is signalled and not waited for. A descendant that left the group
+itself, by `setsid`, is out of reach either way. A store missing a writer
+projects what can be read, and the answer carries the `incomplete` clause
+naming it.
+
+The refusals: `(error bad-request (reason lang-and-cut))` for `--cut` or
+`--latest`, `(reason lang-and-under)` for `--under`, `(reason no-runner)`
+for a language with no runner (`typescript` has none: it needs a compile
+step); `(error projection-failed <the export's answer>)` when the store
+cannot be projected, and nothing runs -- a store whose `meta.sexp` is
+missing, or is not a store's, answers the export verb's own `(error meta
+(path ...))` inside it -- with `--working` the view meets it first and
+answers `(error working-unavailable ...)` instead; an unreadable
+`meta.sexp` answers as any unreadable entry does; `(error spawn-refused
+(reason interpreter-missing))` when the interpreter is not an executable
+on `PATH`, found before anything ran. Four more `spawn-refused` reasons
+come before anything is made, when the launcher's `CHEZSCHEMELIBDIRS` or
+`CHEZSCHEMELIBEXTS` cannot carry the calling process's library path as it
+is: `library-directories-empty` and `library-extensions-empty` (an empty
+value reads as an empty list, so the launcher would load nothing);
+`library-directory-unrepresentable` with `(directory <d>)` and
+`library-extension-unrepresentable` with `(extension <e>)` for a name
+whose text Chez does not read back as itself -- one holding `:` (a working
+directory whose name holds `:` is one, when the libraries are found by the
+default `.`) -- or that holds a NUL character. If the interpreter
+disappears between that check and its start, the answer is `(exit 127)` --
+the one answer a runner could also produce itself.
 
 ## Serving a store
 
@@ -1428,12 +1511,13 @@ the transport's tag rather than on the answer's text.
 
 | variable | read by | what it does |
 |---|---|---|
-| `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. Not read by any source file here. |
+| `CHEZSCHEMELIBDIRS`, `CHEZSCHEMELIBEXTS` | Chez itself | where the libraries are found. No source file here reads them; `eval --lang` WRITES them for its launcher, from the running process's own library directories and extensions (see `--lang`). |
 | `THEOURGIA_STORE` | `core.sc`, `theourgiad.sc` | the store to use when `--store` is absent. Falls back to `.` |
 | `THEOURGIA_ACTOR` | `core.sc`, `mcp/server.sc` | who the requests are from. Falls back to `USER`, then `cli` |
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`) |
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 

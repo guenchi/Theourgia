@@ -44,7 +44,8 @@
         (only (theourgia store) open-and-reduce)
         (only (theourgia log) load-listener-add! load-declaration-set! load-refused?
               merge-unreadable incomplete-clause)
-        (only (theourgia incomplete) incomplete-accepted))
+        (only (theourgia incomplete) incomplete-accepted)
+        (only (theourgia languages) language-for-name language-runner))
 
 ;; ---- what this program does NOT load until it has to -----------------------
 ;;
@@ -411,9 +412,77 @@
 ;; verb by the common part of the table, and listing them in one usage
 ;; form would suggest they are special to it.
 (define eval-usage
-  '(eval ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
+  '(eval ["--lang" <language>] ["--cut" <cut>] ["--under" <library>] ["--working"] ["--latest"]
          ["--writer" <name>] ["--timeout-ms" <n>] ["--memory-bytes" <n>]
          ["--output-bytes" <n>] <source>))
+
+;; A LANGUAGE OTHER THAN SCHEME, or #f. `--lang scheme` is today's evaluation
+;; exactly, with all its options; any other name takes the runner path.
+(define (foreign-lang nodes)
+  (let ((l (argument-option nodes "--lang")))
+    (and l (not (string=? l "scheme")) l)))
+
+;; RUNNERS ARE OFF UNLESS THE OPERATOR TURNS THEM ON. eval runs in this
+;; process, so the gate is this process's environment, and it is exactly
+;; the value "on": a runner reaches whatever its interpreter can reach on
+;; this machine, which the Scheme sandbox does not limit.
+(define (runners-enabled?)
+  (let ((v (getenv "THEOURGIA_RUNNERS")))
+    (and v (string=? v "on"))))
+
+;; `eval --lang <l>` FOR A FOREIGN LANGUAGE. Every exit here carries what the
+;; process heard, as every eval exit does. The conflicts are refused first:
+;; the runner projects the committed state or the writer's working view, so
+;; a cut and a library have nothing to name.
+(define (eval-foreign-and-exit! nodes lang key heard timeout memory output)
+  (let* ((wire? (argument-option nodes "--wire"))
+         (done (lambda (a) (finish (with-heard-clause a (heard)) wire?)))
+         (entry (language-for-name lang)))
+    (cond
+      ((or (argument-option nodes "--cut") (argument-option nodes "--latest"))
+       (done (list 'error 'bad-request '(reason lang-and-cut)
+                         (list 'usage eval-usage))))
+      ((argument-option nodes "--under")
+       (done (list 'error 'bad-request '(reason lang-and-under)
+                         (list 'usage eval-usage))))
+      ((not (and timeout memory output))
+       (done (list 'error 'bad-request '(reason eval-arguments)
+                         (list 'usage eval-usage))))
+      ((not (and entry (language-runner entry)))
+       (done (list 'error 'bad-request '(reason no-runner) (list 'lang (string->symbol lang))
+                         (list 'usage eval-usage))))
+      ((not (runners-enabled?))
+       (done '(error runners-disabled)))
+      (else
+       (let ((source (read-source nodes)))
+         (if (> (string-length source) 1048576)
+             (done '(error bad-source (reason input-limit)))
+             (let ((before-scheduler (mutation-record)))
+               ((later '(theourgia sched) 'start-scheduler)
+                 (lambda ()
+                   (with-mutation-record
+                     (lambda ()
+                       (guard (e ((classify-failure e (mutation-record)) => done))
+                         (done
+                           (combine-report
+                             ((later '(theourgia eval-runner) 'run-foreign-eval)
+                               key lang source
+                               (list (cons 'working? (argument-option nodes "--working"))
+                                     (cons 'writer (argument-option nodes "--writer"))
+                                     (cons 'timeout-ms timeout)
+                                     (cons 'memory-bytes memory)
+                                     (cons 'output-bytes output)
+                                     (cons 'scheme (scheme-binary))
+                                     (cons 'launcher (absolute-path (beside-this-program "eval-runner-exec.sc")))))
+                             (mutation-record)))))
+                     before-scheduler))))))))))
+
+;; A PATH MADE ABSOLUTE against this process's cwd: the launcher is started
+;; with its cwd in the projection, where a relative path names nothing.
+(define (absolute-path p)
+  (if (and (> (string-length p) 0) (char=? (string-ref p 0) #\/))
+      p
+      (string-append (current-directory) "/" p)))
 
 (define (eval-and-exit! argv)
   (let ((nodes (parse-arguments 'eval (cdr argv))))
@@ -426,6 +495,8 @@
               (output (eval-number nodes "--output-bytes" 65536 128 1048576))
               (store (or (argument-option nodes "--store") (getenv "THEOURGIA_STORE") ".")))
          (let-values (((key heard) (eval-scope store)))
+         (if (foreign-lang nodes)
+             (eval-foreign-and-exit! nodes (foreign-lang nodes) key heard timeout memory output)
          (let ((cut (eval-cut nodes key))
               (under (or (argument-option nodes "--under") ""))
               (wire? (argument-option nodes "--wire")))
@@ -501,7 +572,7 @@
                                          (mutation-record))
                                        (heard))
                                        wire?))))))
-                           before-scheduler))))))))))))))
+                           before-scheduler)))))))))))))))
 
 ;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
 ;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS

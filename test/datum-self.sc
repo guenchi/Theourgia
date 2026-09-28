@@ -238,7 +238,7 @@
 ;; calls a program turns this row red, so none joins the set unseen.
 (want "PROGRAMS the sources classified as programs are exactly these"
       (map car (filter (lambda (t) (eq? (cadr t) 'program)) round-trips))
-      '("core.sc" "eval-worker.sc" "mcp/server.sc" "theourgia.sc" "theourgiad.sc"))
+      '("core.sc" "eval-runner-exec.sc" "eval-worker.sc" "mcp/server.sc" "theourgia.sc" "theourgiad.sc"))
 
 ;; THE EXPORT'S FIRST FORM says which shape it was written as -- `import`
 ;; for a program, `library` for a library (TWIN: the wrapper is still there).

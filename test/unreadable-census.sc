@@ -92,7 +92,8 @@
 ;; ---- the scanner ------------------------------------------------------
 
 (define presence-names
-  '(file-exists? file-is-directory? file-is-regular? file-directory? file-regular?))
+  '(file-exists? file-is-directory? file-is-regular? file-directory? file-regular?
+    entry-name-type))
 (define handler-heads '(guard with-exception-handler))
 (define source-suffixes '(".sc" ".ss" ".sls" ".scm"))
 

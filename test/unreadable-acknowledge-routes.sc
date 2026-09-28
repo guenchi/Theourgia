@@ -202,6 +202,7 @@
     ("datum-project.sc" "def-datum" "open-and-reduce" 1 request)
     ("datum-project.sc" "export-datum" "open-and-reduce" 1 request)
     ("datum-project.sc" "field-changes!" "open-and-reduce" 1 request)
+    ("eval-runner.sc" "project-and-run" "open-and-reduce" 1 request)
     ("eval-worker.sc" "answer" "open-and-reduce" 2 request)
     ("log.sc" "log-begin" "open-load" 1 builder)
     ("log.sc" "log-open" "open-load" 1 builder)

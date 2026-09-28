@@ -104,6 +104,9 @@
 ;;; file (test/unreadable-census.sc, section `door`). One line per export:
 ;;;
 ;;;   entry-type          stat            unreadable-entry | absent
+;;;   entry-name-type     lstat           unreadable-entry | absent; a
+;;;                                       symbolic link is `link`, never
+;;;                                       followed
 ;;;   read-entry          open, read      unreadable-entry | absent
 ;;;   list-entries        opendir, read   unreadable-entry | absent
 ;;;   size-entry          stat            unreadable-entry | absent
@@ -161,6 +164,8 @@
 ;;;                                       durable-error from a mkdir; a
 ;;;                                       directory another process made
 ;;;                                       first is success
+;;;   mkdir-exclusive!    mkdir           durable-error; 'exists on EEXIST,
+;;;                                       whatever occupies the name
 ;;;   rename-over!        rename          durable-error
 ;;;   link!               link            durable-error; 'exists on EEXIST
 ;;;   unlink!             unlink          durable-error
@@ -363,7 +368,7 @@
           ftruncate! fsync! fsync-dir! write-all! write-one!
           fd-seek! fd-size file-size file-ensure! fd-path link!
           setsid! session-id signal-pid! process-alive-signal0?
-          setrlimit! getrlimit RLIMIT_CPU process-rss-bytes
+          setrlimit! getrlimit RLIMIT_CPU process-rss-bytes isolate-evaluation!
           barrier!
           lock-acquire! lock-try-acquire! current-lock-acquire
           lock-release! current-lock-release lock-fd lock-held?
@@ -373,16 +378,16 @@
           report-fault?
           trace-enabled? trace-enable! trace-event!
           directory-entries file-is-directory? file-is-regular? file-is-socket? rename-over!
-          entry-type read-entry list-entries
+          entry-type entry-name-type read-entry list-entries
           unreadable-entry? unreadable-entry-path unreadable-entry-reason
           unreadable-entry-errno make-unreadable-entry
-          unlink! file-create-exclusive! mkdir-p!
+          unlink! file-create-exclusive! mkdir-p! mkdir-exclusive!
           size-entry overwrite-entry! entry-bytes read-entry-range
           with-mutation-record mutation-record mutation-set-self!
           EIO ENOENT EACCES ENOTDIR EBADF ECHILD waitpid-status
           hold-point! hold-sleeper-set!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
-          source-datum-print exec-argv!
+          source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
           unix-socket-connect fd-read socket-timeout! sun-path-max
           redirect-stdio! spawn-detached! reap-children! path-case-sensitive?
           process-id wall-clock-ms machine-home env-or)
@@ -447,6 +452,50 @@
       ((foreign-procedure "execvp" (string void*) int) (car args) argv)
       (for-each foreign-free strings) (foreign-free argv)
       (raise '(error launcher-unavailable))))
+
+  ;; THE SAME REPLACEMENT WITH AN ENVIRONMENT OF THE CALLER'S MAKING: execve on
+  ;; a path already resolved, with `env` ("NAME=value" strings) as the whole
+  ;; environment the new program sees -- nothing of this process's own is
+  ;; inherited. If exec returns, the same raise as exec-argv!.
+  (define (exec-argv-env! path args env)
+    (let* ((width (foreign-sizeof 'void*))
+           (c-strings
+             (lambda (xs)
+               (map (lambda (s)
+                      (let* ((b (string->utf8 s)) (n (bytevector-length b)) (p (foreign-alloc (+ n 1))))
+                        (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 p i (bytevector-u8-ref b i)))
+                        (foreign-set! 'unsigned-8 p n 0) p)) xs)))
+           (vector-of
+             (lambda (ps)
+               (let ((v (foreign-alloc (* width (+ 1 (length ps))))))
+                 (do ((xs ps (cdr xs)) (i 0 (+ i 1))) ((null? xs))
+                   (foreign-set! 'void* v (* i width) (car xs)))
+                 (foreign-set! 'void* v (* (length ps) width) 0)
+                 v)))
+           (arg-strings (c-strings args)) (env-strings (c-strings env))
+           (argv (vector-of arg-strings)) (envp (vector-of env-strings)))
+      ((foreign-procedure "execve" (string void* void*) int) path argv envp)
+      (for-each foreign-free arg-strings) (for-each foreign-free env-strings)
+      (foreign-free argv) (foreign-free envp)
+      (raise '(error launcher-unavailable))))
+
+  ;; A PROCESS ABOUT TO RUN SOMETHING IT DOES NOT TRUST: a session of its own,
+  ;; so the supervisor can signal the whole group, and a CPU ceiling. Shared
+  ;; by the Scheme worker and the runner's launcher, which both call it
+  ;; before they say ready.
+  ;; NOTE: THE CEILING IS ADDED TO THE CPU ALREADY SPENT. RLIMIT_CPU counts
+  ;; the process's whole life, and its start-up has used some of it before
+  ;; this call; the supervisor's wall budget starts at ready, so the CPU
+  ;; budget starts here too, or a slow start-up would leave a legal
+  ;; evaluation less CPU than wall time. A refused request (a host whose
+  ;; inherited hard limit sits below it) leaves the inherited limits in
+  ;; force; the caller says so and carries on.
+  ;; -> (values pgid ceiling status), status 0 when the limit was set.
+  (define (isolate-evaluation! cpu-seconds)
+    (let* ((pgid (setsid!))
+           (ceiling (+ cpu-seconds (div (+ (cpu-time) 999) 1000)))
+           (status (setrlimit! RLIMIT_CPU ceiling ceiling)))
+      (values pgid ceiling status)))
 
   ;; PLATFORM DETECTION AND SHARED-OBJECT LOADING COME FROM IGROPYR, and
   ;; this is one of the three places allowed to say so. Seventy-four
@@ -598,18 +647,73 @@
         ((file-is-directory? path) (void))
         (else (raise (fs-err 'mkdir path code))))))
 
+  ;; ONE DIRECTORY, CREATED BY THIS CALL OR NOT AT ALL. mkdir-p! treats a
+  ;; directory that is already there as success; a caller that will remove
+  ;; what it made cannot, since it would then remove something it did not
+  ;; make. Here EEXIST -- whatever occupies the name, directory or not -- is
+  ;; the answer 'exists, an ordinary result like link!'s; 'created means
+  ;; this call made it. Any other failure raises durable-error with the
+  ;; errno. The parent must exist. The injected mkdir-fail stands where the
+  ;; syscall would, as in mkdir-one!.
+  (define (mkdir-exclusive! path)
+    (unless (and (string? path) (> (string-length path) 0))
+      (assertion-violation 'mkdir-exclusive! "path must be a non-empty string" path))
+    (let-values (((rc code)
+                  (let ((injected (mkdir-fault path)))
+                    (if injected
+                        (values -1 injected)
+                        (let ((rc (c-mkdir path #o777)))
+                          (values rc (and (< rc 0) (errno))))))))
+      (cond
+        ((>= rc 0)
+         (note! (list 'mkdir path))
+         (trace-event! 'create path #f)
+         'created)
+        ((eqv? code EEXIST) 'exists)
+        (else (raise (fs-err 'mkdir path code))))))
+
   ;; unlink(2), NOT delete-file: Chez's delete-file answered #f and raised
   ;; nothing when it could not delete (F99), so a failed unlink read as a
   ;; done one. A failure raises durable-error with the errno; success is
   ;; noted.
+  ;; The injected unlink-fail stands where the syscall would and skips it,
+  ;; so it removes nothing and notes nothing.
   (define (unlink! path)
     (unless (string? path)
       (assertion-violation 'unlink! "path must be a string" path))
-    (let ((rc (c-unlink path)))
-      (when (< rc 0) (fail! 'unlink path))
+    (let-values (((rc code)
+                  (let ((injected (unlink-fault path)))
+                    (if injected
+                        (values -1 injected)
+                        (let ((rc (c-unlink path)))
+                          (values rc (and (< rc 0) (errno))))))))
+      (when (< rc 0) (raise (fs-err 'unlink path code)))
       (note! (list 'unlink path))
       (trace-event! 'unlink path #f)
       path))
+
+  ;; rmdir(2) of an EMPTY directory. A failure raises durable-error with the
+  ;; errno, as unlink! does; success is noted.
+  (define (rmdir! path)
+    (unless (string? path)
+      (assertion-violation 'rmdir! "path must be a string" path))
+    (let ((rc (c-rmdir path)))
+      (when (< rc 0) (fail! 'rmdir path))
+      (note! (list 'rmdir path))
+      (trace-event! 'rmdir path #f)
+      path))
+
+  ;; A REGULAR FILE THIS PROCESS MAY EXECUTE: access(2) with X_OK, and a stat
+  ;; that says regular (access alone says yes to a searchable directory).
+  ;; It answers #f for anything else, a missing path included, and raises
+  ;; nothing: its one caller is a launcher that has to answer before it has
+  ;; run anything, and a raise there would read as a different failure.
+  (define (path-executable? path)
+    (and (string? path)
+         (= 0 (c-access path 1))
+         (let ((buf (make-bytevector stat-buffer-size 0)))
+           (and (>= (c-stat path buf) 0)
+                (= (bitwise-and (st-mode-of buf) S_IFMT) S_IFREG)))))
 
   (define (process-id) (get-process-id))
 
@@ -697,8 +801,11 @@
   ;; the errno was lost at the door (F100 D1).
   (define c-rename (foreign-procedure "rename" (string string) int))
   (define c-unlink (foreign-procedure "unlink" (string) int))
+  (define c-rmdir (foreign-procedure "rmdir" (string) int))
+  (define c-access (foreign-procedure "access" (string int) int))
   (define c-mkdir (foreign-procedure "mkdir" (string unsigned-16) int))
   (define c-stat  (foreign-procedure "stat"  (string u8*) int))
+  (define c-lstat (foreign-procedure "lstat" (string u8*) int))
   (define c-realpath (foreign-procedure "realpath" (string u8*) uptr))
   (define c-socket (foreign-procedure "socket" (int int int) int))
   (define c-connect (foreign-procedure "connect" (int u8* int) int))
@@ -1586,6 +1693,33 @@
           ((absence-errno? code) 'absent)
           (else (unreadable! path code))))))
 
+  ;; -> directory | regular | link | other | absent
+  ;; The TYPE of the directory ENTRY the path names, NOT following a
+  ;; symbolic link at its last component (lstat): a link answers `link`,
+  ;; whatever it points at and whether it points at anything. A walk that
+  ;; must stay inside the tree it walks -- removing a directory another
+  ;; program wrote into -- asks this one: entry-type follows the link and
+  ;; names the target's type, so a walk that asked it would enter the
+  ;; target. ENOENT and ENOTDIR answer absent; any other failure raises
+  ;; unreadable-entry naming the path. stat-fail reaches it.
+  (define (entry-name-type path)
+    (unless (string? path)
+      (assertion-violation 'entry-name-type "path must be a string" path))
+    (let ((buf (make-bytevector stat-buffer-size 0)))
+      (let-values (((rc code)
+                    (if (stat-fault? path)
+                        (values -1 (stat-fault-errno))
+                        (let ((rc (c-lstat path buf))) (values rc (and (< rc 0) (errno)))))))
+        (cond
+          ((>= rc 0)
+           (let ((kind (bitwise-and (st-mode-of buf) S_IFMT)))
+             (cond ((= kind S_IFDIR) 'directory)
+                   ((= kind S_IFREG) 'regular)
+                   ((= kind S_IFLNK) 'link)
+                   (else 'other))))
+          ((absence-errno? code) 'absent)
+          (else (unreadable! path code))))))
+
   ;; -> the size in bytes of what the path names, or absent. An R1 query
   ;; (F100 D1): a stat, so it needs no read permission on the file itself,
   ;; and it answers `absent` for ENOENT and ENOTDIR and raises
@@ -1885,7 +2019,8 @@
     ;; close-after-the-answer has to be made to fail before anything can
     ;; ask what it does then, and a failure mode no row can arm is one
     ;; that nothing checks.
-    '(deliver-barrier commit registry publish snapshot repair report working index conn client))
+    '(deliver-barrier commit registry publish snapshot repair report working index conn client
+      eval-cleanup))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -1991,7 +2126,7 @@
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
          lseek-fail mkdir-fail client-extra-child store-raise-early
-         reload-raise probe-raise))
+         reload-raise probe-raise unlink-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2372,6 +2507,15 @@
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) (or fault-errno EIO))))
 
+     ;; ONE SHOT in its stage: the first unlink there fails with EIO, which is
+     ;; all a cleanup needs in order to be seen failing.
+     (define (unlink-fault path)
+       (and fault-name
+            (eq? fault-name 'unlink-fail)
+            (in-fault-stage?)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) EIO)))
+
      (define (mkdir-fault path)
        (and fault-name
             (eq? fault-name 'mkdir-fail)
@@ -2468,6 +2612,7 @@
      (define (stat-fault-errno) EIO)
      (define (lseek-fault subject) #f)
      (define (mkdir-fault path) #f)
+     (define (unlink-fault path) #f)
      (define (read-fault path produced) #f)
      (define (readdir-fault path produced) #f)
      (define (close-fault?) #f)
@@ -2964,6 +3109,7 @@
   (define S_IFSOCK #xC000)
   (define S_IFDIR  #x4000)
   (define S_IFREG  #x8000)
+  (define S_IFLNK  #xA000)
 
   ;; st_mode out of a filled stat buffer; the offsets are the ones stated
   ;; above for each platform.
