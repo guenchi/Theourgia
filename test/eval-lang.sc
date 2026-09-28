@@ -778,6 +778,30 @@
                    (length (eval-dirs-of run-c))))
         (list '(error spawn-refused (reason scratch-unavailable)) #t 8)))
 
+;; ---- L23: the run root is resolved at the claim ------------------------------------
+;; The run root is a symbolic link L to directory A. The runner learns its
+;; scratch name T from $0 (source/ under eval-T), points L at directory B,
+;; makes B/eval-T/keep itself, and exits 0. The evaluation claimed A/eval-T
+;; through L's real path, so it removes A/eval-T: B/eval-T/keep survives and
+;; A holds no eval-* entry. Removing through L would have removed B's
+;; directory and left A's.
+(define dir-a (string-append root "/run-a"))
+(define dir-b (string-append root "/run-b"))
+(define link23 (string-append root "/run-link"))
+(sh "mkdir -p " (quoted dir-a) " " (quoted dir-b) " && ln -s " (quoted dir-a) " " (quoted link23))
+(let* ((src (string-append
+              "d=$(dirname \"$(dirname \"$0\")\"); t=$(basename \"$d\"); "
+              "rm " (quoted link23) " && ln -s " (quoted dir-b) " " (quoted link23) " && "
+              "mkdir " (quoted dir-b) "/\"$t\" && printf keep > " (quoted dir-b) "/\"$t\"/keep && echo \"$t\"\n"))
+       (a (ask (string-append ON " THEOURGIA_RUN=" (quoted link23)) S src "--lang" "shell"))
+       (t (let ((o (clause-of a 'stdout))) (and o (> (string-length (cadr o)) 1)
+                                               (substring (cadr o) 0 (- (string-length (cadr o)) 1))))))
+  (want "L23 a run root reached through a link the runner re-points: the evaluation removes its own directory, not the one the link now reaches"
+        (list (head-of a) (and t (prefix? t "eval-"))
+              (and t (text-of-file (string-append dir-b "/" t "/keep")))
+              (eval-dirs-of dir-a))
+        (list 'ok #t "keep" '())))
+
 ;; ---- L17: the compiled layout carries every program ------------------------------
 ;; build.ss copies the programs beside the compiled libraries, and a program
 ;; left out cannot be started from the output (the launcher is found beside

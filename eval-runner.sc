@@ -40,7 +40,7 @@
   (export run-foreign-eval)
   (import (chezscheme)
           (only (theourgia client) run-root next-attempt-token)
-          (only (theourgia ffi) mkdir-p! mkdir-exclusive! overwrite-entry! unlink! rmdir! directory-entries
+          (only (theourgia ffi) mkdir-p! mkdir-exclusive! real-path overwrite-entry! unlink! rmdir! directory-entries
                 entry-name-type trace-event! theourgia-stage with-mutation-record)
           (only (theourgia store) open-and-reduce)
           (only (theourgia log) log-error?)
@@ -235,30 +235,43 @@
   ;; scratch-tries names, after which the answer is spawn-refused (reason
   ;; scratch-unavailable). The dynamic-wind whose exit is cleanup! is entered
   ;; only once the directory is this evaluation's own.
+  ;;
+  ;; NEVER: THE RUN ROOT IS RESOLVED ONCE, AT THE CLAIM (real-path), and the
+  ;; directory is claimed and removed through the resolved path. The run
+  ;; root may be reached through a symbolic link the runner can rewrite;
+  ;; removing through the unresolved path would follow the link wherever
+  ;; the runner pointed it by then, and remove an eval-<token> there instead
+  ;; of this evaluation's own. A run root that cannot be resolved answers
+  ;; scratch-unavailable. What remains -- a real directory ABOVE the
+  ;; resolved root replaced by a link during the run -- needs write access
+  ;; to that directory's parent, and is inside the runner's reach (README).
   (define scratch-tries 8)
 
   (define (in-scratch key lang source options working)
     (let* ((runner (language-runner (language-for-name lang)))
            (argv (cadr (assq 'argv runner)))
            (source-name (cadr (assq 'source-name runner)))
-           (root (absolute (run-root))))
-      (mkdir-p! root)
-      (let claim ((tries 1))
-        (let ((dir (string-append root "/eval-" (next-attempt-token))))
-          (if (eq? (mkdir-exclusive! dir) 'exists)
-              (if (< tries scratch-tries)
-                  (claim (+ tries 1))
-                  '(error spawn-refused (reason scratch-unavailable)))
-              (let* ((tree (string-append dir "/tree"))
-                     (source-dir (string-append dir "/source"))
-                     (file (string-append source-dir "/" source-name)))
-                (dynamic-wind
-                  (lambda () #f)
-                  (lambda ()
-                    (mkdir-p! tree)
-                    (mkdir-p! source-dir)
-                    (project-and-run key lang source options working argv tree file))
-                  (lambda () (cleanup! dir)))))))))
+           (given-root (absolute (run-root))))
+      (mkdir-p! given-root)
+      (let ((root (real-path given-root)))
+        (if (not root)
+            '(error spawn-refused (reason scratch-unavailable))
+            (let claim ((tries 1))
+              (let ((dir (string-append root "/eval-" (next-attempt-token))))
+                (if (eq? (mkdir-exclusive! dir) 'exists)
+                    (if (< tries scratch-tries)
+                        (claim (+ tries 1))
+                        '(error spawn-refused (reason scratch-unavailable)))
+                    (let* ((tree (string-append dir "/tree"))
+                           (source-dir (string-append dir "/source"))
+                           (file (string-append source-dir "/" source-name)))
+                      (dynamic-wind
+                        (lambda () #f)
+                        (lambda ()
+                          (mkdir-p! tree)
+                          (mkdir-p! source-dir)
+                          (project-and-run key lang source options working argv tree file))
+                        (lambda () (cleanup! dir)))))))))))
 
   ;; THE VIEW THE EXPORT READS, and the cut it used: the writer's working
   ;; view with --working (its baseline under its drafts), otherwise the

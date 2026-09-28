@@ -1404,20 +1404,27 @@ committed state, or with `--working` the writer's working view -- into
 written into its sibling `source/`. Fresh means this evaluation created
 the directory itself: a name already taken, by a file or a directory, is
 left alone and the next token is tried, and after eight taken names the
-answer is `(error spawn-refused (reason scratch-unavailable))`. The
-runner's working directory is `tree/`, so the source reads projected files
-by relative paths; `{file}`, the source's path, is absolute. A relative
-module import from the source (`import './a.mjs'`, a Python sibling
-module) resolves against `source/`, not `tree/`: build absolute paths from
-the working directory for those. The directory is removed after the
-answer; a symbolic link the runner left in it is removed as a link and
-never followed. A removal that fails leaves the directory in place and the
-answer unchanged, and says so by the trace line `eval-cleanup-failed` when
-tracing is on. It is scratch: when a refusal carries a `written` clause,
-that clause names what this process changed in the store -- the draft lock
-a `--working` view may create -- never the directory made and removed
-around the run. What the runner itself writes, by any path it can reach,
-is not recorded there: it is part of the reach described above.
+answer is `(error spawn-refused (reason scratch-unavailable))`. The run
+root is resolved once, when the directory is claimed (its real path; one
+that cannot be resolved answers `scratch-unavailable` too), and the
+directory is removed through that resolved path, so a runner that rewrites
+a symbolic link on the way to the run root does not redirect the removal.
+Replacing a real directory above the run root with a link needs write
+access to that directory's parent and is within the runner's reach
+described above. The runner's working directory is `tree/`, so the source
+reads projected files by relative paths; `{file}`, the source's path, is
+absolute. A relative module import from the source (`import './a.mjs'`, a
+Python sibling module) resolves against `source/`, not `tree/`: build
+absolute paths from the working directory for those. The directory is
+removed after the answer; a symbolic link the runner left in it is removed
+as a link and never followed. A removal that fails leaves the directory in
+place and the answer unchanged, and says so by the trace line
+`eval-cleanup-failed` when tracing is on. It is scratch: when a refusal
+carries a `written` clause, that clause names what this process changed in
+the store -- the draft lock a `--working` view may create -- never the
+directory made and removed around the run. What the runner itself writes,
+by any path it can reach, is not recorded there: it is part of the reach
+described above.
 
     (ok (exit <n> | (signal <name>)) (stdout "...") (stderr "...")
         (lang <language>) (projection (files <k>))
