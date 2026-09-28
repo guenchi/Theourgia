@@ -98,6 +98,10 @@
   ;; bytes were replayed, the file came back with the OLD heading, and
   ;; re-importing that file wrote a second record putting the title back
   ;; to what the file said. The change could not be made to stick.
+  (define (effective-level b)
+    (let ((v (field b 'level)))
+      (if (and (integer? v) (exact? v) (> v 0) (< v 7)) v 1)))
+
   (define (effective-heading state id)
     (let* ((b (state-read state id))
            (stored (text-field b 'heading-src))
@@ -107,8 +111,7 @@
            ;; passes every field value as text -- raised instead of
            ;; rendering. A reader may refuse to understand a value; it
            ;; may not fall over on one.
-           (level (let ((v (field b 'level)))
-                    (if (and (integer? v) (exact? v) (> v 0) (< v 7)) v 1)))
+           (level (effective-level b))
            (title (text-field b 'title))
            (parsed (parse-heading stored)))
       (if (and parsed (= (car parsed) level) (string=? (cdr parsed) title))
@@ -693,18 +696,31 @@
               (with-store-write store
                 (lambda (state view)
                   (let* ((docs (absent-documents state files))
-                         (gone-sections (missing-sections state dir files)))
+                         (gone (missing-sections state dir files))
+                         (gone-sections (map car gone))
+                         (roots (apply append (map cdr gone))))
                     (set! absent (map cadr docs))
                     (set! doc-deletions '())
                     (cond
+                      ;; The refusal names what deleting the sections would
+                      ;; strand, under `holds`, and only when there is
+                      ;; something to name: its first four elements are the
+                      ;; shape they always were.
                       ((and (pair? gone-sections) (not allow-delete?))
-                       (list (list 'error 'would-delete
-                                   (list 'blocks gone-sections)
-                                   (list 'remedy 'allow-delete))))
+                       (list (append (list 'error 'would-delete
+                                           (list 'blocks gone-sections)
+                                           (list 'remedy 'allow-delete))
+                                     (if (null? roots)
+                                         '()
+                                         (list (list 'holds (map car roots)))))))
                       (else
                        (let loop ((fs files) (base 0) (out '()))
                          (if (null? fs)
                              (let* ((imports (apply append (reverse out)))
+                                    ;; What a deleted section holds that the
+                                    ;; file does not describe is moved out
+                                    ;; before the section goes.
+                                    (rehomes (map (lambda (r) (list 'move (car r) (cdr r) #f)) roots))
                                     ;; Sections first, so a document is never
                                     ;; tombstoned before its children.
                                     (section-dels
@@ -712,12 +728,12 @@
                                            (append gone-sections
                                                    (if allow-delete? (apply append (map caddr docs)) '()))))
                                     (doc-dels (if allow-delete? (map (lambda (d) (list 'del (car d))) docs) '()))
-                                    (first-doc (+ (length imports) (length section-dels))))
+                                    (first-doc (+ (length imports) (length rehomes) (length section-dels))))
                                (set! doc-deletions
                                  (let number ((ds docs) (k first-doc) (acc '()))
                                    (if (or (null? ds) (not allow-delete?)) (reverse acc)
                                        (number (cdr ds) (+ k 1) (cons (cons (cadr (car ds)) k) acc)))))
-                               (append imports section-dels doc-dels))
+                               (append imports rehomes section-dels doc-dels))
                              (let ((is (file-intents state dir (car fs) base)))
                                (loop (cdr fs) (+ base (length is)) (cons is out)))))))))
                 actor)))
@@ -751,9 +767,11 @@
                       out))))))
 
   ;; Every section of a document whose file is PRESENT that nothing in the
-  ;; file matches. A document's kind decides here, as before, deleted or not:
-  ;; a deleted document whose file is still there keeps its sections under
-  ;; the section rule.
+  ;; file matches, as `(<section-id> (<root-id> . <target>) ...)`: each with
+  ;; the roots it holds that go to `target` before it is deleted. A
+  ;; document's kind decides here, as before, deleted or not: a deleted
+  ;; document whose file is still there keeps its sections under the
+  ;; section rule.
   (define (missing-sections state dir files)
     (let loop ((bs (state-datum state)) (sections '()))
       (if (null? bs)
@@ -761,20 +779,70 @@
           (let* ((id (cadr (car bs))) (b (state-read state id)))
             (loop (cdr bs)
                   (if (and (eq? 'doc (kind-of b)) (member (text-field b 'path) files))
-                      (append (reverse (unmatched-sections state dir id b)) sections)
+                      (append (reverse (unmatched-sections state dir id b files)) sections)
                       sections))))))
 
-  (define (unmatched-sections state dir doc-id b)
+  ;; ONLY A SECTION CAN BE MISSING: a code block, a file or a nested
+  ;; document under the document is never missing, so the file saying
+  ;; nothing about it is not the file removing it.
+  (define (unmatched-sections state dir doc-id b files)
     (let* ((rel (text-field b 'path))
            (raw (read-file (string-append dir "/" rel)))
            (sections (file-sections raw))
-           (old (doc-sections-of state doc-id))
-           (matched (match-sections state old sections)))
+           (candidates (heading-candidates state doc-id))
+           (matched (match-sections state (doc-sections-of state doc-id) candidates sections)))
       (if (and (pair? matched) (eq? (car matched) 'error))
           '()
-          (filter (lambda (id)
-                    (not (exists (lambda (p) (equal? (car p) id)) matched)))
-                  old))))
+          (let* ((found (filter string? (map car matched)))
+                 (named (map car (filter (lambda (m) (and (car m) (not (recognised-only? state m))))
+                                         matched)))
+                 (missing (filter (lambda (id)
+                                    (and (eq? 'section (kind-of (state-read state id)))
+                                         (not (member id found))))
+                                  candidates))
+                 (rows (state-outline state)))
+            (map (lambda (id) (cons id (retained-roots state rows id missing named files)))
+                 missing)))))
+
+  ;; A DELETED SECTION DOES NOT ORPHAN WHAT THE FILE DOES NOT DESCRIBE.
+  ;; Deletion does not cascade, so a block left under a tombstone is
+  ;; live and in no file. The roots of what the section holds -- its direct
+  ;; children that are not sections and that the file does not name -- go,
+  ;; in their order and each with everything under it, to the nearest
+  ;; ancestor that survives the import. A section child is the file's to
+  ;; place or to delete, and a named block is placed where the file puts
+  ;; it: the file's word wins.
+  ;;
+  ;; NO GUESS ABOUT WHICH NEW SECTION REPLACES THE DELETED ONE. The file
+  ;; does not say, so the roots go where they certainly belong.
+  ;;
+  ;; A NESTED DOCUMENT GOES TO ROOT, its one legal place, when its own file
+  ;; is present. When that file is absent the absent-document rule governs
+  ;; it, and it is not moved here: a deletion and a move of one block never
+  ;; share a plan.
+  (define (retained-roots state rows id missing named files)
+    (let ((target (surviving-ancestor rows id missing)))
+      (fold-right
+        (lambda (child acc)
+          (let ((b (state-read state child)))
+            (cond ((eq? 'section (kind-of b)) acc)
+                  ((member child named) acc)
+                  ((eq? 'doc (kind-of b))
+                   (if (member (text-field b 'path) files) (cons (cons child 'root) acc) acc))
+                  (else (cons (cons child target) acc)))))
+        '()
+        (children-of rows id))))
+
+  ;; Up from the block past every section this import deletes: the first
+  ;; ancestor left is a matched section, a block of another kind, or the
+  ;; document, and all of those survive it.
+  (define (surviving-ancestor rows id missing)
+    (let up ((p (parent-in rows id)))
+      (if (member p missing) (up (parent-in rows p)) p)))
+
+  (define (parent-in rows id)
+    (let ((r (find (lambda (r) (equal? (caddr r) id)) rows)))
+      (and r (car r))))
 
   ;; The section list of a file, each entry
   ;;   (declared-id level title heading-src src)
@@ -863,16 +931,16 @@
                               out)))))))
 
   ;; A FILE THAT IS ALREADY IN THE STORE. Identity is decided in the
-  ;; order section 8.1 gives: a declared id wins outright; otherwise the
-  ;; structural position (parent, index among siblings); and where the
-  ;; position does not line up, the heading and body together are the
-  ;; signature -- but only when that signature picks out exactly one
-  ;; candidate. Two refusals come out of this and they are different
-  ;; things: the file moved something (position), or the file cannot say
-  ;; which of several identical sections it means (ambiguous).
+  ;; order `match-sections` gives: a declared id wins outright; otherwise
+  ;; the position, when every pair it makes agrees on the heading; and
+  ;; otherwise the heading key, with the body breaking ties -- but only
+  ;; when that picks out exactly one candidate. Two refusals come out of
+  ;; this and they are different things: the file names a block it cannot
+  ;; mean (position), or the file cannot say which of several identical
+  ;; sections it means (ambiguous).
   (define (changed-intents state doc-id rel split sections base)
     (let* ((old (doc-sections-of state doc-id))
-           (matched (match-sections state old sections)))
+           (matched (match-sections state old (heading-candidates state doc-id) sections)))
       (cond
         ((and (pair? matched) (eq? (car matched) 'error)) (list matched))
         (else
@@ -891,37 +959,170 @@
   ;; THE PARENT MAY NOT EXIST YET. If B's parent A is also new, A's id
   ;; is only known once its own insert commits, so B names it with the
   ;; batch back-reference -- which is what that mechanism is for.
+  ;;
+  ;; A MATCHED SECTION GOES THERE TOO. Updating its fields only
+  ;; left it where it was stored: a parent renamed in the file became a new
+  ;; section, and the child it had kept its place under the old one, which
+  ;; --allow-delete then deleted -- the child live, under a tombstone, in no
+  ;; file. Its parent is resolved as a new section's is, and under each
+  ;; parent the file's order is compared with the stored one; see
+  ;; `placed-parents`.
+  ;;
+  ;; A BLOCK MATCHED BY ITS OWN RENDERING IS LEFT WHERE IT IS. It is not a
+  ;; section, the file carries it only because the export wrote it there,
+  ;; and the level the export wrote it at is a default, not a nesting.
   (define (section-intents state doc-id sections matched base)
-    (let ((parents (parents-of sections))
-          (refs (make-vector (length sections) #f)))
+    (let* ((rows (state-outline state))
+           (parents (parents-of sections))
+           (placing (placed-parents state rows doc-id parents matched))
+           (refs (make-vector (length sections) #f))
+           (homes (make-vector (length sections) #f))
+           (fixed (make-vector (length sections) #f)))
       (let loop ((i 0) (ms matched) (ps parents) (n base) (out '()))
         (if (null? ms)
             (reverse out)
             (let* ((stored (car (car ms)))
                    (incoming (cdr (car ms)))
-                   (parent-ix (car ps)))
-              (if stored
-                  (let ((is (section-field-intents state stored incoming)))
-                    (vector-set! refs i stored)
-                    (loop (+ i 1) (cdr ms) (cdr ps) (+ n (length is))
-                          (append (reverse is) out)))
-                  (let* ((parent (if (eq? parent-ix 'doc)
-                                     doc-id
-                                     (vector-ref refs parent-ix)))
-                         (after (previous-sibling refs parents i parent-ix))
-                         (intent (list 'insert parent after
-                                       (section-fields incoming))))
-                    (vector-set! refs i (list 'from n))
-                    (loop (+ i 1) (cdr ms) (cdr ps) (+ n 1)
-                          (cons intent out)))))))))
+                   (parent-ix (car ps))
+                   (parent (if (eq? parent-ix 'doc)
+                               doc-id
+                               (vector-ref refs parent-ix)))
+                   (placed? (member parent-ix placing))
+                   (j (predecessor fixed parents i parent-ix))
+                   (after (and j (vector-ref refs j))))
+              (cond
+                ((and stored (recognised-only? state (car ms)))
+                 (vector-set! refs i stored)
+                 (vector-set! homes i (parent-in rows stored))
+                 (vector-set! fixed i #t)
+                 (loop (+ i 1) (cdr ms) (cdr ps) n out))
+                (stored
+                 (let ((is (append (section-field-intents state stored incoming)
+                                   (if placed? (list (list 'move stored parent after)) '()))))
+                   (vector-set! refs i stored)
+                   (vector-set! homes i (if placed? parent (parent-in rows stored)))
+                   (loop (+ i 1) (cdr ms) (cdr ps) (+ n (length is))
+                         (append (reverse is) out))))
+                (else
+                 ;; WHERE NOTHING IS PLACED, A NEW SECTION GOES WHERE ITS
+                 ;; PREDECESSOR IS. The file shows it right after the one
+                 ;; before it, and the export writes it there only when it is
+                 ;; that one's next sibling: a predecessor stored under a
+                 ;; section of its own level is written after that section,
+                 ;; at that level, and the new section goes under the same
+                 ;; section. Inserted under the parent the levels give, it
+                 ;; came after that section's whole subtree, the export no
+                 ;; longer said what the file said, and the next untouched
+                 ;; import wrote.
+                 (let ((home (if (and j (not placed?)) (vector-ref homes j) parent)))
+                   (vector-set! refs i (list 'from n))
+                   (vector-set! homes i home)
+                   (loop (+ i 1) (cdr ms) (cdr ps) (+ n 1)
+                         (cons (list 'insert home after (section-fields incoming))
+                               out))))))))))
 
-  ;; The nearest earlier section with the same parent, so a new one lands
-  ;; after the sibling it follows in the file rather than at the end.
-  (define (previous-sibling refs parents i parent-ix)
+  ;; A stored block the file matched without a marker and that is not a
+  ;; section: the file carries it only as the export's rendering of it.
+  (define (recognised-only? state pair)
+    (and (car pair)
+         (not (sec-id (cdr pair)))
+         (not (eq? 'section (kind-of (state-read state (car pair)))))))
+
+  ;; THE PARENTS WHOSE CHILDREN ARE PLACED IN FILE ORDER, as the
+  ;; values `parents-of` gives ('doc or an index). Under each parent the
+  ;; ids the file places there -- matched sections, and blocks of any kind
+  ;; a marker names -- are compared, in file order, with the order of those
+  ;; same ids under that parent in the arrangement the store's own export
+  ;; gives (`rendered-arrangement`); blocks the file does not name take no
+  ;; part. When the two agree and every new section can be
+  ;; inserted after its predecessor, nothing moves. Otherwise each of that
+  ;; parent's sections is placed: an existing one by a move, a new one by
+  ;; its insert.
+  ;;
+  ;; AND A SECTION STORED UNDER ONE THE FILE NO LONGER HOLDS IS PLACED, whatever
+  ;; the order says. The export can write a section under another of its own
+  ;; level as that one's sibling, so the file may agree with the export
+  ;; while dropping the section the other one is stored under; left in
+  ;; place, it stayed under that section's tombstone after --allow-delete,
+  ;; live and in no file. A retained block is re-homed for that reason; a
+  ;; section is the file's to place, and this is where it is placed.
+  ;;
+  ;; NEVER: A MOVE FOR AN ORDER THAT DID NOT CHANGE. An unchanged file
+  ;; writes nothing; that is what makes a projection a projection.
+  (define (placed-parents state rows doc-id parents matched)
+    (let ((rendered (rendered-arrangement state doc-id))
+          (missing (let ((found (filter string? (map car matched))))
+                     (filter (lambda (id) (and (eq? 'section (kind-of (state-read state id)))
+                                               (not (member id found))))
+                             (heading-candidates state doc-id)))))
+     (let loop ((keys (unique parents)) (out '()))
+      (if (null? keys)
+          (reverse out)
+          (let* ((key (car keys))
+                 (group (let pick ((ps parents) (ms matched) (acc '()))
+                          (cond ((null? ps) (reverse acc))
+                                ((and (equal? (car ps) key)
+                                      (not (recognised-only? state (car ms))))
+                                 (pick (cdr ps) (cdr ms) (cons (car ms) acc)))
+                                (else (pick (cdr ps) (cdr ms) acc)))))
+                 (named (filter string? (map car group)))
+                 (parent (if (eq? key 'doc) doc-id (car (list-ref matched key))))
+                 (stored-order
+                   (if (string? parent)
+                       (filter (lambda (c) (member c named))
+                               (rendered-children rendered (if (eq? key 'doc) 'doc parent)))
+                       '()))
+                 (insertable? (new-sections-insertable? group named))
+                 (stranded? (exists (lambda (id) (member (parent-in rows id) missing)) named)))
+            (loop (cdr keys)
+                  (if (and (equal? stored-order named) insertable? (not stranded?))
+                      out
+                      (cons key out))))))))
+
+  ;; THE ARRANGEMENT THE STORE'S OWN EXPORT WOULD GIVE: the heading
+  ;; candidates in outline order, each at the level its heading is written
+  ;; with, nested by those levels as the file's sections are. The file is
+  ;; compared with this and not with the stored children, because the
+  ;; export cannot say every nesting the store holds: a section moved under
+  ;; another of the same level is written after it at that level. Compared
+  ;; with the stored children, an untouched export read as a move and put
+  ;; it back.
+  ;; -> ((<id> . <parent>) ...), in order, the parent 'doc or an id.
+  (define (rendered-arrangement state doc-id)
+    (let* ((ids (heading-candidates state doc-id))
+           (levels (map (lambda (id) (list id (car (rendered-heading-key state id)))) ids))
+           (ps (parents-of levels)))
+      (map (lambda (id p) (cons id (if (eq? p 'doc) 'doc (list-ref ids p)))) ids ps)))
+
+  (define (rendered-children rendered parent)
+    (map car (filter (lambda (e) (equal? (cdr e) parent)) rendered)))
+
+  ;; A NEW SECTION IS INSERTED AFTER ITS PREDECESSOR IN THE FILE, and an
+  ;; insert can say "after this one" or "at the end", never "first". So a
+  ;; new section with no predecessor under its parent, followed there by
+  ;; one the store already holds, cannot be put where the file has it
+  ;; without placing the whole group; any other new section can.
+  (define (new-sections-insertable? group named)
+    (or (null? group)
+        (car (car group))
+        (null? named)))
+
+  (define (unique xs)
+    (let loop ((xs xs) (out '()))
+      (cond ((null? xs) (reverse out))
+            ((member (car xs) out) (loop (cdr xs) out))
+            (else (loop (cdr xs) (cons (car xs) out))))))
+
+;; The index of the nearest earlier entry the file puts under the same
+  ;; parent, or #f: a block lands after the one it follows in the file
+  ;; rather than at the end. A block matched by its own rendering is none: it
+  ;; is not moved, and while its parent's children are placed they end after
+  ;; every block the placement leaves alone.
+  (define (predecessor fixed parents i parent-ix)
     (let loop ((j (- i 1)))
       (cond
         ((< j 0) #f)
-        ((equal? (list-ref parents j) parent-ix) (vector-ref refs j))
+        ((and (equal? (list-ref parents j) parent-ix) (not (vector-ref fixed j))) j)
         (else (loop (- j 1))))))
 
   (define (section-fields s)
@@ -937,18 +1138,41 @@
                (map (lambda (child) (cons child (walk child)))
                     (children-of rows id))))))
 
+  ;; WHAT AN UNMARKED HEADING MAY BE: the document's
+  ;; descendants that are not documents and are not inside one, in outline
+  ;; order. A nested document's sections belong to its own file, and are
+  ;; matched or missing there, never here. Of these, a section is matched by
+  ;; its heading, and any other block only by its own rendering
+  ;; (`agrees?`); only a section can be missing. This is the one answer to
+  ;; "which blocks can a heading be", asked at the three places that match:
+  ;; the positional pairing, the signature pool, and the missing set.
+  ;; `doc-sections-of` stays the whole subtree: a marker is checked against
+  ;; it, and an absent file's document is deleted with all of it.
+  (define (heading-candidates state doc-id)
+    (let ((rows (state-outline state)))
+      (let walk ((id doc-id))
+        (apply append
+               (map (lambda (child)
+                      (if (eq? 'doc (kind-of (state-read state child)))
+                          '()
+                          (cons child (walk child))))
+                    (children-of rows id))))))
+
   ;; IDENTITY, IN THE ORDER SECTION 8.1 GIVES IT.
   ;;
-  ;;   1. a declared id wins outright -- that is what the recovery form
-  ;;      is for, and a file that carries one is not guessing;
-  ;;   2. otherwise the structural position, when the counts line up;
-  ;;   3. otherwise the heading and body together are the signature, and
-  ;;      it has to pick out exactly one stored section.
+  ;;   1. a declared id wins outright, section by section -- that is what
+  ;;      the recovery form is for, and a section that carries one is not
+  ;;      guessing;
+  ;;   2. otherwise the position, when the counts line up and every pair
+  ;;      agrees (`agrees?`);
+  ;;   3. otherwise the heading key, with the body breaking ties, and it
+  ;;      has to pick out exactly one stored block.
   ;;
   ;; THE TWO REFUSALS ARE DIFFERENT SITUATIONS AND SAY SO.
   ;;   `position-mismatch`   the file declares an id this document does
   ;;                         not contain -- it is talking about some
-  ;;                         other document, or about a deleted block.
+  ;;                         other document, or about a deleted block --
+  ;;                         or declares one id twice (`claimed-twice`).
   ;;   `ambiguous-identity`  the file changed, and a section in it looks
   ;;                         exactly like more than one stored section,
   ;;                         so nothing in the bytes says which one it
@@ -960,8 +1184,21 @@
 
   (define (signature-of-incoming s) (cons (sec-heading s) (sec-src s)))
 
-  (define (match-sections state old incoming)
-    (let ((declared (filter (lambda (s) (sec-id s)) incoming)))
+  ;; A MARKER IS PER SECTION. A section that carries one is that
+  ;; block, whatever its kind; the rest are matched among the candidates
+  ;; no marker claimed. Markers were used only when EVERY section carried
+  ;; one, so a partly marked file had its markers ignored.
+  ;;
+  ;; POSITION NEEDS AGREEING HEADINGS. Pairing by position when
+  ;; the counts were equal, with no look at the headings, gave a block the
+  ;; identity of whatever section stood in its place: a section a batch had
+  ;; inserted, the only one left in its document, was rewritten into the
+  ;; file's one heading. A count of one is not an identity. Position is
+  ;; used only when every pair it would make agrees; one pair that does not
+  ;; sends the whole file to the heading key, as a count difference does.
+  (define (match-sections state old candidates incoming)
+    (let* ((declared (filter (lambda (s) (sec-id s)) incoming))
+           (ids (map sec-id declared)))
       (cond
         ;; a declared id that is not one of this document's sections
         ((exists (lambda (s) (not (member (sec-id s) old))) declared)
@@ -971,14 +1208,56 @@
                           (map sec-id
                                (filter (lambda (s) (not (member (sec-id s) old)))
                                        declared))))))
-        ((= (length declared) (length incoming))
-         (map (lambda (s) (cons (sec-id s) s)) incoming))
-        ((= (length old) (length incoming))
-         (let loop ((o old) (i incoming) (out '()))
-           (if (null? o)
-               (reverse out)
-               (loop (cdr o) (cdr i) (cons (cons (car o) (car i)) out)))))
-        (else (match-by-signature state old incoming)))))
+        ;; two markers naming one block: the file claims it twice
+        ((pair? (claimed-twice ids))
+         (list 'error 'position-mismatch (list 'claimed-twice (claimed-twice ids))))
+        (else
+         (let* ((rest (filter (lambda (s) (not (sec-id s))) incoming))
+                (free (filter (lambda (id) (not (member id ids))) candidates))
+                (paired (or (paired-by-position state free rest)
+                            (match-by-signature state free rest))))
+           (if (and (pair? paired) (eq? (car paired) 'error))
+               paired
+               (let merge ((is incoming) (ps paired) (out '()))
+                 (cond ((null? is) (reverse out))
+                       ((sec-id (car is))
+                        (merge (cdr is) ps (cons (cons (sec-id (car is)) (car is)) out)))
+                       (else (merge (cdr is) (cdr ps) (cons (car ps) out)))))))))))
+
+  (define (claimed-twice ids)
+    (let loop ((xs ids) (seen '()) (out '()))
+      (cond ((null? xs) (reverse out))
+            ((and (member (car xs) seen) (not (member (car xs) out)))
+             (loop (cdr xs) seen (cons (car xs) out)))
+            (else (loop (cdr xs) (cons (car xs) seen) out)))))
+
+  ;; -> the pairs, or #f when the counts differ or one pair disagrees.
+  (define (paired-by-position state free incoming)
+    (and (= (length free) (length incoming))
+         (for-all (lambda (id s) (agrees? state id s)) free incoming)
+         (map cons free incoming)))
+
+  ;; A SECTION AGREES BY ITS HEADING KEY; ANY OTHER BLOCK ONLY BY ITS OWN
+  ;; RENDERING: that key and the body as the split reads them back. Both
+  ;; keys are the key of the heading the export writes. The export writes every
+  ;; block of a document into its file, so a code block comes back as a
+  ;; heading; matched to nothing, it was a new section on every import of
+  ;; an unmarked export. Matched by its heading alone, a heading the author
+  ;; wrote took the block over.
+  (define (agrees? state id s)
+    (if (eq? 'section (kind-of (state-read state id)))
+        (equal? (rendered-heading-key state id) (heading-key s))
+        (and (equal? (rendered-heading-key state id) (heading-key s))
+             (same-body? (text-field (state-read state id) 'src) (sec-src s)))))
+
+  ;; THE JOIN ADDS ONE NEWLINE AFTER A BODY THAT LACKS ONE when another
+  ;; block follows it (md-join), and the split keeps that newline in the
+  ;; body it reads, so a stored "x" comes back as "x\n".
+  (define (same-body? stored incoming)
+    (or (string=? stored incoming)
+        (and (> (string-length stored) 0)
+             (not (char=? #\newline (string-ref stored (- (string-length stored) 1))))
+             (string=? (string-append stored "\n") incoming))))
 
   ;; THE HEADING IS THE KEY; THE BODY ONLY BREAKS TIES.
   ;;
@@ -999,17 +1278,27 @@
   ;; heading -- which is exactly the case A6 is about.
   (define (heading-key s) (cons (sec-level s) (sec-title s)))
 
-  (define (stored-heading-key state id)
-    (let ((b (state-read state id)))
-      (cons (or (field b 'level) 1) (text-field b 'title))))
+  ;; THE KEY OF THE HEADING THE EXPORT WRITES, as the split reads it back.
+  ;; A stored title the split normalises -- one with a trailing space, say
+  ;; -- is written as it is and read back without the space, so the raw
+  ;; stored key did not match the block's own untouched export and the
+  ;; import refused it as missing. When the written line does not parse as
+  ;; exactly one heading -- a title carrying a line break, which only a
+  ;; record from elsewhere can hold, is written as two -- the stored title
+  ;; is paired with the level the line was written at: a stored level can
+  ;; be a value that is no level at all, a conflict of two writers, and the
+  ;; arrangement compares levels as numbers.
+  (define (rendered-heading-key state id)
+    (or (parse-heading (effective-heading state id))
+        (cons (effective-level (state-read state id))
+              (text-field (state-read state id) 'title))))
 
   (define (match-by-signature state old incoming)
     (let loop ((is incoming) (free old) (out '()))
       (if (null? is)
           (reverse out)
           (let* ((want (heading-key (car is)))
-                 (hits (filter (lambda (id) (equal? (stored-heading-key state id) want))
-                               free)))
+                 (hits (filter (lambda (id) (agrees? state id (car is))) free)))
             (cond
               ((null? hits) (loop (cdr is) free (cons (cons #f (car is)) out)))
               ((null? (cdr hits))

@@ -1504,6 +1504,503 @@
         (and (pair? first) (pair? (cdr first)) (list (car first) (cadr first))))
       '(error would-delete))
 
+(printf "== a heading is a section only when it says so ==\n")
+;; NEVER: A COUNT IS NOT AN IDENTITY. With the counts equal, the import
+;; paired stored and incoming sections by position with no look at their
+;; headings: a section a batch had inserted, the only one left in its
+;; document, was rewritten into the file's one heading. Position now needs
+;; every pair to agree on its heading; a block that is not a section is
+;; matched only by its own rendering and is never missing; a marker counts
+;; section by section; a matched section goes where the file puts it; and
+;; what a deleted section holds that the file does not describe is moved to
+;; its nearest surviving ancestor before it goes.
+(define (kids d id)
+  (map caddr (filter (lambda (r) (equal? (car r) id)) (state-outline (open-and-reduce d)))))
+(define (position-parent d id)
+  (let ((b (state-read (open-and-reduce d) id)))
+    (and b (let ((p (cdr (assq 'position b)))) (and (pair? p) (car p))))))
+(define (live? d id)
+  (let ((b (state-read (open-and-reduce d) id)))
+    (and b (not (cdr (assq 'deleted b))))))
+(define (insert-block! d parent after fields)
+  (id-written-by (with-store-write d (lambda (s v) (list (list 'insert parent after fields))) "t")))
+;; A block put through the log directly, as history written before the
+;; write path's rules would hold it: the only way to have a document below
+;; another one.
+(define (log-put! d fields)
+  (let* ((sess (log-begin d (lambda args 'applied)))
+         (v (session-view sess))
+         (id (block-id (view-writer v) (view-expect-seq v))))
+    (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v)
+                                      (view-expect-seq v) "independent-fixture" '()
+                                      (list 'put fields)))
+    (session-commit! sess)
+    (log-end! sess)
+    id))
+(define (x-section level title src)
+  (list (cons 'kind 'section) (cons 'level level) (cons 'title title)
+        (cons 'heading-src (string-append (make-string level #\#) " " title "\n"))
+        (cons 'src src)))
+(define (x-code title src)
+  (list (cons 'kind 'code) (cons 'title title) (cons 'src src)))
+(define (marker id) (string-append "<!-- theourgia: " id " -->\n"))
+(define (first-answer r) (if (and (pair? r) (pair? (car r))) (car r) r))
+(define (swap text from to)
+  (let ((n (string-length from)) (m (string-length text)))
+    (let loop ((i 0))
+      (cond ((> (+ i n) m) text)
+            ((string=? (substring text i (+ i n)) from)
+             (string-append (substring text 0 i) to (substring text (+ i n) m)))
+            (else (loop (+ i 1)))))))
+;; The document's file as export-md writes it, plain or with ids.
+(define (exported src d name with-ids?)
+  (let ((out (string-append src "-out")))
+    (system (string-append "rm -rf " out "; mkdir -p " out))
+    (export-md d out with-ids?)
+    (slurp (string-append out "/" name))))
+(define (kind-at d id) (text-field-of d id 'kind))
+
+;; -> (src store f g a b c): f.md's b moved under g's document, c inserted
+;; under f's, and g.md written as the store now holds it.
+(define (x1-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# a\nbody a\n# b\nbody b\n")
+                               (cons "g.md" "# g\nbody g\n"))))
+         (src (car t)) (d (cdr t)))
+    (import-md d src "t")
+    (let* ((f (live-doc-of d "f.md")) (g (live-doc-of d "g.md"))
+           (a (car (kids d f))) (b (cadr (kids d f))))
+      (with-store-write d (lambda (s v) (list (list 'move b g #f))) "t")
+      (let ((c (insert-block! d f #f (x-section 1 "c" "body c\n"))))
+        (put! (string-append src "/g.md") "# g\nbody g\n# b\nbody b\n")
+        (list src d f g a b c)))))
+
+;; X1: the finding.
+(want "X1 a section inserted under a document whose file still names a section moved out of it is not taken over: refused would-delete naming it, nothing written, its title and body unchanged"
+      (let* ((x (x1-case!)) (d (list-ref x 1)) (c (list-ref x 6)) (before (records d))
+             (r (import-md d (car x) "t")))
+        (list (equal? (first-answer r)
+                      (list 'error 'would-delete (list 'blocks (list c)) '(remedy allow-delete)))
+              (- (records d) before) (text-field-of d c 'title) (text-field-of d c 'src)))
+      (list #t 0 "c" "body c\n"))
+;; X1b: allowed to delete.
+(want "X1b with --allow-delete: a kept with nothing written for it, c deleted, the file's b a new section after a, two records"
+      (let* ((x (x1-case!)) (d (list-ref x 1)) (f (list-ref x 2)) (a (list-ref x 4)) (c (list-ref x 6))
+             (before (records d))
+             (r (import-md d (car x) "t" #t))
+             (ks (kids d f)))
+        (list (all-ok? r) (- (records d) before)
+              (map (lambda (id) (text-field-of d id 'title)) ks)
+              (equal? (car ks) a) (and (member c ks) #t) (live? d c)
+              (kind-at d (cadr ks))))
+      (list #t 2 '("a" "b") #t #f #f 'section))
+
+;; X2 PIN: an unchanged file writes nothing.
+(want "X2 PIN an unchanged nested file re-imported writes nothing"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n## B\nb\n# C\nc\n## D\nd\n"))))
+             (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((before (records d)) (r (import-md d (car t) "t")))
+          (list (length r) (- (records d) before))))
+      (list 0 0))
+
+;; X3: a heading edited in the file, the counts equal.
+(want "X3 a heading edited in the file is a new section and the old one missing: refused would-delete naming the old one, nothing written"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (b (cadr (kids d f))) (before (records d)))
+          (put! (string-append (car t) "/f.md") "# A\na\n# B2\nb\n")
+          (let ((r (import-md d (car t) "t")))
+            (list (equal? (first-answer r)
+                          (list 'error 'would-delete (list 'blocks (list b)) '(remedy allow-delete)))
+                  (- (records d) before) (text-field-of d b 'title)))))
+      (list #t 0 "B"))
+
+;; X4: a code block under the document, titled like the file's one heading.
+(want "X4 a heading is not matched to a code block with its title: a new section, the code block's title and src unchanged"
+      (let* ((t (fresh-case! (list (cons "f.md" "lead\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md"))
+               (k (insert-block! d f #f (x-code "T" "code body\n"))))
+          (put! (string-append (car t) "/f.md") "lead\n# T\nsection body\n")
+          (let* ((r (import-md d (car t) "t")) (ks (kids d f)))
+            (list (all-ok? r) (text-field-of d k 'src) (text-field-of d k 'title) (kind-at d k)
+                  (length ks) (equal? (car ks) k)
+                  (and (= 2 (length ks)) (kind-at d (cadr ks)))
+                  (and (= 2 (length ks)) (text-field-of d (cadr ks) 'src))))))
+      (list #t "code body\n" "T" 'code 2 #t 'section "section body\n"))
+
+;; X4b: a code block is never missing.
+(define (x4b-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (b (cadr (kids d f)))
+           (k (insert-block! d f #f (x-code "Z" "z\n"))))
+      (put! (string-append (car t) "/f.md") "# A\na\n")
+      (list (car t) d f b k))))
+(want "X4b a file with fewer sections: the refusal names only the section, not the code block"
+      (let* ((x (x4b-case!)) (d (cadr x)) (b (cadddr x)))
+        (equal? (first-answer (import-md d (car x) "t"))
+                (list 'error 'would-delete (list 'blocks (list b)) '(remedy allow-delete))))
+      #t)
+(want "X4b with --allow-delete the section goes and the code block stays live and unchanged under the document"
+      (let* ((x (x4b-case!)) (d (cadr x)) (f (caddr x)) (b (cadddr x)) (k (list-ref x 4))
+             (r (import-md d (car x) "t" #t)))
+        (list (all-ok? r) (live? d b) (live? d k) (equal? (position-parent d k) f) (text-field-of d k 'src)))
+      (list #t #f #t #t "z\n"))
+
+;; X5: a marked section whose heading was edited.
+(want "X5 a marked section whose heading was edited is the marked block, under its new heading"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f)))
+               (text (exported (car t) d "f.md" #t)))
+          (put! (string-append (car t) "/f.md") (swap text "# B\n" "# B2\n"))
+          (let ((r (import-md d (car t) "t")))
+            (list (all-ok? r) (equal? (kids d f) (list a b)) (text-field-of d b 'title) (live? d b)))))
+      (list #t #t "B2" #t))
+;; X5b: a marker names a block of another kind.
+(want "X5b a marked code block whose heading and body changed is updated by its id and stays code"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md"))
+               (k (insert-block! d f #f (x-code "K" "k\n")))
+               (text (exported (car t) d "f.md" #t)))
+          (put! (string-append (car t) "/f.md") (swap text "# K\nk\n" "# K2\nk edited\n"))
+          (let ((r (import-md d (car t) "t")))
+            (list (all-ok? r) (kind-at d k) (text-field-of d k 'title) (text-field-of d k 'src)
+                  (live? d k) (equal? (position-parent d k) f)))))
+      (list #t 'code "K2" "k edited\n" #t #t))
+
+;; X6: a partly marked file.
+(define (x6-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f))))
+      (put! (string-append (car t) "/f.md") (string-append (marker a) "# C\na\n# D\nd\n"))
+      (list (car t) d f a b))))
+(want "X6 a partly marked file: the marked section is its block, the unmarked heading new, the one left missing and named, nothing written"
+      (let* ((x (x6-case!)) (d (cadr x)) (b (list-ref x 4)) (before (records d))
+             (r (import-md d (car x) "t")))
+        (list (equal? (first-answer r)
+                      (list 'error 'would-delete (list 'blocks (list b)) '(remedy allow-delete)))
+              (- (records d) before)))
+      (list #t 0))
+(want "X6 with --allow-delete the marked section takes the heading C, D is new after it, B is deleted"
+      (let* ((x (x6-case!)) (d (cadr x)) (f (caddr x)) (a (cadddr x)) (b (list-ref x 4))
+             (r (import-md d (car x) "t" #t))
+             (ks (kids d f)))
+        (list (all-ok? r) (equal? (car ks) a) (text-field-of d a 'title)
+              (map (lambda (id) (text-field-of d id 'title)) ks) (live? d b)))
+      (list #t #t "C" '("C" "D") #f))
+;; X6b: two markers naming one block.
+(want "X6b two markers naming one block are refused position-mismatch naming it, nothing written"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (before (records d)))
+          (put! (string-append (car t) "/f.md")
+                (string-append (marker a) "# A\na\n" (marker a) "# B\nb\n"))
+          (let ((r (import-md d (car t) "t")))
+            (list (equal? (first-answer r)
+                          (list 'error 'position-mismatch (list 'claimed-twice (list a))))
+                  (- (records d) before)))))
+      (list #t 0))
+
+;; X7: a parent heading renamed in the file.
+(define (x7-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\nlead\n## B\nbody\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (car (kids d a))))
+      (put! (string-append (car t) "/f.md") "# C\nlead\n## B\nbody\n")
+      (list (car t) d f a b))))
+(want "X7 with --allow-delete a renamed parent is a new section, its child keeps its id and moves under it, the old one is deleted, and the export is the file"
+      (let* ((x (x7-case!)) (d (cadr x)) (f (caddr x)) (a (cadddr x)) (b (list-ref x 4))
+             (r (import-md d (car x) "t" #t))
+             (ks (kids d f)))
+        (list (all-ok? r) (length ks) (and (pair? ks) (not (equal? (car ks) a)))
+              (and (pair? ks) (text-field-of d (car ks) 'title))
+              (and (pair? ks) (equal? (kids d (car ks)) (list b)))
+              (live? d a)
+              (exported (car x) d "f.md" #f)))
+      (list #t 1 #t "C" #t #f "# C\nlead\n## B\nbody\n"))
+(want "X7b without --allow-delete the rename is refused would-delete naming the old parent, nothing written"
+      (let* ((x (x7-case!)) (d (cadr x)) (a (cadddr x)) (before (records d))
+             (r (import-md d (car x) "t")))
+        (list (equal? (first-answer r)
+                      (list 'error 'would-delete (list 'blocks (list a)) '(remedy allow-delete)))
+              (- (records d) before)))
+      (list #t 0))
+
+;; X8: a section moved under another parent, in the file's order.
+(want "X8 a section moved in the file under a later parent keeps its id and lands before that parent's own child, in the file's order"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n## B\nb\n# C\nc\n## D\nd\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (ids (ids-of d))
+               (a (car (kids d f))) (c (cadr (kids d f)))
+               (b (car (kids d a))) (dd (car (kids d c)))
+               (then "# A\na\n# C\nc\n## B\nb\n## D\nd\n")
+               (before (records d)))
+          (put! (string-append (car t) "/f.md") then)
+          (let ((r (import-md d (car t) "t")))
+            (list (all-ok? r) (- (records d) before) (equal? ids (ids-of d))
+                  (equal? (kids d f) (list a c)) (kids d a) (equal? (kids d c) (list b dd))
+                  (string=? (exported (car t) d "f.md" #f) then)))))
+      (list #t 2 #t #t '() #t #t))
+
+;; X8b: a new section ahead of every section its parent already holds.
+(want "X8b a new section before the one section already there puts the two in the file's order, the old one keeping its id"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (then "# N\nn\n# A\na\n"))
+          (put! (string-append (car t) "/f.md") then)
+          (let* ((r (import-md d (car t) "t")) (ks (kids d f)))
+            (list (all-ok? r) (map (lambda (id) (text-field-of d id 'title)) ks)
+                  (and (= 2 (length ks)) (equal? (cadr ks) a))
+                  (string=? (exported (car t) d "f.md" #f) then)))))
+      (list #t '("N" "A") #t #t))
+
+;; X9: what a deleted section holds that the file does not describe.
+(define (x9-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\nbody a\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (a (car (kids d f)))
+           (k (insert-block! d a #f (x-code "K" "k text\n")))
+           (l (insert-block! d k #f (x-code "L" "l text\n"))))
+      (put! (string-append (car t) "/f.md") "# C\nbody c\n")
+      (list (car t) d f a k l))))
+(want "X9 with --allow-delete the code block under a deleted section moves to the document with its child, both live and unchanged, and the export carries them"
+      (let* ((x (x9-case!)) (d (cadr x)) (f (caddr x)) (a (cadddr x)) (k (list-ref x 4)) (l (list-ref x 5))
+             (r (import-md d (car x) "t" #t))
+             (text (exported (car x) d "f.md" #f)))
+        (list (all-ok? r) (live? d a)
+              (equal? (position-parent d k) f) (equal? (position-parent d l) k)
+              (live? d k) (live? d l) (text-field-of d k 'src) (text-field-of d l 'src)
+              (map (lambda (id) (text-field-of d id 'title)) (kids d f))
+              (and (holds? text "k text") (holds? text "l text"))))
+      (list #t #f #t #t #t #t "k text\n" "l text\n" '("C" "K") #t))
+(want "X9b without --allow-delete the refusal names the section and, under holds, the root it would strand"
+      (let* ((x (x9-case!)) (d (cadr x)) (a (cadddr x)) (k (list-ref x 4)) (before (records d))
+             (r (import-md d (car x) "t")))
+        (list (equal? (first-answer r)
+                      (list 'error 'would-delete (list 'blocks (list a)) '(remedy allow-delete)
+                            (list 'holds (list k))))
+              (- (records d) before)))
+      (list #t 0))
+;; X9c: the walk up passes every deleted section.
+(want "X9c a code block under two deleted sections goes to the document"
+      (let* ((t (fresh-case! (list (cons "f.md" "# P\np\n## A\na\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (p (car (kids d f))) (a (car (kids d p)))
+               (k (insert-block! d a #f (x-code "K" "k\n"))))
+          (put! (string-append (car t) "/f.md") "# C\nc\n")
+          (let ((r (import-md d (car t) "t" #t)))
+            (list (all-ok? r) (live? d p) (live? d a) (live? d k) (equal? (position-parent d k) f)))))
+      (list #t #f #f #t #t))
+;; X9d: a block of another kind between two deleted sections survives.
+(want "X9d a code block between two deleted sections goes to the document, and what the inner section held goes under it, intact"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f)))
+               (m (insert-block! d a #f (x-code "M" "m\n")))
+               (b (insert-block! d m #f (x-section 2 "B" "b\n")))
+               (k (insert-block! d b #f (x-code "K" "k\n")))
+               (j (insert-block! d k #f (x-code "J" "j\n"))))
+          (put! (string-append (car t) "/f.md") "# C\nc\n")
+          (let ((r (import-md d (car t) "t" #t)))
+            (list (all-ok? r) (live? d a) (live? d b)
+                  (equal? (position-parent d m) f) (equal? (position-parent d k) m)
+                  (equal? (position-parent d j) k)
+                  (live? d m) (live? d k) (live? d j)))))
+      (list #t #f #f #t #t #t #t #t #t))
+;; X9e, X9g: a nested document under a deleted section.
+;; -> (src store f a n s), n.md present when present? is true.
+(define (x9e-case! present?)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (a (car (kids d f)))
+           (n (log-put! d (list (cons 'kind 'doc) (cons 'path "n.md") (cons 'title "N")
+                                (cons 'parent a) (cons 'ord 0))))
+           (s (log-put! d (append (x-section 1 "S" "s\n") (list (cons 'parent n) (cons 'ord 0))))))
+      (when present? (put! (string-append (car t) "/n.md") "# S\ns\n"))
+      (put! (string-append (car t) "/f.md") "# C\nc\n")
+      (list (car t) d f a n s))))
+(define x9e (caught (x9e-case! #t)))
+(want "X9e with --allow-delete a nested document whose file is present moves to root and stays a document"
+      (let* ((d (cadr x9e)) (a (cadddr x9e)) (n (list-ref x9e 4))
+             (r (import-md d (car x9e) "t" #t)))
+        (list (all-ok? r) (live? d a) (position-parent d n) (kind-at d n) (live? d n)))
+      (list #t #f 'root 'doc #t))
+(want "X9g and its section, unchanged in its own file, is matched there, not missing for the outer file: live, under it"
+      (let* ((d (cadr x9e)) (n (list-ref x9e 4)) (s (list-ref x9e 5)))
+        (list (live? d s) (equal? (position-parent d s) n) (text-field-of d s 'src)))
+      (list #t #t "s\n"))
+(want "X9e without --allow-delete the refusal names the section only, and the nested document under holds"
+      (let* ((x (x9e-case! #t)) (d (cadr x)) (a (cadddr x)) (n (list-ref x 4)) (before (records d))
+             (r (import-md d (car x) "t")))
+        (list (equal? (first-answer r)
+                      (list 'error 'would-delete (list 'blocks (list a)) '(remedy allow-delete)
+                            (list 'holds (list n))))
+              (- (records d) before)))
+      (list #t 0))
+;; X9f PIN: its file absent, the absent-document rule governs it.
+(want "X9f PIN a nested document whose file is absent is reported absent, and names nothing under holds"
+      (let* ((x (x9e-case! #f)) (d (cadr x))
+             (rep (import-md-report d (car x) "t"))
+             (first (first-answer (car rep))))
+        (list (cadr rep) (and (pair? first) (list? first) (assq 'holds (cddr first)) #t)))
+      (list '(absent (files ("n.md"))) #f))
+(want "X9f PIN with --allow-delete it is deleted by that rule and not moved first"
+      (let* ((x (x9e-case! #f)) (d (cadr x)) (a (cadddr x)) (n (list-ref x 4))
+             (rep (import-md-report d (car x) "t" #t)))
+        (list (cadr rep) (live? d n) (equal? (position-parent d n) a)))
+      (list '(deleted (files ("n.md"))) #f #t))
+
+;; X10: a block the file names is placed by the file, not re-homed.
+(want "X10 a code block the file marks under another section goes there, not to the deleted section's ancestor"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f)))
+               (k (insert-block! d a #f (x-code "K" "k\n"))))
+          (put! (string-append (car t) "/f.md")
+                (string-append (marker b) "# B\nb\n" (marker k) "## K\nk\n"))
+          (let ((r (import-md d (car t) "t" #t)))
+            (list (all-ok? r) (live? d a) (equal? (position-parent d k) b) (live? d k)
+                  (kind-at d k) (text-field-of d b 'title)))))
+      (list #t #f #t #t 'code "B"))
+
+;; X11: an unmarked export of a document holding blocks of another kind
+;; comes back as itself.
+(define (round-trips d src name)
+  (let loop ((cycle 0) (out '()))
+    (if (= cycle 2)
+        (reverse out)
+        (begin
+          (put! (string-append src "/" name) (exported src d name #f))
+          (let* ((before (records d)) (r (import-md d src "t")))
+            (loop (+ cycle 1) (cons (list (length r) (- (records d) before)) out)))))))
+(want "X11 an unmarked export of a document holding a code block with a child, re-imported twice, writes nothing"
+      (let* ((t (fresh-case! (list (cons "f.md" "# C\nc\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md"))
+               (k (insert-block! d f #f (x-code "K" "k\n")))
+               (l (insert-block! d k #f (x-code "L" "l\n"))))
+          (round-trips d (car t) "f.md")))
+      '((0 0) (0 0)))
+(want "X11 and one whose code block has no final newline and is followed by a section writes nothing either"
+      (let* ((t (fresh-case! (list (cons "f.md" "lead\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md"))
+               (k (insert-block! d f #f (x-code "K" "x")))
+               (s (insert-block! d f k (x-section 1 "S" "s\n"))))
+          (round-trips d (car t) "f.md")))
+      '((0 0) (0 0)))
+
+;; X11 (iii): a block matched by its own rendering is not placed, even
+;; where the file shows it somewhere else.
+(want "X11 (iii) a file that shows a code block's rendering ahead of the section it follows writes nothing: the block is matched, not moved"
+      (let* ((t (fresh-case! (list (cons "f.md" "# C\nc\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (c (car (kids d f)))
+               (k (insert-block! d f c (x-code "K" "k\n"))))
+          (put! (string-append (car t) "/f.md") "# K\nk\n# C\nc\n")
+          (let* ((before (records d)) (r (import-md d (car t) "t")))
+            (list (length r) (- (records d) before) (equal? (kids d f) (list c k))))))
+      (list 0 0 #t))
+
+;; X12: a nesting the export cannot write. A section moved under another of
+;; the same level is written after it at that level; the file is compared
+;; with what the store's own export gives, so its untouched export moves
+;; nothing, and a new section after it goes where it follows, under the same
+;; section, so the export still writes what the file says.
+(define (x12-case!)
+  (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+    (import-md d (car t) "t")
+    (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f))))
+      (with-store-write d (lambda (s v) (list (list 'move b a #f))) "t")
+      (list (car t) d f a b))))
+(want "X12 a section moved under another of the same level stays there when its untouched export is re-imported: no intents"
+      (let* ((x (x12-case!)) (d (cadr x)) (a (cadddr x)) (b (list-ref x 4))
+             (text (exported (car x) d "f.md" #f)))
+        (put! (string-append (car x) "/f.md") text)
+        (let* ((before (records d)) (r (import-md d (car x) "t")))
+          (list text (length r) (- (records d) before) (equal? (position-parent d b) a))))
+      (list "# A\na\n# B\nb\n" 0 0 #t))
+(want "X12 (ii) and a new section after it in that file is one insert, after it and under the same section, not refused, the export unchanged"
+      (let* ((x (x12-case!)) (d (cadr x)) (f (caddr x)) (a (cadddr x)) (b (list-ref x 4)))
+        (put! (string-append (car x) "/f.md") "# A\na\n# B\nb\n# N\nn\n")
+        (let* ((before (records d)) (r (import-md d (car x) "t")))
+          (list (all-ok? r) (length r) (- (records d) before)
+                (equal? (kids d f) (list a))
+                (map (lambda (id) (text-field-of d id 'title)) (kids d a))
+                (exported (car x) d "f.md" #f))))
+      (list #t 1 1 #t '("B" "N") "# A\na\n# B\nb\n# N\nn\n"))
+(want "X12 (iii) two sections stored under another of their level, a new one written between them: one insert between them, the export is the file, and its untouched re-import writes nothing"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n# C\nc\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (ks (kids d f))
+               (a (car ks)) (b (cadr ks)) (c (caddr ks))
+               (then "# A\na\n# B\nb\n# N\nn\n# C\nc\n"))
+          (with-store-write d (lambda (s v) (list (list 'move b a #f) (list 'move c a b))) "t")
+          (put! (string-append (car t) "/f.md") then)
+          (let* ((before (records d)) (r (import-md d (car t) "t"))
+                 (written (- (records d) before))
+                 (text (exported (car t) d "f.md" #f)))
+            (put! (string-append (car t) "/f.md") text)
+            (let* ((before2 (records d)) (r2 (import-md d (car t) "t")))
+              (list (all-ok? r) (length r) written (string=? text then)
+                    (length r2) (- (records d) before2))))))
+      (list #t 1 1 #t 0 0))
+
+;; X13: a title the split normalises. A trailing space is written as it is
+;; and read back without it; the section's key is the key of what the export
+;; writes, so the untouched export matches the section it came from.
+(want "X13 a section whose title has a trailing space matches its own untouched export: no intents, the title kept"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))))
+          (with-store-write d (lambda (s v) (list (list 'set a 'title "A "))) "t")
+          (put! (string-append (car t) "/f.md") (exported (car t) d "f.md" #f))
+          (let* ((before (records d)) (r (import-md d (car t) "t")))
+            (list (length r) (- (records d) before) (text-field-of d a 'title) (live? d a)))))
+      (list 0 0 "A " #t))
+
+;; X14: a section whose written heading does not parse as one heading -- a
+;; title with a line break, which only a record from elsewhere can carry --
+;; and whose level two writers set at once. Its level in the arrangement is
+;; the level the heading is written at, not the conflict.
+(define (mirror-publish! d seq deps payload)
+  (let ((bytes (encode-record seq (+ 1757300000000 seq) "peer" deps (storable-encode payload))))
+    (log-publish! d "zzzzzzzz" seq bytes (segment-sha bytes))))
+(want "X14 a fully marked file imports over a section with a two-line title and a level in conflict: every answer ok, the file's title taken"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f)))
+               (seen (car (reduce-applied-cut (open-and-reduce d)))))
+          (with-store-write d (lambda (s v) (list (list 'set b 'level 2))) "t")
+          (mirror-publish! d 1 (list seen) (list 'set b 'title "B\n# extra"))
+          (mirror-publish! d 2 (list seen) (list 'set b 'level 3))
+          (let ((level (text-field-of d b 'level)) (title (text-field-of d b 'title)))
+            (put! (string-append (car t) "/f.md")
+                  (string-append (marker a) "# A\na\n" (marker b) "# B\nb\n"))
+            (let ((r (import-md d (car t) "t")))
+              (list (and (pair? level) (eq? (car level) 'conflict)) title
+                    (all-ok? r) (text-field-of d b 'title))))))
+      (list #t "B\n# extra" #t "B"))
+
+;; X15: a section stored under another of its level, the other dropped from
+;; the file. The export wrote them as siblings, so the file agrees with the
+;; export's order, but the section it is stored under is deleted: it is
+;; placed where the file puts it, not left under the tombstone.
+(want "X15 with --allow-delete a section stored under one the file drops is moved to where the file puts it, live, and the dropped one deleted"
+      (let* ((t (fresh-case! (list (cons "f.md" "# A\na\n# B\nb\n")))) (d (cdr t)))
+        (import-md d (car t) "t")
+        (let* ((f (live-doc-of d "f.md")) (a (car (kids d f))) (b (cadr (kids d f))))
+          (with-store-write d (lambda (s v) (list (list 'move b a #f))) "t")
+          (put! (string-append (car t) "/f.md") "# B\nb\n")
+          (let ((r (import-md d (car t) "t" #t)))
+            (list (all-ok? r) (live? d a) (live? d b) (equal? (position-parent d b) f)
+                  (exported (car t) d "f.md" #f)))))
+      (list #t #f #t #t "# B\nb\n"))
+
 (printf "\n~a failures\n" bad)
 (printf "rows: ~a\n" rows-run)
 (printf "md2 complete\n")

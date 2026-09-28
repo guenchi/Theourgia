@@ -658,6 +658,30 @@ answer lists the ones whose deletion ran under
 a file to name. A section that has disappeared from a file that is still
 there is refused as `would-delete` until `--allow-delete` is given.
 
+Each heading in a file that is already in the store is matched to a
+section this way: a heading preceded by a `--with-ids` marker is the block
+the marker names; the other headings are paired with the document's
+remaining sections by position when the counts are equal and every pair
+has the same level and title; otherwise each is matched by its level and
+title, the body deciding between sections that share both; a heading
+matched by none of these is a new section. So a heading edited in the file
+is a new section, and the section it replaced is missing: `would-delete`
+until `--allow-delete`, which deletes it. To rename a section and keep its
+id, `set` its `title` in the store, or edit a file exported `--with-ids`. A
+block of another kind under the document (a `code` block, say) is written
+into the file by `export-md`, and a heading matches it only when the
+heading and body are exactly what the export wrote for it; it is never
+missing. A matched section is moved where the file puts it, under the
+heading above it and in the file's order, when the file arranges it
+differently from what `export-md` writes; a nesting the heading levels
+cannot show (a section moved under another of the same level) is kept
+through an untouched export, and a new section written right after such a
+section goes beside it, under the same section. Before a missing section is
+deleted, the blocks under it that the file does not describe are moved to
+its nearest ancestor that stays (a nested document whose own file is there
+goes to the top level), and the `would-delete` refusal names them under
+`(holds (<id> ...))`.
+
 ### `export-md`
 
     (export-md <dir> ("--with-ids") ("--working") ("--writer" <name>))
