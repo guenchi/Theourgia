@@ -74,5 +74,26 @@
                                      (uncertain-tokens ()) (prefix-lines ())))))
 (want "CT-02 registered data row activates existing profile"
       (boundaries (suggest "toy" "thing First {}\nthing Second {}\n")) '(0 15))
+;; A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT, and its offsets count the
+;; mark: they are into the file as it is on disk, so every offset after 0 is
+;; the plain file's plus the mark's three bytes. It used to answer invalid-utf8,
+;; because the whole-file text test decoded the mark away and the re-encoding
+;; did not give it back.
+(let* ((plain "function a() {}\nfunction b() {}\n")
+       (marked (string-append "\xFEFF;" plain))
+       (p (suggest "js" plain))
+       (m (suggest "js" marked)))
+  (want "CT-21 a JavaScript file beginning with a byte-order mark is cut as the plain one, every offset after 0 moved by the mark's 3 bytes, with no warning"
+        (list (boundaries p) (boundaries m) (result-value m 'warnings))
+        (list (list 0 (byte-count "function a() {}\n")) (list 0 (+ 3 (byte-count "function a() {}\n"))) '())))
+(let* ((head "class A {\n  String s = \"")
+       (plain (string-append head "\\u0041\";\n}\nclass B {}\n"))
+       (marked (string-append "\xFEFF;" plain))
+       (p (suggest "java" plain))
+       (m (suggest "java" marked)))
+  (want "CT-21 an uncertain token in a file beginning with a byte-order mark is reported at its offset on disk: the plain file's plus 3"
+        (list (result-value p 'warnings) (result-value m 'warnings))
+        (list (list (list 'code 'lexically-uncertain 'byte-offset (byte-count head)))
+              (list (list 'code 'lexically-uncertain 'byte-offset (+ 3 (byte-count head)))))))
 (printf "~a failures\ncode-suggest1 complete\n" bad)
 (exit (if (zero? bad) 0 1))

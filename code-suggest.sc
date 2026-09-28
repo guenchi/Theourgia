@@ -15,6 +15,7 @@
 (library (theourgia code-suggest)
   (export suggest-boundaries split-suggest)
   (import (rnrs) (theourgia languages) (theourgia text-code) (theourgia regex)
+          (only (theourgia markers) mark-length after-mark)
           (theourgia code-project) (theourgia code-markers) (theourgia trace)
           (only (theourgia wire) string->sexpr-extended)
           (only (theourgia digest) sha256 bytevector->hex)
@@ -111,13 +112,17 @@
                       (else (loop (+ i 1))))))))
           (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
-          (unless (safe-utf8 bytes) (fallback 'invalid-utf8 0))
+          ;; NEVER: A FILE THAT BEGINS WITH A BYTE-ORDER MARK IS TEXT. The whole
+          ;; file is tested without its mark, and an offset found in the
+          ;; mark-less text counts the mark back in: offsets are into the
+          ;; file as it is on disk.
+          (unless (safe-utf8 (after-mark bytes)) (fallback 'invalid-utf8 0))
           (for-each
             (lambda (token)
-              (let ((s (safe-utf8 bytes)))
+              (let ((s (safe-utf8 (after-mark bytes))))
                 (let loop ((i 0))
                   (when (< i (string-length s))
-                    (if (string-prefix-at? s token i) (fallback 'lexically-uncertain (bytevector-length (string->utf8 (substring s 0 i))))
+                    (if (string-prefix-at? s token i) (fallback 'lexically-uncertain (+ (mark-length bytes) (bytevector-length (string->utf8 (substring s 0 i)))))
                         (loop (+ i 1))))))) (get 'global-uncertain-tokens '()))
           (for-each
             (lambda (row)

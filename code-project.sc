@@ -20,7 +20,8 @@
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
-                entry-bytes))
+                entry-bytes)
+          (only (theourgia markers) import-text?))
   (define (code-field state id name)
     ;; THE VIEW, because a projection writes what a reader would see --
     ;; a code block's `name` is derived from its source and is not in the
@@ -78,10 +79,29 @@
 
   ;; The capture contains complete intents and original cuts, never a directory
   ;; name to reread after a request has acquired an identity.
+  ;;
+  ;; NEVER: A TEXT IMPORT KEEPS WHAT IS TEXT, and lists the rest. A file
+  ;; whose bytes are not UTF-8, or that holds a NUL, is not imported: it is
+  ;; captured, in the walk's order, as the skipped list, and it touches
+  ;; nothing -- no new identity, no update, no deletion. The test runs on
+  ;; the raw bytes BEFORE projection-decode, so a binary file that happens
+  ;; to open with a marker line is skipped, not refused, and a marked
+  ;; projection whose body became binary never reaches the header path that
+  ;; would overwrite or delete its children.
+  ;;
+  ;; NEVER: ONE FILE AT A TIME, IN THE WALK'S ORDER: its path checked, its
+  ;; bytes read, the text test, and then its decoding, before the next file
+  ;; is read. Reading every file first answered an unreadable later file
+  ;; where the base had refused an earlier one's header.
+  ;; Each entry is (rel bytes input), input #f for a skipped file.
   (define (capture-import store dir allow-delete?)
-    (let* ((inputs (map (lambda (rel) (unless (relative-safe? rel) (projection-failure 'unsafe-path))
-                                       (projection-input rel (read-code-bytes (string-append dir "/" rel))))
-                        (directory-files dir)))
+    (let* ((files (map (lambda (rel)
+                         (unless (relative-safe? rel) (projection-failure 'unsafe-path))
+                         (let ((b (read-code-bytes (string-append dir "/" rel))))
+                           (list rel b (and (import-text? b) (projection-input rel b)))))
+                       (directory-files dir)))
+           (skipped (map car (filter (lambda (f) (not (caddr f))) files)))
+           (inputs (map caddr (filter caddr files)))
            (seen-files '()) (seen-ids '()) (baselines '()) (memberships '()) (intents '()))
       (define (emit! x) (set! intents (append intents (list x))) (- (length intents) 1))
       (define (check-id! state id file old)
@@ -141,7 +161,13 @@
                             (emit! (if entry (list 'set id 'lang (string->symbol (language-property entry 'lang #f))) (list 'set id 'lang))))
                           (unless unchanged-order? (emit! (list 'move id parent previous)))
                           (set! previous id))))) entries)))) inputs)
-      (list intents baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs))))
+      (list intents baselines memberships (map (lambda (i) (list (car i) (list-ref i 3))) inputs)
+            (list 'skipped skipped))))
+  ;; A text packet's tagged slot after the fourth, or #f: a packet captured
+  ;; before the slot existed has four.
+  (define (text-packet-extra captured tag)
+    (let ((x (and (> (length captured) 4) (assq tag (list-tail captured 4)))))
+      (and x (cadr x))))
   (define (import-code store dir actor req allow-delete?)
     (answer
       (lambda ()
@@ -153,8 +179,12 @@
                                 (exists (lambda (m) (and (not (equal? (cadr m) (code-children state (car m))))
                                                          (list 'error 'stale-baseline (list 'block (car m)) '(reason changed-children))))
                                         (caddr captured)))) #t)))
+          ;; THE SKIPPED CLAUSE IS THERE ONLY WHEN SOMETHING WAS SKIPPED, and
+          ;; only on an answer that succeeded.
           (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) results)
-              (list 'ok (cons 'items results))
+              (append (list 'ok (cons 'items results))
+                      (let ((skipped (text-packet-extra captured 'skipped)))
+                        (if (pair? skipped) (list (list 'skipped skipped)) '())))
               (if (= (length results) 1) (car results) (batch-answer results)))))))
 ;; NOTE: THE VIEW IS A PARAMETER (F17), as for export-md-view: `view` hands
   ;; back the reduction to project, the committed state or a writer's

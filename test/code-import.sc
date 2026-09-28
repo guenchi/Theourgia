@@ -148,5 +148,144 @@
           (list 'error '(reason duplicate-path) #t
                 (list 'paths (list (list "a.py" (list 'ids ha)) (list "b.py" (list 'ids hb))))
                 '(remedy del-all-but-one-per-path) 2 2))))
+(define (bv-append a b)
+  (let ((out (make-bytevector (+ (bytevector-length a) (bytevector-length b)))))
+    (bytevector-copy! a 0 out 0 (bytevector-length a))
+    (bytevector-copy! b 0 out (bytevector-length a) (bytevector-length b))
+    out))
+(define (bv-append-ff b) (bv-append b (bytevector 255)))
+;; ---- what a text import holds ------------------------------------------------
+;;
+;; NEVER: A TEXT IMPORT KEEPS WHAT IS TEXT, DECIDED BY THE BYTES. A file that
+;; is UTF-8 with no NUL byte is imported as before, a registered extension or
+;; not; any other file is not imported and is listed in `(skipped (...))`, in
+;; the walk's order, the clause absent when nothing was skipped. The test runs
+;; before any projection decoding, so a skipped file touches nothing.
+(define (safely thunk)
+  (guard (e (#t (list 'RAISED (if (and (condition? e) (message-condition? e)) (condition-message e) e)))) (thunk)))
+(define (answer-clause a head)
+  (and (pair? a) (list? a) (find (lambda (c) (and (pair? c) (eq? (car c) head))) (cdr a))))
+(define (answer-head a)
+  (cond ((not (pair? a)) a)
+        ((and (eq? (car a) 'error) (pair? (cdr a))) (list 'error (cadr a)))
+        (else (car a))))
+;; -> (store . input)
+(define (text-area! name)
+  (let* ((dir (string-append root "/" name)) (store (string-append dir "/store")) (input (string-append dir "/input")))
+    (mkdir-p! input) (rpc-dispatch store '(init) "test")
+    (cons store input)))
+(define (import-text! store dir . extra)
+  (safely (lambda () (rpc-dispatch store (append (list 'import-code dir) extra) "test"))))
+;; Every alive text file block, as (path lang (src ...)), sorted by path.
+(define (text-files store)
+  (let ((s (open-and-reduce store)))
+    (list-sort (lambda (a b) (string<? (car a) (car b)))
+      (map (lambda (id) (list (code-field s id 'path) (code-field s id 'lang)
+                              (map (lambda (c) (code-field s c 'src)) (code-children s id))))
+           (filter (lambda (id) (eq? 'text (code-field s id 'mode))) (code-files s))))))
+(define (block-count store) (length (state-datum (open-and-reduce store))))
+(define png-bytes (bytevector 137 80 78 71 13 10 26 10 0 0 255))
+(define nul-bytes (string->utf8 "ab\x0;cd\n"))
+(define (t1-dir! input)
+  (write! (string-append input "/a.sh") (string->utf8 "echo hi\n"))
+  (write! (string-append input "/a.sc") (string->utf8 "(define x 1)\n"))
+  (write! (string-append input "/Makefile") (string->utf8 "all:\n\techo made\n"))
+  (write! (string-append input "/b.png") png-bytes)
+  (write! (string-append input "/c.bin") nul-bytes))
+
+;; T1: text is imported, a registered extension or not; the rest is listed.
+(let* ((ta (text-area! "t1")) (store (car ta)) (input (cdr ta)))
+  (t1-dir! input)
+  (let ((a (import-text! store input)))
+    (want "T1 a text import keeps a.sh, a.sc and Makefile (bytes as in the files), lists b.png and c.bin as skipped, and holds no block for them"
+          (list (answer-head a) (text-files store) (answer-clause a 'skipped))
+          (list 'ok
+                (list (list "Makefile" #f (list (string->utf8 "all:\n\techo made\n")))
+                      (list "a.sc" 'scheme (list (string->utf8 "(define x 1)\n")))
+                      (list "a.sh" 'shell (list (string->utf8 "echo hi\n"))))
+                '(skipped ("b.png" "c.bin"))))))
+
+;; T2: nothing skipped, no clause; the ok and the imports are asserted first.
+(let* ((ta (text-area! "t2")) (store (car ta)) (input (cdr ta)))
+  (write! (string-append input "/one.txt") (string->utf8 "one\n"))
+  (write! (string-append input "/two.py") (string->utf8 "def two():\n  pass\n"))
+  (let ((a (import-text! store input)))
+    (want "T2 a directory of text files only answers ok, imports both, and carries no skipped clause"
+          (list (answer-head a) (map car (text-files store)) (answer-clause a 'skipped))
+          '(ok ("one.txt" "two.py") #f))))
+
+;; T3: a marked projection whose body became binary, imported with
+;; --allow-delete: listed, and the file and its children are as they were.
+(let* ((ta (text-area! "t3")) (store (car ta)) (input (cdr ta)) (out (string-append root "/t3-out")))
+  (write! (string-append input "/x.py") (projection-encode py #f (list (list "new" one) (list "new" two))))
+  (import-text! store input)
+  (mkdir-p! out)
+  (safely (lambda () (rpc-dispatch store (list 'export-code out) "test")))
+  (let* ((s (open-and-reduce store))
+         (file (find (lambda (id) (equal? (code-field s id 'path) "x.py")) (code-files s)))
+         (kids (code-children s file))
+         (before (list (map (lambda (id) (list (block-hash s id) (code-field s id 'src))) (cons file kids)) (block-count store)))
+         (exported (call-with-port (open-file-input-port (string-append out "/x.py")) get-bytevector-all)))
+    (write! (string-append out "/x.py") (bv-append-ff exported))
+    (let* ((a (import-text! store out "--allow-delete")) (s2 (open-and-reduce store)))
+      (want "T3 a marked projection whose body is no longer text, imported with --allow-delete, is listed as skipped and changes nothing"
+            (list (answer-head a) (answer-clause a 'skipped)
+                  (equal? before (list (map (lambda (id) (list (block-hash s2 id) (code-field s2 id 'src))) (cons file kids)) (block-count store)))
+                  (equal? kids (code-children s2 file)))
+            '(ok (skipped ("x.py")) #t #t)))))
+
+;; T1c: a file that opens with a marker-family line and then is not UTF-8 is
+;; skipped before any decoding; the valid file beside it is imported.
+(let* ((ta (text-area! "t1c")) (store (car ta)) (input (cdr ta)))
+  (write! (string-append input "/ok.txt") (string->utf8 "fine\n"))
+  (write! (string-append input "/z.txt") (bv-append-ff (string->utf8 "# @file z\n")))
+  (let ((a (import-text! store input)))
+    (want "T1c a file opening with a marker line and then not UTF-8 is skipped, not refused as projection-invalid, and the valid file is imported"
+          (list (answer-head a) (map car (text-files store)) (answer-clause a 'skipped))
+          '(ok ("ok.txt") (skipped ("z.txt"))))))
+
+;; T3b: an unmarked file of a path already in the store, now binary, is
+;; skipped: no second identity.
+(let* ((ta (text-area! "t3b")) (store (car ta)) (input (cdr ta)))
+  (write! (string-append input "/u.txt") (string->utf8 "text once\n"))
+  (import-text! store input)
+  (let ((before (block-count store)))
+    (write! (string-append input "/u.txt") (bytevector 255 254 0 97))
+    (let ((a (import-text! store input)))
+      (want "T3b an unmarked file of a held path, now not text, is skipped and adds no identity"
+            (list (answer-head a) (answer-clause a 'skipped) (= before (block-count store)))
+            '(ok (skipped ("u.txt")) #t)))))
+
+;; T4 PIN: the datum import over T1's directory reads a.sc and lists the
+;; rest, by its own rule.
+(let* ((ta (text-area! "t4")) (store (car ta)) (input (cdr ta)))
+  (t1-dir! input)
+  (write! (string-append input "/a.sc") (string->utf8 "(library (t4 a) (export x) (import (rnrs)) (define x 1))\n"))
+  (let ((a (safely (lambda () (rpc-dispatch store (list 'import-code input "--datum") "test")))))
+    (want "T4 PIN the datum import of T1's directory reads a.sc and lists Makefile, a.sh, b.png and c.bin as skipped"
+          (list (answer-head a) (answer-clause a 'skipped))
+          '(ok (skipped ("Makefile" "a.sh" "b.png" "c.bin"))))))
+
+;; T5 PIN: a BOM and CRLF line ends are text.
+(let* ((ta (text-area! "t5")) (store (car ta)) (input (cdr ta)))
+  (write! (string-append input "/bom.txt") (bv-append (bytevector 239 187 191) (string->utf8 "with a BOM\n")))
+  (write! (string-append input "/crlf.txt") (string->utf8 "line one\r\nline two\r\n"))
+  (let ((a (import-text! store input)))
+    (want "T5 PIN a UTF-8 file with a BOM and a file with CRLF line ends are text and imported"
+          (list (answer-head a) (map car (text-files store)) (answer-clause a 'skipped))
+          '(ok ("bom.txt" "crlf.txt") #f))))
+
+;; T6 PIN: one file at a time, in the walk's order. An earlier file whose
+;; marker header is invalid is refused before a later file is read, as the
+;; base did; reading every file first answered the later file's unreadable.
+(let* ((ta (text-area! "t6")) (store (car ta)) (input (cdr ta)))
+  (write! (string-append input "/a.txt") (string->utf8 "# @file z\n"))
+  (write! (string-append input "/b.txt") (string->utf8 "fine\n"))
+  (system (string-append "chmod 000 '" input "/b.txt'"))
+  (let ((a (import-text! store input)))
+    (system (string-append "chmod 644 '" input "/b.txt'"))
+    (want "T6 PIN an invalid header in a.txt is refused before an unreadable b.txt is read, as on the base"
+          (list (answer-head a) (answer-clause a 'reason))
+          '((error projection-invalid) (reason invalid-header)))))
 (printf "~a failures\ncode-import complete\n" bad)
 (exit (if (zero? bad) 0 1))

@@ -602,6 +602,18 @@
                 'in-the-description 'MISSING-FROM-DESCRIPTION))
       '(in-the-readme-section in-the-description))
 
+;; NOTE: WHAT THE TEXT IMPORT SKIPS, IN BOTH PLACES, compared as the sentences
+;; above are. What the answer does is held by code-import.sc's text rows.
+(define text-selection-phrase
+  "skips a file that is not UTF-8 text or that holds a NUL byte, and lists it in the same skipped clause; it is decided by the bytes, not the name, so a source file in a legacy 8-bit encoding or in UTF-16 is skipped and listed, not imported, unless its bytes happen to be valid UTF-8 with no NUL.")
+(want "what the text import skips, and why, is in the README's import-code section and in the verb's catalogue description"
+      (list (if (and import-code-section (contains? (squashed import-code-section) text-selection-phrase))
+                'in-the-readme-section 'MISSING-FROM-README-SECTION)
+            (if (and import-code-description
+                     (contains? (squashed import-code-description) text-selection-phrase))
+                'in-the-description 'MISSING-FROM-DESCRIPTION))
+      '(in-the-readme-section in-the-description))
+
 ;; ---- two README sentences the product's behaviour depends on ---------------
 ;;
 ;; NOTE: LITERAL, BECAUSE THE NAMES ROW CANNOT SEE THEM. The usage rows above

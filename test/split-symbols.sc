@@ -275,6 +275,23 @@
         (list (clause (car r) 'boundaries) (clause (car r) 'warnings))
         '((0 23) ((symbol-not-top-level (at 9)) (symbol-kinds string string string)))))
 
+;; ---- S13: a file that begins with a byte-order mark ------------------------------
+;; S1's source with a mark in front. The symbols name byte offsets into the file
+;; as it is on disk, mark included, so each is S1's plus 3, and the cuts are S1's
+;; plus 3 after 0. Without --symbols the same cuts. It used to answer
+;; invalid-utf8 and one block, with and without --symbols.
+(define s13 (string-append "\xFEFF;" s1))
+(let ((r (suggest "s13.js" s13
+                  (lines (header (digest-of s13) header-source)
+                         (symbol-line 19 52 'function "alpha")
+                         (symbol-line 96 128 'function "beta")
+                         (symbol-line 129 162 'function "gamma"))))
+      (twin (suggest "s13.js" s13 #f)))
+  (want "S13 a marked file with --symbols cuts as S1 does, each cut after 0 moved by the mark's 3 bytes, and without --symbols the same, no invalid-utf8"
+        (list (clause (car r) 'boundaries) (clause (car r) 'warnings)
+              (clause (car twin) 'boundaries) (clause (car twin) 'warnings))
+        '((0 53 129) ((symbol-kinds function function function)) (0 53 129) ())))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsplit-symbols complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

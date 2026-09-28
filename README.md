@@ -750,7 +750,14 @@ exactly); every other file the directory walk returns (it does not
 enter a name that starts with a dot) is listed, in the order it was walked,
 in the answer's skipped clause, which is there only when something
 was skipped. A file the reader refuses is named in the refusal's path
-clause.
+clause. Text mode, without `--datum`, skips a file that is not UTF-8 text
+or that holds a NUL byte, and lists it in the same skipped clause; it is
+decided by the bytes, not the name, so a source file in a legacy 8-bit
+encoding or in UTF-16 is skipped and listed, not imported, unless its
+bytes happen to be valid UTF-8 with no NUL. A UTF-8 byte-order mark at the
+start of a file is text: the file is imported, its bytes stored as they
+are, mark included. With `--datum` a file that begins
+with a mark is refused `invalid-utf8`, as it always was.
 
 With `--datum`, a file WITHOUT a projection header, whose path an alive
 datum library in the store already holds, updates that library rather
@@ -804,7 +811,11 @@ Proposes where a file could be split into blocks. It writes no record;
 what it produces is the review file. The answer is `(ok (working-path <review-file>) (boundaries (<n>
 ...)) (warnings (...)) (cuts-from <supplier>))`: the byte offsets where the
 blocks start, and which supplier chose them -- `regex` when the language's
-definition patterns did, or the symbols file's source.
+definition patterns did, or the symbols file's source. A file that begins
+with a UTF-8 byte-order mark is cut as it would be without one, and every
+boundary, and the offset of an uncertain token, counts the mark. With
+`--symbols`, the file's first line starts at byte 0, not after the mark,
+so a symbol starting at byte 3 is refused `symbols-not-a-line-start`.
 
 With `--symbols`, the cuts come from a list of the file's top-level
 symbols that an editor collected, in place of the definition patterns.

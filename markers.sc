@@ -63,7 +63,7 @@
   ;; left `header-read` and `block-read` behind and the library would not
   ;; load. A move is finished when the thing moved has nothing left
   ;; pointing back.
-  (export byte-slice bytes-append byte-lines safe-utf8 string-prefix-at?
+  (export byte-slice bytes-append byte-lines safe-utf8 import-text? mark-length after-mark string-prefix-at?
           language-property projection-failure hex-decode safe-id?
           header-read block-read
           wrapping marker-line family projection-header-wrapper? projection-control)
@@ -86,6 +86,38 @@
               (else (loop start (+ i 1) out))))))
   (define (safe-utf8 b)
     (guard (e (#t #f)) (let ((s (utf8->string b))) (and (equal? (string->utf8 s) b) s))))
+  ;; NEVER: WHAT A TEXT IMPORT HOLDS IS DECIDED BY THE BYTES, HERE AND ONLY
+  ;; HERE: valid UTF-8 with no NUL byte. The language table says what a file
+  ;; IS, not whether it is text: a Makefile is text with no language, and a
+  ;; .sc of Latin-1 bytes is not text at all.
+  ;;
+  ;; NEVER: A LEADING BOM IS TEXT. utf8->string drops it, so the round trip
+  ;; safe-utf8 asks for does not give it back, and every file that began
+  ;; with one was skipped as not text. Where a WHOLE file is tested for
+  ;; text, the mark is taken off before the question is asked; safe-utf8
+  ;; itself is unchanged, because its string then holds no mark, and a
+  ;; caller that turns positions in that string into positions in the
+  ;; bytes would be three short. CRLF passes as it is.
+  (define (import-text? b)
+    (let ((n (bytevector-length b)))
+      (and (safe-utf8 (after-mark b))
+           (let loop ((i 0))
+             (cond ((= i n) #t)
+                   ((= 0 (bytevector-u8-ref b i)) #f)
+                   (else (loop (+ i 1))))))))
+
+  ;; The length of a UTF-8 byte-order mark at the start of b, 3 or 0, and
+  ;; the bytes after it.
+  (define (mark-length b)
+    (if (and (>= (bytevector-length b) 3)
+             (= #xEF (bytevector-u8-ref b 0))
+             (= #xBB (bytevector-u8-ref b 1))
+             (= #xBF (bytevector-u8-ref b 2)))
+        3
+        0))
+  (define (after-mark b)
+    (let ((m (mark-length b)))
+      (if (= m 0) b (byte-slice b m (bytevector-length b)))))
   (define (string-prefix-at? text prefix start)
     (and (<= (+ start (string-length prefix)) (string-length text))
          (string=? prefix (substring text start (+ start (string-length prefix))))))
