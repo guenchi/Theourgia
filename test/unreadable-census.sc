@@ -94,6 +94,10 @@
 (define presence-names
   '(file-exists? file-is-directory? file-is-regular? file-directory? file-regular?
     entry-name-type))
+;; NEVER: THE lstat DOOR IS A COUNTED NAME, whatever the pins say. A census
+;; that dropped the name and its pins together would compare two empty lists
+;; and pass; this row does not look at the pins at all.
+(define required-presence-names '(entry-name-type))
 (define handler-heads '(guard with-exception-handler))
 (define source-suffixes '(".sc" ".ss" ".sls" ".scm"))
 
@@ -427,6 +431,9 @@
 
 ;; ---- the instrument's own first reading -------------------------------
 
+(want "every required name is a counted presence name, independent of the pins"
+      (filter (lambda (n) (not (memq n presence-names))) required-presence-names)
+      '())
 (want "U11-00 the walk found the production sources, log.sc among them"
       (and (> (length files) 30) (member "log.sc" files) (member "mcp/server.sc" files) #t)
       #t)

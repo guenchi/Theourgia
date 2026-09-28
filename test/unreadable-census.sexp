@@ -49,6 +49,7 @@
   ("log.sc" (ensure-writer-directory!) file-is-directory? 1 convert b "ensure-writer-directory! (publish)")
   ("log.sc" (install-snapshot!) file-is-directory? 1 keep a "not writer layout: snapshot directory; creation is refused on an incomplete reduction in c")
   ("log.sc" (select-readable-snapshot) file-is-directory? 1 keep a "not writer layout: the snapshot directory; select-snapshot answers writer-unreadable before this when any writer is unreadable (K8)")
+  ("log.sc" (instance-name-present?) entry-name-type 1 keep a "not writer layout: whether the name instance.sexp is present in the store, asked of the name with an lstat; a failure other than absence raises")
   ("project.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("project.sc" (md-files) file-is-directory? 1 keep a "not writer layout: import-md input dir")
   ("project.sc" (require-md-directory) file-is-directory? 1 keep a "not writer layout: export-md/import-md refuse a path that is not a directory (F82, F83)")
@@ -351,11 +352,6 @@
    conservative a
    "F77b R2g, by ruling (F100a): three sites, one rule -- log.sc's local-writer-name and barrier-artefacts and working.sc's writer-for read an owner.sexp or retired.sexp that cannot be stat'ed as absent, as the native presence test they replace did; the only places an unreadable entry still reads as absent"
    (e ((unreadable-entry? e) #f)))
-  ("log.sc" (instance-entry-listed?) 1 guard
-   ((unreadable-entry? e))
-   conservative a
-   "a store directory that cannot be listed counts instance.sexp as present, so adopt keeps the answer it gave before the name was asked about: minting an identity needs proof that none is there"
-   (e ((unreadable-entry? e) #t)))
   ("log.sc" (atomic-write!) 1 guard
    (#t)
    propagate b

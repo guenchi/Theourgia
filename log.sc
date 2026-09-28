@@ -4929,14 +4929,17 @@
   ;; in. The conditions can hold at once, and taking one as THE reason
   ;; discards the protection the others give: a caller who says "damage"
   ;; skips the rollback check that only the registry can make.
-  ;; IS THE NAME instance.sexp IN THE STORE'S DIRECTORY? The listing sees a
-  ;; link itself, where a stat follows it. A listing that cannot be read
-  ;; counts the name as PRESENT, so adopt falls through to the answer it
-  ;; gave before the name was asked about: minting an identity needs proof
-  ;; that none is there, and an unreadable directory gives none.
-  (define (instance-entry-listed? store)
-    (guard (e ((unreadable-entry? e) #t))
-      (and (member "instance.sexp" (directory-entries store)) #t)))
+  ;; IS THE NAME instance.sexp PRESENT? Asked of the NAME, with an lstat
+  ;; (entry-name-type): a link is present, a dangling one included, where a
+  ;; stat would follow it. The read side opens the same name through the
+  ;; same file system, so on a case-folding volume the two agree, and only
+  ;; search permission on the store is needed, never a listing. A failure
+  ;; other than absence raises unreadable-entry naming the path. `stage` is
+  ;; the fault stage the question is asked in: `presence` for the
+  ;; inventory's, `presence-decision` for adopt-needed?'s.
+  (define (instance-name-present? store stage)
+    (parameterize ((theourgia-stage stage))
+      (not (eq? (entry-name-type (string-append store "/instance.sexp")) 'absent))))
 
   (define (adopt-needed? store)
     (let* ((id (verify-instance store))
@@ -4949,8 +4952,11 @@
         ;; store's directory: a present instance.sexp that parses to #f, or
         ;; a symlink that points nowhere, also verifies as absent -- a stat
         ;; follows the link -- and minting over either would replace an
-        ;; entry this path cannot explain. The listing sees the link itself.
-        ((and (eq? id 'absent) writer (not (instance-entry-listed? store)))
+        ;; entry this path cannot explain. The name's own presence (an lstat)
+        ;; sees the link itself. The inventory has already asked it, so a
+        ;; failure here is a race: it propagates, named by the request's
+        ;; failure table.
+        ((and (eq? id 'absent) writer (not (instance-name-present? store 'presence-decision)))
          (list 'identity 'instance-absent))
         ((not writer) (list 'no-local-writer))
         ((let ((r (retired-of store writer))) (and r #t)) (list 'retired))
@@ -5186,11 +5192,18 @@
       (and p (read-failure-refusal p))))
 
   ;; -> #f, a refusal answer, or a raised unreadable-entry naming the file.
+  ;; THE NAME instance.sexp IS ASKED HERE TOO, beside verify-instance's stat:
+  ;; the read pass mints nothing (verify-instance may still create this
+  ;; machine's own record on a first run, as it always has), and an lstat
+  ;; that fails raises inside the preflight's guard, answered
+  ;; metadata-unreadable naming the path, as any unreadable inventory file
+  ;; is.
   (define (adopt-inventory store)
     (let ((v (verify-instance store)))
       (if (and (pair? v) (eq? (car v) 'refused))
           v
           (begin
+            (instance-name-present? store 'presence)
             (with-machine-lock (lambda () (registry-as-read)))
             (let loop ((ws (store-writers store)))
               (cond

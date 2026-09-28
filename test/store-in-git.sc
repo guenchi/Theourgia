@@ -374,9 +374,9 @@
                 (text-of-file (string-append s "/instance.sexp")))
           (list '(error not-needed) #f "#f\n"))))
 
-;; A store directory that can be searched but not listed holds no proof that
-;; instance.sexp is absent, so adopt answers as the base does. The G4d state
-;; (a present instance.sexp holding #f) under such a directory.
+;; The G4d state (a present instance.sexp holding #f) under a store directory
+;; that can be searched but not listed: the name is present, asked of the
+;; name, so adopt answers not-needed; the listing is no longer what decides.
 (let* ((h (home! "g4f")) (s (string-append root "/g4f/store")))
   (sh "mkdir -p " (quoted s))
   (ask h s "init")
@@ -404,6 +404,93 @@
           (list (head-of a) (clause-of a 'identity)
                 (sh-out "readlink " (quoted (string-append s "/instance.sexp"))))
           (list '(error not-needed) #f (string-append target "\n")))))
+
+;; ---- the name instance.sexp, asked of the name -------------------------------
+(define (ask-env env home store verb . args)
+  (let ((out (string-append root "/ask.out")))
+    (sh env " THEOURGIA_LOCAL=1 THEOURGIA_HOME=" (quoted home) " scheme --script ../core.sc " verb " "
+        (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+        "--store " (quoted store) " --wire > " (quoted out) " 2> /dev/null < /dev/null")
+    (guard (e (#t 'UNREADABLE))
+      (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d)))))
+;; -> (home store instance-path), a checkout with a local writer and NO
+;; instance.sexp.
+(define (checkout-without-instance! name)
+  (let* ((h (home! name)) (s (string-append root "/" name "/store")))
+    (sh "mkdir -p " (quoted s))
+    (ask h s "init")
+    (sh "rm -f " (quoted (string-append s "/instance.sexp")))
+    (list h s (string-append s "/instance.sexp"))))
+
+;; H2: a checkout without instance.sexp under a root that can be searched and
+;; not read. The QUESTION -- is the name instance.sexp there -- is asked of
+;; the name, and needs only search permission: adopt judges the instance
+;; absent and goes on to mint one. The MINT needs more. A new entry is durable
+;; only once its directory is flushed, and flushing a directory means opening
+;; it, which needs the same read permission a listing needs. So on this root
+;; the mint is written and renamed into place and cannot be made durable, and
+;; adopt says so: `incomplete`, the root and EACCES, and the three steps it
+;; did take. The base answered `not-needed` here, reading the unlistable root
+;; as holding an instance it does not have.
+(let* ((c (checkout-without-instance! "h2")) (h (car c)) (s (cadr c)))
+  (sh "chmod 300 " (quoted s))
+  (let* ((unlistable (not (= 0 (sh "ls " (quoted s) " > /dev/null 2>&1"))))
+         (searchable (= 0 (sh "test -e " (quoted (string-append s "/meta.sexp")))))
+         (writer (and (file-exists? (string-append s "/writers")) #t))
+         (a (ask h s "adopt")))
+    (sh "chmod 755 " (quoted s))
+    (want "H2 a checkout with no instance.sexp under a root that can be searched but not read is judged instance-absent and minted, and the mint that cannot be made durable is answered incomplete: the root, EACCES, and create, write, rename of instance.sexp"
+          (list unlistable searchable writer (head-of a)
+                (clause-of a 'failed)
+                (let ((w (clause-of a 'written)))
+                  (and w (pair? (cdr w)) (list? (cadr w))
+                       (list (map car (cadr w))
+                             (let ((r (assq 'rename (cadr w))))
+                               (and r (pair? (cdr r)) (pair? (cddr r)) (equal? (caddr r) (caddr c)))))))
+                (file-exists? (caddr c)))
+          (list #t #t #t '(error incomplete)
+                (list 'failed (list 'path s) (list 'reason "Permission denied") (list 'errno 'EACCES))
+                '((create write rename) #t)
+                #t))))
+
+;; H3: the inventory's question fails (stat-fail in its stage): adopt refuses
+;; metadata-unreadable naming instance.sexp, and mints nothing. A second
+;; adopt without the fault mints: the refusal left the store as it was.
+(let* ((c (checkout-without-instance! "h3")) (h (car c)) (s (cadr c)) (inst (caddr c))
+       (a (ask-env "THEOURGIA_INJECT=on THEOURGIA_FAULT=stat-fail@presence:instance.sexp" h s "adopt"))
+       (after-a (file-exists? inst))
+       (b (ask h s "adopt")))
+  (want "H3 the inventory's presence question failing refuses metadata-unreadable naming instance.sexp, mints nothing, and a second adopt mints"
+        (list (head-of a) (clause-of a 'path) after-a (head-of b) (file-exists? inst))
+        (list '(error metadata-unreadable) (list 'path inst) #f 'ok #t)))
+
+;; H3b: the decision's question fails (its own stage), after the inventory's
+;; passed: the request's failure table names it, and nothing is minted.
+(let* ((c (checkout-without-instance! "h3b")) (h (car c)) (s (cadr c)) (inst (caddr c))
+       (a (ask-env "THEOURGIA_INJECT=on THEOURGIA_FAULT=stat-fail@presence-decision:instance.sexp" h s "adopt")))
+  (want "H3b the decision's presence question failing answers unreadable with the path and errno EIO, and mints nothing"
+        (list (head-of a) (clause-of a 'path) (clause-of a 'errno) (file-exists? inst))
+        (list '(error unreadable) (list 'path inst) '(errno EIO) #f)))
+
+;; H5: on a volume that folds case, INSTANCE.SEXP is the name instance.sexp.
+;; The lowercase file init wrote is removed and INSTANCE.SEXP written holding
+;; #f; the listing holds only the uppercase name. adopt must not mint over it.
+(let* ((probe (string-append root "/h5-fold"))
+       (_ (sh "mkdir -p " (quoted probe) " && touch " (quoted (string-append probe "/A"))))
+       (folds (file-exists? (string-append probe "/a"))))
+  (if (not folds)
+      (printf "n/a  H5 not applicable: case-sensitive volume (A created, a not found)\n")
+      (let* ((h (home! "h5")) (s (string-append root "/h5/store")))
+        (sh "mkdir -p " (quoted s))
+        (ask h s "init")
+        (sh "rm -f " (quoted (string-append s "/instance.sexp")))
+        (call-with-output-file (string-append s "/INSTANCE.SEXP") (lambda (o) (put-string o "#f\n")))
+        (let* ((listing (lines-of (sh-out "ls " (quoted s))))
+               (a (ask h s "adopt")))
+          (want "H5 on a case-folding volume, INSTANCE.SEXP holding #f is the name instance.sexp: adopt answers not-needed and leaves it"
+                (list (and (member "INSTANCE.SEXP" listing) #t) (and (member "instance.sexp" listing) #t)
+                      (head-of a) (clause-of a 'identity) (text-of-file (string-append s "/INSTANCE.SEXP")))
+                (list #t #f '(error not-needed) #f "#f\n"))))))
 
 ;; The stale twin: A still has its own valid instance and writes to the
 ;; OLD generation; once it pulls B's commit it holds the successor and the

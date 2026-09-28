@@ -2019,8 +2019,13 @@
     ;; close-after-the-answer has to be made to fail before anything can
     ;; ask what it does then, and a failure mode no row can arm is one
     ;; that nothing checks.
+    ;; `presence` and `presence-decision` are adopt's two questions about the
+    ;; name instance.sexp: the inventory's (answered by the preflight) and the
+    ;; decision's (answered by the request's failure table). Each is its own
+    ;; stage so a fault can be aimed at either one without the other, or
+    ;; verify-instance's earlier stat, consuming it.
     '(deliver-barrier commit registry publish snapshot repair report working index conn client
-      eval-cleanup))
+      eval-cleanup presence presence-decision))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
