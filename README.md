@@ -798,10 +798,62 @@ there) before any `del`, which is permanent.
 
 ### `split-suggest`
 
-    (split-suggest <file> ("--output" <review-file>))
+    (split-suggest <file> ("--output" <review-file>) ("--symbols" <symbols-file>))
 
-Proposes where a file could be split into blocks. It suggests; it does
-not write.
+Proposes where a file could be split into blocks. It writes no record;
+what it produces is the review file. The answer is `(ok (working-path <review-file>) (boundaries (<n>
+...)) (warnings (...)) (cuts-from <supplier>))`: the byte offsets where the
+blocks start, and which supplier chose them -- `regex` when the language's
+definition patterns did, or the symbols file's source.
+
+With `--symbols`, the cuts come from a list of the file's top-level
+symbols that an editor collected, in place of the definition patterns.
+Only the question "does a definition start on this line" changes hands:
+the comment lines above a definition still go with it, and a shebang, BOM
+or coding line still stays with the first block, by the same rules as
+without it, so where the two suppliers agree they cut in the same place.
+A symbol whose start the scanner sees inside a string, a block comment or
+an open bracket is not a cut, and the warnings say so, `(symbol-not-top-level
+(at <n>))`; nor is a start inside the protected prefix, `(symbol-in-prefix
+(at <n>))`. For a file the language table does not know, or whose language
+has no suggestion profile, the starts are the cuts as given, with the
+warning `(no-language-entry)` or `(no-suggest-profile)`. The symbols' kinds
+are reported in the warnings as `(symbol-kinds <kind> ...)`; they do not
+choose cuts.
+
+The symbols file holds one datum per line, read as data (nothing in it
+runs): a header, then one line per symbol, in the file's order:
+
+    (symbols (digest "<sha256 of the file>") (source (vscode "<version>" "<languageId>")) (top-level #t))
+    (symbol <start> <end> <kind> "<name>")
+
+`<kind>` is one of VS Code's SymbolKind names, lower-cased and written as
+one word -- `file module namespace package class method property field
+constructor enum interface function variable constant string number
+boolean array object key null enummember struct event operator
+typeparameter` -- and anything else is a malformed line; a producer emits
+exactly these. `<start>` and `<end>` are byte offsets into the file exactly as it is on
+disk (a byte-order mark and every carriage return counted); `<start>` is
+the first byte of its line. The digest is of those same bytes, so a list
+made from an unsaved editor buffer, or from a file that changed since,
+is refused rather than trusted. A list that cannot be trusted is refused
+by name, never folded into one block; the first failure in this order is
+the one named:
+
+- `(error symbols-malformed (line <n>))`: a missing header, a line that
+  does not read or has the wrong shape, a kind outside the list above, an
+  offset that is not an exact non-negative integer, or a start not below
+  its end;
+- `(error symbols-stale (digest-expected <d>) (digest-found <d>))`;
+- `(error symbols-empty)`: a header and no symbols;
+- `(error symbols-past-end (at <n>))`: a start at or past the end of the
+  file, or an end past it;
+- `(error symbols-not-a-boundary (at <n>))`: an offset inside a UTF-8
+  character;
+- `(error symbols-unordered)`: starts not strictly ascending;
+- `(error symbols-overlap (at <n>))`: a range that starts before the
+  previous one ends;
+- `(error symbols-not-a-line-start (at <n>))`.
 
 ## Checking, snapshotting, adopting
 

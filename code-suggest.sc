@@ -16,12 +16,40 @@
   (export suggest-boundaries split-suggest)
   (import (rnrs) (theourgia languages) (theourgia text-code) (theourgia regex)
           (theourgia code-project) (theourgia code-markers) (theourgia trace)
+          (only (theourgia wire) string->sexpr-extended)
+          (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia log) atomic-write! directory-entry-durable!)
           (only (theourgia ffi) process-id wall-clock-ms file-create-exclusive! link! unlink!))
 
   ;; Profiles are lexical evidence for suggestions, never import authority.
   ;; A state we cannot prove resets the entire suggestion to one block.
-  (define (suggest-boundaries entry bytes)
+  ;;
+  ;; AN EDITOR'S SYMBOLS REPLACE THE DEFINITION TEST, NOT THE SCANNER. With
+  ;; `starts` (byte offsets of line starts an editor's symbol provider named
+  ;; as top-level definitions), a line is a definition when its offset is
+  ;; one of them, instead of when a def-head matches it. Everything else is
+  ;; the scanner's: the delimiter, quote and comment state, the comment
+  ;; lines a definition takes with it (`pending`), and the protected prefix
+  ;; that stays with the first block -- so where the two suppliers agree on
+  ;; a definition they cut in the same place. A start the scanner does not
+  ;; see at the top level (inside a string, a block comment, a fence or an
+  ;; open bracket) is not a cut, and is said in the warnings.
+  ;; A PROFILE THE SCANNER CAN FOLLOW: the one test for "this language has
+  ;; lexical evidence to offer", asked by the scanner and by split-suggest.
+  (define (usable-profile? entry)
+    (let ((profile (language-property entry 'suggest-only #f)))
+      (and profile
+           (member (language-property profile 'top-level #f) '("paren" "brace" "indent" "fence"))
+           #t)))
+
+  (define (suggest-boundaries entry bytes . rest)
+    (define starts (and (pair? rest) (car rest)))
+    (define not-top-level '())
+    (define (definition? offset trimmed)
+      (if starts (and (memv offset starts) #t) (definition-name entry trimmed)))
+    (define (symbol-not-top-level! offset)
+      (when (and starts (memv offset starts))
+        (set! not-top-level (cons (list 'symbol-not-top-level (list 'at offset)) not-top-level))))
     (call/cc
       (lambda (return)
         (define (fallback reason offset)
@@ -81,7 +109,7 @@
                        (if (= (+ i (string-length escape)) (string-length line)) (set! continued? #t)
                            (loop (min (string-length line) (+ i (string-length escape) 1)))))
                       (else (loop (+ i 1))))))))
-          (unless (and profile (member kind '("paren" "brace" "indent" "fence")))
+          (unless (usable-profile? entry)
             (fallback 'unknown-profile 0))
           (unless (safe-utf8 bytes) (fallback 'invalid-utf8 0))
           (for-each
@@ -102,14 +130,16 @@
                     (let ((run (fence-run line)))
                       (cond
                         (fence
+                         (symbol-not-top-level! offset)
                          (when (and run (char=? (car run) (car fence)) (>= (cadr run) (cadr fence))
                                     (string=? (trim-left (caddr run)) "")) (set! fence #f)))
-                        (run (set! fence run))
-                        ((definition-name entry trimmed)
+                        (run (symbol-not-top-level! offset) (set! fence run))
+                        ((definition? offset trimmed)
                          (when (> offset (car boundaries)) (set! boundaries (cons offset boundaries))))))
                     (begin
+                      (unless top? (symbol-not-top-level! offset))
                       (cond
-                        ((and top? (definition-name entry trimmed))
+                        ((and top? (definition? offset trimmed))
                          (let ((start (or pending offset)))
                            (when (> start (car boundaries)) (set! boundaries (cons start boundaries))))
                          (set! pending #f))
@@ -124,7 +154,112 @@
           (when (or (pair? stack) quoted (> comment-depth 0) continued? fence)
             (fallback 'unbalanced (bytevector-length bytes)))
           ;; A protected prefix belongs to the first actual block.
-          (list (filter (lambda (n) (or (= n 0) (> n prefix))) (reverse boundaries)) '())))))
+          (list (filter (lambda (n) (or (= n 0) (> n prefix))) (reverse boundaries))
+                (reverse not-top-level))))))
+
+  ;; ---- the symbols file ---------------------------------------------------
+  ;;
+  ;; One datum per line, read with the wire's datum reader (it builds data
+  ;; and runs nothing): a header
+  ;;   (symbols (digest "<sha256 of the file's bytes>")
+  ;;            (source (vscode "<version>" "<languageId>")) (top-level #t))
+  ;; then one line per top-level symbol, in the file's order,
+  ;;   (symbol <start> <end> <kind> "<name>")
+  ;; with byte offsets into the file as read-code-bytes reads it.
+  ;;
+  ;; NEVER: MALFORMED INPUT IS REFUSED BY NAME, NOT FOLDED INTO ONE BLOCK. A
+  ;; list that cannot be trusted says why, and the first failure in this
+  ;; order is the one named: a line that does not read or has the wrong
+  ;; shape, or numbers that are not exact non-negative integers with start
+  ;; below end (symbols-malformed, by line); a digest of other bytes
+  ;; (symbols-stale); no symbols (symbols-empty); a start at or past the
+  ;; end of the file or an end past it (symbols-past-end); an offset inside
+  ;; a UTF-8 character (symbols-not-a-boundary); starts not strictly
+  ;; ascending (symbols-unordered); overlapping ranges (symbols-overlap); a
+  ;; start that is not the first byte of its line (symbols-not-a-line-start).
+  ;; Each check runs over the whole list before the next one does.
+  (define (symbols-refusal kind . details)
+    (raise (cons* 'error kind details)))
+  (define unread (list 'unread))
+  (define (symbols-header d)
+    (and (list? d) (= 4 (length d)) (eq? (car d) 'symbols)
+         (let ((digest (cadr d)) (source (caddr d)) (top (cadddr d)))
+           (and (list? digest) (= 2 (length digest)) (eq? (car digest) 'digest) (string? (cadr digest))
+                (list? source) (= 2 (length source)) (eq? (car source) 'source)
+                (let ((v (cadr source)))
+                  (and (list? v) (= 3 (length v)) (eq? (car v) 'vscode)
+                       (string? (cadr v)) (string? (caddr v))))
+                (equal? top '(top-level #t))
+                (list (cadr digest) (cadr source))))))
+  ;; THE KINDS AN EDITOR'S SYMBOL PROVIDER NAMES: VS Code's SymbolKind
+  ;; names, lower-cased and written as one word. The producer emits exactly
+  ;; these; anything else is a line this reader does not understand.
+  (define known-symbol-kinds
+    '(file module namespace package class method property field constructor enum
+      interface function variable constant string number boolean array object key
+      null enummember struct event operator typeparameter))
+  (define (symbol-line d)
+    (and (list? d) (= 5 (length d)) (eq? (car d) 'symbol)
+         (memq (list-ref d 3) known-symbol-kinds) (string? (list-ref d 4))
+         (let ((start (cadr d)) (end (caddr d)))
+           (and (integer? start) (exact? start) (>= start 0)
+                (integer? end) (exact? end) (>= end 0)
+                (< start end)
+                (list start end (list-ref d 3))))))
+  ;; -> (source starts kinds), or raises one of the refusals above.
+  (define (read-symbols symbols-path bytes)
+    (let* ((raw (read-code-bytes symbols-path))
+           (data (map (lambda (row)
+                        (let ((text (safe-utf8 (byte-slice raw (car row) (cadr row)))))
+                          (if text (guard (e (#t unread)) (string->sexpr-extended text)) unread)))
+                      (byte-lines raw)))
+           (header (and (pair? data) (symbols-header (car data))))
+           (symbols
+             (if (not header)
+                 (symbols-refusal 'symbols-malformed (list 'line 1))
+                 (let loop ((ds (cdr data)) (n 2) (out '()))
+                   (cond
+                     ((null? ds) (reverse out))
+                     ((symbol-line (car ds)) => (lambda (sym) (loop (cdr ds) (+ n 1) (cons sym out))))
+                     (else (symbols-refusal 'symbols-malformed (list 'line n)))))))
+           (found (bytevector->hex (sha256 bytes)))
+           (size (bytevector-length bytes)))
+      (define (continuation? i) (and (< i size) (= #x80 (bitwise-and (bytevector-u8-ref bytes i) #xC0))))
+      (unless (string=? (car header) found)
+        (symbols-refusal 'symbols-stale (list 'digest-expected (car header)) (list 'digest-found found)))
+      (when (null? symbols) (symbols-refusal 'symbols-empty))
+      (for-each (lambda (sym)
+                  (cond ((>= (car sym) size) (symbols-refusal 'symbols-past-end (list 'at (car sym))))
+                        ((> (cadr sym) size) (symbols-refusal 'symbols-past-end (list 'at (cadr sym))))))
+                symbols)
+      (for-each (lambda (sym)
+                  (cond ((continuation? (car sym)) (symbols-refusal 'symbols-not-a-boundary (list 'at (car sym))))
+                        ((continuation? (cadr sym)) (symbols-refusal 'symbols-not-a-boundary (list 'at (cadr sym))))))
+                symbols)
+      (let loop ((ss symbols))
+        (when (and (pair? ss) (pair? (cdr ss)))
+          (unless (< (car (car ss)) (car (cadr ss))) (symbols-refusal 'symbols-unordered))
+          (loop (cdr ss))))
+      (let loop ((ss symbols))
+        (when (and (pair? ss) (pair? (cdr ss)))
+          (when (< (car (cadr ss)) (cadr (car ss)))
+            (symbols-refusal 'symbols-overlap (list 'at (car (cadr ss)))))
+          (loop (cdr ss))))
+      (for-each (lambda (sym)
+                  (unless (or (= 0 (car sym)) (= 10 (bytevector-u8-ref bytes (- (car sym) 1))))
+                    (symbols-refusal 'symbols-not-a-line-start (list 'at (car sym)))))
+                symbols)
+      (list (cadr header) (map car symbols) (map caddr symbols))))
+
+  ;; WITHOUT A PROFILE THE SCANNER CAN FOLLOW -- no language entry, or an
+  ;; entry with no suggest profile -- the editor's starts are the only
+  ;; knowledge there is: they are the cuts as given, the protected prefix
+  ;; still staying with the first block, and the warnings name which of the
+  ;; two it was. Falling back to one block instead would make --symbols do
+  ;; nothing and say nothing.
+  (define (cuts-as-given bytes starts)
+    (let ((prefix (source-prefix-size bytes)))
+      (cons 0 (filter (lambda (n) (> n prefix)) starts))))
 
   (define counter 0)
   (define (review-path path)
@@ -135,10 +270,36 @@
                            (else (loop (- i 1)))))))
       (string-append path ".review-" (number->string (process-id)) "-"
                      (number->string (wall-clock-ms)) "-" (number->string counter) suffix)))
-  (define (split-suggest path output)
+  ;; (split-suggest path output [symbols-path]). The answer says which
+  ;; supplier chose the cuts, as its last clause: (cuts-from regex), or the
+  ;; symbols file's source, (cuts-from (vscode "<version>" "<languageId>")).
+  ;; The symbols file is read and checked before any cut is computed.
+  (define (split-suggest path output . rest)
     (guard (e ((and (pair? e) (eq? (car e) 'error)) e))
       (let* ((bytes (read-code-bytes path)) (entry (language-for-path path))
-             (suggestion (suggest-boundaries entry bytes)) (cuts (car suggestion))
+             (symbols (and (pair? rest) (car rest) (read-symbols (car rest) bytes)))
+             (suggestion
+               (cond ((not symbols) (suggest-boundaries entry bytes))
+                     ((not entry) (list (cuts-as-given bytes (cadr symbols)) '((no-language-entry))))
+                     ((not (usable-profile? entry))
+                      (list (cuts-as-given bytes (cadr symbols)) '((no-suggest-profile))))
+                     (else (suggest-boundaries entry bytes (cadr symbols)))))
+             ;; NEVER: NO START IS DROPPED IN SILENCE. One inside the
+             ;; protected prefix (a shebang, a coding line, a BOM) cannot
+             ;; start a block -- the prefix stays with the first one -- and
+             ;; the warnings say so, as they do for a start not at the top
+             ;; level. A start AT the prefix's end starts the first block, so
+             ;; it loses nothing and is not warned.
+             (in-prefix
+               (if symbols
+                   (let ((prefix (source-prefix-size bytes)))
+                     (map (lambda (n) (list 'symbol-in-prefix (list 'at n)))
+                          (filter (lambda (n) (< n prefix)) (cadr symbols))))
+                   '()))
+             (warnings (if symbols
+                           (append (cadr suggestion) in-prefix (list (cons 'symbol-kinds (caddr symbols))))
+                           (cadr suggestion)))
+             (cuts (car suggestion))
              (target (or output (review-path path))) (tmp (string-append (review-path path) ".tmp"))
              (entries (map (lambda (from to) (list "new" (byte-slice bytes from to)))
                            cuts (append (cdr cuts) (list (bytevector-length bytes))))))
@@ -151,6 +312,7 @@
             (atomic-write! tmp (projection-encode entry #f entries) 'working)
             (when (eq? (link! tmp target) 'exists) (projection-failure 'output-exists))
             (directory-entry-durable! target 'working)
-            (list 'ok (list 'working-path target) (list 'boundaries cuts) (list 'warnings (cadr suggestion))))
+            (list 'ok (list 'working-path target) (list 'boundaries cuts) (list 'warnings warnings)
+                  (list 'cuts-from (if symbols (car symbols) 'regex))))
           (lambda () (guard (e (#t #f)) (unlink! tmp)))))))
 )

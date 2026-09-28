@@ -76,6 +76,11 @@
    unrelated a
    "socket forwarding"
    (e (#t (quote unreadable))))
+  ("code-suggest.sc" (read-symbols) 1 guard
+   (#t)
+   unrelated a
+   "a symbols-file line the datum reader cannot parse: the body reads a string already in memory, not a file, and the line is then refused by name as symbols-malformed"
+   (e (#t unread)))
   ("theourgiad.sc" (detach-step) 1 guard
    (#t)
    fact a

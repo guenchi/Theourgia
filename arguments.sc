@@ -92,7 +92,7 @@
         ((set) '("--if-unchanged" "--based-on"))
         ((move) '("--after"))
         ((outline) '("--depth"))
-        ((split-suggest) '("--output"))
+        ((split-suggest) '("--output" "--symbols"))
         ((def) '("--under"))
         ((commit) '("--writer" "--working-version"))
         ((write) '("--writer" "--based-on" "--working-cut" "--working-parent-writer" "--working-parent"))

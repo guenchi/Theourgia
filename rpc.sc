@@ -803,8 +803,8 @@
             "Throw away a writer's draft of a block." #f 'daemon)
       (list 'batch '(batch <intents>)
             "Carry out several changes as one request." #f 'daemon)
-      (list 'split-suggest '(split-suggest <file> ["--output" <review-file>])
-            "Propose where a long file could be divided into blocks." #f 'daemon)
+      (list 'split-suggest '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])
+            "Propose where a long file could be divided into blocks. With --symbols, the cuts come from an editor's list of the file's top-level symbols instead of the language's definition patterns; the answer's cuts-from says which." #f 'daemon)
       (list 'import-code '(import-code <dir> ["--allow-delete"] ["--datum"])
             "Read a directory of source into the store. With --datum, the whole-line ; comments directly above a form become its doc; a ; comment inside a form is dropped, and the answer warns with its line and column. A #| |# block comment, and any comment inside a datum discarded with #;, is dropped with neither. With --datum, only Scheme files are read: those the language table gives to Scheme by extension (ss, sc, scm, sls, matched exactly); every other file the directory walk returns (it does not enter a name that starts with a dot) is listed, in the order it was walked, in the answer's skipped clause, which is there only when something was skipped. A file the reader refuses is named in the refusal's path clause."
             #f 'daemon)
@@ -1008,8 +1008,9 @@
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
                   (guarded (lambda () (split-suggest (car args)
-                                                     (argument-option options "--output"))))
-                  (usage '(split-suggest <file> ["--output" <review-file>])))))
+                                                     (argument-option options "--output")
+                                                     (argument-option options "--symbols"))))
+                  (usage '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])))))
       (cons 'import-code
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
