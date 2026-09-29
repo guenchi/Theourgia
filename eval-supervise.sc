@@ -196,10 +196,23 @@
   ;; datum printed there is not read (wait-for-ready reads only ready), and
   ;; nothing has run that the evaluated side controls, so status 3 --
   ;; the launcher's "no executable interpreter" -- is unforgeable.
+  ;;
+  ;; STATUS 75 BEFORE READY IS THE PLATFORM TABLE'S REFUSAL: the launcher
+  ;; loads the FFI, and a platform with no row in (theourgia
+  ;; platform-numbers) exits 75 when the table loads, before any foreign
+  ;; call. Its datum went to the launcher's stderr, which is not read
+  ;; here, so the reason is named from the status. NOTE: it is not
+  ;; reachable from a platform the parent runs on -- this process loaded
+  ;; the same table and was not refused -- so no row exercises it; it is
+  ;; named so that a launcher refused for any reason tied to the table
+  ;; answers by name and not as another exit.
   (define (runner-refused-reason reason)
-    (if (and (pair? reason) (eq? (car reason) 'exited) (pair? (cdr reason)) (eqv? (cadr reason) 3))
-        'interpreter-missing
-        (refused-reason reason)))
+    (cond
+      ((and (pair? reason) (eq? (car reason) 'exited) (pair? (cdr reason)) (eqv? (cadr reason) 3))
+       'interpreter-missing)
+      ((and (pair? reason) (eq? (car reason) 'exited) (pair? (cdr reason)) (eqv? (cadr reason) 75))
+       'platform-unmeasured)
+      (else (refused-reason reason))))
 
   ;; NOTE: THE QUOTA COUNTS BYTES, per chunk as it arrives, both streams
   ;; summed -- a runner's output has no framing to decode first -- and it

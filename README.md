@@ -24,6 +24,28 @@ directory holding both `theourgia/` and `igropyr/`:
     export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
     scheme --script theourgia.sc init --store /path/to/store
 
+**Platforms: the ones with a measured row.** Every number the code hands
+to the kernel or reads back from it -- open flags, errno values, struct
+sizes and field offsets -- is taken from a table of MEASURED rows,
+`platform-numbers.sc`, one per platform: macOS on arm64, Linux on x86_64
+and on aarch64 with glibc, and FreeBSD 15 on amd64. The row is chosen when
+the programs start, from Chez's machine type and, on Linux, from the C
+library the process has mapped. On any other platform -- another
+architecture, macOS on x86_64 or under Rosetta, a Linux with musl, a
+static executable, a sandbox that hides `/proc` -- every program
+(`theourgia.sc`, `core.sc`, `theourgiad.sc`, the MCP shell `mcp/server.sc`,
+and `eval --lang`'s launcher) writes
+
+    (error platform-unmeasured (system "<s>") (machine "<m>") (remedy "run test/probe/layout.c and add its row"))
+
+on the standard error, with `(libc "<l>")` for a Linux, and exits 75
+before it does anything else; it is never run on a neighbouring
+platform's numbers. The remedy is literal: compile
+`test/probe/layout.c` there, run it, and add its output as a row. NOTE:
+The first Linux runs found seven numbers the code then held as literals
+wrong there, one of which (`O_APPEND`) wrote every log record over the
+start of its segment.
+
 **Running it compiled.** `build.ss` compiles every library -- this tree
 and its dependency -- into a directory of objects:
 
@@ -1849,7 +1871,9 @@ missing, or is not a store's, answers the export verb's own `(error meta
 answers `(error working-unavailable ...)` instead; an unreadable
 `meta.sexp` answers as any unreadable entry does; `(error spawn-refused
 (reason interpreter-missing))` when the interpreter is not an executable
-on `PATH`, found before anything ran. Four more `spawn-refused` reasons
+on `PATH`, found before anything ran; `(error spawn-refused (reason
+platform-unmeasured))` when the launcher exits 75 before it is ready, the
+platform table's refusal (see Installing). Four more `spawn-refused` reasons
 come before anything is made, when the launcher's `CHEZSCHEMELIBDIRS` or
 `CHEZSCHEMELIBEXTS` cannot carry the calling process's library path as it
 is: `library-directories-empty` and `library-extensions-empty` (an empty
@@ -1969,9 +1993,14 @@ giving a correct answer, from the right store, with no sign that it had
 bypassed a daemon sitting right there.
 
 NOTE: The reason it is the run root rather than beside the store:
-`sun_path` holds 104 bytes on macOS and FreeBSD, and a store may sit
-anywhere and be arbitrarily deep, so a store-adjacent socket under a long
-path simply fails to bind and the daemon reports `listener-down`.
+`sun_path` holds 104 bytes on macOS and FreeBSD (108 on Linux), and a
+store may sit anywhere and be arbitrarily deep, so a store-adjacent
+socket under a long path simply fails to bind and the daemon reports
+`listener-down`.
+The address a client connects with is built from the platform's row --
+a one-byte `sun_len` and `sun_family` on macOS and FreeBSD, a two-byte
+`sun_family` and no length byte on Linux -- and the length it passes is
+the whole struct on every platform.
 
 **Detaching.** `--detach` is for a launcher, not for a person: the
 process leaves the caller's session and replaces its standard streams,
@@ -2048,8 +2077,9 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_SCHEME` | `core.sc` | the Chez binary to start `eval`'s worker with, so a tree started under a particular Chez starts its children under the same one. Falls back to `scheme` |
 | `THEOURGIA_TRACE` | `ffi.sc` | `1` writes filesystem and dispatch events to stderr. NOTE: Read once when the library loads, so it is set per PROCESS and cannot be turned on by a call |
 
-**Test-only. Five of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
-`THEOURGIA_BARRIER`, `THEOURGIA_HOLD` and `THEOURGIA_HOLD_MS` -- are read only
+**Test-only. Six of them -- `THEOURGIA_FAULT`, `THEOURGIA_NOFLOCK`,
+`THEOURGIA_BARRIER`, `THEOURGIA_HOLD`, `THEOURGIA_HOLD_MS` and
+`THEOURGIA_PLATFORM_KEY` -- are read only
 by a build made with `THEOURGIA_INJECT=on`; an ordinary build does not read
 them at all.**
 
@@ -2061,6 +2091,7 @@ them at all.**
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
 | `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll) and `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
+| `THEOURGIA_PLATFORM_KEY` | `<system>/<machine>[/<libc>]` replaces the platform key the table would select (`platform-numbers.sc`), read once when the table loads, so a fixture can run a FRESH child as if on another platform -- its layouts are built and read back as bytes, never handed to this kernel -- or as an unlisted one, which is refused with exit 75 |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_SUITE_TOKEN` | set by `test/run-fixtures.sh` to the run's token, so every process the run starts carries it and a leak is counted by it. Read by no library |
