@@ -145,13 +145,13 @@
       ;; form. A `serve` started by hand must keep its terminal, so this
       ;; is a flag the CLIENT passes and a person does not.
       ((serve) '("--detach"))
-      ((outline) '("--with-keywords"))
+      ((outline) '("--with-keywords" "--with-signatures"))
       ;; `--all` releases grep's two caps; `--under` takes a block id and is
       ;; therefore not here.
       ((grep) '("--all"))
       ;; `search` answers its best ten unless asked for everything.
       ((search) '("--all"))
-      ((read) '("--md" "--recursive" "--working" "--working-info"))
+      ((read) '("--md" "--recursive" "--working" "--working-info" "--signature"))
       ;; `--working` names the view and `--writer` names whose; `--latest`
       ;; releases the pin.
       ;;

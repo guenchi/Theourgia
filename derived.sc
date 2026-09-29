@@ -38,7 +38,8 @@
 ;;; a buffer that was not the disk, or before a draft or a commit, is refused
 ;;; `supply-stale` naming the file.
 (library (theourgia derived)
-  (export supply-derived clear-derived derived-facts derived-kinds
+  (export supply-derived clear-derived derived-facts derived-kinds derived-clauses
+          derived-signature derived-signature-table derived-keyword-table
           table-file-name percent-encode read-supply-header)
   (import (rnrs)
           (only (theourgia reduce) state-read reduce-applied-cut)
@@ -378,14 +379,16 @@
   ;; ---- reading --------------------------------------------------------------
 
   ;; THE FRESH FACTS OF ONE KIND FOR ONE WRITER, judged in the reader's view.
-  ;; -> (values ((<payload> <via>) ...) <stale count>)
+  ;; -> (values ((<payload> <via>) ...) <stale count> <tables read>)
   ;; Every language's table for the kind and writer is read; a table that is
-  ;; absent (missing, unreadable, tampered with) contributes nothing. A fact
-  ;; is fresh when every block it lists still has the src bytes it was
-  ;; stamped with and every file it was stamped on still has its key, in
-  ;; `view`; a deleted block, a changed src, a changed child list or
-  ;; language wrapping, or a file that no longer projects make it stale.
-  (define (derived-facts store kind writer view)
+  ;; absent (missing, unreadable, tampered with) contributes nothing and is
+  ;; not counted as read. Only the facts `relevant?` accepts (by payload)
+  ;; are judged and counted. A fact is fresh when every block it lists
+  ;; still has the src bytes it was stamped with and every file it was
+  ;; stamped on still has its key, in `view`; a deleted block, a changed
+  ;; src, a changed child list or language wrapping, or a file that no
+  ;; longer projects make it stale.
+  (define (derived-facts store kind writer view relevant?)
     (let* ((dir (derived-dir store))
            (prefix (string-append (symbol->string kind) "-" (percent-encode writer) "-"))
            (names (if (file-is-directory? dir)
@@ -409,16 +412,71 @@
                      (and (for-all (lambda (s) (equal? (src-sha (car s)) (cadr s))) (fact-dep-stamps f))
                           (for-all (lambda (s) (equal? (key-of (car s)) (list 'key (cadr s))))
                                    (fact-file-stamps f))))))
-      (let loop ((ns names) (out '()) (stale 0))
+      (let loop ((ns names) (out '()) (stale 0) (tables 0))
         (if (null? ns)
-            (values (reverse out) stale)
+            (values (reverse out) stale tables)
             (let* ((body (read-table store (string-append dir "/" (car ns)) kind writer #f))
                    ;; the name must be the one this table's own identity gives
                    (body (and body (string=? (car ns) (table-file-name kind writer (caddr body))) body))
-                   (facts (if body (cadddr body) '())))
+                   (facts (if body (filter (lambda (f) (relevant? (fact-payload f))) (cadddr body)) '())))
               (let inner ((fs facts) (out out) (stale stale))
-                (cond ((null? fs) (loop (cdr ns) out stale))
+                (cond ((null? fs) (loop (cdr ns) out stale (if body (+ tables 1) tables)))
                       ((fresh? (car fs))
                        (inner (cdr fs) (cons (list (fact-payload (car fs)) (fact-via (car fs))) out) stale))
                       (else (inner (cdr fs) out (+ stale 1))))))))))
+
+  ;; WHAT AN ANSWER THAT READ FACTS CARRIES: `(via <provenance> ...)`, the
+  ;; distinct provenances of the facts it USED, only when it used one; and
+  ;; `(stale <n>)` only when facts it would have read were dropped. A stale
+  ;; fact's provenance is never named: it was not used.
+  (define (derived-clauses vias stale)
+    (append (let ((distinct (let loop ((vs vias) (out '()))
+                              (cond ((null? vs) (reverse out))
+                                    ((member (car vs) out) (loop (cdr vs) out))
+                                    (else (loop (cdr vs) (cons (car vs) out)))))))
+              (if (null? distinct) '() (list (cons 'via distinct))))
+            (if (> stale 0) (list (list 'stale stale)) '())))
+
+  (define (payload-about? tag id)
+    (lambda (payload) (and (eq? (car payload) tag) (equal? (cadr payload) id))))
+  (define (payload-tagged? tag)
+    (lambda (payload) (eq? (car payload) tag)))
+
+  ;; ONE BLOCK'S SIGNATURE. -> (values "<text>" | #f, (<via> ...), <stale>)
+  ;; When two fresh facts give one block a signature (two languages' tables,
+  ;; say), the first in table order is the answer.
+  (define (derived-signature store writer view id)
+    (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-about? 'signature id))))
+      (if (null? facts)
+          (values #f '() stale)
+          (values (caddr (car (car facts))) (list (cadr (car facts))) stale))))
+
+  ;; EVERY BLOCK'S SIGNATURE, for a listing.
+  ;; -> (values <lookup: id -> (<text> <via>) | #f> <stale>)
+  (define (derived-signature-table store writer view)
+    (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-tagged? 'signature))))
+      (let ((t (make-hashtable string-hash string=?)))
+        (for-each (lambda (f)
+                    (let ((id (cadr (car f))))
+                      (unless (hashtable-contains? t id)
+                        (hashtable-set! t id (list (caddr (car f)) (cadr f))))))
+                  facts)
+        (values (lambda (id) (hashtable-ref t id #f)) stale))))
+
+  ;; EVERY BLOCK'S DERIVED KEYWORDS, for search.
+  ;; -> (list <lookup: id -> (("<word>" ...) <via>) | #f> <tables read> <stale>)
+  ;; A block's words from several fresh facts are joined, the via of the
+  ;; first kept for each; whether a block with author keywords uses them is
+  ;; the search's rule, not this one's.
+  (define (derived-keyword-table store writer view)
+    (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-tagged? 'keywords))))
+      (let ((t (make-hashtable string-hash string=?)))
+        (for-each (lambda (f)
+                    (let* ((id (cadr (car f))) (old (hashtable-ref t id #f)))
+                      (hashtable-set! t id
+                                      (if old
+                                          (list (append (car old) (caddr (car f))) (cadr old))
+                                          (list (caddr (car f)) (cadr f))))))
+                  facts)
+        (list (lambda (id) (hashtable-ref t id #f)) tables stale))))
 )

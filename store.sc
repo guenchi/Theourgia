@@ -1427,12 +1427,19 @@
   ;; block's fields and after them, and the block is unreadable if it moved.
   ;; That is once per block by construction, whatever route the fields took,
   ;; and it costs no second decode.
-  (define (search-report state shown omitted scanned unreadable)
+  ;; `derived` is (<tables read> (<via> ...) <stale>) when the caller gave
+  ;; the search an editor's keywords to consult, else #f: the scanned
+  ;; fields name derived-keywords only when a table was read.
+  (define (search-report state shown omitted scanned unreadable . derived)
+    (append
     (list (cons (quote items) shown)
           (cons (quote omitted-hits) omitted)
           (cons (quote scanned-blocks) scanned)
           (cons (quote unreadable-blocks) unreadable)
-          (cons (quote fields) (quote (title keywords src names doc body)))
+          (cons (quote fields)
+                (if (and (pair? derived) (car derived) (> (car (car derived)) 0))
+                    (quote (title keywords derived-keywords src names doc body))
+                    (quote (title keywords src names doc body))))
           (cons (quote cut) (reduce-applied-cut state))
           ;; HOW MANY NAMES THE INDEX HOLDS, not whether it exists.
           ;;
@@ -1471,7 +1478,11 @@
           ;; shape this clause replaced `(defs built)` to fix. Naming the
           ;; second is scheduled; until it lands, a reader of `(names 0)`
           ;; does not know which one it has.
-          (cons (quote defs-names) (defs-index-name-count state))))
+          (cons (quote defs-names) (defs-index-name-count state)))
+    (if (and (pair? derived) (car derived))
+        (list (cons (quote derived-via) (cadr (car derived)))
+              (cons (quote derived-stale) (caddr (car derived))))
+        (quote ()))))
 
   ;; -> how many distinct names the definitions index holds for this state.
   (define (defs-index-name-count state)
@@ -1485,13 +1496,17 @@
   ;; and later meant "report, capped" -- and the reading a caller got
   ;; depended on which build it was linked against. A wrong limit is now a
   ;; refusal at the door rather than a different answer.
-  (define (store-search-report store query limit)
+  ;; `derived`, when given, is a procedure the caller supplies: given the
+  ;; state searched, it answers an editor's keywords for it as
+  ;; (<lookup: id -> (("<word>" ...) <via>) | #f> <tables read> <stale>).
+  ;; This library does not read those tables itself; the caller does.
+  (define (store-search-report store query limit . derived)
     (if (not (or (eq? limit #f)
                  (and (integer? limit) (exact? limit) (positive? limit))))
         (assertion-violation 'store-search-report
                              "the limit is #f for every hit, or a positive integer"
                              limit)
-        (store-search store query limit)))
+        (apply store-search store query limit derived)))
 
   (define (store-search store query . rest)
     (let* ((state (open-and-reduce store))
@@ -1525,13 +1540,20 @@
            ;; HOW MANY LIVE BLOCKS THIS SCAN COULD NOT READ THE TEXT OF.
            ;; One search, one count; it is raised once per block by the
            ;; loop below and read by the report at the end.
-           (unreadable-here 0))
+           (unreadable-here 0)
+           ;; AN EDITOR'S KEYWORDS, WHEN THE CALLER GAVE THEM: consulted
+           ;; only for a query that looks at blocks at all.
+           (derived (and (pair? rest) (pair? (cdr rest)) (cadr rest) (pair? tokens)
+                         ((cadr rest) state)))
+           (derived-words (if derived (car derived) (lambda (id) #f)))
+           ;; id -> the provenance of the derived words a hit was found by
+           (derived-used (make-hashtable string-hash string=?)))
       (if (null? tokens)
           (let ((none (prepared-end! (quote ()))))
             (if (pair? rest)
                 ;; An empty query looks at nothing, leaves nothing out,
                 ;; and reads no block's text.
-                (search-report state none 0 0 0)
+                (search-report state none 0 0 0 #f)
                 none))
           (let ((hits
                   (let loop ((ds (state-datum state)) (out (quote ())))
@@ -1553,6 +1575,13 @@
                                ;; block whose keywords match is a better
                                ;; answer than one whose prose happens to.
                                (kws (field-strings block (quote keywords)))
+                               ;; HUMAN FIRST: A BLOCK WITH KEYWORDS OF ITS
+                               ;; AUTHOR'S IGNORES AN EDITOR'S. A block with
+                               ;; none is searched on the editor's words at
+                               ;; the source's tier, below any author's.
+                               (authored (exists (lambda (k) (> (string-length k) 0)) kws))
+                               (dk (and alive (not authored) (derived-words id)))
+                               (dks (if dk (car dk) (quote ())))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
                                ;; ONE MATRIX, TWO PROJECTIONS OF IT.
@@ -1587,6 +1616,7 @@
                                (title-row (row field-tier titles))
                                (src-row (row field-tier srcs))
                                (kw-row (row field-tier kws))
+                               (dk-row (row field-tier dks))
                                ;; NEVER: AND THE THINGS ONLY A CODE BLOCK HAS.
                                ;; `names` is derived from the source rather
                                ;; than stored, so it is read from the view;
@@ -1632,6 +1662,7 @@
                                (title-tier (collapse-field-row title-row))
                                (src-tier (collapse-field-row src-row))
                                (kw-tier (collapse-field-row kw-row))
+                               (dk-tier (collapse-field-row dk-row))
                                (doc-tier (collapse-field-row doc-row))
                                (body-tier (collapse-field-row body-row))
                                (nm-tier (collapse-name-row name-row))
@@ -1641,14 +1672,18 @@
                                ;; an OR across tokens.
                                (every-token
                                  (every-token-hit?
-                                   (list title-row src-row kw-row
-                                         name-row doc-row body-row))))
+                                   (list title-row src-row kw-row dk-row
+                                         name-row doc-row body-row)))
+                               (ignored-derived
+                                 (when (and alive every-token dk-tier)
+                                   (hashtable-set! derived-used id (cadr dk)))))
                           (loop (cdr ds)
                                 (if (and alive every-token)
                                     (cons (list id
                                                 (+ (tier-score 'title title-tier)
                                                    (tier-score 'src src-tier)
                                                    (tier-score 'keywords kw-tier)
+                                                   (tier-score 'src dk-tier)
                                                    (name-score nm-tier)
                                                    (if doc-tier 1 0)
                                                    (if body-tier 1 0))
@@ -1665,7 +1700,7 @@
                                                   ;; list to lines only lost
                                                   ;; that, and the row for it
                                                   ;; went red the same hour.
-                                                  (append kws titles
+                                                  (append kws dks titles
                                                           (apply append (map lines-of-text srcs))
                                                           names docs bodies srcs)
                                                   tokens)
@@ -1709,6 +1744,7 @@
                                                       (filter (lambda (x) x)
                                                               (list (and title-tier 'title)
                                                                     (and kw-tier 'keywords)
+                                                                    (and dk-tier 'derived-keywords)
                                                                     (and src-tier 'src)
                                                                     (and nm-tier 'names)
                                                                     (and doc-tier 'doc)
@@ -1733,7 +1769,13 @@
                     (search-report state shown
                                    (- total (length shown))
                                    (length (state-outline state))
-                                   unreadable-here))
+                                   unreadable-here
+                                   (and derived
+                                        (list (cadr derived)
+                                              (filter (lambda (v) v)
+                                                      (map (lambda (h) (hashtable-ref derived-used (car h) #f))
+                                                           shown))
+                                              (caddr derived)))))
                   sorted))))))
 
   ;; ---- grep: lines, where search answers with blocks ----------------------

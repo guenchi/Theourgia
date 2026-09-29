@@ -53,7 +53,8 @@
           (only (theourgia answers) classify-failure)
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
-          (only (theourgia derived) supply-derived clear-derived derived-kinds)
+          (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
+                derived-signature derived-signature-table derived-keyword-table)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -462,6 +463,16 @@
     (let*-values (((out get) (open-string-output-port)))
       (let* ((depth-limit (if (pair? limit) (car limit) #f))
              (with-keywords? (and (pair? limit) (pair? (cdr limit)) (cadr limit)))
+             ;; id -> the signature an editor supplied, or #f; absent, no column
+             (signature-of (if (and (pair? limit) (pair? (cdr limit)) (pair? (cddr limit)))
+                               (caddr limit)
+                               (lambda (id) #f)))
+             (put-signature
+               (lambda (id)
+                 (let ((sig (signature-of id)))
+                   (when sig
+                     (put-string out "  :: ")
+                     (put-string out sig)))))
              (keywords-of
                (lambda (id)
                  (let* ((block (state-read state id))
@@ -531,6 +542,7 @@
                   (when (member id orphans)
                     (put-string out "  orphan"))
                   (put-keywords id)
+                  (put-signature id)
                   (put-string out "\n")
                   (walk id (+ depth 1)))))
             (children-of parent)))
@@ -563,6 +575,7 @@
                         (put-string out "  ")
                         (put-string out (title-of state id))
                         (put-keywords id)
+                        (put-signature id)
                         (put-string out "\n")
                         (walk id 1))
                       left)))
@@ -578,7 +591,7 @@
     '(commit [<block> ...] ["--writer" <name>] ["--working-version" <block>=<version>]))
 
   (define outline-usage
-    '(outline ["--depth" <n>] ["--with-keywords"]))
+    '(outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"]))
 
   ;; <file> BEFORE THE OPTIONAL GROUPS: the positional slots are read off
   ;; the form up to its first group, and the daemon resolves a <file> slot
@@ -594,6 +607,23 @@
 
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
+
+  ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
+  ;; committed state's table ("-") against the committed state, or with
+  ;; --working the writer's table against the writer's working view.
+  ;; -> (ok (signature "<text>" | absent) [(via ...)] [(stale <n>)])
+  (define (read-signature store state writer id working?)
+    (let-values (((table-writer view)
+                  (if working?
+                      (let ((w (working-state store state writer)))
+                        (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                        (values (cadr w) (caddr w)))
+                      (values "-" (reduction-for store state)))))
+      (if (not (state-read view id))
+          (unknown-id view id)
+          (let-values (((text vias stale) (derived-signature store table-writer view id)))
+            (append (list 'ok (list 'signature (or text 'absent)))
+                    (derived-clauses vias stale))))))
 
   (define (one-write store actor intent req . check)
     (let ((answers (with-store-write store (lambda (state view) (list intent))
@@ -879,8 +909,8 @@
       (list 'outline outline-usage
             "List the blocks as a tree of titles." #f 'daemon)
       (list 'read '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
-                         ["--working"] ["--working-info"])
-            "Read one block: its fields, or its text." #f 'daemon)
+                         ["--working"] ["--working-info"] ["--signature"])
+            "Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view." #f 'daemon)
       (list 'refs '(refs <id>)
             "List the relations a block takes part in." #f 'daemon)
       (list 'search '(search <query> ["--all"])
@@ -1198,11 +1228,24 @@
                   ((not (null? rest)) (usage outline-usage))
                   ((and depth (not (count-argument depth))) (usage outline-usage))
                   (else
-                   (let ((with-keywords (argument-option options "--with-keywords")))
+                   (let ((with-keywords (argument-option options "--with-keywords"))
+                         (with-signatures (argument-option options "--with-signatures")))
                      (guarded (lambda ()
-                                (text (outline-text (reduction-for store state)
-                                                    (and depth (count-argument depth))
-                                                    with-keywords))))))))))
+                                (let ((st (reduction-for store state)))
+                                  (if (not with-signatures)
+                                      (text (outline-text st (and depth (count-argument depth)) with-keywords))
+                                      ;; THE VIA NAMES WHAT WAS PRINTED: the
+                                      ;; lookup notes a provenance only for a
+                                      ;; row the listing drew.
+                                      (let-values (((lookup stale) (derived-signature-table store "-" st)))
+                                        (let* ((used '())
+                                               (signature-of
+                                                 (lambda (id)
+                                                   (let ((e (lookup id)))
+                                                     (and e (begin (set! used (cons (cadr e) used)) (car e)))))))
+                                          (let ((listing (outline-text st (and depth (count-argument depth))
+                                                                       with-keywords signature-of)))
+                                            (append (text listing) (derived-clauses (reverse used) stale)))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections
@@ -1220,7 +1263,13 @@
                     (deep? (argument-option options "--recursive")) (rest args))
                 (cond
                   ((not (= 1 (length rest))) (usage '(read <id> ["--md"] ["--recursive"] ["--writer" <name>]
-                                 ["--working"] ["--working-info"])))
+                                 ["--working"] ["--working-info"] ["--signature"])))
+                  ((argument-option options "--signature")
+                   (if (or md? deep? (argument-option options "--working-info"))
+                       '(error bad-request incompatible-signature-options)
+                       (guarded (lambda ()
+                                  (read-signature store state writer (car rest)
+                                                  (argument-option options "--working"))))))
                   ((or (argument-option options "--working") (argument-option options "--working-info"))
                    (if (or md? deep?) '(error bad-request incompatible-working-options)
                        (working-read store state writer (car rest) (argument-option options "--working-info"))))
@@ -1384,7 +1433,11 @@
                                          store (car args)
                                          (if (argument-option options "--all")
                                              #f
-                                             search-hit-limit)))
+                                             search-hit-limit)
+                                         ;; an editor's keywords, from the
+                                         ;; committed store's table, judged
+                                         ;; against the state searched
+                                         (lambda (st) (derived-keyword-table store "-" st))))
                                     (hits (cdr (assq 'items r)))
                                     (omitted (cdr (assq 'omitted-hits r))))
                                (append (items (map (lambda (hit) (cons 'hit hit)) hits))
@@ -1400,7 +1453,9 @@
                                        (if (> omitted 0)
                                            (list (list 'truncated (list 'hits omitted)))
                                            '())
-                                       (scan-clauses r (null? hits)))))))))
+                                       (scan-clauses r (null? hits))
+                                       (let ((via (assq 'derived-via r)) (stale (assq 'derived-stale r)))
+                                         (if via (derived-clauses (cdr via) (cdr stale)) '())))))))))
       ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
       ;; THING THAT SAYS SO. A grep line and a search hit have the same
       ;; arity and the same types in the same places -- an id, an integer, a

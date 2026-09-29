@@ -54,21 +54,26 @@
   ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
   ;; used to drop every clause after the body; the one saying the answer
   ;; is missing a writer's records is the one a reader must not lose (K10).
+  ;; So are `via` and `stale`: an answer built from facts an editor supplied
+  ;; says where they came from, and how many it could not use, in every
+  ;; rendering. They follow the body in the order the answer holds them.
+  (define kept-clauses '(incomplete via stale))
   (define (render-human answer)
-    (let ((clause (and (pair? answer) (list? answer)
-                       (find (lambda (x) (and (pair? x) (eq? (car x) 'incomplete))) (cdr answer)))))
+    (let* ((clauses (if (and (pair? answer) (list? answer))
+                        (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
+                        '()))
+           (tail (apply string-append (map render-wire clauses))))
       (cond
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'text))
          (let ((text (cadadr answer)))
-           (cond ((not clause) text)
+           (cond ((null? clauses) text)
                  ((or (= 0 (string-length text))
                       (char=? #\newline (string-ref text (- (string-length text) 1))))
-                  (string-append text (render-wire clause)))
-                 (else (string-append text "\n" (render-wire clause))))))
+                  (string-append text tail))
+                 (else (string-append text "\n" tail)))))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'items))
-         (string-append (apply string-append (map render-wire (cdadr answer)))
-                        (if clause (render-wire clause) "")))
+         (string-append (apply string-append (map render-wire (cdadr answer))) tail))
         (else (render-wire answer)))))
 )

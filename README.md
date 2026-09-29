@@ -106,7 +106,7 @@ differences — and is never an error.
 ### `read`
 
     (read <id> ("--md") ("--recursive") ("--writer" <name>)
-          ("--working") ("--working-info"))
+          ("--working") ("--working-info") ("--signature"))
 
 It answers:
 
@@ -125,6 +125,18 @@ after the items. A deleted block has no version, read alone or in a subtree, and
 `--md` and `--working` answer as they did. A block whose value is nested too
 deeply to hash is still read; its version is `(version unavailable (reason ...))`,
 as a write's state section says when it cannot describe a block.
+
+`--signature` answers the signature an editor supplied for the block (see
+"Derived data from an editor"):
+
+    (ok (signature "<text>") (via (vscode "<version>" "<languageId>")))
+    (ok (signature absent))
+
+from the committed store's facts, or with `--working` from the writer's own
+facts judged against its working view. A fact that no longer matches what it
+was computed from is not used, and `(stale <n>)` counts those. `--signature`
+with `--md`, `--recursive` or `--working-info` is refused with
+`(error bad-request incompatible-signature-options)`.
 
 A file-level block holds almost nothing of its own: its body is the front matter
 and whatever sits above the first heading, which in most documents is nothing at all.
@@ -223,6 +235,14 @@ that; a prefix match ties with it and the tie is broken by id, which is the
 intended answer -- a name that merely BEGINS with the query is not obviously a
 better result than a page about the query.
 Fields are counted once each however many times they match.
+
+Keywords an editor supplied (see "Derived data from an editor") are
+searched only for a block with no keywords of its own author's, and score as
+src does, 2 or 1, below any author's keywords; a hit found there names
+`derived-keywords` among its fields. When a table of such keywords was read,
+the `scanned` clause names `derived-keywords` too, and the answer carries
+`(via ...)` for the keywords it used and `(stale <n>)` for the facts it could
+not use.
 
 Only a `code` or `library` block has names at all -- a name is something defined
 or carried, not a field anyone may set -- so `search` and `whereis` ask the same
@@ -541,7 +561,7 @@ Defines one datum by name, optionally inside a library block.
 
 ### `outline`
 
-    (outline ["--depth" <n>] ["--with-keywords"])
+    (outline ["--depth" <n>] ["--with-keywords"] ["--with-signatures"])
 
 Prints the store's block tree as indented text: one line per block, its
 `<id>.<version>` and its title. `--depth` stops at that many levels.
@@ -550,6 +570,12 @@ Prints the store's block tree as indented text: one line per block, its
 A block without the field prints no brackets: empty ones would say the
 writer chose no keywords, which is a different thing from a store written
 before the field existed. Without the option the listing is unchanged.
+
+`--with-signatures` appends `  :: <signature>` to each row an editor
+supplied a signature for (after the keywords' brackets when both are asked
+for), from the committed store's facts. The answer then carries
+`(via ...)` for the signatures it printed and `(stale <n>)` for the facts
+it could not use.
 
 ## Drafts, and committing them
 
