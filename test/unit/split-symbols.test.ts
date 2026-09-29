@@ -517,7 +517,18 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('starts a symbol on the first line of a file with a byte-order mark at byte 0, and the core splits it', async () => {
+  /*
+   * NOTE: TODAY'S CORE DOES NOT CUT A FILE THAT BEGINS WITH A BYTE-ORDER MARK.
+   * The pinned core's split-suggest reads the mark as invalid UTF-8 at byte 0
+   * and answers one block, with or without symbols (measured on the pinned
+   * core with its own patterns: the same file unmarked cuts in two). The row
+   * pins that answer. The plugin's part is what it asserts first: the first
+   * line's start is sent as byte 0 and the core takes the file (a start of 3
+   * is refused as not a line start). When the pin moves to a core that reads
+   * the mark as the protected prefix, the expected answer becomes two blocks
+   * and this row is rewritten with it.
+   */
+  it('starts a symbol on the first line of a file with a byte-order mark at byte 0, which the core takes', async () => {
     store = await RealStore.make();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'theourgia-split-real-'));
     const text = 'function a() {\n  return 1;\n}\nfunction b() {\n  return 2;\n}\n';
@@ -556,7 +567,12 @@ describe('P1 on a real core the symbols file is taken and cut as given', functio
     ]);
     assert.strictEqual(outcome.done, 'split', shown(outcome));
     assert.ok(outcome.done === 'split');
-    assert.match(outcome.notice, /^2 blocks proposed, cuts from \(vscode "9\.9\.9" "javascript"\)/);
+    assert.deepStrictEqual(outcome.boundaries, [0]);
+    assert.strictEqual(
+      outcome.notice,
+      '1 block proposed, cuts from (vscode "9.9.9" "javascript"); warnings ((code invalid-utf8 byte-offset 0) ' +
+        '(symbol-in-prefix (at 0)) (symbol-kinds function function))'
+    );
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
