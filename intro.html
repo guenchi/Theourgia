@@ -322,14 +322,15 @@ scene({tag:['feat','Feature 1 / 7'],title:'A minimal query surface for agents',d
 }});
 
 // ============================== FEATURE 2 ==================================
-scene({tag:['feat','Feature 2 / 7'],title:'One graph across artifacts and languages',dur:7,build(r){
-  const B=[['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,330],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,250],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,560],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,330],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,620]];
+scene({tag:['feat','Feature 2 / 7'],title:'One graph across artifacts and languages',dur:7.5,build(r){
+  // four code blocks in four languages, all equal nodes between the requirement and its test
+  const B=[['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,440],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,215],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,375],['RUST','fn jitter(ms: u64) …','x9a3vtll.7','#b7410e',760,535],['GO','func Retry(ctx, fn) …','q7m2hs0c.4','#0089ad',760,695],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,380],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,640]];
   this.b=B.map(([k,tt,id,c,x,y])=>({x,y,e:el(`<div class="blk" style="border-color:${c}"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${id}</div></div>`,r)}));
-  const E=[[0,1,'met by',0],[0,2,'met by',0],[1,3,'checked by',0],[2,3,'checked by',0],[3,4,'decided in',0]];
+  const E=[[0,1,'met by'],[0,2,''],[0,3,''],[0,4,''],[1,5,'checked by'],[2,5,''],[3,5,''],[4,5,''],[5,6,'decided in']];
   this.E=E;
   this.svg=el(`<svg class="full"><defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--acc2)"/></marker></defs><g stroke="var(--acc2)" stroke-width="4.5" fill="none" stroke-linecap="round"></g><g class="lab" font-family="SF Mono,Menlo,monospace" font-weight="700" font-size="20" fill="var(--acc2)"></g></svg>`,r);
   r.insertBefore(this.svg,this.b[0].e);
-  this.wall=el(`<div class="abs" style="width:6px;height:520px;background:repeating-linear-gradient(var(--red) 0 20px,transparent 20px 34px)"></div>`,r);
+  this.wall=el(`<div class="abs" style="width:6px;height:600px;background:repeating-linear-gradient(var(--red) 0 20px,transparent 20px 34px)"></div>`,r);
   this.wl=el(`<div class="abs lbl" style="color:var(--red);font-size:20px;width:560px;text-align:center">repo | docs — a filesystem accident</div>`,r);
   this.paths=[];
 },update(t){
@@ -342,10 +343,10 @@ scene({tag:['feat','Feature 2 / 7'],title:'One graph across artifacts and langua
       this.paths.push([p,tx,p.getTotalLength()])});
   }
   const merge=P(t,1.2,2.2);
-  this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.18);const side=i==0||i==4?-1:1;S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<2?-40:60),y:b.y,s:pp.s})});
-  S(this.wall,{o:P(t,.3,.6)*(1-merge),x:1000,y:280,sy:1-merge});
-  S(this.wl,{o:P(t,.5,.8)*(1-merge),x:720,y:830});
-  this.paths.forEach(([p,tx,len],i)=>{const a=2.6+i*.45;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
+  this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.14);S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<5?-40:60),y:b.y,s:pp.s})});
+  S(this.wall,{o:P(t,.3,.6)*(1-merge),x:1030,y:230,sy:1-merge});
+  S(this.wl,{o:P(t,.5,.8)*(1-merge),x:750,y:850});
+  this.paths.forEach(([p,tx,len],i)=>{const a=2.5+i*.3;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
   // pulse flowing along the chain
 }});
 
@@ -487,14 +488,10 @@ scene({tag:['feat','Feature 6 / 7'],title:'Zero-conflict workspaces & isolated e
 }});
 
 // ============================== FEATURE 7 ==================================
-scene({tag:['feat','Feature 7 / 7'],title:'A Lisp machine: a living knowledge base',dur:13.1,build(r){
-  this.LANGS=['Scheme','Python','JavaScript','Rust','Go','any language'];
-  this.langs=el(`<div class="abs" style="display:flex;gap:10px">${this.LANGS.map((l,i)=>`<span class="chip" style="font-size:19px;padding:6px 14px;${i==5?'font-style:italic;':''}">${l}</span>`).join('')}</div>`,r);
-  this.lchips=[...this.langs.children];
-  this.code=el(`<div class="abs term" style="width:760px;height:250px;font-size:26px;white-space:pre"><div class="c1"></div><div class="c2"></div><div class="c3" style="margin-top:14px"></div></div>`,r);
-  this.c1=this.code.querySelector('.c1');this.c2=this.code.querySelector('.c2');this.c3=this.code.querySelector('.c3');
-  this.box=el(`<div class="abs" style="width:520px;height:250px;border-radius:22px;border:3px solid var(--acc);background:#e9f7f4;padding:20px 24px"><div class="lbl bl" style="color:var(--acc2);font-size:17px"></div><div class="gs" style="margin-top:16px;display:flex;flex-direction:column;gap:14px"></div></div>`,r);
-  this.bl=this.box.querySelector('.bl');
+scene({tag:['feat','Feature 7 / 7'],title:'A Lisp machine: a living knowledge base',dur:10.5,build(r){
+  this.code=el(`<div class="abs term" style="width:760px;height:260px;font-size:27px"><div class="c1"></div><div class="c2"></div><div style="margin-top:16px">(<span class="k">greet</span> <span class="s">"agent"</span>)</div></div>`,r);
+  this.c1=this.code.querySelector('.c1');this.c2=this.code.querySelector('.c2');
+  this.box=el(`<div class="abs" style="width:520px;height:260px;border-radius:22px;border:3px solid var(--acc);background:#e9f7f4;padding:20px 24px"><div class="lbl" style="color:var(--acc2);font-size:17px">sandboxed child process</div><div class="gs" style="margin-top:16px;display:flex;flex-direction:column;gap:14px"></div></div>`,r);
   this.g=['wall-clock','memory','output'].map((n,i)=>el(`<div style="display:flex;align-items:center;gap:14px;font:600 20px var(--mono)"><span style="width:130px">${n}</span><div style="flex:1;height:18px;border-radius:9px;background:#fff;border:2px solid #9fd9c2;position:relative;overflow:hidden"><div class="f" style="position:absolute;left:0;top:0;bottom:0;width:0;background:var(--acc)"></div></div><span style="color:var(--dim)">quota</span></div>`,this.box.querySelector('.gs')));
   this.out=el(`<div class="abs" style="width:760px;padding:16px 24px;border-radius:16px;background:#fff;border:2px solid var(--line);font:600 27px var(--mono)"><span class="lbl" style="font-size:16px;margin-right:14px">stdout</span><span class="o"></span><span class="at" style="float:right;color:var(--com)"></span></div>`,r);
   this.o=this.out.querySelector('.o');this.at=this.out.querySelector('.at');
@@ -502,35 +499,20 @@ scene({tag:['feat','Feature 7 / 7'],title:'A Lisp machine: a living knowledge ba
   for(let i=0;i<=24;i++)el(`<div style="position:absolute;left:${i/24*100}%;top:${i%4?28:22}px;width:3px;height:${i%4?14:26}px;background:#d6d0c1"></div>`,this.tl.querySelector('.ticks'));
   this.h=this.tl.querySelector('.h');this.hl=this.tl.querySelector('.hl');
 },update(t){
-  // Scheme, Python and JavaScript each run in their own sandbox; then the history beat, back in Scheme
-  const D=2.6,SW=[2.8,4.2,5.6],RUN=[1.4,3.1,4.5];
-  const li=t<SW[0]?0:(t<SW[1]?1:(t<SW[2]?2:0));
-  const old=t>6.6+D;
-  const K=x=>`<span class="k">${x}</span>`,Q=x=>`<span class="s">${x}</span>`;
-  const CODE=[
-    [`(${K('define')} (greet who)`,old?`  (${K('string-append')} ${Q('"Hi "')} who))`:`  (${K('string-append')} ${Q('"Hello, "')} who ${Q('"!"')}))`,`(${K('greet')} ${Q('"agent"')})`],
-    [`${K('def')} greet(who):`,`    ${K('return')} ${Q('"Hello, "')} + who + ${Q('"!"')}`,`${K('print')}(greet(${Q('"agent"')}))`],
-    [`${K('const')} greet = who =>`,`  ${Q('`Hello, ${who}!`')};`,`${K('console.log')}(greet(${Q('"agent"')}));`]];
-  [this.c1.innerHTML,this.c2.innerHTML,this.c3.innerHTML]=CODE[li];
-  this.c2.style.background=old?`rgba(18,176,156,${.35*(1-P(t,6.6+D,7.4+D))})`:'transparent';
-  const swap=[...SW].filter(x=>x<=t).length,flash=SW.some(x=>t>x&&t<x+.25);
-  this.code.style.opacity=P(t,0,.4)*(flash?.55:1);S(this.code,{o:this.code.style.opacity,x:200,y:290});
-  S(this.langs,{o:P(t,.2,.6),x:200,y:222});
-  this.lchips.forEach((c,i)=>{const on=i==li&&t>.4;c.style.background=on?'var(--acc)':'var(--bg2)';c.style.color=on?'#fff':(i==5?'var(--com)':'var(--dim)')});
-  S(this.box,{o:P(t,.8,1.2),x:1180,y:290});
-  this.bl.textContent='sandboxed child process · '+this.LANGS[li].toLowerCase();
-  // gauges fill on each run and empty when the code changes
-  const starts=[...RUN,7.4+D],resets=[...SW,6.2+D];
-  const ls=Math.max(-1,...starts.filter(x=>x<=t)),lr=Math.max(-1,...resets.filter(x=>x<=t));
-  const v=ls>lr?P(t,ls,ls+.8):0;
-  this.g.forEach((g,i)=>{g.querySelector('.f').style.width=(v*[.35,.22,.08][i]*100)+'%'});
-  S(this.out,{o:P(t,2.2,2.5),x:200,y:590});
-  const shown=ls>lr&&t>ls+.8;
-  const hist=ls==7.4+D;
-  this.o.innerHTML=shown?(hist?'<span style="color:var(--acc2)">"Hi agent"</span>':'<span style="color:var(--str)">Hello, agent!</span>'):'';
-  this.at.textContent=shown?(hist?'@ log 1042 — reproducible':'@ now · '+this.LANGS[li].toLowerCase()):'';
-  S(this.tl,{o:P(t,4.4+D,4.8+D),x:220,y:750});
-  const hp=t<5+D?1:L(1,.42,P(t,5+D,6.4+D));
+  S(this.code,{o:P(t,0,.4),x:200,y:250});
+  const old=t>6.6;
+  this.c1.innerHTML=`(<span class="k">define</span> (greet who)`;
+  this.c2.innerHTML=old?`&nbsp;&nbsp;(<span class="k">string-append</span> <span class="s">"Hi "</span> who))`:`&nbsp;&nbsp;(<span class="k">string-append</span> <span class="s">"Hello, "</span> who <span class="s">"!"</span>))`;
+  this.c2.style.background=old?`rgba(18,176,156,${.35*(1-P(t,6.6,7.4))})`:'transparent';
+  S(this.box,{o:P(t,.8,1.2),x:1180,y:250});
+  const run=(a)=>P(t,a,a+.8);
+  const r1=run(1.4),r2=run(7.4);
+  this.g.forEach((g,i)=>{const lv=[.35,.22,.08][i];const v=t<7?r1*(1-P(t,6.2,6.5)):r2;g.querySelector('.f').style.width=(v*lv*100)+'%'});
+  S(this.out,{o:P(t,2.2,2.5),x:200,y:560});
+  this.o.innerHTML=t<2.3?'':(t<6.3?'<span style="color:var(--str)">"Hello, agent!"</span>':(t<8.2?'':'<span style="color:var(--acc2)">"Hi agent"</span>'));
+  this.at.textContent=t<6.3?'@ now':(t<8.2?'':'@ log 1042 — reproducible');
+  S(this.tl,{o:P(t,4.4,4.8),x:220,y:720});
+  const hp=t<5?1:L(1,.42,P(t,5,6.4));
   this.h.style.left=`calc(${hp*100}% - 21px)`;this.hl.style.left=`calc(${hp*100}% - 60px)`;
   this.hl.textContent=hp>.99?'now':'@ log '+Math.round(L(1042,2480,(hp-.42)/.58));
 }});
