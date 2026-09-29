@@ -1248,12 +1248,12 @@
   ;; and on FreeBSD 15.0 by a compiled probe (2026-09-29): the same on both.
   ;; THEOURGIA_EVAL_SLOTS_DEFAULT, a positive integer, replaces the reading:
   ;; a test seam, so a row can ask for a pool of a known size on any
-  ;; machine. -> a positive integer, or #f when the seam is not one or the
-  ;; kernel gave no answer.
+  ;; machine; empty, it is unset (env-or). -> a positive integer, or #f when
+  ;; the seam is set and not one, or the kernel gave no answer.
   (define _SC_NPROCESSORS_ONLN 58)
 
   (define (online-processors)
-    (let ((seam (getenv "THEOURGIA_EVAL_SLOTS_DEFAULT")))
+    (let ((seam (env-or "THEOURGIA_EVAL_SLOTS_DEFAULT")))
       (if seam
           (let ((n (string->number seam 10)))
             (and n (exact? n) (integer? n) (> n 0) n))
@@ -2898,8 +2898,10 @@
   ;; that scope's record. The flag is LEXICAL -- an argument -- and NOT a
   ;; parameter: under igropyr a parameterize is one global cell that a
   ;; preemption hands to every other actor (actor.sc:459-469), so it would
-  ;; suppress the notes of whatever actor ran during the hold. hold-point! is
-  ;; the only caller, and it exists only in an injection build.
+  ;; suppress the notes of whatever actor ran during the hold. Its callers
+  ;; are hold-point!, which exists only in an injection build, and the eval
+  ;; admission's slot files (client.sc eval-admit!), which are
+  ;; administration and not the request's writes.
   (define (file-ensure-unrecorded! path) (file-ensure-body! path #f))
 
   (define (file-ensure-body! path record?)

@@ -862,7 +862,10 @@
 ;; ---- L15: the evaluation admission --------------------------------------------
 ;; Every evaluation takes one of K slots of its run root's pool before its cut,
 ;; view, projection or scratch, and holds it until its process ends. Each row
-;; has a run root of its own, so its pool starts empty.
+;; has a run root of its own, so its pool starts empty. A LIMIT: a slot
+;; released when the evaluation returns but before core.sc ends is not told
+;; apart from one released at the end -- nothing here keeps core.sc alive in
+;; that interval.
 (define SL (make-store! "slots" (list (cons "a.sh" "echo slots\n"))))
 (define (wall-ms)
   (let ((t (current-time 'time-utc))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
@@ -894,81 +897,175 @@
   (length (filter (lambda (f) (and (> (string-length f) 5) (string=? (substring f 0 5) "eval-") (not (string=? f "eval-slots"))))
                   (directory-list r))))
 (define (slots-env r . more) (apply string-append "THEOURGIA_RUN=" (quoted r) " " more))
+;; A HOLDER'S SOURCE: it says it is running, then holds its slot until the row
+;; creates the go file -- never for a fixed time, so a contender that starts
+;; slowly cannot find the holder already gone. -> the source text.
+(define (hold-until ready go) (string-append "touch " ready "; until [ -e " go " ]; do sleep 0.05; done"))
 
 ;; THE SECOND WAITS, AND MAKES NOTHING WHILE IT WAITS. A holds the only slot
-;; (its runner has written its ready file); B is held at its admission, whose
-;; .held file says it got there, and the scratch listing is read then: only
-;; A's. Released, B waits for the slot, and ends after A.
-(want "L15 K=1: a second evaluation waits for the slot, has no scratch while it waits, and runs after the first ends"
+;; until the row says go; B is held at its admission, whose .held file says
+;; it got there, and the scratch listing is read then: only A's. Released
+;; from the hold, B tries the slot; half a second later B is still running
+;; with no answer, A still holds, and the scratch listing is still only A's
+;; -- an implementation that let B in would show B's scratch or B's answer
+;; there. Then A is let go, and B runs.
+(want "L15 K=1: a second evaluation waits for the slot, has no scratch and no answer while it waits, and runs once the first ends"
       (let* ((r (fresh-run! "slots-wait"))
-             (ready (string-append r ".ready")) (rel (string-append r ".release"))
-             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 3; echo first")
+             (ready (string-append r ".ready")) (rel (string-append r ".release")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append (hold-until ready go) "; echo first")
                     "--lang" "shell" "--timeout-ms" "15000"))
-             (_ (within 15000 (lambda () (file-exists? ready))))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
              (b (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON " THEOURGIA_INJECT=on THEOURGIA_HOLD=eval-admission:" rel)
                     SL "echo second" "--lang" "shell" "--timeout-ms" "20000"))
              (held (within 20000 (lambda () (file-exists? (string-append rel ".held")))))
              (scratch (scratch-count r))
              (_ (sh "touch " (quoted rel)))
+             (_ (pause-ms 500))
+             (waiting (list (alive? (car b)) (alive? (car a)) (answer-in (cadr b)) (scratch-count r)))
+             (_ (sh "touch " (quoted go)))
              (a-end (ended-at (car a) 20000))
              (b-end (ended-at (car b) 30000)))
-        (list (and held #t) scratch
+        (list (and ready-seen held #t) scratch waiting
               (has-substring? (format "~s" (answer-in (cadr a))) "first")
               (has-substring? (format "~s" (answer-in (cadr b))) "second")
-              (and a-end b-end (>= b-end a-end))))
-      '(#t 1 #t #t #t))
+              (and a-end b-end #t)))
+      '(#t 1 (#t #t NO-ANSWER 1) #t #t #t))
 
+;; BUSY, WITH THE WAIT REPORTED: waited-ms is at least the budget and at most
+;; the time the row itself measured around the request.
 (want "L15 K=1: a second evaluation whose timeout ends while the first holds the slot answers eval-busy, with K and the time it waited"
       (let* ((r (fresh-run! "slots-busy"))
-             (ready (string-append r ".ready"))
-             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 4")
+             (ready (string-append r ".ready")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (hold-until ready go)
                     "--lang" "shell" "--timeout-ms" "15000"))
-             (_ (within 15000 (lambda () (file-exists? ready))))
-             (busy (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo x" "--lang" "shell" "--timeout-ms" "500"))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (t0 (wall-ms))
+             (busy (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo x" "--lang" "shell" "--timeout-ms" "700"))
+             (t1 (wall-ms))
+             (_ (sh "touch " (quoted go)))
              (_ (ended-at (car a) 20000))
              (waited (let ((c (clause-of busy 'waited-ms))) (and c (cadr c)))))
-        (list (head-of busy) (clause-of busy 'slots) (and (integer? waited) (<= 500 waited 3500))))
-      '((error eval-busy) (slots 1) #t))
+        (list (and ready-seen #t) (head-of busy) (clause-of busy 'slots)
+              (and (integer? waited) (<= 700 waited (- t1 t0)))))
+      '(#t (error eval-busy) (slots 1) #t))
 
-;; NEVER: THE RUNNER DOES NOT HOLD THE SLOT. The holder is killed with SIGKILL
-;; while its runner sleeps on; a runner that had inherited the lock's
-;; descriptor would keep the slot, and the third evaluation would be busy.
+;; NO ATTEMPT AND NO SLEEP PAST THE BUDGET: with --timeout-ms 1 and the one
+;; slot held, the refusal comes after the first attempt and a sleep cut to
+;; what is left, not after a whole 100 ms step. (That a slot freed after the
+;; budget is not taken, and that the wait is on the monotonic clock, are not
+;; observable here: the first needs a release timed inside one step of
+;; another process, the second a step of the machine's clock.)
+(want "L15 K=1, --timeout-ms 1 while the slot is held: eval-busy with waited-ms under one 100 ms step"
+      (let* ((r (fresh-run! "slots-short"))
+             (ready (string-append r ".ready")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (hold-until ready go)
+                    "--lang" "shell" "--timeout-ms" "15000"))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (busy (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo x" "--lang" "shell" "--timeout-ms" "1"))
+             (_ (sh "touch " (quoted go)))
+             (_ (ended-at (car a) 20000))
+             (waited (let ((c (clause-of busy 'waited-ms))) (and c (cadr c)))))
+        (list (and ready-seen #t) (head-of busy) (clause-of busy 'slots) (and (integer? waited) (<= 1 waited 99))))
+      '(#t (error eval-busy) (slots 1) #t))
+
+;; THE REFUSALS THAT NEED NO STORE DO NOT QUEUE: with the one slot held,
+;; cut-and-latest, eval-arguments, lang-and-cut and runners-disabled are
+;; answered as themselves, not as eval-busy.
+(want "L15 K=1, the slot held: the pre-admission refusals answer at once as themselves"
+      (let* ((r (fresh-run! "slots-pre"))
+             (ready (string-append r ".ready")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (hold-until ready go)
+                    "--lang" "shell" "--timeout-ms" "15000"))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (env (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON))
+             (answers (list (ask env SL "(+ 1 2)" "--latest" "--cut" "w:1" "--timeout-ms" "500")
+                            (ask env SL "(+ 1 2)" "--timeout-ms" "0")
+                            (ask env SL "echo x" "--lang" "shell" "--cut" "w:1" "--timeout-ms" "500")
+                            (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 THEOURGIA_RUNNERS=") SL "echo x" "--lang" "shell" "--timeout-ms" "500"))))
+        (sh "touch " (quoted go))
+        (ended-at (car a) 20000)
+        (list (and ready-seen #t)
+              (map (lambda (x) (list (head-of x) (clause-of x 'reason))) answers)))
+      '(#t (((error bad-request) (reason cut-and-latest)) ((error bad-request) (reason eval-arguments))
+            ((error bad-request) (reason lang-and-cut)) ((error runners-disabled) #f))))
+
+;; THE WAIT IS NOT PART OF THE EVALUATION'S DEADLINE: B waits about 2 s for
+;; the slot and then runs a 2.5 s source within a 4 s budget. A deadline that
+;; counted the wait would leave B under 2 s and end it.
+(want "L15 K=1: an evaluation that waited 2 s for the slot still has its whole --timeout-ms to run"
+      (let* ((r (fresh-run! "slots-deadline"))
+             (ready (string-append r ".ready")) (rel (string-append r ".release")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (hold-until ready go)
+                    "--lang" "shell" "--timeout-ms" "15000"))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (b (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON " THEOURGIA_INJECT=on THEOURGIA_HOLD=eval-admission:" rel)
+                    SL "sleep 2.5; echo late" "--lang" "shell" "--timeout-ms" "4000"))
+             (held (within 20000 (lambda () (file-exists? (string-append rel ".held")))))
+             (_ (sh "touch " (quoted rel)))
+             (_ (pause-ms 2000))
+             (_ (sh "touch " (quoted go)))
+             (_ (ended-at (car a) 20000))
+             (_ (ended-at (car b) 20000))
+             (answer (answer-in (cadr b))))
+        (list (and ready-seen held #t) (head-of answer) (has-substring? (format "~s" answer) "late")))
+      '(#t ok #t))
+
+;; NEVER: THE RUNNER DOES NOT HOLD THE SLOT. The holder -- core.sc itself, its
+;; command line read back -- is killed with SIGKILL while its runner sleeps
+;; on, and the runner is seen alive after it; a runner that had inherited the
+;; lock's descriptor would keep the slot, and the third evaluation would be
+;; busy.
 (want "L15 K=1: the holder killed while its runner sleeps frees the slot at once; the runner does not hold it"
       (let* ((r (fresh-run! "slots-kill"))
              (ready (string-append r ".ready"))
              (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 31.5")
                     "--lang" "shell" "--timeout-ms" "60000"))
-             (_ (within 15000 (lambda () (file-exists? ready))))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (target-core (and (car a) (has-substring? (sh-out "ps -o command= -p " (number->string (car a))) "core.sc")))
              (_ (when (car a) (sh "kill -9 " (number->string (car a)))))
-             (_ (ended-at (car a) 5000))
+             (gone (ended-at (car a) 5000))
+             (runner-alive (> (string-length (sh-out "pgrep -f 'sleep 31[.]5'")) 0))
              (third (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo third" "--lang" "shell" "--timeout-ms" "1500")))
-        (sh "pkill -f 'sleep 31.5' 2>/dev/null")
-        (list (head-of third) (has-substring? (format "~s" third) "third")))
-      '(ok #t))
+        (sh "pkill -f 'sleep 31[.]5' 2>/dev/null")
+        (list (and ready-seen #t) target-core (and gone #t) runner-alive
+              (head-of third) (has-substring? (format "~s" third) "third")))
+      '(#t #t #t #t ok #t))
 
 ;; THE POOL'S SIZE UNSET: the online processors, through the one reading and
 ;; its seam. Two holders fill a pool of two, and the third is busy.
 (want "L15 THEOURGIA_EVAL_SLOTS unset, THEOURGIA_EVAL_SLOTS_DEFAULT=2: two evaluations hold the pool and a third is busy with (slots 2)"
       (let* ((r (fresh-run! "slots-default"))
              (env (string-append "env -u THEOURGIA_EVAL_SLOTS THEOURGIA_EVAL_SLOTS_DEFAULT=2 THEOURGIA_RUN=" (quoted r) " " ON))
-             (ra (string-append r ".a")) (rb (string-append r ".b"))
-             (a (bg env SL (string-append "touch " ra "; sleep 4") "--lang" "shell" "--timeout-ms" "15000"))
-             (b (bg env SL (string-append "touch " rb "; sleep 4") "--lang" "shell" "--timeout-ms" "15000"))
-             (_ (within 15000 (lambda () (and (file-exists? ra) (file-exists? rb)))))
+             (ra (string-append r ".a")) (rb (string-append r ".b")) (go (string-append r ".go"))
+             (a (bg env SL (hold-until ra go) "--lang" "shell" "--timeout-ms" "15000"))
+             (b (bg env SL (hold-until rb go) "--lang" "shell" "--timeout-ms" "15000"))
+             (ready-seen (within 15000 (lambda () (and (file-exists? ra) (file-exists? rb)))))
              (third (ask env SL "echo x" "--lang" "shell" "--timeout-ms" "500")))
+        (sh "touch " (quoted go))
         (ended-at (car a) 20000) (ended-at (car b) 20000)
-        (list (head-of third) (clause-of third 'slots)))
-      '((error eval-busy) (slots 2)))
+        (list (and ready-seen #t) (head-of third) (clause-of third 'slots)))
+      '(#t (error eval-busy) (slots 2)))
 
-;; The reading is asked inside a guard: a library without it (the base, a
-;; mutant) makes this row red, not the fixture's end.
-(let ((n-online (guard (e (#t 'NOT-AVAILABLE)) ((eval 'online-processors (environment '(theourgia ffi)))))))
-  (printf "L15 information: the online processors, read by the pool's own reading: ~a\n" n-online)
-  (want "L15 CONTROL: the pool's own reading of the online processors is a positive integer on this machine"
-        (and (integer? n-online) (> n-online 0))
-        #t))
+;; THE READING ITSELF, against the system's own count: getconf's
+;; _NPROCESSORS_ONLN, in this process where the seam is unset. The reading is
+;; asked inside a guard: a library without it (the base, a mutant) makes this
+;; row red, not the fixture's end.
+(let ((n-online (guard (e (#t 'NOT-AVAILABLE)) ((eval 'online-processors (environment '(theourgia ffi))))))
+      (n-getconf (string->number (let ((t (sh-out "getconf _NPROCESSORS_ONLN 2>/dev/null")))
+                                   (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "")))))
+  (printf "L15 information: the online processors, by the pool's reading ~a, by getconf ~a\n" n-online n-getconf)
+  (want "L15 the pool's reading of the online processors, with the seam unset, is getconf's _NPROCESSORS_ONLN"
+        (list (not (getenv "THEOURGIA_EVAL_SLOTS_DEFAULT")) (and (integer? n-online) (> n-online 0) (eqv? n-online n-getconf)))
+        '(#t #t)))
 
-(want "L15 a K that is not a positive integer is refused eval-slots, whatever else the request says"
+;; AN EMPTY SEAM IS AN UNSET ONE, as every other variable's empty value is
+;; (env-or): the pool is the online processors, and the evaluation runs.
+(want "L15 THEOURGIA_EVAL_SLOTS and THEOURGIA_EVAL_SLOTS_DEFAULT both empty: the pool is the online processors and the evaluation answers ok"
+      (let ((r (fresh-run! "slots-empty")))
+        (head-of (ask (slots-env r "THEOURGIA_EVAL_SLOTS= THEOURGIA_EVAL_SLOTS_DEFAULT=") SL "(+ 1 2)")))
+      'ok)
+
+(want "L15 a K that is not a positive integer is refused eval-slots"
       (let ((r (fresh-run! "slots-bad")))
         (list (ask (slots-env r "THEOURGIA_EVAL_SLOTS=0") SL "(+ 1 2)")
               (ask (slots-env r "THEOURGIA_EVAL_SLOTS=two") SL "(+ 1 2)")))
@@ -976,15 +1073,18 @@
 
 ;; THE SLOT FILES ARE MADE WHERE THEY CANNOT BE: an eval-slots directory that
 ;; can be searched and not written, holding no slot. The creation's failure
-;; is the table's unwritable.
+;; is the table's unwritable. The instrument is checked first: a file this
+;; process tries to create there must be refused (a process that bypasses
+;; permissions would make the row say nothing).
 (want "L15 an eval-slots directory that can be searched and not written, and holds no slot, answers unwritable"
       (let* ((r (fresh-run! "slots-unwritable"))
              (d (string-append r "/eval-slots"))
              (_ (sh "mkdir -p " (quoted d) "; chmod 555 " (quoted d)))
+             (denied (not (= 0 (sh "touch " (quoted (string-append d "/probe")) " 2>/dev/null"))))
              (a (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1") SL "(+ 1 2)")))
         (sh "chmod 755 " (quoted d))
-        (head-of a))
-      '(error unwritable))
+        (list denied (head-of a)))
+      '(#t (error unwritable)))
 
 ;; A MARK THAT FAILS is the descriptor's failure, unreadable-entry. (That the
 ;; slot is released before the answer is not observable from outside: the
@@ -1011,7 +1111,7 @@
         "(fd-close-on-exec! marked)\n"
         "(define (probe fd)\n"
         "  (spawn-worker! \"/bin/sh\" (list \"sh\" \"-c\" (string-append \"test -e /dev/fd/\" (number->string fd))) '() self)\n"
-        "  (receive (`(worker-exit ,r ,status ,signal) status)))\n"
+        "  (receive (`(worker-exit ,r ,status ,signal) status) (after 10000 'no-exit)))\n"
         "(start-scheduler\n"
         "  (lambda ()\n"
         "    (let* ((p (probe plain)) (m (probe marked)))\n"

@@ -535,8 +535,9 @@
             ;; THE PRE-ADMISSION REFUSALS COME FIRST, BEFORE ANY LOAD: a
             ;; request refused here does not queue for an evaluation slot,
             ;; and nothing has been read that an answer could carry. They
-            ;; used to be checked after the cut's baseline load and carry
-            ;; what it heard; the admission reordered them.
+            ;; used to be checked after the cut's baseline load, and
+            ;; eval-arguments carried what it heard; the admission reordered
+            ;; them.
             ((and (argument-option nodes "--latest") (argument-option nodes "--cut"))
              (finish (list 'error 'bad-request '(reason cut-and-latest)
                            (list 'usage eval-usage))

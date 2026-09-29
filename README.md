@@ -1531,9 +1531,10 @@ processors -- and holds it until its process ends; a slot is an exclusive
 lock on a file under `<run root>/eval-slots/`, released by the system when
 the holder ends, a killed one included. The descriptor is never inherited by
 the worker or the runner. With no slot free the evaluation waits, trying
-every 100 ms, for up to its own `--timeout-ms`, and then answers
-`(error eval-busy (slots K) (waited-ms n))`; that wait is not part of the
-evaluation's own deadline. A K that is not a positive integer is
+at once and then every 100 ms, for at most its own `--timeout-ms` on the
+monotonic clock -- a slot that comes free after that is not taken -- and
+then answers `(error eval-busy (slots K) (waited-ms n))`; that wait is not
+part of the evaluation's own deadline. A K that is not a positive integer is
 `(error bad-request (reason eval-slots))`. The refusals that need no store --
 `cut-and-latest`, `eval-arguments`, and for `--lang` `lang-and-cut`,
 `lang-and-under`, `no-runner` and `runners-disabled` -- come before the slot,
@@ -1777,7 +1778,7 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
 | `THEOURGIA_EVAL_SLOTS` | `client.sc` | how many evaluations one run root runs at once (the admission pool, `### eval`); a positive integer. Unset or empty, the number of online processors. Anything else answers `(error bad-request (reason eval-slots))` |
-| `THEOURGIA_EVAL_SLOTS_DEFAULT` | `ffi.sc` | a test seam: a positive integer read in place of the online processors when `THEOURGIA_EVAL_SLOTS` is unset, so a row can ask for a pool of a known size on any machine |
+| `THEOURGIA_EVAL_SLOTS_DEFAULT` | `ffi.sc` | a test seam: a positive integer read in place of the online processors when `THEOURGIA_EVAL_SLOTS` is unset or empty, so a row can ask for a pool of a known size on any machine. Empty, it is unset; any other value that is not a positive integer answers `(error bad-request (reason eval-slots))` |
 | `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |

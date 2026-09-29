@@ -32,6 +32,7 @@
           ;; prints as its own spelling, rather than carrying a second
           ;; model of when Chez escapes one.
           (only (chezscheme) getenv guard raise sleep make-time
+                current-time time-second time-nanosecond
                 write call-with-string-output-port
                 read open-string-input-port eof-object? with-exception-handler
                 parameterize char-whitespace? get-process-id
@@ -277,9 +278,21 @@
   ;; -> (values <lock> #f) once a slot is held, or (values #f <refusal>):
   ;; (error bad-request (reason eval-slots)) for a K that is not a positive
   ;; integer, (error eval-busy (slots K) (waited-ms n)) when no slot came
-  ;; free within timeout-ms, retried every 100 ms. The wait is not part of
-  ;; the evaluation's own deadline, which starts at ready. A filesystem
-  ;; condition making the slots raises, for the request's table.
+  ;; free within timeout-ms. The wait is not part of the evaluation's own
+  ;; deadline, which starts at ready. A filesystem condition making the
+  ;; slots raises, for the request's table.
+  ;;
+  ;; NEVER: NO ATTEMPT AFTER THE BUDGET. The slots are tried at once, then
+  ;; every 100 ms, each sleep cut to what is left of timeout-ms, and the
+  ;; budget is checked after every sleep BEFORE the next attempt: a slot
+  ;; that comes free after timeout-ms is not taken, and a refusal waits
+  ;; timeout-ms, not the next whole step. The wait is measured on the
+  ;; monotonic clock, as the MCP shell's watchdog is, so a step of the wall
+  ;; clock neither stretches it nor cuts it short.
+  (define (monotonic-ms)
+    (let ((t (current-time 'time-monotonic)))
+      (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+
   (define (eval-admit! timeout-ms)
     (let ((k (eval-slots-count)))
       (if (not k)
@@ -292,24 +305,31 @@
                 (file-ensure-unrecorded! (slot i))
                 (make (+ i 1))))
             (hold-point! 'eval-admission)
-            (let ((start (wall-clock-ms)))
+            (let ((start (monotonic-ms)))
+              (define (elapsed) (- (monotonic-ms) start))
+              (define (busy waited)
+                (values #f (list 'error 'eval-busy (list 'slots k) (list 'waited-ms waited))))
               (let try ()
                 (let ((held (let scan ((i 0))
                               (and (< i k)
                                    (or (lock-try-acquire! (slot i) 'exclusive)
                                        (scan (+ i 1)))))))
-                  (cond
-                    (held
-                     (guard (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e)))
-                       (parameterize ((theourgia-stage 'admission))
-                         (fd-close-on-exec! (lock-fd held))))
-                     (values held #f))
-                    ((>= (- (wall-clock-ms) start) timeout-ms)
-                     (values #f (list 'error 'eval-busy (list 'slots k)
-                                      (list 'waited-ms (- (wall-clock-ms) start)))))
-                    (else
-                     (sleep (make-time 'time-duration 100000000 0))
-                     (try))))))))))
+                  (if held
+                      (begin
+                        (guard (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e)))
+                          (parameterize ((theourgia-stage 'admission))
+                            (fd-close-on-exec! (lock-fd held))))
+                        (values held #f))
+                      (let ((waited (elapsed)))
+                        (if (>= waited timeout-ms)
+                            (busy waited)
+                            (begin
+                              (sleep (make-time 'time-duration
+                                                (* 1000000 (min 100 (- timeout-ms waited))) 0))
+                              (let ((waited (elapsed)))
+                                (if (>= waited timeout-ms)
+                                    (busy waited)
+                                    (try))))))))))))))
 
   ;; ---- one call: connect, send a frame, read one answer, close -------------
   ;;
