@@ -97,7 +97,8 @@
                  #t)
             (and (member (scheme-version) (cadr (caddr (ffi-definition 'printer-measured-versions)))) #t))
       (list '(define printer-measured-versions
-               '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.1"))
+               '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.0"
+                 "Chez Scheme Version 10.4.1"))
             #t #t))
 (printf "~a failures\ndatum-reader complete\n" bad)
 (exit (if (zero? bad) 0 1))
