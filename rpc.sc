@@ -49,13 +49,11 @@
           (theourgia working) (theourgia baseline) (theourgia code-project) (theourgia code-suggest)
           (theourgia datum-project)
           (only (theourgia datum-code) datum-source-read)
-          (only (theourgia ffi) read-entry entry-type fs-error? with-mutation-record mutation-record)
+          (only (theourgia ffi) read-entry entry-type directory-entries fs-error? with-mutation-record mutation-record)
           (only (theourgia answers) classify-failure)
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
-          (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
-                derived-signature derived-signature-table derived-keyword-table
-                derived-calls-into derived-reach derived-facts* supplied-relations derived-table-named?)
+          (rnrs eval)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -609,56 +607,43 @@
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
 
-  ;; A WRITER'S DIAGNOSTICS, from its own tables judged against its working
-  ;; view, `w` being working-state's answer. Ordered by block and then by
-  ;; start, a diagnostic that does not map to a range of its block first
-  ;; among its block's; two at one start keep the order they were kept in.
-  ;; -> (values ((<payload> <via>) ...) (<stale payload> ...) <tables read>)
-  (define (writer-diagnostics store w)
-    (let-values (((facts stale tables)
-                  (derived-facts* store 'diagnostics (cadr w) (caddr w) (lambda (p) (eq? (car p) 'diagnostic)))))
-      (let ((start (lambda (f) (let ((at (list-ref (car f) 4))) (if (eq? (cadr at) 'unmappable) -1 (cadr at))))))
-        (values (list-sort (lambda (a b)
-                             (let ((ia (cadr (car a))) (ib (cadr (car b))))
-                               (or (string<? ia ib) (and (string=? ia ib) (< (start a) (start b))))))
-                           facts)
-                stale tables))))
+  ;; ---- the facts an editor supplied: loaded on first use -----------------------
+  ;;
+  ;; NEVER: THIS LIBRARY DOES NOT IMPORT (theourgia derived). Every start of
+  ;; the command line compiles what this library's closure holds, and the
+  ;; facts' tables, freshness and answers cost about 23 ms of it from source,
+  ;; measured, for verbs most starts never use. So the library is entered
+  ;; here, on first use, as core.sc enters the actor system (`later`), and a
+  ;; reader enters only when a table file of the kind it reads exists -- a
+  ;; name in <store>/derived/, read without loading anything. A store with
+  ;; no tables answers read, outline, search, refs and drafts as it did
+  ;; before tables existed, and loads nothing for them.
+  (define (derived name) (eval name (environment '(theourgia derived))))
+  (define (derived-tables? store kind)
+    (let ((dir (string-append store "/derived")) (prefix (string-append (symbol->string kind) "-")))
+      (and (eq? (entry-type dir) 'directory)
+           (exists (lambda (n) (and (> (string-length n) (string-length prefix))
+                                    (string=? prefix (substring n 0 (string-length prefix)))))
+                   (directory-entries dir))
+           #t)))
 
   ;; A DRAFT'S DIAGNOSTICS ARE COUNTED IN `drafts` once the writer has a
-  ;; table of them: each draft item gains (diagnostics <n>), the fresh ones
-  ;; on its block, and the answer the stale and via clauses of the facts on
-  ;; the drafted blocks -- the ones this answer consulted. A writer with no
-  ;; such table, or the writer named "-" (whose name is the committed
-  ;; table's), gets the answer it always got.
+  ;; table of them; a writer with no such table, or the writer named "-"
+  ;; (whose name is the committed tables'), gets the answer it always got.
+  ;; NO VIEW IS BUILT FOR A WRITER WITHOUT A TABLE: a drafts answer comes
+  ;; from the state it was given, and building the working view opens the
+  ;; log.
   (define (with-draft-diagnostics store state writer answer)
     (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
                   (eq? (car (cadr answer)) 'items)))
         answer
-        ;; NO VIEW IS BUILT FOR A WRITER WITHOUT A TABLE: a drafts answer
-        ;; comes from the state it was given, and building the working view
-        ;; opens the log. Asking whether a table file exists reads a name.
-        (let ((w (and (string? writer) (derived-table-named? store 'diagnostics writer)
+        (let ((w (and (string? writer) (not (equal? writer "-"))
+                      (derived-tables? store 'diagnostics)
+                      ((derived 'derived-table-named?) store 'diagnostics writer)
                       (working-state store state writer))))
           (if (not (and (pair? w) (eq? 'ok (car w)) (not (equal? (cadr w) "-"))))
               answer
-              (let-values (((facts stale tables) (writer-diagnostics store w)))
-                (if (= tables 0)
-                    answer
-                    (let* ((drafted (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (cdr (cadr answer))))
-                           (block-of (lambda (x) (cadr (assq 'block (cdr x)))))
-                           (on (lambda (id) (filter (lambda (f) (equal? (cadr (car f)) id)) facts)))
-                           (used (apply append (map (lambda (x) (on (block-of x))) drafted)))
-                           (stale-here (filter (lambda (p) (member (cadr p) (map block-of drafted))) stale)))
-                      (append
-                        (list 'ok
-                              (cons 'items
-                                    (map (lambda (x)
-                                           (if (and (pair? x) (eq? (car x) 'draft))
-                                               (append x (list (list 'diagnostics (length (on (block-of x))))))
-                                               x))
-                                         (cdr (cadr answer)))))
-                        (cddr answer)
-                        (derived-clauses tables (map cadr used) (length stale-here))))))))))
+              ((derived 'drafts-with-diagnostics) store w answer)))))
 
   ;; THE WRITER NAMED "-" CANNOT HAVE TABLES OF ITS OWN: "-" names the
   ;; committed state's tables, so its working view would be judged against
@@ -668,7 +653,7 @@
   ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
   ;; committed state's table ("-") against the committed state, or with
   ;; --working the writer's table against the writer's working view.
-  ;; -> (ok (signature "<text>" | absent) [(via ...)] [(stale <n>)])
+  ;; -> (ok (signature "<text>" | absent) [(stale <n>) (via ...)])
   (define (read-signature store state writer id working?)
     (let-values (((table-writer view)
                   (if working?
@@ -677,11 +662,9 @@
                         (when (equal? (cadr w) "-") (raise reserved-writer))
                         (values (cadr w) (caddr w)))
                       (values "-" (reduction-for store state)))))
-      (if (not (state-read view id))
-          (unknown-id view id)
-          (let-values (((text vias stale tables) (derived-signature store table-writer view id)))
-            (append (list 'ok (list 'signature (or text 'absent)))
-                    (derived-clauses tables vias stale))))))
+      (cond ((not (state-read view id)) (unknown-id view id))
+            ((not (derived-tables? store 'signatures)) '(ok (signature absent)))
+            (else ((derived 'signature-answer) store table-writer view id)))))
 
   (define (one-write store actor intent req . check)
     (let ((answers (with-store-write store (lambda (state view) (list intent))
@@ -1150,12 +1133,8 @@
                     (cond
                       ((not (and (pair? w) (eq? 'ok (car w)))) w)
                       ((equal? (cadr w) "-") reserved-writer)
-                      (else
-                       (guarded
-                         (lambda ()
-                           (let-values (((facts stale tables) (writer-diagnostics store w)))
-                             (append (items (map car facts))
-                                     (derived-clauses tables (map cadr facts) (length stale))))))))))))
+                      ((not (derived-tables? store 'diagnostics)) (items '()))
+                      (else (guarded (lambda () ((derived 'diagnostics-answer) store w)))))))))
       (cons 'discard
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
@@ -1197,20 +1176,21 @@
       ;; otherwise -- the view the plugin's export-code projected.
       (cons 'supply
             (lambda (store actor args req options state writer cwd)
-              (if (and (= 2 (length args)) (memq (string->symbol (car args)) derived-kinds))
-                  (let ((kind (string->symbol (car args))) (table-writer (or (argument-option options "--for") "-")))
-                    (guarded
-                      (lambda ()
-                        (if (argument-option options "--clear")
-                            (clear-derived store kind (cadr args) table-writer)
-                            (supply-derived store kind (cadr args) table-writer
-                              (if (equal? table-writer "-")
-                                  (lambda () (reduction-for store state))
-                                  (lambda ()
-                                    (let ((w (working-state store state table-writer)))
-                                      (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
-                                      (caddr w)))))))))
-                  (usage supply-usage))))
+              (if (not (= 2 (length args)))
+                  (usage supply-usage)
+                  (let ((table-writer (or (argument-option options "--for") "-")))
+                    ;; #f from supply-command: the first argument names no kind
+                    (or (guarded
+                          (lambda ()
+                            ((derived 'supply-command) store (car args) (cadr args) table-writer
+                             (if (equal? table-writer "-")
+                                 (lambda () (reduction-for store state))
+                                 (lambda ()
+                                   (let ((w (working-state store state table-writer)))
+                                     (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                                     (caddr w))))
+                             (argument-option options "--clear"))))
+                        (usage supply-usage))))))
       (cons 'def
             (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
@@ -1308,20 +1288,12 @@
                          (with-signatures (argument-option options "--with-signatures")))
                      (guarded (lambda ()
                                 (let ((st (reduction-for store state)))
-                                  (if (not with-signatures)
+                                  (if (not (and with-signatures (derived-tables? store 'signatures)))
                                       (text (outline-text st (and depth (count-argument depth)) with-keywords))
-                                      ;; THE VIA NAMES WHAT WAS PRINTED: the
-                                      ;; lookup notes a provenance only for a
-                                      ;; row the listing drew.
-                                      (let-values (((lookup stale tables) (derived-signature-table store "-" st)))
-                                        (let* ((used '())
-                                               (signature-of
-                                                 (lambda (id)
-                                                   (let ((e (lookup id)))
-                                                     (and e (begin (set! used (cons (cadr e) used)) (car e)))))))
-                                          (let ((listing (outline-text st (and depth (count-argument depth))
-                                                                       with-keywords signature-of)))
-                                            (append (text listing) (derived-clauses tables (reverse used) stale)))))))))))))))
+                                      (let-values (((signature-of finish) ((derived 'outline-signatures) store st)))
+                                        (let ((listing (outline-text st (and depth (count-argument depth))
+                                                                     with-keywords signature-of)))
+                                          (append (text listing) (finish))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections
@@ -1436,17 +1408,17 @@
                             ;; AN EDITOR'S CALLS EDGES INTO THIS BLOCK FOLLOW
                             ;; THE STORE'S OWN ROWS, their via the provenance
                             ;; that supplied them rather than a symbol.
-                            (let-values (((edges stale tables)
-                                          (derived-calls-into store "-" (reduction-for store state) (car args))))
+                            (let-values (((rows clauses)
+                                          (if (derived-tables? store 'calls)
+                                              ((derived 'refs-supplied) store (reduction-for store state) (car args))
+                                              (values '() '()))))
                               (append
                                 (items (map (lambda (r)
                                               (list 'ref (list 'from (car r))
                                                     (list 'rel (cadr r))
                                                     (list 'via (caddr r))))
-                                            (append (cadr a)
-                                                    (map (lambda (e) (list (car e) 'calls (caddr e)))
-                                                         (list-sort (lambda (x y) (string<? (car x) (car y))) edges)))))
-                                (derived-clauses tables (map caddr edges) stale)))
+                                            (append (cadr a) rows)))
+                                clauses))
                             a)))))))
       ;; OVER THE EDGES AN EDITOR SUPPLIED ONLY: an edge a writer linked by
       ;; hand is `refs`' to show, and a relation no supply produces is
@@ -1462,17 +1434,10 @@
                     (guarded
                       (lambda ()
                         (let ((view (reduction-for store state)) (id (car args)))
-                          (cond
-                            ((not (state-read view id)) (unknown-id view id))
-                            ((not (memq (string->symbol (or rel "calls")) supplied-relations))
-                             (list 'error 'unknown-relation (list 'rel (string->symbol rel))))
-                            (else
-                             (let-values (((reached vias stale tables)
-                                           (derived-reach store "-" view id
-                                                          (string->symbol (or rel "calls"))
-                                                          (if depth (count-argument depth) 1))))
-                               (append (list 'ok (list 'reached reached))
-                                       (derived-clauses tables vias stale))))))))))))
+                          (if (not (state-read view id))
+                              (unknown-id view id)
+                              ((derived 'reach-answer) store view id (string->symbol (or rel "calls"))
+                               (if depth (count-argument depth) 1))))))))))
       ;; NEVER: A NAME CAN BE IN A LIBRARY WITHOUT BEING DEFINED THERE, AND
       ;; THE ANSWER SAYS WHICH IT IS. Three of this tree's own libraries
       ;; define nothing -- they re-export what igropyr defines -- so an answer
@@ -1547,7 +1512,11 @@
                                          ;; an editor's keywords, from the
                                          ;; committed store's table, judged
                                          ;; against the state searched
-                                         (lambda (st) (derived-keyword-table store "-" st))))
+                                         ;; asked only when the query has a word,
+                                         ;; as before; #f when no table exists
+                                         (lambda (st)
+                                           (and (derived-tables? store 'signatures)
+                                                ((derived 'derived-keyword-table) store "-" st)))))
                                     (hits (cdr (assq 'items r)))
                                     (omitted (cdr (assq 'omitted-hits r))))
                                (append (items (map (lambda (hit) (cons 'hit hit)) hits))
@@ -1566,7 +1535,7 @@
                                        (scan-clauses r (null? hits))
                                        (let ((tables (assq 'derived-tables r)) (via (assq 'derived-via r))
                                              (stale (assq 'derived-stale r)))
-                                         (if tables (derived-clauses (cdr tables) (cdr via) (cdr stale)) '())))))))))
+                                         (if tables ((derived 'derived-clauses) (cdr tables) (cdr via) (cdr stale)) '())))))))))
       ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
       ;; THING THAT SAYS SO. A grep line and a search hit have the same
       ;; arity and the same types in the same places -- an id, an integer, a

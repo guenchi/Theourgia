@@ -41,11 +41,14 @@
   (export supply-derived clear-derived derived-facts derived-facts* derived-kinds derived-clauses
           derived-signature derived-signature-table derived-keyword-table
           derived-calls-into derived-reach supplied-relations derived-table-named?
-          table-file-name percent-encode read-supply-header)
+          table-file-name percent-encode read-supply-header
+          signature-answer diagnostics-answer drafts-with-diagnostics outline-signatures
+          refs-supplied reach-answer supply-command
+          projection-range path-projection-key)
   (import (rnrs)
-          (only (theourgia reduce) state-read reduce-applied-cut)
-          (only (theourgia code-project) code-field projected-files path-projection-key)
-          (only (theourgia code-markers) projection-encode-map projection-range)
+          (only (theourgia reduce) state-read reduce-applied-cut state-path-claimants)
+          (only (theourgia code-project) code-field projected-files file-projection-key)
+          (only (theourgia code-markers) projection-encode-map)
           (only (theourgia markers) byte-lines byte-slice safe-utf8)
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia ffi) entry-bytes entry-type mkdir-p! file-ensure! with-exclusive-lock
@@ -213,6 +216,88 @@
                (let-values (((bytes pieces) (projection-encode-map entry (list sid id cut) entries)))
                  (list rel id bytes pieces key entries))))
            (projected-files view))))
+
+  ;; ---- where a projected range lies, and a path's key: the consumer's side ----
+  ;;
+  ;; Both are here, not beside the projection they read, because nothing but
+  ;; this library asks them: the exporter writes the map and the key and
+  ;; never reads a range back or looks a key up by path.
+
+  ;; A RANGE OF PROJECTED BYTES, BACK TO ONE BLOCK'S OWN SRC.
+  ;; -> (mapped <id> <src-start> <src-end>) | (unmappable <id>) | (none)
+  ;; for 0 <= s <= e <= the file's length.
+  ;;
+  ;; A nonempty [s, e) maps when s lies in a source piece of a block B and e
+  ;; lies in or at the end of a source piece of B, with only B's pieces
+  ;; between them (the first block's prefix and body are contiguous in its
+  ;; src even though the pad LF, the @file line and its @block line sit
+  ;; between them in the file). Otherwise it is unmappable on the first
+  ;; block s touches: the block whose source s is in, else the block the
+  ;; control at s precedes.
+  ;;
+  ;; An empty [o, o) belongs, in this order, to the block whose source
+  ;; piece ENDS at o (the earliest in file order), to the block whose
+  ;; source piece begins at o, to the block whose source o lies inside, or
+  ;; to the block the control at o precedes, at that piece's src start. A cursor at the end of a block's last line
+  ;; is in that block, not in the next one.
+  ;;
+  ;; An escape "@" belongs to the src position of the byte it was inserted
+  ;; before, so a range holding only that byte is the empty range there.
+  (define (projection-range pieces s e)
+    (define (source? p) (eq? (car p) 'source))
+    (define (id-of p) (cadr p))
+    (define (start-of p) (caddr p))
+    (define (end-of p) (cadddr p))
+    (define (src-start-of p) (list-ref p 4))
+    ;; the src offset of projected offset o, start-of p <= o <= end-of p
+    (define (src-at p o)
+      (+ (src-start-of p) (- o (start-of p))
+         (- (length (filter (lambda (i) (< i o)) (list-ref p 5))))))
+    (define (holding o)
+      (find (lambda (p) (and (<= (start-of p) o) (< o (end-of p)))) pieces))
+    (define (touched p) (id-of p))
+    (cond
+      ((= s e)
+       (let ((ending (find (lambda (p) (and (source? p) (= (end-of p) s))) pieces))
+             (beginning (find (lambda (p) (and (source? p) (= (start-of p) s))) pieces))
+             (inside (holding s)))
+         (cond
+           (ending (list 'mapped (id-of ending) (src-at ending s) (src-at ending s)))
+           (beginning (list 'mapped (id-of beginning) (src-start-of beginning) (src-start-of beginning)))
+           ;; STRICTLY INSIDE A BLOCK'S SOURCE: a cursor in the middle of a
+           ;; line is at that byte of the block's src.
+           ((and inside (source? inside))
+            (list 'mapped (id-of inside) (src-at inside s) (src-at inside s)))
+           ((and inside (id-of inside))
+            (list 'mapped (id-of inside) (list-ref inside 4) (list-ref inside 4)))
+           (else '(none)))))
+      (else
+       (let ((from (holding s)))
+         (cond
+           ((not from) '(none))
+           ((not (source? from)) (if (id-of from) (list 'unmappable (id-of from)) '(none)))
+           (else
+            (let* ((b (id-of from))
+                   ;; e maps into a piece of b when it lies in it or at its end
+                   ;; (an e at the first byte of the control after it)
+                   (to (find (lambda (p) (and (source? p) (equal? (id-of p) b)
+                                              (<= (start-of p) e) (<= e (end-of p))))
+                             pieces))
+                   (between (filter (lambda (p) (and (source? p)
+                                                     (< (start-of p) e) (> (end-of p) s)))
+                                    pieces)))
+              (if (and to (for-all (lambda (p) (equal? (id-of p) b)) between))
+                  (list 'mapped b (src-at from s) (src-at to e))
+                  (list 'unmappable (touched from))))))))))
+
+  ;; THE SAME QUESTION ASKED OF A PATH, which is how a stamp names its file:
+  ;; the one live text file holding it, else no key.
+  (define (path-projection-key state rel)
+    (let ((holders (state-path-claimants state 'file 'text rel)))
+      (cond ((null? holders) '(failure no-holder))
+            ((> (length holders) 1) (list 'failure 'duplicate-path (list 'path rel) (list 'ids holders)))
+            (else (file-projection-key state (car holders))))))
+
 
   ;; ---- the table ------------------------------------------------------------
 
@@ -557,4 +642,100 @@
                          (let ((to (caddr (car (car es)))))
                            (edge (cdr es) (cons to next) (cons (list to (+ d 1)) seen)
                                  (cons (cadr (car es)) vias)))))))))))))
+
+  ;; ---- the answers, entered on demand -----------------------------------------
+  ;;
+  ;; NEVER: THE COMMAND LINE DOES NOT LOAD THIS LIBRARY TO ANSWER A VERB THAT
+  ;; READS NO FACT. (theourgia rpc) reaches every procedure below through
+  ;; one entry, (eval name (environment '(theourgia derived))), and a
+  ;; consumer enters only when a table file of the kind exists, so a store
+  ;; with no tables, and a start that asks nothing of them, pay nothing for
+  ;; them. The answers are built here rather than in the dispatcher for the
+  ;; same reason: code the dispatcher holds is code every start compiles.
+
+  ;; ONE BLOCK'S SIGNATURE, as `read --signature` answers it; the block is
+  ;; known to exist in `view`.
+  (define (signature-answer store table-writer view id)
+    (let-values (((text vias stale tables) (derived-signature store table-writer view id)))
+      (append (list 'ok (list 'signature (or text 'absent)))
+              (derived-clauses tables vias stale))))
+
+  ;; A WRITER'S DIAGNOSTICS, `w` being working-state's answer. Ordered by
+  ;; block and then by start, a diagnostic that does not map to a range of
+  ;; its block first among its block's; two at one start keep the order
+  ;; they were kept in.
+  ;; -> (values ((<payload> <via>) ...) (<stale payload> ...) <tables read>)
+  (define (writer-diagnostics store w)
+    (let-values (((facts stale tables)
+                  (derived-facts* store 'diagnostics (cadr w) (caddr w) (lambda (p) (eq? (car p) 'diagnostic)))))
+      (let ((start (lambda (f) (let ((at (list-ref (car f) 4))) (if (eq? (cadr at) 'unmappable) -1 (cadr at))))))
+        (values (list-sort (lambda (a b)
+                             (let ((ia (cadr (car a))) (ib (cadr (car b))))
+                               (or (string<? ia ib) (and (string=? ia ib) (< (start a) (start b))))))
+                           facts)
+                stale tables))))
+
+  (define (diagnostics-answer store w)
+    (let-values (((facts stale tables) (writer-diagnostics store w)))
+      (append (list 'ok (cons 'items (map car facts)))
+              (derived-clauses tables (map cadr facts) (length stale)))))
+
+  ;; `drafts`' answer with each draft's count: the fresh diagnostics on its
+  ;; block, and the stale and via clauses of the facts on the drafted
+  ;; blocks -- the ones this answer consulted. `answer` is working-list's.
+  (define (drafts-with-diagnostics store w answer)
+    (let-values (((facts stale tables) (writer-diagnostics store w)))
+      (if (= tables 0)
+          answer
+          (let* ((drafted (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (cdr (cadr answer))))
+                 (block-of (lambda (x) (cadr (assq 'block (cdr x)))))
+                 (on (lambda (id) (filter (lambda (f) (equal? (cadr (car f)) id)) facts)))
+                 (used (apply append (map (lambda (x) (on (block-of x))) drafted)))
+                 (stale-here (filter (lambda (p) (member (cadr p) (map block-of drafted))) stale)))
+            (append
+              (list 'ok
+                    (cons 'items
+                          (map (lambda (x)
+                                 (if (and (pair? x) (eq? (car x) 'draft))
+                                     (append x (list (list 'diagnostics (length (on (block-of x))))))
+                                     x))
+                               (cdr (cadr answer)))))
+              (cddr answer)
+              (derived-clauses tables (map cadr used) (length stale-here)))))))
+
+  ;; `outline --with-signatures`: -> (values <id -> "<signature>" | #f> <finish>),
+  ;; `finish` answering the clauses once the listing is drawn -- the via
+  ;; names what was printed, so the lookup notes a provenance only for a
+  ;; row the listing drew.
+  (define (outline-signatures store view)
+    (let-values (((lookup stale tables) (derived-signature-table store "-" view)))
+      (let ((used '()))
+        (values (lambda (id)
+                  (let ((e (lookup id)))
+                    (and e (begin (set! used (cons (cadr e) used)) (car e)))))
+                (lambda () (derived-clauses tables (reverse used) stale))))))
+
+  ;; `refs`: the calls an editor supplied into this block.
+  ;; -> (values ((<from> calls <via>) ...) <clauses>)
+  (define (refs-supplied store view id)
+    (let-values (((edges stale tables) (derived-calls-into store "-" view id)))
+      (values (map (lambda (e) (list (car e) 'calls (caddr e)))
+                   (list-sort (lambda (x y) (string<? (car x) (car y))) edges))
+              (derived-clauses tables (map caddr edges) stale))))
+
+  ;; `reach`, whole; the block is known to exist in `view`.
+  (define (reach-answer store view id rel depth)
+    (if (not (memq rel supplied-relations))
+        (list 'error 'unknown-relation (list 'rel rel))
+        (let-values (((reached vias stale tables) (derived-reach store "-" view id rel depth)))
+          (append (list 'ok (list 'reached reached))
+                  (derived-clauses tables vias stale)))))
+
+  ;; `supply` and `supply --clear`, whole: `kind-name` as the command line
+  ;; gave it; #f when it names no kind, for the dispatcher's usage form.
+  (define (supply-command store kind-name path table-writer view clear?)
+    (let ((kind (string->symbol kind-name)))
+      (cond ((not (memq kind derived-kinds)) #f)
+            (clear? (clear-derived store kind path table-writer))
+            (else (supply-derived store kind path table-writer view)))))
 )

@@ -1,5 +1,6 @@
 #!r6rs
-(import (chezscheme) (theourgia code-markers) (theourgia text-code) (theourgia languages))
+(import (chezscheme) (theourgia code-markers) (theourgia text-code) (theourgia languages)
+        (only (theourgia derived) projection-range))
 (define bad 0)
 (define (want name got expected)
   (if (equal? got expected) (printf "ok ~a\n" name)

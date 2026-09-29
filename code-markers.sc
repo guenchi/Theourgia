@@ -13,7 +13,7 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia code-markers)
-  (export projection-encode projection-encode-map projection-range projection-wrapping
+  (export projection-encode projection-encode-map projection-wrapping
           projection-decode marker-line projection-failure projection-header-wrapper?
           projection-control projection-header-line)
   ;; The marker grammar moved to (theourgia markers), which
@@ -150,73 +150,6 @@
   ;; property of a language entry the projected bytes depend on: the marker
   ;; lines and the escape family are both read through it.
   (define (projection-wrapping entry) (wrapping entry))
-
-  ;; A RANGE OF PROJECTED BYTES, BACK TO ONE BLOCK'S OWN SRC.
-  ;; -> (mapped <id> <src-start> <src-end>) | (unmappable <id>) | (none)
-  ;; for 0 <= s <= e <= the file's length.
-  ;;
-  ;; A nonempty [s, e) maps when s lies in a source piece of a block B and e
-  ;; lies in or at the end of a source piece of B, with only B's pieces
-  ;; between them (the first block's prefix and body are contiguous in its
-  ;; src even though the pad LF, the @file line and its @block line sit
-  ;; between them in the file). Otherwise it is unmappable on the first
-  ;; block s touches: the block whose source s is in, else the block the
-  ;; control at s precedes.
-  ;;
-  ;; An empty [o, o) belongs, in this order, to the block whose source
-  ;; piece ENDS at o (the earliest in file order), to the block whose
-  ;; source piece begins at o, to the block whose source o lies inside, or
-  ;; to the block the control at o precedes, at that piece's src start. A cursor at the end of a block's last line
-  ;; is in that block, not in the next one.
-  ;;
-  ;; An escape "@" belongs to the src position of the byte it was inserted
-  ;; before, so a range holding only that byte is the empty range there.
-  (define (projection-range pieces s e)
-    (define (source? p) (eq? (car p) 'source))
-    (define (id-of p) (cadr p))
-    (define (start-of p) (caddr p))
-    (define (end-of p) (cadddr p))
-    (define (src-start-of p) (list-ref p 4))
-    ;; the src offset of projected offset o, start-of p <= o <= end-of p
-    (define (src-at p o)
-      (+ (src-start-of p) (- o (start-of p))
-         (- (length (filter (lambda (i) (< i o)) (list-ref p 5))))))
-    (define (holding o)
-      (find (lambda (p) (and (<= (start-of p) o) (< o (end-of p)))) pieces))
-    (define (touched p) (id-of p))
-    (cond
-      ((= s e)
-       (let ((ending (find (lambda (p) (and (source? p) (= (end-of p) s))) pieces))
-             (beginning (find (lambda (p) (and (source? p) (= (start-of p) s))) pieces))
-             (inside (holding s)))
-         (cond
-           (ending (list 'mapped (id-of ending) (src-at ending s) (src-at ending s)))
-           (beginning (list 'mapped (id-of beginning) (src-start-of beginning) (src-start-of beginning)))
-           ;; STRICTLY INSIDE A BLOCK'S SOURCE: a cursor in the middle of a
-           ;; line is at that byte of the block's src.
-           ((and inside (source? inside))
-            (list 'mapped (id-of inside) (src-at inside s) (src-at inside s)))
-           ((and inside (id-of inside))
-            (list 'mapped (id-of inside) (list-ref inside 4) (list-ref inside 4)))
-           (else '(none)))))
-      (else
-       (let ((from (holding s)))
-         (cond
-           ((not from) '(none))
-           ((not (source? from)) (if (id-of from) (list 'unmappable (id-of from)) '(none)))
-           (else
-            (let* ((b (id-of from))
-                   ;; e maps into a piece of b when it lies in it or at its end
-                   ;; (an e at the first byte of the control after it)
-                   (to (find (lambda (p) (and (source? p) (equal? (id-of p) b)
-                                              (<= (start-of p) e) (<= e (end-of p))))
-                             pieces))
-                   (between (filter (lambda (p) (and (source? p)
-                                                     (< (start-of p) e) (> (end-of p) s)))
-                                    pieces)))
-              (if (and to (for-all (lambda (p) (equal? (id-of p) b)) between))
-                  (list 'mapped b (src-at from s) (src-at to e))
-                  (list 'unmappable (touched from))))))))))
 
   (define (projection-decode entry bytes)
     (let* ((rows (byte-lines bytes))

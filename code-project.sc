@@ -15,7 +15,7 @@
 (library (theourgia code-project)
   (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
           code-input-files code-safe-path? code-parent-directory duplicate-path-failure
-          file-projection-key path-projection-key projected-files)
+          file-projection-key projected-files)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
@@ -252,14 +252,6 @@
                (let ((w (projection-wrapping (language-for-name (code-field state id 'lang)))))
                  (list 'key (bytevector->hex (sha256 (string->utf8 (sexpr->string-extended
                                                 (storable-encode (list 'file-projection (car w) (cdr w) children))))))))))))))
-
-  ;; THE SAME QUESTION ASKED OF A PATH, which is how a stamp names its file:
-  ;; the one live text file holding it, else no key.
-  (define (path-projection-key state rel)
-    (let ((holders (state-path-claimants state 'file 'text rel)))
-      (cond ((null? holders) '(failure no-holder))
-            ((> (length holders) 1) (list 'failure 'duplicate-path (list 'path rel) (list 'ids holders)))
-            (else (file-projection-key state (car holders))))))
 
   ;; A key's failure, answered the way the exporter has always answered it.
   (define (key-failure state k)

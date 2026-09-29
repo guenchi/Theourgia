@@ -1244,6 +1244,37 @@
         (list (has (ask rf 'refs rf-beta) rf-alpha 'calls) (has (ask rf 'refs rf-alpha) rf-beta 'uses)))
       '(#t #t))
 
+;; ==== the command line loads the facts' library only when it needs it ====
+;; A process of its own: on a store with no table, read (with --signature),
+;; outline (with --with-signatures), search, refs and drafts answer without
+;; loading (theourgia derived); a supply loads it. The library list of the
+;; process says which.
+(define (probe-load-text st)
+  (string-append
+    "(import (chezscheme) (theourgia rpc))\n"
+    "(define st " (format "~s" st) ")\n"
+    "(define (ask . a) (rpc-dispatch st a \"t\"))\n"
+    "(define (loaded?) (and (member '(theourgia derived) (library-list)) #t))\n"
+    "(ask 'init)\n"
+    "(define ev (cdr (assq 'events (cdr (ask 'insert \"--under\" \"root\" \"--title\" \"x\" \"--text\" \"a word\")))))\n"
+    "(define id (string-append (car (car (car ev))) \".\" (number->string (cdr (car (car ev))))))\n"
+    "(ask 'read id \"--signature\") (ask 'outline \"--with-signatures\") (ask 'search \"word\")\n"
+    "(ask 'refs id) (ask 'drafts \"--writer\" \"w1\")\n"
+    "(define before (loaded?))\n"
+    "(ask 'supply \"signatures\" \"/nonexistent/supply.sexp\")\n"
+    "(write (list before (loaded?)))\n"))
+(want "startup: with no table, read --signature, outline --with-signatures, search, refs and drafts load no (theourgia derived); a supply does"
+      (let* ((d (fresh-dir! "load")) (f (string-append d "/probe.ss")) (out (string-append d "/out.txt")))
+        (write! f (probe-load-text (string-append d "/store")))
+        (system (string-append "CHEZSCHEMELIBDIRS=" libs " CHEZSCHEMELIBEXTS='" exts "' scheme --script '" f "' > '" out
+                               "' 2>&1 < /dev/null"))
+        (let ((t (or (text-of out) "")))
+          (guard (e (#t (list 'UNREADABLE t)))
+            (let ((p (open-string-input-port t)))
+              (let loop ((last #f))
+                (let ((x (read p))) (if (eof-object? x) last (loop x))))))))
+      '(#f #t))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsupply complete\n" bad rows)
 (exit (if (= bad 0) 0 1))
