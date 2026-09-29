@@ -37,7 +37,7 @@
 ;;; change the answer.
 
 (library (theourgia eval-runner)
-  (export run-foreign-eval)
+  (export run-foreign-eval runner-refusal)
   (import (chezscheme)
           (only (theourgia client) run-root next-attempt-token)
           (only (theourgia ffi) mkdir-p! mkdir-exclusive! real-path overwrite-entry! unlink! rmdir! directory-entries
@@ -180,9 +180,15 @@
       (list (string-append "CHEZSCHEMELIBDIRS=" (launcher-library-directories))
             (string-append "CHEZSCHEMELIBEXTS=" (launcher-library-extensions)))))
 
-  ;; "{file}" is the source's absolute path, "{dir}" the projection's.
+  ;; "{file}" is the source's absolute path, "{dir}" the projection's, and
+  ;; "{libdirs}" the launcher's own library path, each as a whole argument.
   (define (expand-argv argv file dir)
-    (map (lambda (a) (cond ((string=? a "{file}") file) ((string=? a "{dir}") dir) (else a))) argv))
+    (map (lambda (a)
+           (cond ((string=? a "{file}") file)
+                 ((string=? a "{dir}") dir)
+                 ((string=? a "{libdirs}") (launcher-library-directories))
+                 (else a)))
+         argv))
 
   ;; THE RUNNER'S ENVIRONMENT PAIRS, as "NAME=VALUE". In a value "{file}",
   ;; "{dir}" and "{libdirs}" -- the launcher's own library path, as written
@@ -279,6 +285,14 @@
                      (values r #f)
                      (values #f (runner-config-invalid
                                   (list 'field (runner-problem r '(argv source-name)))))))))))))
+
+  ;; THE REFUSAL THE OPERATOR'S CONFIGURATION FORCES, or #f: core.sc asks it
+  ;; before the evaluation takes an admission slot, so a runner that cannot
+  ;; be resolved is answered as itself -- never as eval-busy behind a full
+  ;; pool -- and makes nothing, the admission directory included.
+  ;; run-foreign-eval resolves again from the same environment.
+  (define (runner-refusal lang)
+    (let-values (((runner refusal) (resolved-runner lang))) refusal))
 
   ;; NEVER: A PROJECTION DIRECTORY THE RUNNER'S LIBRARY PATH CANNOT CARRY IS
   ;; REFUSED, NOT BENT. A runner whose CHEZSCHEMELIBDIRS names "{dir}" gets

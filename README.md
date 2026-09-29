@@ -1865,9 +1865,9 @@ the one answer a runner could also produce itself.
 A runner is an `argv`, a `source-name` and, optionally, an `env`: a list of
 `(<name> <value>)` pairs added to the interpreter's environment after it is
 cleared to `PATH`, `HOME` and `LANG` (those three cannot be named). In
-`argv`, `{file}` and `{dir}` are replaced only as whole arguments; in an
-`env` value, `{file}`, `{dir}` and `{libdirs}` -- the launcher's own library
-path, as written for it -- are replaced wherever they occur, since a value
+`argv`, `{file}`, `{dir}` and `{libdirs}` -- the launcher's own library
+path, as written for it -- are replaced only as whole arguments; in an
+`env` value the same three are replaced wherever they occur, since a value
 is a path list. No string of a runner may hold a NUL character, and the
 interpreter's name may not be empty.
 
@@ -1900,7 +1900,9 @@ alone. An empty value is unset. A value that is not exactly one datum, or
 that a runner's checks refuse, answers `(error bad-request (reason
 runner-config-invalid) (variable "THEOURGIA_RUNNER_CHEZ") (detail ...))`,
 naming the field (`(detail (field argv))`) or `(detail not-one-datum)`, and
-nothing runs: a default never runs in place of what the operator named. An
+nothing runs: a default never runs in place of what the operator named. It
+is answered before the evaluation takes an admission slot, so a full pool
+does not hide it behind `eval-busy`. An
 interpreter:
 
     THEOURGIA_RUNNER_CHEZ='((argv ("petite" "--script" "{file}")))'

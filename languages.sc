@@ -27,8 +27,9 @@
   ;; HOW `eval --lang` RUNS A SOURCE IN THIS LANGUAGE, or #f: an alist of
   ;; (argv <strings>), (source-name <one path component>) and, optionally,
   ;; (env ((<name> <value>) ...)). argv is a list, never a shell string;
-  ;; "{file}" in it stands for the source's absolute path and "{dir}" for
-  ;; the projection directory, each as a whole argument. env's pairs are
+  ;; "{file}" in it stands for the source's absolute path, "{dir}" for the
+  ;; projection directory and "{libdirs}" for the launcher's own library
+  ;; path, each as a whole argument. env's pairs are
   ;; added to the interpreter's environment after it is cleared to PATH,
   ;; HOME and LANG, so none of those three can be named; in a value
   ;; "{file}", "{dir}" and "{libdirs}" (the launcher's own library path) are
