@@ -57,6 +57,7 @@ jobs:
             pkg update -f
             pkg install -y chez-scheme libuv perl5 python3 git node bash
             pw useradd tester -m -s /bin/sh
+            mount -t fdescfs fdesc /dev/fd
           run: |
             set -x
             freebsd-version; uname -a; sysctl hw.ncpu hw.physmem
