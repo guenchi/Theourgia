@@ -48,7 +48,8 @@
           (only (theourgia working) working-state)
           (only (theourgia reduce) reduce-applied-cut)
           (only (theourgia code-project) export-code-view)
-          (only (theourgia languages) language-for-name language-runner)
+          (only (theourgia languages) language-for-name language-runner runner-valid? override-valid?
+                runner-problem runner-with-override)
           (only (theourgia eval-supervise) supervise-eval))
 
   ;; A PATH MADE ABSOLUTE against this process's current directory: the
@@ -225,6 +226,78 @@
       (parameterize ((theourgia-stage 'eval-cleanup))
         (remove-tree! dir))))
 
+  ;; ---- the operator's runner for chez -------------------------------------
+  ;;
+  ;; NEVER: WHAT RUNS IS WHAT THE OPERATOR NAMED, AND THE STORE NAMES
+  ;; NOTHING. The runner is the language table's, or for `chez` the table's
+  ;; with THEOURGIA_RUNNER_CHEZ in place of the fields it names; that
+  ;; variable is read from this process's environment, never from a block,
+  ;; a language entry in the store, or a projected file. The store is data
+  ;; that may come from anyone. After exec, a projected library the source
+  ;; imports runs with the runner's reach: that is what the runner is for
+  ;; (README).
+  ;;
+  ;; KEY: ONE DATUM, ((argv (...)) (source-name "...") (env (...))), any
+  ;; non-empty set of the three, each held to the table's own check. A field
+  ;; it names replaces the table's whole (env included). EMPTY IS UNSET, as
+  ;; env-or reads every THEOURGIA_ variable; the name is written here as a
+  ;; literal so the documentation's scanner finds it.
+  ;;
+  ;; NEVER: A VALUE THAT DOES NOT READ, OR THAT THE CHECKS REFUSE, IS
+  ;; REFUSED BY NAME, never replaced by the table's default: the operator's
+  ;; line is the whole truth, and a runner they did not name must not run in
+  ;; its place. The merged runner is checked again, so a merge can never
+  ;; produce a runner the table would refuse.
+  (define (chez-runner-text)
+    (let ((v (getenv "THEOURGIA_RUNNER_CHEZ")))
+      (and v (> (string-length v) 0) v)))
+
+  (define (runner-config-invalid detail)
+    (list 'error 'bad-request '(reason runner-config-invalid)
+          '(variable "THEOURGIA_RUNNER_CHEZ") (list 'detail detail)))
+
+  ;; -> (list <datum>) when `text` is exactly one datum, else #f.
+  (define (one-datum text)
+    (guard (e (#t #f))
+      (let* ((p (open-string-input-port text)) (d (read p)))
+        (and (not (eof-object? d)) (eof-object? (read p)) (list d)))))
+
+  ;; -> (values <runner> #f), or (values #f <refusal>).
+  (define (resolved-runner lang)
+    (let ((table (language-runner (language-for-name lang)))
+          (text (and (string=? lang "chez") (chez-runner-text))))
+      (if (not text)
+          (values table #f)
+          (let ((d (one-datum text)))
+            (cond
+              ((not d) (values #f (runner-config-invalid 'not-one-datum)))
+              ((not (override-valid? (car d)))
+               (values #f (runner-config-invalid (list 'field (or (runner-problem (car d) '()) 'runner)))))
+              (else
+               (let ((r (runner-with-override table (car d))))
+                 (if (runner-valid? r)
+                     (values r #f)
+                     (values #f (runner-config-invalid
+                                  (list 'field (runner-problem r '(argv source-name)))))))))))))
+
+  ;; NEVER: A PROJECTION DIRECTORY THE RUNNER'S LIBRARY PATH CANNOT CARRY IS
+  ;; REFUSED, NOT BENT. A runner whose CHEZSCHEMELIBDIRS names "{dir}" gets
+  ;; the resolved tree/ inside that variable, which Chez splits at ":"; a
+  ;; tree/ whose text does not read back as itself would put another
+  ;; directory, or a relative one, on the interpreter's path. It is decided
+  ;; by the same read-back as the launcher's own pairs, on the path as
+  ;; claimed, before anything is exported; the claimed directory is removed
+  ;; on the way out as always.
+  (define (has-text? s t)
+    (let ((n (string-length s)) (k (string-length t)))
+      (let loop ((i 0))
+        (and (<= (+ i k) n) (or (string=? (substring s i (+ i k)) t) (loop (+ i 1)))))))
+
+  (define (projection-directory-refusal env tree)
+    (and (exists (lambda (p) (and (string=? (car p) "CHEZSCHEMELIBDIRS") (has-text? (cadr p) "{dir}"))) env)
+         (unrepresentable-name library-directories (list (cons tree tree)))
+         (list 'error 'spawn-refused '(reason projection-directory-unrepresentable) (list 'directory tree))))
+
   ;; The value under k in an options alist, #f when it is absent.
   (define (option-of options k)
     (let ((e (assq k options))) (and e (cdr e))))
@@ -241,14 +314,15 @@
   ;; the scratch space it made and removed. The working view is therefore
   ;; taken OUTSIDE that scope.
   (define (run-foreign-eval key lang source options)
-    (let ((refusal (launcher-library-refusal)))
-      (if refusal
-          refusal
-          (let ((working (and (option-of options 'working?) (working-state key #f (option-of options 'writer)))))
-            (if (and working (not (and (pair? working) (eq? 'ok (car working)))))
-                (append working '((during view)))
-                (with-mutation-record
-                  (lambda () (in-scratch key lang source options working))))))))
+    (let-values (((runner config-refusal) (resolved-runner lang)))
+      (let ((refusal (or config-refusal (launcher-library-refusal))))
+        (if refusal
+            refusal
+            (let ((working (and (option-of options 'working?) (working-state key #f (option-of options 'writer)))))
+              (if (and working (not (and (pair? working) (eq? 'ok (car working)))))
+                  (append working '((during view)))
+                  (with-mutation-record
+                    (lambda () (in-scratch key lang runner source options working)))))))))
 
   ;; NEVER: CLEANUP REMOVES ONLY WHAT THIS EVALUATION MADE. The token is the
   ;; process id and a counter, so its name can repeat after the id is
@@ -270,9 +344,8 @@
   ;; to that directory's parent, and is inside the runner's reach (README).
   (define scratch-tries 8)
 
-  (define (in-scratch key lang source options working)
-    (let* ((runner (language-runner (language-for-name lang)))
-           (argv (cadr (assq 'argv runner)))
+  (define (in-scratch key lang runner source options working)
+    (let* ((argv (cadr (assq 'argv runner)))
            (env (let ((e (assq 'env runner))) (if e (cadr e) '())))
            (source-name (cadr (assq 'source-name runner)))
            (given-root (absolute (run-root))))
@@ -292,9 +365,11 @@
                       (dynamic-wind
                         (lambda () #f)
                         (lambda ()
-                          (mkdir-p! tree)
-                          (mkdir-p! source-dir)
-                          (project-and-run key lang source options working argv env tree file))
+                          (or (projection-directory-refusal env tree)
+                              (begin
+                                (mkdir-p! tree)
+                                (mkdir-p! source-dir)
+                                (project-and-run key lang source options working argv env tree file))))
                         (lambda () (cleanup! dir)))))))))))
 
   ;; THE VIEW THE EXPORT READS, and the cut it used: the writer's working

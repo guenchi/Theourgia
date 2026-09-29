@@ -272,7 +272,36 @@
                (escaped-character "\\") (nested-block-comment #f)
                (uncertain-tokens ()) (fallback "whole-file-with-warning")
                (prefix-lines ())))
-           (name-vectors ("# Alpha" "## Beta" "### Gamma"))))))
+           (name-vectors ("# Alpha" "## Beta" "### Gamma")))
+         ;; A RUNNER FOR SCHEME SOURCE OUTSIDE THE SANDBOX, over the projection,
+         ;; with the libraries the store holds on its path. It claims no file
+         ;; extension -- files are Scheme's, and `--lang scheme` stays the
+         ;; sandbox -- and it is placed after `scheme`, so a lookup that takes
+         ;; the first entry whose comment syntax matches still finds `scheme`.
+         ;; Its libraries are searched in the projection first, then where the
+         ;; calling process found its own; its extensions put `.sc` first, as
+         ;; the repositories it will hold spell their libraries. An operator
+         ;; replaces any of its fields with THEOURGIA_RUNNER_CHEZ
+         ;; (eval-runner.sc).
+         ((comment-prefixes (";")) (lang "chez") (extensions ()) (line-comment ";;")
+           (block-comment ("#|" "|#"))
+           (runner ((argv ("scheme" "--script" "{file}")) (source-name "__eval.ss")
+                    (env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")
+                          ("CHEZSCHEMELIBEXTS" ".sc:.ss:.sls:.scm")))))
+           (def-heads
+             ("^\\(define\\s+\\(([^\\s()\\[\\]\";]+)"
+               "^\\(define\\s+([^\\s()\\[\\]\";]+)"
+               "^\\(define-syntax\\s+([^\\s()\\[\\]\";]+)"))
+           (name-capture 1)
+           (suggest-only
+             ((multiline-quotes ("\"")) (top-level "paren") (pairs ("()" "[]" "{}"))
+               (quote-delimiters ("\"")) (escaped-character "\\")
+               (nested-block-comment #t) (uncertain-tokens ("#;" "#\\"))
+               (fallback "whole-file-with-warning") (prefix-lines ())))
+           (name-vectors
+             ("(define (f x) x)"
+               "(define x 1)"
+               "(define-syntax m (syntax-rules () ((_ x) x)))"))))))
   (define (language-table) (vector-ref catalog 0))
 
   (define (language-for-name name)
