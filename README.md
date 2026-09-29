@@ -18,6 +18,17 @@ store made with `theourgia init`. One store is one machine's: the core
 serves it through one daemon, and two machines writing one store is not
 this design.
 
+**Versions.** The core must be at least commit 9f806bb of the theourgia
+repository (the `read --wire` version clause that move and rename check);
+on an older core those two commands are refused by name. VS Code 1.138 is
+what the suites run on, and the extension claims nothing older.
+
+**Platforms.** 0.1.0 is packaged for macOS on Apple Silicon only: the
+extension's save queue takes a file lock through a small native module,
+built for the machine that packages the extension, and this first package
+was built here. Packages for Linux, Windows and Intel macOS follow when
+they are built on those platforms.
+
 The extension's source is the `vscode` branch of https://github.com/guenchi/Theourgia.
 
 ## What this batch does
