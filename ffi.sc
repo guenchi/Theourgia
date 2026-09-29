@@ -891,7 +891,6 @@
 
   ;; ---- processes ----------------------------------------------------------
 
-  (define ESRCH (platform-number 'ESRCH))
   (define EPERM (platform-number 'EPERM))
 
   ;; A NEW SESSION, SO THE GUARDIAN CAN SIGNAL THE WHOLE GROUP LATER.
@@ -1122,10 +1121,6 @@
   ;; is how the first attempt was justified, and a reviewer reported the
   ;; overwrite twice against that reasoning; moving them out of the way
   ;; first removes the question instead of answering it.
-  ;;
-  ;; NOTE: `F_DUPFD` gives the lowest free descriptor AT OR ABOVE the number
-  ;; asked for, which is exactly "somewhere that is not 0, 1 or 2".
-  (define F_DUPFD (platform-number 'F_DUPFD))
 
   ;; NEVER: THE DESCRIPTOR HANDED IN IS THIS PROCEDURE'S TO ACCOUNT FOR. On
   ;; the success path it is closed after being duplicated higher up; when
@@ -2958,11 +2953,11 @@
   ;; flag is a caller's slip and addition turns it into a DIFFERENT flag:
   ;; on the BSD rows O_APPEND twice is 16, which is O_SHLOCK there, so
   ;; '(write append append) would have opened a shared-locked descriptor
-  ;; positioned at byte zero and overwritten the log; on the Linux rows
-  ;; it is 2048, O_NONBLOCK. Enough repeats reach O_CREAT, and O_CREAT is
-  ;; the one flag this declaration of open(2) cannot survive -- it would
-  ;; make the kernel read a mode that was never passed. Or is
-  ;; idempotent, so none of that is reachable.
+  ;; positioned at byte zero and overwritten the log, and enough repeats
+  ;; reach O_CREAT, the one flag this declaration of open(2) cannot
+  ;; survive -- it would make the kernel read a mode that was never
+  ;; passed. On the Linux rows it is 2048, O_NONBLOCK. Or is idempotent,
+  ;; so none of that is reachable.
   ;;
   ;; Flags are symbols rather than a number so that a caller cannot pass
   ;; a numeric constant that means something else on the other platform.
