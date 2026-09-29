@@ -1180,6 +1180,351 @@
         (list (at 4) (at 5))
         '(0 1)))
 
+;; ---- C: --lang chez, a Scheme runner over the projection ---------------------------
+;; A store holding the library (lib a) at lib/a.sc, imported by import-code.
+;; On the base every chez row meets no-runner first: that is its red there,
+;; and the property each row also asserts is for the mutants.
+(define LIB-A "(library (lib a) (export f) (import (rnrs)) (define (f) 42))\n")
+(define SC (make-store! "chez1" (list (cons "lib/a.sc" LIB-A))))
+(define (stdout-of a) (let ((c (clause-of a 'stdout))) (if c (cadr c) "")))
+(define (stderr-of a) (let ((c (clause-of a 'stderr))) (if c (cadr c) "")))
+(define (chez-var text) (string-append "THEOURGIA_RUNNER_CHEZ=" (quoted text)))
+(define (with-var text) (string-append ON " " (chez-var text)))
+;; What a whitespace run is, in README: any run of spaces and newlines is one space.
+(define (squash text)
+  (let loop ((cs (string->list text)) (space? #f) (acc '()))
+    (cond ((null? cs) (list->string (reverse acc)))
+          ((memv (car cs) '(#\space #\newline #\tab))
+           (loop (cdr cs) #t acc))
+          (else (loop (cdr cs) #f (cons (car cs) (if (and space? (pair? acc)) (cons #\space acc) acc)))))))
+(define (pwd-p dir) (let ((s (sh-out "cd " (quoted dir) " && pwd -P"))) (substring s 0 (max 0 (- (string-length s) 1)))))
+
+(let ((a (ask ON SC "(import (lib a)) (display (f))" "--lang" "chez")))
+  (want "C1 chez: a library the store holds as lib/a.sc is imported by the source; ok, (exit 0), stdout 42, (lang chez)"
+        (list (head-of a) (clause-of a 'exit) (stdout-of a) (clause-of a 'lang))
+        (list 'ok '(exit 0) "42" '(lang chez))))
+;; THE PARENT'S LIBRARIES ARE ON THE PATH TOO: the interpreter's cwd is tree/,
+;; and Chez searches "." by default, so a projected library alone would be
+;; found by a runner that dropped the directories pair. (theourgia crc32) is
+;; the calling process's and not the projection's.
+(let ((a (ask ON SC "(import (theourgia crc32)) (display 1)" "--lang" "chez")))
+  (want "C1b chez: a library only the calling process's directories hold is found through {libdirs}"
+        (list (head-of a) (clause-of a 'exit) (stdout-of a))
+        (list 'ok '(exit 0) "1")))
+(define SC-SHADOW
+  (make-store! "chez2" (list (cons "theourgia/crc32.sc"
+                                   "(library (theourgia crc32) (export probe) (import (chezscheme)) (define probe \"projected\"))\n"))))
+(let ((a (ask ON SC-SHADOW "(import (theourgia crc32)) (display probe)" "--lang" "chez")))
+  (want "C1c chez: a library of the same name in the projection and in the calling process's directories: the projection's is found first"
+        (list (head-of a) (clause-of a 'exit) (stdout-of a))
+        (list 'ok '(exit 0) "projected")))
+(let ((a (ask ON SC "(begin (import (lib a)) (f))" "--lang" "scheme")))
+  (want "C2 --lang scheme is the sandbox, unchanged: the same import answers the fixed eval-exception"
+        (list (head-of a) (clause-of a 'kind) (clause-of a 'message))
+        (list '(error eval-exception) '(kind raised) '(message "Evaluation raised an exception"))))
+(let ((a (ask (string-append ON " THEOURGIA_RUNNER_CHEZ=") SC "(import (lib a)) (display (f))" "--lang" "chez")))
+  (want "C4b an empty THEOURGIA_RUNNER_CHEZ is unset: the table's runner runs"
+        (list (head-of a) (stdout-of a))
+        (list 'ok "42")))
+
+;; A RECORDING INTERPRETER: a shell script that writes its argv, its
+;; environment, the source's basename and the source's contents to files
+;; outside the run root, then exits 0.
+(define recorders 0)
+(define (make-recorder!)
+  (set! recorders (+ recorders 1))
+  (let* ((base (string-append outside "/rec-" (number->string recorders)))
+         (script (string-append base ".sh")))
+    (put! script
+          (string-append
+            "#!/bin/sh\n"
+            "{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; } > " (quoted (string-append base ".argv")) "\n"
+            "env > " (quoted (string-append base ".env")) "\n"
+            "pwd -P > " (quoted (string-append base ".pwd")) "\n"
+            "basename \"$1\" > " (quoted (string-append base ".base")) "\n"
+            "cat \"$1\" > " (quoted (string-append base ".src")) "\n"))
+    (sh "chmod 755 " (quoted script))
+    base))
+(define (rec-script base) (string-append base ".sh"))
+(define (rec-lines base ext)
+  (let ((t (text-of-file (string-append base ext))))
+    (if (string=? t "") '() (let ((ls (lines-of t))) (if (and (pair? ls) (string=? (car (last-pair ls)) "")) (reverse (cdr (reverse ls))) ls)))))
+(define (rec-ran? base) (file-exists? (string-append base ".argv")))
+(define (rec-env base)
+  (map (lambda (l)
+         (let loop ((i 0))
+           (cond ((= i (string-length l)) (cons l #f))
+                 ((char=? (string-ref l i) #\=) (cons (substring l 0 i) (substring l (+ i 1) (string-length l))))
+                 (else (loop (+ i 1))))))
+       (rec-lines base ".env")))
+(define (rec-names base) (map car (rec-env base)))
+(define (rec-value base name) (let ((p (assoc name (rec-env base)))) (and p (cdr p))))
+(define sh-own-names '("PATH" "HOME" "LANG" "PWD" "SHLVL" "_" "OLDPWD"))
+(define (names-within? names allowed) (and (member "PATH" names) (for-all (lambda (n) (member n allowed)) names) #t))
+(define (theourgia-name? n) (and (>= (string-length n) 10) (string=? (substring n 0 10) "THEOURGIA_")))
+(define SRC-C "(import (lib a)) (display (f))")
+(let* ((r (make-recorder!))
+       (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\")))")) SC SRC-C "--lang" "chez"))
+       (pwd (let ((l (rec-lines r ".pwd"))) (and (pair? l) (car l)))))
+  (want "C3 an argv-only override: the operator's argv runs; the environment is PATH, HOME, LANG and the table's pairs, {dir} expanded to the resolved tree/ ahead of the caller's directories; no THEOURGIA_ name; the source is __eval.ss with its text"
+        (list (head-of a) (clause-of a 'exit)
+              (let ((l (rec-lines r ".argv"))) (and (= 1 (length l)) (ends-with? (car l) "/source/__eval.ss")))
+              (names-within? (rec-names r) (append sh-own-names '("CHEZSCHEMELIBDIRS" "CHEZSCHEMELIBEXTS")))
+              (exists theourgia-name? (rec-names r))
+              (let ((v (rec-value r "CHEZSCHEMELIBDIRS")))
+                (and v pwd (prefix? v (string-append pwd ":")) (> (string-length v) (+ 1 (string-length pwd)))
+                     (ends-with? pwd "/tree")))
+              (rec-value r "CHEZSCHEMELIBEXTS")
+              (rec-lines r ".base") (text-of-file (string-append r ".src")))
+        (list 'ok '(exit 0)
+              #t #t #f #t ".sc:.ss:.sls:.scm" '("__eval.ss") SRC-C)))
+(let* ((r (make-recorder!))
+       (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\")) (source-name \"run.ss\"))")) SC SRC-C "--lang" "chez")))
+  (want "C3b a source-name override: the source is written as run.ss, {file} names it, and it holds the source's text"
+        (list (head-of a) (rec-lines r ".base") (text-of-file (string-append r ".src")))
+        (list 'ok '("run.ss") SRC-C)))
+(let ((a (ask (with-var "((env ((\"FOO\" \"bar\"))))") SC
+              "(write (list (command-line) (getenv \"FOO\") (getenv \"CHEZSCHEMELIBDIRS\") (getenv \"CHEZSCHEMELIBEXTS\")))"
+              "--lang" "chez")))
+  (want "C3c an env-only override: the table's argv and source name stay (scheme --script .../__eval.ss); the environment is the override's whole, so the table's pairs are gone"
+        (let ((d (datum-of (stdout-of a))))
+          (list (head-of a)
+                (and (pair? d) (pair? (car d)) (string? (caar d)) (ends-with? (caar d) "/source/__eval.ss"))
+                (and (pair? d) (cdr d))))
+        (list 'ok #t '("bar" #f #f))))
+(let* ((r (make-recorder!))
+       (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\")) (env ()))")) SC SRC-C "--lang" "chez")))
+  (want "C3d an explicit (env ()) is an override, not absence: the interpreter has PATH, HOME and LANG only"
+        (list (head-of a) (names-within? (rec-names r) sh-own-names))
+        (list 'ok #t)))
+(let* ((r (make-recorder!))
+       (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\")) (env ((\"CHEZSCHEMELIBEXTS\" \".sls\"))))"))
+               SC SRC-C "--lang" "chez")))
+  (want "C3e an override naming only the extensions pair replaces env whole: CHEZSCHEMELIBDIRS is absent"
+        (list (head-of a) (rec-value r "CHEZSCHEMELIBDIRS") (rec-value r "CHEZSCHEMELIBEXTS"))
+        (list 'ok #f ".sls")))
+
+;; ---- C4: what the operator's variable may not be; nothing runs ----------------------
+;; Each value names a recorder as argv[0] where it can, so a value wrongly
+;; taken would run it and leave its record.
+(define (config-refusal a) (list (head-of a) (clause-of a 'reason) (clause-of a 'variable) (clause-of a 'detail)))
+(define (refused-with detail)
+  (list '(error bad-request) '(reason runner-config-invalid) '(variable "THEOURGIA_RUNNER_CHEZ") (list 'detail detail)))
+(for-each
+  (lambda (c)
+    (let* ((r (make-recorder!))
+           (text ((cadr c) (rec-script r)))
+           (a (ask (with-var text) SC SRC-C "--lang" "chez")))
+      (want (string-append "C4 " (car c) ": runner-config-invalid naming the variable and " (format "~s" (caddr c)) "; the recorder never ran")
+            (list (config-refusal a) (rec-ran? r))
+            (list (refused-with (caddr c)) #f))))
+  (list (list "not a datum" (lambda (p) (string-append "((argv (\"" p "\"")) 'not-one-datum)
+        (list "two datums" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\"))) ()")) 'not-one-datum)
+        (list "an env name holding =" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (env ((\"A=B\" \"x\"))))")) '(field env))
+        (list "PATH named in env" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (env ((\"PATH\" \"/x\"))))")) '(field env))
+        (list "an argv holding NUL" (lambda (p) (string-append "((argv (\"" p "\" \"a\\x0;b\")))")) '(field argv))
+        (list "an empty interpreter name" (lambda (p) "((argv (\"\" \"{file}\")))") '(field argv))
+        (list "a field no runner has" (lambda (p) (string-append "((argv (\"" p "\" \"{file}\")) (cmd \"x\"))")) '(field cmd))
+        (list "an empty override" (lambda (p) "()") '(field runner))))
+(let ((a (ask (string-append ON " THEOURGIA_RUNNER_JAVASCRIPT=" (quoted "((")) S "console.log(1)" "--lang" "javascript")))
+  (want "C4c THEOURGIA_RUNNER_JAVASCRIPT is not read: garbage in it leaves node's runner as the table has it (node present)"
+        (list (have? "node") (head-of a) (stdout-of a))
+        (list #t 'ok "1\n")))
+(let ((a (ask (chez-var "((") SC SRC-C "--lang" "chez")))
+  (want "C4d without THEOURGIA_RUNNERS, --lang chez answers runners-disabled before its configuration is read"
+        a '(error runners-disabled)))
+
+;; ---- C5: the launcher never loads from the projection; the interpreter does ----------
+(define marker-c5a (string-append outside "/c5a"))
+(define marker-c5b (string-append outside "/c5b"))
+(define SC-PLANT
+  (make-store! "chez3"
+    (list (cons "theourgia/ffi.sc"
+                (string-append
+                  "(library (theourgia ffi) (export path-executable? isolate-evaluation! exec-argv-env!) (import (chezscheme))\n"
+                  "  (define loaded (call-with-output-file \"" marker-c5a "\" (lambda (p) (display \"ran\" p)) 'replace))\n"
+                  "  (define refused (raise 'planted-ffi))\n"
+                  "  (define (path-executable? p) #f) (define (isolate-evaluation! s) (values 0 0 0)) (define (exec-argv-env! a b c) #f))\n"))
+          (cons "lib/probe.sc"
+                (string-append
+                  "(library (lib probe) (export p) (import (chezscheme))\n"
+                  "  (define p (begin (call-with-output-file \"" marker-c5b "\" (lambda (o) (display \"ran\" o)) 'replace) 1)))\n")))))
+(let ((a (ask ON SC-PLANT "(display 1)" "--lang" "chez")))
+  (want "C5a a planted theourgia/ffi.sc under tree/ is not what the launcher loads: ok, (exit 0), stdout 1, and its load marker is absent"
+        (list (head-of a) (clause-of a 'exit) (stdout-of a) (file-exists? marker-c5a))
+        (list 'ok '(exit 0) "1" #f)))
+(let ((a (ask ON SC-PLANT "(import (lib probe)) (display p)" "--lang" "chez")))
+  (want "C5b the interpreter reads the projection as a library directory: a projected library the source imports is loaded (its marker is written)"
+        (list (head-of a) (clause-of a 'exit) (stdout-of a) (file-exists? marker-c5b))
+        (list 'ok '(exit 0) "1" #t)))
+
+;; ---- C7: the extensions and directories the interpreter reads ----------------------
+(let ((a (ask ON SC "(write (library-extensions))" "--lang" "chez")))
+  (want "C7 the interpreter's own (library-extensions): .sc, .ss, .sls, .scm, each with the default object .so"
+        (list (head-of a) (datum-of (stdout-of a)))
+        (list 'ok '((".sc" . ".so") (".ss" . ".so") (".sls" . ".so") (".scm" . ".so")))))
+(let ((a (ask (with-var "((env ((\"CHEZSCHEMELIBDIRS\" \"{dir}:{libdirs}\") (\"CHEZSCHEMELIBEXTS\" \".sls\"))))") SC SRC-C "--lang" "chez")))
+  (want "C7 extensions set to .sls only: lib/a.sc is not found; a non-zero exit, and stderr names the library"
+        (list (head-of a) (equal? (clause-of a 'exit) '(exit 0)) (has-substring? (stderr-of a) "library (lib a) not found"))
+        (list 'ok #f #t)))
+;; THE DIRECTORIES, READ BY THE INTERPRETER: the calling process is given a
+;; library pair whose source and object directories differ, so a runner that
+;; dropped the object side of {libdirs} is seen.
+(define objdir (string-append root "/objects"))
+(sh "mkdir -p " (quoted objdir))
+(let ((a (ask (string-append ON " CHEZSCHEMELIBDIRS=" (quoted (string-append libdir "::" objdir))) SC
+              "(write (list (current-directory) (library-directories)))" "--lang" "chez")))
+  (want "C7b the interpreter's (library-directories): the projection first, as (tree . tree), then the calling process's pair with both sides intact"
+        (let ((d (datum-of (stdout-of a))))
+          (list (head-of a)
+                (and (pair? d) (string? (car d)) (pair? (cdr d))
+                     (equal? (cadr d) (list (cons (car d) (car d)) (cons libdir objdir))))))
+        (list 'ok #t)))
+
+;; ---- C8: the limits are a runner's ------------------------------------------------
+(let ((a (ask ON SC "(let loop () (loop))" "--lang" "chez" "--timeout-ms" "1500")))
+  (want "C8 time: a loop past --timeout-ms answers eval-limit (resource time)"
+        (list (head-of a) (clause-of a 'resource)) (list '(error eval-limit) '(resource time))))
+;; 400 characters of two bytes each: 800 bytes over a 600 quota, while the
+;; characters (400) are under it, so a quota in characters would let it pass.
+(let ((a (ask ON SC "(display (make-string 400 #\\xe9))" "--lang" "chez" "--output-bytes" "600")))
+  (want "C8 output in bytes: 400 two-byte characters stop at a 600-byte quota"
+        (list (head-of a) (clause-of a 'resource)) (list '(error eval-limit) '(resource output))))
+
+;; ---- C9: --working ------------------------------------------------------------------
+(define lib-a-id (block-holding SC "define (f) 42"))
+(cli SC "write" "--writer" "wc" lib-a-id "(library (lib a) (export f) (import (rnrs)) (define (f) 43))\n")
+(let ((w (ask ON SC SRC-C "--lang" "chez" "--working" "--writer" "wc"))
+      (plain (ask ON SC SRC-C "--lang" "chez")))
+  (want "C9 --working: wc's draft of lib/a.sc answers 43; the committed state still answers 42"
+        (list (and lib-a-id #t) (stdout-of w) (stdout-of plain))
+        (list #t "43" "42")))
+
+;; ---- C6: an env field on another language's runner (in process) ---------------------
+;; THE REGISTRATION IS IN THE PROCESS THAT EVALUATES: a child program that
+;; registers javascript's entry with an env field and runs the evaluation
+;; itself, as core.sc does, under the scheduler; the fixture's own `ask`
+;; starts a fresh core.sc, which never sees a registration made elsewhere.
+(define launcher-abs (string-append (current-directory) "/../eval-runner-exec.sc"))
+(define (in-process-eval name lang entry-edit source)
+  (let ((child (string-append root "/" name ".sc")))
+    (put! child
+          (string-append
+            "(import (chezscheme) (theourgia languages) (theourgia eval-runner) (theourgia sched))\n"
+            entry-edit "\n"
+            "(start-scheduler (lambda ()\n"
+            "  (write (guard (e (#t 'RAISED))\n"
+            "    (run-foreign-eval \"" SC "\" \"" lang "\" " (format "~s" source) "\n"
+            "      (list (cons 'working? #f) (cons 'timeout-ms 10000) (cons 'memory-bytes 268435456)\n"
+            "            (cons 'output-bytes 65536) (cons 'scheme " (format "~s" scheme-path) ")\n"
+            "            (cons 'launcher " (format "~s" launcher-abs) ")))))\n"
+            "  (newline) (exit 0)))\n"))
+    (datum-of (sh-out "THEOURGIA_LOCAL=1 THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted run) " "
+                      (quoted scheme-path) " --script " (quoted child) " 2>/dev/null"))))
+(let ((a (in-process-eval "c6" "javascript"
+           (string-append
+             "(register-language!\n"
+             "  (map (lambda (f) (if (eq? (car f) 'runner)\n"
+             "                       '(runner ((argv (\"node\" \"{file}\")) (source-name \"__eval.mjs\") (env ((\"GREETING\" \"hi {dir}\")))))\n"
+             "                       f))\n"
+             "       (language-for-name \"javascript\")))")
+           "console.log(process.env.GREETING)")))
+  (want "C6 javascript given an env field in the evaluating process: node sees the pair, {dir} replaced inside the value by the tree/ it runs in (node present)"
+        (list (have? "node") (head-of a)
+              (let ((o (stdout-of a))) (and (prefix? o "hi /") (ends-with? o "/tree\n"))))
+        (list #t 'ok #t)))
+
+;; ---- the launcher's arguments, read by the launcher itself --------------------------
+;; The launcher is started directly, as the supervisor starts it, with a
+;; recording interpreter; `go` on its stdin.
+(define (launcher-run . args)
+  (sh-out "printf 'go\\n' | " (quoted scheme-path) " --script " (quoted launcher-abs) " "
+          (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+          " >/dev/null 2>&1; echo $?"))
+(let* ((r (make-recorder!))
+       (status (launcher-run "5" "--env" "A=1" "--env" "B=" "--env" "C=x=y z --" "--" (rec-script r) "--env" "--" "tail")))
+  (want "G1 the launcher: pairs up to the first standalone --, each split at its first =, an empty value kept; everything after -- is the interpreter's verbatim"
+        (list status (rec-lines r ".argv") (rec-value r "A") (rec-value r "B") (rec-value r "C"))
+        (list "0\n" '("--env" "--" "tail") "1" "" "x=y z --")))
+(for-each
+  (lambda (c)
+    (let ((r (make-recorder!)))
+      (want (string-append "G2 the launcher, " (car c) ": exit " (cadr c) " before ready, and the interpreter never ran")
+            (list (apply launcher-run (map (lambda (a) (if (equal? a "REC") (rec-script r) a)) (caddr c))) (rec-ran? r))
+            (list (string-append (cadr c) "\n") #f))))
+  (list (list "a pair with no =" "3" '("5" "--env" "NOEQ" "--" "REC"))
+        (list "a pair with an empty name" "3" '("5" "--env" "=v" "--" "REC"))
+        (list "no -- at all (usage)" "2" '("5" "--env" "A=1" "REC"))
+        (list "--env with nothing after it (usage)" "2" '("5" "--env"))))
+
+;; ---- the table's checks at construction ---------------------------------------------
+(define (child-datum name program)
+  (let ((child (string-append root "/" name ".sc")))
+    (put! child program)
+    (datum-of (sh-out (quoted scheme-path) " --script " (quoted child) " 2>/dev/null"))))
+(want "T1 every runner of the built-in table passes runner-valid?, and four languages have one"
+      (child-datum "t1"
+        (string-append
+          "(import (chezscheme) (theourgia languages))\n"
+          "(write (let ((rs (filter values (map language-runner (language-table)))))\n"
+          "  (list (for-all runner-valid? rs) (length rs)\n"
+          "        (map (lambda (e) (language-property e 'lang #f)) (filter language-runner (language-table))))))\n"))
+      '(#t 4 ("javascript" "python" "shell" "chez")))
+(want "T2 a table built with an entry whose runner the checks refuse stops at construction, naming the entry and the field"
+      (child-datum "t2"
+        (string-append
+          "(import (chezscheme) (theourgia languages))\n"
+          "(write (guard (e ((assertion-violation? e) (cons 'REFUSED (condition-irritants e))))\n"
+          "  (checked-catalogue (list '((lang \"bad\") (extensions ()) (def-heads ())\n"
+          "                             (runner ((argv (\"\" \"{file}\")) (source-name \"x.ss\"))))))\n"
+          "  'BUILT))\n"))
+      '(REFUSED "bad" argv))
+
+;; ---- a projection directory the library variable cannot carry -------------------------
+;; A run root whose path holds ":": a runner without {dir} in a library
+;; variable (shell) runs there; chez is refused before anything is exported,
+;; and the run root keeps what it held (the admission's directory) with no
+;; eval-* left.
+(define run-colon (string-append root "/run:colon"))
+(define (entries-of dir) (if (file-exists? dir) (list-sort string<? (directory-list dir)) '()))
+(let* ((a (ask (string-append ON " THEOURGIA_RUN=" (quoted run-colon)) S "echo shell\n" "--lang" "shell"))
+       (before (entries-of run-colon))
+       (b (ask (string-append ON " THEOURGIA_RUN=" (quoted run-colon)) SC SRC-C "--lang" "chez"))
+       (after (entries-of run-colon))
+       (resolved (pwd-p run-colon))
+       (d (let ((c (clause-of b 'directory))) (and c (cadr c)))))
+  (want "U1 a run root holding a colon: shell runs; chez answers projection-directory-unrepresentable naming <resolved root>/eval-<token>/tree, and the run root is as before with no eval-*"
+        (list (head-of a) (head-of b) (clause-of b 'reason)
+              (and (string? d) (prefix? d (string-append resolved "/eval-")) (ends-with? d "/tree"))
+              (equal? before after) (eval-dirs-of run-colon))
+        (list 'ok '(error spawn-refused) '(reason projection-directory-unrepresentable) #t #t '())))
+
+;; ---- the documents --------------------------------------------------------------------
+(define readme (squash (text-of-file "../README.md")))
+(define (library-defines file name)
+  (let loop ((fs (forms-of file)))
+    (cond ((null? fs) #f)
+          ((and (pair? (car fs)) (eq? (caar fs) 'library))
+           (or (find (lambda (x) (and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (equal? (cadr x) name))) (cdar fs))
+               (loop (cdr fs))))
+          (else (loop (cdr fs))))))
+(want "D1 docs: README's environment table has a THEOURGIA_RUNNER_CHEZ row read by eval-runner.sc; chez-runner-text reads it by a literal getenv"
+      (list (and (exists (lambda (l) (prefix? l "| `THEOURGIA_RUNNER_CHEZ` | `eval-runner.sc` |")) (environment-table-rows)) #t)
+            (let ((d (library-defines "../eval-runner.sc" '(chez-runner-text))))
+              (and d (holds-datum? (cddr d) '(getenv "THEOURGIA_RUNNER_CHEZ")))))
+      (list #t #t))
+(want "D2 docs: README states chez's default runner, the field-wise replacement, empty is unset, an interpreter and a compiler example with {file} as $1, and the reach sentence in place of the old one"
+      (map (lambda (t) (has-substring? readme (squash t)))
+           (list "(runner ((argv (\"scheme\" \"--script\" \"{file}\")) (source-name \"__eval.ss\") (env ((\"CHEZSCHEMELIBDIRS\" \"{dir}:{libdirs}\") (\"CHEZSCHEMELIBEXTS\" \".sc:.ss:.sls:.scm\")))))"
+                 "The fields it names replace the table's, field by field, and a named field replaces the table's whole"
+                 "An empty value is unset."
+                 "THEOURGIA_RUNNER_CHEZ='((argv (\"petite\" \"--script\" \"{file}\")))'"
+                 "THEOURGIA_RUNNER_CHEZ='((argv (\"sh\" \"-c\" \"goeteia build \\\"$1\\\" && ./a.out\" \"compile\" \"{file}\")))'"
+                 "nothing the projection holds is ever loaded as a library by the launcher; a runner configured to search it, as `chez` is, loads from it after exec, and that is the runner's reach."
+                 "is ever loaded as a library."))
+      '(#t #t #t #t #t #t #f))
+(want "C every chez run above left no eval-* directory behind" (eval-dirs) '())
+
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
 (printf "\n~a failures\nrows: ~a\neval-lang complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

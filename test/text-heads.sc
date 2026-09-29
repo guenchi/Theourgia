@@ -8,7 +8,7 @@
   '(("scheme" "f" "x" "m") ("javascript" "f" "C" "inc") ("typescript" "Shape" "Count" "f")
     ("python" "f" "C" "answer") ("go" "f" "Count" "M") ("rust" "f" "Thing" "Thing")
     ("c" "f" "g" "Point") ("java" "C" "I" "E") ("shell" "f" "g" "h")
-    ("markdown" "Alpha" "Beta" "Gamma")))
+    ("markdown" "Alpha" "Beta" "Gamma") ("chez" "f" "x" "m")))
 (for-each (lambda (entry)
             (let ((name (language-property entry 'lang #f)))
               (want (string-append "CT-05 " name " three definition heads")

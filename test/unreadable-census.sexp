@@ -1084,6 +1084,11 @@
    unrelated a
    "the launcher's library path: a text the parameter will not read back is not representable, so the answer is #f and the caller refuses it by name; no filesystem is involved"
    (e (#t #f)))
+  ("eval-runner.sc" (one-datum) 1 guard
+   (#t)
+   unrelated a
+   "the operator's THEOURGIA_RUNNER_CHEZ: text that does not read as exactly one datum answers #f, and the caller refuses it by name as runner-config-invalid; no filesystem is involved"
+   (e (#t #f)))
   ("eval-runner.sc" (project-and-run) 1 guard
    ((log-error? e))
    refuse a
