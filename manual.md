@@ -1,8 +1,51 @@
 # Theourgia manual
 
-The model a store holds, and every verb it answers to. This file is generated from the store it describes: the prose is its blocks and the reference is what `describe` answers, so neither can drift from the thing it documents.
+This file is generated from the store it describes: the prose is its blocks and the reference is what `describe` answers, so neither can drift from the thing it documents.
 
-## The model
+## Installing
+
+One set of prerequisites: Chez Scheme, and igropyr. There is no Python anywhere in this, and no build step beyond what Chez does itself.
+
+### npm
+
+`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the prerequisites; when one is missing it prints the platform's install line.
+
+### Homebrew
+
+On macOS and Linux, a Homebrew tap installs everything in one step:
+
+```
+brew tap guenchi/theourgia
+brew install theourgia
+```
+
+The tap arrives with the 1.0 release.
+
+### From source
+
+Get a tagged tarball of Theourgia and place igropyr beside it under one library root:
+
+```
+library-root/
+  theourgia/
+  igropyr/
+```
+
+Compile both into one output directory:
+
+```
+scheme --script theourgia/build.ss library-root objects
+```
+
+The three wrapper scripts -- `theourgia`, `theourgia-mcp`, and `theourgiad` -- expect `CHEZSCHEMELIBDIRS` set to the objects directory and `CHEZSCHEMELIBEXTS` set to `.so`.
+
+Objects start about twelve times faster than source (measured: 50 ms from objects, 572 ms from source). Never place them in the source tree -- a stale `.so` beside a `.sc` is resolved in preference to it.
+
+### Connecting a client
+
+Register `theourgia-mcp --store <path>` in the client's MCP configuration. One store per project or per person, on one machine.
+
+## What a store is
 
 ### A store
 
@@ -51,33 +94,29 @@ del retires a block: the reduction stops treating it as live, and the record of 
 
 The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text. A Scheme definition imported as a library block is a block the store can evaluate against and follow by name; for other languages the editor supplies what its language server knows (signatures, keywords, call edges, diagnostics), and every answer built on those facts names the editor that supplied them and counts the facts the source has since outrun.
 
-#### A name is a block
-
-In a Scheme library block this is literal rather than a metaphor. A definition is a block, and evaluating an expression against that library is evaluating the definitions those blocks hold -- so a name resolves to its definition block, log <id> gives that definition's history, and an explicit edge ties it to the design that motivated it. The same three questions about one name -- what it is, how it got that way, why it exists -- are three reads rather than three searches.
-
-#### Other languages, more modestly
-
-Source in other languages goes in as text blocks cut at top-level regions, with names extracted as well as the language table allows. They are blocks like any other: addressable, linkable, with their own history. What they do not get is the resolution above -- a name in Python source is not a binding the store can follow to a block.
-
-### Backlinks cost one query
-
-refs <id> answers what points at this block, from the two places a reference can live: an edge somebody wrote with link, and a mention in the text of another block. Each line says which of the two it came from, and they are never merged -- an edge can be removed with unlink, a sentence can only be edited. One small query in place of walking a repository and a documentation tree looking for the places that mention a thing.
-
-```
-$ theourgia link koou2buo.2 implements koou2buo.1
-$ theourgia insert --under root --title "Mentions by id" \
-    --text "See [[koou2buo.1]] for the reasoning."
-
-$ theourgia refs koou2buo.1
-(ok (items (ref (from "koou2buo.2") (rel implements) (via link))
-           (ref (from "koou2buo.4") (rel ref) (via md))))
-```
-
-> **What refs resolves, exactly** Measured, because this is easy to over-claim. A mention resolves by id: a block whose text contains [[koou2buo.1]] shows up as (ref (from ...) (rel ref) (via md)). A mention by title does not -- a block written with [[The design]] did not appear in refs for the block titled The design. An explicit edge shows up as (ref (from ...) (rel implements) (via link)) under whatever relation name it was given. So renaming a block leaves explicit edges and id mentions intact, because both are by id; what does not survive a rename is a reference that was only ever a name.
-
-### One query surface
+### One answer shape
 
 Every verb answers with one line: an S-expression that begins with ok or error. --wire asks for the machine-facing spelling of it. There is no second, prettier output mode that an agent has to parse differently, and no rendering markup in the way -- the reply is the same data the store holds, and the agent can judge the size of what it is about to read before it reads it.
+
+### Writers
+
+Every agent and every person writes under a writer id. The id is what block ids are built from, so a block carries the identity of who wrote it for as long as it exists. One writer id is held by one live agent at a time -- that is a rule in the documentation, not a mechanism in the code; a later session may bind the same id and carry on with its drafts.
+
+### Drafts, then commit
+
+write puts a proposed next version of a block into the writing agent's own space. It is not in the log and nobody else can see it. commit, in describe's own words, installs a writer's drafts into the store as one change; the process that owns the store carries commits out one at a time, so the outcome of a race is decided rather than interleaved. With --based-on, the commit states the version the draft was made against. If that premise has moved, the commit is refused.
+
+#### A refusal hands back the winner
+
+A refused commit does not simply say no. It answers stale-baseline, and it names the version the draft was made against, the version the block carries now, and the records applied since -- the winner's content among them. The agent that lost the race does not have to go and fetch the new state to find out what happened: it already has what it needs to merge and send the commit again.
+
+### One store per scope
+
+One store per project or per person, on one machine. The machine registry tracks which stores live where; adopt transfers a store after a move or a restore.
+
+### The daemon
+
+Every verb can run standalone: open the store, answer, exit. For a session that sends many verbs, serve holds the store open and answers over a unix socket. The client finds the socket by the same rule the daemon used to create it, so nothing needs to be told where it is. The daemon's answer is the CLI's answer, byte for byte; both call the same dispatcher, and no verb or answer shape exists in one and not the other. When no daemon is running, the CLI starts one beside itself and asks again. The daemon answers one commit behind an outside change: a record appended by another process or a git pull is applied before the next request, so what the daemon says is never staler than the previous commit.
 
 ### Put the store in git
 
@@ -132,12 +171,6 @@ read <id> [--md] [--recursive] [--writer <name>] [--working] [--working-info]
 Read one block: its fields, or its text. (daemon)
 
 ```
-outline [--depth <n>] [--with-keywords]
-```
-
-List the blocks as a tree of titles. (daemon)
-
-```
 refs <id>
 ```
 
@@ -156,6 +189,12 @@ log [<id>]
 Show the changes recorded, for the store or for one block. (daemon)
 
 ```
+outline [--depth <n>] [--with-keywords]
+```
+
+List the blocks as a tree of titles. (daemon)
+
+```
 tag [<name>]
 ```
 
@@ -166,12 +205,6 @@ diff <cut> <cut>
 ```
 
 Report what changed between two cuts. (daemon)
-
-```
-conflicts
-```
-
-List blocks whose writers disagree. (daemon)
 
 ```
 describe
@@ -314,6 +347,12 @@ adopt
 Take in records that are on disk but not yet in the log. (daemon)
 
 ```
+conflicts
+```
+
+List blocks whose writers disagree. (daemon)
+
+```
 publish <writer> <segment> <file> [<sha256>]
 ```
 
@@ -324,4 +363,28 @@ batch <intents>
 ```
 
 Carry out several changes as one request. (daemon)
+
+## Working with agents
+
+### The MCP shell
+
+theourgia-mcp --store <path> speaks MCP over stdio. One tool per verb, named theourgia_<verb>, with a single argv array as arguments. The shell asks the core what verbs exist on every call, so a verb added to a newer build appears without restarting the server. Core refusals are successful tool results, not JSON-RPC errors: the agent reads the store's own words, not a transport-level failure. eval is not offered as a tool; init is not offered either, because the store must already exist before the MCP server starts.
+
+### One writer per session
+
+A writer id is held by one live agent at a time. A later session may bind the same id and carry on with its drafts, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. A host giving several agents the same actor must give each its own --writer.
+
+### The memory recipe
+
+To use a store as persistent memory for Claude Code sessions: turn off the built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 or in settings.json), register the store as an MCP server, and inject an outline at session start with a SessionStart hook that runs theourgia outline --depth 1. CLAUDE.md then carries the recall and write instructions: search to find, read to retrieve, insert to add (under the right section, with title, keywords, and text following the block protocol), and write+commit to update an existing block rather than duplicating it. The full recipe is in docs/claude-code-memory.md in the repository.
+
+## Limits
+
+Two agents on one writer id: silent overwrite, no detection. The rule is in the documentation; the code does not enforce it.
+
+Two machines on one store: not supported. A store belongs to one machine's registry; moving it to another requires adopt.
+
+Linux: the platform library compiles and the test suite passes. macOS and FreeBSD are the platforms with production readings; Linux's are pending.
+
+Runners (--lang): the Scheme evaluator runs in a sandboxed child process with no filesystem and no network. A runner for another language (node, python3, sh) gets a projected copy of the store's code files in a temporary directory and the machine's own interpreter, so it has the reach of a local script. Runners are off by default (THEOURGIA_RUNNERS=on).
 
