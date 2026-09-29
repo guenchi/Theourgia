@@ -1988,7 +1988,9 @@
               " > " out " 2>/dev/null < /dev/null"))
     (file-text out)))
 
-(define (pause-ms ms) (sleep (make-time 'time-duration (* ms 1000000) 0)))
+;; Whole seconds apart from the rest: a time-duration's nanoseconds must be
+;; below one second, and 3500 ms written as nanoseconds alone is refused.
+(define (pause-ms ms) (sleep (make-time 'time-duration (* (mod ms 1000) 1000000) (div ms 1000))))
 
 ;; Until `ok?` answers true or `ms` pass; -> its last answer.
 (define (within ms ok?)
@@ -2143,7 +2145,7 @@
                                       (eval-call '("--store" "elsewhere" "(+ 1 2)"))
                                       (eval-call '("--actor" "someone" "(+ 1 2)"))
                                       (eval-call '("--wire" "(+ 1 2)"))
-                                      (eval-call '("--socket" "/tmp/x" "(+ 1 2)")))))
+                                      (eval-call '("--socket" "elsewhere.sock" "(+ 1 2)")))))
        (lines-then (length (counter-lines (cadr d))))
        (passed (stub-talk d "" (list hello ready
                                      (eval-call '("(display \"--store y\")"))

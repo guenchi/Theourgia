@@ -787,6 +787,46 @@
    unrelated a
    "mcp: a transport refusal's text that does not read is not a refusal datum (peer text); not a filesystem read"
    (e (#t #f)))
+  ("mcp/server.sc" (run-child-in) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (remove-call-files! dir (list stdin-path answer-path diag-path)) (raise e))))
+  ("mcp/server.sc" (run-child-in) 2 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (guard (x (#t #f)) (fd-close fd)) (raise e))))
+  ("mcp/server.sc" (run-child-in) 3 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (x (#t #f)))
+  ("mcp/server.sc" (await-child) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (void))))
+  ("mcp/server.sc" (poll-child) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (list (quote wait-failed) (if (fs-error? e) (fs-error-errno e) (quote unknown))))))
+  ("mcp/server.sc" (outcome-of) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (quote unreadable))))
+  ("mcp/server.sc" (diag-tail) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t #f)))
+  ("mcp/server.sc" (remove-call-files!) 1 guard
+   (#t)
+   unrelated a
+   "mcp: eval's child route"
+   (e (#t (let ((p (current-error-port))) (put-string p "(theourgia-mcp call-directory-left \"") (put-string p dir) (put-string p "\")\n") (flush-output-port p)))))
   ("request.sc" (membership) 1 guard
    (#t)
    unrelated a
