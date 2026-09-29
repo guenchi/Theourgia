@@ -488,7 +488,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia cba98ae) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 659fea2, as cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete
@@ -506,6 +506,10 @@ a message after a save the store took; and `incomplete` in the status bar until 
 sees every writer again. Each names the writer, the path and the reason. While a writer is
 missing, the marks on blocks are shown as not known, and the conflict count is the other
 writers' count, since the missing writer's conflicts are not in it. Saving goes on as usual.
+A writer whose log is damaged partway is read up to the damage: its records up to the last good
+one are in the reading, and the note says so -- the record it was read up to, the log's own name
+for the damage, the path and the reason. A note of any other kind is not one this extension knows
+how to say, and the reading is refused by name rather than shown as complete.
 
 **Code blocks.** A text-mode code block -- one `import-code` made from a source file -- keeps its
 source as bytes, and it opens as that source, decoded as UTF-8, in the editor mode its `lang` names
@@ -520,6 +524,21 @@ line of its `(define ...)`, found in the text as it is shown, a draft included; 
 their library and kind, or `export` for a library that exports the name, which opens at the library's first
 line. A name nobody defines is said, with the nearest names the store knows. The line search reads `;` and
 `#| |#` comments as comments; a `#;` datum comment is not recognised.
+
+**Suggest a split of a source file.** On a source file on disk (not a block's own file), "theourgia:
+Suggest a Split of This File" asks the core's `split-suggest` where the file could be divided into
+blocks, and opens the review file the core writes; nothing is recorded. The cuts come from the
+editor's own symbols for the file -- the top-level ones the language's symbol provider gives, sent as
+`--symbols` -- and the message beside the review says so (`cuts from (vscode "<version>"
+"<languageId>")`), with the core's warnings; with no symbols (no provider, or none yet) the core's own
+definition patterns choose, and the message says `regex`. A dirty file is saved first, and nothing is
+sent if the save fails. The positions are counted in the file as it is on disk, a byte-order mark and
+carriage returns included, and the file's digest goes with them; if the file changes while its symbols
+are being collected, or before the core reads it, nothing is cut (`symbols-stale`, shown as the core
+says it). Each symbol is sent at the start of its line, two symbols on one line as one, and a comment
+above a definition goes with it, as without symbols. A file whose lines end in CR alone is not cut by
+symbols: the core takes a line start to follow a line feed, and refuses (`symbols-not-a-line-start`). Which provider named a symbol cannot be said: the
+editor merges them.
 
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of

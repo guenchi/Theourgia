@@ -76,6 +76,10 @@
       {
         "command": "theourgia.migrateBlock",
         "title": "theourgia: Migrate Legacy Block Files"
+      },
+      {
+        "command": "theourgia.suggestSplit",
+        "title": "theourgia: Suggest a Split of This File"
       }
     ],
     "menus": {

@@ -107,7 +107,17 @@ export const GO_TO_DEFINITION: CommandName = {
   title: 'theourgia: Go to Definition'
 };
 
+/*
+ * A SPLIT OF A SOURCE FILE, CUT WHERE THE EDITOR'S SYMBOLS START. See
+ * `src/split-symbols.ts`.
+ */
+export const SUGGEST_SPLIT: CommandName = {
+  id: 'theourgia.suggestSplit',
+  title: 'theourgia: Suggest a Split of This File'
+};
+
 export const COMMANDS: CommandName[] = [
+  SUGGEST_SPLIT,
   OPEN_AS_DOCUMENT,
   GO_TO_DEFINITION,
   SEARCH_BLOCKS,

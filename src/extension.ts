@@ -42,7 +42,9 @@ import { Outbox } from './outbox';
 import { activateCore } from './activate';
 import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
 import { projectionNameFor } from './projection-name';
+import { runSplit, splitRefusalNotice } from './split-symbols';
 import {
+  SUGGEST_SPLIT,
   GO_TO_DEFINITION,
   OPEN_AS_DOCUMENT,
   OPEN_BLOCK,
@@ -879,6 +881,92 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const views = new DocumentViews(
     new DocumentTexts(() => (client === null ? null : { client, store: config.store }))
   );
+
+  /*
+   * A SPLIT OF THE SOURCE FILE IN THE EDITOR. The steps are in
+   * `src/split-symbols.ts` (`runSplit`); this hands them the editor's
+   * document, its symbol providers, the disk and the core, and then opens
+   * the review file the core wrote and says what it proposed.
+   *
+   * NOTE: A REAL SOURCE FILE ONLY. A block's own file is one block already,
+   * and a document view is not a file; the core splits a file on disk.
+   */
+  async function suggestSplit(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (editor === undefined) {
+      vscode.window.showWarningMessage('theourgia: open the source file to split first.');
+      return;
+    }
+    const document = editor.document;
+    const within = path.relative(storage, document.uri.fsPath);
+    if (document.uri.scheme !== 'file' || (!within.startsWith('..') && !path.isAbsolute(within))) {
+      vscode.window.showWarningMessage("theourgia: only a source file on disk is split this way, not a block's own file or a document view.");
+      return;
+    }
+    const using = client;
+    if (using === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const asked = generation;
+    const symbolsDirectory = path.join(storage, 'symbols');
+    let outcome;
+    try {
+      outcome = await runSplit(
+        {
+          uri: document.uri.toString(),
+          fsPath: document.uri.fsPath,
+          languageId: document.languageId,
+          isDirty: () => document.isDirty,
+          version: () => document.version,
+          text: () => document.getText(),
+          save: () => Promise.resolve(document.save())
+        },
+        {
+          client: using,
+          editorVersion: vscode.version,
+          readFile: (file) => files.readBytes(file),
+          symbols: () => Promise.resolve(vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri)),
+          symbolsPath: () => path.join(symbolsDirectory, `${randomUUID()}.sexp`),
+          writeSymbols: (written, text) => {
+            files.makeDirectory(symbolsDirectory);
+            files.writeText(written, text);
+          },
+          /*
+           * A file that never came to exist -- the write failed before
+           * creating it -- is nothing to remove, and is not reported.
+           */
+          removeSymbols: (written) => {
+            try {
+              files.unlink(written);
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+                vscode.window.showWarningMessage(`theourgia: the symbols file ${written} could not be removed: ${String(e)}`);
+              }
+            }
+          }
+        }
+      );
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    if (outcome.done === 'stopped') {
+      vscode.window.showWarningMessage(`theourgia: ${outcome.why}.`);
+      return;
+    }
+    if (outcome.done === 'refused') {
+      vscode.window.showErrorMessage(`theourgia: ${splitRefusalNotice(outcome.refusal)}`);
+      return;
+    }
+    if (asked !== generation) {
+      vscode.window.showInformationMessage(`theourgia: ${outcome.notice}; the review is at ${outcome.review}.`);
+      return;
+    }
+    const review = await vscode.workspace.openTextDocument(vscode.Uri.file(outcome.review));
+    await vscode.window.showTextDocument(review, { preview: false });
+    vscode.window.showInformationMessage(`theourgia: ${outcome.notice}.`);
+  }
 
   /*
    * THE SUBTREE UNDER A NODE, AS ONE READ-ONLY DOCUMENT (queue item 6). It
@@ -1753,6 +1841,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
+    command(SUGGEST_SPLIT.id, suggestSplit),
     command(RECONCILE_BLOCK.id, reconcileBlock),
     /*
      * NOTE: THE HANDLER IS ONE LINE ON PURPOSE. Everything this command

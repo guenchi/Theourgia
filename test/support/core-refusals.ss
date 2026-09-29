@@ -24,6 +24,13 @@
                  (pair? (cddr form)) (pair? (caddr form)) (eq? (car (caddr form)) 'quote)
                  (pair? (cdr (caddr form))) (list? (cadr (caddr form))))
             (for-each (lambda (kind) (when (symbol? kind) (remember kind))) (cadr (caddr form))))
+           ;; NOTE: THE SYMBOLS FILE'S REFUSALS ARE MADE THROUGH A NAMED
+           ;; CONSTRUCTOR (code-suggest.sc: `(symbols-refusal 'symbols-stale ...)`,
+           ;; which raises `(error <kind> ...)` from a variable). No literal
+           ;; `(error <kind> ...)` names them, so the constructor's calls are
+           ;; read; the name is this one constructor's, not a pattern.
+           ((and (eq? (car form) 'symbols-refusal) (pair? (cdr form)) (literal-symbol (cadr form)))
+            (remember (literal-symbol (cadr form))))
            ((and (eq? (car form) 'list) (pair? (cdr form)) (pair? (cddr form))
                  (eq? (literal-symbol (cadr form)) 'error) (literal-symbol (caddr form)))
             (remember (literal-symbol (caddr form))))

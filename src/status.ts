@@ -88,9 +88,20 @@ export interface StatusFacts {
  */
 export function incompleteWarning(notes: Note[]): string {
   const who = notes
-    .map((note) => `writer ${note.writer} could not be read (${note.path}: ${note.reason})`)
+    .map((note) =>
+      note.cut === undefined
+        ? `writer ${note.writer} could not be read (${note.path}: ${note.reason})`
+        : `writer ${note.writer} was read only up to record ${note.cut.after}, its log being cut there (${note.cut.kind} at ${note.path}: ${note.reason})`
+    )
     .join('; ');
-  return `Incomplete: ${who}. What you see is what the other writers wrote, within the usual limits.`;
+  /*
+   * A CUT WRITER'S RECORDS UP TO THE CUT ARE IN THE READING, so "what the
+   * other writers wrote" would say less than was shown; the sentence for a
+   * reading with no cut is unchanged.
+   */
+  return notes.some((note) => note.cut !== undefined)
+    ? `Incomplete: ${who}. What you see is what could be read, within the usual limits.`
+    : `Incomplete: ${who}. What you see is what the other writers wrote, within the usual limits.`;
 }
 
 export interface StatusLine {

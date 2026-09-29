@@ -519,6 +519,11 @@ function survey(text: string = extensionText()): Waiting[] {
  * be argued for rather than joining quietly.
  */
 const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
+  suggestSplit:
+    'its two waits after the guard open and show the review file the core wrote, by the path the core ' +
+    'answered with; nothing of the store is read or written after the guard, and the review names the ' +
+    'source file it was cut from, so a settings change during the show leaves a tab that is still about ' +
+    'that file',
   openBlock:
     'the store is captured BEFORE the first wait and every later step uses the captured one: ' +
     'the publication directory is built from it, so the version and its record are written under ' +

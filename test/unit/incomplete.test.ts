@@ -33,7 +33,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
 import { readdirSync } from 'fs';
-import { Client, Note, interpret, splitIncomplete } from '../../src/client';
+import { Client, Note, interpret, mergeNotes, splitIncomplete } from '../../src/client';
 import { Outbox } from '../../src/outbox';
 import { StoreModel, verdictOf } from '../../src/model';
 import { NOT_A_WRITES_ANSWER, Saver, Settle } from '../../src/saver';
@@ -177,6 +177,63 @@ describe('I1 the clause comes off every answer family, and its notes travel besi
     assert.throws(
       () => splitIncomplete(parseAnswers(`(ok ${CLAUSE} ${CLAUSE})\n`)[0], 'read'),
       (e: unknown) => e instanceof TransportError && /2 incomplete clauses/.test(e.message)
+    );
+  });
+});
+
+/*
+ * A LOG CUT BY DAMAGE IS SAID IN THE SAME CLAUSE, as a second kind of note:
+ * `(cut (writer w) (path p) (reason r) (kind k) (after n))`, the writer read
+ * up to record n. The shape is the one the core's design gives; the re-pin
+ * that brings it records a real answer beside these.
+ */
+const CUT = '(cut (writer "w") (path "/s/writers/w/000002.sexp") (reason "checksum mismatch") (kind crc) (after 7))';
+
+describe('I9 a cut writer is a note of its own, said as a cut', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  it('reads the cut with its kind and the last record kept, and says so in the warning', () => {
+    const answer = interpret(raw(`(ok (text "- a.1  Alpha\\n") (incomplete ${CUT}))\n`), 'outline', 'text', ['--wire']);
+    assert.deepStrictEqual(answer.notes, [
+      { writer: 'w', path: '/s/writers/w/000002.sexp', reason: 'checksum mismatch', cut: { kind: 'crc', after: 7 } }
+    ]);
+    assert.strictEqual(
+      incompleteWarning(answer.notes as Note[]),
+      'Incomplete: writer w was read only up to record 7, its log being cut there (crc at /s/writers/w/000002.sexp: ' +
+        'checksum mismatch). What you see is what could be read, within the usual limits.'
+    );
+  });
+
+  it('keeps an unreadable writer beside a cut one, each said its own way', () => {
+    const both = `(incomplete (unreadable (writer "zzzzzzzz") (path "${PATH}") (reason "Permission denied")) ${CUT})`;
+    const answer = interpret(raw(`(ok (text "") ${both})\n`), 'outline', 'text', ['--wire']);
+    assert.strictEqual((answer.notes as Note[]).length, 2);
+    assert.deepStrictEqual((answer.notes as Note[])[0], NOTE);
+    const said = incompleteWarning(answer.notes as Note[]);
+    assert.match(said, /writer zzzzzzzz could not be read/);
+    assert.match(said, /writer w was read only up to record 7/);
+    assert.strictEqual(incompleteWarning([NOTE]), `Incomplete: writer zzzzzzzz could not be read (${PATH}: Permission denied). What you see is what the other writers wrote, within the usual limits.`);
+  });
+
+  it('merges notes once each, a cut and an unreadable note of one writer kept apart, two cuts apart by where', () => {
+    const cut = (after: number): Note => ({ writer: 'w', path: '/p', reason: 'r', cut: { kind: 'crc', after } });
+    const plain: Note = { writer: 'w', path: '/p', reason: 'r' };
+    assert.deepStrictEqual(mergeNotes([cut(7)], [cut(7)]), [cut(7)]);
+    assert.deepStrictEqual(mergeNotes([cut(7)], [cut(8)]), [cut(7), cut(8)]);
+    assert.deepStrictEqual(mergeNotes([plain], [cut(7)]), [plain, cut(7)]);
+  });
+
+  it('still refuses a note of any other kind, and a cut without its after, by name', () => {
+    assert.throws(
+      () => interpret(raw('(ok (text "") (incomplete (truncated (writer "w") (path "/p") (reason "r"))))\n'), 'outline', 'text', ['--wire']),
+      (e: unknown) => e instanceof TransportError && /is not a writer's note/.test(e.message)
+    );
+    const noAfter = '(cut (writer "w") (path "/p") (reason "r") (kind crc))';
+    assert.throws(
+      () => interpret(raw(`(ok (text "") (incomplete ${noAfter}))\n`), 'outline', 'text', ['--wire']),
+      (e: unknown) => e instanceof TransportError && /has no after/.test(e.message)
     );
   });
 });

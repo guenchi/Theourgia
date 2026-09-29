@@ -87,6 +87,10 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'conditional, so the rule no longer exempts it; the condition is `asked === generation()`, ' +
     'and when that is false nothing this listing drew is on the screen to be wrong about. ' +
     '(Re-keyed: the listing now also hands on the writers it could not read.)',
+  'split-symbols.ts#savedText: text = new TextDecoder(\'utf-8\', { fatal: true, ignoreBOM: true }).decode(bytes);':
+    'answers NULL for a file whose bytes are not UTF-8: no position the editor gives can be converted ' +
+    'against them. The one caller, `runSplit`, stops on null with the sentence that says so and sends ' +
+    'nothing -- the null is read as "cannot count", never as an empty file.',
   'fsops.ts#syncDirectory: handle = fs.openSync(directory, \'r\');':
     'answers NULL for a directory that will not open for flushing. Some filesystems refuse to ' +
     'open a directory for reading, and a warning on every write there would teach people to ' +

@@ -231,7 +231,12 @@ const AT_LEAST: Array<[string, number]> = [
    * named still written down. And in item 33, 19 -> 55: what `show` and
    * `record` return (C1-C7, C9-C36; C6 is two cells).
    */
-  ['incomplete.test.ts', 24],
+  /*
+   * RAISED with the cut note, 24 -> 28: a cut read and said, an unreadable
+   * writer beside a cut, notes merged by whether and where they are cut, and
+   * an unknown note kind still refused.
+   */
+  ['incomplete.test.ts', 28],
   ['integrity.test.ts', 55],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,
@@ -287,6 +292,13 @@ const AT_LEAST: Array<[string, number]> = [
    */
   ['sessions.test.ts', 109],
   ['shapes.test.ts', 68],
+  /*
+   * ADDED with the split by the editor's symbols: the conversion to byte
+   * offsets and the symbols file (6), the command's steps (6), the empty
+   * list (1), the refusals and their census (5), and a real core (3: the
+   * third a first-line symbol in a file with a byte-order mark).
+   */
+  ['split-symbols.test.ts', 21],
   ['tombstones.test.ts', 11],
   /*
    * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket

@@ -409,7 +409,34 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
    */
   absent:
     'a file or directory of the store is not there. Check the store directory in theourgia.store; ' +
-    'the save is kept and goes again when the setting changes or the retry command is run'
+    'the save is kept and goes again when the setting changes or the retry command is run',
+  /*
+   * NOTE: THE SYMBOLS FILE'S EIGHT REFUSALS, answers to `split-suggest
+   * --symbols` (code-suggest.sc, `read-symbols`), never to a save. They are
+   * here, in this family, because each says the input was wrong and asking
+   * again unchanged gets the same answer; the split command shows the
+   * datum as the core wrote it with this sentence beside it, and retries
+   * nothing. Only `symbols-stale` is expected in use (the file changed
+   * between the read-back and the split); the other seven say the list
+   * this extension wrote is not what the core accepts.
+   */
+  'symbols-stale':
+    'the file changed after its symbols were collected, so the core would not cut it by them; run the command again',
+  'symbols-malformed':
+    'the core could not read a line of the symbols file this extension wrote; nothing was cut',
+  'symbols-past-end':
+    'a symbol in the file this extension wrote reaches past the end of the file; nothing was cut',
+  'symbols-not-a-boundary':
+    'a symbol in the file this extension wrote starts or ends inside a UTF-8 character; nothing was cut',
+  'symbols-unordered':
+    'the symbols in the file this extension wrote are not in ascending order; nothing was cut',
+  'symbols-overlap':
+    'two symbols in the file this extension wrote overlap; nothing was cut',
+  'symbols-not-a-line-start':
+    'a symbol in the file this extension wrote does not start at the beginning of a line, or the file\'s lines ' +
+    'end in CR alone, which the core does not cut by; nothing was cut',
+  'symbols-empty':
+    'the symbols file this extension wrote named no symbol; nothing was cut'
 };
 
 /*
@@ -679,7 +706,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
   'bad-request': 'refused',
   /*
    * A COMMIT THAT NAMED VERSIONS THE DRAFTS NO LONGER HAVE. `complete-plan!`
-   * (store.sc:3453) recomputes each named version before it runs anything and
+   * (store.sc:3514) recomputes each named version before it runs anything and
    * answers this when one disagrees; `working-restore!` (working.sc:438) makes
    * the same name for the same reason. The extension issues `commit`
    * (saver.ts, extension.ts), so a save can be answered with it: the write
@@ -720,11 +747,12 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia cba98ae; re-read row by row at
+ * is made in the pinned core (theourgia 659fea2; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
- * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, and from f5ebd58
+ * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
- * relocation.md). The reason is the provenance, not a
+ * relocation.md, and from cba98ae to 659fea2 in archive/theourgia-vsc-
+ * delivery-plugin-r3-split-symbols-2026-09-29/relocation.md). The reason is the provenance, not a
  * guess about intent: if the grep does not find it, the row says so
  * rather than inventing a story.
  *
@@ -759,14 +787,14 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     "rpc.sc, the `publish` verb's arm (`publish <writer> <segment> <file>`) -- a log segment's " +
     'candidate that cannot be read; this extension never sends `publish`',
   'incomplete-reduction':
-    'incomplete.sc:69 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
+    'incomplete.sc:110 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
-    'refused only to a verb that does not declare it accepts one: rpc.sc:1760 `undeclared-verbs` (export-code ' +
+    'refused only to a verb that does not declare it accepts one: rpc.sc:1769 `undeclared-verbs` (export-code ' +
     'export-md import-md import-code def snapshot). This extension sends none of them; every verb it sends ' +
     'declares, and is answered with an `(incomplete ...)` clause instead',
   'working-draft-unreadable':
     "working.sc:684, `draft-body` -- a writer's draft whose datum does not read, reached only through " +
-    '`working-state`, whose one caller is rpc.sc:90 `working-export`: `export-md` or `export-code` with ' +
+    '`working-state`, whose one caller is rpc.sc:91 `working-export`: `export-md` or `export-code` with ' +
     '`--working`. This extension sends neither',
   incomplete:
     "rpc.sc, `rpc-dispatch-parsed` through answers.sc's table: `(error incomplete (failed (path ...) " +
@@ -780,24 +808,38 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'theourgiad.sc:256 -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
     'client does, and it always names the log',
   'working-unavailable': 'working.sc:247, 251, 272, 461: uncertain W storage result; handled by nobodyKnows before settlement',
-  'eval-value': 'eval-worker.sc:251: local evaluator value serialization',
-  'eval-exception': 'eval-worker.sc:218 (and eval-supervise.sc:381): local evaluator exception',
-  'eval-context': 'eval-worker.sc:332, 339: local evaluator context',
-  'eval-denied': 'eval-worker.sc:342: local evaluator capability refusal',
-  'launcher-unavailable': 'ffi.sc:449: local executable launch',
+  'eval-value': 'eval-worker.sc:244: local evaluator value serialization',
+  'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:531): local evaluator exception',
+  'eval-context': 'eval-worker.sc:325, 332: local evaluator context',
+  'eval-denied': 'eval-worker.sc:335: local evaluator capability refusal',
+  'launcher-unavailable': 'ffi.sc:454 (execvp; and 480, execve): local executable launch',
   'transport-store-mismatch': 'daemon.sc:1576: rejected socket envelope before dispatch',
-  'unknown-tag': 'resolve-cut, store.sc:2071: historical query cut lookup',
-  'tag-unsettled': 'resolve-cut, store.sc:2073: historical query cut lookup',
-  'cut-unavailable': 'store-diff, store.sc:2090: historical query cut validation',
-  'already-initialised': 'store-init!, store.sc:4154 -- initialising a store, not writing to one',
-  'foreign-writer': 'store-init!, store.sc:4157 -- as above',
-  'ambiguous-identity': 'match-by-signature, project.sc:979 -- the markdown import path',
-  'position-mismatch': 'match-sections, project.sc:913 -- the markdown import path',
-  'would-delete': 'import-md, project.sc:680 -- the markdown import path',
-  'invalid-candidate': 'publish-validated!, log.sc:4236 -- publication, not a block write',
-  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1101 -- a log segment candidate that is not there; this extension never sends `publish`',
-  'unknown-verb': 'dispatch-verb, rpc.sc:1840 -- dispatch, before any verb runs',
-  'no-such-intent': 'resolve-from, store.sc:3713 -- resolving an intent by name, not writing',
+  'unknown-tag': 'resolve-cut, store.sc:2091: historical query cut lookup',
+  'tag-unsettled': 'resolve-cut, store.sc:2093: historical query cut lookup',
+  'cut-unavailable': 'store-diff, store.sc:2110: historical query cut validation',
+  'already-initialised': 'store-init!, store.sc:4244 -- initialising a store, not writing to one',
+  'foreign-writer': 'store-init!, store.sc:4247 -- as above',
+  'ambiguous-identity': 'match-by-signature, project.sc:1324 -- the markdown import path',
+  'position-mismatch': 'match-sections, project.sc:1206 -- the markdown import path',
+  'would-delete': 'import-md, project.sc:710 -- the markdown import path',
+  'invalid-candidate': 'publish-validated!, log.sc:4315 -- publication, not a block write',
+  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1110 -- a log segment candidate that is not there; this extension never sends `publish`',
+  'unknown-verb': 'dispatch-verb, rpc.sc:1852 -- dispatch, before any verb runs',
+  /*
+   * NOTE: THREE KINDS FIRST READ ON 659fea2. `would-cycle` refuses a MOVE
+   * that would put a block under its own descendant; this extension sends
+   * no `move` (a block's place changes only through the core's own
+   * commands), and its batches hold only inserts. The other two are
+   * refusals of `eval`, which this extension cannot send (see the `eval`
+   * rows below).
+   */
+  'would-cycle':
+    "store.sc:2603, `resolve`'s `move` arm -- `(error would-cycle (id ...) (parent ...) (through ...))`; " +
+    'this extension sends no move, and no batch of its holds one',
+  'runners-disabled': 'core.sc:455 -- `eval` with a language runner while runners are off; this extension does not send eval',
+  'projection-failed':
+    'eval-runner.sc:295 -- the projection an `eval` runs against could not be made; this extension does not send eval',
+  'no-such-intent': 'resolve-from, store.sc:3774 -- resolving an intent by name, not writing',
   /*
    * NOTE: FIRST READ FROM THE W DELIVERY
    * (archive/theourgia-code-delivery-w-2026-09-17-r1), when the pinned core
@@ -816,7 +858,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * each and what this client does instead of settling it.
    */
   'transport-unknown':
-    'daemon.sc:1518 and 1629-1632 -- the process that owns the store (or a writer) died while this connection was ' +
+    'daemon.sc:1518 and 1681-1684 -- the process that owns the store (or a writer) died while this connection was ' +
     'open, so the request may already have been applied and the connection is closed before ' +
     'anything can say. `saysNobodyKnows` takes it before settlement: the entry is marked ' +
     'pending, keeps its request id and its cursor, and goes again on the next drain',
@@ -828,12 +870,12 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.sc:329 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
-    'rpc-dispatch-parsed, rpc.sc:1701-1745, by answers.sc\'s table (`guarded`, rpc.sc:106, now ' +
+    'rpc-dispatch-parsed, rpc.sc:1710-1754, by answers.sc\'s table (`guarded`, rpc.sc:107, now ' +
     're-raises it) -- an entry the verb could not read, anywhere in the verb, including ' +
     'after the append; the answer does not say where. `saysNobodyKnows` takes it before ' +
     'settlement, exactly as `transport-unknown`: pending, same request id, sent again',
   'unknown-name':
-    'whereis, rpc.sc:1267 -- a read verb naming the nearest names it could place; not a ' +
+    'whereis, rpc.sc:1276 -- a read verb naming the nearest names it could place; not a ' +
     'write and not a verb a save sends',
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
@@ -842,25 +884,25 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    *
    * NEVER: THE FOUR `eval` ONES CANNOT BE A WRITE'S ANSWER HERE FOR A
    * STRUCTURAL REASON, not because they look unlikely: `eval` is not a
-   * verb this extension can send. `client.ts` lists twenty-six verbs in
+   * verb this extension can send. `client.ts` lists the verbs it can send in
    * `KNOWN_VERBS` and neither `eval` nor `serve` is among them, and
    * `answerKind` (client.ts:127) THROWS for a verb that is not listed --
    * so an `eval` request cannot leave this process at all.
    */
   'eval-worker-unavailable':
-    'eval-worker.sc:165 (handshake) and eval-supervise.sc:172 (no-ready) -- TWO sites, not ' +
+    'eval-worker.sc:158 (handshake) and eval-supervise.sc:319 (no-ready) -- TWO sites, not ' +
     'one: the worker says it when its handshake fails, and the supervisor says it when no ' +
     "worker became ready before its deadline (`ready-ms`, 5000 in the pinned core). Both answer " +
     'an `eval`, which this extension cannot send',
   'spawn-refused':
-    'eval-supervise.sc:182 -- the worker process could not be started at all. It answers an ' +
+    'eval-supervise.sc:329 -- the worker process could not be started at all. It answers an ' +
     '`eval`; the same tag also appears in proc.sc:87 as a process DEATH REASON rather than an ' +
     'answer, which is a different thing wearing the same word',
   'eval-limit':
-    'limit-answer, eval-supervise.sc:317 -- an evaluation reached its time, memory or output ' +
+    'limit-answer, eval-supervise.sc:467 -- an evaluation reached its time, memory or output ' +
     'budget. It answers an `eval`, which this extension cannot send',
   'eval-worker-exit':
-    'finish, eval-supervise.sc:329 -- the worker ended without a complete protocol line. It ' +
+    'finish, eval-supervise.sc:479 -- the worker ended without a complete protocol line. It ' +
     'answers an `eval`, which this extension cannot send',
   /*
    * NEVER: AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
@@ -880,7 +922,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'opened for a reason the answers table does not classify, before it signals ready; the ' +
     'client relays it as the kind of `serve-start-failed`, never as this head',
   unknown:
-    'write-outcome->answer, store.sc:2610 -- it IS a write answer, and it is handled before ' +
+    'write-outcome->answer, store.sc:2671 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
     'retried rather than settled at all'
 };

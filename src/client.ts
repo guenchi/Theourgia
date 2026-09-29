@@ -47,7 +47,7 @@
 
 import { CoreConfig } from './config';
 import { RawResult, Transport, TransportError, transportFor } from './transport';
-import { AnswerParseError, Datum, answerOf, isList, parseAnswers } from './wire';
+import { AnswerParseError, Datum, answerOf, asInteger, isList, isSym, parseAnswers } from './wire';
 
 export type AnswerKind = 'text' | 'items' | 'datum';
 
@@ -98,6 +98,14 @@ export interface Note {
   writer: string;
   path: string;
   reason: string;
+  /*
+   * PRESENT FOR A CUT, absent for a writer that could not be read at all.
+   * A cut is a writer whose log was read up to a record and not past it,
+   * because what follows is damaged: `kind` is the log's own name for the
+   * damage and `after` the last record kept. The writer's records up to
+   * there ARE in the reading.
+   */
+  cut?: { kind: string; after: number };
 }
 
 /*
@@ -169,7 +177,16 @@ function notesOf(clause: Datum, verb: string, detail: string): Note[] {
     throw incompleteRefused(verb, 'its incomplete clause names no writer', detail);
   }
   return parts.map((part, index) => {
-    const note = answerOf(part, 'unreadable');
+    /*
+     * TWO KINDS OF NOTE: `(unreadable (writer w) (path p) (reason r))`, a
+     * writer nothing could be read of, and `(cut (writer w) (path p)
+     * (reason r) (kind k) (after n))`, a writer read up to record n. Any
+     * other kind is refused by name, as before: a note this build does not
+     * know how to say is not one it may leave out.
+     */
+    const unreadable = answerOf(part, 'unreadable');
+    const cut = unreadable === null ? answerOf(part, 'cut') : null;
+    const note = unreadable ?? cut;
     if (note === null) {
       throw incompleteRefused(verb, `note ${index + 1} of its incomplete clause is not a writer's note`, detail);
     }
@@ -180,7 +197,20 @@ function notesOf(clause: Datum, verb: string, detail: string): Note[] {
       }
       return value.value;
     };
-    return { writer: field('writer'), path: field('path'), reason: field('reason') };
+    const read = { writer: field('writer'), path: field('path'), reason: field('reason') };
+    if (cut === null) {
+      return read;
+    }
+    const kind = cut.value('kind');
+    const after = cut.value('after');
+    if (!kind.read || !isSym(kind.value)) {
+      throw incompleteRefused(verb, `note ${index + 1} of its incomplete clause has no kind`, detail);
+    }
+    const last = after.read ? asInteger(after.value) : null;
+    if (last === null || last < 0) {
+      throw incompleteRefused(verb, `note ${index + 1} of its incomplete clause has no after`, detail);
+    }
+    return { ...read, cut: { kind: kind.value.name, after: last } };
   });
 }
 
@@ -201,7 +231,13 @@ export function mergeNotes(...lists: Array<Note[] | null | undefined>): Note[] |
   const out: Note[] = [];
   for (const list of lists) {
     for (const note of list ?? []) {
-      if (!out.some((n) => n.writer === note.writer && n.path === note.path && n.reason === note.reason)) {
+      const same = (n: Note): boolean =>
+        n.writer === note.writer &&
+        n.path === note.path &&
+        n.reason === note.reason &&
+        (n.cut === undefined) === (note.cut === undefined) &&
+        (n.cut === undefined || (n.cut.kind === note.cut?.kind && n.cut.after === note.cut?.after));
+      if (!out.some(same)) {
         out.push(note);
       }
     }
@@ -275,6 +311,11 @@ const KNOWN_VERBS = new Set([
   'tag',
   'diff',
   'conflicts',
+  /*
+   * `split-suggest` writes a review file and no record, so it is not in
+   * ALWAYS_WRITE_VERBS; its answer is one datum.
+   */
+  'split-suggest',
   /*
    * NOTE: `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
    * An unknown verb throws out of `answerKind`, the caller that asks

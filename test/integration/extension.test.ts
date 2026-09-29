@@ -29,6 +29,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { StoreModel } from '../../src/model';
+import { runSplit } from '../../src/split-symbols';
 import { stringField } from '../../src/blocks';
 import {
   RealStore,
@@ -398,6 +399,87 @@ describe('the extension inside an editor', function () {
      * moved -- is made by the unit cells, which create the storage they
      * then look at.
      */
+  });
+
+  /*
+   * A SPLIT BY THE EDITOR'S OWN SYMBOLS, IN A REAL EDITOR. The provider is
+   * the one VS Code ships for JavaScript; nothing here stands in for it,
+   * and the cell says so by finding no stand-in module loaded. It reads
+   * what can be read -- how many symbols, their kinds and names, the
+   * offsets -- and cannot say which provider answered (the editor merges
+   * them), which the delivery notes say.
+   */
+  it('P5 splits a .js file by the editor\'s JavaScript symbols, and the core cuts where they start', async () => {
+    assert.deepStrictEqual(
+      Object.keys(require.cache).filter((m) => /extension-schedules|fake-core/.test(m)),
+      [],
+      'a stand-in module is loaded in the editor host'
+    );
+    const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'theourgia-split-'));
+    const text = '// one\nfunction alpha() {\n  return 1;\n}\n\n// two\nfunction beta() {\n  return 2;\n}\n';
+    const file = path.join(dir, 'split.js');
+    fs.writeFileSync(file, text);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document);
+    let provided: unknown = [];
+    await until(
+      () => `the editor's symbol provider named the two functions (last answer: ${JSON.stringify(provided)})`,
+      async () => {
+        provided = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri);
+        return Array.isArray(provided) && provided.length >= 2;
+      }
+    );
+    const written: string[] = [];
+    const outcome = await runSplit(
+      {
+        uri: document.uri.toString(),
+        fsPath: file,
+        languageId: document.languageId,
+        isDirty: () => document.isDirty,
+        version: () => document.version,
+        text: () => document.getText(),
+        save: () => Promise.resolve(document.save())
+      },
+      {
+        client: store.client,
+        editorVersion: vscode.version,
+        readFile: (p) => fs.readFileSync(p),
+        symbols: () => Promise.resolve(vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri)),
+        symbolsPath: () => path.join(dir, 'symbols.sexp'),
+        writeSymbols: (p, t) => {
+          fs.writeFileSync(p, t);
+          written.push(t);
+        },
+        removeSymbols: (p) => fs.rmSync(p, { force: true })
+      }
+    );
+    assert.strictEqual(
+      outcome.done,
+      'split',
+      JSON.stringify(outcome, (_key, v) => (typeof v === 'bigint' ? String(v) : v))
+    );
+    const lines = written[0].trimEnd().split('\n');
+    const digest = require('crypto').createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+    assert.strictEqual(lines[0], `(symbols (digest "${digest}") (source (vscode "${vscode.version}" "javascript")) (top-level #t))`);
+    assert.deepStrictEqual(lines.slice(1), [
+      `(symbol ${text.indexOf('function alpha')} ${text.indexOf('}\n') + 1} function "alpha")`,
+      `(symbol ${text.indexOf('function beta')} ${text.lastIndexOf('}') + 1} function "beta")`
+    ]);
+    assert.ok(outcome.done === 'split');
+    assert.ok(
+      outcome.notice.startsWith(`2 blocks proposed, cuts from (vscode "${vscode.version}" "javascript")`),
+      outcome.notice
+    );
+    assert.deepStrictEqual(outcome.boundaries, [0, Buffer.byteLength(text.slice(0, text.indexOf('// two')))], 'the second block does not start at its comment');
+    /*
+     * AND THE COMMAND ITSELF, from the palette's point of view: the review
+     * file the core wrote for this source is what it opens.
+     */
+    await vscode.window.showTextDocument(document);
+    await vscode.commands.executeCommand('theourgia.suggestSplit');
+    const shown = vscode.window.activeTextEditor?.document.uri.fsPath ?? '';
+    assert.ok(shown.startsWith(`${file}.review-`), `the command opened ${shown}`);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('opens a block into a markdown buffer holding its heading and body', async () => {

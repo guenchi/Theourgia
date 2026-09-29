@@ -44,11 +44,12 @@ export interface SuiteLike {
 }
 
 /*
- * The current host registers 15 extension and 4 generation cells.
- * The completed v20 editor run preserves this 19-cell floor.
+ * The current host registers 16 extension and 4 generation cells: 15 at
+ * the completed v20 editor run, and the split by the editor's own
+ * JavaScript symbols (P5).
  */
 export const EDITOR_CELLS: Array<[string, number]> = [
-  ['extension.test.js', 15],
+  ['extension.test.js', 16],
   ['generation.test.js', 4]
 ];
 
