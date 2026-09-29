@@ -514,11 +514,16 @@
       '(#t #f #f ("build.ss")))
 (want "D1-door-01 no native filesystem name outside ffi.sc, as a token or by an imported name"
       (door-hits files texts symbols) '())
+;; The names are the banned ones AND every name an import gives one of
+;; them (prefix, rename), as row D1-door-01 counts them elsewhere; the
+;; second list is every form headed by any of those names.
+(define table-door-names
+  (map car (import-aliases (forms-of-text "platform-numbers.sc" (text-of "platform-numbers.sc")) door-banned)))
 (want "D1-door-02 platform-numbers.sc's native filesystem names: one call-with-input-file, in linux-libc, for /proc/self/maps"
-      (list (filter (lambda (s) (and (string=? (car s) "platform-numbers.sc") (memq (caddr s) door-banned)))
+      (list (filter (lambda (s) (and (string=? (car s) "platform-numbers.sc") (memq (caddr s) table-door-names)))
                     symbols)
             (let search ((x (read (open-string-input-port (text-of "platform-numbers.sc")))))
-              (cond ((and (pair? x) (eq? (car x) 'call-with-input-file)) (list x))
+              (cond ((and (pair? x) (memq (car x) table-door-names)) (list x))
                     ((pair? x) (append (search (car x)) (search (cdr x))))
                     (else '()))))
       (list '(("platform-numbers.sc" (linux-libc) call-with-input-file))

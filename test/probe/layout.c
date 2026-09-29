@@ -16,13 +16,14 @@
 
 /*
  * THE LAYOUTS ffi.sc READS BY OFFSET, MEASURED BY THE COMPILER. ffi.sc reads
- * struct stat and struct sockaddr_un through byte offsets it holds as
- * constants; they were read from headers on macOS and FreeBSD and never on
- * Linux. This program prints what the platform's own compiler and headers
- * say: each struct's size, and for every field ffi.sc could read its
- * offset and size, with the sizes of the types behind them. The output is
- * S-expressions -- a (struct ...) block per struct, one (constants ...)
- * block -- so a reader can take it as data.
+ * struct stat, struct sockaddr_un and the other kernel structs at the
+ * offsets and widths of the running platform's row in
+ * (theourgia platform-numbers), and each row is this program's output on
+ * that platform, kept verbatim in readings/. It prints what the
+ * platform's own compiler and headers say: each struct's size, and for
+ * every field ffi.sc could read its offset and size, with the sizes of the
+ * types behind them. The output is S-expressions -- a (struct ...) block
+ * per struct, one (constants ...) block -- so a reader can take it as data.
  *
  * AND EVERY PLATFORM NUMBER ffi.sc NAMES: open and fcntl flags, the ioctl
  * and sysconf requests, flock and seek, the file type bits, the socket
