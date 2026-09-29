@@ -167,10 +167,26 @@
 (define (table name) (string-append derived "/" name))
 (define js-table (table "signatures-%2D-javascript.sexp"))
 ;; The table's datum: (derived-table 1 <store-id> <digest> (<kind> <writer> <language> (<fact> ...))).
+;; #f when there is no table, and #f when the bytes are not a datum: a
+;; table that does not read is a reading for the row, not a stop.
 (define (table-datum path)
-  (let ((b (bytes-of path))) (and b (storable-decode (string->sexpr-extended (utf8->string b))))))
+  (let ((b (bytes-of path)))
+    (and b (guard (e (#t #f)) (storable-decode (string->sexpr-extended (utf8->string b)))))))
+;; A TABLE THAT DOES NOT READ ANSWERS (unreadable-table), NOT A CONDITION.
+;; The rows that take facts apart would otherwise stop the fixture at the
+;; first table a mutant corrupted, and every row after it -- the one aimed
+;; at that mutant included -- would never run. '() when there is no table.
 (define (table-facts path)
-  (let ((d (table-datum path))) (if d (cadddr (list-ref d 4)) '())))
+  (let ((d (table-datum path)))
+    (cond ((not (bytes-of path)) '())
+          ((and (list? d) (= 5 (length d)) (list? (list-ref d 4)) (= 4 (length (list-ref d 4)))
+                (list? (cadddr (list-ref d 4))))
+           (cadddr (list-ref d 4)))
+          (else '(unreadable-table)))))
+(define (facts? x) (and (list? x) (for-all (lambda (f) (and (pair? f) (eq? (car f) 'fact))) x)))
+;; `f` of each fact of the table at `path`, or the table's refusal value as it is.
+(define (fact-column f path)
+  (let ((fs (table-facts path))) (if (facts? fs) (map f fs) fs)))
 (define (malformed line reason) (list 'error 'supply-malformed (list 'line line) (list 'reason reason)))
 
 ;; ---- D2: a stale file is refused before anything is written ------------------------
@@ -196,19 +212,25 @@
               (file-exists? (string-append derived "/lock"))))
       (list 'derived-table 1 #t #t (list 'signatures "-" "javascript" 2) #t))
 (want "A1 each fact is kept against its own file, with the depends stamped by id and the file by path, and the provenance"
-      (map (lambda (f) (list (cadr f) (caddr f) (map car (list-ref f 3)) (map car (list-ref f 4)) (list-ref f 5)))
-           (table-facts js-table))
+      (fact-column (lambda (f) (list (cadr f) (caddr f) (map car (list-ref f 3)) (map car (list-ref f 4)) (list-ref f 5)))
+           js-table)
       (list (list "a.js" (list 'signature alpha "() => number" '(kind function)) (list alpha beta) '("a.js")
                   '(vscode "1.140.0" "javascript"))
             (list "b.js" (list 'signature gamma "() => number" '(kind function)) (list gamma) '("b.js")
                   '(vscode "1.140.0" "javascript"))))
 (want "A1 a dependency's stamp is the sha256 of the block's src bytes as read; a file's stamp is not the file's digest"
-      (let ((f (if (pair? (table-facts js-table)) (car (table-facts js-table)) '(fact "" () (("" "")) (("" "")) ()))))
+      (let ((f (let ((fs (table-facts js-table)))
+                 (if (and (facts? fs) (pair? fs)) (car fs) '(fact "" () (("" "")) (("" "")) ())))))
         (list (equal? (cadr (car (list-ref f 3)))
                       (bytevector->hex (sha256 (src-bytes-of (run 'read alpha)))))
               (= 64 (string-length (cadr (car (list-ref f 4)))))
               (equal? (cadr (car (list-ref f 4))) (sha0 "a.js"))))
       '(#t #t #f))
+(want "A1 a table with bytes after its datum: table-facts answers (unreadable-table) and table-datum #f, rather than stopping the fixture"
+      (let ((p (string-append (fresh-dir! "trailing") "/t.sexp")))
+        (in-order (begin (write! p "(derived-table 1 \"s\" \"d\" (signatures \"-\" \"javascript\" ())) (trailing)") 'written)
+                  (table-facts p) (table-datum p) (fact-column cadr p)))
+      (list 'written '(unreadable-table) #f '(unreadable-table)))
 
 ;; ---- D12: only a dependency file's digest is wrong ------------------------------------
 (let* ((before (bytes-of js-table))
@@ -238,7 +260,7 @@
 (supply a1-text "signatures")
 (let ((a (supply (header 'signatures "-" (files-of "a.js" "b.js") '("a.js")) "signatures")))
   (want "R8 an empty supply replacing a.js keeps b.js's fact and drops a.js's"
-        (in-order a (map cadr (table-facts js-table)))
+        (in-order a (fact-column cadr js-table))
         (list '(ok (supplied (facts 0) (files 1))) '("b.js"))))
 (supply a1-text "signatures")
 
@@ -315,7 +337,7 @@
        (a (supply (string-append (header 'diagnostics "-" (files-of "a.js" "b.js") '("a.js")) (diagnostic alpha s (+ s 6)))
                   "diagnostics")))
   (want "M18 control: the same range on alpha is kept, stored in alpha's own src"
-        (in-order a (map caddr (table-facts diag-table)))
+        (in-order a (fact-column caddr diag-table))
         (list '(ok (supplied (facts 1) (files 1)))
               (list (list 'diagnostic alpha 'error "m" (list 'at 21 27))))))
 
@@ -441,6 +463,17 @@
 (define js-c "function delta() {\n  return 4;\n}\n")
 (define (ask st . args) (rpc-dispatch st args "test"))
 (define (src-bytes st id) (src-bytes-of (ask st 'read id)))
+;; EACH SCENARIO STORE'S OWN WRITER, by name, as the one directory under
+;; writers/ when the store is made. A record is forged for that writer by
+;; name: a working view opened later for another writer ("-" included)
+;; makes a directory of its own, and the first entry is then whichever the
+;; listing puts first.
+(define own-writers (make-hashtable string-hash string=?))
+(define (own-writer st) (hashtable-ref own-writers st #f))
+(define (forge-own! st payload-text) (forge-record-as! st (own-writer st) payload-text))
+;; 'forged, or the refusal forge-record-as! answered.
+(define (forged st payload-text)
+  (let ((n (forge-own! st payload-text))) (if (integer? n) 'forged n)))
 (define (make-store! name)
   (let ((st (string-append root "/" name)) (src (fresh-dir! (string-append name "-src"))))
     (write! (string-append src "/a.js") js-a)
@@ -454,6 +487,10 @@
             (list (head-of i) (head-of m) (length (filter string? ids))
                   (let loop ((xs ids)) (or (null? xs) (and (not (member (car xs) (cdr xs))) (loop (cdr xs))))))
             '(ok ok 4 #t)))
+    (let ((wdir (string-append st "/writers")))
+      (hashtable-set! own-writers st
+                      (and (file-directory? wdir)
+                           (let ((ws (directory-list wdir))) (and (= 1 (length ws)) (car ws))))))
     st))
 (define (id-in st needle)
   (let ((m (find-headed (ask st 'grep needle) 'match))) (and m (string? (cadr m)) (cadr m))))
@@ -604,15 +641,27 @@
 ;; A TABLE WHOSE CHECKSUM IS RIGHT AND WHOSE CONTENT IS NOT this library's:
 ;; the body changed and the checksum recomputed over it, as a hand-edited
 ;; or foreign table would be.
-(define (rewrite-table! path change)
-  (let* ((d (storable-decode (string->sexpr-extended (utf8->string r1-table-bytes))))
-         (body (change (list-ref d 4))))
-    (write-bytes! path (string->utf8 (sexpr->string-extended
-                                       (storable-encode
-                                         (list (car d) (cadr d) (caddr d)
-                                               (bytevector->hex (sha256 (string->utf8 (sexpr->string-extended
-                                                                                        (storable-encode body)))))
-                                               body)))))))
+;; -> rewritten, or not-a-table when `bytes` is not a table's datum (empty,
+;; as it is when there is no table to copy): those bytes are then written
+;; as they are, so the rows after read a table that does not read rather
+;; than the fixture stopping here.
+(define (rewrite-table-from! bytes path change)
+  (let ((d (guard (e (#t #f)) (storable-decode (string->sexpr-extended (utf8->string bytes))))))
+    (if (not (and (list? d) (= 5 (length d))))
+        (begin (write-bytes! path bytes) 'not-a-table)
+        (let ((body (change (list-ref d 4))))
+          (write-bytes! path (string->utf8 (sexpr->string-extended
+                                             (storable-encode
+                                               (list (car d) (cadr d) (caddr d)
+                                                     (bytevector->hex (sha256 (string->utf8 (sexpr->string-extended
+                                                                                              (storable-encode body)))))
+                                                     body)))))
+          'rewritten))))
+(define (rewrite-table! path change) (rewrite-table-from! r1-table-bytes path change))
+(want "D8 a rewrite of a table that is not there writes the empty bytes and says so, rather than stopping the fixture"
+      (let ((p (string-append (fresh-dir! "rewrite-empty") "/t.sexp")))
+        (in-order (rewrite-table-from! #vu8() p (lambda (body) body)) (bytes-of p)))
+      (list 'not-a-table #vu8()))
 (rewrite-table! r1-table (lambda (body) (list (car body) (cadr body) (caddr body)
                                               (map (lambda (f) (list (car f) (cadr f) (caddr f) '() (list-ref f 4) (list-ref f 5)))
                                                    (cadddr body)))))
@@ -825,9 +874,14 @@
 ;; A MODE IS NOT A FIELD THE CALLER'S PATH CHANGES (set answers mode-mismatch),
 ;; so the change arrives as a record from elsewhere would.
 (want "D23 beta's mode changed by a record (its kind still code): a.js does not project, alpha's fact is stale, and export-code refuses unexportable-block"
-      (in-order (and (forge-record! r7b (format "(set ~s mode datum)" r7b-beta)) 'forged) (sig-of r7b r7b-alpha)
+      (in-order (forged r7b (format "(set ~s mode datum)" r7b-beta)) (sig-of r7b r7b-alpha)
             (let ((x (ask r7b 'export-code (fresh-dir! "x")))) (and (pair? x) (assq 'reason (cddr x)))))
       (list 'forged absent-stale-1 '(reason unexportable-block)))
+(want "D23 a record forged for a writer with no segment is refused by name, and nothing is appended elsewhere"
+      (let ((before (bytes-of (string-append r7b "/writers/" (own-writer r7b) "/000001.sexp"))))
+        (in-order (forge-record-as! r7b "nobody" (format "(set ~s title ~s)" r7b-beta "t"))
+                  (equal? (bytes-of (string-append r7b "/writers/" (own-writer r7b) "/000001.sexp")) before)))
+      (list '(forge-refused (writer "nobody")) #t))
 
 ;; ---- D30, D24: who holds the path ---------------------------------------------------------
 (define r8 (make-store! "r8"))
@@ -842,7 +896,7 @@
             (head-of (ask r8 'set r8-c "path" "c.js")) (sig-of r8 r8-gamma))
       (list 'ok absent-stale-1 '(reason duplicate-path) 'ok (present "g")))
 (want "D30 b.js's mode changed by a record: nothing holds b.js as a text file, gamma's fact is stale"
-      (in-order (and (forge-record! r8 (format "(set ~s mode datum)" r8-b)) 'forged) (sig-of r8 r8-gamma))
+      (in-order (forged r8 (format "(set ~s mode datum)" r8-b)) (sig-of r8 r8-gamma))
       (list 'forged absent-stale-1))
 (define (without-derived st thunk)
   (let ((d (string-append st "/derived")) (away (string-append st "/derived-away")))
@@ -1265,7 +1319,7 @@
 (define r19-beta (id-in r19 "function beta"))
 (supply-now r19 "-" (list (sig r19-alpha "a")) '("a.js"))
 (want "V11 beta's src arrives as text in a record: a.js does not project (unexportable-block), and alpha's fact, which does not list beta, is stale"
-      (begin (forge-record! r19 (format "(set ~s src ~s)" r19-beta "function beta() {}\n"))
+      (begin (forge-own! r19 (format "(set ~s src ~s)" r19-beta "function beta() {}\n"))
              (let ((x (ask r19 'export-code (fresh-dir! "text-src"))))
                (list (sig-of r19 r19-alpha) (head-of x) (and (pair? x) (assq 'reason (cddr x))))))
       (list absent-stale-1 '(error projection-invalid) '(reason unexportable-block)))
@@ -1312,14 +1366,14 @@
 (define rf (make-store! "rf"))
 (define rf-alpha (id-in rf "function alpha"))
 (define rf-beta (id-in rf "function beta"))
-(define rf-writer (car (directory-list (string-append rf "/writers"))))
+(define rf-writer (own-writer rf))
 (define rf-check-before (ask rf 'check))
 (want "D10 setup: the store has one writer directory, holding the segment the helper appends to"
       (in-order (length (directory-list (string-append rf "/writers")))
             (file-exists? (string-append rf "/writers/" rf-writer "/000001.sexp")))
       '(1 #t))
-(define rf-seq-1 (forge-record! rf (format "(link ~s calls ~s)" rf-alpha rf-beta)))
-(define rf-seq-2 (forge-record! rf (format "(link ~s uses ~s surplus)" rf-beta rf-alpha)))
+(define rf-seq-1 (forge-own! rf (format "(link ~s calls ~s)" rf-alpha rf-beta)))
+(define rf-seq-2 (forge-own! rf (format "(link ~s uses ~s surplus)" rf-beta rf-alpha)))
 (define rf-check-after (ask rf 'check))
 (want "D10 check: no clause before; after an old calls record and an old uses record with a surplus argument, the clause names both with their events, and the verdict is the same"
       (in-order (clause rf-check-before 'reserved-relations) (clause rf-check-before 'verdict)

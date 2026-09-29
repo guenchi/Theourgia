@@ -72,24 +72,40 @@
          (writers (if (file-exists? wdir) (directory-list wdir) '())))
     (when (null? writers)
       (assertion-violation 'forge-record! "this store has no writer to append to" store))
-    (let* ((seg (string-append wdir "/" (car writers) "/000001.sexp"))
-           (bytes (call-with-port (open-file-input-port seg)
-                    (lambda (i) (let ((b (get-bytevector-all i)))
-                                  (if (eof-object? b) (make-bytevector 0) b)))))
-           (text (utf8->string bytes))
-           (seq (forge-next-seq text))
-           ;; THE ACTOR SAYS WHERE IT CAME FROM. A record forged by a
-           ;; fixture is not one this store's writer produced, and a reading
-           ;; that shows the log should say so rather than blend in.
-           (datum (string-append "(" (number->string seq)
-                                 " 1789978200000 \"forged\" () " payload-text ")"))
-           (line (string-append (crc32-hex (string->utf8 datum)) " " datum "\n")))
-      (call-with-port (open-file-output-port seg (file-options no-fail no-truncate)
-                                             (buffer-mode block))
-        (lambda (o)
-          (set-port-position! o (bytevector-length bytes))
-          (put-bytevector o (string->utf8 line))))
-      seq)))
+    (forge-append! (string-append wdir "/" (car writers) "/000001.sexp") payload-text)))
+
+;; THE SAME RECORD, APPENDED TO THE WRITER THE CALLER NAMES. forge-record!
+;; takes the first directory under writers/, which is the store's own only
+;; while it is the only one: a working view opened for another writer makes
+;; a directory of its own, and the first entry is then whichever the
+;; listing puts first. -> the sequence number written, or
+;; (forge-refused (writer <name>)) when that writer has no segment, so the
+;; row that asked compares the refusal rather than stopping.
+(define (forge-record-as! store writer payload-text)
+  (let ((seg (and (string? writer) (string-append store "/writers/" writer "/000001.sexp"))))
+    (if (and seg (file-exists? seg))
+        (forge-append! seg payload-text)
+        (list 'forge-refused (list 'writer writer)))))
+
+;; Appends one forged record to the segment `seg`. -> its sequence number.
+(define (forge-append! seg payload-text)
+  (let* ((bytes (call-with-port (open-file-input-port seg)
+                  (lambda (i) (let ((b (get-bytevector-all i)))
+                                (if (eof-object? b) (make-bytevector 0) b)))))
+         (text (utf8->string bytes))
+         (seq (forge-next-seq text))
+         ;; THE ACTOR SAYS WHERE IT CAME FROM. A record forged by a
+         ;; fixture is not one this store's writer produced, and a reading
+         ;; that shows the log should say so rather than blend in.
+         (datum (string-append "(" (number->string seq)
+                               " 1789978200000 \"forged\" () " payload-text ")"))
+         (line (string-append (crc32-hex (string->utf8 datum)) " " datum "\n")))
+    (call-with-port (open-file-output-port seg (file-options no-fail no-truncate)
+                                           (buffer-mode block))
+      (lambda (o)
+        (set-port-position! o (bytevector-length bytes))
+        (put-bytevector o (string->utf8 line))))
+    seq))
 
 ;; A RECORD FROM A SECOND WRITER, which is how a conflict really happens.
 ;;
