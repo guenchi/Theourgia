@@ -180,9 +180,11 @@
 
 ;; (theourgia answers) is in it since F100b item 6: the client's own
 ;; failures are answered by the table (classify-failure).
+;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
+;; platform number the FFI uses comes from the running platform's row.
 (want "C-1 and its closure is exactly what it should be"
       (closure 'client)
-      '(answers client digest ffi incomplete render trace))
+      '(answers client digest ffi incomplete platform-numbers render trace))
 
 ;; KEY: THE CONTROL ROW. Without it every row above is also passed by a
 ;; walker that found no edges at all -- which is the state this file
@@ -223,9 +225,11 @@
 ;; failures are answered by the table (classify-failure).
 ;; (theourgia refusal) is in it since F100b M3a: the shell renders every
 ;; refusal through one object (item 8; ruling Q-M3-1).
+;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
+;; platform number the FFI uses comes from the running platform's row.
 (want "C-1 and the shell's closure is exactly what it should be"
       (closure-of-all shell-imports)
-      '(answers arguments client digest ffi incomplete json refusal render trace))
+      '(answers arguments client digest ffi incomplete json platform-numbers refusal render trace))
 
 
 ;; ---- C-2 the client PROGRAM's own closure --------------------------------
@@ -262,9 +266,11 @@
       (filter (lambda (n) (memq n server-side)) (closure-of-all program-imports))
       '())
 
+;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
+;; platform number the FFI uses comes from the running platform's row.
 (want "C-2 and the client program's closure is exactly what it should be"
       (closure-of-all program-imports)
-      '(answers arguments client digest ffi incomplete render trace))
+      '(answers arguments client digest ffi incomplete platform-numbers render trace))
 
 (printf "rows: ~a\n~a failures\nclosures complete\n" rows failures)
 (exit (if (zero? failures) 0 1))

@@ -1051,9 +1051,11 @@
 
 ;; (theourgia answers) is in it since F100b item 6: the client's own
 ;; failures are answered by the table (classify-failure).
+;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
+;; platform number the FFI uses comes from the running platform's row.
 (want "IMPORTS and the client's closure is exactly what it should be"
       (closure-from 'client)
-      '(answers client digest ffi incomplete render trace))
+      '(answers client digest ffi incomplete platform-numbers render trace))
 
 ;; NEVER: AND THE PROGRAM'S OWN CLOSURE, not only the library's. A person runs
 ;; `theourgia.sc`; what IT reaches is a separate fact from what the
@@ -1063,6 +1065,8 @@
 ;; keeping a second copy of it, and the table reaches nothing else.
 ;; `answers` is allowed for a reason also written there: the program turns
 ;; a filesystem failure into the one table answer (F100b point 4).
+;; (theourgia platform-numbers) is in it because ffi.sc imports it: every
+;; platform number the FFI uses comes from the running platform's row.
 (want "IMPORTS and the client program's closure is exactly what it should be"
       (let ((program-imports
               (map cadr (filter (lambda (r) (pair? (cdr r)))
@@ -1076,7 +1080,7 @@
             (else
              (let ((edges (cond ((assq (car todo) import-graph) => cdr) (else '()))))
                (loop (append edges (cdr todo)) (cons (car todo) seen)))))))
-      '(answers arguments client digest ffi incomplete render trace))
+      '(answers arguments client digest ffi incomplete platform-numbers render trace))
 
 
 (kill-daemons!)
