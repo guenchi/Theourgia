@@ -1,4 +1,4 @@
-(layout-probe 3)
+(layout-probe 4)
 (machine "arm64") (system "Darwin") (release "25.3.0")
 (libc "darwin")
 (pointer-size 8)
@@ -145,4 +145,5 @@
   (EOVERFLOW 84)
   (ETIMEDOUT 60)
   (ECONNREFUSED 61)
+  (ENOTSOCK 38)
   )

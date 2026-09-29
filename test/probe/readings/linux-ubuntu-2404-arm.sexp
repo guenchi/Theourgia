@@ -1,4 +1,4 @@
-(layout-probe 3)
+(layout-probe 4)
 (machine "aarch64") (system "Linux") (release "6.17.0-1022-azure")
 (libc "glibc 2.39")
 (pointer-size 8)
@@ -140,4 +140,5 @@
   (EOVERFLOW 75)
   (ETIMEDOUT 110)
   (ECONNREFUSED 111)
+  (ENOTSOCK 88)
   )

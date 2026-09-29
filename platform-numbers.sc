@@ -66,7 +66,7 @@
   (list
     ;; Linux x86_64, glibc 2.39: GitHub Actions ubuntu-latest, run 36600347509 (linux-ubuntu-latest.sexp).
     '(
-      (layout-probe 3)
+      (layout-probe 4)
       (machine "x86_64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -208,10 +208,11 @@
         (EOVERFLOW 75)
         (ETIMEDOUT 110)
         (ECONNREFUSED 111)
+        (ENOTSOCK 88)
         ))
     ;; Linux aarch64, glibc 2.39: GitHub Actions ubuntu-24.04-arm, run 36600347509 (linux-ubuntu-2404-arm.sexp).
     '(
-      (layout-probe 3)
+      (layout-probe 4)
       (machine "aarch64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -353,10 +354,11 @@
         (EOVERFLOW 75)
         (ETIMEDOUT 110)
         (ECONNREFUSED 111)
+        (ENOTSOCK 88)
         ))
     ;; FreeBSD 15.0 amd64: the Paris server (freebsd-15-paris.sexp).
     '(
-      (layout-probe 3)
+      (layout-probe 4)
       (machine "amd64") (system "FreeBSD") (release "15.0-RELEASE")
       (libc "freebsd 15")
       (pointer-size 8)
@@ -500,10 +502,11 @@
         (EOVERFLOW 84)
         (ETIMEDOUT 60)
         (ECONNREFUSED 61)
+        (ENOTSOCK 38)
         ))
     ;; Darwin arm64, macOS 25.3: the development machine (darwin-arm64-local.sexp).
     '(
-      (layout-probe 3)
+      (layout-probe 4)
       (machine "arm64") (system "Darwin") (release "25.3.0")
       (libc "darwin")
       (pointer-size 8)
@@ -650,6 +653,7 @@
         (EOVERFLOW 84)
         (ETIMEDOUT 60)
         (ECONNREFUSED 61)
+        (ENOTSOCK 38)
         ))))
 
   ;; ---- which row is this platform's -----------------------------------------

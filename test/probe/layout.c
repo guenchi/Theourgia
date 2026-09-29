@@ -103,7 +103,7 @@ int main(void) {
   int exited = 0x0300;
   int signalled = 0x0009;
 
-  printf("(layout-probe 3)\n");
+  printf("(layout-probe 4)\n");
   if (uname(&u) == 0) {
     printf("(machine \"%s\") (system \"%s\") (release \"%s\")\n", u.machine, u.sysname, u.release);
   }
@@ -648,6 +648,11 @@ int main(void) {
   printf("  (ECONNREFUSED %ld)\n", (long)(ECONNREFUSED));
 #else
   printf("  (ECONNREFUSED absent)\n");
+#endif
+#ifdef ENOTSOCK
+  printf("  (ENOTSOCK %ld)\n", (long)(ENOTSOCK));
+#else
+  printf("  (ENOTSOCK absent)\n");
 #endif
   printf("  )\n");
   return 0;

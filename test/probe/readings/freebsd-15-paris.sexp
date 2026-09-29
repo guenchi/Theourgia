@@ -1,4 +1,4 @@
-(layout-probe 3)
+(layout-probe 4)
 (machine "amd64") (system "FreeBSD") (release "15.0-RELEASE")
 (libc "freebsd 15")
 (pointer-size 8)
@@ -142,4 +142,5 @@
   (EOVERFLOW 84)
   (ETIMEDOUT 60)
   (ECONNREFUSED 61)
+  (ENOTSOCK 38)
   )
