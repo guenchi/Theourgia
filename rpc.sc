@@ -40,7 +40,7 @@
           describe-log-error eval-usage)
   (import (only (theourgia view) view-read)
           (only (theourgia render) render-wire)
-          (only (theourgia client) request-frame verb-spelling-error)
+          (only (theourgia client) request-frame verb-spelling-error no-daemon-errno?)
           (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (rnrs unicode) (rnrs arithmetic fixnums) (rnrs bytevectors)
@@ -1795,46 +1795,30 @@
   ;; Disagreeing would mean one of them re-running work that may already
   ;; have been done.
   ;;
-  ;; -2 ENOENT (nothing at that path), -38 ENOTSOCK (something that is
-  ;; not a socket), -61 ECONNREFUSED (a socket file whose daemon has
-  ;; gone). KEY: All three measured 2026-09-18 on the development machine
-  ;; (Darwin arm64) against a real daemon, the last by ending one with an
-  ;; uncatchable signal so it could not unlink its own socket. -111 is the
-  ;; same refusal on Linux, where libuv reports that errno instead; it is
-  ;; listed by name rather than left to be found by a user whose CLI
-  ;; stopped working.
+  ;; KEY: THE STATUSES ARE libuv's, WHICH ON UNIX ARE THE libc ERRNO NEGATED,
+  ;; so the question is the client's own: no-daemon-errno? of the status
+  ;; negated -- ENOENT (nothing at that path), ENOTSOCK (something that is
+  ;; not a socket), ECONNREFUSED (a socket file whose daemon has gone),
+  ;; each the running platform's number from (theourgia platform-numbers).
+  ;; A list of literals here once held macOS's -38 and -61 with Linux's
+  ;; -111 added by hand, and missed Linux's -88: a file that is not a
+  ;; socket at the socket path was not "nobody there" on Linux.
   ;;
-  ;; NOTE: THOSE ARE OBSERVATIONS ABOUT PLATFORMS, AS OF THAT DATE, not
-  ;; properties of this program: a platform's mapping can change, and the
-  ;; Linux figure was never measured here at all: `grep -rn '\-111' test/*.sc`
-  ;; prints nothing and exits 1, there being no match.
-  ;;
-  ;; NEVER: THAT SENTENCE SAID THE COMMAND "ANSWERS 0", WHICH IT DOES NOT --
-  ;; `grep -c` would. The rule this comment was written under is that a claim
-  ;; about what nothing covers must carry the command supporting it, and the
-  ;; command was quoted without being run. Quoting a command is the act that
-  ;; makes a reader stop checking, so what belongs here is its output.
-  ;;
-  ;; NEVER: AND THE SENTENCE SAYING NOTHING WOULD GO RED WAS FALSE. It said
-  ;; dropping a status from this list turns nothing red. `test/cli-forward.sc`
-  ;; ends a daemon with an uncatchable signal, checks the socket it bound is
-  ;; still on disk, and requires the next call to answer from the local store
-  ;; -- and on this platform that path arrives here as ECONNREFUSED. Remove
-  ;; `-61` and that row goes red. The claim was taken from a review that had
-  ;; read four files and said so, and the qualifier was lost on the way into
-  ;; this comment. A sentence telling the next reader that nothing covers
-  ;; something tells them not to look.
-  ;;
-  ;; What IS uncovered, narrowly: `-2`, `-38` and `-111` have no row of their
-  ;; own, and no row contrasts the four with a failure that lost an answer
-  ;; mid-flight. That distinction is tethered elsewhere and by other means --
-  ;; `test/client-start.sc`'s CS-9 rows separate "provably never went out"
-  ;; from "this may already have happened", and they do it by the COUNT of
-  ;; bytes written, not by an errno.
+  ;; NOTE: WHAT COVERS IT. `test/cli-forward.sc` ends a daemon with an
+  ;; uncatchable signal, checks the socket it bound is still on disk, and
+  ;; requires the next call to answer from the local store -- on this
+  ;; platform that path arrives here as ECONNREFUSED. The derivation itself
+  ;; is pinned by form in `test/platform-rows.sc`, since no row can make
+  ;; libuv report another platform's numbers. `test/client-start.sc`'s CS-9
+  ;; rows separate "provably never went out" from "this may already have
+  ;; happened" by the COUNT of bytes written, not by an errno.
   (define (transport-unreachable? outcome)
     (and (pair? outcome)
          (eq? 'transport-error (car outcome))
-         (memv (cadr outcome) '(-2 -38 -61 -111))
+         (pair? (cdr outcome))
+         (let ((status (cadr outcome)))
+           (and (integer? status) (exact? status) (negative? status)
+                (no-daemon-errno? (- status))))
          #t))
 
   ;; NEVER: `request-frame` IS NOT DEFINED HERE ANY MORE. It moved to

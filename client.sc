@@ -46,6 +46,7 @@
                 ;; F100b point 6: the pid wait, the hold seam, the record.
                 waitpid-status hold-point! theourgia-fault
                 with-mutation-record mutation-record)
+          (only (theourgia platform-numbers) platform-number)
           (only (theourgia answers) classify-failure)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
@@ -249,25 +250,20 @@
   ;; rather than a missing one.
   (define (answer-limit) (* 32 1024 1024))
 
-  ;; KEY: POSITIVE libc ERRNO VALUES, MEASURED 2026-09-18 on macOS 25.3.0
-  ;; and FreeBSD 15.0-RELEASE, where all three agree:
+  ;; KEY: "NOBODY IS LISTENING" IS THREE libc ERRNO VALUES, and they are
+  ;; the running platform's row in (theourgia platform-numbers): nothing at
+  ;; the path, something that is not a socket, a socket whose daemon has
+  ;; gone. They differ between platforms -- ECONNREFUSED is 61 on macOS
+  ;; and FreeBSD and 111 on Linux, ENOTSOCK 38 and 88 -- and a literal
+  ;; here once made every request after an unclean daemon exit on Linux
+  ;; answer connect-failed instead of starting a daemon.
   ;;
-  ;;   ENOENT 2   ECONNREFUSED 61   ENOTSOCK 38
-  ;;
-  ;; NEVER: NOT THE LIST IN `rpc.sc`. That one holds NEGATIVE libuv status
-  ;; codes (-2, -61, -111...), which is a different numbering from a
-  ;; different library; -111 is there because Linux's ECONNREFUSED is
-  ;; 111, and mixing the two would make a plain `read` failure look like
-  ;; "no daemon" on one platform and nothing on another.
-  ;;
-  ;; NOTE: LINUX DIFFERS AND IS NOT MEASURED (ECONNREFUSED 111, ENOTSOCK
-  ;; 88). It does not need a branch yet only because `sockaddr-un`
-  ;; refuses to build an address there at all; when that platform is
-  ;; measured, this list is the second place to change, and it says so
-  ;; here rather than waiting to be found.
-  (define ENOENT 2)
-  (define ECONNREFUSED 61)
-  (define ENOTSOCK 38)
+  ;; NEVER: rpc.sc asks the same question of libuv's statuses, which are
+  ;; these errnos negated, and it asks it through no-daemon-errno? below,
+  ;; so the answer lives in one place.
+  (define ENOENT (platform-number 'ENOENT))
+  (define ECONNREFUSED (platform-number 'ECONNREFUSED))
+  (define ENOTSOCK (platform-number 'ENOTSOCK))
 
   (define (no-daemon-errno? code)
     (or (equal? code ENOENT)
