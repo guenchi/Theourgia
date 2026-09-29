@@ -524,6 +524,11 @@ const WAITS_AFTER_ITS_GUARD: Record<string, string> = {
     'answered with; nothing of the store is read or written after the guard, and the review names the ' +
     'source file it was cut from, so a settings change during the show leaves a tab that is still about ' +
     'that file',
+  rootListing:
+    'its one wait after the guard records the view mode it decided and sets the title bar\'s key, both ' +
+    'started in the same turn as the guard: the mode is written under the key of the store that was just ' +
+    'listed, read before anything could move, and nothing is decided after the wait. getChildren drops the ' +
+    'listing if the generation moved meanwhile, and the next store\'s listing sets the key for its own mode',
   openBlock:
     'the store is captured BEFORE the first wait and every later step uses the captured one: ' +
     'the publication directory is built from it, so the version and its record are written under ' +

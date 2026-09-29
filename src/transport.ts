@@ -64,9 +64,17 @@ export interface RawResult {
   stderr: string;
 }
 
+/*
+ * `input`, WHEN GIVEN, IS THE REQUEST'S STANDARD INPUT. One verb needs it:
+ * the core's `batch` always takes its intents from standard input as a
+ * positional of its own (arguments.sc, `argument-stdin`), so intents passed
+ * as an argument as well are two positionals and the answer is the verb's
+ * usage line -- measured on the pinned core. Without it, standard input is
+ * closed, as it always was.
+ */
 export interface Transport {
   readonly kind: string;
-  send(verb: string, args: string[]): Promise<RawResult>;
+  send(verb: string, args: string[], input?: string): Promise<RawResult>;
 }
 
 /*
@@ -133,7 +141,7 @@ export class CliTransport implements Transport {
     this.env = environmentFor(config, env, coreDirectoryAt(config.corePath));
   }
 
-  public send(verb: string, args: string[]): Promise<RawResult> {
+  public send(verb: string, args: string[], input?: string): Promise<RawResult> {
     const argv = buildArgv(this.config, verb, args);
     return new Promise<RawResult>((resolve, reject) => {
       let child: ChildProcess;
@@ -145,7 +153,7 @@ export class CliTransport implements Transport {
          */
         child = spawn(argv[0], argv.slice(1), {
           env: this.env,
-          stdio: ['ignore', 'pipe', 'pipe']
+          stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe']
         });
       } catch (e) {
         reject(new TransportError('spawn-failed', `could not start ${argv[0]}`, String(e)));
@@ -165,6 +173,17 @@ export class CliTransport implements Transport {
        */
       child.stdout?.on('data', (chunk: Buffer) => out.push(chunk));
       child.stderr?.on('data', (chunk: Buffer) => err.push(chunk));
+
+      /*
+       * THE INPUT IS WRITTEN WHOLE AND THE STREAM CLOSED, so the core's read
+       * of standard input reaches its end. A child that exits without
+       * reading it breaks the pipe; what happened is then said by the
+       * child's exit and its output, below, not by this write.
+       */
+      if (input !== undefined && child.stdin !== null) {
+        child.stdin.on('error', () => undefined);
+        child.stdin.end(input, 'utf8');
+      }
 
       /*
        * A CHILD ASKED TO STOP IS NOT A CHILD THAT HAS STOPPED, and the

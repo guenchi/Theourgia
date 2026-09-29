@@ -52,8 +52,26 @@ let realClient=null;
 // Whether the incomplete-tree stand-in answers as a store missing a writer;
 // turned off to show what a complete reading does to the marker.
 let incompleteOn=true;
+// The files view. The workspace's state as the extension keeps its view mode
+// in it, per store; a store nobody chose a mode for answers `viewModeDefault`,
+// which is Outline for every scenario but the files ones, so the scenarios
+// written before the files view see the outline they were written against.
+// The context keys set, the names typed into input boxes (and what each box
+// asked), and the stores whose blocks carry paths.
+const viewModes=new Map();let viewModeDefault='outline';const contexts={};const inputs=[],inputAsked=[];
+const pathsOn=new Set(['/stores/A']);
+// Each tree refresh the extension asked for. And the files view's store as
+// state: each block's path and version per store, a `set` of the path taking
+// a new version (refused as `changed` when it names an older one with
+// --if-unchanged), and `storeSet` the same write made by somebody else.
+const fired=[];const filesState=new Map();let filesCursor=40;
+// A write of the workspace's state held until the scenario releases it, and
+// writes of the path that the files store does not answer while it is down.
+let updateGate=null,setsDown=false;
+function filesOf(store){if(!filesState.has(store))filesState.set(store,{path:{'a.1':'docs/a.md','a.4':'src/x.scm'},version:{'a.1':'v1','a.2':'v1','a.3':'v1','a.4':'v1'}});return filesState.get(store);}
+function storeSet(store,id,value){const st=filesOf(store);st.path[id]=value;st.version[id]='v'+(Number(st.version[id].slice(1))+1);filesCursor+=1;return filesCursor;}
 const vs = {
- EventEmitter:class{constructor(){this.event=()=>disposable;}fire(){}dispose(){}},
+ EventEmitter:class{constructor(){this.event=()=>disposable;}fire(){fired.push(1);}dispose(){}},
  TreeItem:class{constructor(label,collapsibleState){this.label=label;this.collapsibleState=collapsibleState;}},ThemeIcon:class{constructor(id){this.id=id;}},ThemeColor:class{},
  TreeItemCollapsibleState:{None:0,Collapsed:1},StatusBarAlignment:{Right:1},Uri:{file:p=>({fsPath:p}),from:o=>({...o,toString(){return `${o.scheme}:${o.path}?${o.query}`;}})},
  Range:class{constructor(a,b,c,d){this.start={line:a,character:b};this.end={line:c,character:d};}},
@@ -73,6 +91,7 @@ const vs = {
   showErrorMessage:m=>{channels.push('error');shown.push({text:m,level:'error'});return messages.push(m);},
   showWarningMessage:m=>{channels.push('warning');shown.push({text:m,level:'warning'});messages.push(m);if(process.argv[3]==='integrity-show-throws')throw new Error('the editor threw');return process.argv[3]==='integrity-show-rejects'?Promise.reject(new Error('the editor refused the warning')):Promise.resolve(undefined);},
   showInformationMessage:m=>{channels.push('information');shown.push({text:m,level:'information'});return messages.push(m);},
+  showInputBox:async options=>{inputAsked.push(options);const next=inputs.shift();return typeof next==='function'?next(options):next;},
   showQuickPick:async items=>{if(!pickGate)throw Error('Unexpected picker');pickGate.enter(items);return pickGate.promise;},showTextDocument:async(d,options)=>{shownAt.push({fsPath:d&&d.fsPath!==undefined?d.fsPath:(d&&d.uri?d.uri.fsPath:null),line:options&&options.selection?options.selection.start.line:null});shownDocs.push({fsPath:d&&d.uri?d.uri.fsPath:null,languageId:d?d.languageId:null});return Object.assign(d,{setDecorations:(type,ranges)=>decorations.push({document:String(d.uri),before:type.options.before&&type.options.before.contentText,ranges})});}},
  workspace:{textDocuments:docs,getConfiguration:()=>({get:(k,f)=>settings[k]??f}),onDidSaveTextDocument:f=>{savedHandler=f;return disposable;},
   onDidChangeConfiguration:f=>{configChanged=f;return disposable;},
@@ -84,6 +103,7 @@ const vs = {
   // misleading line, which nothing that finds a definition may consult.
   executeCommand:async(id,...args)=>{
    if(id==='vscode.executeDefinitionProvider'){const [uri,position]=args;const doc=displayed.find(d=>sameUri(d.uri,uri));if(!doc)throw new Error('no displayed document for the definition request');const out=[];for(const {selector,provider} of definitionProviders){if(!selects(selector,doc))continue;const got=await provider.provideDefinition(doc,position,{});if(got)out.push(...(Array.isArray(got)?got:[got]));}return out;}
+   if(id==='setContext'){contexts[args[0]]=args[1];return undefined;}
    if(id==='vscode.executeDocumentSymbolProvider')return [{name:'alpha',range:{start:{line:0,character:0},end:{line:0,character:0}}}];
    const f=commands.get(id);return f?f(...args):undefined;}}
 };
@@ -97,8 +117,8 @@ accepting.acceptSave=parts=>{const result=accept(parts);acceptances.push(result)
 const {Client}=require(path.join(out,'client.js'));
 const {Working}=require(path.join(out,'working.js')),workingRead=Working.prototype.read;
 Working.prototype.read=async function(...args){const reading=await workingRead.apply(this,args);if(afterRead){const held=afterRead;afterRead=null;held.enter();await held.promise;}return reading;};
-Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',send:async(verb,args)=>{
- requests.push({store:cfg.store,verb,args});
+Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',send:async(verb,args,input)=>{
+ requests.push({store:cfg.store,verb,args,input:input??null});
  if(requestGate && verb===requestGate.verb && (!requestGate.working || args.includes('--working-info'))){const held=requestGate;requestGate=null;held.enter();await held.promise;}
  const byVerb=verbGates[verb];
  if(byVerb&&(!byVerb.match||byVerb.match(args))){delete verbGates[verb];byVerb.enter();const replaced=await byVerb.promise;if(replaced)return {argv:[verb,...args],...replaced};}
@@ -128,6 +148,33 @@ Client.fromConfig=cfg=>realClient!==null?realClient:new Client({kind:'schedule',
   if(verb==='outline')return {argv:[verb,...args],rc:0,stdout:`(ok (text "- a.1  ${title}\\n") ${clause})\n`,stderr:''};
   if(verb==='conflicts')return {argv:[verb,...args],rc:0,stdout:`${clause}\n`,stderr:''};
   if(verb==='read'&&args.length===1)return {argv:[verb,...args],rc:0,stdout:`(ok ((id . "a.1") (deleted . #f) (fields (heading-src . "# ${title}\\n") (src . "body\\n") (title . "${title}")) (position root . 0) (edges)) ${clause})\n`,stderr:''};
+ }
+ // The files view: roots a.1 (a document) and a.3 (a section); under a.1 a
+ // section a.2 holding a text file block a.4. Paths only in the stores in
+ // `pathsOn`. Batches and writes of a path are taken, each a new record.
+ if(process.argv[3].startsWith('files-')){
+  const q=JSON.stringify,paths=pathsOn.has(cfg.store),ok=stdout=>({argv:[verb,...args],rc:0,stdout,stderr:''});
+  const clause=process.argv[3]==='files-incomplete'?' (incomplete (unreadable (writer "zzzzzzzz") (path "/stores/A/writers/zzzzzzzz") (reason "Permission denied")))':'';
+  const rec=(id,fields,pos)=>`((id . ${q(id)}) (deleted . #f) (fields ${fields}) (position ${pos}) (edges))`;
+  const st=filesOf(cfg.store);
+  const blocks={
+   'a.1':rec('a.1',`(kind . doc)${paths?` (path . ${q(st.path['a.1'])})`:''} (title . ${q(title)})`,'root . 0'),
+   'a.2':rec('a.2','(kind . section) (title . "Part")','"a.1" . 0'),
+   'a.3':rec('a.3','(kind . section) (title . "Loose")','root . 1'),
+   'a.4':rec('a.4',`(kind . file) (mode . text)${paths?` (path . ${q(st.path['a.4'])})`:''} (title . "x")`,'"a.2" . 0')};
+  const under={'a.1':['a.1','a.2','a.4'],'a.2':['a.2','a.4'],'a.3':['a.3'],'a.4':['a.4']};
+  if(verb==='outline')return ok(`(ok (text "- a.1  ${title}\\n- a.3  Loose\\n")${clause})\n`);
+  if(verb==='conflicts')return ok(clause===''?'':`${clause.trim()}\n`);
+  if(verb==='read'&&args.includes('--recursive')){const got=under[args[0]].map(id=>blocks[id]);return ok(args.includes('--wire')?`(ok (items ${got.join(' ')})${clause})\n`:`${got.join('\n')}\n`);}
+  if(verb==='read')return ok(args.includes('--wire')?`(ok ${blocks[args[0]]} (version ${q(st.version[args[0]])}))\n`:`(ok ${blocks[args[0]]})\n`);
+  if(verb==='batch')return ok('(batch ((ok (events (("w" . 40))) (state (("w.14" . "h"))) (cursor ("w" . 40)) (replay #f))) (done 1))\n');
+  if(verb==='set'){
+   if(setsDown)return {argv:[verb,...args],rc:1,stdout:'',stderr:'the store is not answering'};
+   const guard=args.indexOf('--if-unchanged');
+   if(guard>=0&&args[guard+1]!==st.version[args[0]])return {argv:[verb,...args],rc:1,stdout:`(error changed (current ${q(st.version[args[0]])}))\n`,stderr:''};
+   const n=storeSet(cfg.store,args[0],args[2]);
+   return ok(`(ok (events (("w" . ${n}))) (state ((${q(args[0])} . "h"))) (cursor ("w" . ${n})) (replay #f))\n`);
+  }
  }
  // Queue item 48 (review r1 #2): the store reports a.2, a child of a.1, as a nested document.
  if(verb==='conflicts'&&process.argv[3]==='outline-nested') return {argv:[verb,...args],rc:0,stdout:'(nested-document "a.2")\n',stderr:''};
@@ -185,7 +232,9 @@ async function main(){
  // default, which ends the process -- a tripwire in its own right.
  const unhandledSeen=new Set();
  if(scenario.startsWith('integrity-show'))process.on('unhandledRejection',(reason,promise)=>unhandledSeen.add(promise));
- await require(path.join(out,'extension.js')).activate({globalStorageUri:{fsPath:storage},subscriptions:[]});
+ if(scenario.startsWith('files-'))viewModeDefault=undefined;
+ await require(path.join(out,'extension.js')).activate({globalStorageUri:{fsPath:storage},subscriptions:[],
+  workspaceState:{get:key=>viewModes.has(key)?viewModes.get(key):viewModeDefault,update:async(key,value)=>{viewModes.set(key,value);if(updateGate){const held=updateGate;updateGate=null;held.enter();await held.promise;}}}});
  // Queue item 39: one save of the opened block, and what the editor was shown.
  if(scenario==='notice-behind'||scenario==='notice-refused'||scenario==='incomplete-save'){
   await commands.get('theourgia.openBlock')('a.1');
@@ -544,8 +593,16 @@ async function main(){
   const real=require(path.join(__dirname,'real-core.js'));
   const good=Buffer.from(';; \u4e2d\u6587\r\n(define alpha 1)\r\n','utf8');
   const bad=Buffer.from([0x28,0x64,0x65,0x66,0x69,0x6e,0x65,0x20,0x62,0x20,0x22,0xff,0x22,0x29,0x0a]);
-  const imported=await importedStore(real,{'good.ss':good,'bad.ss':bad});
+  const imported=await importedStore(real,{'good.ss':good});
   try{
+   // A text import skips a file whose bytes are not UTF-8 and lists it as
+   // skipped, so the block that is not UTF-8 is written as other history can
+   // hold one: one insert under the imported file, its src those bytes.
+   const fileId=(await imported.transport.send('outline',[])).stdout.split('\n').map(l=>(/^- (\S+)/.exec(l)||[])[1]).filter(Boolean)[0];
+   const made=await imported.transport.send('batch',[],`(insert ${JSON.stringify(fileId)} #f ((kind . code) (mode . text) (lang . scheme) (name . "b") (src . #vu8(${[...bad].join(' ')}))))`);
+   const badId=(/\(state \(\("([^"]+)"/.exec(made.stdout)||[])[1];
+   if(made.rc!==0||!badId)throw new Error(`the block that is not UTF-8 was not written: ${made.stdout}${made.stderr}`);
+   imported.codeOf['bad.ss']=[badId];
    realClient=imported.client;
    change(imported.store.store);
    shown.length=0;
@@ -669,6 +726,355 @@ async function main(){
    const inDraft=await ask(dirty,where(dirtyText));
    displayed.length=0;docs.length=0;
    return {file,defLine:where(fileText).line,inBlock,inView,inDraft,providers:definitionProviders.length};
+  }finally{realClient=null;store.dispose();for(const d of dirs)fs.rmSync(d,{recursive:true,force:true});}
+ }
+ // The files view with the stand-in core: the rows a store opens with, the
+ // mode each store keeps and the context key the title bar reads, a file's
+ // children, and the three actions with the requests they sent and what they
+ // said.
+ const row=n=>{const item=provider.getTreeItem(n);return {id:item.id??null,label:item.label,command:item.command?item.command.command:null,contextValue:item.contextValue??null,description:item.description??null};};
+ const modeOf=store=>viewModes.get(`theourgia.viewMode:${store}`)??null;
+ if(scenario==='files-incomplete'){
+  return {rows:(await provider.getChildren()).map(row)};
+ }
+ // A listing of an undecided store held at its first subtree read while the
+ // person chooses Outline: the mode chosen meanwhile is the mode, and the
+ // listing's own default is not remembered over it.
+ if(scenario==='files-race'){
+  verbGates.read=Object.assign(gate(),{match:args=>args.includes('--recursive')&&args.includes('--wire')});
+  const held=verbGates.read;
+  const pending=provider.getChildren();
+  await held.entered;
+  await commands.get('theourgia.showOutline')();
+  const chosen=modeOf('/stores/A');
+  held.release();
+  const rows=(await pending).map(row);
+  return {chosen,rows,remembered:modeOf('/stores/A'),context:contexts['theourgia.viewMode']??null};
+ }
+ // A listing of a store kept in Outline held at its outline read while the
+ // person chooses Files: the mode chosen meanwhile is the mode in this branch
+ // too, and the listing is made again in it.
+ if(scenario==='files-race-outline'){
+  viewModes.set('theourgia.viewMode:/stores/A','outline');
+  verbGates.outline=gate();
+  const held=verbGates.outline;
+  const pending=provider.getChildren();
+  await held.entered;
+  await commands.get('theourgia.showFiles')();
+  held.release();
+  const rows=(await pending).map(row);
+  return {rows,remembered:modeOf('/stores/A'),context:contexts['theourgia.viewMode']??null};
+ }
+ // A mode chosen while the listing of an undecided store is remembering the
+ // mode it decided: the mode chosen is the mode, and the listing is made again.
+ if(scenario==='files-race-remember'){
+  updateGate=gate();
+  const held=updateGate;
+  const pending=provider.getChildren();
+  await held.entered;
+  await commands.get('theourgia.showOutline')();
+  held.release();
+  const rows=(await pending).map(row);
+  return {rows:rows.map(x=>x.id),remembered:modeOf('/stores/A'),context:contexts['theourgia.viewMode']??null};
+ }
+ // A move of a.4 to lib made in the current store while its writes are not
+ // answered, so the move is kept in the queue.
+ const keptMove=async()=>{
+  const src=await provider.getChildren((await provider.getChildren()).find(e=>e.directory&&e.directory.name==='src'));
+  setsDown=true;inputs.push('lib');await commands.get('theourgia.moveToDirectory')(src[0]);setsDown=false;
+ };
+ // A kept move drained in front of another save, a new document: the store
+ // refuses it as changed, and the window says so though nobody asked for it.
+ if(scenario==='files-drain-changed'){
+  await keptMove();
+  storeSet('/stores/A','a.4','other/q.scm');
+  shown.length=0;requests.length=0;
+  const docs=(await provider.getChildren()).find(e=>e.directory&&e.directory.name==='docs');
+  inputs.push('n2');await commands.get('theourgia.newFileHere')(docs);
+  return {shown:shown.slice(),verbs:requests.filter(r=>r.verb==='set'||r.verb==='batch').map(r=>r.verb),path:filesOf('/stores/A').path['a.4']};
+ }
+ // The retry command's drain held at the kept move's send while the settings
+ // change: to the same store (the notice is said and the view listed again),
+ // and to another store (the notice is said; the view shown is not that
+ // store's, so it is not listed again).
+ if(scenario==='files-retry-rebuilt'){
+  const retryHeld=async(other)=>{
+   verbGates.set=gate();const held=verbGates.set;shown.length=0;
+   const retrying=commands.get('theourgia.retryOutbox')();
+   await held.entered;change(other);const firedAt=fired.length;held.release();await retrying;
+   return {shown:shown.filter(n=>/changed since it was listed/.test(n.text)),refreshed:fired.length>firedAt};
+  };
+  await keptMove();
+  storeSet('/stores/A','a.4','other/q.scm');
+  const sameStore=await retryHeld('/stores/A');
+  pathsOn.add('/stores/C');change('/stores/C');
+  await keptMove();
+  storeSet('/stores/C','a.4','other/q.scm');
+  const otherStore=await retryHeld('/stores/A');
+  return {sameStore,otherStore,pathA:filesOf('/stores/A').path['a.4'],pathC:filesOf('/stores/C').path['a.4']};
+ }
+ // A move queued while the store did not answer, drained by the retry
+ // command after somebody else changed the path: the store refuses it as
+ // changed, and the window says so and lists the view again.
+ if(scenario==='files-retry-changed'){
+  const src=await provider.getChildren((await provider.getChildren()).find(e=>e.directory&&e.directory.name==='src'));
+  setsDown=true;requests.length=0;shown.length=0;
+  inputs.push('lib');await commands.get('theourgia.moveToDirectory')(src[0]);
+  const queued=shown.map(n=>n.level);
+  storeSet('/stores/A','a.4','other/q.scm');
+  setsDown=false;shown.length=0;
+  const firedBefore=fired.length;
+  await commands.get('theourgia.retryOutbox')();
+  return {queued,retried:shown.slice(),refreshed:fired.length>firedBefore,
+   sets:requests.filter(r=>r.verb==='set').map(r=>r.args.slice(r.args.indexOf('--if-unchanged'))),path:filesOf('/stores/A').path['a.4']};
+ }
+ // The store switched while a move's fresh read is on its way, and
+ // while its prompt is open. Nothing is sent to either store.
+ if(scenario==='files-switch'){
+  const srcOf=async()=>provider.getChildren((await provider.getChildren()).find(e=>e.directory&&e.directory.name==='src'));
+  const first=await srcOf();
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  verbGates.read=Object.assign(gate(),{match:args=>args[0]==='a.4'&&args.includes('--wire')&&!args.includes('--recursive')});
+  const held=verbGates.read;
+  inputs.push('lib');
+  const moving=commands.get('theourgia.moveToDirectory')(first[0]);
+  await held.entered;change('/stores/B');held.release();await moving;
+  const duringRead={sets:requests.filter(r=>r.verb==='set').map(r=>r.store),shown:shown.slice(),asked:inputAsked.length};
+  inputs.length=0;
+  change('/stores/A');
+  const again=await srcOf();
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  inputs.push(()=>{change('/stores/B');return 'lib';});
+  await commands.get('theourgia.moveToDirectory')(again[0]);
+  const duringPrompt={sets:requests.filter(r=>r.verb==='set').map(r=>r.store),shown:shown.slice(),asked:inputAsked.length};
+  return {duringRead,duringPrompt,pathA:filesOf('/stores/A').path['a.4'],pathB:filesOf('/stores/B').path['a.4']};
+ }
+ if(scenario==='files-mode'){
+  const first=await provider.getChildren();
+  const dirOf=name=>first.find(e=>e.directory&&e.directory.name===name);
+  const docsEls=await provider.getChildren(dirOf('docs')),srcEls=await provider.getChildren(dirOf('src'));
+  const group=first.find(e=>e.pathless!==undefined);
+  const A={rows:first.map(row),docs:docsEls.map(row),src:srcEls.map(row),group:group?(await provider.getChildren(group)).map(row):[],
+   fileChildren:docsEls.length>0?(await provider.getChildren(docsEls[0])).map(n=>n.id):[],remembered:modeOf('/stores/A'),context:contexts['theourgia.viewMode']??null};
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  inputs.push('n');await commands.get('theourgia.newFileHere')(dirOf('docs'));
+  inputs.push('lib');await commands.get('theourgia.moveToDirectory')(srcEls[0]);
+  // The row kept from before the move renames the block as it is
+  // now -- the prompt shows lib/x.scm -- with the version the move made.
+  inputs.push('y.scm');await commands.get('theourgia.renameFile')(srcEls[0]);
+  const writes=()=>requests.filter(r=>['batch','set','move','insert'].includes(r.verb)).map(r=>({verb:r.verb,args:r.args,input:r.input}));
+  const actions={requests:writes(),shown:shown.slice(),asked:inputAsked.map(o=>[o.prompt,o.value??null])};
+  // The src directory row from the first listing, opened again after
+  // the move: the row it draws still says src, and a move from it starts
+  // from lib/y.scm.
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  const reopened=await provider.getChildren(dirOf('src'));
+  inputs.push('deep');await commands.get('theourgia.moveToDirectory')(reopened[0]);
+  const oldDirectory={drawn:reopened.map(row),requests:writes(),shown:shown.slice(),asked:inputAsked.map(o=>[o.prompt,o.value??null])};
+  // Somebody else writes the path while the prompt is open. The
+  // write carries the version read before the prompt; the store refuses it
+  // as changed, the notice says so and the view is refreshed.
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  const firedBefore=fired.length;
+  inputs.push(()=>{storeSet('/stores/A','a.4','other/q.scm');return 'z.scm';});
+  await commands.get('theourgia.renameFile')(srcEls[0]);
+  const raced={requests:writes(),shown:shown.slice(),refreshed:fired.length>firedBefore,path:filesOf('/stores/A').path['a.4'],version:filesOf('/stores/A').version['a.4']};
+  // A settings change that keeps the store: rows listed before it
+  // still act, reading the block afresh.
+  change('/stores/A');
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  inputs.push('w.scm');await commands.get('theourgia.renameFile')(srcEls[0]);
+  const sameStore={requests:writes(),shown:shown.slice(),asked:inputAsked.map(o=>[o.prompt,o.value??null])};
+  const docsOfA=dirOf('docs');
+  change('/stores/B');
+  const B={first:(await provider.getChildren()).map(row),firstRemembered:modeOf('/stores/B'),firstContext:contexts['theourgia.viewMode']??null};
+  // Rows kept from store A, used after store B was listed: a
+  // directory, a file node expanded, a file node moved, a file node opened
+  // through its own command. Each is refused, and nothing names A's ids to B.
+  requests.length=0;shown.length=0;inputAsked.length=0;
+  inputs.push('stale');await commands.get('theourgia.newFileHere')(docsOfA);
+  const docsChildren=(await provider.getChildren(docsOfA)).length;
+  const nodeChildren=(await provider.getChildren(docsEls[0])).length;
+  inputs.push('stale');await commands.get('theourgia.moveToDirectory')(srcEls[0]);
+  const opened=provider.getTreeItem(docsEls[0]).command.arguments;
+  await commands.get('theourgia.openBlock')(...opened);
+  B.staleRow={sent:requests.filter(r=>r.verb==='batch'||r.verb==='set').length,
+   askedOfB:requests.filter(r=>r.store==='/stores/B'&&r.verb!=='check').map(r=>[r.verb,r.args[0]]),
+   shown:shown.slice(),docsChildren,nodeChildren,asked:inputAsked.length,opened};
+  inputs.length=0;
+  pathsOn.add('/stores/B');
+  B.afterPath=(await provider.getChildren()).map(row);B.afterPathRemembered=modeOf('/stores/B');
+  await commands.get('theourgia.showFiles')();
+  B.toggled=(await provider.getChildren()).map(row);B.toggledRemembered=modeOf('/stores/B');B.toggledContext=contexts['theourgia.viewMode']??null;
+  change('/stores/A');
+  A.back=(await provider.getChildren()).map(row);
+  await commands.get('theourgia.showOutline')();
+  A.outlined=(await provider.getChildren()).map(row);A.outlinedRemembered=modeOf('/stores/A');A.outlinedContext=contexts['theourgia.viewMode']??null;
+  // Outline nodes of store A, and a child expanded from one, used after
+  // store B was listed: refused, and nothing named to B.
+  const outlinedA=await provider.getChildren();
+  const rootA=outlinedA.find(n=>n.id==='a.1');
+  const childA=rootA?await provider.getChildren(rootA):[];
+  change('/stores/B');
+  await provider.getChildren();
+  requests.length=0;shown.length=0;
+  const outlineRoot=rootA?(await provider.getChildren(rootA)).length:null;
+  const outlineChild=childA.length>0?(await provider.getChildren(childA[0])).length:null;
+  const outlineStale={childIds:childA.map(n=>n.id),outlineRoot,outlineChild,
+   askedOfB:requests.filter(r=>r.store==='/stores/B'&&r.verb!=='check').map(r=>[r.verb,r.args[0]]),shown:shown.slice()};
+  return {A,B,actions,oldDirectory,raced,sameStore,outlineStale};
+ }
+ // The files view on a REAL store: documents, a text file moved under a
+ // section, and a datum library, compared with what export-md, export-code
+ // and export-code --datum write into one directory; a file node's children
+ // against the outline's; a document at a path another holds; and a nested
+ // document with a path, written into the log the way the core's own history
+ // cells write one, since the write path refuses to make it.
+ if(scenario==='files-real'){
+  const real=require(path.join(__dirname,'real-core.js'));
+  const {environmentFor}=require(path.join(out,'config.js')),{coreDirectoryAt}=require(path.join(out,'fsops.js'));
+  const {StoreModel}=require(path.join(out,'model.js'));
+  const store=await real.RealStore.make();
+  const dirs=[];const made=prefix=>{const d=fs.mkdtempSync(path.join(os.tmpdir(),prefix));dirs.push(d);return d;};
+  const walk=(dir,rel='')=>fs.readdirSync(path.join(dir,rel)).flatMap(n=>{const r=rel===''?n:`${rel}/${n}`;return fs.statSync(path.join(dir,r)).isDirectory()?[`${r}/`,...walk(dir,r)]:[r];});
+  const errors=[];
+  try{
+   const transport=store.transport();
+   const send=async(verb,args)=>{const r=await transport.send(verb,args);if(r.rc!==0)throw new Error(`${verb} ${args.join(' ')} answered ${r.rc}: ${r.stdout}${r.stderr}`);return r;};
+   const md=made('theourgia-files-md-');fs.mkdirSync(path.join(md,'docs','b'),{recursive:true});
+   fs.writeFileSync(path.join(md,'docs','a.md'),'# A\n\nalpha\n\n## Part one\n\nmore\n\n## Part two\n\nlast\n');
+   fs.writeFileSync(path.join(md,'docs','b','c.md'),'# C\n\ngamma\n');
+   fs.writeFileSync(path.join(md,'readme.md'),'# Readme\n\nFIRSTMARKER\n');
+   fs.writeFileSync(path.join(md,'other.md'),'# Other\n\nSECONDMARKER\n');
+   await send('import-md',[md]);
+   const code=made('theourgia-files-code-');fs.mkdirSync(path.join(code,'src'));
+   fs.writeFileSync(path.join(code,'src','x.scm'),';; x\n(define x 1)\n');
+   await send('import-code',[code]);
+   const lib=made('theourgia-files-lib-');
+   fs.writeFileSync(path.join(lib,'probe.sls'),'(library (probe d)\n  (export alpha)\n  (import (rnrs))\n  (define alpha 1))\n');
+   await send('import-code',[lib,'--datum']);
+   realClient=new Client(transport);
+   const model=new StoreModel(realClient);
+   const blocksNow=async()=>(await model.filesReading()).blocks;
+   const pathOf=b=>{const p=b.block.fields.get('path');return typeof p==='string'?p:null;};
+   const kindOf=b=>{const k=b.block.fields.get('kind');return k&&k.name?k.name:null;};
+   const x=(await blocksNow()).find(b=>kindOf(b)==='file'&&(pathOf(b)||'').endsWith('x.scm'));
+   if(!x)throw new Error('the imported text file has no block with its path');
+   const holder=await send('insert',['--title','Holder','--text','holder\n']);
+   const holderId=(/\(state \(\("([^"]+)"/.exec(holder.stdout)||[])[1];
+   if(!holderId)throw new Error(`the section's id was not in the answer: ${holder.stdout}`);
+   await send('move',[x.block.id,holderId]);
+   const exported=made('theourgia-files-export-');
+   await send('export-md',[exported]);
+   await send('export-code',[exported]);
+   await send('export-code',[exported,'--datum']);
+   change(store.store);
+   const listed=[];
+   const gather=async els=>{for(const e of els){if(e.directory){listed.push(`${e.directory.prefix}/`);await gather(await provider.getChildren(e));}else if(e.file)listed.push(e.file.path);}};
+   const roots=await provider.getChildren();
+   await gather(roots);
+   const onDisk=walk(exported);
+   const files=list=>list.filter(p=>!p.endsWith('/')).sort(),folders=list=>list.filter(p=>p.endsWith('/')).sort();
+   // The document with the most children, as a file node and as a block of the outline.
+   const all=await blocksNow();
+   const docA=all.find(b=>kindOf(b)==='doc'&&pathOf(b)==='docs/a.md');
+   const find=async(els,id)=>{for(const e of els){if(e.file&&e.id===id)return e;if(e.directory){const f=await find(await provider.getChildren(e),id);if(f)return f;}}return null;};
+   const fileNode=docA?await find(roots,docA.block.id):null;
+   const childrenOf=async el=>(await provider.getChildren(el)).map(n=>[n.id,n.title,n.marks]);
+   const fileChildren=fileNode?await childrenOf(fileNode):[];
+   // One level further, from the file node's first child: the imported
+   // document's heading tree, known from the fixture's own text.
+   const firstChild=fileNode?(await provider.getChildren(fileNode))[0]:undefined;
+   const grandChildren=firstChild?(await provider.getChildren(firstChild)).map(n=>n.title):[];
+   await commands.get('theourgia.showOutline')();
+   const outlineRoot=(await provider.getChildren()).find(n=>docA&&n.id===docA.block.id);
+   const outlineChildren=outlineRoot?await childrenOf(outlineRoot):[];
+   // A second document at the path the first holds.
+   const readme=all.find(b=>pathOf(b)==='readme.md'),other=all.find(b=>pathOf(b)==='other.md');
+   if(!readme||!other)throw new Error('the two documents were not imported at their paths');
+   await send('set',[other.block.id,'path','readme.md']);
+   await commands.get('theourgia.showFiles')();
+   const shared=(await provider.getChildren()).filter(e=>e.file&&e.file.path==='readme.md');
+   const byId=[readme.block.id,other.block.id].sort();
+   const noteOf=id=>{const e=shared.find(f=>f.id===id);return e?e.file.note:'absent';};
+   const again=made('theourgia-files-export-');
+   await send('export-md',[again]);
+   const first=byId[0]===readme.block.id?'FIRSTMARKER':'SECONDMARKER';
+   const duplicate={notes:byId.map(noteOf),firstMarker:first,exportedText:fs.existsSync(path.join(again,'readme.md'))?fs.readFileSync(path.join(again,'readme.md'),'utf8'):'(no readme.md)'};
+   // The nested document: a record appended to the log directly, under a
+   // section of docs/a.md, as the core's history cells do.
+   const partId=(await provider.getChildren(fileNode||{id:docA.block.id})).map(n=>n.id)[0];
+   const script=path.join(made('theourgia-files-nested-'),'nested.scm');
+   fs.writeFileSync(script,[
+    '(import (chezscheme) (only (theourgia reduce) block-id) (theourgia log))',
+    `(define store ${JSON.stringify(store.store)})`,
+    '(let* ((sess (log-begin store (lambda args (quote applied)))) (v (session-view sess)))',
+    '  (session-append! sess (make-frame (view-revision v) (view-epoch v) (view-writer v) (view-expect-seq v) "files-view-fixture" (quote ())',
+    `    (list (quote put) (list (cons (quote kind) (quote doc)) (cons (quote path) "nested.md") (cons (quote title) "Nested") (cons (quote src) "NESTEDMARKER\\n") (cons (quote parent) ${JSON.stringify(partId)}) (cons (quote ord) 0)))))`,
+    '  (session-commit! sess)',
+    '  (log-end! sess)',
+    '  (display (block-id (view-writer v) (view-expect-seq v))))',
+    ''].join('\n'));
+   const {execFileSync}=require('child_process');
+   let nestedId=null;
+   try{nestedId=execFileSync(store.config.scheme,['--script',script],{env:environmentFor(store.config,store.env,coreDirectoryAt(store.config.corePath)),encoding:'utf8'}).trim();}
+   catch(e){errors.push(`the nested fixture did not run: ${e.message}`);}
+   // Whether the record reads back; and, when it does not, whether it does
+   // once the store's daemon is stopped and the next request starts one that
+   // loads the log from disk -- which is how history made elsewhere arrives.
+   const readNested=async()=>nestedId===null?null:realClient.request('read',[nestedId]).then(a=>({ok:a.ok,text:a.text.trim().slice(0,400)}),e=>({ok:false,text:String(e&&e.message)}));
+   const beforeRestart=await readNested();
+   let afterRestart=null;
+   if(beforeRestart!==null&&!beforeRestart.ok){
+    const stopped=real.stopDaemonsFor(store.store);
+    const until=Date.now()+10000;
+    while(real.daemonsMatching(store.store).length>0&&Date.now()<until)await new Promise(r=>setTimeout(r,100));
+    if(real.daemonsMatching(store.store).length>0)errors.push(`the store's daemon did not stop: ${JSON.stringify(stopped)}`);
+    afterRestart=await readNested();
+   }
+   const nestedVisible=(afterRestart??beforeRestart)!==null&&(afterRestart??beforeRestart).ok;
+   const afterNested=[];
+   const gatherIds=async els=>{for(const e of els){if(e.directory)await gatherIds(await provider.getChildren(e));else if(e.file)afterNested.push(e.file.path);}};
+   await gatherIds(await provider.getChildren());
+   const third=made('theourgia-files-export-');
+   await send('export-md',[third]);
+   const exportedA=fs.existsSync(path.join(third,'docs','a.md'))?fs.readFileSync(path.join(third,'docs','a.md'),'utf8'):'';
+   const underPart=(await provider.getChildren({id:partId})).map(n=>n.id);
+   const nested={visible:nestedVisible,id:nestedId,beforeRestart,afterRestart,listed:afterNested.includes('nested.md'),exported:walk(third).includes('nested.md'),
+    contentInParent:exportedA.includes('NESTEDMARKER'),underPart:nestedId!==null&&underPart.includes(nestedId)};
+   // A new document made through the window's own command, on the real core:
+   // what the window said, and whether the next listing has the file.
+   const docsDir=(await provider.getChildren()).find(e=>e.directory&&e.directory.prefix==='docs');
+   shown.length=0;
+   inputs.push('fresh');
+   if(docsDir)await commands.get('theourgia.newFileHere')(docsDir);
+   const madeShown=shown.slice();
+   const relisted=[];
+   const gatherAgain=async els=>{for(const e of els){if(e.directory)await gatherAgain(await provider.getChildren(e));else if(e.file)relisted.push(e.file.path);}};
+   await gatherAgain(await provider.getChildren());
+   const fourth=made('theourgia-files-export-');
+   await send('export-md',[fourth]);
+   const created={found:docsDir!==undefined,shown:madeShown,listed:relisted.includes('docs/fresh.md'),exported:fs.existsSync(path.join(fourth,'docs','fresh.md'))};
+   errors.push(...shown.filter(n=>n.level==='error').map(n=>n.text));
+   // On the real core: the moved text file renamed through the window,
+   // the write conditional on the version its fresh read answered; then the
+   // same row renamed again while somebody else writes the path during the
+   // prompt, which the store refuses as changed.
+   const xNode=await find(await provider.getChildren(),x.block.id);
+   shown.length=0;inputAsked.length=0;
+   inputs.push('renamed.scm');
+   if(xNode)await commands.get('theourgia.renameFile')(xNode);
+   const renameShown=shown.slice(),renameAsked=inputAsked.map(o=>o.prompt);
+   const fifth=made('theourgia-files-export-');
+   await send('export-code',[fifth]);
+   shown.length=0;inputAsked.length=0;
+   inputs.push(async()=>{await send('set',[x.block.id,'path','src/elsewhere.scm']);return 'late.scm';});
+   if(xNode)await commands.get('theourgia.renameFile')(xNode);
+   const staleShown=shown.slice(),staleAsked=inputAsked.map(o=>o.prompt);
+   const xNow=(await blocksNow()).find(b=>b.block.id===x.block.id);
+   const guarded={found:xNode!==null,renameShown,renameAsked,exported:walk(fifth).filter(p=>p.endsWith('.scm')),staleShown,staleAsked,pathAfter:xNow?pathOf(xNow):null};
+   return {errors,listed:files(listed),exported:files(onDisk),listedDirs:folders(listed),exportedDirs:folders(onDisk),
+    fileChildren,grandChildren,outlineChildren,duplicate,nested,created,guarded};
   }finally{realClient=null;store.dispose();for(const d of dirs)fs.rmSync(d,{recursive:true,force:true});}
  }
  if(scenario==='outline-nested'){

@@ -136,9 +136,30 @@ function watched() {
   }
 }
 
+/*
+ * WHAT THE CLIENT PUT ON STANDARD INPUT, or null. A request is its argument
+ * vector AND its input -- `batch` sends its intents there -- so a stand-in
+ * that recorded only the vector could not say what a batch asked for. Read
+ * only from a pipe: the client closes standard input (`/dev/null`) when it
+ * sends none, and a terminal is never read.
+ */
+function stdinOf() {
+  try {
+    const stat = fs.fstatSync(0);
+    if (!stat.isFIFO() && !stat.isSocket() && !stat.isFile()) {
+      return null;
+    }
+    const text = fs.readFileSync(0, 'utf8');
+    return text.length > 0 ? text : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 const base = {
   argv,
   coreArgv,
+  input: stdinOf(),
   pid: process.pid,
   incarnation,
   cwd: process.cwd(),

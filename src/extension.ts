@@ -37,7 +37,27 @@ import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
 import { Client, Note } from './client';
 import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
-import { Node, StoreModel } from './model';
+import { ChildListing, Node, StoreModel } from './model';
+import {
+  DirectoryEntry,
+  FileEntry,
+  FilesTree,
+  NOT_IN_ANY_FILE,
+  FilesRow,
+  PathlessEntry,
+  ViewMode,
+  CHANGED_SINCE_LISTED,
+  candidateOf,
+  rowsOf,
+  filesByDefault,
+  filesTree,
+  isViewMode,
+  movedPath,
+  newDocumentIntent,
+  newDocumentPath,
+  pathActionNotice,
+  renamedPath
+} from './directory-view';
 import { Outbox } from './outbox';
 import { activateCore } from './activate';
 import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
@@ -46,6 +66,11 @@ import { runSplit, splitRefusalNotice } from './split-symbols';
 import {
   SUGGEST_SPLIT,
   GO_TO_DEFINITION,
+  MOVE_TO_DIRECTORY,
+  NEW_FILE_HERE,
+  RENAME_FILE,
+  SHOW_FILES,
+  SHOW_OUTLINE,
   OPEN_AS_DOCUMENT,
   OPEN_BLOCK,
   OTHER_SESSIONS,
@@ -142,10 +167,51 @@ interface IncompleteRow {
   under: string | null;
 }
 
-type OutlineElement = Node | IncompleteRow;
+/*
+ * A DIRECTORY OF THE FILES VIEW: a grouping of file nodes, never a block.
+ * It has no id of the store's, nothing to open, and no mark.
+ */
+interface DirectoryRow {
+  directory: DirectoryEntry;
+}
+
+/*
+ * THE ROOT GROUP OF BLOCKS IN NO FILE, in the files view.
+ */
+interface PathlessGroup {
+  pathless: PathlessEntry[];
+}
+
+/*
+ * A BLOCK AS THE FILES VIEW LISTS IT: a file node carries the file it is,
+ * a block in the pathless group carries why it is there. Its children are
+ * the block's outline children, as in the outline view.
+ */
+type ListedNode = Node & { file?: FileEntry; inNoFile?: PathlessEntry };
+
+type OutlineElement = ListedNode | IncompleteRow | DirectoryRow | PathlessGroup;
 
 function isIncompleteRow(element: OutlineElement): element is IncompleteRow {
   return (element as IncompleteRow).incompleteText !== undefined;
+}
+
+function isDirectoryRow(element: OutlineElement): element is DirectoryRow {
+  return (element as DirectoryRow).directory !== undefined;
+}
+
+function isPathlessGroup(element: OutlineElement): element is PathlessGroup {
+  return (element as PathlessGroup).pathless !== undefined;
+}
+
+/*
+ * WHERE THE VIEW MODE OF THE CONFIGURED STORE IS KEPT, and how the title
+ * bar is told which mode is showing. The mode is a viewer's convenience,
+ * kept per store in the workspace's state.
+ */
+export interface ViewModes {
+  get(): ViewMode | undefined;
+  remember(mode: ViewMode): Thenable<unknown>;
+  show(mode: ViewMode): Thenable<unknown>;
 }
 
 /*
@@ -166,6 +232,13 @@ function showIncompleteBanner(editor: vscode.TextEditor, notes: Note[], keep: vs
   editor.setDecorations(banner, [new vscode.Range(0, 0, 0, 0)]);
 }
 
+/*
+ * WHAT AN ITEM LISTED UNDER ANOTHER STORE ANSWERS, whether it is expanded,
+ * opened or acted on: nothing is asked of the store now configured with an
+ * id that came from the other one.
+ */
+const LISTED_ELSEWHERE = 'theourgia: this item was listed under another store. Refresh the view and select it again.';
+
 class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
   private readonly changed = new vscode.EventEmitter<OutlineElement | undefined>();
   public readonly onDidChangeTreeData = this.changed.event;
@@ -173,21 +246,41 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
   private readonly failed: (e: unknown) => void;
   private readonly unknownMarks: () => void;
   private readonly generation: () => number;
+  private readonly store: () => string;
   private readonly noted: (notes: Note[] | null) => void;
-  private readonly nodeGenerations = new WeakMap<Node, number>();
+  /*
+   * THE STORE EACH LISTED ELEMENT CAME FROM. An element is an id and the
+   * store it names a block of, nothing more: what an action does with it is
+   * read from the store at the moment of the action (see `changePath`).
+   */
+  private readonly nodeStores = new WeakMap<Node, string>();
+  private readonly modes: ViewModes | null;
+  /*
+   * EACH DIRECTORY AND GROUP ROW'S OWN LISTING: the store it was listed
+   * from and the nodes of the reading it came from. Opening it reads these,
+   * not the store and not a later listing: the tree was derived from one
+   * reading of every block, and pairing an old row with a newer reading
+   * could show a file in two places or in none. The rows it draws are ids;
+   * an action on one reads the block afresh.
+   */
+  private readonly rowListings = new WeakMap<DirectoryRow | PathlessGroup, { store: string; nodes: Map<string, Node> }>();
 
   constructor(
     model: StoreModel | null,
     failed: (e: unknown) => void,
     unknownMarks: () => void,
     generation: () => number,
-    noted: (notes: Note[] | null) => void = () => undefined
+    store: () => string,
+    noted: (notes: Note[] | null) => void = () => undefined,
+    modes: ViewModes | null = null
   ) {
     this.model = model;
     this.failed = failed;
     this.unknownMarks = unknownMarks;
     this.generation = generation;
+    this.store = store;
     this.noted = noted;
+    this.modes = modes;
   }
 
   public use(model: StoreModel | null): void {
@@ -199,16 +292,30 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
     this.changed.fire(undefined);
   }
 
-  /*
-   * THE SETTINGS A NODE WAS LISTED UNDER, for a command that is handed the
-   * node itself -- a context-menu entry -- rather than the arguments the
-   * row's own command carries.
-   */
-  public generationOf(node: Node): number | undefined {
-    return this.nodeGenerations.get(node);
-  }
 
   public getTreeItem(element: OutlineElement): vscode.TreeItem {
+    if (isDirectoryRow(element)) {
+      /*
+       * NEVER: A DIRECTORY HAS NO COMMAND. It is not a block, and there is
+       * nothing to open; its menu holds only "new file here".
+       */
+      const d = element.directory;
+      const row = new vscode.TreeItem(d.name, vscode.TreeItemCollapsibleState.Collapsed);
+      row.id = `dir:${d.prefix}`;
+      row.iconPath = new vscode.ThemeIcon('folder');
+      row.description = String(d.count);
+      row.tooltip = d.prefix;
+      row.contextValue = 'theourgia.dir';
+      return row;
+    }
+    if (isPathlessGroup(element)) {
+      const row = new vscode.TreeItem(NOT_IN_ANY_FILE, vscode.TreeItemCollapsibleState.Collapsed);
+      row.id = 'theourgia.pathless';
+      row.iconPath = new vscode.ThemeIcon('circle-outline');
+      row.description = String(element.pathless.length);
+      row.contextValue = 'theourgia.pathless';
+      return row;
+    }
     if (isIncompleteRow(element)) {
       /*
        * INFORMATION, NOT AN ERROR, AND NOTHING TO OPEN. The rows below it
@@ -254,9 +361,157 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
     item.command = {
       command: OPEN_BLOCK.id,
       title: 'Open Block',
-      arguments: [node.id, this.nodeGenerations.get(node)]
+      arguments: [node.id, this.nodeStores.get(node)]
     };
+    const file = node.file;
+    if (file !== undefined) {
+      /*
+       * A FILE NODE IS NAMED BY ITS FILE, as export names it; the title is
+       * in the tooltip. Its tree id is its own, because the same block can
+       * also be drawn under its parent in the outline below a document.
+       */
+      item.label = file.label;
+      item.id = `file:${node.id}`;
+      item.contextValue = 'theourgia.block.file';
+      item.description = file.note === null ? node.id : `${node.id}  ${file.note}`;
+      item.tooltip = [file.path, node.title, tooltip].filter((t) => t !== null && t.length > 0).join('\n');
+    }
+    const inNoFile = node.inNoFile;
+    if (inNoFile !== undefined && inNoFile.note !== null) {
+      item.description = `${node.id}  ${inNoFile.note}`;
+      item.tooltip = [inNoFile.raw ?? '', tooltip ?? ''].filter((t) => t.length > 0).join('\n');
+    }
     return item;
+  }
+
+  /*
+   * THE ROOT LISTING, in the mode this store is shown in.
+   *
+   * WHICH MODE is decided once per store: at the first listing, Files when
+   * any root block carries a path, and remembered. It does not change by
+   * itself afterwards, when a path appears or goes. Deciding it needs the
+   * paths, so an undecided store is read the files way, which answers the
+   * outline's rows as well.
+   */
+  /*
+   * NOTE: THE MODE IS RECORDED ONLY FOR THE STORE THAT WAS LISTED. A
+   * settings change during the reading leaves: the listing is dropped by
+   * `getChildren`, and the new store's own listing decides its mode.
+   */
+  private async rootListing(
+    model: StoreModel
+  ): Promise<ChildListing & { files: { tree: FilesTree; nodes: Map<string, Node> } | null }> {
+    const asked = this.generation();
+    const modes = this.modes;
+    const stored = modes === null ? 'outline' : modes.get();
+    if (stored === 'outline') {
+      const listing = await model.roots();
+      if (asked !== this.generation()) {
+        return { ...listing, files: null };
+      }
+      if (modes !== null) {
+        await modes.show('outline');
+      }
+      /*
+       * NEVER: THE MODE READ BEFORE THE WAITS, in this branch either. It is
+       * compared once, after the last wait: Files chosen while the outline
+       * was on its way, or while the title bar's key was being set, is the
+       * mode, and this reading has no paths to draw it with, so the listing
+       * is made again in the mode chosen. A mode that reads back as none was
+       * not chosen by anybody, and listing again for it would not end.
+       */
+      const shown = modes === null ? stored : modes.get();
+      if (shown !== undefined && shown !== 'outline') {
+        return this.rootListing(model);
+      }
+      return { ...listing, files: null };
+    }
+    const reading = await model.filesReading();
+    if (asked !== this.generation()) {
+      return { ...reading.listing, files: null };
+    }
+    const candidates = reading.blocks.map((b) => candidateOf(b.block, b.node.title, b.atRoot, b.exportRoot));
+    /*
+     * NEVER: THE MODE READ BEFORE THE WAIT. A mode chosen while this reading
+     * was on its way is the mode, and the default this reading would have
+     * decided is not remembered over it.
+     */
+    const chosen = modes === null ? stored : modes.get();
+    const mode: ViewMode = chosen ?? (filesByDefault(candidates) ? 'files' : 'outline');
+    if (modes !== null) {
+      await Promise.all([chosen === undefined ? modes.remember(mode) : undefined, modes.show(mode)]);
+    }
+    /*
+     * AND AGAIN AFTER THE LAST WAIT: a mode chosen while this one was being
+     * remembered, or while the title bar's key was being set, is the mode,
+     * and the listing is made again in it. A mode that reads back as none
+     * (a store that did not keep what was remembered) is not a choice, and
+     * listing again for it would not end.
+     */
+    const kept = modes === null ? mode : modes.get();
+    if (kept !== undefined && kept !== mode) {
+      return this.rootListing(model);
+    }
+    return {
+      ...reading.listing,
+      files:
+        mode === 'files'
+          ? { tree: filesTree(candidates), nodes: new Map(reading.blocks.map((b) => [b.block.id, b.node] as [string, Node])) }
+          : null
+    };
+  }
+
+  /*
+   * THE ROOT OF THE FILES VIEW: directories first, then the files at the
+   * top, then the group of blocks in no file.
+   */
+  private filesRoot(tree: FilesTree, nodes: Map<string, Node>, store: string): OutlineElement[] {
+    return this.drawn(rowsOf(tree.root, tree.pathless), nodes, store);
+  }
+
+  private drawn(rows: FilesRow[], nodes: Map<string, Node>, store: string): OutlineElement[] {
+    return rows.map((row) => {
+      if ('file' in row) {
+        return this.fileNode(row.file, nodes, store);
+      }
+      this.rowListings.set(row, { store, nodes });
+      return row;
+    });
+  }
+
+  private fileNode(file: FileEntry, nodes: Map<string, Node>, store: string): ListedNode {
+    const listed: ListedNode = { ...(nodes.get(file.id) as Node), file };
+    this.nodeStores.set(listed, store);
+    return listed;
+  }
+
+  /*
+   * THE STORE A LISTED ELEMENT CAME FROM, for a command handed the element
+   * itself -- a context-menu entry -- rather than the arguments the row's
+   * own command carries. Undefined for an element this view did not list.
+   */
+  public storeOf(element: OutlineElement): string | undefined {
+    if (isDirectoryRow(element) || isPathlessGroup(element)) {
+      return this.rowListings.get(element)?.store;
+    }
+    if (isIncompleteRow(element)) {
+      return undefined;
+    }
+    return this.nodeStores.get(element);
+  }
+
+  /*
+   * AN ELEMENT LISTED UNDER ANOTHER STORE IS NOT EXPANDED: its id names a
+   * block of that store, and reading it from this one would draw another
+   * block, or none, under it.
+   */
+  private listedElsewhere(listed: string | undefined): boolean {
+    const current = this.store();
+    if (listed !== undefined && listed !== current) {
+      vscode.window.showWarningMessage(LISTED_ELSEWHERE);
+      return true;
+    }
+    return false;
   }
 
   public async getChildren(element?: OutlineElement): Promise<OutlineElement[]> {
@@ -266,7 +521,24 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
     if (element !== undefined && isIncompleteRow(element)) {
       return [];
     }
+    if (element !== undefined && (isDirectoryRow(element) || isPathlessGroup(element))) {
+      const carried = this.rowListings.get(element);
+      if (carried === undefined || this.listedElsewhere(carried.store)) {
+        return [];
+      }
+      if (isDirectoryRow(element)) {
+        return this.drawn(rowsOf(element.directory), carried.nodes, carried.store);
+      }
+      return element.pathless.map((entry) => {
+        const listed: ListedNode = { ...(carried.nodes.get(entry.id) as Node), inNoFile: entry };
+        this.nodeStores.set(listed, carried.store);
+        return listed;
+      });
+    }
     const node = element as Node | undefined;
+    if (node !== undefined && this.listedElsewhere(this.nodeStores.get(node))) {
+      return [];
+    }
     /*
      * WHAT THIS REQUEST IS ABOUT IS DECIDED BEFORE IT IS MADE. A
      * settings change replaces the model while a request is still
@@ -276,9 +548,11 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
      * had by then moved to.
      */
     const asked = this.generation();
+    const listedIn = this.store();
     let nodes: Node[];
     let marksKnown: boolean;
     let notes: Note[] | null;
+    let files: { tree: FilesTree; nodes: Map<string, Node> } | null = null;
     try {
       if (node === undefined) {
         /*
@@ -291,10 +565,11 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
          * the same answer one level down said the marks were not known.
          * It comes from the listing now, at both levels.
          */
-        const listing = await this.model.roots();
+        const listing = await this.rootListing(this.model);
         nodes = listing.nodes;
         marksKnown = listing.marksKnown;
         notes = listing.notes;
+        files = listing.files;
       } else {
         const listing = await this.model.childrenOf(node.id);
         nodes = listing.nodes;
@@ -331,12 +606,16 @@ class OutlineProvider implements vscode.TreeDataProvider<OutlineElement> {
       return [];
     }
     for (const returned of nodes) {
-      this.nodeGenerations.set(returned, asked);
+      this.nodeStores.set(returned, listedIn);
+    }
+    let rows: OutlineElement[] = nodes;
+    if (node === undefined && files !== null) {
+      rows = this.filesRoot(files.tree, files.nodes, listedIn);
     }
     if (notes === null) {
-      return nodes;
+      return rows;
     }
-    return [{ incompleteText: incompleteWarning(notes), under: node === undefined ? null : node.id }, ...nodes];
+    return [{ incompleteText: incompleteWarning(notes), under: node === undefined ? null : node.id }, ...rows];
   }
 }
 
@@ -485,8 +764,41 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       paint();
     },
     () => generation,
-    (notes) => noteReading(notes)
+    () => storeIdentity(),
+    (notes) => noteReading(notes),
+    {
+      get: () => {
+        const kept = context.workspaceState.get(modeKey());
+        return isViewMode(kept) ? kept : undefined;
+      },
+      remember: (mode: ViewMode) => context.workspaceState.update(modeKey(), mode),
+      show: (mode: ViewMode) => vscode.commands.executeCommand('setContext', 'theourgia.viewMode', mode)
+    }
   );
+  /*
+   * THE MODE IS KEPT PER STORE, under the store's directory as configured.
+   * Read when it is asked for, so a store changed in the settings has its
+   * own.
+   */
+  function modeKey(): string {
+    return `theourgia.viewMode:${config.store}`;
+  }
+
+  /*
+   * THE STORE A LISTED ELEMENT, A READ AND A WRITE ARE BOUND TO: the
+   * configured directory, resolved. An element listed under one store is
+   * refused under another, and an action whose store changed while it
+   * waited sends nothing.
+   *
+   * NOTE: THE SCOPE IS THE SETTINGS SWITCH. A store replaced at the same
+   * path, or a link retargeted under it, keeps its identity here; what the
+   * store itself refuses as stale (`--if-unchanged`) still covers a block
+   * that moved on, but an element listed from the replaced store is not
+   * refused by this check.
+   */
+  function storeIdentity(): string {
+    return path.resolve(config.store);
+  }
 
   let config = readConfig();
   let client: Client | null = null;
@@ -668,6 +980,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
      */
     const own = outbox;
     const ownStore = storeHash(config.store);
+    const ownIdentity = storeIdentity();
     saver = new Saver(
       client,
       own,
@@ -703,7 +1016,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
          * to outlive the session whose queue the request was in, and
          * `discard` moves that directory away.
          */
-        retired: (record) => tombstones.isRetired(record.storeHash, record.req)
+        retired: (record) => tombstones.isRetired(record.storeHash, record.req),
+        /*
+         * A KEPT WRITE THE STORE REFUSED AS STALE, whichever drain sent it --
+         * the retry command, the one at startup, or the drain in front of
+         * another save: said once per drain however many there were, and
+         * the view listed again when this Saver's store is still the one
+         * shown. Decided by the store, not the generation: a settings
+         * change that keeps the store does not silence it.
+         */
+        stale: () => {
+          show({ level: 'warning', text: CHANGED_SINCE_LISTED });
+          const current = storeIdentity();
+          if (current === ownIdentity) {
+            provider.refresh();
+          }
+        }
       }
     );
     provider.use(model);
@@ -969,6 +1297,184 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   /*
+   * THE FILES VIEW'S MODE AND ACTIONS. What they decide -- the paths, the
+   * intent, the sentences -- is in `src/directory-view.ts`; every write goes
+   * through the Saver: a new document is one batch, a move or a rename is
+   * one write of the block's `path`.
+   */
+  /*
+   * The title bar's key is set by the listing this redraw makes, for the
+   * store it lists.
+   */
+  async function showMode(mode: ViewMode): Promise<void> {
+    const asked = generation;
+    await context.workspaceState.update(modeKey(), mode);
+    if (asked !== generation) {
+      return;
+    }
+    provider.refresh();
+  }
+
+  /*
+   * NOTE: A SETTINGS CHANGE THAT KEEPS THE STORE DOES NOT REFUSE A ROW. The
+   * rows listed before it name blocks of the same store, and every action
+   * reads what it needs afresh; only a row of another store is refused.
+   */
+  function listedElsewhere(element: OutlineElement): boolean {
+    const listed = provider.storeOf(element);
+    const current = storeIdentity();
+    if (listed !== undefined && listed !== current) {
+      vscode.window.showWarningMessage(LISTED_ELSEWHERE);
+      return true;
+    }
+    return false;
+  }
+
+  /*
+   * A NEW DOCUMENT IS AN INSERT, WITH NO VERSION: there is no block yet to
+   * have moved on. A path another block holds is the store's and export's
+   * business, and is shown in the listing as it is now.
+   */
+  async function newFileHere(row?: DirectoryRow): Promise<void> {
+    if (row !== undefined && (!isDirectoryRow(row) || listedElsewhere(row))) {
+      return;
+    }
+    const directory = row === undefined ? '' : row.directory.prefix;
+    const asked = generation;
+    const store = storeIdentity();
+    const name = await vscode.window.showInputBox({
+      prompt: directory === '' ? 'Name of the new document' : `Name of the new document in ${directory}`,
+      placeHolder: 'name.md'
+    });
+    if (name === undefined) {
+      return;
+    }
+    const current = storeIdentity();
+    if (current !== store) {
+      vscode.window.showWarningMessage('theourgia: the store changed while the name was being asked for. Select the directory again.');
+      return;
+    }
+    const sending = saver;
+    if (sending === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const target = newDocumentPath(directory, name);
+    if (target === null) {
+      vscode.window.showErrorMessage(`theourgia: ${name.trim()} does not make a path export would write.`);
+      return;
+    }
+    let outcome: SaveOutcome;
+    try {
+      outcome = await sending.batch(newDocumentIntent(target, name.trim().replace(/\.md$/, '')));
+    } catch (e) {
+      reportFailure(e);
+      paint();
+      return;
+    }
+    /*
+     * THE OUTCOME IS SAID EITHER WAY: the request went to the queue of the
+     * store it was made in. Only the redraw is for the current store.
+     */
+    if (asked !== generation) {
+      show(pathActionNotice('created', outcome, target));
+      return;
+    }
+    show(pathActionNotice('created', outcome, target));
+    paint();
+    provider.refresh();
+  }
+
+  /*
+   * A MOVE OR A RENAME STARTS FROM THE BLOCK AS IT IS NOW. The row is an id:
+   * its path and version are read at the moment of the action, the prompt
+   * shows that path, and the write is conditional on that version, so a
+   * block changed after the read -- by another window, another row, or a
+   * change made while the prompt was open -- is refused by the store as
+   * `changed` rather than overwritten. The read, the prompt and the send
+   * belong to one store: a store switched meanwhile sends nothing.
+   */
+  async function changePath(node: ListedNode | undefined, how: 'move' | 'rename'): Promise<void> {
+    if (node === undefined || node.file === undefined || listedElsewhere(node)) {
+      return;
+    }
+    const reading = model;
+    if (reading === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const asked = generation;
+    const store = storeIdentity();
+    let fresh: { block: Block | null; version: string | null };
+    try {
+      fresh = await reading.blockWithVersion(node.id);
+    } catch (e) {
+      reportFailure(e);
+      return;
+    }
+    const readIn = storeIdentity();
+    if (readIn !== store) {
+      vscode.window.showWarningMessage('theourgia: the store changed while the file was being read. Select the file again.');
+      return;
+    }
+    const version = fresh.version;
+    const now = fresh.block === null ? null : candidateOf(fresh.block, node.title, false, false).path;
+    if (fresh.block === null || version === null || now === null) {
+      vscode.window.showWarningMessage(`theourgia: ${node.id} no longer has a path to ${how}; the view is refreshed.`);
+      provider.refresh();
+      return;
+    }
+    const at = now.lastIndexOf('/');
+    const answer = await vscode.window.showInputBox(
+      how === 'move'
+        ? { prompt: `Directory to move ${now} to`, value: at < 0 ? '' : now.slice(0, at) }
+        : { prompt: `New name for ${now}`, value: now.slice(at + 1) }
+    );
+    if (answer === undefined) {
+      return;
+    }
+    /*
+     * CHECKED RIGHT BEFORE THE SEND, and the Saver taken here: a store
+     * switched while the prompt was open must not receive a write computed
+     * from the other store's block.
+     */
+    const sendIn = storeIdentity();
+    if (sendIn !== store) {
+      vscode.window.showWarningMessage('theourgia: the store changed while the name was being asked for. Select the file again.');
+      return;
+    }
+    const sending = saver;
+    if (sending === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const target = how === 'move' ? movedPath(now, answer) : renamedPath(now, answer);
+    if (target === null) {
+      vscode.window.showErrorMessage(`theourgia: ${answer.trim()} does not make a path export would write.`);
+      return;
+    }
+    if (target === now) {
+      return;
+    }
+    let outcome: SaveOutcome;
+    try {
+      outcome = await sending.save(node.id, 'path', target, version);
+    } catch (e) {
+      reportFailure(e);
+      paint();
+      return;
+    }
+    const said = pathActionNotice(how === 'move' ? 'moved to' : 'renamed to', outcome, target);
+    if (asked !== generation) {
+      show(said);
+      return;
+    }
+    show(said);
+    paint();
+    provider.refresh();
+  }
+
+  /*
    * THE SUBTREE UNDER A NODE, AS ONE READ-ONLY DOCUMENT (queue item 6). It
    * is composed before anything is opened, so a refusal is said as a
    * message rather than as an editor that could not load; opening it again
@@ -978,9 +1484,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     if (node === undefined) {
       return;
     }
-    const listed = provider.generationOf(node);
-    if (listed !== undefined && listed !== generation) {
-      vscode.window.showWarningMessage('theourgia: the store changed after this outline item was created. Refresh the outline and select the block again.');
+    if (listedElsewhere(node)) {
       return;
     }
     if (client === null) {
@@ -1026,9 +1530,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * the prefix the editor shows before the source -- so that go to
    * definition can place a line in it. The command ignores the answer.
    */
-  async function openBlock(id: string, sourceGeneration?: number): Promise<OpenedBlock | undefined> {
-    if (sourceGeneration !== undefined && sourceGeneration !== generation) {
-      vscode.window.showWarningMessage('theourgia: the store changed after this outline item was created. Refresh the outline and select the block again.');
+  /*
+   * NOTE: THE SECOND ARGUMENT IS THE STORE THE ID WAS LISTED OR FOUND IN,
+   * carried by a tree item's command and by a search's open; an id from
+   * another store is refused before anything is read.
+   */
+  async function openBlock(id: string, sourceStore?: string): Promise<OpenedBlock | undefined> {
+    const current = storeIdentity();
+    if (sourceStore !== undefined && sourceStore !== current) {
+      vscode.window.showWarningMessage(LISTED_ELSEWHERE);
       return;
     }
     if (model === null) {
@@ -1842,6 +2352,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),
+    command(SHOW_FILES.id, () => showMode('files')),
+    command(SHOW_OUTLINE.id, () => showMode('outline')),
+    command(NEW_FILE_HERE.id, newFileHere),
+    command(MOVE_TO_DIRECTORY.id, (node?: ListedNode) => changePath(node, 'move')),
+    command(RENAME_FILE.id, (node?: ListedNode) => changePath(node, 'rename')),
     command(RECONCILE_BLOCK.id, reconcileBlock),
     /*
      * NOTE: THE HANDLER IS ONE LINE ON PURPOSE. Everything this command
@@ -1875,10 +2390,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
        * `openBlock` takes one precisely so that it can refuse an id from
        * a store the user has left. Measured in a review round: with the
        * box held open and the store changed from A to B, an id found in
-       * A was read against B. The generation is taken when the command
-       * starts, which is when the search is about the store it is about.
+       * A was read against B. The store is taken when the command starts,
+       * which is when the search is about the store it is about.
        */
-      const asked = generation;
+      const foundIn = storeIdentity();
       const searching = model;
       return runSearch(searching === null ? null : {
         search: (query: string) => searching.search(query),
@@ -1908,7 +2423,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         },
         say: (text: string, level: 'information' | 'error') => show({ level, text }),
         open: async (id: string) => {
-          await vscode.commands.executeCommand(OPEN_BLOCK.id, id, asked);
+          await vscode.commands.executeCommand(OPEN_BLOCK.id, id, foundIn);
         }
       });
     }),

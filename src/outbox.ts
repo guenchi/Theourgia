@@ -41,9 +41,22 @@ import { FileOps, nodeFileOps } from './fsops';
 import { sameWriter } from './cursor';
 import { newerEvent } from './publication';
 import { SendRecord, freezeRecord } from './record';
+import { Datum, answerOf, isList, parseAnswers } from './wire';
 import * as path from 'path';
 
 export const OUTBOX_VERSION = 1;
+
+/*
+ * THE VERSION A QUEUE HOLDING A BATCH ENTRY, OR A CONDITIONAL WRITE, IS
+ * WRITTEN AS. A build from before those fields reads a version-1 queue: it
+ * would take a batch entry for a write of an empty field on an empty id
+ * (refused, and the creation dropped), and would send a conditional write
+ * without its condition. A version it does not know it refuses by name, and
+ * keeps the file. So a queue is written as version 2 only while it holds
+ * such an entry, and as version 1 otherwise, which every build reads as
+ * before. This build reads both.
+ */
+export const OUTBOX_BATCH_VERSION = 2;
 
 /*
  * THREE STATES, AND THE MIDDLE ONE IS WHY THERE ARE THREE. `queued` is
@@ -97,6 +110,25 @@ export interface OutboxEntry {
    * field so section 13's cells compile and read red; nothing writes it yet.
    */
   record?: SendRecord;
+  /*
+   * WHAT IS SENT, WHEN IT IS NOT A FIELD WRITE. Absent for every entry that
+   * writes one field of one block (`set`, or the commit its record names).
+   * `batch` is an entry whose payload is a list of intents run in one
+   * write session -- a new block with its fields -- so it has no block id
+   * yet and no field, and its `id` and `field` are empty.
+   *
+   * NOTE: A BUILD THAT PREDATES THIS FIELD WOULD READ A BATCH ENTRY AS A
+   * FIELD WRITE of an empty field on an empty id, and lose it. So a queue
+   * holding one is written as OUTBOX_BATCH_VERSION, which such a build
+   * refuses by name rather than reading.
+   */
+  verb?: 'batch';
+  /*
+   * THE VERSION THE WRITE IS CONDITIONAL ON, sent as `--if-unchanged
+   * <version>`: the store refuses the write as `changed` if the block is no
+   * longer at that version. Absent for an unconditional write.
+   */
+  expect?: string;
 }
 
 /*
@@ -722,7 +754,8 @@ export class Outbox {
     }
     const temporary = `${this.file}.${process.pid}.tmp`;
     try {
-      this.files.writeDurably(temporary, `${JSON.stringify(next, null, 2)}\n`);
+      const version = next.entries.some((e) => e.verb === 'batch' || e.expect !== undefined) ? OUTBOX_BATCH_VERSION : OUTBOX_VERSION;
+      this.files.writeDurably(temporary, `${JSON.stringify({ ...next, version }, null, 2)}\n`);
       this.files.rename(temporary, this.file);
     } catch (e) {
       try {
@@ -795,9 +828,9 @@ function normalise(parsed: unknown): OutboxFile {
     throw new OutboxWriteError('the outbox is not an object');
   }
   const raw = parsed as { version?: unknown; cursor?: unknown; entries?: unknown };
-  if (raw.version !== undefined && raw.version !== OUTBOX_VERSION) {
+  if (raw.version !== undefined && raw.version !== OUTBOX_VERSION && raw.version !== OUTBOX_BATCH_VERSION) {
     throw new OutboxWriteError(
-      `the outbox says it is version ${String(raw.version)}, and this build writes ${OUTBOX_VERSION}`
+      `the outbox says it is version ${String(raw.version)}, and this build reads ${OUTBOX_VERSION} and ${OUTBOX_BATCH_VERSION}`
     );
   }
   if (raw.cursor !== undefined && raw.cursor !== null && typeof raw.cursor !== 'string') {
@@ -836,6 +869,33 @@ function readEntry(item: unknown, at: number): OutboxEntry {
       );
     }
   }
+  /*
+   * NEVER: A VERB THIS BUILD DOES NOT KNOW IS NOT READ AS A FIELD WRITE.
+   * An entry written by a later build that sends something else would
+   * otherwise go out as `set` with whatever its id and field hold.
+   */
+  if (raw.expect !== undefined && typeof raw.expect !== 'string') {
+    throw new OutboxWriteError(`outbox entry ${at} carries a version to write against that is not a string`);
+  }
+  /*
+   * NEVER: A QUEUED WRITE OF THE PATH WITHOUT ITS VERSION. Sent, it would be
+   * unconditional; the Saver refuses to queue one, and one found on disk is
+   * refused by name rather than sent.
+   */
+  if (raw.verb === undefined && raw.field === 'path' && raw.expect === undefined) {
+    throw new OutboxWriteError(`outbox entry ${at} writes a path without the version it was read at`);
+  }
+  if (raw.verb !== undefined && raw.verb !== 'batch') {
+    throw new OutboxWriteError(`outbox entry ${at} sends a verb this build does not know: ${String(raw.verb)}`);
+  }
+  /*
+   * NEVER: A QUEUED BATCH OF ANYTHING BUT INSERTS. The Saver makes no other,
+   * and one found on disk would be sent as it stands -- a write of a path
+   * among it with no version to guard it.
+   */
+  if (raw.verb === 'batch' && (typeof raw.payload !== 'string' || !insertIntentsOnly(raw.payload))) {
+    throw new OutboxWriteError(`outbox entry ${at} is a batch of something other than insert intents`);
+  }
   if (raw.state !== undefined && !['queued', 'sent', 'pending', 'parked'].includes(raw.state as string)) {
     throw new OutboxWriteError(`outbox entry ${at} is in a state this build does not know: ${String(raw.state)}`);
   }
@@ -866,6 +926,8 @@ function readEntry(item: unknown, at: number): OutboxEntry {
      * disagreeing, which nothing but a round-trip notices.
      */
     importedBy: typeof raw.importedBy === 'string' ? (raw.importedBy as string) : null,
+    ...(raw.verb === 'batch' ? { verb: 'batch' as const } : {}),
+    ...(typeof raw.expect === 'string' ? { expect: raw.expect } : {}),
     ...readRecord(raw.record, at)
   };
 }
@@ -919,6 +981,14 @@ function readRecord(raw: unknown, at: number): { record?: SendRecord } {
   ) {
     throw new OutboxWriteError(`outbox entry ${at} carries a record with no readable intent`);
   }
+  /*
+   * NEVER: A RECORD THAT WRITES THE PATH. A record carries no version to
+   * write against, so it would go out unconditional; `submit` refuses to
+   * queue one, and one found on disk is refused by name.
+   */
+  if (intent.field === 'path') {
+    throw new OutboxWriteError(`outbox entry ${at} carries a record that writes a path without the version it was read at`);
+  }
   return {
     record: freezeRecord({
       req: text('req') as string,
@@ -939,6 +1009,38 @@ function readRecord(raw: unknown, at: number): { record?: SendRecord } {
       }
     })
   };
+}
+
+/*
+ * HOW MANY INTENTS A BATCH PAYLOAD HOLDS, read the way the core's
+ * `parse-batch` reads it: one datum whose first element is itself a list
+ * is a bracketed list of intents; otherwise every top-level datum is one.
+ * Null for a payload this build cannot read, which it never writes.
+ */
+export function intentCount(payload: string): number | null {
+  let data: Datum[];
+  try {
+    data = parseAnswers(payload);
+  } catch {
+    return null;
+  }
+  if (data.length === 1 && isList(data[0]) && data[0].length > 0 && isList(data[0][0])) {
+    return data[0].length;
+  }
+  return data.length;
+}
+
+/*
+ * WHETHER A BATCH PAYLOAD IS ONE OR MORE INSERT INTENTS AND NOTHING ELSE:
+ * the one shape of batch this extension makes. The Saver refuses any other
+ * before queueing it, and the queue reader refuses one found on disk, by
+ * this one test.
+ */
+export function insertIntentsOnly(payload: string): boolean {
+  const count = intentCount(payload);
+  const forms = count === null ? [] : parseAnswers(payload);
+  const each = forms.length === 1 && isList(forms[0]) && forms[0].length > 0 && isList(forms[0][0]) ? forms[0] : forms;
+  return count !== null && count > 0 && each.every((intent) => answerOf(intent, 'insert') !== null);
 }
 
 /*

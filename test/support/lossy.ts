@@ -38,8 +38,8 @@ export class LosesTheAnswer implements Transport {
     this.loseWhen = loseWhen;
   }
 
-  public async send(verb: string, args: string[]): Promise<RawResult> {
-    const result = await this.inner.send(verb, args);
+  public async send(verb: string, args: string[], input?: string): Promise<RawResult> {
+    const result = await this.inner.send(verb, args, input);
     if (!this.loseWhen(verb, args)) {
       return result;
     }

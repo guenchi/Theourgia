@@ -46,15 +46,15 @@
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import { Client, Note } from './client';
-import { Outbox, OutboxEntry, Receipt } from './outbox';
+import { Answer, Client, Note } from './client';
+import { Outbox, OutboxEntry, Receipt, insertIntentsOnly, intentCount } from './outbox';
 import { behindNotice } from './status';
 import { SendRecord } from './record';
 import { ImportTarget } from './sessions';
 import { TransportError } from './transport';
 import { eventFromWrite, firstCursorFromCheck, isReplay, isWellFormedCursor } from './cursor';
 import { RETRY_OUTBOX } from './commands';
-import { Datum, answerOf, formatCursor, isList, isSym, wire } from './wire';
+import { Datum, answerOf, asInteger, formatCursor, isDotted, isList, isSym, readEvent, wire } from './wire';
 import { nextStamp } from './durability';
 
 /*
@@ -254,6 +254,16 @@ export interface SaverOptions {
    * doing that again; what it must do is not send.
    */
   retired?: (record: SendRecord) => { known: true; retired: boolean } | { known: false };
+  /*
+   * THE KEPT WRITES A DRAIN SENT THAT THE STORE REFUSED AS STALE, `(error
+   * changed ...)`: the block moved on after the version they carry was
+   * read. Called once per drain, with every such outcome, when the drain
+   * ends -- whether it returned or threw -- except the outcome of the
+   * write that asked for the drain, which its own caller reports. Without
+   * it, a kept path change drained by another save would be refused and
+   * removed with nobody told.
+   */
+  stale?: (outcomes: SaveOutcome[]) => void;
 }
 
 /*
@@ -707,7 +717,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
   /*
    * A COMMIT THAT NAMED VERSIONS THE DRAFTS NO LONGER HAVE. `complete-plan!`
    * (store.sc:3514) recomputes each named version before it runs anything and
-   * answers this when one disagrees; `working-restore!` (working.sc:438) makes
+   * answers this when one disagrees; `working-restore!` (working.sc:437) makes
    * the same name for the same reason. The extension issues `commit`
    * (saver.ts, extension.ts), so a save can be answered with it: the write
    * did not happen and the caller has to read the drafts again.
@@ -733,7 +743,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
    * NOTE: THIS ONE SHOULD BE UNREACHABLE, AND IT IS A VERDICT ROW ANYWAY.
    *
    * The core refuses a draft-space verb whose writer is unbound
-   * (working.sc:132, `writer-required`) so that two agents handed only an
+   * (working.sc:131, `writer-required`) so that two agents handed only an
    * actor cannot silently
    * share one draft space. This extension binds a writer on every
    * request -- `THEOURGIA_WRITER`, defaulted to the actor -- so it
@@ -747,12 +757,14 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia 659fea2; re-read row by row at
+ * is made in the pinned core (theourgia 9f806bb; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
- * relocation.md, and from cba98ae to 659fea2 in archive/theourgia-vsc-
- * delivery-plugin-r3-split-symbols-2026-09-29/relocation.md). The reason is the provenance, not a
+ * relocation.md, from cba98ae to 659fea2 in archive/theourgia-vsc-
+ * delivery-plugin-r3-split-symbols-2026-09-29/relocation.md, and from
+ * 659fea2 to 9f806bb in archive/theourgia-vsc-delivery-plugin-r3-item-53-
+ * 2026-09-27/r7/relocation.md). The reason is the provenance, not a
  * guess about intent: if the grep does not find it, the row says so
  * rather than inventing a story.
  *
@@ -789,11 +801,11 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'incomplete-reduction':
     'incomplete.sc:110 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
-    'refused only to a verb that does not declare it accepts one: rpc.sc:1769 `undeclared-verbs` (export-code ' +
+    'refused only to a verb that does not declare it accepts one: rpc.sc:1796 `undeclared-verbs` (export-code ' +
     'export-md import-md import-code def snapshot). This extension sends none of them; every verb it sends ' +
     'declares, and is answered with an `(incomplete ...)` clause instead',
   'working-draft-unreadable':
-    "working.sc:684, `draft-body` -- a writer's draft whose datum does not read, reached only through " +
+    "working.sc:683, `draft-body` -- a writer's draft whose datum does not read, reached only through " +
     '`working-state`, whose one caller is rpc.sc:91 `working-export`: `export-md` or `export-code` with ' +
     '`--working`. This extension sends neither',
   incomplete:
@@ -807,7 +819,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'detach-needs-a-log':
     'theourgiad.sc:256 -- `serve --detach` without a log path; this extension never runs `serve`, the thin ' +
     'client does, and it always names the log',
-  'working-unavailable': 'working.sc:247, 251, 272, 461: uncertain W storage result; handled by nobodyKnows before settlement',
+  'working-unavailable': 'working.sc:246, 250, 271, 460: uncertain W storage result; handled by nobodyKnows before settlement',
   'eval-value': 'eval-worker.sc:244: local evaluator value serialization',
   'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:531): local evaluator exception',
   'eval-context': 'eval-worker.sc:325, 332: local evaluator context',
@@ -823,8 +835,8 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'position-mismatch': 'match-sections, project.sc:1206 -- the markdown import path',
   'would-delete': 'import-md, project.sc:710 -- the markdown import path',
   'invalid-candidate': 'publish-validated!, log.sc:4315 -- publication, not a block write',
-  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1110 -- a log segment candidate that is not there; this extension never sends `publish`',
-  'unknown-verb': 'dispatch-verb, rpc.sc:1852 -- dispatch, before any verb runs',
+  'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1127 -- a log segment candidate that is not there; this extension never sends `publish`',
+  'unknown-verb': 'dispatch-verb, rpc.sc:1879 -- dispatch, before any verb runs',
   /*
    * NOTE: THREE KINDS FIRST READ ON 659fea2. `would-cycle` refuses a MOVE
    * that would put a block under its own descendant; this extension sends
@@ -846,7 +858,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * did not have this kind yet; 877f0da had it, and so does f5ebd58.
    */
   'unknown-version':
-    'working-restore!, working.sc:449 -- `restore` was asked for a version no plan of this ' +
+    'working-restore!, working.sc:448 -- `restore` was asked for a version no plan of this ' +
     "writer's froze. It is the only site in the core, and `restore` is not a verb this " +
     'extension sends (client.ts lists write, commit, drafts, discard), so no write can be ' +
     'answered with it',
@@ -870,12 +882,12 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.sc:329 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
-    'rpc-dispatch-parsed, rpc.sc:1710-1754, by answers.sc\'s table (`guarded`, rpc.sc:107, now ' +
+    'rpc-dispatch-parsed, rpc.sc:1737-1781, by answers.sc\'s table (`guarded`, rpc.sc:107, now ' +
     're-raises it) -- an entry the verb could not read, anywhere in the verb, including ' +
     'after the append; the answer does not say where. `saysNobodyKnows` takes it before ' +
     'settlement, exactly as `transport-unknown`: pending, same request id, sent again',
   'unknown-name':
-    'whereis, rpc.sc:1276 -- a read verb naming the nearest names it could place; not a ' +
+    'whereis, rpc.sc:1303 -- a read verb naming the nearest names it could place; not a ' +
     'write and not a verb a save sends',
   /*
    * NOTE: THE FOUR `eval` KINDS AND `store-load-failed` ARRIVED WITH THE
@@ -1150,6 +1162,107 @@ const queues = new Map<string, Promise<void>>();
  * may have moved; the loop stops at it, which is the behaviour this
  * batch inherited and does not change.
  */
+
+/*
+ * A BATCH ANSWER READ AS THE ANSWER OF ITS WRITE.
+ *
+ * The core answers `batch` with `(batch <items> (done n))`, one item per
+ * intent, each the answer that intent would have had alone; or, when the
+ * request had already run, `(batch <receipt>)` with the one receipt
+ * `(ok (replay #t) (event ...))` and no count. The head is `batch`, not
+ * `ok`, so the Saver's readers of an answer would see nothing they know.
+ * This hands them the item they do know:
+ *
+ *   - a success is read from the LAST item, the batch's newest record:
+ *     the core writes the receipt first and each item after it, so the
+ *     cursor to carry forward is the last item's. It is a success only
+ *     when `done` says every intent ran;
+ *   - a replay is read from the receipt, which the Saver's readers
+ *     already take (`event`, `replay #t`);
+ *   - a refusal is read from the first item that is not `ok`, which is
+ *     the intent the store declined; an answer that is not a batch at all
+ *     (`(error ...)` for the whole request) is left as it came.
+ *
+ * `id` is the block the first intent made, when it made one and the
+ * answer says which: the id the core states in that item's `state`
+ * section, or, when that section is unavailable, the one its event names
+ * by the core's rule for a new block's id (`<writer>.<seq in base 36>`).
+ * Both are read, and a state section that names blocks without the one
+ * the event gives is a problem, not a choice between them.
+ */
+export function openBatch(
+  answer: Answer,
+  intents: number | null
+): { answer: Answer; id: string | null } | { problem: string } {
+  if (answer.answers.length === 0) {
+    return { answer, id: null };
+  }
+  const datum = answer.answers[0];
+  const form = answerOf(datum, 'batch');
+  if (form === null) {
+    return answer.ok ? { problem: 'the core answered the batch with something that is not a batch answer' } : { answer, id: null };
+  }
+  const items = (datum as Datum[])[1];
+  if (!isList(items) || items.length === 0) {
+    return { problem: 'the core answered the batch with no items' };
+  }
+  const done = form.value('done');
+  if (!done.read) {
+    if (done.because !== 'absent') {
+      return { problem: 'the core answered the batch with a count this client cannot read' };
+    }
+    /*
+     * NEVER: A COUNT-LESS ANSWER TAKEN FOR A RECEIPT ON ITS HEAD ALONE. The
+     * core leaves the count out only for the replay receipt, `(ok (replay #t)
+     * (event ...))`; anything else without a count is not an answer this
+     * client may settle on.
+     */
+    const receipt = items.length === 1 ? answerOf(items[0], 'ok') : null;
+    const replay = receipt === null ? null : receipt.value('replay');
+    const event = receipt === null ? null : receipt.value('event');
+    if (
+      receipt === null ||
+      replay === null ||
+      !replay.read ||
+      replay.value !== true ||
+      event === null ||
+      !event.read ||
+      readEvent(event.value) === null
+    ) {
+      return { problem: 'the core answered the batch with no count and no replay receipt' };
+    }
+    return { answer: { ...answer, answers: [items[0]] }, id: null };
+  }
+  const refused = items.find((item) => answerOf(item, 'ok') === null);
+  if (refused !== undefined) {
+    return { answer: { ...answer, answers: [refused] }, id: null };
+  }
+  if (!answer.ok) {
+    return { problem: 'the core refused the batch while every item it answered says ok' };
+  }
+  if (intents === null || asInteger(done.value) !== intents || items.length !== intents) {
+    return {
+      problem: `the core answered done ${String(done.value)} with ${items.length} items for ${String(intents)} intents`
+    };
+  }
+  const last: Answer = { ...answer, answers: [items[items.length - 1]] };
+  const first = eventFromWrite({ ...answer, answers: [items[0]] });
+  if (first === null) {
+    return { answer: last, id: null };
+  }
+  const made = `${first.writer}.${first.seq.toString(36)}`;
+  const state = (answerOf(items[0], 'ok') as NonNullable<ReturnType<typeof answerOf>>).value('state');
+  if (state.read && isList(state.value) && state.value.length > 0 && state.value.every((entry) => isDotted(entry))) {
+    const named = state.value.map((entry) => (isDotted(entry) ? entry.items[0] : null));
+    if (!named.includes(made)) {
+      return {
+        problem: `the core's answer names ${named.map(String).join(', ')} in its state and ${made} by its event`
+      };
+    }
+  }
+  return { answer: last, id: made };
+}
+
 export function nextRunnable(entries: OutboxEntry[]): OutboxEntry | undefined {
   const parkedBlocks = new Set<string>();
   for (const entry of entries) {
@@ -1203,6 +1316,7 @@ export class Saver {
   private readonly notNowCounts = new Map<string, number>();
   private readonly now: () => number;
   private readonly baselineOf?: (file: string) => { highWater: number } | null;
+  private readonly stale?: (outcomes: SaveOutcome[]) => void;
   private readonly retired?: (
     record: SendRecord
   ) => { known: true; retired: boolean } | { known: false };
@@ -1261,6 +1375,7 @@ export class Saver {
     this.now = options.now ?? (() => Date.now());
     this.baselineOf = options.baselineOf;
     this.retired = options.retired;
+    this.stale = options.stale;
     this.durability = options.durability;
   }
 
@@ -1281,7 +1396,64 @@ export class Saver {
    * inside the same serialisation, so two saves arriving together are
    * enqueued in the order they arrived and sent in that order.
    */
-  public save(id: string, field: string, payload: string): Promise<SaveOutcome> {
+  public save(id: string, field: string, payload: string, expect?: string): Promise<SaveOutcome> {
+    /*
+     * NEVER: A WRITE OF THE PATH WITHOUT THE VERSION IT WAS READ AT. It would
+     * go out unconditional, and overwrite a path somebody else changed after
+     * the read. Refused before anything is queued: it is a caller's mistake.
+     */
+    if (field === 'path' && expect === undefined) {
+      return Promise.reject(new Error('Saver.save takes a write of the path only with the version it was read at'));
+    }
+    return this.enqueued(id, (req, cursor) => ({
+      req,
+      cursor,
+      id,
+      field,
+      payload,
+      state: 'queued',
+      createdAt: this.now(),
+      lastError: null,
+      importedBy: null,
+      ...(expect === undefined ? {} : { expect })
+    }));
+  }
+
+  /*
+   * A LIST OF INTENTS RUN AS ONE WRITE SESSION, through the same queue as
+   * every save: written down first, sent with its request id and the
+   * cursor it was composed against, kept when the answer is unknown, and
+   * sent again whole. `intents` is the text the core's `batch` reads.
+   *
+   * The outcome's `id` is the block the batch's first intent made, read
+   * from its answer; empty until there is one.
+   */
+  public batch(intents: string): Promise<SaveOutcome> {
+    /*
+     * ONE OR MORE INSERT INTENTS, AND NOTHING ELSE. The settlement reads the
+     * first item as a new block's answer and requires a count equal to the
+     * intents; a payload of other intents, or none, would be settled wrongly
+     * or kept for ever. Refused before anything is queued: it is a caller's
+     * mistake, not an answer.
+     */
+    if (!insertIntentsOnly(intents)) {
+      return Promise.reject(new Error('Saver.batch takes one or more insert intents and nothing else'));
+    }
+    return this.enqueued('', (req, cursor) => ({
+      req,
+      cursor,
+      id: '',
+      field: '',
+      payload: intents,
+      state: 'queued',
+      createdAt: this.now(),
+      lastError: null,
+      importedBy: null,
+      verb: 'batch'
+    }));
+  }
+
+  private enqueued(id: string, make: (req: string, cursor: string) => OutboxEntry): Promise<SaveOutcome> {
     return this.serialise(async () => {
       const cursor = await this.ensureCursor();
       if (cursor === null) {
@@ -1293,17 +1465,7 @@ export class Saver {
           answer: null
         };
       }
-      const entry: OutboxEntry = {
-        req: this.newRequestId(),
-        cursor,
-        id,
-        field,
-        payload,
-        state: 'queued',
-        createdAt: this.now(),
-        lastError: null,
-        importedBy: null
-      };
+      const entry: OutboxEntry = make(this.newRequestId(), cursor);
       /*
        * NOTE: THIS PATH HAS NO NUMBER TO GIVE BACK, so the receipt answers
        * only one question here: whether the queue could promise the entry
@@ -1314,7 +1476,7 @@ export class Saver {
       const enqueuedAt = nextStamp();
       let outcomes: SaveOutcome[];
       try {
-        outcomes = await this.drain();
+        outcomes = await this.drain(entry.req);
       } catch (e) {
         this.toSink(receipt.durability, enqueuedAt);
         throw e;
@@ -1354,6 +1516,14 @@ export class Saver {
    * its first transmission, and drain.
    */
   public submit(record: SendRecord): Promise<SaveOutcome> {
+    /*
+     * NEVER: A RECORD THAT WRITES THE PATH. A record carries no version to
+     * write against, and a write of the path without one is refused, as
+     * `save` refuses it, before anything is queued.
+     */
+    if (record.intent.field === 'path') {
+      return Promise.reject(new Error('Saver.submit takes a write of the path only with the version it was read at'));
+    }
     /*
      * NEVER: WHETHER THE ENTRY WAS QUEUED IS ASKED OF THE FILE.
      *
@@ -1532,7 +1702,7 @@ export class Saver {
        * receipt from outside, this sentence is the reminder.
        */
       const held = receipt;
-      const outcomes = await this.drain();
+      const outcomes = await this.drain(entry.req);
       const mine = outcomes.find((o) => o.req === entry.req);
       this.passOn(outcomes, mine);
       const outcome: SaveOutcome = mine ?? {
@@ -1772,7 +1942,7 @@ export class Saver {
    * whole array with it, and nothing would select or pass on anything. The
    * throwing iteration's own warnings went to the sink in its `finally`.
    */
-  private async drain(): Promise<SaveOutcome[]> {
+  private async drain(asking?: string): Promise<SaveOutcome[]> {
     const outcomes: SaveOutcome[] = [];
     try {
       return await this.drainInto(outcomes);
@@ -1781,6 +1951,29 @@ export class Saver {
         this.toSink(outcome.durability, this.stamps.get(outcome));
       }
       throw e;
+    } finally {
+      this.sayStale(outcomes, asking);
+    }
+  }
+
+  /*
+   * THE STALE REFUSALS OF ONE DRAIN, handed on together. A write whose
+   * answer could not be recorded is `pending` by now and is not among
+   * them: it is still queued, and it will be sent again.
+   */
+  private sayStale(outcomes: SaveOutcome[], asking: string | undefined): void {
+    if (this.stale === undefined) {
+      return;
+    }
+    const refused = outcomes.filter(
+      (o) =>
+        o.req !== asking &&
+        o.status === 'refused' &&
+        o.answer !== null &&
+        answerOf(asItsKind(o.answer), 'error', { at: 1, is: 'changed' }) !== null
+    );
+    if (refused.length > 0) {
+      this.stale(refused);
     }
   }
 
@@ -2006,11 +2199,11 @@ export class Saver {
      * entry has one, and the old fields only for an entry written
      * before section 13, which has no record and takes the legacy path.
      */
-    const what =
+    let what =
       entry.record === undefined
         ? { id: entry.id, field: entry.field, payload: entry.payload }
         : { id: entry.record.blockId, field: entry.record.intent.field, payload: entry.record.intent.body };
-    const verb = entry.record?.intent.verb === 'commit' ? 'commit' : 'set';
+    const verb = entry.verb === 'batch' ? 'batch' : entry.record?.intent.verb === 'commit' ? 'commit' : 'set';
     let args: string[];
     if (verb === 'commit') {
       let selected: {writer:string;version:string};
@@ -2037,10 +2230,27 @@ export class Saver {
        * `answer.envelope`.
        */
       args=[what.id,'--writer',selected.writer,'--working-version',selected.version,'--req',entry.req,'--cursor',entry.cursor,'--wire'];
-    } else args=[what.id,what.field,what.payload,'--req',entry.req,'--cursor',entry.cursor];
+    } else if (verb === 'batch') {
+      /*
+       * THE INTENTS GO ON STANDARD INPUT, NOT AS AN ARGUMENT. The core's
+       * `batch` always reads them from there, so an argument as well makes
+       * two and the answer is the verb's usage line (measured on the pinned
+       * core; see `Transport`).
+       */
+      args = ['--req', entry.req, '--cursor', entry.cursor];
+    } else {
+      /*
+       * A CONDITIONAL WRITE CARRIES ITS VERSION on every send, the first and
+       * any retry: the store refuses it as `changed` if the block moved on.
+       */
+      args = [what.id, what.field, what.payload, '--req', entry.req, '--cursor', entry.cursor];
+      if (entry.expect !== undefined) {
+        args.push('--if-unchanged', entry.expect);
+      }
+    }
     let answer;
     try {
-      answer = await this.client.request(verb, args);
+      answer = await this.client.request(verb, args, verb === 'batch' ? entry.payload : undefined);
     } catch (e) {
       if (e instanceof TransportError) {
         const why = aside(e.detail);
@@ -2054,6 +2264,21 @@ export class Saver {
         };
       }
       throw e;
+    }
+    if (verb === 'batch') {
+      const opened = openBatch(answer, intentCount(entry.payload));
+      if ('problem' in opened) {
+        this.kept(this.outbox.markPending(entry.req, opened.problem));
+        return {
+          status: 'pending',
+          req: entry.req,
+          id: what.id,
+          message: `${opened.problem}; the request is kept and can be retried`,
+          answer: answer.answers.length > 0 ? answer.answers[0] : null
+        };
+      }
+      answer = opened.answer;
+      what = { ...what, id: opened.id ?? '' };
     }
 
     const datum = answer.answers.length > 0 ? answer.answers[0] : null;

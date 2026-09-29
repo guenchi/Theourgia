@@ -60,6 +60,10 @@ export interface ScriptedCall {
 export interface LoggedCall {
   argv: string[];
   coreArgv: string[];
+  /*
+   * The request's standard input, or null when it sent none.
+   */
+  input: string | null;
   env: {
     CHEZSCHEMELIBDIRS: string | null;
     CHEZSCHEMELIBEXTS: string | null;
@@ -176,6 +180,16 @@ export class FakeCore {
     return this.calls()
       .filter((c) => c.event === 'answer' || c.event === 'unscripted')
       .map((c) => c.coreArgv);
+  }
+
+  /*
+   * THE REQUESTS WITH WHAT EACH PUT ON STANDARD INPUT: the whole of what a
+   * request asked for, for a verb that reads its operand there.
+   */
+  public requestsWithInput(): Array<{ argv: string[]; input: string | null }> {
+    return this.calls()
+      .filter((c) => c.event === 'answer' || c.event === 'unscripted')
+      .map((c) => ({ argv: c.coreArgv, input: c.input ?? null }));
   }
 
   /*

@@ -368,9 +368,13 @@ export class Client {
     return this.transport.kind;
   }
 
-  public async request(verb: string, args: string[] = []): Promise<Answer> {
+  /*
+   * `input` is the request's standard input, for the one verb that reads
+   * its operand there (`batch`); see `Transport`.
+   */
+  public async request(verb: string, args: string[] = [], input?: string): Promise<Answer> {
     const kind = answerKind(verb, args);
-    const raw: RawResult = await this.transport.send(verb, args);
+    const raw: RawResult = await this.transport.send(verb, args, input);
     return interpret(raw, verb, kind, args);
   }
 }

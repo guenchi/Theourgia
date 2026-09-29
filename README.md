@@ -488,7 +488,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia 659fea2, as cba98ae before it) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 9f806bb, as 659fea2 and cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete
@@ -539,6 +539,47 @@ says it). Each symbol is sent at the start of its line, two symbols on one line 
 above a definition goes with it, as without symbols. A file whose lines end in CR alone is not cut by
 symbols: the core takes a line start to follow a line feed, and refuses (`symbols-not-a-line-start`). Which provider named a symbol cannot be said: the
 editor merges them.
+
+**Browsing by file.** The tree has two modes, switched from its title bar: **Files**, the directory
+tree export would write, and **Outline**, the store's own parents and order. The directories are not
+kept anywhere; they are read from the `path` field of the blocks export writes as files -- a document
+at the top level, a text-mode file block wherever it sits, and a datum-mode library -- so a directory
+appears with its first file and goes with its last. Directories come before files, each sorted by name;
+a file is labelled with the last part of its path, and its title is in the tooltip. A path is taken as
+export takes it, never tidied: one export refuses (`../a.md`, `docs//e.md/`) puts its block under
+**not in any file** with the path in the tooltip, beside the top-level blocks with no path, those with a
+path that are not a file, and the orphans. Two documents with one path are both listed and the second by
+id says `not exported: path taken`; two text files or two libraries with one path both say
+`export refused: duplicate path`, as export refuses the whole export. A document below the top level
+is never a file, whatever its path: export writes its content into the enclosing document. A store
+opens in Files when any of its top-level blocks carries a path and in Outline otherwise, decided the
+first time it is shown and kept for that store; it does not change by itself when a path appears
+later. On a directory, **New File Here** makes a markdown document at that path (one `batch` through the
+save queue, so an answer that is lost is kept and sent again); on a file, **Move to Directory** and
+**Rename File** write its `path`. A directory has nothing to open, and there is no new or deleted
+directory: a directory is only ever a prefix. The Files listing reads each top-level block with its
+whole subtree, where the Outline listing reads each alone. A path is a path only when it is stored as a
+string, as the exporters take it, and a document is a file only when export takes it as a root: an
+orphan document with a path is listed in no file. Text files are written as a family, as export-code
+writes them: one text file with no safe path, one path two text files share, or one block under a text
+file that is not a text-mode code block, and every text file says `export refused` with the reason;
+datum libraries likewise. Two of the datum exporter's refusals are not predicted here and are answered only
+when exporting: a library whose child's doc holds a projection marker (`marker-in-doc`) or is not whole-line
+comments (`invalid-doc`); such a library is shown as written. A row names a block and nothing more: Move
+and Rename read the block afresh (`read <id> --wire`, whose answer carries the block's version), offer its
+current path, and write the new one with `--if-unchanged <version>`, so a block changed after that read --
+by another window, or while the prompt was open -- is refused by the store as `changed`; the window says
+"this item changed since it was listed; the view is refreshed" and lists it again. A row, a node or an
+open kept from a listing of another store is refused before anything is read, and an action whose store
+was switched while its read or its prompt waited sends nothing; once queued, a write belongs to the store
+it was read from. A settings change that keeps the store refuses nothing. A write of the path is never
+queued without the version it was read at. A
+queue holding a new document not yet settled, or a write kept with the version it was read at, is written
+as version 2, which an earlier build of this extension refuses by name rather than misreading or sending
+without its condition; every other queue is written as version 1, as before. A kept write is sent with
+the same version however late it goes, so it is refused if the block has changed meanwhile; whichever
+send drains it -- the retry command, the drain at startup, or the drain in front of another save -- the
+window says so, and lists the view again when that store is still the one shown.
 
 **Point `THEOURGIA_CORE` at a copy nobody is editing.** The core is somebody else's working
 tree, and a suite that reads one is only as stable as the editing going on in it — a run of

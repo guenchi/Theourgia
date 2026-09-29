@@ -108,6 +108,36 @@ export const GO_TO_DEFINITION: CommandName = {
 };
 
 /*
+ * THE TREE VIEW'S TWO MODES AND THE FILE ACTIONS. See
+ * `src/directory-view.ts`: the files view is the tree export would write,
+ * derived from the blocks' paths.
+ */
+export const SHOW_FILES: CommandName = {
+  id: 'theourgia.showFiles',
+  title: 'theourgia: Show Files'
+};
+
+export const SHOW_OUTLINE: CommandName = {
+  id: 'theourgia.showOutline',
+  title: 'theourgia: Show Outline'
+};
+
+export const NEW_FILE_HERE: CommandName = {
+  id: 'theourgia.newFileHere',
+  title: 'theourgia: New File Here'
+};
+
+export const MOVE_TO_DIRECTORY: CommandName = {
+  id: 'theourgia.moveToDirectory',
+  title: 'theourgia: Move to Directory'
+};
+
+export const RENAME_FILE: CommandName = {
+  id: 'theourgia.renameFile',
+  title: 'theourgia: Rename File'
+};
+
+/*
  * A SPLIT OF A SOURCE FILE, CUT WHERE THE EDITOR'S SYMBOLS START. See
  * `src/split-symbols.ts`.
  */
@@ -118,6 +148,11 @@ export const SUGGEST_SPLIT: CommandName = {
 
 export const COMMANDS: CommandName[] = [
   SUGGEST_SPLIT,
+  SHOW_FILES,
+  SHOW_OUTLINE,
+  NEW_FILE_HERE,
+  MOVE_TO_DIRECTORY,
+  RENAME_FILE,
   OPEN_AS_DOCUMENT,
   GO_TO_DEFINITION,
   SEARCH_BLOCKS,

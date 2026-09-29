@@ -38,9 +38,9 @@ export class Counting implements Transport {
     this.kind = `counting-${inner.kind}`;
   }
 
-  public send(verb: string, args: string[]): Promise<RawResult> {
+  public send(verb: string, args: string[], input?: string): Promise<RawResult> {
     this.sent.push([verb, ...args]);
-    return this.inner.send(verb, args);
+    return this.inner.send(verb, args, input);
   }
 
   public countOf(verb: string): number {

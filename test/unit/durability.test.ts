@@ -239,8 +239,8 @@ describe('a queue in a shape this build cannot read is refused, not repaired', (
     },
     {
       name: 'a queue from a later version',
-      text: '{"version":2,"cursor":"w:7","entries":[]}\n',
-      says: /version 2/
+      text: '{"version":3,"cursor":"w:7","entries":[]}\n',
+      says: /version 3/
     },
     {
       /*

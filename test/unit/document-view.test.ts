@@ -313,9 +313,18 @@ describe('plugin-r3 6 a subtree as one read-only document', () => {
     const entries = manifest.contributes.menus['view/item/context'] as Array<{ command: string; when: string }>;
     const entry = entries.find((e) => e.command === 'theourgia.openAsDocument');
     assert.ok(entry !== undefined, 'no context-menu entry');
-    assert.strictEqual(entry?.when, 'view == theourgiaOutline && viewItem == theourgia.block');
+    assert.strictEqual(entry?.when, 'view == theourgiaOutline && viewItem =~ /^theourgia\\.block/');
     const source = fs.readFileSync(path.join(root, 'src', 'extension.ts'), 'utf8');
     assert.ok(source.includes("item.contextValue = 'theourgia.block';"), 'the rows no longer carry that context value');
+    /*
+     * A FILE ROW OF THE FILES VIEW IS A BLOCK ROW TOO, and a directory is not.
+     */
+    assert.ok(source.includes("item.contextValue = 'theourgia.block.file';"), 'the file rows no longer carry their context value');
+    const offered = new RegExp((/viewItem =~ \/(.*)\/$/.exec(entry?.when ?? '') as RegExpExecArray)[1]);
+    assert.deepStrictEqual(
+      ['theourgia.block', 'theourgia.block.file', 'theourgia.dir', 'theourgia.pathless', 'theourgia.incomplete'].map((v) => offered.test(v)),
+      [true, true, false, false, false]
+    );
     const palette = manifest.contributes.menus.commandPalette as Array<{ command: string; when: string }>;
     assert.deepStrictEqual(
       palette.find((e) => e.command === 'theourgia.openAsDocument'),

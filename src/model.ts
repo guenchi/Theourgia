@@ -46,7 +46,7 @@ import { Client, Note, mergeNotes } from './client';
 import { Block, isTopLevel, parentOf, readBlock, stringField, titleOf, hasFieldConflict } from './blocks';
 import { parseOutline } from './outline';
 import { TransportError } from './transport';
-import { Datum, answerOf, isList, isSym } from './wire';
+import { Datum, Form, answerOf, isList, isSym } from './wire';
 import { Hit, hitsOf, knownVerbs, rankHits } from './search';
 
 /*
@@ -131,6 +131,22 @@ export interface ChildListing {
    * whose writing is not in them.
    */
   notes: Note[] | null;
+}
+
+/*
+ * A BLOCK AS A FILES LISTING READ IT: its record, its node, and whether it
+ * sits at the root of the outline (top level, or promoted there by a mark).
+ */
+export interface ListedBlock {
+  block: Block;
+  node: Node;
+  atRoot: boolean;
+  /*
+   * Whether export takes it as a root: top level, or a cycle or an unplaced
+   * block, which the core's outline puts at the root. An orphan is listed at
+   * the root and is not one (it keeps the parent that was deleted).
+   */
+  exportRoot: boolean;
 }
 
 export interface Node {
@@ -226,6 +242,67 @@ export class StoreModel {
    * no promise about which rows survived it.
    */
   public async roots(): Promise<ChildListing> {
+    return (await this.rootsFrom((id) => this.blockReading(id))).listing;
+  }
+
+  /*
+   * THE ROOT LISTING FOR FILES MODE, and every block below each root.
+   *
+   * Export writes a text file block wherever it sits, so a file may be below
+   * a section nobody has expanded yet. Each root is therefore read with its
+   * whole subtree, once per listing, in place of the one-block read the
+   * outline listing makes -- the same number of requests, each answering
+   * more. What the blocks carry (kind, mode, path) is read from those
+   * answers; nothing is fetched again when a directory is opened.
+   */
+  public async filesReading(): Promise<{ listing: ChildListing; blocks: ListedBlock[] }> {
+    const below: Block[] = [];
+    const found = await this.rootsFrom(async (id) => {
+      const answer = await this.client.request('read', [id, '--recursive', '--wire']);
+      if (!answer.ok) {
+        throw new TransportError(
+          'unreadable',
+          `the store would not read the subtree under ${id}: ${answer.text.trim()}`,
+          answer.text
+        );
+      }
+      const blocks = answer.answers.map((item) => readBlock(item));
+      if (blocks.some((b) => b === null)) {
+        throw new TransportError(
+          'unreadable',
+          `the store answered the subtree under ${id} with something that is not a block`,
+          answer.text
+        );
+      }
+      const own = (blocks as Block[]).find((b) => b.id === id) ?? null;
+      below.push(...(blocks as Block[]).filter((b) => b.id !== id));
+      return { block: own, notes: answer.notes ?? null };
+    });
+    /*
+     * ONE ENTRY PER BLOCK. A block reached from two roots' reads -- a
+     * promoted block whose old parent is still being read -- is listed
+     * once, as a root when it is one.
+     */
+    const blocks: ListedBlock[] = found.roots.map((block, i) => ({
+      block,
+      node: found.listing.nodes[i],
+      atRoot: true,
+      exportRoot: isTopLevel(block) || (found.marks.get(block.id) ?? []).some((m) => m === 'cycle' || m === 'unplaced')
+    }));
+    const seen = new Set(blocks.map((b) => b.block.id));
+    for (const block of below) {
+      if (seen.has(block.id)) {
+        continue;
+      }
+      seen.add(block.id);
+      blocks.push({ block, node: nodeFromBlock(block, found.marks.get(block.id) ?? []), atRoot: false, exportRoot: false });
+    }
+    return { listing: found.listing, blocks };
+  }
+
+  private async rootsFrom(
+    readRoot: (id: string) => Promise<{ block: Block | null; notes: Note[] | null }>
+  ): Promise<{ listing: ChildListing; roots: Block[]; marks: Map<string, StructuralMark[]> }> {
     const answer = await this.client.request('outline', ['--depth', '1', '--wire']);
     /*
      * NEVER: THE EXIT CODE IS READ BEFORE THE TEXT IS.
@@ -269,8 +346,9 @@ export class StoreModel {
     const marks = read.marks;
     let notes = mergeNotes(answer.notes, read.notes);
     const out: Node[] = [];
+    const rootBlocks: Block[] = [];
     for (const row of rows) {
-      const reading = await this.blockReading(row.id);
+      const reading = await readRoot(row.id);
       notes = mergeNotes(notes, reading.notes);
       const block = reading.block;
       if (block === null) {
@@ -317,8 +395,9 @@ export class StoreModel {
         );
       }
       out.push(nodeFromBlock(block, found));
+      rootBlocks.push(block);
     }
-    return { nodes: out, marksKnown: read.complete, notes };
+    return { listing: { nodes: out, marksKnown: read.complete, notes }, roots: rootBlocks, marks };
   }
 
   /*
@@ -599,7 +678,56 @@ export class StoreModel {
    * writer carries the notes with it.
    */
   public async blockReading(id: string): Promise<{ block: Block | null; notes: Note[] | null }> {
-    const answer = await this.client.request('read', [id]);
+    const read = await this.readOne(id, [id]);
+    return { block: read.block, notes: read.notes };
+  }
+
+  /*
+   * THE BLOCK AS IT IS NOW, AND ITS VERSION: what an action on a listed row
+   * starts from. A row is an id; its path and its version are read here, at
+   * the moment of the action, never taken from the listing. The version is
+   * what `set ... --if-unchanged <version>` compares against, so a block
+   * changed between this read and the write is refused by the store as
+   * `changed`.
+   *
+   * NOTE: THE CLAUSE IS `(version "<block-hash>")` BESIDE THE RECORD in the
+   * answer to `read <id> --wire`: `(ok <record> (version "<hash>"))`. An
+   * answer without it is one this client cannot act on, and is refused as
+   * unreadable rather than written without a precondition.
+   *
+   * NOTE: `(version unavailable (reason "<text>"))` IS THE STORE SAYING IT
+   * CANNOT COMPUTE THIS BLOCK'S VERSION. No guarded write is possible, so the
+   * action is refused as well, but with that sentence and the store's reason
+   * rather than as an answer this client could not read.
+   */
+  public async blockWithVersion(id: string): Promise<{ block: Block | null; version: string | null; notes: Note[] | null }> {
+    const read = await this.readOne(id, [id, '--wire']);
+    if (read.block === null) {
+      return { block: null, version: null, notes: read.notes };
+    }
+    const whole = read.form === null ? null : read.form.whole('version');
+    const unavailable = whole !== null && whole.read ? answerOf(whole.items, 'version', { at: 1, is: 'unavailable' }) : null;
+    if (unavailable !== null) {
+      const reason = unavailable.value('reason');
+      const why = reason.read && typeof reason.value === 'string' ? `: ${reason.value}` : '';
+      throw new TransportError(
+        'unreadable',
+        `the store cannot version this block (${id}), so its path cannot be changed safely${why}`,
+        ''
+      );
+    }
+    const version = read.form === null ? null : read.form.value('version');
+    if (version === null || !version.read || typeof version.value !== 'string') {
+      throw new TransportError('unreadable', `the store answered the read of ${id} without its version`, '');
+    }
+    return { block: read.block, version: version.value, notes: read.notes };
+  }
+
+  private async readOne(
+    id: string,
+    args: string[]
+  ): Promise<{ block: Block | null; notes: Note[] | null; form: Form | null }> {
+    const answer = await this.client.request('read', args);
     if (!answer.ok) {
       const said = answer.answers.length > 0 ? answer.answers[0] : null;
       /*
@@ -618,7 +746,7 @@ export class StoreModel {
         said.length >= 3 &&
         said[2] === id
       ) {
-        return { block: null, notes: answer.notes ?? null };
+        return { block: null, notes: answer.notes ?? null, form: null };
       }
       throw new TransportError(
         'unreadable',
@@ -676,7 +804,7 @@ export class StoreModel {
     if (block.id !== id) {
       return unreadable(`a record for ${block.id}`);
     }
-    return { block, notes: answer.notes ?? null };
+    return { block, notes: answer.notes ?? null, form: answerOf(datum, 'ok') };
   }
 
   /*

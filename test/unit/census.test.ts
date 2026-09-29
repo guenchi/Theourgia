@@ -137,6 +137,39 @@ const AT_LEAST: Array<[string, number]> = [
   ['definition.test.ts', 14],
   ['dependency-sexpr.test.ts', 15],
   /*
+   * ADDED with the files view: the tree export would write, from the
+   * blocks' paths -- the grouping and the exporter's rule (6), the
+   * enumeration (1), the default mode (1), the action paths (2), the batch
+   * through the Saver (5), its queue entry (5), the menus (1), the window in
+   * the harness (6), and on a real core the agreement with export and a new
+   * document made through the window (5). RAISED 32 -> 45 by its review: kind
+   * and mode as symbols (1), a family written whole or not at all (6), an
+   * orphan document (1), the receipt, the insert-only batch and the queue's
+   * version (3), a stale row and a mode chosen during a listing (2). RAISED
+   * 45 -> 50 by its second review: a cycle's blocks and a deleted block in a
+   * family, a receipt whose event is not one, a mode spelled as a string and
+   * an orphan read by the model (5). RAISED 50 -> 62 when a row became an id
+   * and a write of the path became conditional: the version read and a
+   * version missing (1), a queued write refused as stale and one kept through
+   * a restart (2), a version that is not a string (1), and in the harness a
+   * rename from a row kept from before a move, a move from an old directory,
+   * a write that raced the prompt, a settings change that kept the store,
+   * rows of another store, a store switched during the read and during the
+   * prompt, and Files chosen during an Outline listing, net of the two rows
+   * they replaced (6 + 2 + 1), and on a real core the conditional rename (1).
+   * RAISED 62 -> 66 by its review: a write of the path never queued without
+   * its version (1), a stale change drained by the retry command (1), a mode
+   * chosen while the listing remembered its own (1), and Outline nodes of
+   * another store (1). RAISED 66 -> 72 by its next review: a stale refusal
+   * of a kept write handed on from any drain, not the asking write's own
+   * (1), and when the drain then throws (1); a queued record writing the
+   * path and a queued batch of other intents refused (1); submit refusing a
+   * record writing the path (1); in the window, a kept move drained in
+   * front of a new document (1) and across a settings change during the
+   * retry (1).
+   */
+  ['directory-view.test.ts', 72],
+  /*
    * ADDED in plugin-r3 item 6: a subtree composed as one read-only
    * document -- fifteen cells on the composition, five on the text behind
    * a document's address, four against a real store.
