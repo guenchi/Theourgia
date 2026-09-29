@@ -5,8 +5,9 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
 
-**One set of prerequisites: Chez Scheme, and igropyr.** There is no
-Python anywhere in this, and no build step -- the verbs run from source:
+**One set of prerequisites: Chez Scheme, and igropyr.** 
+
+-- the verbs run from source:
 
     scheme --script theourgia.sc <verb> [...]
 
