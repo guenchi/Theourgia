@@ -411,7 +411,8 @@
 ;; platform: inside a when, unless, if, and or cond clause whose test
 ;; names macos?, platform-os, machine-kind or platform-field-present?, and
 ;; not in that test; or in a procedure every call of which is so guarded
-;; (rss-darwin, rss-freebsd). A name is lacking when a row prints it
+;; (rss-darwin, rss-freebsd, sysctl-environment-entries). A name is
+;; lacking when a row prints it
 ;; absent: a constant, a struct, or a struct's field.
 ;;
 ;; (d) THE STRUCT HELPERS are exactly unsigned, signed and unsigned-set
@@ -477,7 +478,11 @@
                                            (not (memq (site-name s) struct-helpers))))
                           sites))))
 (define expected-read-sites
-  '(("../client.sc" ECONNREFUSED (platform-number (quote ECONNREFUSED)))
+  '(("../ffi.sc" sysctl-environment-entries (platform-number (quote CTL_KERN)))
+    ("../ffi.sc" sysctl-environment-entries (platform-number (quote KERN_PROC)))
+    ("../ffi.sc" sysctl-environment-entries (platform-number (quote KERN_PROC_ENV)))
+    ("../ffi.sc" sysctl-environment-entries (platform-type-size (quote int)))
+    ("../client.sc" ECONNREFUSED (platform-number (quote ECONNREFUSED)))
     ("../client.sc" ENOENT (platform-number (quote ENOENT)))
     ("../client.sc" ENOTSOCK (platform-number (quote ENOTSOCK)))
     ("../daemon.sc" signal-term (platform-number (quote SIGTERM)))
@@ -638,7 +643,7 @@
 (define struct-definitions
   '(st-mode-of path-device-inode size-entry sockaddr-un timeval-bytes rlimit-bytes getrlimit rss-darwin rss-freebsd
     make-pid-buffer pid-buffer-ref waitpid-status))
-(define mechanism-definitions '(process-rss-bytes spawn-detached! spawn-captured! path-case-sensitive? machine-kind))
+(define mechanism-definitions '(process-rss-bytes spawn-detached! spawn-captured! path-case-sensitive? machine-kind environment-entries))
 (define fixed-width-accessors
   '(bytevector-u8-ref bytevector-u16-native-ref bytevector-u32-native-ref bytevector-u64-native-ref
     bytevector-s16-native-ref bytevector-s32-native-ref bytevector-s64-native-ref
@@ -727,7 +732,7 @@
                (and (list? parent) (pair? parent) (eq? (car parent) 'cond) (list? a) (pair? a)
                     (names-a-guard? (car a)) (not (eq? child (car a))))
                (loop a (cdr up)))))))
-(define branch-procedures '(rss-darwin rss-freebsd))
+(define branch-procedures '(rss-darwin rss-freebsd sysctl-environment-entries))
 ;; every call of a procedure, its own definition's head aside
 (define (calls-of name)
   (filter (lambda (s)
@@ -754,7 +759,7 @@
             (length (filter (lambda (s) (and (accessor-call? (site-form s)) (pair? (lacking-of (site-form s)))
                                              (not (memq (site-name s) struct-helpers))))
                             sites)))
-      (list #t 11))
+      (list #t 14))
 
 (define ffi-sites (walk-sites "../ffi.sc"))
 (define (defined-form name)
@@ -791,6 +796,54 @@
                (list (>= (max 8 16 fa) fa) (>= (max 512 st) st) (>= (max 4096 pm) pm))))
            (platform-readings))
       '((#t #t #t) (#t #t #t) (#t #t #t) (#t #t #t)))
+
+;; ---- V: a child's environment where libc has no `environ` ------------------
+;;
+;; FreeBSD's executable keeps `environ` in its own startup code and a Chez
+;; binary does not export it, so there both spawns read this process's
+;; environment through sysctl {CTL_KERN, KERN_PROC, KERN_PROC_ENV, pid}.
+;; That path cannot be forced here -- the sysctl is FreeBSD's -- so these
+;; rows read its form, and the suite run on FreeBSD is its witness: every
+;; daemon started there goes through it.
+(want "PN-V the environment is environ where libc has it, sysctl on FreeBSD, and refused elsewhere; both spawns ask it"
+      (let ((e (defined-form 'environment-entries)))
+;; the body is one cond: its clauses' tests, the FreeBSD clause's call,
+        ;; the refusal, and no fourth clause
+        (list (and e (map car (cdr (caddr e))))
+              (and e (cadr (list-ref (caddr e) 2)))
+              (and e (cadr (list-ref (caddr e) 3)))
+              (and e (length (cdr (caddr e))))
+              (holds? (defined-form 'spawn-detached!) '(environment-entries own! 'spawn-detached!))
+              (holds? (defined-form 'spawn-captured!) '(environment-entries own! 'spawn-captured!))
+              (holds? (defined-form 'spawn-detached!) '(foreign-entry "environ"))
+              (holds? (defined-form 'spawn-captured!) '(foreign-entry "environ"))))
+      (list '((foreign-entry? "environ") (string=? (machine-kind) "freebsd") else)
+            '(sysctl-environment-entries own! who)
+            '(assertion-violation who "no environ in libc" (machine-kind))
+            3
+            #t #t #f #f))
+(want "PN-V the sysctl's name is CTL_KERN, KERN_PROC, KERN_PROC_ENV and this process's pid, at the row's int width"
+      (let ((f (defined-form 'sysctl-environment-entries)))
+        (list (holds? f '(bytevector-uint-set! mib 0 (platform-number 'CTL_KERN) (native-endianness) int-size))
+              (holds? f '(bytevector-uint-set! mib int-size (platform-number 'KERN_PROC) (native-endianness) int-size))
+              (holds? f '(bytevector-uint-set! mib (* 2 int-size) (platform-number 'KERN_PROC_ENV) (native-endianness) int-size))
+              (holds? f '(bytevector-uint-set! mib (* 3 int-size) (get-process-id) (native-endianness) int-size))
+              (holds? f '(c-sysctl mib 4 buf len 0 0))))
+      '(#t #t #t #t #t))
+(want "PN-V and on this row a captured child sees this process's environment, with a binding replacing its own"
+      (let ((out (string-append here "/env.out")) (err (string-append here "/env.err")))
+        (call-with-values
+          (lambda () (spawn-captured! (list "/bin/sh" "-c" "printf '%s|%s' \"$PN_V_MARK\" \"$HOME\"")
+                                      (list (cons "PN_V_MARK" "set-by-binding")) #f out err))
+          (lambda (pid e)
+            ;; waitpid-status does not wait: it answers #f while the child runs
+            (when pid
+              (let wait ((n 0))
+                (unless (or (waitpid-status pid) (>= n 100))
+                  (sleep (make-time 'time-duration 50000000 0))
+                  (wait (+ n 1)))))
+            (list e (file-text out)))))
+      (list #f (string-append "set-by-binding|" (or (getenv "HOME") ""))))
 
 ;; ---- signedness is the reader's, from the C type --------------------------------
 ;;
