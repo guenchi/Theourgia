@@ -57,7 +57,7 @@
   (export platform-number platform-field platform-field-present?
           platform-struct-size platform-struct-value platform-type-size
           platform-wait-sample platform-key platform-row platform-readings
-          reading-key)
+          reading-key maps-libc)
   (import (chezscheme))
 
   ;; ---- the rows ------------------------------------------------------------
@@ -675,27 +675,61 @@
             (and (equal? system "Linux")
                  (let ((libc (reading-string r 'libc))) (and libc (first-word libc)))))))
 
-  (define (string-contains? hay needle)
-    (let ((n (string-length needle)) (h (string-length hay)))
-      (let loop ((i 0))
-        (and (<= (+ i n) h)
-             (or (string=? (substring hay i (+ i n)) needle)
-                 (loop (+ i 1)))))))
+  (define (has-prefix? prefix s)
+    (and (<= (string-length prefix) (string-length s))
+         (string=? (substring s 0 (string-length prefix)) prefix)))
+
+  (define (has-suffix? suffix s)
+    (and (<= (string-length suffix) (string-length s))
+         (string=? (substring s (- (string-length s) (string-length suffix)) (string-length s)) suffix)))
+
+  ;; -> the last component of a mapping's path, or #f for a line with no
+  ;; path. A maps line is address, permissions, offset, device, inode, then
+  ;; the pathname; only the pathname holds a "/", so it starts at the
+  ;; line's first "/". The kernel appends " (deleted)" to an unlinked
+  ;; object's path, and that suffix is not part of its name.
+  (define (mapping-basename line)
+    (let loop ((i 0))
+      (cond
+        ((= i (string-length line)) #f)
+        ((char=? (string-ref line i) #\/)
+         (let* ((path (substring line i (string-length line)))
+                (path (if (has-suffix? " (deleted)" path)
+                          (substring path 0 (- (string-length path) 10))
+                          path)))
+           (let last ((j (string-length path)))
+             (if (char=? (string-ref path (- j 1)) #\/)
+                 (substring path j (string-length path))
+                 (last (- j 1))))))
+        (else (loop (+ i 1))))))
+
+  (define (text-lines text)
+    (let loop ((i 0) (from 0) (out '()))
+      (cond ((= i (string-length text)) (reverse (if (< from i) (cons (substring text from i) out) out)))
+            ((char=? (string-ref text i) #\newline) (loop (+ i 1) (+ i 1) (cons (substring text from i) out)))
+            (else (loop (+ i 1) from out)))))
 
   ;; THE C LIBRARY ON LINUX, IDENTIFIED POSITIVELY from the objects mapped
   ;; into this very process: glibc's libc.so.6 or its loader ld-linux-*,
-  ;; musl's ld-musl-* or libc.musl-*. A process that cannot read the file
-  ;; (a sandbox hiding /proc) or maps neither (a static executable) reads
-  ;; as unknown, which is unlisted and refused: the safe side. -> "glibc",
-  ;; "musl" or "unknown"
+  ;; musl's ld-musl-* or libc.musl-*. Each mapping's path is judged by its
+  ;; LAST COMPONENT only, so a directory that happens to be named like a
+  ;; library (/opt/libc.so.6-build/bin/scheme) names nothing. A text that
+  ;; names both families, or neither, reads as unknown, and so does a
+  ;; process that cannot read the file (a sandbox hiding /proc) or maps
+  ;; neither (a static executable): unknown is unlisted and refused, the
+  ;; safe side. -> "glibc", "musl" or "unknown"
+  (define (maps-libc text)
+    (let* ((names (filter (lambda (b) b) (map mapping-basename (text-lines text))))
+           (glibc (exists (lambda (b) (or (string=? b "libc.so.6") (has-prefix? "ld-linux-" b))) names))
+           (musl (exists (lambda (b) (or (has-prefix? "ld-musl-" b) (has-prefix? "libc.musl-" b))) names)))
+      (cond ((and glibc (not musl)) "glibc")
+            ((and musl (not glibc)) "musl")
+            (else "unknown"))))
+
   (define (linux-libc)
     (let ((maps (guard (e (#t #f))
                   (call-with-input-file "/proc/self/maps" get-string-all))))
-      (cond
-        ((not (string? maps)) "unknown")
-        ((or (string-contains? maps "/libc.so.6") (string-contains? maps "/ld-linux-")) "glibc")
-        ((or (string-contains? maps "/ld-musl-") (string-contains? maps "/libc.musl-")) "musl")
-        (else "unknown"))))
+      (if (string? maps) (maps-libc maps) "unknown")))
 
   ;; THE SYSTEM AND THE ARCHITECTURE FROM (machine-type), a fixed map.
   ;; Threaded and non-threaded builds map alike: a layout does not depend
