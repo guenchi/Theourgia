@@ -5,27 +5,10 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 ## Installing
 
-**One set of prerequisites: Chez Scheme, and igropyr.** Chez Scheme
-10.1.0, 10.3.0 or 10.4.1 (the datum printer is measured identical on
-these); on any other version the verbs that print a datum refuse with
-`(error unsupported-printer-version)`. The verbs run from source:
-
-    scheme --script theourgia.sc <verb> [...]
-
-**Three programs, one per role.** `theourgia.sc` is the command you run.
-It answers through a daemon, and starts the daemon program,
-`theourgiad.sc`, beside itself when none is running; `init`, `eval` and
-any request under `THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc`
-answers one request in its own process -- the in-process route, which
-forwards to a running daemon unless `THEOURGIA_LOCAL=1`. `theourgiad.sc`
-takes only `serve`.
-
-Chez finds the libraries through its own two variables, which must name a
-directory holding both `theourgia/` and `igropyr/`:
-
-    export CHEZSCHEMELIBDIRS=/path/to/that/directory
-    export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
-    scheme --script theourgia.sc init --store /path/to/store
+**Prerequisites: Chez Scheme, libuv, and igropyr.** Chez Scheme 10.1.0, 10.3.0 or 10.4.1 (the datum
+printer is measured identical on these; on any other version the verbs that print a datum refuse with
+`(error unsupported-printer-version)`). On Homebrew the Chez binary is `chez`, not `scheme`; use that
+name wherever `scheme` appears below.
 
 **Platforms: the ones with a measured row.** The numbers the code hands
 to the kernel or reads back from it that differ between platforms --
@@ -54,27 +37,45 @@ The first Linux runs found seven numbers the code then held as literals
 wrong there, one of which (`O_APPEND`) wrote every log record over the
 start of its segment.
 
-**Running it compiled.** `build.ss` compiles every library -- this tree
-and its dependency -- into a directory of objects:
+**Build.** `build.ss` compiles every library -- this tree and igropyr -- into a directory of objects,
+and copies the programs beside them:
 
     scheme --script build.ss <library-root> <output-root>
 
-where both arguments are the directory that *contains* `theourgia/`.
-Point `CHEZSCHEMELIBDIRS` at the output and `CHEZSCHEMELIBEXTS` at
-`.so`. NOTE: Objects start about twelve times faster than source, because
-they do not re-expand the libraries on every call.
+Both arguments are the directory that *contains* `theourgia/` and `igropyr/`, not the source directory
+itself.
 
-NEVER: **The products do not belong in the source tree.** A stale `.so`
-beside a `.sc` is resolved in preference to it, so a tree holding both
-can be running code nobody has edited for a week.
+**Run.** Point Chez's two variables at the output and run the client from it:
 
-NOTE: **Packaging the whole program into one file is not done yet.** That
-form would drop a library nothing statically references -- and `eval`
-and forwarding are reached at run time by name, so they would stop
-resolving; so would the daemon, which `theourgiad.sc` loads by name once
-its arguments are checked.
-It is recorded as F13; until then the shipped form is a directory of
-objects, which those routes do work in.
+    export CHEZSCHEMELIBDIRS=<output-root>
+    export CHEZSCHEMELIBEXTS=".so"
+    scheme --script <output-root>/theourgia/theourgia.sc init --store /path/to/store
+
+A short wrapper on the PATH that sets those two variables and execs the program is all an install
+needs: `theourgia` for `theourgia/theourgia.sc`, `theourgia-mcp` for `theourgia/mcp/server.sc`, and
+`theourgiad` for `theourgia/theourgiad.sc`.
+
+**The programs.** `theourgia.sc` is the command you run. It answers through a daemon, and starts
+`theourgiad.sc` beside itself when none is running; `init`, `eval` and any request under
+`THEOURGIA_LOCAL=1` it hands to `core.sc`. `core.sc` starts `eval-worker.sc` for `eval` and
+`eval-runner-exec.sc` for `eval --lang`. `mcp/server.sc` is the MCP shell and starts `theourgiad.sc`
+one level up. `theourgiad.sc` takes only `serve`. The programs find each other by path, not through
+the library path, so keep the output directory as `build.ss` lays it out.
+
+NOTE: **The shipped form is this directory of objects, not one file.** `eval`, forwarding and the
+daemon load libraries by name at run time, and a whole-program package would drop them for being
+statically unreferenced. Objects start about twelve times faster than source, because they do not
+re-expand the libraries on every call.
+
+**From source, for development.** Name a directory holding both `theourgia/` and `igropyr/`, and run
+the programs directly:
+
+    export CHEZSCHEMELIBDIRS=/path/to/that/directory
+    export CHEZSCHEMELIBEXTS=".sc:.ss:.sls:.scm"
+    scheme --script theourgia.sc <verb> [...]
+
+NEVER: **The products do not belong in the source tree.** A stale `.so` beside a `.sc` is resolved in
+preference to it, so a tree holding both can be running code nobody has edited for a week.
 
 ## Two ways to run
 
