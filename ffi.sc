@@ -1229,10 +1229,13 @@
       ((string=? (machine-kind) "freebsd") (sysctl-environment-entries own! who))
       (else (assertion-violation who "no environ in libc" (machine-kind)))))
 
-  ;; The FreeBSD branch of the above. The block's size is asked first and
-  ;; read with room to spare; an environment that grew in between is asked
-  ;; for again, three times at most, and a failure is raised with the
-  ;; errno as a spawn failure would be.
+  ;; The FreeBSD branch of the above. The block's size is asked first, and
+  ;; the read is given at least that much and at least 4096 bytes; a read
+  ;; that fails -- ENOMEM when the room is too small, and the size asked
+  ;; first was measured too small in a FreeBSD 15.0 run -- is retried with
+  ;; twice the room, up to 8 MiB, past the most an environment can hold
+  ;; (ARG_MAX), and a failure then is raised with the errno as a spawn
+  ;; failure would be.
   (define (sysctl-environment-entries own! who)
     (let* ((int-size (platform-type-size 'int))
            (size-t-size (foreign-sizeof 'size_t))
@@ -1242,12 +1245,11 @@
       (bytevector-uint-set! mib int-size (platform-number 'KERN_PROC) (native-endianness) int-size)
       (bytevector-uint-set! mib (* 2 int-size) (platform-number 'KERN_PROC_ENV) (native-endianness) int-size)
       (bytevector-uint-set! mib (* 3 int-size) (get-process-id) (native-endianness) int-size)
-      (let retry ((tries 0))
-        (bytevector-uint-set! len 0 0 (native-endianness) size-t-size)
-        (unless (= 0 (c-sysctl mib 4 #f len 0 0))
-          (raise (fs-err 'spawn "kern.proc.env" (errno))))
-        (let* ((room (+ 256 (bytevector-uint-ref len 0 (native-endianness) size-t-size)))
-               (buf (make-bytevector room 0)))
+      (bytevector-uint-set! len 0 0 (native-endianness) size-t-size)
+      (unless (= 0 (c-sysctl mib 4 #f len 0 0))
+        (raise (fs-err 'spawn "kern.proc.env" (errno))))
+      (let retry ((room (max 4096 (+ 256 (bytevector-uint-ref len 0 (native-endianness) size-t-size)))))
+        (let ((buf (make-bytevector room 0)))
           (bytevector-uint-set! len 0 room (native-endianness) size-t-size)
           (cond
             ((= 0 (c-sysctl mib 4 buf len 0 0))
@@ -1262,7 +1264,7 @@
                    ((= 0 (bytevector-u8-ref buf i))
                     (loop (+ i 1) (+ i 1) (if (< start i) (cons (+ block start) out) out)))
                    (else (loop (+ i 1) start out))))))
-            ((< tries 2) (retry (+ tries 1)))
+            ((< room (* 8 1024 1024)) (retry (* 2 room)))
             (else (raise (fs-err 'spawn "kern.proc.env" (errno)))))))))
 
   ;; ---- starting a daemon without becoming one -----------------------------
