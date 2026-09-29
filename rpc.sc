@@ -55,7 +55,7 @@
           (only (theourgia request) req-id-ok?)
           (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
                 derived-signature derived-signature-table derived-keyword-table
-                derived-calls-into derived-reach derived-facts* supplied-relations)
+                derived-calls-into derived-reach derived-facts* supplied-relations derived-table-named?)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -634,7 +634,11 @@
     (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
                   (eq? (car (cadr answer)) 'items)))
         answer
-        (let ((w (working-state store state writer)))
+        ;; NO VIEW IS BUILT FOR A WRITER WITHOUT A TABLE: a drafts answer
+        ;; comes from the state it was given, and building the working view
+        ;; opens the log. Asking whether a table file exists reads a name.
+        (let ((w (and (string? writer) (derived-table-named? store 'diagnostics writer)
+                      (working-state store state writer))))
           (if (not (and (pair? w) (eq? 'ok (car w)) (not (equal? (cadr w) "-"))))
               answer
               (let-values (((facts stale tables) (writer-diagnostics store w)))

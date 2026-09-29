@@ -40,7 +40,7 @@
 (library (theourgia derived)
   (export supply-derived clear-derived derived-facts derived-facts* derived-kinds derived-clauses
           derived-signature derived-signature-table derived-keyword-table
-          derived-calls-into derived-reach supplied-relations
+          derived-calls-into derived-reach supplied-relations derived-table-named?
           table-file-name percent-encode read-supply-header)
   (import (rnrs)
           (only (theourgia reduce) state-read reduce-applied-cut)
@@ -411,16 +411,25 @@
   ;; stamped on still has its key, in `view`; a deleted block, a changed
   ;; src, a changed child list or language wrapping, or a file that no
   ;; longer projects make it stale.
+  ;; THE FILE NAMES OF ONE KIND'S TABLES FOR ONE WRITER, one per language,
+  ;; sorted; '() when there is no derived directory. Names only: nothing is
+  ;; read, so a caller can ask whether there is anything to consult before
+  ;; it builds a view to consult it against.
+  (define (table-names store kind writer)
+    (let ((dir (derived-dir store))
+          (prefix (string-append (symbol->string kind) "-" (percent-encode writer) "-")))
+      (if (file-is-directory? dir)
+          (list-sort string<?
+            (filter (lambda (n) (and (> (string-length n) (+ (string-length prefix) 5))
+                                     (string=? prefix (substring n 0 (string-length prefix)))
+                                     (string=? ".sexp" (substring n (- (string-length n) 5) (string-length n)))))
+                    (directory-entries dir)))
+          '())))
+  (define (derived-table-named? store kind writer) (pair? (table-names store kind writer)))
+
   (define (derived-facts* store kind writer view relevant?)
     (let* ((dir (derived-dir store))
-           (prefix (string-append (symbol->string kind) "-" (percent-encode writer) "-"))
-           (names (if (file-is-directory? dir)
-                      (list-sort string<?
-                        (filter (lambda (n) (and (> (string-length n) (+ (string-length prefix) 5))
-                                                 (string=? prefix (substring n 0 (string-length prefix)))
-                                                 (string=? ".sexp" (substring n (- (string-length n) 5) (string-length n)))))
-                                (directory-entries dir)))
-                      '()))
+           (names (table-names store kind writer))
            (key-memo (make-hashtable string-hash string=?))
            (key-of (lambda (path)
                      (or (hashtable-ref key-memo path #f)

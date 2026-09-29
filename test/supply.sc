@@ -28,7 +28,7 @@
 ;; own rows.
 (import (chezscheme) (theourgia rpc) (theourgia ffi)
         (only (theourgia store) open-and-reduce)
-        (only (theourgia code-project) code-files code-field)
+        (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia render) render-human)
         (only (theourgia languages) register-language!)
         (only (theourgia reduce) state-hash reduce-applied-cut)
@@ -40,6 +40,14 @@
 
 (include "forge-record.ss")
 
+;; THE VALUES A ROW READS ARE TAKEN IN THE ORDER THEY ARE WRITTEN. A row
+;; that writes and then reads names both in one form, and R6RS leaves the
+;; order of a procedure call's arguments open (Chez takes them as it
+;; pleases), so `list` would let a read run before the write it follows.
+(define-syntax in-order
+  (syntax-rules ()
+    ((_) '())
+    ((_ e rest ...) (let ((v e)) (cons v (in-order rest ...))))))
 (define bad 0)
 (define rows 0)
 (define (want name got expected)
@@ -84,9 +92,15 @@
 ;; ---- the store --------------------------------------------------------------
 ;; Two javascript files and an empty one: a.js with alpha and beta, b.js with
 ;; gamma, empty.js with no block at all.
+;;
+;; IMPORT MAKES ONE BLOCK PER FILE unless the file carries marker lines, so
+;; a.js is written with a `// @block new` line before each function (the
+;; boundary an import respects, code-markers1 CT-16/CT-18); the markers are
+;; not part of any block's src. An empty file is imported as one empty
+;; block, and deleting that block leaves a file with no blocks.
 (define store (string-append root "/store"))
 (define src (fresh-dir! "src"))
-(write! (string-append src "/a.js") "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 2;\n}\n")
+(write! (string-append src "/a.js") "// @block new\nfunction alpha() {\n  return 1;\n}\n// @block new\nfunction beta() {\n  return 2;\n}\n")
 (write! (string-append src "/b.js") "function gamma() {\n  return alpha();\n}\n")
 (write! (string-append src "/empty.js") "")
 (define (run . args) (rpc-dispatch store args "test"))
@@ -106,6 +120,13 @@
 (define alpha (holder "function alpha"))
 (define beta (holder "function beta"))
 (define gamma (holder "function gamma"))
+;; The empty file's one block, and its deletion.
+(define empty-children
+  (let* ((s (open-and-reduce store))
+         (f (find (lambda (id) (equal? (code-field s id 'path) "empty.js")) (code-files s))))
+    (if f (code-children s f) '())))
+(define empty-deleted
+  (map (lambda (id) (head-of (run 'del id))) empty-children))
 
 ;; -> the directory the export wrote.
 (define (export! . options)
@@ -114,8 +135,9 @@
     d))
 (define e0 (export!))
 (define (sha0 name) (sha-of (string-append e0 "/" name)))
-(want "S0 setup: import answered ok; three blocks found; the export wrote a.js, b.js and empty.js, and empty.js holds no @block line"
-      (list (head-of imported) (and alpha beta gamma #t)
+(want "S0 setup: import answered ok; alpha, beta and gamma are three distinct blocks; empty.js's one block deleted; the export wrote a.js, b.js and empty.js, and empty.js holds no @block line"
+      (in-order (head-of imported) (and alpha beta gamma (not (equal? alpha beta)) (not (equal? beta gamma)) (not (equal? alpha gamma)))
+            empty-deleted
             (map (lambda (n) (file-exists? (string-append e0 "/" n))) '("a.js" "b.js" "empty.js"))
             (let ((t (text-of (string-append e0 "/empty.js"))))
               (and (string? t)
@@ -123,7 +145,7 @@
                      (cond ((> (+ i 6) (string-length t)) #f)
                            ((string=? (substring t i (+ i 6)) "@block") #t)
                            (else (loop (+ i 1))))))))
-      (list 'ok #t '(#t #t #t) #f))
+      (list 'ok #t '(ok) '(#t #t #t) #f))
 
 ;; ---- supply files -----------------------------------------------------------
 (define (line x) (format "~s\n" x))
@@ -155,7 +177,7 @@
                                 (signature alpha beta))
                  "signatures")))
   (want "D2 a.js listed with another file's digest: supply-stale naming a.js, and no derived directory is made"
-        (list a (file-exists? derived))
+        (in-order a (file-exists? derived))
         (list '(error supply-stale (file "a.js")) #f)))
 
 ;; ---- A1: an accepted supply -----------------------------------------------------------
@@ -194,7 +216,7 @@
                                  (signature alpha beta))
                   "signatures")))
   (want "D12 files (a.js b.js), replaces (a.js), b.js's digest wrong: supply-stale naming b.js, the table byte-identical"
-        (list a (equal? (bytes-of js-table) before))
+        (in-order a (equal? (bytes-of js-table) before))
         (list '(error supply-stale (file "b.js")) #t)))
 
 ;; ---- D31: a file with no blocks is digest-checked like any other ---------------------
@@ -208,14 +230,14 @@
                                      (signature alpha beta))
                       "signatures")))
   (want "D31 empty.js with a wrong digest is supply-stale naming it (table unchanged); with its own digest the supply is kept"
-        (list wrong (equal? after-wrong before) right)
+        (in-order wrong (equal? after-wrong before) right)
         (list '(error supply-stale (file "empty.js")) #t '(ok (supplied (facts 1) (files 2))))))
 
 ;; ---- R8: replacement is per file --------------------------------------------------------
 (supply a1-text "signatures")
 (let ((a (supply (header 'signatures "-" (files-of "a.js" "b.js") '("a.js")) "signatures")))
   (want "R8 an empty supply replacing a.js keeps b.js's fact and drops a.js's"
-        (list a (map cadr (table-facts js-table)))
+        (in-order a (map cadr (table-facts js-table)))
         (list '(ok (supplied (facts 0) (files 1))) '("b.js"))))
 (supply a1-text "signatures")
 
@@ -292,7 +314,7 @@
        (a (supply (string-append (header 'diagnostics "-" (files-of "a.js" "b.js") '("a.js")) (diagnostic alpha s (+ s 6)))
                   "diagnostics")))
   (want "M18 control: the same range on alpha is kept, stored in alpha's own src"
-        (list a (map caddr (table-facts diag-table)))
+        (in-order a (map caddr (table-facts diag-table)))
         (list '(ok (supplied (facts 1) (files 1)))
               (list (list 'diagnostic alpha 'error "m" (list 'at 21 27))))))
 
@@ -303,14 +325,14 @@
 (define (sha2 name) (sha-of (string-append e2 "/" name)))
 (define w2-files (list (list "a.js" (sha2 "a.js")) (list "b.js" (sha2 "b.js"))))
 (want "V0 setup: w-2's working a.js differs from the committed one, b.js does not"
-      (list (equal? (sha2 "a.js") (sha0 "a.js")) (equal? (sha2 "b.js") (sha0 "b.js")))
+      (in-order (equal? (sha2 "a.js") (sha0 "a.js")) (equal? (sha2 "b.js") (sha0 "b.js")))
       '(#f #t))
 (want "V1 --for w-2 with the committed digests: supply-stale naming a.js"
       (supply (string-append (header 'signatures "w-2" (files-of "a.js" "b.js") '("a.js")) (signature alpha beta))
               "signatures" "--for" "w-2")
       '(error supply-stale (file "a.js")))
 (want "V2 --for w-2 with its working digests: kept, in derived/signatures-w%2D2-javascript.sexp"
-      (list (supply (string-append (header 'signatures "w-2" w2-files '("a.js")) (signature alpha beta))
+      (in-order (supply (string-append (header 'signatures "w-2" w2-files '("a.js")) (signature alpha beta))
                     "signatures" "--for" "w-2")
             (and (table-datum (table "signatures-w%2D2-javascript.sexp")) #t))
       (list '(ok (supplied (facts 1) (files 1))) #t))
@@ -323,11 +345,11 @@
        (a (supply (string-append (header 'signatures "-" (files-of "a.js" "b.js") '("a.js") "python") (signature alpha beta))
                   "signatures")))
   (want "C1 the same kind and writer in another language is another table; the javascript one is byte-identical"
-        (list a (and (table-datum (table "signatures-%2D-python.sexp")) #t) (equal? (bytes-of js-table) before))
+        (in-order a (and (table-datum (table "signatures-%2D-python.sexp")) #t) (equal? (bytes-of js-table) before))
         (list '(ok (supplied (facts 1) (files 1))) #t #t)))
 (let ((a (supply (header 'signatures "-" '() '() "python") "signatures" "--clear")))
   (want "C2 --clear removes the table its header names, and only that one"
-        (list a (file-exists? (table "signatures-%2D-python.sexp")) (file-exists? js-table))
+        (in-order a (file-exists? (table "signatures-%2D-python.sexp")) (file-exists? js-table))
         (list '(ok (cleared (kind signatures) (writer "-") (language "python"))) #f #t)))
 (want "C3 --clear of a table that is not there answers the same"
       (supply (header 'signatures "-" '() '() "python") "signatures" "--clear")
@@ -344,7 +366,7 @@
 (define ignore-init ignore-at-init)
 (supply a1-text "signatures")
 (want "G1 init's .gitignore, read before any supply, holds the /derived/ line, and a supply leaves it alone"
-      (list (contains? ignore-at-init "\n/derived/\n") (text-of ignore))
+      (in-order (contains? ignore-at-init "\n/derived/\n") (text-of ignore))
       (list #t ignore-at-init))
 (write! ignore "custom")
 (supply a1-text "signatures")
@@ -376,14 +398,14 @@
 (index-forget-memory!)
 (index-checkpoint! store)
 (want "D11 after a supply, a replacement and a clear: every file under writers/ byte-identical, the state hash and cut unchanged, the evidence checkpoint byte-identical"
-      (list (equal? (writers-snapshot) log-before) (equal? (reading) reading-before)
+      (in-order (equal? (writers-snapshot) log-before) (equal? (reading) reading-before)
             (equal? (bytes-of (string-append store "/request-index.sexp")) checkpoint-before))
       '(#t #t #t))
 
 ;; ---- D10: the reserved relation names ------------------------------------------------------
 (define (edge verb rel) (head-of (run verb alpha rel beta)))
 (want "D10 control before: link and unlink under explains are accepted"
-      (list (edge 'link "explains") (edge 'unlink "explains")) '(ok ok))
+      (in-order (edge 'link "explains") (edge 'unlink "explains")) '(ok ok))
 (want "D10 link refuses ref, uses, calls and guards by name"
       (map (lambda (r) (run 'link alpha r beta)) '("ref" "uses" "calls" "guards"))
       (map (lambda (r) (list 'error 'reserved-relation (list 'relation r))) '(ref uses calls guards)))
@@ -403,7 +425,7 @@
 (let ((x (run 'export-code (fresh-dir! "refused")))
       (s (supply a1-text "signatures")))
   (want "X1 a file holding a block that is not code: supply answers export-code's own refusal, unexportable-block"
-        (list (and file-a #t) (head-of note) (head-of s) (equal? s x) (and (pair? s) (assq 'reason (cddr s))))
+        (in-order (and file-a #t) (head-of note) (head-of s) (equal? s x) (and (pair? s) (assq 'reason (cddr s))))
         '(#t ok (error projection-invalid) #t (reason unexportable-block))))
 
 ;; ==== the readers: read --signature, outline --with-signatures, search ====
@@ -413,10 +435,11 @@
 ;; what another did to its store. A supply here is always made the way the
 ;; editor makes one: the view is exported, every projected file is listed
 ;; with its digest, and the header names the writer whose view it was.
-(define js-a "function alpha() {\n  return 1;\n}\n\nfunction beta() {\n  return 2;\n}\n")
+(define js-a "// @block new\nfunction alpha() {\n  return 1;\n}\n// @block new\nfunction beta() {\n  return 2;\n}\n")
 (define js-b "function gamma() {\n  return alpha();\n}\n")
 (define js-c "function delta() {\n  return 4;\n}\n")
 (define (ask st . args) (rpc-dispatch st args "test"))
+(define (src-bytes st id) (src-bytes-of (ask st 'read id)))
 (define (make-store! name)
   (let ((st (string-append root "/" name)) (src (fresh-dir! (string-append name "-src"))))
     (write! (string-append src "/a.js") js-a)
@@ -493,22 +516,22 @@
 (define r1-delta (id-in r1 "function delta"))
 (define r1-plain (ask r1 'read r1-alpha))
 (want "D9 control: before any supply, --signature answers absent with no via and no stale; outline --with-signatures carries no clause"
-      (list (and r1-alpha r1-beta r1-gamma r1-delta #t) (sig-of r1 r1-alpha)
+      (in-order (and r1-alpha r1-beta r1-gamma r1-delta #t) (sig-of r1 r1-alpha)
             (clauses-after-text (outline-with-signatures r1)))
       (list #t '(ok (signature absent)) '()))
 ;; alpha's signature depends on delta in c.js (a dependency of alpha only);
 ;; gamma's comes from another supply, of another version.
 (want "D1 two supplies: alpha's (1.140.0, a.js and c.js) and gamma's (1.141.0, b.js)"
-      (list (supply-now r1 "-" (list (sig r1-alpha "alpha(): number" r1-beta r1-delta)) '("a.js" "c.js"))
+      (in-order (supply-now r1 "-" (list (sig r1-alpha "alpha(): number" r1-beta r1-delta)) '("a.js" "c.js"))
             (supply-now r1 "-" (list (sig r1-gamma "gamma(): number")) '("b.js") "1.141.0"))
       '((ok (supplied (facts 1) (files 2))) (ok (supplied (facts 1) (files 1)))))
 (want "D1 read --signature answers each block's text, (stale 0) and its own provenance; beta, with no fact, is absent with (stale 0) and an empty via"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (sig-of r1 r1-beta))
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (sig-of r1 r1-beta))
       (list (present "alpha(): number") (present "gamma(): number" "1.141.0") absent-consulted))
 (want "D1 a plain read of alpha is what it was before any supply"
       (ask r1 'read r1-alpha) r1-plain)
 (want "D1 --signature with --md, --recursive or --working-info is refused; of an unknown id, unknown-id"
-      (list (ask r1 'read r1-alpha "--signature" "--md") (ask r1 'read r1-alpha "--signature" "--recursive")
+      (in-order (ask r1 'read r1-alpha "--signature" "--md") (ask r1 'read r1-alpha "--signature" "--recursive")
             (ask r1 'read r1-alpha "--signature" "--working-info") (head-of (sig-of r1 "nope.1")))
       (list '(error bad-request incompatible-signature-options) '(error bad-request incompatible-signature-options)
             '(error bad-request incompatible-signature-options) '(error unknown-id)))
@@ -521,11 +544,11 @@
         (and (at r1-alpha) (at r1-gamma) (< (at r1-alpha) (at r1-gamma))))
       #t)
 (want "D1 the writer named - is the committed tables' name: read --signature --working and diagnostics refuse it"
-      (list (sig-of r1 r1-alpha "--working" "--writer" "-") (ask r1 'diagnostics "--writer" "-"))
+      (in-order (sig-of r1 r1-alpha "--working" "--writer" "-") (ask r1 'diagnostics "--writer" "-"))
       '((error reserved-writer (writer "-")) (error reserved-writer (writer "-"))))
 (let* ((a (outline-with-signatures r1)) (t (text-of-answer a)))
   (want "D8/D9 outline --with-signatures: alpha's and gamma's rows end in their signatures, beta's has none, and the via names both provenances"
-        (list (row-signature t r1-alpha) (row-signature t r1-gamma) (row-signature t r1-beta)
+        (in-order (row-signature t r1-alpha) (row-signature t r1-gamma) (row-signature t r1-beta)
               (clauses-after-text a))
         (list "alpha(): number" "gamma(): number" 'none
               (list '(stale 0) (list 'via '(vscode "1.140.0" "javascript") '(vscode "1.141.0" "javascript"))))))
@@ -540,14 +563,14 @@
 ;; ---- D3, D15: a changed dependency, through read and outline --------------------
 (want "D3 setup: delta's src is changed and committed" (head-of (ask r1 'set r1-delta "src" "function delta() {\n  return 5;\n}\n")) 'ok)
 (want "D3 alpha, which lists delta, is absent and counted; gamma, which does not, still answers"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
       (list absent-stale-1 (present "gamma(): number" "1.141.0")))
 (let* ((a (outline-with-signatures r1)) (t (text-of-answer a)))
   (want "D15 outline omits alpha's signature, counts it, and names only gamma's provenance"
-        (list (row-signature t r1-alpha) (row-signature t r1-gamma) (clauses-after-text a))
+        (in-order (row-signature t r1-alpha) (row-signature t r1-gamma) (clauses-after-text a))
         (list 'none "gamma(): number" (list '(stale 1) (via "1.141.0")))))
 (want "D3 a fresh supply of alpha's answers again"
-      (list (supply-now r1 "-" (list (sig r1-alpha "alpha(): number" r1-beta r1-delta)) '("a.js" "c.js"))
+      (in-order (supply-now r1 "-" (list (sig r1-alpha "alpha(): number" r1-beta r1-delta)) '("a.js" "c.js"))
             (sig-of r1 r1-alpha))
       (list '(ok (supplied (facts 1) (files 2))) (present "alpha(): number")))
 
@@ -565,7 +588,7 @@
           (else (loop (+ i 1) (cons (string (string-ref text i)) out))))))
 (write! r1-table (replace-all (utf8->string r1-table-bytes) "alpha(): number" "alpha(): string"))
 (want "D8 (i) a table whose fact was changed under its old checksum: neither alpha's nor gamma's fact is used, outline --with-signatures prints no signature and no clause, and read, check and outline answer as before"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (equal? (readings r1 r1-alpha) r1-readings)
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (equal? (readings r1 r1-alpha) r1-readings)
             (has-substring? (text-of r1-table) "alpha(): string")
             (let ((a (outline-with-signatures r1)))
               (list (row-signature (text-of-answer a) r1-alpha) (row-signature (text-of-answer a) r1-gamma)
@@ -573,7 +596,7 @@
       (list '(ok (signature absent)) '(ok (signature absent)) #t #t '(none none ())))
 (write! r1-table "(derived-table 1")
 (want "D8 (ii) a table that does not read: nothing is used, and read, check and outline answer as before"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (equal? (readings r1 r1-alpha) r1-readings))
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma) (equal? (readings r1 r1-alpha) r1-readings))
       (list '(ok (signature absent)) '(ok (signature absent)) #t))
 ;; A TABLE WHOSE CHECKSUM IS RIGHT AND WHOSE CONTENT IS NOT this library's:
 ;; the body changed and the checksum recomputed over it, as a hand-edited
@@ -591,21 +614,21 @@
                                               (map (lambda (f) (list (car f) (cadr f) (caddr f) '() (list-ref f 4) (list-ref f 5)))
                                                    (cadddr body)))))
 (want "D8 (iii) a checksummed table whose facts carry no dependency stamps: none of them is used"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
       (list '(ok (signature absent)) '(ok (signature absent))))
 (rewrite-table! r1-table (lambda (body) (list (car body) (cadr body) 123 (cadddr body))))
 (want "D8 (iv) a checksummed table whose language is not a string: nothing is used, and the readers answer"
-      (list (sig-of r1 r1-alpha) (head-of (outline-with-signatures r1)))
+      (in-order (sig-of r1 r1-alpha) (head-of (outline-with-signatures r1)))
       (list '(ok (signature absent)) 'ok))
 (write-bytes! r1-table r1-table-bytes)
 (want "D8 control: the table's own bytes put back, both answer again"
-      (list (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
       (list (present "alpha(): number") (present "gamma(): number" "1.141.0")))
 (want "D8 an empty supply replacing a.js clears alpha's fact and keeps gamma's"
-      (list (supply-now r1 "-" '() '("a.js")) (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
+      (in-order (supply-now r1 "-" '() '("a.js")) (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
       (list '(ok (supplied (facts 0) (files 1))) absent-consulted (present "gamma(): number" "1.141.0")))
 (want "D8 a python table for the same writer: delta answers from it, gamma still from the javascript one"
-      (list (supply-now r1 "-" (list (sig r1-delta "delta()")) '("c.js") "1.140.0" "python")
+      (in-order (supply-now r1 "-" (list (sig r1-delta "delta()")) '("c.js") "1.140.0" "python")
             (sig-of r1 r1-delta) (sig-of r1 r1-gamma))
       (list '(ok (supplied (facts 1) (files 1))) (list 'ok '(signature "delta()") '(stale 0) (via "1.140.0" "python"))
             (present "gamma(): number" "1.141.0")))
@@ -623,7 +646,7 @@
 (define r2-authored-before (hits (ask r2 'search "authored")))
 (define r2-zebra-before (ask r2 'search "zebrafish"))
 (want "D5 control: with no table, the scan names no derived-keywords and the answer carries neither clause; zebrafish finds beta alone"
-      (list (scanned-fields r2-zebra-before) (assq 'stale (cdr r2-zebra-before)) (assq 'via (cdr r2-zebra-before))
+      (in-order (scanned-fields r2-zebra-before) (assq 'stale (cdr r2-zebra-before)) (assq 'via (cdr r2-zebra-before))
             (hits r2-zebra-before))
       (list '(title keywords src names doc body) #f #f (list (list r2-beta 4 '(keywords)))))
 (want "D5 setup: keywords supplied for alpha (no author keywords), beta (author keyword zebrafish; the editor's zebrafish and narwhal) and gamma (author keywords)"
@@ -633,24 +656,24 @@
       '(ok (supplied (facts 3) (files 2))))
 (let ((a (ask r2 'search "okapi")))
   (want "D5 a word only an editor supplied finds alpha at the src tier, the field named derived-keywords, with the via; the scan names derived-keywords"
-        (list (hits a) (assq 'stale (cdr a)) (assq 'via (cdr a)) (scanned-fields a))
+        (in-order (hits a) (assq 'stale (cdr a)) (assq 'via (cdr a)) (scanned-fields a))
         (list (list (list r2-alpha 2 '(derived-keywords))) '(stale 0) (via "1.140.0")
               '(title keywords derived-keywords src names doc body))))
 (want "D5 zebrafish: beta by its author's keyword first (4), alpha by the editor's second (2)"
       (hits (ask r2 'search "zebrafish"))
       (list (list r2-beta 4 '(keywords)) (list r2-alpha 2 '(derived-keywords))))
 (want "D14 gamma has author keywords: the editor's quokka does not find it, and its own word scores as before"
-      (list (hits (ask r2 'search "quokka")) (hits (ask r2 'search "authored")))
+      (in-order (hits (ask r2 'search "quokka")) (hits (ask r2 'search "authored")))
       (list '() r2-authored-before))
 (want "D14 beta has the author's zebrafish and the editor's zebrafish and narwhal: narwhal finds nothing, and zebrafish scores beta at the author's tier alone"
-      (list (hits (ask r2 'search "narwhal")) (assoc r2-beta (hits (ask r2 'search "zebrafish"))))
+      (in-order (hits (ask r2 'search "narwhal")) (assoc r2-beta (hits (ask r2 'search "zebrafish"))))
       (list '() (list r2-beta 4 '(keywords))))
 (want "D5 the human rendering of a search that read a table is hit lines only: no stale and no via line"
       (let ((ls (filter (lambda (l) (> (string-length l) 0)) (lines-of (render-human (ask r2 'search "okapi"))))))
         (list (length ls) (for-all (lambda (l) (has-substring? l "(hit ")) ls)))
       '(1 #t))
 (want "D5 an editor's words for alpha from a second provenance (a python table): a hit found by them names that provenance only, and one found by the first names the first only"
-      (list (supply-now r2 "-" (list (kw r2-alpha '("tapir"))) '("a.js") "1.141.0" "python")
+      (in-order (supply-now r2 "-" (list (kw r2-alpha '("tapir"))) '("a.js") "1.141.0" "python")
             (assq 'via (cdr (ask r2 'search "tapir"))) (assq 'via (cdr (ask r2 'search "okapi"))))
       (list '(ok (supplied (facts 1) (files 1))) (via "1.141.0" "python") (via "1.140.0")))
 (want "D14 gamma's keyword field reads back as its author wrote it"
@@ -664,25 +687,28 @@
 (define r3-alpha (id-in r3 "function alpha"))
 (define r3-beta (id-in r3 "function beta"))
 (ask r3 'write r3-beta "function beta() {\n  return 20;\n}\n" "--writer" "w1")
-(define r3-alpha-in-w1 (ask r3 'read r3-alpha "--working" "--writer" "w1"))
-(want "D13 setup: alpha is changed and committed after w1's draft; w1's view still reads the alpha it read before, the committed store the new one"
-      (list (head-of (ask r3 'set r3-alpha "src" "function alpha() {\n  return 10;\n}\n"))
-            (equal? (ask r3 'read r3-alpha "--working" "--writer" "w1") r3-alpha-in-w1)
+;; THE PINNED VIEW IS READ THROUGH ITS PROJECTION: `read --working` of a
+;; block the writer has no draft of answers the committed state as it is
+;; now, not the view's baseline.
+(define (working-text st writer name) (text-of (string-append (export-in st "--working" "--writer" writer) "/" name)))
+(want "D13 setup: alpha is changed and committed after w1's draft; w1's projection still holds the old alpha, the committed store the new one"
+      (in-order (head-of (ask r3 'set r3-alpha "src" "function alpha() {\n  return 10;\n}\n"))
+            (let ((t (working-text r3 "w1" "a.js"))) (list (contains? t "return 1;") (contains? t "return 10;")))
             (src-bytes r3 r3-alpha))
-      (list 'ok #t (string->utf8 "function alpha() {\n  return 10;\n}\n")))
+      (list 'ok '(#t #f) (string->utf8 "function alpha() {\n  return 10;\n}\n")))
 (want "D13 a supply for w1 made from the committed projection is supply-stale on a.js"
       (let* ((d (export-in r3)) (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
         (supply-in r3 (string-append (header 'signatures "w1" files '("a.js")) (sig r3-alpha "w1-alpha" r3-beta))
                    "signatures" "--for" "w1"))
       '(error supply-stale (file "a.js")))
 (want "D13 made from w1's working projection it is kept, and read --signature --working answers it"
-      (list (supply-now r3 "w1" (list (sig r3-alpha "w1-alpha" r3-beta)) '("a.js"))
+      (in-order (supply-now r3 "w1" (list (sig r3-alpha "w1-alpha" r3-beta)) '("a.js"))
             (sig-of r3 r3-alpha "--working" "--writer" "w1"))
       (list '(ok (supplied (facts 1) (files 1))) (present "w1-alpha")))
 (want "D13 the committed table has nothing for alpha: w1's facts are w1's"
       (sig-of r3 r3-alpha) '(ok (signature absent)))
 (want "D13 a second draft of beta under w1, and no supply: alpha's fact is stale in w1's view"
-      (list (head-of (ask r3 'write r3-beta "function beta() {\n  return 21;\n}\n" "--writer" "w1"))
+      (in-order (head-of (ask r3 'write r3-beta "function beta() {\n  return 21;\n}\n" "--writer" "w1"))
             (sig-of r3 r3-alpha "--working" "--writer" "w1"))
       (list 'ok absent-stale-1))
 
@@ -691,17 +717,17 @@
 (define r4-gamma (id-in r4 "function gamma"))
 (ask r4 'write r4-gamma "function gamma() {\n  return 30;\n}\n" "--writer" "w2")
 (want "D19 setup: a committed-store fact and a w2 fact on gamma, each from its own view, read back"
-      (list (supply-now r4 "-" (list (sig r4-gamma "committed-gamma")) '("b.js"))
+      (in-order (supply-now r4 "-" (list (sig r4-gamma "committed-gamma")) '("b.js"))
             (supply-now r4 "w2" (list (sig r4-gamma "w2-gamma")) '("b.js"))
             (sig-of r4 r4-gamma) (sig-of r4 r4-gamma "--working" "--writer" "w2"))
       (list '(ok (supplied (facts 1) (files 1))) '(ok (supplied (facts 1) (files 1)))
             (present "committed-gamma") (present "w2-gamma")))
 (want "D19 w2 commits its draft (other bytes than the committed src): w2's fact stays fresh, the committed table's goes stale"
-      (list (head-of (ask r4 'commit r4-gamma "--writer" "w2"))
+      (in-order (head-of (ask r4 'commit r4-gamma "--writer" "w2"))
             (sig-of r4 r4-gamma "--working" "--writer" "w2") (sig-of r4 r4-gamma))
       (list 'ok (present "w2-gamma") absent-stale-1))
 (want "D20 a title change of gamma leaves w2's fact fresh"
-      (list (head-of (ask r4 'set r4-gamma "title" "renamed gamma")) (sig-of r4 r4-gamma "--working" "--writer" "w2"))
+      (in-order (head-of (ask r4 'set r4-gamma "title" "renamed gamma")) (sig-of r4 r4-gamma "--working" "--writer" "w2"))
       (list 'ok (present "w2-gamma")))
 
 ;; ---- D21: what a fact lists, and the file's order ---------------------------------------
@@ -712,10 +738,10 @@
 (define r5-a (file-in r5 "a.js"))
 (supply-now r5 "-" (list (sig r5-alpha "fine") (sig r5-delta "d")) '("a.js" "c.js"))
 (want "D21 alpha lists only itself: an edit of beta, its unlisted sibling, leaves the fact fresh"
-      (list (head-of (ask r5 'set r5-beta "src" "function beta() {\n  return 22;\n}\n")) (sig-of r5 r5-alpha))
+      (in-order (head-of (ask r5 'set r5-beta "src" "function beta() {\n  return 22;\n}\n")) (sig-of r5 r5-alpha))
       (list 'ok (present "fine")))
 (want "D21 delta moved into a.js after alpha: a.js's blocks changed, alpha's fact is stale, and delta's, stamped on c.js, is stale too"
-      (list (head-of (ask r5 'move r5-delta r5-a "--after" r5-alpha)) (sig-of r5 r5-alpha) (sig-of r5 r5-delta)
+      (in-order (head-of (ask r5 'move r5-delta r5-a "--after" r5-alpha)) (sig-of r5 r5-alpha) (sig-of r5 r5-delta)
             (let ((t (text-of-answer (ask r5 'outline))))
               (let ((pos (lambda (id) (let loop ((ls (lines-of t)) (i 0))
                                         (cond ((null? ls) #f) ((has-substring? (car ls) (string-append "- " id "  ")) i)
@@ -724,7 +750,7 @@
                      (< (pos r5-alpha) (pos r5-delta) (pos r5-beta))))))
       (list 'ok absent-stale-1 absent-stale-1 #t))
 (want "D21 a fresh supply, then a reorder of a.js (delta moved after beta): stale again"
-      (list (supply-now r5 "-" (list (sig r5-alpha "fine")) '("a.js" "c.js")) (sig-of r5 r5-alpha)
+      (in-order (supply-now r5 "-" (list (sig r5-alpha "fine")) '("a.js" "c.js")) (sig-of r5 r5-alpha)
             (head-of (ask r5 'move r5-delta r5-a "--after" r5-beta)) (sig-of r5 r5-alpha))
       (list '(ok (supplied (facts 1) (files 2))) (present "fine") 'ok absent-stale-1))
 
@@ -734,12 +760,12 @@
 (define r6-b (file-in r6 "b.js"))
 (supply-now r6 "-" (list (sig r6-gamma "g")) '("b.js"))
 (want "D22 (a) b.js set to python, whose comments differ: the export's marker lines are python's, and gamma's fact is stale"
-      (list (head-of (ask r6 'set r6-b "lang" "python"))
+      (in-order (head-of (ask r6 'set r6-b "lang" "python"))
             (let ((t (text-of (string-append (export-in r6) "/b.js")))) (list (contains? t "# @file") (contains? t "// @file")))
             (sig-of r6 r6-gamma))
       (list 'ok '(#t #f) absent-stale-1))
 (want "D22 (b) b.js set to a language no entry names: it still projects, and a supply against that projection is fresh"
-      (list (head-of (ask r6 'set r6-b "lang" "nonesuch"))
+      (in-order (head-of (ask r6 'set r6-b "lang" "nonesuch"))
             (supply-now r6 "-" (list (sig r6-gamma "g2")) '("b.js")) (sig-of r6 r6-gamma))
       (list 'ok '(ok (supplied (facts 1) (files 1))) (present "g2")))
 
@@ -750,22 +776,24 @@
 (define r7-a (file-in r7 "a.js"))
 (supply-now r7 "-" (list (sig r7-alpha "a")) '("a.js"))
 (want "D23 beta's kind set to section: a.js does not project, alpha's fact is stale; set back to code, it is fresh again"
-      (list (head-of (ask r7 'set r7-beta "kind" "section")) (sig-of r7 r7-alpha)
+      (in-order (head-of (ask r7 'set r7-beta "kind" "section")) (sig-of r7 r7-alpha)
             (head-of (ask r7 'set r7-beta "kind" "code")) (sig-of r7 r7-alpha))
       (list 'ok absent-stale-1 'ok (present "a")))
 (define r7-note (ask r7 'insert "--under" r7-a "--title" "a note" "--text" "not code"))
 (want "D29 a block that is not code inserted into a.js: alpha's fact is stale, and export-code refuses unexportable-block"
-      (list (head-of r7-note) (sig-of r7 r7-alpha)
+      (in-order (head-of r7-note) (sig-of r7 r7-alpha)
             (let ((x (ask r7 'export-code (fresh-dir! "x")))) (and (pair? x) (assq 'reason (cddr x)))))
       (list 'ok absent-stale-1 '(reason unexportable-block)))
 (define r7b (make-store! "r7b"))
 (define r7b-alpha (id-in r7b "function alpha"))
 (define r7b-beta (id-in r7b "function beta"))
 (supply-now r7b "-" (list (sig r7b-alpha "a")) '("a.js"))
-(want "D23 beta's mode changed (its kind still code): a.js does not project, alpha's fact is stale, and export-code refuses unexportable-block"
-      (list (head-of (ask r7b 'set r7b-beta "mode" "datum")) (sig-of r7b r7b-alpha)
+;; A MODE IS NOT A FIELD THE CALLER'S PATH CHANGES (set answers mode-mismatch),
+;; so the change arrives as a record from elsewhere would.
+(want "D23 beta's mode changed by a record (its kind still code): a.js does not project, alpha's fact is stale, and export-code refuses unexportable-block"
+      (in-order (and (forge-record! r7b (format "(set ~s mode datum)" r7b-beta)) 'forged) (sig-of r7b r7b-alpha)
             (let ((x (ask r7b 'export-code (fresh-dir! "x")))) (and (pair? x) (assq 'reason (cddr x)))))
-      (list 'ok absent-stale-1 '(reason unexportable-block)))
+      (list 'forged absent-stale-1 '(reason unexportable-block)))
 
 ;; ---- D30, D24: who holds the path ---------------------------------------------------------
 (define r8 (make-store! "r8"))
@@ -775,19 +803,19 @@
 (define r8-c (file-in r8 "c.js"))
 (supply-now r8 "-" (list (sig r8-gamma "g") (sig r8-delta "d")) '("b.js" "c.js"))
 (want "D30 c.js's file block given the path b.js: two holders, gamma's fact is stale and export-code refuses duplicate-path; the path put back, fresh again"
-      (list (head-of (ask r8 'set r8-c "path" "b.js")) (sig-of r8 r8-gamma)
+      (in-order (head-of (ask r8 'set r8-c "path" "b.js")) (sig-of r8 r8-gamma)
             (let ((x (ask r8 'export-code (fresh-dir! "x")))) (and (pair? x) (assq 'reason (cddr x))))
             (head-of (ask r8 'set r8-c "path" "c.js")) (sig-of r8 r8-gamma))
       (list 'ok absent-stale-1 '(reason duplicate-path) 'ok (present "g")))
-(want "D30 b.js's mode changed: nothing holds b.js as a text file, gamma's fact is stale"
-      (list (head-of (ask r8 'set r8-b "mode" "datum")) (sig-of r8 r8-gamma))
-      (list 'ok absent-stale-1))
+(want "D30 b.js's mode changed by a record: nothing holds b.js as a text file, gamma's fact is stale"
+      (in-order (and (forge-record! r8 (format "(set ~s mode datum)" r8-b)) 'forged) (sig-of r8 r8-gamma))
+      (list 'forged absent-stale-1))
 (define (without-derived st thunk)
   (let ((d (string-append st "/derived")) (away (string-append st "/derived-away")))
     (rename-file d away)
     (let ((v (thunk))) (rename-file away d) v)))
 (want "D24 c.js's file block deleted: delta's fact is stale; check and a read of delta answer as they do with no table at all"
-      (list (head-of (ask r8 'del r8-c)) (sig-of r8 r8-delta)
+      (in-order (head-of (ask r8 'del r8-c)) (sig-of r8 r8-delta)
             (equal? (list (ask r8 'check) (ask r8 'read r8-delta))
                     (without-derived r8 (lambda () (list (ask r8 'check) (ask r8 'read r8-delta))))))
       (list 'ok absent-stale-1 #t))
@@ -800,25 +828,25 @@
 (ask r9 'write r9-alpha "function alpha() {\n  return 11;\n}\n" "--writer" "w3")
 (ask r9 'write r9-beta "function beta() {\n  return 12;\n}\n" "--writer" "w3")
 (want "D25 w3 drafts alpha and beta; a fact on beta (listing beta only) from w3's view answers"
-      (list (supply-now r9 "w3" (list (sig r9-beta "w3-beta")) '("a.js")) (sig-of r9 r9-beta "--working" "--writer" "w3"))
+      (in-order (supply-now r9 "w3" (list (sig r9-beta "w3-beta")) '("a.js")) (sig-of r9 r9-beta "--working" "--writer" "w3"))
       (list '(ok (supplied (facts 1) (files 1))) (present "w3-beta")))
-(want "D25 w3 commits beta and keeps alpha's draft: its view stays at alpha's baseline, where beta reads its old bytes, so the fact is stale"
-      (list (head-of (ask r9 'commit r9-beta "--writer" "w3"))
-            (ask r9 'read r9-beta "--working" "--writer" "w3")
+(want "D25 w3 commits beta and keeps alpha's draft: its view stays at alpha's baseline, where w3's projection holds beta's old bytes, so the fact is stale"
+      (in-order (head-of (ask r9 'commit r9-beta "--writer" "w3"))
+            (let ((t (working-text r9 "w3" "a.js"))) (list (contains? t (utf8->string r9-beta-before)) (contains? t "return 12;")))
             (sig-of r9 r9-beta "--working" "--writer" "w3"))
-      (list 'ok (list 'ok (list 'text (utf8->string r9-beta-before))) absent-stale-1))
+      (list 'ok '(#t #f) absent-stale-1))
 (define r10 (make-store! "r10"))
 (define r10-alpha (id-in r10 "function alpha"))
 (define r10-beta (id-in r10 "function beta"))
 (ask r10 'write r10-alpha "function alpha() {\n  return 13;\n}\n" "--writer" "w4")
 (want "D27 w4's only draft is alpha; a fact on alpha listing beta answers, and still does after beta is changed and committed by the store's writer"
-      (list (supply-now r10 "w4" (list (sig r10-alpha "w4-alpha" r10-beta)) '("a.js"))
+      (in-order (supply-now r10 "w4" (list (sig r10-alpha "w4-alpha" r10-beta)) '("a.js"))
             (sig-of r10 r10-alpha "--working" "--writer" "w4")
             (head-of (ask r10 'set r10-beta "src" "function beta() {\n  return 14;\n}\n"))
             (sig-of r10 r10-alpha "--working" "--writer" "w4"))
       (list '(ok (supplied (facts 1) (files 1))) (present "w4-alpha") 'ok (present "w4-alpha")))
 (want "D27 w4 commits alpha, its last draft: its view becomes the committed state, where beta changed, and the fact is stale"
-      (list (head-of (ask r10 'commit r10-alpha "--writer" "w4")) (sig-of r10 r10-alpha "--working" "--writer" "w4"))
+      (in-order (head-of (ask r10 'commit r10-alpha "--writer" "w4")) (sig-of r10 r10-alpha "--working" "--writer" "w4"))
       (list 'ok absent-stale-1))
 
 ;; ---- D28: the language entry itself ------------------------------------------------------
@@ -832,14 +860,14 @@
 (ask r11 'import-code r11-src)
 (define r11-one (id-in r11 "one"))
 (want "D28 setup: a tl file's block, and a fact on it that answers"
-      (list (and r11-one #t) (supply-now r11 "-" (list (sig r11-one "tl-sig")) '("x.tl") "1.140.0" "tl") (sig-of r11 r11-one))
+      (in-order (and r11-one #t) (supply-now r11 "-" (list (sig r11-one "tl-sig")) '("x.tl") "1.140.0" "tl") (sig-of r11 r11-one))
       (list #t '(ok (supplied (facts 1) (files 1))) (list 'ok '(signature "tl-sig") '(stale 0) (via "1.140.0" "tl"))))
 (register-language! '((lang "tl") (extensions ("tl" "tl2")) (line-comment "#") (def-heads ())))
 (want "D28 the entry replaced with another extension and the same comments: the fact is fresh"
       (sig-of r11 r11-one) (list 'ok '(signature "tl-sig") '(stale 0) (via "1.140.0" "tl")))
 (register-language! '((lang "tl") (extensions ("tl" "tl2")) (line-comment "//") (def-heads ())))
 (want "D28 the entry replaced under the same name with other comments: the export's marker lines are the new ones, and the fact is stale"
-      (list (let ((t (text-of (string-append (export-in r11) "/x.tl")))) (list (contains? t "// @file") (contains? t "# @file")))
+      (in-order (let ((t (text-of (string-append (export-in r11) "/x.tl")))) (list (contains? t "// @file") (contains? t "# @file")))
             (sig-of r11 r11-one))
       (list '(#t #f) absent-stale-1))
 (register-language! tl-entry)
@@ -874,7 +902,7 @@
       (ask r12 'reach r12-alpha "--rel" "calls" "--depth" "5")
       (list 'ok (list 'reached (list (list r12-alpha 0) (list r12-gamma 1) (list r12-delta 2))) '(stale 0) supplied-via))
 (want "D6 --depth 1 reaches gamma only; --depth 0 is alpha alone, with an empty via"
-      (list (ask r12 'reach r12-alpha "--rel" "calls" "--depth" "1") (ask r12 'reach r12-alpha "--depth" "0"))
+      (in-order (ask r12 'reach r12-alpha "--rel" "calls" "--depth" "1") (ask r12 'reach r12-alpha "--depth" "0"))
       (list (list 'ok (list 'reached (list (list r12-alpha 0) (list r12-gamma 1))) '(stale 0) supplied-via)
             (list 'ok (list 'reached (list (list r12-alpha 0))) '(stale 0) '(via))))
 (want "D6/D9 refs gamma shows the supplied row from alpha with its provenance, and the answer carries the via"
@@ -882,7 +910,7 @@
       (list (list (list 'ref (list 'from r12-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript"))))
             (list '(stale 0) supplied-via)))
 (want "D6 reach refuses a depth that is not a count, and answers unknown-id for an id the store does not hold"
-      (list (head-of (ask r12 'reach r12-alpha "--depth" "two")) (head-of (ask r12 'reach "nope.1")))
+      (in-order (head-of (ask r12 'reach r12-alpha "--depth" "two")) (head-of (ask r12 'reach "nope.1")))
       '(usage (error unknown-id)))
 
 ;; ---- D16: direction and relation ------------------------------------------------------
@@ -894,7 +922,7 @@
 (define r13-gamma (id-in r13 "function gamma"))
 (define r13-delta (id-in r13 "function delta"))
 (want "D16 setup: two supplied calls and one linked edge"
-      (list (supply-calls r13 (list (calls r13-gamma r13-alpha r13-alpha) (calls r13-alpha r13-beta r13-beta))
+      (in-order (supply-calls r13 (list (calls r13-gamma r13-alpha r13-alpha) (calls r13-alpha r13-beta r13-beta))
                           '("a.js" "b.js"))
             (head-of (ask r13 'link r13-alpha "explains" r13-delta)))
       '((ok (supplied (facts 2) (files 2))) ok))
@@ -902,13 +930,13 @@
       (ask r13 'reach r13-alpha "--rel" "calls" "--depth" "2")
       (list 'ok (list 'reached (list (list r13-alpha 0) (list r13-beta 1))) '(stale 0) supplied-via))
 (want "D16 reach beta, which calls nothing, is beta alone; --rel explains, a relation no supply produces, is refused by name"
-      (list (ask r13 'reach r13-beta) (ask r13 'reach r13-alpha "--rel" "explains" "--depth" "2"))
+      (in-order (ask r13 'reach r13-beta) (ask r13 'reach r13-alpha "--rel" "explains" "--depth" "2"))
       (list (list 'ok (list 'reached (list (list r13-beta 0))) '(stale 0) '(via))
             '(error unknown-relation (rel explains))))
 (define r13b (make-store! "r13b"))
 (define r13b-alpha (id-in r13b "function alpha"))
 (want "D16 with no calls table, reach answers the block alone and carries neither clause; an unknown relation is refused there too"
-      (list (ask r13b 'reach r13b-alpha) (ask r13b 'reach r13b-alpha "--rel" "uses"))
+      (in-order (ask r13b 'reach r13b-alpha) (ask r13b 'reach r13b-alpha "--rel" "uses"))
       (list (list 'ok (list 'reached (list (list r13b-alpha 0)))) '(error unknown-relation (rel uses))))
 
 ;; ---- D3: a supplied edge whose third dependency changed ------------------------------------
@@ -918,11 +946,11 @@
 (define r14-delta (id-in r14 "function delta"))
 (supply-calls r14 (list (calls r14-alpha r14-gamma r14-gamma r14-delta)) '("a.js"))
 (want "D3 before: refs gamma shows the edge from alpha, and reach alpha reaches gamma"
-      (list (refs-items (ask r14 'refs r14-gamma)) (ask r14 'reach r14-alpha))
+      (in-order (refs-items (ask r14 'refs r14-gamma)) (ask r14 'reach r14-alpha))
       (list (list (list 'ref (list 'from r14-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript"))))
             (list 'ok (list 'reached (list (list r14-alpha 0) (list r14-gamma 1))) '(stale 0) supplied-via)))
 (want "D3 delta, listed by the edge, changed and committed: refs gamma and reach alpha drop it and count it"
-      (list (head-of (ask r14 'set r14-delta "src" "function delta() {\n  return 5;\n}\n"))
+      (in-order (head-of (ask r14 'set r14-delta "src" "function delta() {\n  return 5;\n}\n"))
             (let ((a (ask r14 'refs r14-gamma))) (list (refs-items a) (refs-clauses a)))
             (ask r14 'reach r14-alpha))
       (list 'ok (list '() '((stale 1) (via)))
@@ -933,7 +961,7 @@
       (list 'ok (list 'reached (list (list r14-alpha 0) (list r14-gamma 1))) '(stale 0) supplied-via))
 (define r14-b (file-in r14 "b.js"))
 (want "D6 (v4) an edge listing alpha and gamma only; delta, from c.js which it does not list, moved into b.js beside gamma: b.js's blocks changed, so the edge is stale although no listed block's bytes did"
-      (list (supply-calls r14 (list (calls r14-alpha r14-gamma r14-gamma)) '("a.js"))
+      (in-order (supply-calls r14 (list (calls r14-alpha r14-gamma r14-gamma)) '("a.js"))
             (ask r14 'reach r14-alpha)
             (head-of (ask r14 'move r14-delta r14-b "--after" r14-gamma))
             (let ((a (ask r14 'refs r14-gamma))) (list (refs-items a) (refs-clauses a)))
@@ -956,10 +984,10 @@
 (ask r15 'del r15-gamma)
 (let ((a (ask r15 'refs r15-gamma)))
   (want "D4 gamma deleted: refs gamma answers the rows it answers with no table at all (none), then the dropped edge counted, whole"
-        (list a (without-derived r15 (lambda () (ask r15 'refs r15-gamma))))
+        (in-order a (without-derived r15 (lambda () (ask r15 'refs r15-gamma))))
         '((ok (items) (stale 1) (via)) (ok (items)))))
 (want "D4 reach alpha reaches nothing and counts the edge; refs alpha has the base's items, and consulted a table with nothing into alpha"
-      (list (ask r15 'reach r15-alpha) (ask r15 'refs r15-alpha))
+      (in-order (ask r15 'reach r15-alpha) (ask r15 'refs r15-alpha))
       (list (list 'ok (list 'reached (list (list r15-alpha 0))) '(stale 1) '(via)) '(ok (items) (stale 0) (via))))
 
 ;; ==== diagnostics ====
@@ -984,12 +1012,18 @@
                                     (and (= (bytevector-u8-ref b (+ i k)) (bytevector-u8-ref n k)) (check (+ k 1)))))
              i)
             (else (loop (+ i 1)))))))
-(define (src-bytes st id) (src-bytes-of (ask st 'read id)))
 
 ;; ---- D18: the range map, read back through diagnostics ------------------------------
 ;; A python file whose first block opens with a #! line and a coding cookie,
 ;; and whose second block holds a marker-like line (escaped when projected).
-(define py-src "#!/usr/bin/env python\n# coding: utf-8\ndef one():\n    return 1\n\n\ndef two():\n# @@block writer.q\n    return 2\n")
+;; The `# @block new` line cuts the file into the two blocks on import. The
+;; marker-like line is found by its line, not by its count of "@": whether
+;; the import keeps it as written or reads it as escaped, the projection
+;; inserts one "@" after its "# ".
+(define py-src "#!/usr/bin/env python\n# coding: utf-8\ndef one():\n    return 1\n# @block new\ndef two():\n# @@block writer.q\n    return 2\n")
+(define (line-start-of b needle)
+  (let ((i (bytes-offset b needle)))
+    (and i (let loop ((j i)) (if (or (= j 0) (= 10 (bytevector-u8-ref b (- j 1)))) j (loop (- j 1)))))))
 (define r16 (string-append root "/r16"))
 (define r16-src (fresh-dir! "r16-src"))
 (write! (string-append r16-src "/m.py") py-src)
@@ -1000,18 +1034,20 @@
 (define src1 (src-bytes r16 b1))
 (define src2 (src-bytes r16 b2))
 (define k (bytes-offset src1 "def one"))
-(define r (bytes-offset src2 "# @@block"))
+(define r (line-start-of src2 "block writer.q"))
 (define len1 (bytevector-length src1))
 (define len2 (bytevector-length src2))
 (define-values (ignored-text P) (diagnostics-supply r16 "wd" "python" '() '() "m.py"))
 (define p1 (bytes-offset P "def one"))
 (define p2 (bytes-offset P "def two"))
-(define q (bytes-offset P "# @@@block writer.q"))
+(define q (line-start-of P "block writer.q"))
 (define f0 (bytes-offset P "# @file"))
 (define m2 (bytes-offset P (string-append "# @block " b2)))
 (want "D18 setup: two blocks; b1's prefix (the #! line and the cookie) is 38 bytes and stays above the @file line; b1 ends in LF, so b2's marker follows it directly; b2's marker-like line is escaped"
-      (list (and b1 b2 #t) k f0 (bytevector-u8-ref src1 (- len1 1)) (= m2 (+ p1 (- len1 k))) (and q r #t))
-      (list #t 38 38 10 #t #t))
+      (in-order (and b1 b2 (not (equal? b1 b2))) k f0 (bytevector-u8-ref src1 (- len1 1)) (= m2 (+ p1 (- len1 k))) (and q r #t)
+            (and q r (= (bytevector-u8-ref P (+ q 2)) 64)
+                 (- (- (bytes-offset P "block writer.q") q) (- (bytes-offset src2 "block writer.q") r))))
+      (list #t 38 38 10 #t #t 1))
 ;; -> (supply answer, the one item diagnostics then lists)
 (define (map-case id s e)
   (let-values (((text bytes) (diagnostics-supply r16 "wd" "python" (list (diag id s e)) '("m.py") "m.py")))
@@ -1024,7 +1060,7 @@
 (want "D18 (2) from the prefix into b1's body, across the @file and @block lines: contiguous in b1"
       (map-case b1 2 (+ p1 3)) (list kept (item b1 (list 'at 2 (+ k 3)))))
 (want "D18 (3) around the escape: the byte before it, the escape alone (empty), the byte after it"
-      (list (map-case b2 (+ q 1) (+ q 2)) (map-case b2 (+ q 2) (+ q 3)) (map-case b2 (+ q 3) (+ q 4)))
+      (in-order (map-case b2 (+ q 1) (+ q 2)) (map-case b2 (+ q 2) (+ q 3)) (map-case b2 (+ q 3) (+ q 4)))
       (list (list kept (item b2 (list 'at (+ r 1) (+ r 2)))) (list kept (item b2 (list 'at (+ r 2) (+ r 2))))
             (list kept (item b2 (list 'at (+ r 2) (+ r 3))))))
 (want "D18 (4) b1's body to its end (b2's marker start): b1 from the prefix's size to its length"
@@ -1034,15 +1070,15 @@
 (want "D18 (6) inside b2's @block line: unmappable on b2"
       (map-case b2 (+ m2 1) (+ m2 3)) (list kept (item b2 '(at unmappable))))
 (want "D18 (7) empty at b1's end (b2's marker start): b1 at its length; empty at EOF: b2 at its length"
-      (list (map-case b1 m2 m2) (map-case b2 (bytevector-length P) (bytevector-length P)))
+      (in-order (map-case b1 m2 m2) (map-case b2 (bytevector-length P) (bytevector-length P)))
       (list (list kept (item b1 (list 'at len1 len1))) (list kept (item b2 (list 'at len2 len2)))))
 (want "D18 an empty range strictly inside b1's body: b1 at that offset of its src"
       (map-case b1 (+ p1 3) (+ p1 3)) (list kept (item b1 (list 'at (+ k 3) (+ k 3)))))
 (want "D18 (10) empty inside the @file line: b1 at the prefix's size; inside b2's @block line: b2 at 0"
-      (list (map-case b1 (+ f0 3) (+ f0 3)) (map-case b2 (+ m2 3) (+ m2 3)))
+      (in-order (map-case b1 (+ f0 3) (+ f0 3)) (map-case b2 (+ m2 3) (+ m2 3)))
       (list (list kept (item b1 (list 'at k k))) (list kept (item b2 '(at 0 0)))))
 (want "D18 (8) a fact on b2 with a range in b1, and (9) one on b2 with a range unmappable on b1: id-range-mismatch, line 2"
-      (list (car (map-case b2 2 5)) (car (map-case b2 (+ p1 1) (+ p2 1))))
+      (in-order (car (map-case b2 2 5)) (car (map-case b2 (+ p1 1) (+ p2 1))))
       (list (malformed 2 'id-range-mismatch) (malformed 2 'id-range-mismatch)))
 
 ;; ---- D7, D17: diagnostics per writer, and in drafts ---------------------------------------
@@ -1079,7 +1115,7 @@
                                              (list 'diagnostic r17-beta 'error "m" '(at 27 29))))))
               (list '(stale 0) supplied-via)))
 (want "D7 w2 has none: (ok (items)), no clause; and its drafts carry no diagnostics count"
-      (list (diag-answer r17 "w2") (draft-counts r17 "w2"))
+      (in-order (diag-answer r17 "w2") (draft-counts r17 "w2"))
       (list '(ok (items)) (list (list r17-gamma #f))))
 (want "D7 w1's drafts carry their counts: alpha 1, beta 2"
       (sorted-counts (draft-counts r17 "w1"))
@@ -1094,7 +1130,7 @@
             (list (list 'diagnostic r17-gamma 'error "m" '(at 21 30))) 3 (list (list r17-gamma 1))))
 (ask r17 'write r17-alpha "function alpha() {\n  let x = 1;\n  return 11;\n}\n" "--writer" "w1")
 (want "D7 w1 grows alpha: the earlier supply file is refused supply-stale on a.js, and every diagnostic on a.js is stale"
-      (list (supply-in r17 w1-text* "diagnostics" "--for" "w1") (diag-answer r17 "w1"))
+      (in-order (supply-in r17 w1-text* "diagnostics" "--for" "w1") (diag-answer r17 "w1"))
       (list '(error supply-stale (file "a.js")) '(ok (items) (stale 3) (via))))
 (let-values (((text bytes) (diagnostics-supply r17 "w1" "javascript" '() '() "a.js")))
   (let ((s12* (bytes-offset bytes "return 12")))
@@ -1105,7 +1141,7 @@
           (list #t '(ok (supplied (facts 1) (files 1))) (list (list 'diagnostic r17-beta 'error "m" '(at 20 29)))))))
 
 (want "D7 w2 discards its only draft: drafts counts no stale diagnostic, since it consulted none (gamma is not drafted), while diagnostics counts the one on gamma"
-      (list (head-of (ask r17 'discard r17-gamma "--writer" "w2"))
+      (in-order (head-of (ask r17 'discard r17-gamma "--writer" "w2"))
             (ask r17 'drafts "--writer" "w2") (diag-answer r17 "w2"))
       (list 'ok '(ok (items) (stale 0) (via)) '(ok (items) (stale 1) (via))))
 
@@ -1187,14 +1223,14 @@
 (define rf-writer (car (directory-list (string-append rf "/writers"))))
 (define rf-check-before (ask rf 'check))
 (want "D10 setup: the store has one writer directory, holding the segment the helper appends to"
-      (list (length (directory-list (string-append rf "/writers")))
+      (in-order (length (directory-list (string-append rf "/writers")))
             (file-exists? (string-append rf "/writers/" rf-writer "/000001.sexp")))
       '(1 #t))
 (define rf-seq-1 (forge-record! rf (format "(link ~s calls ~s)" rf-alpha rf-beta)))
 (define rf-seq-2 (forge-record! rf (format "(link ~s uses ~s surplus)" rf-beta rf-alpha)))
 (define rf-check-after (ask rf 'check))
 (want "D10 check: no clause before; after an old calls record and an old uses record with a surplus argument, the clause names both with their events, and the verdict is the same"
-      (list (clause rf-check-before 'reserved-relations) (clause rf-check-before 'verdict)
+      (in-order (clause rf-check-before 'reserved-relations) (clause rf-check-before 'verdict)
             (clause rf-check-after 'reserved-relations) (clause rf-check-after 'verdict))
       (list #f 'ok
             (list (list rf-alpha 'calls rf-beta (list 'event rf-writer rf-seq-1))

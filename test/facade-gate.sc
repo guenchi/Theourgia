@@ -676,7 +676,7 @@
 (want "S-B2b and these are the items sites the walk cannot follow"
       (list-sort (lambda (a b) (string<? (symbol->string (car a)) (symbol->string (car b))))
                  (cadr items-scan))
-      '((conflicts . store-conflicts) (diff . store-diff) (read . map) (whereis . append)))
+      '((conflicts . store-conflicts) (diagnostics . map) (diff . store-diff) (read . map) (whereis . append)))
 
 ;; THE THREE THINGS IT STILL CANNOT SEE, named rather than described as a
 ;; class:
@@ -1013,10 +1013,12 @@
     (cons 'refs (seeded (lambda (st x s) (census-ask st 'refs (census-get s 'E)))))
     ;; A writer's diagnostics need a projected file and a supply for that
     ;; writer first: one python file is imported, exported from the
-    ;; writer's view, and one diagnostic supplied against it.
+    ;; writer's view, and one diagnostic supplied against it. The writer is
+    ;; one with no drafts: the seed's writer holds a draft whose baseline
+    ;; predates the import, so its view has no m.py.
     (cons 'diagnostics
           (seeded (lambda (st x s)
-                    (let ((w (census-get s 'writer)) (in (string-append x "/diag-in"))
+                    (let ((w "diagw") (in (string-append x "/diag-in"))
                           (out (string-append x "/diag-out")) (f (string-append x "/diag.sexp")))
                       (mkdir-p! in)
                       (mkdir-p! out)

@@ -34,7 +34,7 @@
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
-  ("derived.sc" (derived-facts) file-is-directory? 1 keep a "not writer layout: the derived tables' directory, which may not exist yet")
+  ("derived.sc" (table-names) file-is-directory? 1 keep a "not writer layout: the derived tables' directory, which may not exist yet")
   ("evidence-index.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("evidence-index.sc" (files) file-is-directory? 1 convert c "evidence inventory lists writer files (R2f)")
   ("ffi.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
