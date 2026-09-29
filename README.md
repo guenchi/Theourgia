@@ -1256,16 +1256,17 @@ An answer built from history the store could not wholly read carries an
 `incomplete` clause, one entry per writer it is missing:
 
     (incomplete (unreadable (writer <w>) (path <p>) (reason <r>)) ...
-                (cut (writer <w>) (path <p>) (reason <kind>) (kind <kind>) (after <n>)) ...)
+                (cut (writer <w>) (path <p>) (reason <r>) (kind <kind>) (after <n>)) ...)
 
 `unreadable` names a writer that could not be read.
 `cut` names a writer whose history was cut by damage the store could read --
 a segment whose hash or declared range the manifest does not vouch for, a
 listed segment that is missing, a record whose check fails or that does not
 parse or follow its predecessor, a sealed segment that ends mid-record, a
-malformed manifest or retirement -- with the kind of damage and `after`, the
-last sequence kept. The records up to `after` are delivered; nothing after
-the cut is. A verb that must not act on a partial history -- `export-code`,
+malformed manifest or retirement -- with the kind of damage (its name is
+also the reason) and `after`, the last sequence kept. The records up to
+`after` are delivered; nothing after the cut is. A verb that must not act
+on a partial history -- `export-code`,
 `export-md`, `import-md`, `import-code`, `def`, `snapshot` -- refuses instead,
 `(error incomplete-reduction (notes ...))` with the same entries, before
 it writes a record or a snapshot. A cut refuses nothing else: every other
