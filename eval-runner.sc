@@ -280,6 +280,12 @@
               ((not (override-valid? (car d)))
                (values #f (runner-config-invalid (list 'field (or (runner-problem (car d) '()) 'runner)))))
               (else
+               ;; A TRIPWIRE: unreachable by construction today -- an override
+               ;; that passes override-valid?, merged field by field into a
+               ;; table runner that passed checked-catalogue or
+               ;; register-language!, always holds a valid argv and source-name
+               ;; -- and kept so that a later change to the checks cannot make
+               ;; the merge the one path that is never checked.
                (let ((r (runner-with-override table (car d))))
                  (if (runner-valid? r)
                      (values r #f)
