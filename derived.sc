@@ -40,6 +40,7 @@
 (library (theourgia derived)
   (export supply-derived clear-derived derived-facts derived-kinds derived-clauses
           derived-signature derived-signature-table derived-keyword-table
+          derived-calls-into derived-reach
           table-file-name percent-encode read-supply-header)
   (import (rnrs)
           (only (theourgia reduce) state-read reduce-applied-cut)
@@ -379,7 +380,7 @@
   ;; ---- reading --------------------------------------------------------------
 
   ;; THE FRESH FACTS OF ONE KIND FOR ONE WRITER, judged in the reader's view.
-  ;; -> (values ((<payload> <via>) ...) <stale count> <tables read>)
+  ;; -> (values ((<payload> <via>) ...) (<stale payload> ...) <tables read>)
   ;; Every language's table for the kind and writer is read; a table that is
   ;; absent (missing, unreadable, tampered with) contributes nothing and is
   ;; not counted as read. Only the facts `relevant?` accepts (by payload)
@@ -388,7 +389,7 @@
   ;; stamped on still has its key, in `view`; a deleted block, a changed
   ;; src, a changed child list or language wrapping, or a file that no
   ;; longer projects make it stale.
-  (define (derived-facts store kind writer view relevant?)
+  (define (derived-facts* store kind writer view relevant?)
     (let* ((dir (derived-dir store))
            (prefix (string-append (symbol->string kind) "-" (percent-encode writer) "-"))
            (names (if (file-is-directory? dir)
@@ -412,9 +413,9 @@
                      (and (for-all (lambda (s) (equal? (src-sha (car s)) (cadr s))) (fact-dep-stamps f))
                           (for-all (lambda (s) (equal? (key-of (car s)) (list 'key (cadr s))))
                                    (fact-file-stamps f))))))
-      (let loop ((ns names) (out '()) (stale 0) (tables 0))
+      (let loop ((ns names) (out '()) (stale '()) (tables 0))
         (if (null? ns)
-            (values (reverse out) stale tables)
+            (values (reverse out) (reverse stale) tables)
             (let* ((body (read-table store (string-append dir "/" (car ns)) kind writer #f))
                    ;; the name must be the one this table's own identity gives
                    (body (and body (string=? (car ns) (table-file-name kind writer (caddr body))) body))
@@ -423,7 +424,12 @@
                 (cond ((null? fs) (loop (cdr ns) out stale (if body (+ tables 1) tables)))
                       ((fresh? (car fs))
                        (inner (cdr fs) (cons (list (fact-payload (car fs)) (fact-via (car fs))) out) stale))
-                      (else (inner (cdr fs) out (+ stale 1))))))))))
+                      (else (inner (cdr fs) out (cons (fact-payload (car fs)) stale))))))))))
+
+  ;; -> (values ((<payload> <via>) ...) <stale count> <tables read>)
+  (define (derived-facts store kind writer view relevant?)
+    (let-values (((fresh stale tables) (derived-facts* store kind writer view relevant?)))
+      (values fresh (length stale) tables)))
 
   ;; WHAT AN ANSWER THAT READ FACTS CARRIES: `(via <provenance> ...)`, the
   ;; distinct provenances of the facts it USED, only when it used one; and
@@ -479,4 +485,41 @@
                                           (list (caddr (car f)) (cadr f))))))
                   facts)
         (list (lambda (id) (hashtable-ref t id #f)) tables stale))))
+
+  ;; THE SUPPLIED EDGES INTO ONE BLOCK, for `refs`.
+  ;; -> (values ((<from> <to> <via>) ...) <stale>)
+  (define (derived-calls-into store writer view id)
+    (let-values (((facts stale tables)
+                  (derived-facts store 'calls writer view
+                                 (lambda (p) (and (eq? (car p) 'calls) (equal? (caddr p) id))))))
+      (values (map (lambda (f) (list (cadr (car f)) (caddr (car f)) (cadr f))) facts) stale)))
+
+  ;; WHAT A BLOCK REACHES OVER SUPPLIED EDGES OF ONE RELATION, outward, up to
+  ;; `depth` hops; the block itself is at depth 0, and every block is listed
+  ;; once, at the fewest hops that reach it.
+  ;; -> (values ((<id> <depth>) ...) (<via> ...) <stale>)
+  ;; The vias are those of the edges that reached a block; the stale count
+  ;; is of the edges out of the blocks the walk went on from, dropped
+  ;; because what they were computed from has changed.
+  (define (derived-reach store writer view id relation depth)
+    (let-values (((facts stale tables)
+                  (derived-facts* store 'calls writer view (lambda (p) (eq? (car p) relation)))))
+      (let ((out-of (lambda (from facts)
+                      (list-sort (lambda (a b) (string<? (caddr (car a)) (caddr (car b))))
+                                 (filter (lambda (f) (equal? (cadr (car f)) from)) facts)))))
+        (let walk ((frontier (list id)) (d 0) (seen (list (list id 0))) (vias '()) (expanded '()))
+          (if (or (null? frontier) (>= d depth))
+              (values (reverse seen) (reverse vias)
+                      (length (filter (lambda (p) (member (cadr p) expanded)) stale)))
+              (let step ((ns frontier) (next '()) (seen seen) (vias vias))
+                (if (null? ns)
+                    (walk (reverse next) (+ d 1) seen vias (append expanded frontier))
+                    (let edge ((es (out-of (car ns) facts)) (next next) (seen seen) (vias vias))
+                      (cond
+                        ((null? es) (step (cdr ns) next seen vias))
+                        ((assoc (caddr (car (car es))) seen) (edge (cdr es) next seen vias))
+                        (else
+                         (let ((to (caddr (car (car es)))))
+                           (edge (cdr es) (cons to next) (cons (list to (+ d 1)) seen)
+                                 (cons (cadr (car es)) vias)))))))))))))
 )

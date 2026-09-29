@@ -54,7 +54,8 @@
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
           (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
-                derived-signature derived-signature-table derived-keyword-table)
+                derived-signature derived-signature-table derived-keyword-table
+                derived-calls-into derived-reach)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -913,6 +914,8 @@
             "Read one block: its fields, or its text. With --signature, the signature an editor supplied for it, of the committed store or, with --working, of the writer's working view." #f 'daemon)
       (list 'refs '(refs <id>)
             "List the relations a block takes part in." #f 'daemon)
+      (list 'reach '(reach <id> ["--rel" <rel>] ["--depth" <n>])
+            "List the blocks a block reaches over the edges an editor supplied (calls, by default), outward, up to --depth hops (1 by default); the block itself is at depth 0." #f 'daemon)
       (list 'search '(search <query> ["--all"])
             "Find blocks whose title, keywords or text match every word given." #f 'daemon)
       (list 'grep '(grep <pattern> ["--under" <id>] ["--all"])
@@ -1357,12 +1360,41 @@
                     (lambda ()
                       (let ((a (store-refs store (car args))))
                         (if (eq? (car a) 'ok)
-                            (items (map (lambda (r)
-                                          (list 'ref (list 'from (car r))
-                                                (list 'rel (cadr r))
-                                                (list 'via (caddr r))))
-                                        (cadr a)))
+                            ;; AN EDITOR'S CALLS EDGES INTO THIS BLOCK FOLLOW
+                            ;; THE STORE'S OWN ROWS, their via the provenance
+                            ;; that supplied them rather than a symbol.
+                            (let-values (((edges stale)
+                                          (derived-calls-into store "-" (reduction-for store state) (car args))))
+                              (append
+                                (items (map (lambda (r)
+                                              (list 'ref (list 'from (car r))
+                                                    (list 'rel (cadr r))
+                                                    (list 'via (caddr r))))
+                                            (append (cadr a)
+                                                    (map (lambda (e) (list (car e) 'calls (caddr e)))
+                                                         (list-sort (lambda (x y) (string<? (car x) (car y))) edges)))))
+                                (derived-clauses (map caddr edges) stale)))
                             a)))))))
+      ;; OVER THE EDGES AN EDITOR SUPPLIED ONLY: an edge a writer linked by
+      ;; hand is `refs`' to show. The stale count is always there, so a walk
+      ;; that reached nothing says whether it had edges it could not use.
+      (cons 'reach
+            (lambda (store actor args req options state writer cwd)
+              (let ((rel (argument-option options "--rel")) (depth (argument-option options "--depth")))
+                (if (or (not (= 1 (length args))) (and depth (not (count-argument depth)))
+                        (and rel (= 0 (string-length rel))))
+                    (usage '(reach <id> ["--rel" <rel>] ["--depth" <n>]))
+                    (guarded
+                      (lambda ()
+                        (let ((view (reduction-for store state)) (id (car args)))
+                          (if (not (state-read view id))
+                              (unknown-id view id)
+                              (let-values (((reached vias stale)
+                                            (derived-reach store "-" view id
+                                                           (string->symbol (or rel "calls"))
+                                                           (if depth (count-argument depth) 1))))
+                                (append (list 'ok (list 'reached reached) (list 'stale stale))
+                                        (derived-clauses vias 0)))))))))))
       ;; NEVER: A NAME CAN BE IN A LIBRARY WITHOUT BEING DEFINED THERE, AND
       ;; THE ANSWER SAYS WHICH IT IS. Three of this tree's own libraries
       ;; define nothing -- they re-export what igropyr defines -- so an answer

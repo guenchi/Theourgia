@@ -108,6 +108,7 @@
         ;; `--for` names whose view a supply was projected from, and so
         ;; whose table it fills; "-" when absent.
         ((supply) '("--for"))
+        ((reach) '("--rel" "--depth"))
         ;; NOTE: ADDED WITH THE SCHEME SUPERVISOR, AND THIS TABLE IS WHY IT
         ;; HAD TO BE. Measured before it was: `eval --timeout-ms 999999`
         ;; parsed `--timeout-ms` as a POSITIONAL, so the source of the

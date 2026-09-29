@@ -1260,7 +1260,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 37 37))
+      (list 38 38))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1295,7 +1295,7 @@
 ;; that it existed somewhere.
 (want "GATE-C the verbs whose form is written in more than one place"
       (length compared)
-      31)
+      32)
 
 (want "GATE-C no verb's two spellings of its usage form disagree"
       disagreeing

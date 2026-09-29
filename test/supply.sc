@@ -753,6 +753,108 @@
       (sig-of r11 r11-one) absent-stale-1)
 (register-language! tl-entry)
 
+;; ==== calls: refs and reach ====
+;; -> the answer to a calls supply of `lines` made from the committed projection.
+(define (supply-calls st lines replaces)
+  (let* ((d (export-in st))
+         (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
+    (supply-in st
+               (apply string-append
+                      (line (list 'supply 'calls '(writer "-") '(language "javascript") '(source (vscode "1.140.0"))
+                                  (list 'files files) (list 'replaces replaces)))
+                      lines)
+               "calls")))
+(define (calls from to . depends) (line (list 'calls from to (list 'depends (cons from depends)))))
+(define (refs-items a) (and (pair? a) (eq? (car a) 'ok) (cdr (assq 'items (cdr a)))))
+(define (refs-clauses a) (filter (lambda (c) (and (pair? c) (memq (car c) '(via stale)))) (cdr a)))
+(define supplied-via '(via (vscode "1.140.0" "javascript")))
+
+;; ---- D6: a cycle, and depth -----------------------------------------------------------
+(define r12 (make-store! "r12"))
+(define r12-alpha (id-in r12 "function alpha"))
+(define r12-gamma (id-in r12 "function gamma"))
+(define r12-delta (id-in r12 "function delta"))
+(want "D6 setup: alpha -> gamma -> delta -> alpha supplied as calls"
+      (supply-calls r12 (list (calls r12-alpha r12-gamma r12-gamma) (calls r12-gamma r12-delta r12-delta)
+                              (calls r12-delta r12-alpha r12-alpha))
+                    '("a.js" "b.js" "c.js"))
+      '(ok (supplied (facts 3) (files 3))))
+(want "D6 reach alpha --depth 5 ends on the cycle: each block once, at the fewest hops, with the via"
+      (ask r12 'reach r12-alpha "--rel" "calls" "--depth" "5")
+      (list 'ok (list 'reached (list (list r12-alpha 0) (list r12-gamma 1) (list r12-delta 2))) '(stale 0) supplied-via))
+(want "D6 --depth 1 reaches gamma only; --depth 0 is alpha alone, with no via"
+      (list (ask r12 'reach r12-alpha "--rel" "calls" "--depth" "1") (ask r12 'reach r12-alpha "--depth" "0"))
+      (list (list 'ok (list 'reached (list (list r12-alpha 0) (list r12-gamma 1))) '(stale 0) supplied-via)
+            (list 'ok (list 'reached (list (list r12-alpha 0))) '(stale 0))))
+(want "D6/D9 refs gamma shows the supplied row from alpha with its provenance, and the answer carries the via"
+      (let ((a (ask r12 'refs r12-gamma))) (list (refs-items a) (refs-clauses a)))
+      (list (list (list 'ref (list 'from r12-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript"))))
+            (list supplied-via)))
+(want "D6 reach refuses a depth that is not a count, and answers unknown-id for an id the store does not hold"
+      (list (head-of (ask r12 'reach r12-alpha "--depth" "two")) (head-of (ask r12 'reach "nope.1")))
+      '(usage (error unknown-id)))
+
+;; ---- D16: direction and relation ------------------------------------------------------
+;; gamma -> alpha and alpha -> beta supplied as calls; alpha explains delta,
+;; linked by hand.
+(define r13 (make-store! "r13"))
+(define r13-alpha (id-in r13 "function alpha"))
+(define r13-beta (id-in r13 "function beta"))
+(define r13-gamma (id-in r13 "function gamma"))
+(define r13-delta (id-in r13 "function delta"))
+(want "D16 setup: two supplied calls and one linked edge"
+      (list (supply-calls r13 (list (calls r13-gamma r13-alpha r13-alpha) (calls r13-alpha r13-beta r13-beta))
+                          '("a.js" "b.js"))
+            (head-of (ask r13 'link r13-alpha "explains" r13-delta)))
+      '((ok (supplied (facts 2) (files 2))) ok))
+(want "D16 reach alpha --depth 2 follows calls outward: beta, not gamma (which calls alpha), not delta (a linked edge)"
+      (ask r13 'reach r13-alpha "--rel" "calls" "--depth" "2")
+      (list 'ok (list 'reached (list (list r13-alpha 0) (list r13-beta 1))) '(stale 0) supplied-via))
+(want "D16 reach beta, which calls nothing, is beta alone; --rel explains follows no linked edge"
+      (list (ask r13 'reach r13-beta) (ask r13 'reach r13-alpha "--rel" "explains" "--depth" "2"))
+      (list (list 'ok (list 'reached (list (list r13-beta 0))) '(stale 0))
+            (list 'ok (list 'reached (list (list r13-alpha 0))) '(stale 0))))
+
+;; ---- D3: a supplied edge whose third dependency changed ------------------------------------
+(define r14 (make-store! "r14"))
+(define r14-alpha (id-in r14 "function alpha"))
+(define r14-gamma (id-in r14 "function gamma"))
+(define r14-delta (id-in r14 "function delta"))
+(supply-calls r14 (list (calls r14-alpha r14-gamma r14-gamma r14-delta)) '("a.js"))
+(want "D3 before: refs gamma shows the edge from alpha, and reach alpha reaches gamma"
+      (list (refs-items (ask r14 'refs r14-gamma)) (ask r14 'reach r14-alpha))
+      (list (list (list 'ref (list 'from r14-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript"))))
+            (list 'ok (list 'reached (list (list r14-alpha 0) (list r14-gamma 1))) '(stale 0) supplied-via)))
+(want "D3 delta, listed by the edge, changed and committed: refs gamma and reach alpha drop it and count it"
+      (list (head-of (ask r14 'set r14-delta "src" "function delta() {\n  return 5;\n}\n"))
+            (let ((a (ask r14 'refs r14-gamma))) (list (refs-items a) (refs-clauses a)))
+            (ask r14 'reach r14-alpha))
+      (list 'ok (list '() '((stale 1)))
+            (list 'ok (list 'reached (list (list r14-alpha 0))) '(stale 1))))
+(want "D3 a fresh calls supply answers again"
+      (begin (supply-calls r14 (list (calls r14-alpha r14-gamma r14-gamma r14-delta)) '("a.js"))
+             (ask r14 'reach r14-alpha))
+      (list 'ok (list 'reached (list (list r14-alpha 0) (list r14-gamma 1))) '(stale 0) supplied-via))
+
+;; ---- D4: the edge's target deleted ----------------------------------------------------------
+(define r15 (make-store! "r15"))
+(define r15-alpha (id-in r15 "function alpha"))
+(define r15-gamma (id-in r15 "function gamma"))
+(want "D4 the base oracle: with no reference of any kind, refs alpha answers (ok (items))"
+      (ask r15 'refs r15-alpha) '(ok (items)))
+(supply-calls r15 (list (calls r15-alpha r15-gamma r15-gamma)) '("a.js"))
+(want "D4 before the deletion: refs gamma shows the edge from alpha"
+      (refs-items (ask r15 'refs r15-gamma))
+      (list (list 'ref (list 'from r15-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript")))))
+(ask r15 'del r15-gamma)
+(let ((a (ask r15 'refs r15-gamma)))
+  (want "D4 gamma deleted: refs gamma's rows are the ones it answers with no table at all, none of them supplied, and the dropped edge is counted"
+        (list (refs-items a) (refs-items (without-derived r15 (lambda () (ask r15 'refs r15-gamma)))) (refs-clauses a))
+        '(() () ((stale 1)))))
+(want "D4 reach alpha reaches nothing and counts the edge; refs alpha is still the base's answer"
+      (list (ask r15 'reach r15-alpha) (ask r15 'refs r15-alpha))
+      (list (list 'ok (list 'reached (list (list r15-alpha 0))) '(stale 1)) '(ok (items))))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsupply complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

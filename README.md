@@ -193,6 +193,33 @@ because materialising them would give one fact two suppliers that can then disag
 A block's own out-edges are not references to it; those are part of what `read`
 returns about the block.
 
+A third place is an editor's: the calls it supplied (see "Derived data from
+an editor"). Those rows come after the store's own, and their via is the
+provenance that supplied them:
+
+    (ref (from <id>) (rel calls) (via (vscode "<version>" "<languageId>")))
+
+The answer then carries `(via ...)` for them, and `(stale <n>)` for the
+supplied calls into this block that were dropped because what they were
+computed from has changed.
+
+### `reach`
+
+    (reach <id> ("--rel" <rel>) ("--depth" <n>))
+
+It answers:
+
+    (ok (reached ((<id> <depth>) ...)) (stale <n>) (via ...))
+
+The blocks this block reaches over the edges an editor supplied under
+`<rel>` (`calls` when not given), following them outward, up to `<n>` hops
+(1 when not given). The block itself is at depth 0; every block is listed
+once, at the fewest hops that reach it, so a cycle ends. An edge written with
+`link` is not followed: those are `refs`' to show. `(stale <n>)` is always
+there and counts the supplied edges out of the blocks the walk went on from
+that were dropped because what they were computed from has changed;
+`(via ...)` names the provenances of the edges that reached a block.
+
 ### `search`
 
     (search <query> ("--all"))
