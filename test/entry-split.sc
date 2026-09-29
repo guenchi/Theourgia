@@ -263,7 +263,7 @@
   ;; ps into a file, then filter in here: the shell that runs ps carries no
   ;; store path, so the listing cannot match this fixture's own command.
   (let ((f (string-append here "/ps.txt")))
-    (system (string-append "ps -eo pid,command > " f))
+    (system (string-append "ps -axo pid,command > " f))
     (filter (lambda (l) (and (contains? l "serve") (contains? l store)))
             (let loop ((t (file-text f)) (acc '()))
               (let ((i (let find ((k 0)) (cond ((>= k (string-length t)) #f)

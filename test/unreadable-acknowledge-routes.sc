@@ -859,7 +859,7 @@
                                                      (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
                                                            ((char=? (car cs) #\space) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
                                                            (else (split (cdr cs) (cons (car cs) cur) acc))))))))
-         (filter (lambda (l) (has-substring? l needle)) (lines-of-command "ps -axo pid=,command=")))))
+         (filter (lambda (l) (has-substring? l needle)) (lines-of-command "ps -ax -o pid= -o command=")))))
 (define e-stores '())
 (define (stop-daemon! store)
   (for-each (lambda (pid) (sh "kill -TERM " (number->string pid) " 2>/dev/null")) (daemon-pids store))

@@ -303,7 +303,7 @@
                                                      (cond ((null? cs) (reverse (cons (list->string (reverse cur)) acc)))
                                                            ((char=? (car cs) #\space) (split (cdr cs) '() (cons (list->string (reverse cur)) acc)))
                                                            (else (split (cdr cs) (cons (car cs) cur) acc))))))))
-         (filter (lambda (l) (has-substring? l needle)) (lines-of-command "ps -axo pid=,command=")))))
+         (filter (lambda (l) (has-substring? l needle)) (lines-of-command "ps -ax -o pid= -o command=")))))
 (define daemon-counts '())
 (define (stop-daemon! label store)
   (set! daemon-counts (append daemon-counts (list (cons label (length (daemon-pids store))))))
