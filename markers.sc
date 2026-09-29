@@ -89,7 +89,7 @@
   ;; NEVER: WHAT A TEXT IMPORT HOLDS IS DECIDED BY THE BYTES, HERE AND ONLY
   ;; HERE: valid UTF-8 with no NUL byte. The language table says what a file
   ;; IS, not whether it is text: a Makefile is text with no language, and a
-  ;; .sc of Latin-1 bytes is not text at all.
+  ;; .sc whose Latin-1 bytes are not valid UTF-8 is not text at all.
   ;;
   ;; NEVER: A LEADING BOM IS TEXT. utf8->string drops it, so the round trip
   ;; safe-utf8 asks for does not give it back, and every file that began
