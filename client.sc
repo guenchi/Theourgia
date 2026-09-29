@@ -284,9 +284,10 @@
   ;;
   ;; NEVER: NO ATTEMPT AFTER THE BUDGET. The slots are tried at once, then
   ;; every 100 ms, each sleep cut to what is left of timeout-ms, and the
-  ;; budget is read before EVERY attempt, each slot's included: a slot that
-  ;; comes free after timeout-ms is not taken, and a refusal waits
-  ;; timeout-ms, not the next whole step. The one exception is the very
+  ;; budget is read before EVERY attempt, each slot's included: no attempt
+  ;; begins once a reading has reached timeout-ms (one begun just before can
+  ;; finish just after), and a refusal waits timeout-ms, not the next whole
+  ;; step. The one exception is the very
   ;; first attempt, on the first slot, which is made whatever the clock
   ;; reads: a millisecond boundary crossed at the start must not refuse a
   ;; request with a 1 ms budget on an empty pool. The wait is measured on

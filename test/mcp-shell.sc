@@ -2579,7 +2579,10 @@
 ;; there twenty times while it runs, every 0.1 s -- always one when they took
 ;; turns; two, within 0.1 s of the later start, when both were let in. (Two
 ;; sources started more than 2 s apart would not overlap without any pool;
-;; the sends are made back to back, so only a stall of that length hides it.)
+;; the sends are made back to back, so only a stall of that length hides it.
+;; A brief overlap at the ends is also missed: the later source marking
+;; after the earlier one's last count, and counting first after the earlier
+;; marker is gone.)
 (want "X26 two shells, THEOURGIA_EVAL_SLOTS=1: two sleep 2 sent together take turns, neither running while the other runs"
       (let* ((m (string-append here "/x26"))
              (_ (system (string-append "rm -rf " m "; mkdir -p " m)))

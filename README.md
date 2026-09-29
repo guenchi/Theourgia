@@ -1532,9 +1532,11 @@ lock on a file under `<run root>/eval-slots/`, released by the system when
 the holder ends, a killed one included. The descriptor is never inherited by
 the worker or the runner. With no slot free the evaluation waits, trying
 at once and then every 100 ms, for at most its own `--timeout-ms` on the
-monotonic clock -- a slot that comes free after that is not taken -- and
-then answers `(error eval-busy (slots K) (waited-ms n))`; that wait is not
-part of the evaluation's own deadline. A K that is not a positive integer is
+monotonic clock -- after the first attempt, each attempt needs a fresh
+reading below the timeout, though an attempt begun just before it can
+finish just after -- and then answers
+`(error eval-busy (slots K) (waited-ms n))`; that wait is not part of the
+evaluation's own deadline. A K that is not a positive integer is
 `(error bad-request (reason eval-slots))`. The refusals that need no store --
 `cut-and-latest`, `eval-arguments`, and for `--lang` `lang-and-cut`,
 `lang-and-under`, `no-runner` and `runners-disabled` -- come before the slot,

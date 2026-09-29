@@ -901,7 +901,9 @@
 ;; creates the go file -- never for a fixed time, so a contender that starts
 ;; slowly cannot find the holder already gone. Every holder runs with a 60 s
 ;; deadline of its own, longer than any wait a row makes for its contender
-;; (20 s at most). -> the source text.
+;; (20 s at most). A LIMIT: a contender's own startup is not bounded by the
+;; row, and one that took longer than 60 s would find its holder gone and
+;; be let in. -> the source text.
 (define (hold-until ready go) (string-append "touch " ready "; until [ -e " go " ]; do sleep 0.05; done"))
 
 ;; THE SECOND WAITS, AND MAKES NOTHING WHILE IT WAITS. A holds the only slot
@@ -957,7 +959,9 @@
 ;; slot held, the refusal comes after the first attempt and a sleep cut to
 ;; what is left of the 50 ms, not after a whole 100 ms step. (50 and not 1:
 ;; a first attempt that itself took the whole of a 1 ms budget would refuse
-;; before any sleep, and a whole-step sleep would go unseen.) (That a slot freed after the
+;; before any sleep, and a whole-step sleep would go unseen. The same holds
+;; at 50 ms, less often: a whole-step sleep is seen only when the first
+;; attempt took under 50 ms.) (That a slot freed after the
 ;; budget is not taken, and that the wait is on the monotonic clock, are not
 ;; observable here: the first needs a release timed inside one step of
 ;; another process, the second a step of the machine's clock.)
@@ -1022,7 +1026,8 @@
 ;; exec'ing the sleep (so the pid is the sleeping process), and it is seen
 ;; alive after the kill and again after the third request; a runner that had
 ;; inherited the lock's descriptor would keep the slot, and the third
-;; evaluation would be busy.
+;; evaluation would be busy. A LIMIT: the runner sleeps 31.5 s, so a row
+;; delayed past that ends it first and is red on a correct product.
 (want "L15 K=1: the holder killed while its runner sleeps frees the slot at once; the runner does not hold it"
       (let* ((r (fresh-run! "slots-kill"))
              (ready (string-append r ".ready")) (rp (string-append r ".runner"))
