@@ -42,6 +42,9 @@ jobs:
           mem: 8192
           envs: 'REF'
           prepare: |
+            mkdir -p /usr/local/etc/pkg/repos
+            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly" }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            pkg update -f
             pkg install -y chez-scheme libuv perl5 python3 git node bash
             pw useradd tester -m -s /bin/sh
           run: |
@@ -55,6 +58,10 @@ jobs:
             echo "so files: $(find lib -name '*.so' | wc -l)"
             mkdir -p "$W/out" "$W/testroot"
             chown -R tester "$W"
+            id tester; sysctl security.bsd.see_other_uids security.bsd.see_other_gids security.bsd.see_jail_proc 2>&1
+            printf '%s\n' 'echo "me $$"' 'ps -A -ww -o pid=,pgid=,stat=,command= | wc -l' 'ps -A -ww -o pid=,pgid=,stat=,command= | awk -v p=$$ "\$1==p"' 'ps -ww -o pid=,pgid=,stat=,command= -p $$' 'ps -A -o user= | sort | uniq -c' > /tmp/diag.sh
+            su -m tester -c 'sh /tmp/diag.sh'
+            ps -A -ww -o pid=,pgid=,stat=,command= | tail -5
             cd lib/theourgia/test
             su -m tester -c "HOME=/home/tester THEOURGIA_LIBDIR=$W/lib THEOURGIA_TEST_ROOT=$W/testroot; export HOME THEOURGIA_LIBDIR THEOURGIA_TEST_ROOT; . ./env.sh; sh run-fixtures.sh $W/out > $W/suite.log 2>&1; echo \$? > $W/suite.rc" || true
             cd "$W"
