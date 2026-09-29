@@ -1879,11 +1879,9 @@ path: a library imported with `import-code` (`lib/a.sc` holding
 `(library (lib a) ...)`) is reached by `(import (lib a))`. It claims no file
 extension; files stay `scheme`'s, and `--lang scheme` stays the sandbox.
 Its default runner is
-
-    (runner ((argv ("scheme" "--script" "{file}")) (source-name "__eval.ss")
-             (env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")
-                   ("CHEZSCHEMELIBEXTS" ".sc:.ss:.sls:.scm")))))
-
+`(runner ((argv ("scheme" "--script" "{file}")) (source-name "__eval.ss")
+(env (("CHEZSCHEMELIBDIRS" "{dir}:{libdirs}")
+("CHEZSCHEMELIBEXTS" ".sc:.ss:.sls:.scm")))))`,
 so the projection is searched first and then the calling process's own
 library directories, and `.sc` comes first among the extensions (single
 colons: in Chez `a::b` pairs a source extension with an object one). It is
@@ -1902,10 +1900,8 @@ runner-config-invalid) (variable "THEOURGIA_RUNNER_CHEZ") (detail ...))`,
 naming the field (`(detail (field argv))`) or `(detail not-one-datum)`, and
 nothing runs: a default never runs in place of what the operator named. It
 is answered before the evaluation takes an admission slot, so a full pool
-does not hide it behind `eval-busy`. An
-interpreter:
-
-    THEOURGIA_RUNNER_CHEZ='((argv ("petite" "--script" "{file}")))'
+does not hide it behind `eval-busy`. An interpreter:
+`THEOURGIA_RUNNER_CHEZ='((argv ("petite" "--script" "{file}")))'`.
 
 A compiler pipeline is an `argv` too. Since `{file}` is replaced only as a
 whole argument, it goes to the shell as `$1`:
