@@ -326,9 +326,9 @@ scene({tag:['feat','Feature 1 / 7'],title:'A query API small enough to memorize'
 // ============================== FEATURE 2 ==================================
 scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any language',dur:7.5,build(r){
   // four code blocks in four languages, all equal nodes between the requirement and its test
-  const B=[['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,440],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,215],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,375],['RUST','fn jitter(ms: u64) …','x9a3vtll.7','#b7410e',760,535],['GO','func Retry(ctx, fn) …','q7m2hs0c.4','#0089ad',760,695],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,380],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,640]];
+  const B=[['DESIGN','Retry policy §4','8pniyrtk.2','var(--acc2)',230,250],['REQUIREMENT','Retries are bounded','x9a3vtll.4','var(--orange)',230,500],['SCHEME','(define-syntax retry …)','8pniyrtk.j','#3572a5',760,215],['PYTHON','def backoff(n): …','q7m2hs0c.1','var(--violet)',760,375],['RUST','fn jitter(ms: u64) …','x9a3vtll.7','#b7410e',760,535],['GO','func Retry(ctx, fn) …','q7m2hs0c.4','#0089ad',760,695],['TEST','test W3: retry stops','x9a3vtll.12','var(--gold)',1300,380],['DECISION RECORD','ADR-12: cap at 5','8pniyrtk.p','var(--red)',1300,640]];
   this.b=B.map(([k,tt,id,c,x,y])=>({x,y,e:el(`<div class="blk" style="border-color:${c}"><div class="k" style="color:${c}">${k}</div><div class="t">${tt}</div><div class="id">${id}</div></div>`,r)}));
-  const E=[[0,1,'met by'],[0,2,''],[0,3,''],[0,4,''],[1,5,'checked by'],[2,5,''],[3,5,''],[4,5,''],[5,6,'decided in']];
+  const E=[[0,1,'states'],[1,2,'met by'],[1,3,''],[1,4,''],[1,5,''],[2,6,'checked by'],[3,6,''],[4,6,''],[5,6,''],[6,7,'decided in']];
   this.E=E;
   this.svg=el(`<svg class="full"><defs><marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--acc2)"/></marker></defs><g stroke="var(--acc2)" stroke-width="4.5" fill="none" stroke-linecap="round"></g><g class="lab" font-family="SF Mono,Menlo,monospace" font-weight="700" font-size="20" fill="var(--acc2)"></g></svg>`,r);
   r.insertBefore(this.svg,this.b[0].e);
@@ -350,10 +350,10 @@ scene({tag:['feat','Feature 2 / 7'],title:'Docs, code, tests — one graph, any 
       this.paths.push([p,tx,p.getTotalLength()])});
   }
   const merge=P(t,1.2,2.2);
-  this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.14);S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<5?-40:60),y:b.y,s:pp.s})});
+  this.b.forEach((b,i)=>{const pp=pop(t,.2+i*.14);S(b.e,{o:pp.o,x:b.x+(1-merge)*(i<6?-40:60),y:b.y,s:pp.s})});
   S(this.wall,{o:P(t,.3,.6)*(1-merge),x:1030,y:230,sy:1-merge});
   S(this.wl,{o:P(t,.5,.8)*(1-merge),x:750,y:850});
-  this.paths.forEach(([p,tx,len],i)=>{const a=2.5+i*.3;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
+  this.paths.forEach(([p,tx,len],i)=>{const a=2.4+i*.28;p.style.opacity=t>a?1:0;p.style.strokeDasharray=len;p.style.strokeDashoffset=len*(1-P(t,a,a+.5));tx.style.opacity=P(t,a+.3,a+.6)});
   // pulse flowing along the chain
 }});
 
