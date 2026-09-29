@@ -1174,6 +1174,11 @@
    unrelated a
    "eval-admission: the evaluation admission's slot, released before the mark's failure goes on"
    (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e))))
+  ("platform-numbers.sc" (linux-libc) 1 guard
+   (#t)
+   unrelated a
+   "platform-numbers: /proc/self/maps that cannot be read (a sandbox hiding /proc) reads as an unknown C library, which is unlisted and refused by name; not a store entry"
+   (e (#t #f)))
   ("eval-admission.sc" (eval-admit!) 2 guard
    (#t)
    unrelated a

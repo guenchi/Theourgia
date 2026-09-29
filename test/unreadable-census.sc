@@ -491,7 +491,12 @@
     open-input-file open-output-file call-with-input-file call-with-output-file
     with-input-from-file with-output-to-file set-port-position! port-position
     get-mode chmod))
-(define (door-file? rel) (and (suffix? rel ".sc") (not (string=? rel "ffi.sc"))))
+;; platform-numbers.sc is outside the door too, and by name: it is the one
+;; library below ffi.sc (ffi.sc imports it, so it cannot use ffi.sc), and
+;; the one thing it reads is /proc/self/maps, to identify the C library --
+;; not a store entry. Row D1-door-02 pins that that read is all it does.
+(define (door-file? rel)
+  (and (suffix? rel ".sc") (not (member rel '("ffi.sc" "platform-numbers.sc")))))
 (define (door-hits fs ts syms)
   (let ((aliases (map (lambda (f t)
                         (cons f (if (door-file? f)
@@ -501,13 +506,23 @@
     (filter (lambda (s) (let ((a (assoc (car s) aliases))) (and a (memq (caddr s) (cdr a)))))
             syms)))
 
-(want "D1-door-00 the walk reads .sc files at any depth; ffi.sc and the .ss files it saw are outside the door"
+(want "D1-door-00 the walk reads .sc files at any depth; ffi.sc, platform-numbers.sc and the .ss files it saw are outside the door"
       (list (and (member "mcp/server.sc" files) (door-file? "mcp/server.sc") #t)
             (and (member "ffi.sc" files) (door-file? "ffi.sc"))
+            (and (member "platform-numbers.sc" files) (door-file? "platform-numbers.sc"))
             (filter (lambda (f) (suffix? f ".ss")) files))
-      '(#t #f ("build.ss")))
+      '(#t #f #f ("build.ss")))
 (want "D1-door-01 no native filesystem name outside ffi.sc, as a token or by an imported name"
       (door-hits files texts symbols) '())
+(want "D1-door-02 platform-numbers.sc's native filesystem names: one call-with-input-file, in linux-libc, for /proc/self/maps"
+      (list (filter (lambda (s) (and (string=? (car s) "platform-numbers.sc") (memq (caddr s) door-banned)))
+                    symbols)
+            (let search ((x (read (open-string-input-port (text-of "platform-numbers.sc")))))
+              (cond ((and (pair? x) (eq? (car x) 'call-with-input-file)) (list x))
+                    ((pair? x) (append (search (car x)) (search (cdr x))))
+                    (else '()))))
+      (list '(("platform-numbers.sc" (linux-libc) call-with-input-file))
+            '((call-with-input-file "/proc/self/maps" get-string-all))))
 
 ;; ---- the close census (F100a, ruling H1) --------------------------------
 ;;
