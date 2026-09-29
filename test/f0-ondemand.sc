@@ -216,7 +216,24 @@
 ;; from this machine; F54's first row takes this reading.
 ;; The relative instrument, F54, is the next item after F100a. Moved by the
 ;; main session (ruling F, 2026-09-25), the only way this budget may move.
-(define budget-ms 590)
+;;
+;; ---- moved again, from 590 to 636, for the facts an editor supplies ---------
+;;
+;; The supply interface adds verbs, a table check and the projection's map
+;; and key to what every start compiles. Its facts' library loads on first
+;; use, and what stays static is what the design keeps there; the user
+;; accepted the measured cost, 2026-09-29. Measured on one machine, the
+;; same command as this row, base 9f806bb against the tree, ten rounds of
+;; ten starts alternated:
+;;
+;;   median of round medians   base 572   tree 583   +11 ms (1.9 %)
+;;   per library, alone        rpc 559 -> 567, store 433 -> 436,
+;;                             code-project 440 -> 442
+;;
+;; The record is archive/theourgia-f127-startup-2026-09-29/READINGS.md in
+;; the workspace root repository. The budget follows this row's own rule:
+;; today's tree reading times 1.09, 583 x 1.09 = 635.5, so 636.
+(define budget-ms 636)
 
 (define (median xs)
   (let ((v (list-sort < xs)))
