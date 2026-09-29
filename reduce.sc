@@ -47,6 +47,7 @@
           text-field-types value-kind
           state-read state-outline outline-subtree state-dump state-hash state-datum block-hash
           state-path-claimants state-duplicated-paths
+          reserved-relation-names state-reserved-relation-records
           state-structure state-refs state-tags state-event-cut cut-usable? cut-id
           state->rows rows->state
           state-consumed? state-consumption state-consumed-completions
@@ -1899,6 +1900,30 @@
                          (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
                               (equal? (field 'path) rel))))))
               (map car (reduction-blocks r)))))
+
+  ;; THE RELATION NAMES SUPPLIED FACTS ANSWER UNDER, in one place: the
+  ;; request path refuses a link or unlink carrying one (store.sc), and
+  ;; `check` names every applied record that already does. The reducer
+  ;; itself applies such a record as it always has; history is not
+  ;; rewritten by a later rule.
+  (define reserved-relation-names '(ref uses calls guards))
+
+  ;; -> ((<from> <rel> <to> (event <writer> <seq>)) ...), in the order the
+  ;; records were accepted, for every APPLIED link or unlink record whose
+  ;; relation is reserved.
+  (define (state-reserved-relation-records r)
+    (let loop ((recs (reverse (reduction-history r))) (out '()))
+      (if (null? recs)
+          (reverse out)
+          (let ((p (rec-payload (car recs))))
+            (loop (cdr recs)
+                  (if (and (list? p) (= 4 (length p)) (memq (car p) '(link unlink))
+                           (memq (caddr p) reserved-relation-names)
+                           (event-applied? r (cons (rec-writer (car recs)) (rec-seq (car recs)))))
+                      (cons (list (cadr p) (caddr p) (cadddr p)
+                                  (list 'event (rec-writer (car recs)) (rec-seq (car recs))))
+                            out)
+                      out))))))
 
   ;; -> `((duplicate-path <rel> (ids (<id> ...))) ...)`, sorted by path, for
   ;; every path two or more alive datum libraries, or two or more alive text

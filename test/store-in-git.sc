@@ -154,7 +154,7 @@
 ;; prefix, a directory unless it is the last), the last matching pattern
 ;; winning; a path is excluded when any of its entries is. The patterns:
 ;; /instance.sexp and /request-index.sexp (a root entry of either kind),
-;; /snap/ (a root directory), /writers/*/working/ (a directory),
+;; /snap/ and /derived/ (root directories), /writers/*/working/ (a directory),
 ;; /writers/*/draft.lock (either kind), *.tmp-* (a name at any depth), and
 ;; !/writers/*/incoming/* (re-includes an incoming entry of either kind).
 (define (glob-tmp? name) (has-substring? name ".tmp-"))
@@ -165,7 +165,7 @@
     (cond (incoming-entry? #f)
           ((glob-tmp? name) #t)
           ((and (= k 1) (member name '("instance.sexp" "request-index.sexp"))) #t)
-          ((and (= k 1) dir? (string=? name "snap")) #t)
+          ((and (= k 1) dir? (member name '("snap" "derived"))) #t)
           ((and writer-level? dir? (string=? name "working")) #t)
           ((and writer-level? (string=? name "draft.lock")) #t)
           (else #f))))
@@ -221,8 +221,8 @@
 
 ;; ---- G2: what init keeps out, and what `git add <store>` stages --------------------
 (define gitignore-lines
-  '("/instance.sexp" "/request-index.sexp" "/snap/" "/writers/*/working/" "/writers/*/draft.lock" "*.tmp-*"
-    "!/writers/*/incoming/*"))
+  '("/instance.sexp" "/request-index.sexp" "/snap/" "/derived/" "/writers/*/working/" "/writers/*/draft.lock"
+    "*.tmp-*" "!/writers/*/incoming/*"))
 (let* ((h (home! "g2")) (repo (string-append root "/g2")) (s (string-append repo "/store")))
   (sh "mkdir -p " (quoted s))
   (git repo "init" "-q")
@@ -249,7 +249,7 @@
                 (and (pair? (filter (lambda (f) (has-substring? f "/working/")) (files-under s))) #t)
                 (and (pair? (filter (lambda (f) (has-substring? f "snap/")) (files-under s))) #t))
           (list 'ok 'ok '(#t #t #t) #t #t))
-    (want "G2 init writes .gitignore holding exactly the seven patterns, in order"
+    (want "G2 init writes .gitignore holding exactly the eight patterns, in order"
           (lines-of (text-of-file (string-append s "/.gitignore")))
           gitignore-lines)
     (git repo "add" "store")
@@ -267,6 +267,27 @@
                   (and (member (string-append "store/" writer-tmp) t) #t)
                   (file-exists? (string-append s "/" writer-tmp)))
             (list #t #t #f #t)))))
+
+;; ---- G2d: the tables a supply writes are not staged ---------------------------------
+;; A supply keeps its facts in derived/ (a table and the lock beside it); the
+;; store's own files around it are staged as before.
+(let* ((h (home! "g2d")) (repo (string-append root "/g2d")) (s (string-append repo "/store"))
+       (f (string-append root "/g2d-supply.sexp")))
+  (sh "mkdir -p " (quoted s))
+  (git repo "init" "-q")
+  (ask h s "init")
+  (call-with-output-file f
+    (lambda (p) (put-string p "(supply signatures (writer \"-\") (language \"javascript\") (source (vscode \"1.140.0\")) (files ()) (replaces ()))\n"))
+    'truncate)
+  (let ((a (ask h s "supply" "signatures" f)))
+    (git repo "add" "store")
+    (let ((t (tracked repo)))
+      (want "G2d after a supply, derived/ holds the table and the lock, and `git add <store>` stages neither while meta.sexp and .gitignore are staged"
+            (list a (map (lambda (n) (file-exists? (string-append s "/derived/" n)))
+                         '("signatures-%2D-javascript.sexp" "lock"))
+                  (filter (lambda (x) (has-substring? x "derived")) t)
+                  (and (member "store/meta.sexp" t) #t) (and (member "store/.gitignore" t) #t))
+            (list '(ok (supplied (facts 0) (files 0))) '(#t #t) '() #t #t)))))
 
 ;; ---- G3: a rolled segment is staged as a whole ------------------------------------
 ;; A segment rolls at 1 MiB; one append over that and a second append give

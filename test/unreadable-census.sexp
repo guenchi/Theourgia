@@ -33,6 +33,8 @@
   ("code-project.sc" (directory-files) file-is-directory? 1 keep a "not writer layout: import-code input dir")
   ("daemon.sc" () file-is-regular? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("daemon.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("derived.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
+  ("derived.sc" (derived-facts) file-is-directory? 1 keep a "not writer layout: the derived tables' directory, which may not exist yet")
   ("evidence-index.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
   ("evidence-index.sc" (files) file-is-directory? 1 convert c "evidence inventory lists writer files (R2f)")
   ("ffi.sc" () file-is-directory? 1 binding a "import or re-export of the predicate; row (i) pins bindings")
@@ -267,6 +269,26 @@
    propagate a
    "eval: what the worker's own steps raise (the reader of the source and the cut, the store's load, the library lookup) answers as before F92: a list headed error is the refusal it names; a worker-refusal, an unreadable-entry, a durable-error (F100b) or a condition is re-raised to answer's clauses; anything else (log-error, a record) is the fixed-message answer, never a value the source raised (F92 review r1, S)"
    (e ((and (pair? e) (eq? (car e) (quote error))) (refuse! e)) ((or (worker-refusal? e) (unreadable-entry? e) (fs-error? e) (condition? e)) (raise e)) (#t (refuse! (quote (error eval-exception (kind raised) (message "Evaluation raised an exception")))))))
+  ("derived.sc" (supply-lines) 1 guard
+   (#t)
+   unrelated a
+   "a line of the supply file the caller named that does not read as one datum; the file was already read, and the line is refused supply-malformed unreadable"
+   (e (#t unread)))
+  ("derived.sc" (read-table) 1 guard
+   (#t)
+   unrelated a
+   "reads a derived table under <store>/derived/, not a writer file: an unreadable, malformed or tampered table is absent to its consumers as a whole (R2), and a supply rebuilds it"
+   (e (#t #f)))
+  ("derived.sc" (supply-derived) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "catches error lists only, never a condition"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
+  ("derived.sc" (clear-derived) 1 guard
+   ((and (pair? e) (eq? (car e) (quote error))))
+   unrelated a
+   "catches error lists only, never a condition"
+   (e ((and (pair? e) (eq? (car e) (quote error))) e)))
   ("evidence-index.sc" (load-checkpoint) 1 guard
    (#t)
    unrelated c

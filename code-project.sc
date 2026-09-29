@@ -14,14 +14,17 @@
 ;; limitations under the License.
 (library (theourgia code-project)
   (export import-code export-code export-code-view code-field code-children code-files read-code-bytes
-          code-input-files code-safe-path? code-parent-directory duplicate-path-failure)
+          code-input-files code-safe-path? code-parent-directory duplicate-path-failure
+          file-projection-key path-projection-key projected-files)
   (import (only (theourgia view) view-read)
           (rnrs) (theourgia languages) (theourgia text-code) (theourgia code-markers)
           (theourgia store) (theourgia reduce) (theourgia baseline) (theourgia operation-packet)
           (only (theourgia log) store-id-of atomic-write!)
           (only (theourgia ffi) directory-entries file-is-directory? file-is-regular? mkdir-p!
                 entry-bytes)
-          (only (theourgia markers) import-text?))
+          (only (theourgia markers) import-text?)
+          (only (theourgia wire) storable-encode sexpr->string-extended)
+          (only (theourgia digest) sha256 bytevector->hex))
   (define (code-field state id name)
     ;; THE VIEW, because a projection writes what a reader would see --
     ;; a code block's `name` is derived from its source and is not in the
@@ -203,28 +206,99 @@
                         (list 'paths (map cdr (state-duplicated-paths state)))
                         (list 'remedy 'del-all-but-one-per-path)))
 
+  ;; WHETHER A FILE PROJECTS, AND WHAT ITS PROJECTION IS A FUNCTION OF.
+  ;; -> (key "<sha256>") | (failure <reason> <detail> ...)
+  ;;
+  ;; KEY: ONE FUNCTION FOR THE EXPORTER AND FOR EVERY FRESHNESS CHECK. A
+  ;; supplied fact is stamped with this key and judged by it again later;
+  ;; export-code-view runs its own checks through it. So "this file would
+  ;; project" and "this file has a key" cannot come apart: a file the
+  ;; exporter refuses has no key, for the exporter's own reason, in the
+  ;; exporter's own order -- every child first (any child that is not
+  ;; code text with bytes is unexportable-block: the exporter refuses it,
+  ;; it does not skip it), then the path (unsafe-path), then its holders
+  ;; (duplicate-path, when more than one live text file holds the path).
+  ;; `no-holder` is this layer's own answer, for a block that is no longer
+  ;; a live text-mode file: the exporter never meets one, it lists only
+  ;; such files.
+  ;;
+  ;; THE KEY hashes what the projected bytes depend on beyond each block's
+  ;; own src: the comment wrapping the language entry gives the marker
+  ;; lines and the escape family (read through the entry actually
+  ;; registered, so a replacement under the same name with another
+  ;; wrapping changes it, and metadata that does not reach the bytes does
+  ;; not), and the ordered ids of ALL the file's children. A child's src is
+  ;; stamped on its own (projected-files); the header's store id, file id
+  ;; and cut are not inputs of any fact.
+  (define (file-projection-key state id)
+    (let ((b (state-read state id)))
+      (if (not (and b (not (cdr (assq 'deleted b)))
+                    (eq? 'file (code-field state id 'kind)) (eq? 'text (code-field state id 'mode))))
+          '(failure no-holder)
+          (let* ((children (code-children state id))
+                 (bad (find (lambda (child)
+                              (not (and (eq? 'code (code-field state child 'kind))
+                                        (eq? 'text (code-field state child 'mode))
+                                        (bytevector? (code-field state child 'src)))))
+                            children))
+                 (rel (code-field state id 'path)))
+            (cond
+              (bad (list 'failure 'unexportable-block (list 'ids (list bad))))
+              ((not (relative-safe? rel)) '(failure unsafe-path))
+              ((let ((holders (state-path-claimants state 'file 'text rel)))
+                 (and (> (length holders) 1) holders))
+               => (lambda (holders) (list 'failure 'duplicate-path (list 'path rel) (list 'ids holders))))
+              (else
+               (let ((w (projection-wrapping (language-for-name (code-field state id 'lang)))))
+                 (list 'key (bytevector->hex (sha256 (string->utf8 (sexpr->string-extended
+                                                (storable-encode (list 'file-projection (car w) (cdr w) children))))))))))))))
+
+  ;; THE SAME QUESTION ASKED OF A PATH, which is how a stamp names its file:
+  ;; the one live text file holding it, else no key.
+  (define (path-projection-key state rel)
+    (let ((holders (state-path-claimants state 'file 'text rel)))
+      (cond ((null? holders) '(failure no-holder))
+            ((> (length holders) 1) (list 'failure 'duplicate-path (list 'path rel) (list 'ids holders)))
+            (else (file-projection-key state (car holders))))))
+
+  ;; A key's failure, answered the way the exporter has always answered it.
+  (define (key-failure state k)
+    (case (cadr k)
+      ((unexportable-block) (projection-failure 'unexportable-block (caddr k)))
+      ((unsafe-path) (projection-failure 'unsafe-path))
+      ((duplicate-path) (duplicate-path-failure state (cadr (caddr k)) (cadr (cadddr k))))
+      (else (projection-failure (cadr k)))))
+
+  ;; EVERY TEXT FILE OF A VIEW AS THE EXPORTER PROJECTS IT, in the exporter's
+  ;; order: -> ((<path> <file-id> <entry> ((<child> <src>) ...) <key>) ...),
+  ;; raising the exporter's refusal for the first file that does not
+  ;; project. The exporter writes these; `supply` projects them in memory
+  ;; and stamps its facts from them.
+  (define (projected-files state)
+    ;; A loop, not `map`: the refusal answered is the first file's in the
+    ;; exporter's order, and R6RS leaves map's order of application open.
+    (let loop ((ids (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state))) (out '()))
+      (if (null? ids)
+          (reverse out)
+          (loop (cdr ids)
+                (cons (let* ((id (car ids)) (k (file-projection-key state id)))
+                        (unless (eq? (car k) 'key) (key-failure state k))
+                        (list (code-field state id 'path) id (language-for-name (code-field state id 'lang))
+                              (map (lambda (child) (list child (code-field state child 'src))) (code-children state id))
+                              (cadr k)))
+                      out)))))
+
   (define (export-code-view store dir raw? view)
     (answer
       (lambda ()
         (let* ((state (view)) (cut (reduce-applied-cut state))
-               (files (filter (lambda (id) (eq? 'text (code-field state id 'mode))) (code-files state)))
-               (paths '())
+               (files (projected-files state))
                (outputs
-                 (map (lambda (id)
-                        (let* ((rel (code-field state id 'path)) (lang (code-field state id 'lang))
-                               (entry (language-for-name lang))
-                               (entries (map (lambda (child)
-                                               (let ((src (code-field state child 'src)))
-                                                 (unless (and (eq? 'code (code-field state child 'kind))
-                                                              (eq? 'text (code-field state child 'mode)) (bytevector? src))
-                                                   (projection-failure 'unexportable-block (list 'ids (list child))))
-                                                 (list child src))) (code-children state id))))
-                          (unless (relative-safe? rel) (projection-failure 'unsafe-path))
-                          (when (member rel paths)
-                            (duplicate-path-failure state rel (state-path-claimants state 'file 'text rel)))
-                          (set! paths (cons rel paths))
+                 (map (lambda (f)
+                        (let ((rel (car f)) (id (cadr f)) (entry (caddr f)) (entries (cadddr f)))
                           (list rel (if raw? (apply bytes-append (map cadr entries))
-                                        (projection-encode entry (list (store-id-of store) id cut) entries))))) files)))
+                                        (projection-encode entry (list (store-id-of store) id cut) entries)))))
+                      files)))
           (for-each (lambda (out) (let ((path (string-append dir "/" (car out))))
                                    (mkdir-p! (parent-directory path)) (atomic-write! path (cadr out) 'working))) outputs)
           (list 'ok (list 'files (length files)))))))

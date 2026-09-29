@@ -995,6 +995,14 @@
                                (let ((d (string-append x "/md-out")))
                                  (mkdir-p! d)
                                  (census-ask st 'export-md d)))))
+    ;; A supply that lists no file and replaces none: nothing to check a digest
+    ;; against and no fact, so it is kept as an empty supply.
+    (cons 'supply (seeded (lambda (st x s)
+                            (let ((f (string-append x "/supply.sexp")))
+                              (census-write! f (string-append
+                                                 "(supply signatures (writer \"-\") (language \"javascript\") "
+                                                 "(source (vscode \"1.140.0\")) (files ()) (replaces ()))\n"))
+                              (census-ask st 'supply "signatures" f)))))
     (cons 'adopt (seeded (lambda (st x s) (census-ask st 'adopt))))
     (cons 'check (seeded (lambda (st x s) (census-ask st 'check))))
     (cons 'snapshot (seeded (lambda (st x s) (census-ask st 'snapshot))))
@@ -1170,7 +1178,7 @@
 (want "F58 these verbs answer with a success that is not items"
       (census-class 'not-items)
       '(batch check del describe discard export-code export-md import-md init insert
-        link move outline publish restore set snapshot split-suggest unlink write))
+        link move outline publish restore set snapshot split-suggest supply unlink write))
 (want "F58 these verbs are unexercised"
       (census-class 'unexercised)
       '(adopt))
@@ -1189,7 +1197,7 @@
       '((batch . batch) (check . check) (del . ok) (describe . ok) (discard . ok)
         (export-code . ok) (export-md . ok) (import-md . import) (init . ok) (insert . ok)
         (link . ok) (move . ok) (outline . ok) (publish . ok) (restore . ok) (set . ok)
-        (snapshot . ok) (split-suggest . ok) (unlink . ok) (write . ok)))
+        (snapshot . ok) (split-suggest . ok) (supply . ok) (unlink . ok) (write . ok)))
 
 ;; THE UNEXERCISED LIST IS AN ALLOW-LIST, AND EVERY ENTRY IS JUSTIFIED. A
 ;; refusal is accepted only with the line saying why it is the verb's correct

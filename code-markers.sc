@@ -13,7 +13,8 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 (library (theourgia code-markers)
-  (export projection-encode projection-decode marker-line projection-failure projection-header-wrapper?
+  (export projection-encode projection-encode-map projection-range projection-wrapping
+          projection-decode marker-line projection-failure projection-header-wrapper?
           projection-control projection-header-line)
   ;; The marker grammar moved to (theourgia markers), which
   ;; CANNOT REACH THIS LIBRARY -- it imports (rnrs) and two names from
@@ -38,11 +39,21 @@
             (if (= delta 1)
                 (bytes-append (byte-slice b 0 at) #vu8(64) (byte-slice b at (bytevector-length b)))
                 (bytes-append (byte-slice b 0 at) (byte-slice b (+ at 1) (bytevector-length b))))))))
-  (define (escape-body entry b)
-    (apply bytes-append
-      (map (lambda (r)
-             (bytes-append (adjust-line entry (byte-slice b (car r) (cadr r)) 1)
-                           (byte-slice b (cadr r) (caddr r)))) (byte-lines b))))
+  ;; -> (values escaped inserted): the body with one "@" inserted into every
+  ;; marker-like line, and the offsets IN THE ESCAPED BYTES where those "@"
+  ;; bytes sit. One walk makes both, so the offsets are the ones written.
+  (define (escape-body-map entry b)
+    (let loop ((rows (byte-lines b)) (parts '()) (inserted '()) (at 0))
+      (if (null? rows)
+          (values (apply bytes-append (reverse parts)) (reverse inserted))
+          (let* ((r (car rows))
+                 (content (byte-slice b (car r) (cadr r)))
+                 (eol (byte-slice b (cadr r) (caddr r)))
+                 (f (family entry content))
+                 (line (adjust-line entry content 1)))
+            (loop (cdr rows) (cons eol (cons line parts))
+                  (if f (cons (+ at (list-ref f 2)) inserted) inserted)
+                  (+ at (bytevector-length line) (bytevector-length eol)))))))
   (define (ends-lf? b)
     (and (> (bytevector-length b) 0) (= 10 (bytevector-u8-ref b (- (bytevector-length b) 1)))))
   (define (padding b) (if (or (zero? (bytevector-length b)) (ends-lf? b)) 0 1))
@@ -66,24 +77,142 @@
   ;; Header = (store file cut), entries = ((id-or-new raw-bytes) ...).
   ;; Framing LF belongs to the following marker and is never source text.
   (define (projection-encode entry header entries)
+    (let-values (((bytes pieces) (projection-encode-map entry header entries))) bytes))
+
+  ;; THE PROJECTION AND WHERE EVERY BYTE OF IT CAME FROM, written in one pass
+  ;; so the map is the layout that was written and not a second description
+  ;; of it. -> (values bytes pieces), pieces in file order:
+  ;;   (source <id> <start> <end> <src-start> (<inserted> ...))
+  ;;   (control <id> <start> <end> <src-start>)
+  ;; `start` and `end` are projected byte offsets, half-open. A source piece
+  ;; holds the block's own bytes beginning at `src-start` of its src, with an
+  ;; escape "@" at each projected offset in `inserted`. A control -- a pad LF
+  ;; or a marker line -- holds none, and names the block and the src offset
+  ;; of the source piece it precedes (#f and 0 when no block follows).
+  ;;
+  ;; KEY: THE FIRST BLOCK'S PREFIX IS ITS SOURCE, NOT A CONTROL. The BOM and
+  ;; the position-sensitive lines stay at the top of the file, before the
+  ;; @file line, and they are the first block's own bytes; so the first
+  ;; block has two source pieces (the prefix at src 0, then its body at
+  ;; src prefix-size) and every other block one. A piece of zero length is
+  ;; kept (an empty block still owns its place in the file); an empty
+  ;; prefix is not a piece.
+  (define (projection-encode-map entry header entries)
     (let* ((first (if (pair? entries) (cadar entries) #vu8()))
+           (first-id (and (pair? entries) (caar entries)))
            (prefix-size (source-prefix-size first))
            (prefix (byte-slice first 0 prefix-size))
-           (padded (if (= 1 (padding prefix)) (bytes-append prefix #vu8(10)) prefix))
            (head (and header (append '(code-projection 1) header (list 'text (padding prefix)))))
-           (initial (if head
-                        (bytes-append padded (marker-line entry
-                          (string-append "@file " (bytevector->hex (string->utf8
-                            (sexpr->string-extended (storable-encode head)))))))
-                        padded)))
-      (let loop ((xs entries) (first? #t) (previous initial) (out '()))
-        (if (null? xs) (apply bytes-append (reverse (cons previous out)))
-            (let* ((pad (if (and first? (not header)) (padding prefix) (padding previous)))
+           (head-line (if head
+                          (marker-line entry
+                            (string-append "@file " (bytevector->hex (string->utf8
+                              (sexpr->string-extended (storable-encode head))))))
+                          #vu8()))
+           (opening (bytes-append (if (= 1 (padding prefix)) #vu8(10) #vu8()) head-line)))
+      ;; parts: (kind bytes id src-start inserted), inserted relative to the
+      ;; part, NEWEST FIRST (reversed when they are placed).
+      (let loop ((xs entries) (first? #t) (previous-body prefix)
+                 (parts (cons (list 'control opening first-id prefix-size '())
+                              (if (> prefix-size 0) (list (list 'source prefix first-id 0 '())) '()))))
+        (if (null? xs)
+            (let place ((ps (reverse parts)) (at 0) (bytes '()) (pieces '()))
+              (if (null? ps)
+                  (values (apply bytes-append (reverse bytes)) (reverse pieces))
+                  (let* ((p (car ps)) (n (bytevector-length (cadr p))) (end (+ at n)))
+                    (place (cdr ps) end (cons (cadr p) bytes)
+                           ;; A CONTROL OF ZERO BYTES IS NO PIECE: it holds no
+                           ;; offset and precedes nothing on its own.
+                           (if (and (eq? (car p) 'control) (= n 0))
+                               pieces
+                               (cons (if (eq? (car p) 'source)
+                                         (list 'source (caddr p) at end (cadddr p)
+                                               (map (lambda (i) (+ at i)) (list-ref p 4)))
+                                         (list 'control (caddr p) at end (cadddr p)))
+                                     pieces))))))
+            ;; THE PAD IS THE ORIGINAL'S: for the first block it is taken over
+            ;; everything written before its marker (the prefix, its pad LF and
+            ;; the @file line), which is the prefix alone only without a header.
+            (let* ((id (caar xs))
+                   (pad (cond ((not first?) (padding previous-body))
+                              ((not header) (padding prefix))
+                              (else (padding (bytes-append prefix opening)))))
                    (body (cadar xs))
                    (body (if first? (byte-slice body prefix-size (bytevector-length body)) body))
-                   (mark (marker-line entry (string-append "@block " (caar xs) " pad " (number->string pad))))
-                   (part (if (and (= pad 1) (not first?)) (bytes-append previous #vu8(10)) previous)))
-              (loop (cdr xs) #f (escape-body entry body) (cons mark (cons part out))))))))
+                   (src-start (if first? prefix-size 0))
+                   (mark (marker-line entry (string-append "@block " id " pad " (number->string pad))))
+                   (framing (if (and (= pad 1) (not first?)) (bytes-append #vu8(10) mark) mark)))
+              (let-values (((escaped inserted) (escape-body-map entry body)))
+                (loop (cdr xs) #f escaped
+                      (cons (list 'source escaped id src-start inserted)
+                            (cons (list 'control framing id src-start '()) parts)))))))))
+
+  ;; The comment wrapping a projection writes its marker lines in, the one
+  ;; property of a language entry the projected bytes depend on: the marker
+  ;; lines and the escape family are both read through it.
+  (define (projection-wrapping entry) (wrapping entry))
+
+  ;; A RANGE OF PROJECTED BYTES, BACK TO ONE BLOCK'S OWN SRC.
+  ;; -> (mapped <id> <src-start> <src-end>) | (unmappable <id>) | (none)
+  ;; for 0 <= s <= e <= the file's length.
+  ;;
+  ;; A nonempty [s, e) maps when s lies in a source piece of a block B and e
+  ;; lies in or at the end of a source piece of B, with only B's pieces
+  ;; between them (the first block's prefix and body are contiguous in its
+  ;; src even though the pad LF, the @file line and its @block line sit
+  ;; between them in the file). Otherwise it is unmappable on the first
+  ;; block s touches: the block whose source s is in, else the block the
+  ;; control at s precedes.
+  ;;
+  ;; An empty [o, o) belongs, in this order, to the block whose source
+  ;; piece ENDS at o (the earliest in file order), to the block whose
+  ;; source piece begins at o, or to the block the control at o precedes,
+  ;; at that piece's src start. A cursor at the end of a block's last line
+  ;; is in that block, not in the next one.
+  ;;
+  ;; An escape "@" belongs to the src position of the byte it was inserted
+  ;; before, so a range holding only that byte is the empty range there.
+  (define (projection-range pieces s e)
+    (define (source? p) (eq? (car p) 'source))
+    (define (id-of p) (cadr p))
+    (define (start-of p) (caddr p))
+    (define (end-of p) (cadddr p))
+    (define (src-start-of p) (list-ref p 4))
+    ;; the src offset of projected offset o, start-of p <= o <= end-of p
+    (define (src-at p o)
+      (+ (src-start-of p) (- o (start-of p))
+         (- (length (filter (lambda (i) (< i o)) (list-ref p 5))))))
+    (define (holding o)
+      (find (lambda (p) (and (<= (start-of p) o) (< o (end-of p)))) pieces))
+    (define (touched p) (id-of p))
+    (cond
+      ((= s e)
+       (let ((ending (find (lambda (p) (and (source? p) (= (end-of p) s))) pieces))
+             (beginning (find (lambda (p) (and (source? p) (= (start-of p) s))) pieces))
+             (control (let ((p (holding s))) (and p (not (source? p)) p))))
+         (cond
+           (ending (list 'mapped (id-of ending) (src-at ending s) (src-at ending s)))
+           (beginning (list 'mapped (id-of beginning) (src-start-of beginning) (src-start-of beginning)))
+           ((and control (id-of control))
+            (list 'mapped (id-of control) (list-ref control 4) (list-ref control 4)))
+           (else '(none)))))
+      (else
+       (let ((from (holding s)))
+         (cond
+           ((not from) '(none))
+           ((not (source? from)) (if (id-of from) (list 'unmappable (id-of from)) '(none)))
+           (else
+            (let* ((b (id-of from))
+                   ;; e maps into a piece of b when it lies in it or at its end
+                   ;; (an e at the first byte of the control after it)
+                   (to (find (lambda (p) (and (source? p) (equal? (id-of p) b)
+                                              (<= (start-of p) e) (<= e (end-of p))))
+                             pieces))
+                   (between (filter (lambda (p) (and (source? p)
+                                                     (< (start-of p) e) (> (end-of p) s)))
+                                    pieces)))
+              (if (and to (for-all (lambda (p) (equal? (id-of p) b)) between))
+                  (list 'mapped b (src-at from s) (src-at to e))
+                  (list 'unmappable (touched from))))))))))
 
   (define (projection-decode entry bytes)
     (let* ((rows (byte-lines bytes))

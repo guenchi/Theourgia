@@ -516,6 +516,12 @@ choosing; the store does not interpret it. The answer carries
 `(matched 1)` when that edge already existed and `(matched 0)` when it is
 new.
 
+Four names are reserved for facts an editor supplies (see "Derived data
+from an editor"): `ref`, `uses`, `calls` and `guards`. `link` and `unlink`
+refuse them with `(error reserved-relation (relation <rel>))`. A record
+written under one of them before they were reserved still applies, and
+`check` names it.
+
 ### `unlink <from> <rel> <to>`
 
     (unlink <from> <rel> <to>)
@@ -875,6 +881,88 @@ the one named:
   previous one ends;
 - `(error symbols-not-a-line-start (at <n>))`.
 
+## Derived data from an editor
+
+An editor that has the store's source open computes facts the store does
+not: a declaration's signature, which function calls which, a compiler's
+diagnostics. `supply` keeps such facts beside the store, in
+`<store>/derived/`, and never in it: no record is written, the reducer and
+`check` never read them, and the store's `.gitignore` keeps them out of
+git. They are as fresh as their last supply.
+
+### `supply`
+
+    (supply <kind> <file> ("--for" <writer>) ("--clear"))
+
+`<kind>` is `signatures`, `calls` or `diagnostics`. `<file>` is a supply
+file an editor wrote from an `export-code` projection of the committed
+store, or, with `--for <writer>`, of that writer's working view
+(`export-code --working --writer <writer>`). The answer is
+`(ok (supplied (facts <n>) (files <n>)))`: the facts kept, and the files
+named in `replaces`, a file whose facts were emptied included.
+
+The file is one S-expression per line; an empty line is skipped, and a
+line is numbered as the file is. Line 1 is the header:
+
+    (supply <kind> (writer "<writer>") (language "<languageId>")
+            (source (vscode "<version>"))
+            (files ((<path> "<sha256>") ...)) (replaces (<path> ...)))
+
+`writer` is `-` for the committed store and must be the `--for` given;
+`files` is every file the projection wrote, with the sha256 of its bytes;
+`replaces` names the files whose facts this supply replaces. Every other
+line is one fact, by kind:
+
+    (signature <id> "<text>" (kind <k>) (depends (<id> ...)))
+    (keywords <id> ("<word>" ...) (depends (<id> ...)))
+    (calls <from-id> <to-id> (depends (<id> ...)))
+    (diagnostic <id> <severity> "<message>" (range <start> <end>) (depends (<id> ...)))
+
+`depends` lists the blocks the fact was computed from, the fact's own
+block first. A diagnostic's range is a half-open byte range in the
+projected file; the store maps it to the block's own src bytes, undoing
+the projection's markers and escapes, or to `(at unmappable)` when it
+falls in a marker or spans more than one block.
+
+The store projects the view again as `export-code` would and checks every
+listed file against it before it keeps anything. What it refuses:
+
+| answer | when |
+|---|---|
+| `(error supply-stale (file <path>))` | a listed file's sha256 is not the store's projection of it: a draft written or a commit made since, or a buffer that was not the file |
+| `supply-malformed (line 1) (reason header)` | line 1 is not a header |
+| `supply-malformed (line 1) (reason kind-mismatch)` | the header's kind is not the command's |
+| `supply-malformed (line 1) (reason writer-mismatch)` | the header's writer is not `--for` (or `-` without it) |
+| `supply-malformed (line 1) (reason replaces-not-listed)` | a path in `replaces` is not in `files` |
+| `supply-malformed (line <n>) (reason unreadable)` | the line is not one S-expression |
+| `supply-malformed (line <n>) (reason fact-shape)` | the line is not a fact of this kind |
+| `supply-malformed (line <n>) (reason depends-not-led-by-subject)` | `depends` does not begin with the fact's own block |
+| `supply-malformed (line <n>) (reason unknown-id)` | a block the fact names is in no projected file |
+| `supply-malformed (line <n>) (reason dependency-file-not-listed)` | a block it depends on is in a file `files` does not list |
+| `supply-malformed (line <n>) (reason own-file-not-replaced)` | the fact's own block is in a file `replaces` does not name |
+| `supply-malformed (line <n>) (reason range-outside-file)` | a diagnostic's range ends past its file |
+| `supply-malformed (line <n>) (reason id-range-mismatch)` | a diagnostic's range maps to a block other than its `<id>` |
+
+`supply-malformed` answers are `(error supply-malformed (line <n>) (reason
+<r>))`. A view the exporter refuses (a path two blocks hold, an unsafe
+path) is refused with the exporter's own answer. Nothing is written until
+the whole file passes.
+
+Facts are kept per kind, writer and language, in
+`derived/<kind>-<writer>-<languageId>.sexp`, with every byte of the writer
+and the language outside `[A-Za-z0-9_.]` written `%XX` (so the committed
+store's `-` is `%2D`). A supply keeps the facts about the files it does
+not replace. `--clear` removes the table the header names and answers
+`(ok (cleared (kind <k>) (writer <w>) (language <l>)))`. A table that does
+not read, or whose checksum or identity is wrong, is absent as a whole.
+
+A fact is used only while what it was computed from is unchanged: the src
+bytes of every block in `depends`, and, for every file those blocks are
+in, the language's comment wrapping and the ordered list of the file's
+blocks. A fact whose inputs changed is not used, and the answers that
+read facts count it. A change in a file a fact does not list is not seen
+until the next supply.
+
 ## Checking, snapshotting, adopting
 
 ### `check`
@@ -886,10 +974,14 @@ datum libraries, or two alive text files, both hold is reported under
 `(paths ((duplicate-path <path> (ids (<id> ...))) ...))`, a clause that is
 there only when there is such a path. It is not damage -- the log is whole;
 what the store holds is two identities for one path -- but an export
-refuses it, so the verdict says it. The verdict is `damaged` when a
-writer's log fails its integrity check, the reduction could not apply a
-record, or the registry is inside the store; otherwise `duplicates` when
-there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
+refuses it, so the verdict says it. An applied `link` or `unlink` record
+under a reserved relation name (`ref`, `uses`, `calls`, `guards`), written
+before the names were reserved, is listed under
+`(reserved-relations ((<from> <rel> <to> (event <writer> <seq>)) ...))`,
+again only when there is one; it does not change the verdict. The verdict
+is `damaged` when a writer's log fails its integrity check, the reduction
+could not apply a record, or the registry is inside the store; otherwise
+`duplicates` when there is a paths clause; otherwise `ok`. Any verdict but `ok` exits 1. The
 way out of `duplicates` is under "A path several blocks hold".
 
 ### `snapshot`
@@ -921,6 +1013,7 @@ history:
     /instance.sexp
     /request-index.sexp
     /snap/
+    /derived/
     /writers/*/working/
     /writers/*/draft.lock
     *.tmp-*
@@ -929,7 +1022,9 @@ history:
 `instance.sexp` is this copy's identity. `request-index.sexp` is a
 checkpoint of the evidence index; it records this instance's files and is
 rebuilt from the log, and written again at the next `snapshot`. Snapshots
-are rebuilt the same way. The working areas and draft locks are one
+are rebuilt the same way. `derived/` holds the facts an editor supplied;
+the next `supply` gives them back. `supply` adds the line to a store's
+`.gitignore` that lacks it, and creates the file when there is none. The working areas and draft locks are one
 machine's drafts. The `*.tmp-*` files are the temporaries an atomic write
 keeps after a failure, for a reader -- except under a writer's `incoming/`,
 which the last line brings back: a candidate staged there and kept after a

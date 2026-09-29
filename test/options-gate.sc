@@ -1260,7 +1260,7 @@
 (want "GATE-C every verb lands in exactly one of the three lists"
       (list (+ (length compared) (length written-in-one) (length no-form-found))
             (length verbs-to-cover))
-      (list 36 36))
+      (list 37 37))
 
 ;; NEVER: AND THE NUMBER IS ABOUT THE SHIPPED SOURCES, NOT ABOUT THE WORLD.
 ;; `write`'s form is written in FOUR places: its catalogue entry, its
@@ -1319,6 +1319,7 @@
 ;;   outline  rpc.sc:502  `outline-usage`
 ;;   insert   rpc.sc:505  `insert-usage`
 ;;   eval     rpc.sc      `eval-usage`
+;;   supply   rpc.sc:586  `supply-usage`
 ;;     Each is reached from the catalogue entry and from the `(usage <name>)`
 ;;     sites BY NAME, so several arrivals are one place to edit.
 ;;     `commit-usage` is never passed to `usage` at all -- `commit` appends
@@ -1352,7 +1353,7 @@
 ;; less likely to be read again.
 (want "GATE-C the verbs whose form is written in exactly one place, named"
       written-in-one
-      '(commit eval insert outline serve))
+      '(commit eval insert outline serve supply))
 
 (want "GATE-C the verbs with no usage form this gate can find, named"
       no-form-found
@@ -1689,7 +1690,7 @@
       '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
-        "datum-project.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
+        "datum-project.sc" "derived.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "ffi.sc" "incomplete.sc" "json.sc"
         "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"

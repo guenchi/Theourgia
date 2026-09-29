@@ -3405,6 +3405,8 @@
                      ((intent-reason raw)
                       => (lambda (why)
                            (list 'error 'malformed-intent why)))
+                     ((reserved-relation raw)
+                      => (lambda (rel) (list 'error 'reserved-relation (list 'relation rel))))
                      ((and (pair? fixed) (eq? (car fixed) 'error)) fixed)
                      ;; THE POSITION IS CHECKED BEFORE THE RECORD EXISTS.
                      ((not (equal? at (cons (car declared) (+ 1 (cdr declared)))))
@@ -4030,6 +4032,20 @@
 
   (define (malformed-intent? i) (and (intent-reason i) #t))
 
+  ;; THE RELATION NAMES AN EDITOR'S FACTS ANSWER UNDER ARE NOT WRITTEN AS
+  ;; EDGES. `refs` joins supplied `calls` and computes `ref`; `uses` and
+  ;; `guards` are kept for the same kind of fact. An edge written under one
+  ;; of these names would answer beside the supplied one and be read as
+  ;; it, so link and unlink refuse them here, where a request's intent is
+  ;; checked -- NOT in the reducer's payload check: a record already in a
+  ;; log still applies, and `check` names it (reserved-relations). The
+  ;; names are the reducer's list, reserved-relation-names.
+  ;; -> the relation, or #f.
+  (define (reserved-relation raw)
+    (and (not (malformed-intent? raw))
+         (let ((u (unwrap raw)))
+           (and (memq (car u) '(link unlink)) (memq (caddr u) reserved-relation-names) (caddr u)))))
+
   (define (run-intents! s state actor-at intents)
     (let loop ((is intents) (n 0) (made '()) (out '()))
       (if (null? is)
@@ -4049,6 +4065,8 @@
                            ((intent-reason raw)
                             => (lambda (why)
                                  (list 'error 'malformed-intent why)))
+                           ((reserved-relation raw)
+                            => (lambda (rel) (list 'error 'reserved-relation (list 'relation rel))))
                            ((and (pair? fixed) (eq? (car fixed) 'error)) fixed)
                            (else
                      ;; A RAISE IN ONE SUB-OPERATION IS THAT SUB-OPERATION'S
@@ -4222,8 +4240,9 @@
         (else (loop (cdr ws))))))
 
   ;; THE PATTERNS A STORE'S .gitignore HOLDS, anchored at the store: the
-  ;; instance identity, the evidence checkpoint, snapshots, each writer's
-  ;; working area and draft lock, and retained atomic-write temporaries
+  ;; instance identity, the evidence checkpoint, snapshots, the tables of
+  ;; facts an editor supplied (derived/, rebuilt by the next supply), each
+  ;; writer's working area and draft lock, and retained atomic-write temporaries
   ;; anywhere below the store -- EXCEPT a writer's incoming/ files, which
   ;; the negation brings back: a staged candidate kept there after a failure
   ;; is evidence the request index scans and a replay answers from, so a
@@ -4233,6 +4252,7 @@
       "/instance.sexp\n"
       "/request-index.sexp\n"
       "/snap/\n"
+      "/derived/\n"
       "/writers/*/working/\n"
       "/writers/*/draft.lock\n"
       "*.tmp-*\n"
@@ -4512,6 +4532,12 @@
            ;; local-writer is there only when there is a writer, and the
            ;; verdict is then `duplicates` unless the store is damaged.
            (duplicated (state-duplicated-paths state))
+           ;; AN OLD RECORD UNDER A RESERVED RELATION NAME IS REPORTED, AND
+           ;; IT IS NOT DAMAGE: it was a valid edge when written and still
+           ;; applies; `refs` would now show it beside supplied facts under
+           ;; the same name. Present only when there is one; the verdict is
+           ;; unchanged by it.
+           (reserved (state-reserved-relation-records state))
            (damaged? (exists (lambda (w) (pair? (cadr (assq 'integrity (cdr w)))))
                              per-writer)))
       (append
@@ -4552,6 +4578,7 @@
             (list 'registry (if (registry-inside-store?) 'inside-store 'outside-store))
             (list 'notes notes))
         (if (pair? duplicated) (list (list 'paths duplicated)) '())
+        (if (pair? reserved) (list (list 'reserved-relations reserved)) '())
         ;; THE VERDICT SAYS IT TOO: `damaged` first, then `duplicates`, then
         ;; `ok`. A health verb that answered ok, and exited 0, on a store an
         ;; export refuses said nothing; any verdict but ok exits 1.

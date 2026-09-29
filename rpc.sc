@@ -53,6 +53,7 @@
           (only (theourgia answers) classify-failure)
           (only (theourgia incomplete) incomplete-accepted incomplete-refused)
           (only (theourgia request) req-id-ok?)
+          (only (theourgia derived) supply-derived clear-derived derived-kinds)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -579,6 +580,12 @@
   (define outline-usage
     '(outline ["--depth" <n>] ["--with-keywords"]))
 
+  ;; <file> BEFORE THE OPTIONAL GROUPS: the positional slots are read off
+  ;; the form up to its first group, and the daemon resolves a <file> slot
+  ;; against the caller's directory only when it is one of them.
+  (define supply-usage
+    '(supply <kind> <file> ["--for" <writer>] ["--clear"]))
+
   ;; --under IS OPTIONAL, and its absence is root (parse-insert); the usage
   ;; says so by bracketing it like every other optional part.
   (define insert-usage
@@ -858,6 +865,9 @@
             "Read a directory of markdown into the store." #f 'daemon)
       (list 'export-md '(export-md <dir> ["--with-ids"] ["--working"] ["--writer" <name>])
             "Write the store out as markdown." #f 'daemon)
+      (list 'supply supply-usage
+            "Keep facts an editor computed from an export-code projection -- signatures, calls, diagnostics -- beside the store, never in it. The file's header names the projection it was made from; every file it lists is checked against the store's own re-projection, of the committed state or, with --for, of that writer's working view. A fact is used only while the blocks it depends on still project as they did. With --clear, the table the header names is removed."
+            #f 'daemon)
       (list 'adopt '(adopt)
             "Take in records that are on disk but not yet in the log." #f 'daemon)
       (list 'check '(check)
@@ -1076,6 +1086,25 @@
                           ((argument-option options "--datum") (export-datum store (car args)))
                           (else (export-code store (car args) (argument-option options "--raw"))))))
                   (usage '(export-code <dir> ["--raw"] ["--datum"] ["--working"] ["--writer" <name>])))))
+      ;; THE TABLE'S WRITER IS --for, AND THE VIEW IS THAT WRITER'S: the
+      ;; committed state for "-" (no --for), the writer's working view
+      ;; otherwise -- the view the plugin's export-code projected.
+      (cons 'supply
+            (lambda (store actor args req options state writer cwd)
+              (if (and (= 2 (length args)) (memq (string->symbol (car args)) derived-kinds))
+                  (let ((kind (string->symbol (car args))) (table-writer (or (argument-option options "--for") "-")))
+                    (guarded
+                      (lambda ()
+                        (if (argument-option options "--clear")
+                            (clear-derived store kind (cadr args) table-writer)
+                            (supply-derived store kind (cadr args) table-writer
+                              (if (equal? table-writer "-")
+                                  (lambda () (reduction-for store state))
+                                  (lambda ()
+                                    (let ((w (working-state store state table-writer)))
+                                      (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                                      (caddr w)))))))))
+                  (usage supply-usage))))
       (cons 'def
             (lambda (store actor args req options state writer cwd)
               (if (= (length args) 2)
@@ -1818,7 +1847,7 @@
   ;; one that is missing a writer. These are the second kind; every other
   ;; verb declares. A verb that builds no reduction declares too, and it
   ;; makes no difference: it never loads.
-  (define undeclared-verbs '(export-code export-md import-md import-code def snapshot))
+  (define undeclared-verbs '(export-code export-md import-md import-code def snapshot supply))
   ;; THE UNDECLARED VERBS ARE STRICT: a cut refuses them before they build
   ;; anything (the load raises), where every consumer outside a request
   ;; still loads a cut store as it always has.
