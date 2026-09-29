@@ -1,0 +1,33 @@
+# The layouts ffi.sc reads by offset (struct stat, struct sockaddr_un), as the
+# compiler on each Linux architecture measures them. It builds and runs
+# test/probe/layout.c and prints its output; it checks nothing, publishes
+# nothing and uses no secrets. It runs on a push to this branch, or by hand.
+name: linux-layout
+
+on:
+  push:
+    branches: [linux-layout]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: platform
+        run: |
+          uname -a
+          uname -m
+          ldd --version | head -1
+          cc --version | head -1
+      - name: build the probe
+        run: cc -Wall -Wextra -O0 -o layout-probe test/probe/layout.c
+      - name: run the probe
+        run: ./layout-probe | tee layout-${{ matrix.os }}.sexp
