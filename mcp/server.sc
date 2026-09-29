@@ -727,7 +727,10 @@
       (guard (e (#t (remove-call-files! dir (list stdin-path answer-path diag-path))
                     (raise e)))
         (let ((fd (fd-open stdin-path '(write create))))
-          (write-all! fd (string->utf8 stdin) stdin-path)
+          ;; A write that fails leaves the descriptor open; it is closed
+          ;; before the failure goes on, or a session would keep it.
+          (guard (e (#t (guard (x (#t #f)) (fd-close fd)) (raise e)))
+            (write-all! fd (string->utf8 stdin) stdin-path))
           (fd-close fd))))
     (let-values (((pid spawn-errno)
                   (spawn-captured! (append (list (scheme-binary) "--script" core "eval") argv)
@@ -762,11 +765,13 @@
 ;; -> (status <(exit n)|(signal s)>), (wait-failed <errno>),
 ;;    (deadline <ms>), (deadline-unreaped <ms>) or (signal-failed <errno>).
 (define (await-child pid budget)
-  ;; THE HOLD SEAM EXISTS ONLY IN AN INJECTION BUILD, and a marker it cannot
-  ;; make must not end the wait: the child has started, and leaving here
-  ;; would report a filesystem result for a request that ran.
-  (guard (e (#t (void))) (hold-point! 'mcp-child-wait))
+  ;; THE WATCHDOG STARTS WHEN THE SPAWN RETURNS, before anything else: a hold
+  ;; here is time the child's budget pays for, not time added to it.
   (let ((deadline (+ (now-ms) budget)))
+    ;; THE HOLD SEAM EXISTS ONLY IN AN INJECTION BUILD, and a marker it cannot
+    ;; make must not end the wait: the child has started, and leaving here
+    ;; would report a filesystem result for a request that ran.
+    (guard (e (#t (void))) (hold-point! 'mcp-child-wait))
     (let poll ()
       (let ((status (poll-child pid)))
         (cond

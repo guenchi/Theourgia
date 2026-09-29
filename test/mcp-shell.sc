@@ -1904,12 +1904,6 @@
 
 (define (stub-err d) (string-append (car d) ".err"))
 
-(define (last-component path)
-  (let loop ((i (- (string-length path) 1)))
-    (cond ((< i 0) path)
-          ((char=? (string-ref path i) #\/) (substring path (+ i 1) (string-length path)))
-          (else (loop (- i 1))))))
-
 (define (lines-of-text t)
   (let loop ((i 0) (start 0) (out '()))
     (cond ((= i (string-length t)) (reverse (if (< start i) (cons (substring t start i) out) out)))
@@ -2323,11 +2317,12 @@
 ;; with THEOURGIA_MCP_X8=1 and says so when it does not. The budget's own
 ;; discriminators are X9 and X9b, which run always.
 (if (equal? (getenv "THEOURGIA_MCP_X8") "1")
-    (let ((out (talk* (list hello ready (eval-call '("--lang" "shell" "--timeout-ms" "40000" "sleep 33")))
-                      xstore #f "env THEOURGIA_RUNNERS=on " "")))
-      (want "X8 --lang shell --timeout-ms 40000 on sleep 33 answers ok past the socket's 30 s"
-            (let ((t (text-of (cadr out)))) (and (string? t) (starts-with-text? t "(ok")))
-            #t))
+    (want "X8 --lang shell --timeout-ms 40000 on sleep 33 answers ok past the socket's 30 s"
+          (let* ((out (talk* (list hello ready (eval-call '("--lang" "shell" "--timeout-ms" "40000" "sleep 33")))
+                             xstore #f "env THEOURGIA_RUNNERS=on " ""))
+                 (t (text-of (cadr out))))
+            (and (string? t) (starts-with-text? t "(ok")))
+          #t)
     (printf "SKIP X8: set THEOURGIA_MCP_X8=1 to run the 33 s row (an opt-in, not a failure)\n"))
 
 ;; ---- X9 the budget ----------------------------------------------------------------------
@@ -2445,7 +2440,7 @@
          (define (flush)
            (if (and fd type (string->number fd) (> (string->number fd) 2)
                     (member type '("REG" "PIPE" "FIFO")))
-               (cons (if (string=? type "REG") (string-append type " " (or name "")) type) acc)
+               (cons (if (string=? type "REG") (string-append type " " (or name "")) (string-append type " " fd)) acc)
                acc))
          (define (rest-of l) (substring l 1 (string-length l)))
          (cond ((null? ls) (list-sort string<? (flush)))
@@ -2470,7 +2465,9 @@
                                     (fd (and (>= (length words) 4) (string->number (list-ref words 2))))
                                     (t (and fd (list-ref words 3))))
                                (and fd (> fd 2) (member t '("v" "p"))
-                                    (if (string=? t "v") (string-append t " " (list-ref words (- (length words) 1))) t))))
+                                    (if (string=? t "v")
+                                        (string-append t " " (list-ref words (- (length words) 1)))
+                                        (string-append t " " (number->string fd))))))
                            => (lambda (t) (loop (cdr ls) (cons t acc))))
                           (else (loop (cdr ls) acc))))))
       (else 'no-instrument))))
@@ -2481,8 +2478,10 @@
 (want "X13 CONTROL: the descriptor instrument (lsof or procstat) sees the one extra file a process holds"
       (let* ((pa (string-append here "/pa.pid")) (pb (string-append here "/pb.pid"))
              (_ (system (string-append "rm -f " pa " " pb)))
-             (_ (system (string-append "sh -c 'echo $$ > " pa "; exec sleep 30' > /dev/null 2>&1 &")))
-             (_ (system (string-append "sh -c 'echo $$ > " pb "; exec 7< /etc/hosts; exec sleep 30' > /dev/null 2>&1 &")))
+             ;; The pid is written only after the extra file is open, so a
+             ;; pid on disk means the descriptor is there to be seen.
+             (_ (system (string-append "sh -c 'echo $$ > " pa "; exec sleep 60' > /dev/null 2>&1 &")))
+             (_ (system (string-append "sh -c 'exec 7< /etc/hosts; echo $$ > " pb "; exec sleep 60' > /dev/null 2>&1 &")))
              (ready (within 5000 (lambda () (and (> (string-length (file-text pa)) 1) (> (string-length (file-text pb)) 1)))))
              (pid-a (and ready (read (open-input-string (file-text pa)))))
              (pid-b (and ready (read (open-input-string (file-text pb)))))
@@ -2551,19 +2550,22 @@
 ;; The two sends are required to be within 100 ms of each other, so a delay
 ;; between them cannot pass a serialized pair; the bound after them is
 ;; 3.5 s from the later send, where one-after-the-other needs over 4.
-(want "X15 two shells' sleep 2, sent within 100 ms of each other, both answer ok within 3.5 s of the later send"
+(want "X15 two shells' sleep 2, sent within 100 ms of each other, both answer ok within 3.5 s of the first send"
       (let* ((a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
              (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
              (open! (lambda (s) (send-frame! s hello) (read-frame s) (send-frame! s ready)
                             (send-frame! s (eval-call '("(+ 1 1)"))) (read-frame s)))
              (_ (begin (open! a) (open! b)))
-             (sent-a (begin (send-frame! a (eval-call '("--lang" "shell" "sleep 2"))) (wall-ms)))
-             (sent-b (begin (send-frame! b (eval-call '("--lang" "shell" "sleep 2"))) (wall-ms)))
+             ;; THE CLOCK IS READ BEFORE EACH SEND, and the answers are timed
+             ;; from the first: a pause between a send and its reading could
+             ;; otherwise hide a serialized pair.
+             (sent-a (let ((t (wall-ms))) (send-frame! a (eval-call '("--lang" "shell" "sleep 2"))) t))
+             (sent-b (let ((t (wall-ms))) (send-frame! b (eval-call '("--lang" "shell" "sleep 2"))) t))
              (ra (read-frame a)) (rb (read-frame b))
              (done (wall-ms)))
         (for-each (lambda (s) (close-input! s) (let dr () (unless (eof-object? (read-frame s)) (dr)))) (list a b))
         (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok")
-              (<= (- sent-b sent-a) 100) (< (- done sent-b) 3500)))
+              (<= (- sent-b sent-a) 100) (< (- done sent-a) 3500)))
       '(#t #t #t #t))
 
 ;; ---- X16 the reaper does not run while a child is owned ------------------------------------------------
@@ -2757,12 +2759,15 @@
   (let dr () (unless (eof-object? (read-frame s)) (dr)))
   (want "X24 the answer is returned, the shell's stderr names that directory once, the directory is left with only the extra file, the next call succeeds"
         (list (text-of answer)
-              (length (filter (lambda (l) (and (contains? l "call-directory-left") (pair? left)
-                                                   ;; by its own name: the shell writes the path
-                                                   ;; under the run root it resolved, /tmp being
-                                                   ;; /private/tmp on macOS
-                                                   (contains? l (last-component (car left)))))
-                              (lines-of-text (file-text (stub-err d)))))
+              ;; Every call-directory-left line, and exactly this one: the
+              ;; shell writes the path under the run root it resolved (/tmp
+              ;; is /private/tmp on macOS), so the row resolves it the same way.
+              (let ((lines (filter (lambda (l) (contains? l "call-directory-left"))
+                                   (lines-of-text (file-text (stub-err d))))))
+                (and (pair? left)
+                     (equal? lines (list (string-append "(theourgia-mcp call-directory-left \""
+                                                        (resolved-by-the-shell (car left)) "\")")))
+                     1))
               (length left)
               (and (= 1 (length left))
                    (let ((out (string-append here "/x24ls.txt")))

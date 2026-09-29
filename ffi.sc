@@ -1245,7 +1245,11 @@
     ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, a raise part-way through
     ;; included: each one is recorded as it is made and freed on the way
     ;; out. The kept environ entries are the caller's and are never freed.
-    (let ((owned '()))
+    ;; AND THE FILE ACTIONS ARE DESTROYED WHENEVER THEY WERE INITIALISED: libc
+    ;; owns copies of their paths, and freeing the handle's storage without
+    ;; destroying it would leak those. The destroy is in the same unwind as
+    ;; the frees, before them.
+    (let ((owned '()) (destroy! #f))
       (define (own! p) (set! owned (cons p owned)) p)
       (dynamic-wind
         (lambda () #f)
@@ -1285,17 +1289,20 @@
             (let ((rc (let ((init (c-fa-init actions)))
                         (if (not (zero? init))
                             init
-                            (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
-                                   (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
-                                   (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
-                                   (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b))
-                                   (r (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))
-                              (c-fa-destroy actions)
-                              r)))))
+                            (begin
+                              (set! destroy! (lambda () (c-fa-destroy actions)))
+                              (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
+                                     (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
+                                     (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
+                                     (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b)))
+                                (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))))))
               (if (zero? rc)
                   (values (bytevector-u32-native-ref pid-out 0) #f)
                   (values #f rc)))))
-        (lambda () (for-each foreign-free owned) (set! owned '())))))
+        (lambda ()
+          (when destroy! (destroy!) (set! destroy! #f))
+          (for-each foreign-free owned)
+          (set! owned '())))))
 
   ;; Whether the NUL-terminated C string at `address` starts with the bytes
   ;; of `prefix`.
@@ -2338,7 +2345,7 @@
      (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
 
      ;; THE PATHLESS FAULTS TAKE NO PATH, so their whole argument is the
-     ;; qualifier: `waitpid-fail@mcp-wait:errno=ECHILD`. Read with the colon
+     ;; qualifier: `waitpid-fail@mcp-wait:errno=EACCES`. Read with the colon
      ;; the others carry before it, it was missed and EIO was injected
      ;; instead of the errno named; anything else after the stage is refused
      ;; at load, as an unknown qualifier is.
