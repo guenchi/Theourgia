@@ -44,9 +44,12 @@
   ;;
   ;; NEVER: A CHILD DOES NOT INHERIT THE SLOT. The descriptor is marked
   ;; close-on-exec as soon as the lock is taken, before the worker or the
-  ;; runner is spawned (proc-spawn! marks nothing): a runner outliving its
-  ;; supervisor would otherwise hold the slot. A mark that fails releases
-  ;; the lock and raises, as the descriptor's failure.
+  ;; runner is spawned: a runner outliving its supervisor would otherwise
+  ;; hold the slot wherever the spawn keeps unmarked descriptors. libuv's
+  ;; spawn, which the worker and runner go through, closes them anyway
+  ;; (measured on macOS and FreeBSD 15.0); the mark is what holds on any
+  ;; other path. A mark that fails releases the lock and raises, as the
+  ;; descriptor's failure.
   ;;
   ;; NEVER: THE SLOT FILES ARE ADMINISTRATION, NOT THE REQUEST'S WRITES. The
   ;; directory and the files are made, when absent, with the unrecorded
@@ -88,13 +91,13 @@
   ;; included: no attempt begins once a reading has reached timeout-ms (one
   ;; begun just before can finish just after). Each sleep is cut to what is
   ;; left of the budget, and the refusal comes once a reading reaches it,
-  ;; which scheduling can put somewhat after -- not a whole step after. The
-  ;; one exception is the very first attempt, on the first slot, which is
-  ;; made whatever the clock reads: a millisecond boundary crossed at the
-  ;; start must not refuse a request with a 1 ms budget on an empty pool.
-  ;; The wait is measured on the monotonic clock, as the MCP shell's
-  ;; watchdog is, so a step of the wall clock neither stretches it nor cuts
-  ;; it short.
+  ;; which scheduling can put somewhat after; no further whole-step sleep is
+  ;; requested. The one exception is the very first attempt, on the first
+  ;; slot, which is made whatever the clock reads: a millisecond boundary
+  ;; crossed at the start must not refuse a request with a 1 ms budget on
+  ;; an empty pool. The wait is measured on the monotonic clock, as the MCP
+  ;; shell's watchdog is, so a step of the wall clock neither stretches it
+  ;; nor cuts it short.
   (define (monotonic-ms)
     (let ((t (current-time 'time-monotonic)))
       (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))

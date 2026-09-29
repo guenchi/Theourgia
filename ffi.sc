@@ -1207,10 +1207,14 @@
 
   ;; ---- a descriptor a child must not inherit ------------------------------
   ;;
-  ;; NEVER: A DESCRIPTOR IS INHERITED BY EVERY CHILD UNLESS IT IS MARKED, and
-  ;; nothing in proc-spawn! marks one. A lock whose descriptor a child
-  ;; inherits is held for as long as that child lives, whatever its parent
-  ;; does -- so a lock that must end with its process is marked here.
+  ;; NEVER: A DESCRIPTOR NOT MARKED IS INHERITED by a child made through a
+  ;; spawn that keeps unmarked descriptors -- fork and exec, or this file's
+  ;; posix_spawn (spawn-captured!, spawn-detached!), which sets no
+  ;; close-on-exec default. libuv's spawn (proc-spawn!) closes what it did
+  ;; not set up, measured on macOS and FreeBSD 15.0, but nothing guarantees
+  ;; every path does. A lock whose descriptor a child inherits is held for as
+  ;; long as that child lives, whatever its parent does -- so a lock that
+  ;; must end with its process is marked here.
   ;;
   ;; NOTE: THE MARK IS SET WITH ioctl(FIOCLEX), NOT fcntl(F_SETFD). fcntl is
   ;; variadic and F_SETFD's flags are its variadic argument, which a
