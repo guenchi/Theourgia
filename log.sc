@@ -1632,9 +1632,10 @@
   ;; missing something: the whole writer could not be read (origin
   ;; unreadable, the note naming what failed); a segment could not be read
   ;; and stopped the writer where it stands (segment-unreadable, K11); or
-  ;; readable damage CUT the writer's history -- its prefix is delivered,
-  ;; the rest is not. The last two are the writer's discovery-cut, the one
-  ;; error that decided its extent.
+  ;; readable damage CUT the writer's history. In the last two its prefix
+  ;; is delivered and the rest is not; they are the writer's discovery-cut,
+  ;; the one error that decided its extent, and both notes say where it
+  ;; stops.
   (define (load-unreadable ls)
     (let ((store (load-session-store ls)))
       (fold-right
@@ -1651,17 +1652,23 @@
 
   ;; THE NOTE FOR A CUT, ITS PATH AND REASON DERIVED FROM THE KIND, never
   ;; read from the error's detail (only segment-unreadable carries a path
-  ;; there; a malformed manifest carries nothing). segment-unreadable keeps
-  ;; the triple it has always had, the system's reason from its detail; any
-  ;; other cut gains (cut <kind> <after>), after being the last sequence the
-  ;; writer kept (0 when none). The path is the segment's file for a
-  ;; segment's damage, the manifest for a malformed manifest or a segment it
-  ;; lists and the directory lacks (such a segment's number need not have a
-  ;; file name at all), and retired.sexp for a malformed retirement.
+  ;; there; a malformed manifest carries nothing). EVERY cut ends in (cut
+  ;; <kind> <after>), after being the last sequence the writer kept (0 when
+  ;; none), so an answer can say how far the writer was read. For
+  ;; segment-unreadable the path and the system's reason come from its
+  ;; detail. NEVER: THAT FOURTH ELEMENT DOES NOT MAKE IT A NON-REFUSING
+  ;; CUT: incomplete.sc's cut-note? excludes kind segment-unreadable, so an
+  ;; unreadable segment refuses every undeclared consumer as it always did
+  ;; (what lies past it is unknown, not known damaged). For any other cut
+  ;; the path is the segment's file for a segment's damage, the manifest for
+  ;; a malformed manifest or a segment it lists and the directory lacks
+  ;; (such a segment's number need not have a file name at all), and
+  ;; retired.sexp for a malformed retirement.
   (define (cut-note store writer p e)
     (let ((kind (log-error-kind e)) (detail (log-error-detail e)))
       (if (and (eq? kind 'segment-unreadable) (pair? detail) (assq 'path detail))
-          (list writer (cdr (assq 'path detail)) (cdr (assq 'reason detail)))
+          (list writer (cdr (assq 'path detail)) (cdr (assq 'reason detail))
+                (list 'cut kind (discovery-end-seq p)))
           (list writer
                 (case kind
                   ((manifest manifest-missing-segment) (manifest-path store writer))

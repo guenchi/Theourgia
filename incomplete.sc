@@ -29,14 +29,16 @@
 ;;; must not declare. #f, or anything else, is "not declared".
 ;;;
 ;;; THE NOTES are (writer path reason) triples, the form (theourgia log)
-;;; keeps them in, for a writer or segment that could not be read; a
-;;; writer whose history was CUT by readable damage has a fourth element,
-;;; (writer path reason (cut <kind> <after>)): the damage's kind and the
-;;; last sequence kept. `incomplete-note-clauses` is the one spelling of
-;;; them in an answer, shared by the refusal below and by the clause a
-;;; declared answer carries -- `unreadable` for a triple, `cut` for the
-;;; other -- and `clause->note` is its inverse, so a note that crossed a
-;;; wire as a clause comes back whole.
+;;; keeps them in, for a writer that could not be read; a writer whose
+;;; history stops early has a fourth element, (writer path reason (cut
+;;; <kind> <after>)): why it stops and the last sequence kept. That is a
+;;; writer CUT by readable damage, and a writer stopped by a segment it
+;;; could not read (kind segment-unreadable), whose readable prefix is
+;;; delivered too. `incomplete-note-clauses` is the one spelling of them
+;;; in an answer, shared by the refusal below and by the clause a declared
+;;; answer carries -- `unreadable` for a triple, `cut` for the other -- and
+;;; `clause->note` is its inverse, so a note that crossed a wire as a
+;;; clause comes back whole.
 ;;;
 ;;; THIS LIBRARY SITS BELOW (theourgia log) AND (theourgia answers), which
 ;;; both need the condition, and imports neither.
@@ -62,11 +64,22 @@
   ;; A CUT IS A NOTE, NEVER A LOAD REFUSAL, except for the strict consumer.
   ;; A writer that could not be read (a triple) leaves a reduction nobody
   ;; can build on unknowingly, and refuses every undeclared consumer. A
-  ;; writer whose history was cut (four elements) still delivers its
+  ;; writer whose history was cut by readable damage still delivers its
   ;; prefix, and every other consumer keeps today's integrity semantics:
   ;; the write path's integrity refusal, writer-stopped with the adopt
   ;; remedy, adopt itself, snapshots and requests all load such a store.
-  (define (cut-note? n) (and (list? n) (= (length n) 4)))
+  ;;
+  ;; NEVER: A SEGMENT THAT COULD NOT BE READ IS NOT SUCH A CUT, though its
+  ;; note has the same four elements. What lies past it is unknown, not
+  ;; known to be damaged -- an EIO is not a torn record -- so it refuses
+  ;; every undeclared consumer as an unreadable writer does. The note
+  ;; carries where the writer stops; the refusal does not change. This is
+  ;; the one predicate that decides it, and refusing-notes follows it.
+  (define (cut-note? n)
+    (and (list? n) (= (length n) 4)
+         (let ((c (cadddr n)))
+           (not (and (pair? c) (eq? (car c) 'cut) (pair? (cdr c))
+                     (eq? (cadr c) 'segment-unreadable))))))
   (define (refusing-notes notes strict?)
     (if strict? notes (filter (lambda (n) (not (cut-note? n))) notes)))
 

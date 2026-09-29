@@ -1258,7 +1258,7 @@ An answer built from history the store could not wholly read carries an
     (incomplete (unreadable (writer <w>) (path <p>) (reason <r>)) ...
                 (cut (writer <w>) (path <p>) (reason <kind>) (kind <kind>) (after <n>)) ...)
 
-`unreadable` names a writer, or a segment of one, that could not be read.
+`unreadable` names a writer that could not be read.
 `cut` names a writer whose history was cut by damage the store could read --
 a segment whose hash or declared range the manifest does not vouch for, a
 listed segment that is missing, a record whose check fails or that does not
@@ -1272,7 +1272,13 @@ it writes a record or a snapshot. A cut refuses nothing else: every other
 operation reads a cut store as it always has (a write whose own writer's
 history is damaged is refused `integrity`), and every answer given after a
 load carries the clause, a refusal included.
-`conflicts` lists each cut as `(cut <writer> <path> <kind> <after>)`. The
+A `cut` of kind `segment-unreadable` is the exception: the writer was stopped
+by a segment the store could not read (its path and the system's reason are
+named), so the records up to `after` are delivered but what lies past it is
+unknown, not known to be damaged -- so it refuses wherever `unreadable` does,
+not only where a cut does.
+`conflicts` lists each cut, a `segment-unreadable` one included, as
+`(cut <writer> <path> <kind> <after>)`. The
 torn end of a writer's current segment after a crash is recovery, not
 damage, and is not reported.
 

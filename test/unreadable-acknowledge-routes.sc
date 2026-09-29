@@ -1460,15 +1460,45 @@
           (list (head-of (cadr r)) (incomplete-clause-count (cadr r)) (k-notes (cadr r)))
           (list 'ok 1 (list (k-cut M seg2 'manifest-hash 1))))))
 
-;; K7: an unreadable older segment is still spelled `unreadable`: the tag,
-;; the path and the reason asserted explicitly.
+;; K7: an unreadable older segment stops its writer where it stands, and its
+;; clause says how far: `cut`, kind segment-unreadable, the segment's path,
+;; the system's reason, and after -- 0 here, the segment being the first.
 (let* ((c (fresh-store!)) (st (car c)) (seg (older-segment st)))
   (chmod! "000" seg)
   (let ((a (ask st 'outline)))
     (chmod! "600" seg)
-    (want "K7 an unreadable older segment keeps its unreadable note (today's path and reason, no kind, no after)"
+    (want "K7 an unreadable older segment is a cut of kind segment-unreadable: the segment's path, the system's reason, and after 0"
           (list (head-of a) (k-notes a))
-          (list 'ok (list (list 'unreadable (list 'writer M) (list 'path seg) (list 'reason "Permission denied")))))))
+          (list 'ok (list (list 'cut (list 'writer M) (list 'path seg) (list 'reason "Permission denied")
+                                (list 'kind 'segment-unreadable) (list 'after 0)))))))
+
+;; K7b: THE FOURTH ELEMENT DOES NOT MAKE IT A CUT THAT LETS CONSUMERS THROUGH.
+;; A load outside any request declares nothing: an unreadable segment still
+;; refuses it, as an unreadable writer does, while readable damage -- the
+;; control, a cut proper -- does not. (Inside a request the two cannot be
+;; told apart: every verb either accepts both or refuses both.)
+(let* ((u (fresh-store!)) (su (car u)) (useg (older-segment su))
+       (d (fresh-store!)) (sd (car d)))
+  (chmod! "000" useg)
+  (damage! (older-segment sd))
+  (let ((unreadable (kind-of-raise (lambda () (open-and-reduce su))))
+        (damaged (kind-of-raise (lambda () (open-and-reduce sd)))))
+    (chmod! "600" useg)
+    (want "K7b a load outside any request is refused by an unreadable segment, and not by readable damage (the control)"
+          (list unreadable damaged)
+          '(incomplete-reduction returned))))
+
+;; K7c: conflicts lists the segment-unreadable cut as it lists every cut, and
+;; after is where the writer stops -- 1 here, the SECOND of three segments
+;; unreadable (K7's first segment gives 0, which a constant could fake).
+(let* ((c (three-segment-store!)) (st (car c)) (seg2 (mirror-seg st 2)))
+  (chmod! "000" seg2)
+  (let ((cf (ask st 'conflicts)) (ol (ask st 'outline)))
+    (chmod! "600" seg2)
+    (want "K7c the second of three segments unreadable: conflicts lists (cut <writer> <segment> segment-unreadable 1), and outline's clause says after 1"
+          (list (head-of cf) (has-substring? (format "~s" cf) (format "~s" (list 'cut M seg2 'segment-unreadable 1)))
+                (map (lambda (n) (list (car n) (k-field n 'kind) (k-field n 'after))) (k-notes ol)))
+          '(ok #t ((cut segment-unreadable 1))))))
 
 ;; K8: the healthy local writer stays writable beside a cut mirror.
 (let* ((c (three-segment-store!)) (st (car c)) (seg2 (mirror-seg st 2)))
