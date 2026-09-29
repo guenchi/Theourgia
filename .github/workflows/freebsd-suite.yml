@@ -1,0 +1,71 @@
+# The core's whole suite on FreeBSD 15.0, from source, in a VM. The tree it
+# tests is the commit named in .github/freebsd-suite.ref, not this branch's
+# own; igropyr is pinned beside it. It runs the suite as an unprivileged
+# user (root reads files a test makes unreadable), writes nothing back to the
+# repository, uses no secrets, and uploads the whole output directory.
+name: freebsd-suite
+
+on:
+  push:
+    branches: [freebsd-suite]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+      - name: the tree under test
+        run: |
+          echo "REF=$(cat harness/.github/freebsd-suite.ref)" >> "$GITHUB_ENV"
+          cat harness/.github/freebsd-suite.ref
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+          path: lib/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
+          path: lib/igropyr
+      - name: the suite on FreeBSD 15.0
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "15.0"
+          usesh: true
+          mem: 8192
+          envs: 'REF'
+          prepare: |
+            pkg install -y chez-scheme libuv perl5 python3 git node bash
+            pw useradd tester -m -s /bin/sh
+          run: |
+            set -x
+            freebsd-version; uname -a; sysctl hw.ncpu hw.physmem
+            command -v scheme || ln -s "$(command -v chez-scheme)" /usr/local/bin/scheme
+            scheme --version
+            pkg info chez-scheme libuv
+            W="$(pwd)"
+            rm -rf lib/theourgia/.git lib/igropyr/.git
+            echo "so files: $(find lib -name '*.so' | wc -l)"
+            mkdir -p "$W/out" "$W/testroot"
+            chown -R tester "$W"
+            cd lib/theourgia/test
+            su -m tester -c "HOME=/home/tester THEOURGIA_LIBDIR=$W/lib THEOURGIA_TEST_ROOT=$W/testroot; export HOME THEOURGIA_LIBDIR THEOURGIA_TEST_ROOT; . ./env.sh; sh run-fixtures.sh $W/out > $W/suite.log 2>&1; echo \$? > $W/suite.rc" || true
+            cd "$W"
+            echo "suite rc: $(cat suite.rc)"
+            tail -80 suite.log
+      - name: keep the readings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-suite-${{ env.REF }}
+          path: |
+            out
+            suite.log
+            suite.rc
