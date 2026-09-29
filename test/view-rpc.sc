@@ -196,9 +196,10 @@
         '(error changed ok)))
 
 (let ((a (rpc-dispatch store (list 'read file-id "--recursive") "t")))
-  (want "VR-12 read --recursive keeps its items and gains one trailing (versions ...) clause"
-        (list (length a) (car (cadr a)) (car (caddr a)))
-        '(3 items versions))
+  (want "VR-12 read --recursive keeps its items, each the record a plain read of that block gives, and gains one trailing (versions ...) clause"
+        (list (length a) (car (cadr a)) (car (caddr a))
+              (for-all (lambda (r) (equal? r (cadr (plain-read (cdr (assq 'id r)))))) (cdr (cadr a))))
+        '(3 items versions #t))
   (want "VR-12 one pair per item, in item order, each the version a plain read of that block gives"
         (let ((pairs (cadr (caddr a)))
               (item-ids (map (lambda (r) (cdr (assq 'id r))) (cdr (cadr a)))))

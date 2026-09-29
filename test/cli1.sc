@@ -935,10 +935,12 @@
 ;; so a snapshot that restored the state wrongly would still hand back a hash
 ;; the next write agrees with, and every row above stays green.
 ;;
-;; NOTE: THERE IS NO READ-PATH HASH TO COMPARE IT WITH. `read` does not carry
-;; one; `block-hash` reaches a caller only through a write answer's `state`
-;; clause or through the `current` of an `--if-unchanged` refusal. Recorded as
-;; a gap. What the refusal DOES give is a hash computed from the reduction --
+;; NOTE: THE READER'S HASH HERE IS A REFUSAL'S. When this row was written
+;; `read` carried no hash, and `block-hash` reached a caller only through a
+;; write answer's `state` clause or the `current` of an `--if-unchanged`
+;; refusal. A plain read now answers the same hash as its `version`, a second
+;; route this row does not take. What the refusal gives is a hash computed
+;; from the reduction --
 ;; and the CONTROL above has already shown that reduction is seeded from the
 ;; snapshot and replays nothing. So a refusal taken after the snapshot carries
 ;; the reader's value, and requiring the writer to accept it is the comparison

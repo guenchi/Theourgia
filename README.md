@@ -121,7 +121,7 @@ bytes — the heading line it was written with, then its body.
 
 **The version is the token `--if-unchanged` compares**: the block's hash in the
 state that was read, so a caller that read a block can write it back only if
-nobody changed it in between. It comes after the block, so a reader of the block
+its block hash still matches the one it read. It comes after the block, so a reader of the block
 reads what it read before. `--recursive` gives one pair per block in item order,
 after the items. A deleted block has no version, read alone or in a subtree, and
 `--md` and `--working` answer as they did. A block whose value is nested too
