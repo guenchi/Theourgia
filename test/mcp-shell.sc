@@ -2813,13 +2813,23 @@
 ;; process's pid. A pattern like `serve` or `theourgiad.sc` would also match the
 ;; daemons of a suite running beside this one, and of another session
 ;; entirely.
+;;
+;; NEVER: A DAEMON GIVEN TERM DRAINS, for up to its drain budget (5000 ms,
+;; daemon.sc), so a count taken after a fixed pause measured the drain and
+;; not a survivor. The row polls until nothing matches, up to 10 s, and ends
+;; as soon as that is so; what is still there then is named by its command
+;; line, which also shows a process that matched without being this file's.
 (system (string-append "pkill -f 'serve " here "' 2>/dev/null"))
-(system "sleep 1")
 (let ((left (string-append here "/left.txt")))
-  (system (string-append "pgrep -f 'serve " here "' | wc -l | tr -d ' ' > " left))
-  (let ((n (let ((t (file-text left)))
-             (if (> (string-length t) 0) (substring t 0 (- (string-length t) 1)) "?"))))
-    (want "MC-teardown no daemon this run started is still alive" n "0")))
+  (define (survivors)
+    (system (string-append "pgrep -fl 'serve " here "' > " left " 2>/dev/null"))
+    (lines-of-text (file-text left)))
+  (let loop ((waited 0))
+    (let ((alive (survivors)))
+      (if (or (null? alive) (>= waited 10000))
+          (want "MC-teardown no daemon this run started is still alive once its drain is over (up to 10 s); a survivor is named"
+                alive '())
+          (begin (pause-ms 100) (loop (+ waited 100)))))))
 
 (printf "rows: ~a\n~a failures\nmcp-shell complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
