@@ -389,7 +389,7 @@
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
           unix-socket-connect fd-read socket-timeout! sun-path-max
-          redirect-stdio! spawn-detached! reap-children! path-case-sensitive?
+          redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
           process-id wall-clock-ms machine-home env-or)
   (import (chezscheme)
           (only (igropyr platform)
@@ -655,14 +655,22 @@
   ;; this call made it. Any other failure raises durable-error with the
   ;; errno. The parent must exist. The injected mkdir-fail stands where the
   ;; syscall would, as in mkdir-one!.
-  (define (mkdir-exclusive! path)
+  ;;
+  ;; AN OPTIONAL MODE, #o777 WHEN IT IS NOT GIVEN, so every existing caller
+  ;; makes what it made before. mkdir(2) is not variadic and its mode is a
+  ;; named argument, which this declaration passes; the process umask still
+  ;; applies. A caller making a directory only it may enter passes #o700.
+  (define (mkdir-exclusive! path . options)
     (unless (and (string? path) (> (string-length path) 0))
       (assertion-violation 'mkdir-exclusive! "path must be a non-empty string" path))
+    (let ((mode (if (pair? options) (car options) #o777)))
+    (unless (and (fixnum? mode) (<= 0 mode #o7777))
+      (assertion-violation 'mkdir-exclusive! "mode must be an integer in 0..#o7777" mode))
     (let-values (((rc code)
                   (let ((injected (mkdir-fault path)))
                     (if injected
                         (values -1 injected)
-                        (let ((rc (c-mkdir path #o777)))
+                        (let ((rc (c-mkdir path mode)))
                           (values rc (and (< rc 0) (errno))))))))
       (cond
         ((>= rc 0)
@@ -670,7 +678,7 @@
          (trace-event! 'create path #f)
          'created)
         ((eqv? code EEXIST) 'exists)
-        (else (raise (fs-err 'mkdir path code))))))
+        (else (raise (fs-err 'mkdir path code)))))))
 
   ;; unlink(2), NOT delete-file: Chez's delete-file answered #f and raised
   ;; nothing when it could not delete (F99), so a failed unlink read as a
@@ -874,9 +882,15 @@
   ;; failures apart -- ESRCH is "no such process" and EPERM is "there is
   ;; one and it is not yours", which is still ALIVE -- so this does not
   ;; collapse them into a boolean.
+  ;;
+  ;; The injected kill-fail stands where the syscall would and skips it, so
+  ;; nothing is signalled and its errno is the answer.
   (define (signal-pid! pid signum)
-    (let ((r (c-kill pid signum)))
-      (if (= r 0) 0 (errno))))
+    (let ((injected (kill-fault)))
+      (if injected
+          injected
+          (let ((r (c-kill pid signum)))
+            (if (= r 0) 0 (errno))))))
 
   ;; NOTE: EPERM MEANS ALIVE. `kill(pid, 0)` asks the kernel whether a
   ;; process exists that this one may signal; a process owned by somebody
@@ -1178,6 +1192,109 @@
             (bytevector-u32-native-ref pid-out 0)
             (raise (fs-err 'spawn (car argv) rc))))))
 
+  ;; ---- starting a child whose three streams are files ---------------------
+  ;;
+  ;; NEVER: THE CHILD'S STREAMS ARE FILES THE CALLER OWNS, NOT THE CALLER'S. fd 0
+  ;; is opened from `stdin-path` (or /dev/null), fd 1 and fd 2 are created or
+  ;; truncated at `stdout-path` and `stderr-path` with mode 0600, all by the
+  ;; spawn's own file actions, before the program runs. A child that
+  ;; inherited the caller's fd 0 would read the caller's input, and one that
+  ;; inherited fd 1 would write into the caller's answer channel. Files, not
+  ;; pipes: nothing here can fill and block while the caller is not reading.
+  ;;
+  ;; THE ENVIRONMENT IS THE CALLER'S WITH `bindings` REPLACING ITS OWN. Each
+  ;; binding is (name . value); an entry of `environ` whose name is one of
+  ;; them is left out, and the binding is added, so the child's getenv sees
+  ;; the binding whatever the caller's environment held. Appending instead
+  ;; would leave two entries of one name, and which one a getenv answers is
+  ;; the C library's choice. The entries kept are the caller's own pointers,
+  ;; byte for byte.
+  ;;
+  ;; NOTE: O_CREAT AND O_TRUNC ARE PASSED HERE, and the note at the top of
+  ;; this file does not forbid it: that note is about open(2), whose mode
+  ;; sits in the variadic part a fixed-arity declaration cannot reach.
+  ;; posix_spawn_file_actions_addopen takes its mode as a named argument.
+  ;; The values are read from macOS's <sys/fcntl.h> (O_WRONLY 0x1, O_CREAT
+  ;; 0x200, O_TRUNC 0x400); FreeBSD 15's are to be measured there before
+  ;; this ships to it, as the other constants in this file were.
+  ;; posix_spawn_file_actions_t is pointer-sized on both (measured above).
+  ;;
+  ;; -> (values pid #f) when the program was started, or (values #f errno)
+  ;; when posix_spawnp answered non-zero -- a file action that could not be
+  ;; carried out included. Nothing ran in that case, and the caller says so.
+  (define spawn-O_WRONLY #x1)
+  (define spawn-O_CREAT #x200)
+  (define spawn-O_TRUNC #x400)
+
+  (define (spawn-captured! argv bindings stdin-path stdout-path stderr-path)
+    (unless (and (pair? argv) (for-all string? argv))
+      (assertion-violation 'spawn-captured! "argv must be a non-empty list of strings" argv))
+    (unless (and (list? bindings)
+                 (for-all (lambda (b) (and (pair? b) (string? (car b)) (string? (cdr b)))) bindings))
+      (assertion-violation 'spawn-captured! "bindings must be a list of (name . value) strings" bindings))
+    (unless (and (or (not stdin-path) (string? stdin-path)) (string? stdout-path) (string? stderr-path))
+      (assertion-violation 'spawn-captured! "the stream paths must be strings" (list stdin-path stdout-path stderr-path)))
+    (unless (foreign-entry? "posix_spawnp")
+      (assertion-violation 'spawn-captured! "no posix_spawnp in libc" (machine-kind)))
+    (unless (foreign-entry? "environ")
+      (assertion-violation 'spawn-captured! "no environ in libc" (machine-kind)))
+    (let* ((c-spawn (foreign-procedure "posix_spawnp" (u8* string void* void* void* void*) int))
+           (c-fa-init (foreign-procedure "posix_spawn_file_actions_init" (void*) int))
+           (c-fa-open (foreign-procedure "posix_spawn_file_actions_addopen"
+                                         (void* int string int unsigned-int) int))
+           (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
+           (width (foreign-sizeof 'void*))
+           (names (map (lambda (b) (string->utf8 (string-append (car b) "="))) bindings))
+           (environ-at (foreign-ref 'void* (foreign-entry "environ") 0))
+           (kept (let loop ((i 0) (out '()))
+                   (let ((entry (foreign-ref 'void* environ-at (* i width))))
+                     (if (= entry 0)
+                         (reverse out)
+                         (loop (+ i 1)
+                               (if (exists (lambda (n) (c-bytes-prefix? entry n)) names)
+                                   out
+                                   (cons entry out)))))))
+           (added (map (lambda (b) (c-string (string-append (car b) "=" (cdr b)))) bindings))
+           (envp-list (append kept added))
+           (envp (foreign-alloc (* width (+ 1 (length envp-list)))))
+           (cells (foreign-alloc (* width (+ 1 (length argv)))))
+           (strings (map c-string argv))
+           (actions (foreign-alloc (max width 16)))
+           (pid-out (make-bytevector 4 0)))
+      (do ((ps envp-list (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+        (foreign-set! 'void* envp (* i width) (car ps)))
+      (foreign-set! 'void* envp (* (length envp-list) width) 0)
+      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+        (foreign-set! 'void* cells (* i width) (car ps)))
+      (foreign-set! 'void* cells (* (length argv) width) 0)
+      (let ((rc (let ((init (c-fa-init actions)))
+                  (if (not (zero? init))
+                      init
+                      (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
+                             (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
+                             (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
+                             (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b))
+                             (r (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))
+                        (c-fa-destroy actions)
+                        r)))))
+        (for-each foreign-free strings)
+        (for-each foreign-free added)
+        (foreign-free cells)
+        (foreign-free envp)
+        (foreign-free actions)
+        (if (zero? rc)
+            (values (bytevector-u32-native-ref pid-out 0) #f)
+            (values #f rc)))))
+
+  ;; Whether the NUL-terminated C string at `address` starts with the bytes
+  ;; of `prefix`.
+  (define (c-bytes-prefix? address prefix)
+    (let ((n (bytevector-length prefix)))
+      (let loop ((i 0))
+        (cond ((= i n) #t)
+              ((= (foreign-ref 'unsigned-8 address i) (bytevector-u8-ref prefix i)) (loop (+ i 1)))
+              (else #f)))))
+
   ;; NEVER: A PROCESS THIS LIBRARY STARTED IS STILL A CHILD OF THE PROCESS
   ;; THAT STARTED IT. `spawn-detached!` answers a pid and nothing ever
   ;; waits for it, so when that process exits -- and the loser of the
@@ -1215,7 +1332,11 @@
   ;; low seven bits are the terminating signal, 0 for a normal exit, whose
   ;; code is the next eight. A pid that is not a child is durable-error
   ;; (op waitpid) with its errno, ECHILD.
+  ;; The injected waitpid-fail stands where the syscall would and skips it:
+  ;; nothing is collected, and the raise is the one a real failure makes.
   (define (waitpid-status pid)
+    (let ((injected (waitpid-fault)))
+      (when injected (raise (fs-err 'waitpid pid injected))))
     (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
           (status (make-bytevector 4 0)))
       (let ((r (c-waitpid pid status WNOHANG)))
@@ -2024,8 +2145,12 @@
     ;; decision's (answered by the request's failure table). Each is its own
     ;; stage so a fault can be aimed at either one without the other, or
     ;; verify-instance's earlier stat, consuming it.
+    ;; `mcp-wait` and `mcp-signal` are the MCP shell's two calls on a child
+    ;; it runs for `eval`: the poll that asks whether it has ended, and the
+    ;; signal sent at its deadline. Each is a stage so a fault can be aimed
+    ;; at the one call and not at the daemon starts that also wait and signal.
     '(deliver-barrier commit registry publish snapshot repair report working index conn client
-      eval-cleanup presence presence-decision))
+      eval-cleanup presence presence-decision mcp-wait mcp-signal))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -2131,7 +2256,7 @@
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
          lseek-fail mkdir-fail client-extra-child store-raise-early
-         reload-raise probe-raise unlink-fail))
+         reload-raise probe-raise unlink-fail waitpid-fail kill-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2195,7 +2320,10 @@
      ;; qualifier and reports EIO without one; the other three require it.
      ;; lseek-fail and mkdir-fail are stat-fail's kind: EIO unless :errno=
      ;; names another (F100a amendment 6).
-     (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after lseek-fail mkdir-fail))
+     ;; waitpid-fail and kill-fail are mkdir-fail's kind as well: EIO unless
+     ;; :errno= names another.
+     (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after lseek-fail mkdir-fail
+                            waitpid-fail kill-fail))
      (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
 
      (define-values (fault-arg-head fault-errno-text)
@@ -2244,7 +2372,7 @@
              (assertion-violation 'theourgia-ffi
                "this fault needs :errno=<name> (EMFILE EACCES ENOENT ENOTDIR EIO ELOOP EOVERFLOW) or a positive integer"
                fault-spec)))
-         (when (and (memq fault-name '(stat-fail lseek-fail mkdir-fail)) (eq? fault-errno 'unknown))
+         (when (and (memq fault-name '(stat-fail lseek-fail mkdir-fail waitpid-fail kill-fail)) (eq? fault-errno 'unknown))
            (assertion-violation 'theourgia-ffi
              "this fault's :errno= names no errno this file knows"
              fault-spec))))
@@ -2369,7 +2497,7 @@
      ;; exactly like a hold that never came.
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
-         after-discovery after-barrier))
+         after-discovery after-barrier mcp-child-wait))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond
@@ -2529,6 +2657,22 @@
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) (or fault-errno EIO))))
 
+     ;; ONE SHOT in its stage, for a process, not a path: the first waitpid
+     ;; (or kill) there fails with EIO or the :errno= given, without the
+     ;; syscall. -> an errno, or #f.
+     (define (waitpid-fault)
+       (and fault-name
+            (eq? fault-name 'waitpid-fail)
+            (in-fault-stage?)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) (or fault-errno EIO))))
+     (define (kill-fault)
+       (and fault-name
+            (eq? fault-name 'kill-fail)
+            (in-fault-stage?)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) (or fault-errno EIO))))
+
      ;; -> an errno to fail the open with, or #f
      ;;
      ;; ONE SHOT, like the others: the barrier opens the segment once,
@@ -2617,6 +2761,8 @@
      (define (stat-fault-errno) EIO)
      (define (lseek-fault subject) #f)
      (define (mkdir-fault path) #f)
+     (define (waitpid-fault) #f)
+     (define (kill-fault) #f)
      (define (unlink-fault path) #f)
      (define (read-fault path produced) #f)
      (define (readdir-fault path produced) #f)
