@@ -146,7 +146,29 @@ export const SUGGEST_SPLIT: CommandName = {
   title: 'theourgia: Suggest a Split of This File'
 };
 
+/*
+ * FACTS THE EDITOR COMPUTES, SUPPLIED TO THE STORE, one kind per command. See
+ * `src/supply.ts`.
+ */
+export const SUPPLY_SIGNATURES: CommandName = {
+  id: 'theourgia.supplySignatures',
+  title: 'theourgia: Supply Signatures and Keywords'
+};
+
+export const SUPPLY_CALLS: CommandName = {
+  id: 'theourgia.supplyCalls',
+  title: 'theourgia: Supply Calls'
+};
+
+export const SUPPLY_DIAGNOSTICS: CommandName = {
+  id: 'theourgia.supplyDiagnostics',
+  title: 'theourgia: Supply Diagnostics'
+};
+
 export const COMMANDS: CommandName[] = [
+  SUPPLY_SIGNATURES,
+  SUPPLY_CALLS,
+  SUPPLY_DIAGNOSTICS,
   SUGGEST_SPLIT,
   SHOW_FILES,
   SHOW_OUTLINE,

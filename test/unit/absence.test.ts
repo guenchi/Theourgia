@@ -92,6 +92,16 @@ const ANSWERING_IS_RIGHT: Record<string, string> = {
     'answers NULL for a batch payload this build cannot read -- one it never writes, since the ' +
     'payload is printed by its own writer. The caller does not read null as a count: `openBatch` ' +
     'answers it as a problem, and the entry is kept pending rather than settled.',
+  'markers.ts#utf8: return new TextDecoder(\'utf-8\', { fatal: true, ignoreBOM: true }).decode(bytes);':
+    'answers NULL for bytes that are not UTF-8: such a line is not a marker line, since the core writes its markers ' +
+    'as text, and a file whose header line does not decode is refused by name as having no header.',
+  'markers.ts#headerOf: data = parseAnswers(`${text}\\n`);':
+    'answers NULL for a header whose text does not read as a datum: the line is then not this file\'s header, and a ' +
+    'file with no header line that reads is refused by name, its facts not collected.',
+  'core-regex.ts#coreRegexMatches: return run(ast, 0).length > 0;':
+    'answers FALSE when the core\'s engine would refuse the text for its work limit: the one caller asks whether a ' +
+    'line is a coding line, and the core\'s own caller (text-code.sc) guards the same refusal and takes it as "no". ' +
+    'Any other error is thrown on.',
   'split-symbols.ts#savedText: text = new TextDecoder(\'utf-8\', { fatal: true, ignoreBOM: true }).decode(bytes);':
     'answers NULL for a file whose bytes are not UTF-8: no position the editor gives can be converted ' +
     'against them. The one caller, `runSplit`, stops on null with the sentence that says so and sends ' +

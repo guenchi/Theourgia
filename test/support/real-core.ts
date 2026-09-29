@@ -402,14 +402,14 @@ export class RealStore {
  *
  * NEVER: AND IT IS NOT THE WORD "scheme" FOR A SECOND REASON, which is the
  * one that would have hurt: the core spells the interpreter as
- * `THEOURGIA_SCHEME` or `scheme` (`scheme-binary`, theourgia.sc:142), so on a machine that
+ * `THEOURGIA_SCHEME` or `scheme` (`scheme-binary`, theourgia.sc:149), so on a machine that
  * sets that variable to `chez` this filter would exclude the daemon it
  * exists to find and the teardown would quietly do nothing -- and
  * report a clean nought processes left while doing it.
  *
  * What is matched instead is what the core actually writes into the
  * daemon's argument list: `--socket <run root>/<store key>/socket`
- * (`server-argv`, theourgia.sc:377-381). Both parts are required, because the run
+ * (`server-argv`, theourgia.sc:384-390). Both parts are required, because the run
  * root on its own would also match the client process that is asking
  * for one on the rare occasion the paths are spelled out.
  */
@@ -466,7 +466,7 @@ export function daemonsUnder(runRoot: string): number[] {
  * everything under the root would then have one store's teardown killing
  * another store's daemon, which is a defect this line would then spend a
  * morning on. The store path is in the daemon's own argument list
- * (`serve <store>`, `server-argv` at theourgia.sc:377-381) and is unique per fixture.
+ * (`serve <store>`, `server-argv` at theourgia.sc:384-388) and is unique per fixture.
  */
 /*
  * THE SOCKET PATH A RUNNING DAEMON WAS GIVEN, read off its own argument

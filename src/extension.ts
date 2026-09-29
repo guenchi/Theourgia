@@ -28,6 +28,7 @@
 
 import { randomUUID } from 'crypto';
 import * as path from 'path';
+import { performance } from 'perf_hooks';
 import * as vscode from 'vscode';
 import { Block, documentFor, languageModeOf, prefixOf } from './blocks';
 import {Working} from './working';
@@ -36,7 +37,7 @@ import {digestOfBytes} from './publication';
 import {migrateLegacy,migrationIdentity} from './migration';
 import {Owners} from './ownership';
 import { Client, Note } from './client';
-import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith } from './config';
+import { CoreConfig, DEFAULT_TIMEOUT_MS, defaultActor, problemsWith, writerFor } from './config';
 import { ChildListing, Node, StoreModel } from './model';
 import {
   DirectoryEntry,
@@ -63,8 +64,12 @@ import { activateCore } from './activate';
 import { Composed, DOCUMENT_SCHEME, DocumentTexts, documentOf, documentQuery, refusalOf } from './document-view';
 import { projectionNameFor } from './projection-name';
 import { runSplit, splitRefusalNotice } from './split-symbols';
+import { SupplyKind, SupplyOutcome, runSupply, supplyNotice } from './supply';
 import {
   SUGGEST_SPLIT,
+  SUPPLY_CALLS,
+  SUPPLY_DIAGNOSTICS,
+  SUPPLY_SIGNATURES,
   GO_TO_DEFINITION,
   MOVE_TO_DIRECTORY,
   NEW_FILE_HERE,
@@ -96,7 +101,7 @@ import { Acceptance, acceptSave } from './accepting';
 import { settlerFor } from './settling';
 import { Tombstones } from './tombstones';
 import { DurabilitySink } from './durability';
-import { coreDirectoryAt, nodeFileOps } from './fsops';
+import { coreDirectoryAt, emptyDirectory, filesUnder, insideDirectory, nodeFileOps } from './fsops';
 import { SaveOutcome, Saver } from './saver';
 import {
   Notice,
@@ -1297,6 +1302,124 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   /*
+   * FACTS THE EDITOR COMPUTES, SUPPLIED TO THE STORE. The steps are in
+   * `src/supply.ts` (`runSupply`); this hands them the core, a directory in
+   * this extension's storage for the projection (one per store and writer),
+   * the disk and the editor's providers, and says what came of it.
+   *
+   * Signatures, keywords and calls are the committed store's; diagnostics
+   * are this window's writer's, from its working view. The supply goes to
+   * the store the command started on, through the client taken then.
+   */
+  async function supplyFacts(kind: SupplyKind): Promise<void> {
+    const using = client;
+    if (using === null) {
+      vscode.window.showWarningMessage('theourgia: set theourgia.corePath and theourgia.store first.');
+      return;
+    }
+    const store = storeIdentity();
+    const writer = kind === 'diagnostics' ? writerFor(config) : null;
+    const directory = path.join(storage, 'projection', storeHash(config.store), writer === null ? '-' : encodeURIComponent(writer));
+    const supplyDirectory = path.join(storage, 'supply');
+    let changes = 0;
+    const watching = vscode.languages.onDidChangeDiagnostics((event) => {
+      const inside = event.uris.some((uri) => uri.scheme === 'file' && insideDirectory(directory, uri.fsPath));
+      if (inside) {
+        changes += 1;
+      }
+    });
+    let outcome: SupplyOutcome;
+    try {
+      outcome = await runSupply(kind, writer, {
+        client: using,
+        editorVersion: vscode.version,
+        directory,
+        emptyDirectory: (d) => emptyDirectory(d),
+        filesUnder: (d) => filesUnder(d),
+        readFile: (file) => files.readBytes(file),
+        fsPathOf: (d, relative) => path.join(d, ...relative.split('/')),
+        open: (file) =>
+          Promise.resolve(vscode.workspace.openTextDocument(vscode.Uri.file(file))).then((document) => ({
+            uri: document.uri.toString(),
+            languageId: document.languageId,
+            version: () => document.version,
+            text: () => document.getText(),
+            isDirty: () => document.isDirty
+          })),
+        symbols: (uri) => Promise.resolve(vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', vscode.Uri.parse(uri))),
+        hover: (uri, at) =>
+          Promise.resolve(vscode.commands.executeCommand('vscode.executeHoverProvider', vscode.Uri.parse(uri), new vscode.Position(at.line, at.character))),
+        prepareCalls: (uri, at) =>
+          Promise.resolve(vscode.commands.executeCommand('vscode.prepareCallHierarchy', vscode.Uri.parse(uri), new vscode.Position(at.line, at.character))),
+        outgoingCalls: (item) => Promise.resolve(vscode.commands.executeCommand('vscode.provideOutgoingCalls', item)),
+        settling: {
+          changes: () => changes,
+          /*
+           * A clock that only moves forward: a wall clock set back would
+           * stretch the wait, and one set forward would end it early.
+           */
+          now: () => performance.now(),
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+        },
+        diagnostics: (uri) => vscode.languages.getDiagnostics(vscode.Uri.parse(uri)),
+        stillCurrent: () => storeIdentity() === store,
+        supplyPath: () => path.join(supplyDirectory, `${randomUUID()}.sexp`),
+        writeSupply: (written, text) => {
+          files.makeDirectory(supplyDirectory);
+          files.writeText(written, text);
+        },
+        /*
+         * A file that never came to exist -- the write failed before creating
+         * it -- is nothing to remove, and is not reported; any other failure
+         * is thrown, and the command's sentence says it.
+         */
+        removeSupply: (written) => {
+          try {
+            files.unlink(written);
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+              throw e;
+            }
+          }
+        }
+      });
+    } catch (e) {
+      /*
+       * AN ERROR SAYS WHICH STORE IT HAPPENED IN when the window has
+       * switched since: what it says was sent went to that store. A thrown
+       * value that is not an Error is shown as one.
+       */
+      const error = e instanceof Error ? e : new Error(String(e));
+      if (storeIdentity() !== store) {
+        error.message = `for the store ${store}: ${error.message}`;
+      }
+      reportFailure(error);
+      return;
+    } finally {
+      watching.dispose();
+    }
+    const said =
+      outcome.done === 'ran' ? supplyNotice(kind, outcome) : outcome.done === 'refused' ? outcome.notice : outcome.why;
+    const current = storeIdentity();
+    if (current !== store) {
+      vscode.window.showInformationMessage(`theourgia: for the store ${store}: ${said}.`);
+      return;
+    }
+    if (outcome.done === 'refused') {
+      vscode.window.showErrorMessage(`theourgia: ${said}.`);
+    } else if (
+      outcome.done === 'stopped' ||
+      outcome.results.some((r) => r.done === 'refused') ||
+      outcome.incomplete ||
+      outcome.notRemoved.length > 0
+    ) {
+      vscode.window.showWarningMessage(`theourgia: ${said}.`);
+    } else {
+      vscode.window.showInformationMessage(`theourgia: ${said}.`);
+    }
+  }
+
+  /*
    * THE FILES VIEW'S MODE AND ACTIONS. What they decide -- the paths, the
    * intent, the sentences -- is in `src/directory-view.ts`; every write goes
    * through the Saver: a new document is one batch, a move or a rename is
@@ -2352,6 +2475,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }),
     command(OPEN_AS_DOCUMENT.id, openAsDocument),
     command(SUGGEST_SPLIT.id, suggestSplit),
+    command(SUPPLY_SIGNATURES.id, () => supplyFacts('signatures')),
+    command(SUPPLY_CALLS.id, () => supplyFacts('calls')),
+    command(SUPPLY_DIAGNOSTICS.id, () => supplyFacts('diagnostics')),
     command(SHOW_FILES.id, () => showMode('files')),
     command(SHOW_OUTLINE.id, () => showMode('outline')),
     command(NEW_FILE_HERE.id, newFileHere),

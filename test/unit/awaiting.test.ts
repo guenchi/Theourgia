@@ -1294,7 +1294,13 @@ describe('every command shows what its queue writes could not promise', function
   });
 });
 
-describe('every wait in the extension host knows what may have changed under it', () => {
+/*
+ * NOTE: A MINUTE, AS THE OTHER SUITES THAT BUILD A PROGRAM HAVE. Several cells
+ * here type-check the source again for each rewrite they try; on a CI runner
+ * one of them took more than mocha's two seconds.
+ */
+describe('every wait in the extension host knows what may have changed under it', function () {
+  this.timeout(60000);
   const waiting = survey();
 
   /*

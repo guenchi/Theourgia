@@ -13,15 +13,18 @@ command line. Install the core first (from source today, `build.ss` into a
 directory of objects; a Homebrew tap arrives with the core's 1.0 release),
 then point the settings `theourgia.corePath` (the directory holding
 `theourgia/` and `igropyr/`, objects or sources) and `theourgia.scheme` (the
-Chez executable, `scheme` by default) at it, and `theourgia.store` at a
+Chez executable: `scheme` by default, or `chez` on a Homebrew machine, whose
+formula installs it under that name) at it, and `theourgia.store` at a
 store made with `theourgia init`. One store is one machine's: the core
 serves it through one daemon, and two machines writing one store is not
 this design.
 
 **Versions.** The core must be at least commit 9f806bb of the theourgia
 repository (the `read --wire` version clause that move and rename check);
-on an older core those two commands are refused by name. VS Code 1.138 is
-what the suites run on, and the extension claims nothing older.
+on an older core those two commands are refused by name. The three supply
+commands need commit 5230bb6 or later, which has `supply`; an older core
+answers it as an unknown verb, and the command shows that answer. VS Code
+1.138 is what the suites run on, and the extension claims nothing older.
 
 **Platforms.** 0.1.0 is packaged for macOS on Apple Silicon only: the
 extension's save queue takes a file lock through a small native module,
@@ -137,7 +140,7 @@ of them is a decision rather than an oversight:
 | `theourgia.store` | The store directory, passed as `--store`. Required. |
 | `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
 | `theourgia.writer` | The draft space this window writes into. Defaults to the actor. See *One agent, one writer id*. |
-| `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`. |
+| `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`; Homebrew installs it as `chez`. |
 | `theourgia.timeoutMs` | How long one request may take before the child process is stopped. Defaults to 30000. |
 
 ### A checkout or a product directory
@@ -517,7 +520,7 @@ can also mean an argument the core did not expect, so the message names both.
 
 **A nested document is shown under its parent, with its mark.** The write path refuses a
 document anywhere but the top level, so a nested one exists only in history made before that
-rule or elsewhere. The pinned core (theourgia 9f806bb, as 659fea2 and cba98ae before it) treats it as a block like any
+rule or elsewhere. The pinned core (theourgia 5230bb6, as 9f806bb, 659fea2 and cba98ae before it) treats it as a block like any
 other: it is in its parent's recursive read, and it is reported once under `conflicts` as
 `nested-document`. So it appears in the outline where it is, as a child carrying that mark,
 never hidden. `nested-document` is not a mark that puts a block in the root listing; delete
@@ -568,6 +571,30 @@ says it). Each symbol is sent at the start of its line, two symbols on one line 
 above a definition goes with it, as without symbols. A file whose lines end in CR alone is not cut by
 symbols: the core takes a line start to follow a line feed, and refuses (`symbols-not-a-line-start`). Which provider named a symbol cannot be said: the
 editor merges them.
+
+**Supplying what the editor knows.** Three commands hand the store facts the editor's language
+support computes, which the core keeps beside the store and never in its log (the core's README,
+"Derived data from an editor"): "theourgia: Supply Signatures and Keywords" and "theourgia: Supply
+Calls" for the committed store, and "theourgia: Supply Diagnostics" for this window's writer, from its
+working view. Each projects the store with `export-code` into a directory in this extension's own
+storage, emptied first, opens the projected files without showing them, asks the editor's providers,
+and sends one `supply` per language with every projected file listed by its digest and every file of
+that language named as replaced, a file with no fact included (so its old facts clear).
+- A block's signature is its first top-level symbol's detail, else the first line of its hover, else
+  none; its keywords are the words of the names it declares (itself and its direct children), split at
+  case changes, underscores and digits. A call is an edge from the call hierarchy to a block of the
+  same projection; a call into anything else gives none. A diagnostic keeps its severity and its byte
+  range in the projected file.
+- Which block a position is in is read off the projection's own marker lines. A fact depends on its
+  own block and every other block of its file (a call on the target's file too), so the store drops it
+  when any of them changes; the facts are as fresh as the last supply, and nothing supplies them on its
+  own.
+- If a projected document changes while the facts are collected, nothing is sent and the command says
+  which file. Diagnostics are taken once they have not changed for 1 s, and at most after 10 s, when
+  the message says the analysis may be incomplete. A refusal is shown by name: `supply-stale` asks for
+  the command again; `supply-malformed` is this extension's defect, and its supply file is kept.
+- The projection is outside the workspace, so a language server may see it with less context than a
+  workspace folder (no project configuration); a folder of the person's choosing is a later option.
 
 **Browsing by file.** The tree has two modes, switched from its title bar: **Files**, the directory
 tree export would write, and **Outline**, the store's own parents and order. The directories are not

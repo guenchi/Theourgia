@@ -252,6 +252,49 @@ interface NativeLease { acquire(file:string):number; release(fd:number):void; }
 let nativeLease:NativeLease|undefined;
 const heldResources=new Map<string,number>();
 
+/*
+ * EVERY FILE UNDER A DIRECTORY, as paths relative to it with `/` between
+ * their parts, sorted: what an export wrote, named by the paths the store
+ * gives its files. A directory entry is followed; a link is not.
+ */
+export function filesUnder(root: string): string[] {
+  const out: string[] = [];
+  const walk = (relative: string): void => {
+    for (const entry of fs.readdirSync(path.join(root, relative), { withFileTypes: true })) {
+      const next = relative === '' ? entry.name : `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(next);
+      } else if (entry.isFile()) {
+        out.push(next);
+      }
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+/*
+ * A DIRECTORY MADE EMPTY: removed with everything in it, then made again.
+ * For a directory this extension owns and fills afresh each time, so that
+ * nothing an earlier fill left is taken for part of this one.
+ */
+export function emptyDirectory(directory: string): void {
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+}
+
+/*
+ * WHETHER A PATH IS A FILE INSIDE A DIRECTORY, at any depth.
+ *
+ * NEVER: A RELATIVE PATH STARTING WITH `..` TAKEN FOR ONE OUTSIDE. `..` is
+ * outside only as a whole part: `..helpers/x.js` is a folder named
+ * `..helpers` inside.
+ */
+export function insideDirectory(directory: string, file: string): boolean {
+  const within = path.relative(directory, file);
+  return within !== '' && within !== '..' && !within.startsWith(`..${path.sep}`) && !path.isAbsolute(within);
+}
+
 export function controlDirectory(directory:string): string {
   return path.join(path.dirname(directory),'.block-control',path.basename(directory));
 }

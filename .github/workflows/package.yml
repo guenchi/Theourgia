@@ -58,7 +58,7 @@ permissions:
 # of its dependencies declare node >= 22.
 env:
   NODE_VERSION: 22
-  CORE_REV: 9f806bb916a3c50548b696b39707b07fde0d158c
+  CORE_REV: 5230bb6da9f3701a3d5be842473eb4f9694e5641
   IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
   CHEZ_VERSION: 10.1.0
 
@@ -174,9 +174,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: extension/package-lock.json
+      # Homebrew installs Chez Scheme's executable as `chez`, not `scheme`;
+      # the core and the real-core cells both take THEOURGIA_SCHEME.
       - name: Chez Scheme, libuv and OpenSSL (macOS)
         if: runner.os == 'macOS'
-        run: brew install chezscheme libuv openssl@3
+        run: |
+          brew install chezscheme libuv openssl@3
+          echo "THEOURGIA_SCHEME=$(brew --prefix)/bin/chez" >> "$GITHUB_ENV"
       # Chez Scheme 10 from its release source: the distribution's package
       # is older than the 10 igropyr requires. The release carries the boot
       # files that build it on either architecture. The -dev packages, not
@@ -198,7 +202,7 @@ jobs:
         run: |
           uname -a
           node --version
-          scheme --version
+          "${THEOURGIA_SCHEME:-scheme}" --version
           git -C "$THEOURGIA_CORE" rev-parse HEAD
           git -C "$THEOURGIA_LIBDIRS/igropyr" rev-parse HEAD
       - name: Node headers for the native lock

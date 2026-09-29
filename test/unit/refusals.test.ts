@@ -464,7 +464,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * valid UTF-8 puts the block in the store, and none of its text is
    * visible to `search` or `grep` (core F61, not fixed). The only signal is
    * the count `(scanned ... (unreadable-blocks m))` of a `--wire` search or
-   * grep answer (store.sc:1423 `search-report`, store.sc:1816 `report`).
+   * grep answer (store.sc:1433 `search-report`, store.sc:1870 `report`).
    * This extension sends neither import verb today, so the symptom is out of
    * its reach. The day it grows a command that imports a file or a
    * directory, that command ships with a reading of that count -- the user
@@ -489,12 +489,18 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * EXTENSION SENDS NONE OF THE CORE'S UNDECLARED VERBS. `incomplete-reduction`
    * is refused only to a verb that does not declare it accepts a store
    * missing a writer, and `working-draft-unreadable` is reached only through
-   * `export-md`/`export-code --working`; both verbs are on the core's own
-   * list (rpc.sc:1760). The list is READ FROM THE PINNED CORE, not copied
+   * a writer's working view (`export-md`, `export-code --working`, `supply
+   * --for`, derived.sc's working readers); the export and supply verbs are on
+   * the core's own list (rpc.sc:1936). The list is READ FROM THE PINNED CORE, not copied
    * here, so a verb the core adds to it is checked without an edit in this
-   * file. A tripwire, not a measurement: green today.
+   * file. A tripwire, not a measurement.
+   *
+   * NOTE: THE SUPPLY COMMANDS SEND TWO OF THEM, `export-code` and `supply`,
+   * and show whatever refusal either answers by name (src/supply.ts; the
+   * cells in supply.test.ts drive both with `incomplete-reduction`). Those
+   * two, from that file only, are the expected ones; any other is red.
    */
-  it('sends none of the core\'s undeclared verbs (the only verbs refused incomplete-reduction)', () => {
+  it('sends of the core\'s undeclared verbs only export-code and supply, from the supply commands', () => {
     const rpc = readFileSync(path.join(coreSources().directory, 'rpc.sc'), 'utf8');
     const listed = /\(define undeclared-verbs '\(([^)]*)\)\)/.exec(rpc);
     assert.ok(listed !== null, 'the pinned core defines no undeclared-verbs list this cell can read');
@@ -504,10 +510,14 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
     assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
     assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
     assert.deepStrictEqual(
-      undeclared.filter((verb) => verbs.has(verb)),
-      [],
-      'this extension now sends a verb the core refuses with incomplete-reduction on a store missing a writer: sort that refusal in saver.ts and show its notes'
+      undeclared.filter((verb) => verbs.has(verb)).sort(),
+      ['export-code', 'supply'],
+      'this extension sends a verb the core refuses with incomplete-reduction on a store missing a writer other than the supply commands\' two: sort that refusal and show its notes'
     );
+    const senders = sources()
+      .filter(({ text }) => /\.request\(\s*'(export-code|supply)'/.test(text))
+      .map(({ name }) => path.basename(name));
+    assert.deepStrictEqual(senders, ['supply.ts'], 'export-code or supply is sent from somewhere other than src/supply.ts');
   });
 
   /*
@@ -527,8 +537,8 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
 /*
  * QUEUE ITEM 12: TWO WORDS THAT BOTH SAY "UNREADABLE", ABOUT DIFFERENT
  * THINGS. The core's `(scanned ... (unreadable-blocks m))` counts the blocks
- * of one search or grep answer whose text is not valid UTF-8 (store.sc:1423
- * `search-report`, store.sc:1816 `report`). This client's
+ * of one search or grep answer whose text is not valid UTF-8 (store.sc:1433
+ * `search-report`, store.sc:1870 `report`). This client's
  * `TransportError('unreadable', ...)` (the `TransportFailure` union in
  * transport.ts) means that this client could not read the SHAPE of an
  * answer. The core named its clause with a unit, `-blocks`, so that the two

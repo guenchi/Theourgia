@@ -89,6 +89,18 @@
         "title": "theourgia: Suggest a Split of This File"
       },
       {
+        "command": "theourgia.supplySignatures",
+        "title": "theourgia: Supply Signatures and Keywords"
+      },
+      {
+        "command": "theourgia.supplyCalls",
+        "title": "theourgia: Supply Calls"
+      },
+      {
+        "command": "theourgia.supplyDiagnostics",
+        "title": "theourgia: Supply Diagnostics"
+      },
+      {
         "command": "theourgia.showFiles",
         "title": "theourgia: Show Files",
         "icon": "$(file-directory)"

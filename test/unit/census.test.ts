@@ -189,6 +189,11 @@ const AT_LEAST: Array<[string, number]> = [
   ['durability.test.ts', 68],
   ['fsops.test.ts', 11],
   ['host.test.ts', 8],
+  /*
+   * ADDED with the supply commands: the reader of the projection's marker
+   * lines, one cell per layout the core writes.
+   */
+  ['markers.test.ts', 15],
   ['mutators.test.ts', 12],
   /*
    * ADDED in queue item 39: an information notice and an error notice reach
@@ -338,6 +343,11 @@ const AT_LEAST: Array<[string, number]> = [
    * third a first-line symbol in a file with a byte-order mark).
    */
   ['split-symbols.test.ts', 21],
+  /*
+   * ADDED with the supply commands: collecting (13), the supply file (4), the
+   * answers (5), the command's steps (40), and on a real core (3).
+   */
+  ['supply.test.ts', 65],
   ['tombstones.test.ts', 11],
   /*
    * LOWERED in plugin-r2, from 27, deliberately: the cell for the socket

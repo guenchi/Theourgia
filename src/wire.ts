@@ -35,7 +35,7 @@
  * synchronous, so no caller has to be async merely to read an answer.
  *
  * ONE LINE IS ONE DATUM, and that is a fact about the command line
- * rather than about the format: `render-human` (render.sc:69-72) prints an
+ * rather than about the format: `render-human` (render.sc:81-83) prints an
  * `items` answer with one `write` per item and no wrapper around them, and
  * Chez's writer escapes
  * a newline inside a string rather than emitting it. A transport that

@@ -22,8 +22,8 @@
  * with the code the daemon computed -- 0 when the core's own `rpc-ok?` says
  * the answer is a success (daemon.sc:1880, relayed by `deliver!` in
  * theourgia.sc); `init`, which the thin client runs in-process through
- * `core.sc` (`local-verbs`, theourgia.sc:65), exits by the same predicate
- * there (core.sc:642) -- and that
+ * `core.sc` (`local-verbs`, theourgia.sc:72), exits by the same predicate
+ * there (core.sc:755) -- and that
  * predicate lives in the core precisely so that a shell and a client
  * cannot come to different opinions. So this file never decides success
  * from the head symbol -- `(ok ...)` on a non-zero exit is a core that
@@ -32,8 +32,8 @@
  *
  * THE ANSWER'S KIND IS NOT ON THE WIRE, and that is the one place this
  * client is forced to hold a second opinion. The core says an answer is
- * text, items or a single datum (rpc.sc:176-182), and `render-human`
- * (render.sc:57) draws each
+ * text, items or a single datum (rpc.sc:178-183), and `render-human`
+ * (render.sc:65) draws each
  * differently -- text as its own bytes, items one datum per line, and
  * anything else as one datum -- but it prints no marker saying which it
  * drew. Over a socket the whole `(ok (text ...))` form would arrive and
@@ -321,6 +321,14 @@ const KNOWN_VERBS = new Set([
    * ALWAYS_WRITE_VERBS; its answer is one datum.
    */
   'split-suggest',
+  /*
+   * `export-code` writes a projection of the store into a directory and
+   * `supply` keeps derived facts beside the store; neither appends a
+   * record, and each answers one datum. They are sent by the supply
+   * commands (src/supply.ts).
+   */
+  'export-code',
+  'supply',
   /*
    * NOTE: `describe` IS HERE BECAUSE ASKING WITHOUT IT FAILS SILENTLY.
    * An unknown verb throws out of `answerKind`, the caller that asks
