@@ -43,7 +43,8 @@ jobs:
           envs: 'REF'
           prepare: |
             mkdir -p /usr/local/etc/pkg/repos
-            printf 'FreeBSD: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly" }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+            grep -h -A3 "FreeBSD-ports" /etc/pkg/FreeBSD.conf /usr/local/etc/pkg/repos/*.conf 2>/dev/null | head -20
+            printf 'FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/quarterly", mirror_type: "srv" }\n' > /usr/local/etc/pkg/repos/zz-quarterly.conf
             pkg update -f
             pkg install -y chez-scheme libuv perl5 python3 git node bash
             pw useradd tester -m -s /bin/sh
