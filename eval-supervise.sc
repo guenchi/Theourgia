@@ -59,6 +59,7 @@
           (only (theourgia proc) spawn-worker! worker-write! worker-close-stdin!
                 worker-kill! worker-close! worker-rss worker-ref-pid)
           (only (theourgia ffi) signal-pid! process-alive-signal0? trace-event!)
+          (only (theourgia platform-numbers) platform-number)
           (only (theourgia render) render-wire))
 
   ;; NOTE: THE TWO CLOCKS ARE DIFFERENT AND BOTH ARE NEEDED. `ready-ms` is
@@ -93,7 +94,7 @@
   ;; alive would leave this process waiting for streams that will never say
   ;; anything again -- so it is closed once what the child wrote before it
   ;; died has been read, within a bound.
-  (define sigkill 9)
+  (define sigkill (platform-number 'SIGKILL))
 
   (define (signal-group! ref pgid)
     (when pgid (signal-pid! (- pgid) sigkill))

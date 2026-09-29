@@ -53,6 +53,7 @@
         ;; this shell's closure through `(theourgia client)`, which is what
         ;; opens the socket and starts the daemon. The child route uses the
         ;; rest: the spawn, the pid wait and signal, the call directory.
+        (only (theourgia platform-numbers) platform-number)
         (only (theourgia ffi) reap-children! spawn-captured! waitpid-status signal-pid!
               mkdir-exclusive! mkdir-p! real-path entry-type unlink! rmdir! file-size
               read-entry read-entry-range theourgia-stage hold-point! trace-event!
@@ -792,7 +793,7 @@
 ;; from here; and a descendant that left the group had none before either.
 ;; The status is then polled for up to 2 s.
 (define (kill-at-deadline pid budget)
-  (let ((r (parameterize ((theourgia-stage 'mcp-signal)) (signal-pid! pid 9))))
+  (let ((r (parameterize ((theourgia-stage 'mcp-signal)) (signal-pid! pid (platform-number 'SIGKILL)))))
     (if (not (eqv? r 0))
         (list 'signal-failed r)
         (let ((grace (+ (now-ms) 2000)))

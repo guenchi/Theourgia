@@ -77,6 +77,7 @@
           (only (theourgia client) readable-shape?)
           (only (theourgia trace) trace-event!)
           (only (theourgia ffi) theourgia-fault hold-point! hold-sleeper-set!)
+          (only (theourgia platform-numbers) platform-number)
           (only (theourgia digest) sha256 bytevector->hex)
           (only (theourgia ffi) lock-try-acquire! lock-release! lock-held? file-ensure! file-is-socket?
                 current-lock-acquire current-lock-release
@@ -147,7 +148,7 @@
   ;; a person who has asked twice are the same request, and both leave
   ;; with 75.
   (define sigterm-count 0)
-  (define signal-term 15)
+  (define signal-term (platform-number 'SIGTERM))
   (define drain-poll-ms 25)
   (define drain-budget-ms 5000)
 
