@@ -1044,7 +1044,9 @@
   ;; probe's reading repeats both measurements above: ki_rssize at 264, 8
   ;; bytes, the struct 1088). They exist on no Linux row, so they are read
   ;; here, in the branch that runs on FreeBSD, and never when the library
-  ;; is initialised.
+  ;; is initialised. The name's four words are C ints, at the row's int
+  ;; width; the length cell is a size_t, which the rows do not measure, so
+  ;; its width is Chez's own for this machine type.
 
   (define c-sysctl
     (and (foreign-entry? "sysctl")
@@ -1055,16 +1057,18 @@
 
   (define (rss-freebsd pid)
     (and c-sysctl c-getpagesize
-         (let ((mib (make-bytevector 16 0))
-               (buf (make-bytevector 4096 0))
-               (len (make-bytevector 8 0)))
-           (bytevector-u32-native-set! mib 0 (platform-number 'CTL_KERN))
-           (bytevector-u32-native-set! mib 4 (platform-number 'KERN_PROC))
-           (bytevector-u32-native-set! mib 8 (platform-number 'KERN_PROC_PID))
-           (bytevector-u32-native-set! mib 12 pid)
-           (bytevector-u64-native-set! len 0 4096)
+         (let* ((int-size (platform-type-size 'int))
+                (size-t-size (foreign-sizeof 'size_t))
+                (mib (make-bytevector (* 4 int-size) 0))
+                (buf (make-bytevector 4096 0))
+                (len (make-bytevector size-t-size 0)))
+           (bytevector-uint-set! mib 0 (platform-number 'CTL_KERN) (native-endianness) int-size)
+           (bytevector-uint-set! mib int-size (platform-number 'KERN_PROC) (native-endianness) int-size)
+           (bytevector-uint-set! mib (* 2 int-size) (platform-number 'KERN_PROC_PID) (native-endianness) int-size)
+           (bytevector-uint-set! mib (* 3 int-size) pid (native-endianness) int-size)
+           (bytevector-uint-set! len 0 4096 (native-endianness) size-t-size)
            (and (= 0 (c-sysctl mib 4 buf len 0 0))
-                (= (bytevector-u64-native-ref len 0) (platform-struct-size 'kinfo_proc))
+                (= (bytevector-uint-ref len 0 (native-endianness) size-t-size) (platform-struct-size 'kinfo_proc))
                 (* (row-uint-ref buf 'kinfo_proc 'ki_rssize) (c-getpagesize))))))
 
   ;; NEVER: AND ZERO IS NOT A READING. Every branch below can answer 0 for a
@@ -1323,6 +1327,7 @@
   ;; -> (values pid #f) when the program was started, or (values #f errno)
   ;; when posix_spawnp answered non-zero -- a file action that could not be
   ;; carried out included. Nothing ran in that case, and the caller says so.
+  (define spawn-O_RDONLY (platform-number 'O_RDONLY))
   (define spawn-O_WRONLY (platform-number 'O_WRONLY))
   (define spawn-O_CREAT (platform-number 'O_CREAT))
   (define spawn-O_TRUNC (platform-number 'O_TRUNC))
@@ -1393,7 +1398,7 @@
                             (begin
                               (set! destroy! (lambda () (c-fa-destroy actions)))
                               (let* ((out-flags (bitwise-ior spawn-O_WRONLY spawn-O_CREAT spawn-O_TRUNC))
-                                     (a (c-fa-open actions 0 (or stdin-path "/dev/null") 0 0))
+                                     (a (c-fa-open actions 0 (or stdin-path "/dev/null") spawn-O_RDONLY 0))
                                      (b (if (zero? a) (c-fa-open actions 1 stdout-path out-flags #o600) a))
                                      (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b)))
                                 (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))))))
@@ -2951,13 +2956,13 @@
 
   ;; COMBINED WITH bitwise-ior AND NOT WITH ADDITION, because a repeated
   ;; flag is a caller's slip and addition turns it into a DIFFERENT flag:
-  ;; O_APPEND twice is 16, which is O_SHLOCK on both platforms here, so
+  ;; on the BSD rows O_APPEND twice is 16, which is O_SHLOCK there, so
   ;; '(write append append) would have opened a shared-locked descriptor
-  ;; positioned at byte zero and overwritten the log. Enough repeats
-  ;; reach O_CREAT (512) and O_TRUNC (1024), and O_CREAT is the one flag
-  ;; this declaration of open(2) cannot survive -- it would make the
-  ;; kernel read a mode that was never passed. Or is idempotent, so none
-  ;; of that is reachable.
+  ;; positioned at byte zero and overwritten the log; on the Linux rows
+  ;; it is 2048, O_NONBLOCK. Enough repeats reach O_CREAT, and O_CREAT is
+  ;; the one flag this declaration of open(2) cannot survive -- it would
+  ;; make the kernel read a mode that was never passed. Or is
+  ;; idempotent, so none of that is reachable.
   ;;
   ;; Flags are symbols rather than a number so that a caller cannot pass
   ;; a numeric constant that means something else on the other platform.
