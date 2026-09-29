@@ -55,7 +55,7 @@
           (only (theourgia request) req-id-ok?)
           (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
                 derived-signature derived-signature-table derived-keyword-table
-                derived-calls-into derived-reach)
+                derived-calls-into derived-reach derived-facts)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -609,6 +609,50 @@
   (define (unknown-id state id)
     (list 'error 'unknown-id id (list 'nearest (nearest-ids state id))))
 
+  ;; A WRITER'S DIAGNOSTICS, from its own tables judged against its working
+  ;; view, `w` being working-state's answer. Ordered by block and then by
+  ;; start, a diagnostic that does not map to a range of its block first
+  ;; among its block's; two at one start keep the order they were kept in.
+  ;; -> (values ((<payload> <via>) ...) <stale> <tables read>)
+  (define (writer-diagnostics store w)
+    (let-values (((facts stale tables)
+                  (derived-facts store 'diagnostics (cadr w) (caddr w) (lambda (p) (eq? (car p) 'diagnostic)))))
+      (let ((start (lambda (f) (let ((at (list-ref (car f) 4))) (if (eq? (cadr at) 'unmappable) -1 (cadr at))))))
+        (values (list-sort (lambda (a b)
+                             (let ((ia (cadr (car a))) (ib (cadr (car b))))
+                               (or (string<? ia ib) (and (string=? ia ib) (< (start a) (start b))))))
+                           facts)
+                stale tables))))
+
+  ;; A DRAFT'S DIAGNOSTICS ARE COUNTED IN `drafts` once the writer has a
+  ;; table of them: each draft item gains (diagnostics <n>), the fresh ones
+  ;; on its block, and the answer the via and stale clauses of the facts
+  ;; counted. A writer with no such table gets the answer it always got.
+  (define (with-draft-diagnostics store state writer answer)
+    (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
+                  (eq? (car (cadr answer)) 'items)))
+        answer
+        (let ((w (working-state store state writer)))
+          (if (not (and (pair? w) (eq? 'ok (car w))))
+              answer
+              (let-values (((facts stale tables) (writer-diagnostics store w)))
+                (if (= tables 0)
+                    answer
+                    (let* ((drafted (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (cdr (cadr answer))))
+                           (block-of (lambda (x) (cadr (assq 'block (cdr x)))))
+                           (on (lambda (id) (filter (lambda (f) (equal? (cadr (car f)) id)) facts)))
+                           (used (apply append (map (lambda (x) (on (block-of x))) drafted))))
+                      (append
+                        (list 'ok
+                              (cons 'items
+                                    (map (lambda (x)
+                                           (if (and (pair? x) (eq? (car x) 'draft))
+                                               (append x (list (list 'diagnostics (length (on (block-of x))))))
+                                               x))
+                                         (cdr (cadr answer)))))
+                        (cddr answer)
+                        (derived-clauses (map cadr used) stale)))))))))
+
   ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
   ;; committed state's table ("-") against the committed state, or with
   ;; --working the writer's table against the writer's working view.
@@ -879,6 +923,8 @@
             "Install a writer's drafts into the store as one change." #f 'daemon)
       (list 'drafts '(drafts ["--writer" <name>])
             "List the drafts a writer is holding." #f 'daemon)
+      (list 'diagnostics '(diagnostics ["--writer" <name>])
+            "List the diagnostics an editor supplied for a writer's working view, by block and then by start, each at a byte range of its block's own src." #f 'daemon)
       (list 'discard '(discard <block> ["--writer" <name>])
             "Throw away a writer's draft of a block." #f 'daemon)
       (list 'batch '(batch <intents>)
@@ -1081,8 +1127,20 @@
                     answer))))
       (cons 'drafts
             (lambda (store actor args req options state writer cwd)
-              (if (null? args) (working-list store state writer)
+              (if (null? args) (with-draft-diagnostics store state writer (working-list store state writer))
                   (usage '(drafts ["--writer" <name>])))))
+      (cons 'diagnostics
+            (lambda (store actor args req options state writer cwd)
+              (if (not (null? args))
+                  (usage '(diagnostics ["--writer" <name>]))
+                  (let ((w (working-state store state writer)))
+                    (if (not (and (pair? w) (eq? 'ok (car w))))
+                        w
+                        (guarded
+                          (lambda ()
+                            (let-values (((facts stale tables) (writer-diagnostics store w)))
+                              (append (items (map car facts))
+                                      (derived-clauses (map cadr facts) stale))))))))))
       (cons 'discard
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))

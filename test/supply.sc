@@ -855,6 +855,173 @@
       (list (ask r15 'reach r15-alpha) (ask r15 'refs r15-alpha))
       (list (list 'ok (list 'reached (list (list r15-alpha 0))) '(stale 1)) '(ok (items))))
 
+;; ==== diagnostics ====
+;; -> (values <supply text> <projected bytes of `name`>): a diagnostics supply
+;; of `lines` for `writer`, made from that writer's working projection.
+(define (diagnostics-supply st writer language lines replaces name)
+  (let* ((d (export-in st "--working" "--writer" writer))
+         (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
+    (values (apply string-append
+                   (line (list 'supply 'diagnostics (list 'writer writer) (list 'language language)
+                               '(source (vscode "1.140.0")) (list 'files files) (list 'replaces replaces)))
+                   lines)
+            (bytes-of (string-append d "/" name)))))
+(define (diag id s e . depends) (line (list 'diagnostic id 'error "m" (list 'range s e) (list 'depends (cons id depends)))))
+(define (diag-answer st writer) (ask st 'diagnostics "--writer" writer))
+(define (diag-items st writer) (cdr (assq 'items (cdr (diag-answer st writer)))))
+(define (bytes-offset b needle)
+  (let ((n (string->utf8 needle)))
+    (let loop ((i 0))
+      (cond ((> (+ i (bytevector-length n)) (bytevector-length b)) #f)
+            ((let check ((k 0)) (or (= k (bytevector-length n))
+                                    (and (= (bytevector-u8-ref b (+ i k)) (bytevector-u8-ref n k)) (check (+ k 1)))))
+             i)
+            (else (loop (+ i 1)))))))
+(define (src-bytes st id) (string->utf8 (cadr (cadr (ask st 'read id "--md")))))
+
+;; ---- D18: the range map, read back through diagnostics ------------------------------
+;; A python file whose first block opens with a #! line and a coding cookie,
+;; and whose second block holds a marker-like line (escaped when projected).
+(define py-src "#!/usr/bin/env python\n# coding: utf-8\ndef one():\n    return 1\n\n\ndef two():\n# @@block writer.q\n    return 2\n")
+(define r16 (string-append root "/r16"))
+(define r16-src (fresh-dir! "r16-src"))
+(write! (string-append r16-src "/m.py") py-src)
+(ask r16 'init)
+(ask r16 'import-code r16-src)
+(define b1 (id-in r16 "def one"))
+(define b2 (id-in r16 "def two"))
+(define src1 (src-bytes r16 b1))
+(define src2 (src-bytes r16 b2))
+(define k (bytes-offset src1 "def one"))
+(define r (bytes-offset src2 "# @@block"))
+(define len1 (bytevector-length src1))
+(define len2 (bytevector-length src2))
+(define-values (ignored-text P) (diagnostics-supply r16 "wd" "python" '() '() "m.py"))
+(define p1 (bytes-offset P "def one"))
+(define p2 (bytes-offset P "def two"))
+(define q (bytes-offset P "# @@@block writer.q"))
+(define f0 (bytes-offset P "# @file"))
+(define m2 (bytes-offset P (string-append "# @block " b2)))
+(want "D18 setup: two blocks; b1's prefix (the #! line and the cookie) is 38 bytes and stays above the @file line; b1 ends in LF, so b2's marker follows it directly; b2's marker-like line is escaped"
+      (list (and b1 b2 #t) k f0 (bytevector-u8-ref src1 (- len1 1)) (= m2 (+ p1 (- len1 k))) (and q r #t))
+      (list #t 38 38 10 #t #t))
+;; -> (supply answer, the one item diagnostics then lists)
+(define (map-case id s e)
+  (let-values (((text bytes) (diagnostics-supply r16 "wd" "python" (list (diag id s e)) '("m.py") "m.py")))
+    (let ((a (supply-in r16 text "diagnostics" "--for" "wd")))
+      (list a (diag-items r16 "wd")))))
+(define (item id at) (list (list 'diagnostic id 'error "m" at)))
+(define kept '(ok (supplied (facts 1) (files 1))))
+(want "D18 (1) a range inside the prefix: b1 at the same offsets"
+      (map-case b1 2 5) (list kept (item b1 '(at 2 5))))
+(want "D18 (2) from the prefix into b1's body, across the @file and @block lines: contiguous in b1"
+      (map-case b1 2 (+ p1 3)) (list kept (item b1 (list 'at 2 (+ k 3)))))
+(want "D18 (3) around the escape: the byte before it, the escape alone (empty), the byte after it"
+      (list (map-case b2 (+ q 1) (+ q 2)) (map-case b2 (+ q 2) (+ q 3)) (map-case b2 (+ q 3) (+ q 4)))
+      (list (list kept (item b2 (list 'at (+ r 1) (+ r 2)))) (list kept (item b2 (list 'at (+ r 2) (+ r 2))))
+            (list kept (item b2 (list 'at (+ r 2) (+ r 3))))))
+(want "D18 (4) b1's body to its end (b2's marker start): b1 from the prefix's size to its length"
+      (map-case b1 p1 m2) (list kept (item b1 (list 'at k len1))))
+(want "D18 (5) from b1's body into b2's: unmappable on b1"
+      (map-case b1 (+ p1 1) (+ p2 1)) (list kept (item b1 '(at unmappable))))
+(want "D18 (6) inside b2's @block line: unmappable on b2"
+      (map-case b2 (+ m2 1) (+ m2 3)) (list kept (item b2 '(at unmappable))))
+(want "D18 (7) empty at b1's end (b2's marker start): b1 at its length; empty at EOF: b2 at its length"
+      (list (map-case b1 m2 m2) (map-case b2 (bytevector-length P) (bytevector-length P)))
+      (list (list kept (item b1 (list 'at len1 len1))) (list kept (item b2 (list 'at len2 len2)))))
+(want "D18 (10) empty inside the @file line: b1 at the prefix's size; inside b2's @block line: b2 at 0"
+      (list (map-case b1 (+ f0 3) (+ f0 3)) (map-case b2 (+ m2 3) (+ m2 3)))
+      (list (list kept (item b1 (list 'at k k))) (list kept (item b2 '(at 0 0)))))
+(want "D18 (8) a fact on b2 with a range in b1, and (9) one on b2 with a range unmappable on b1: id-range-mismatch, line 2"
+      (list (car (map-case b2 2 5)) (car (map-case b2 (+ p1 1) (+ p2 1))))
+      (list (malformed 2 'id-range-mismatch) (malformed 2 'id-range-mismatch)))
+
+;; ---- D7, D17: diagnostics per writer, and in drafts ---------------------------------------
+(define r17 (make-store! "r17"))
+(define r17-alpha (id-in r17 "function alpha"))
+(define r17-beta (id-in r17 "function beta"))
+(define r17-gamma (id-in r17 "function gamma"))
+(ask r17 'write r17-alpha "function alpha() {\n  return 11;\n}\n" "--writer" "w1")
+(ask r17 'write r17-beta "function beta() {\n  return 12;\n}\n" "--writer" "w1")
+(ask r17 'write r17-gamma "function gamma() {\n  return 13;\n}\n" "--writer" "w2")
+(define (by-id-then-start items)
+  (list-sort (lambda (a b) (or (string<? (cadr a) (cadr b))
+                               (and (string=? (cadr a) (cadr b)) (< (cadr (list-ref a 4)) (cadr (list-ref b 4))))))
+             items))
+(define (draft-counts st writer)
+  (map (lambda (x) (list (cadr (assq 'block (cdr x))) (let ((c (assq 'diagnostics (cdr x)))) (and c (cadr c)))))
+       (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (cdr (assq 'items (cdr (ask st 'drafts "--writer" writer)))))))
+(define (sorted-counts cs) (list-sort (lambda (a b) (string<? (car a) (car b))) cs))
+(define-values (w1-text w1-a) (diagnostics-supply r17 "w1" "javascript" '() '() "a.js"))
+(define s11 (bytes-offset w1-a "return 11"))
+(define s12 (bytes-offset w1-a "return 12"))
+(define-values (w1-text* ignored-bytes)
+  (diagnostics-supply r17 "w1" "javascript"
+                      (list (diag r17-alpha s11 (+ s11 9) r17-beta) (diag r17-beta s12 (+ s12 9) r17-alpha)
+                            (diag r17-beta (+ s12 7) (+ s12 9) r17-alpha))
+                      '("a.js") "a.js"))
+(want "D7 w1's supply of three diagnostics on its drafts of alpha and beta is kept"
+      (supply-in r17 w1-text* "diagnostics" "--for" "w1") '(ok (supplied (facts 3) (files 1))))
+(want "D7 diagnostics --writer w1 lists them by block and start, each at its block's own offsets, with the via"
+      (diag-answer r17 "w1")
+      (append (list 'ok (cons 'items (by-id-then-start
+                                       (list (list 'diagnostic r17-alpha 'error "m" '(at 21 30))
+                                             (list 'diagnostic r17-beta 'error "m" '(at 20 29))
+                                             (list 'diagnostic r17-beta 'error "m" '(at 27 29))))))
+              (list supplied-via)))
+(want "D7 w2 has none: (ok (items)), no clause; and its drafts carry no diagnostics count"
+      (list (diag-answer r17 "w2") (draft-counts r17 "w2"))
+      (list '(ok (items)) (list (list r17-gamma #f))))
+(want "D7 w1's drafts carry their counts: alpha 1, beta 2"
+      (sorted-counts (draft-counts r17 "w1"))
+      (sorted-counts (list (list r17-alpha 1) (list r17-beta 2))))
+(define-values (w2-text w2-b) (diagnostics-supply r17 "w2" "javascript" '() '() "b.js"))
+(define s13 (bytes-offset w2-b "return 13"))
+(want "D17 w2 supplies its own diagnostic: each writer reads back only its own, with its own draft counts"
+      (let-values (((text bytes) (diagnostics-supply r17 "w2" "javascript" (list (diag r17-gamma s13 (+ s13 9))) '("b.js") "b.js")))
+        (list (supply-in r17 text "diagnostics" "--for" "w2")
+              (diag-items r17 "w2") (length (diag-items r17 "w1")) (draft-counts r17 "w2")))
+      (list '(ok (supplied (facts 1) (files 1)))
+            (list (list 'diagnostic r17-gamma 'error "m" '(at 21 30))) 3 (list (list r17-gamma 1))))
+(ask r17 'write r17-alpha "function alpha() {\n  let x = 1;\n  return 11;\n}\n" "--writer" "w1")
+(want "D7 w1 grows alpha: the earlier supply file is refused supply-stale on a.js, and every diagnostic on a.js is stale"
+      (list (supply-in r17 w1-text* "diagnostics" "--for" "w1") (diag-answer r17 "w1"))
+      (list '(error supply-stale (file "a.js")) '(ok (items) (stale 3))))
+(let-values (((text bytes) (diagnostics-supply r17 "w1" "javascript" '() '() "a.js")))
+  (let ((s12* (bytes-offset bytes "return 12")))
+    (want "D7 a fresh supply after alpha grew: beta's range moved in the projected file, and its at is the same block-relative one"
+          (let-values (((text* ignored) (diagnostics-supply r17 "w1" "javascript"
+                                                             (list (diag r17-beta s12* (+ s12* 9) r17-alpha)) '("a.js") "a.js")))
+            (list (> s12* s12) (supply-in r17 text* "diagnostics" "--for" "w1") (diag-items r17 "w1")))
+          (list #t '(ok (supplied (facts 1) (files 1))) (list (list 'diagnostic r17-beta 'error "m" '(at 20 29)))))))
+
+;; ==== what the exporter refuses, a fact's file has no key for ====
+;; An unsafe path, and a child whose src is not bytes: the exporter refuses
+;; both, so a fact on the file is stale and a supply answers the exporter's
+;; own refusal (not supply-stale).
+(define r18 (make-store! "r18"))
+(define r18-gamma (id-in r18 "function gamma"))
+(define r18-b (file-in r18 "b.js"))
+(supply-now r18 "-" (list (sig r18-gamma "g")) '("b.js"))
+(want "V11 b.js's path set to ../b.js: gamma's fact is stale, and a supply answers what export-code answers, unsafe-path"
+      (let* ((set-answer (ask r18 'set r18-b "path" "../b.js"))
+             (x (ask r18 'export-code (fresh-dir! "unsafe")))
+             (s (supply-now r18 "-" (list (sig r18-gamma "g")) '("b.js"))))
+        (list (head-of set-answer) (sig-of r18 r18-gamma) (equal? s x) (and (pair? s) (assq 'reason (cddr s)))))
+      (list 'ok absent-stale-1 #t '(reason unsafe-path)))
+;; A src that is text rather than bytes has no producer on the caller's
+;; path (a text src is stored as bytes); a record from elsewhere is the only
+;; way it arrives, so it is written as one.
+(define r19 (make-store! "r19"))
+(define r19-alpha (id-in r19 "function alpha"))
+(define r19-beta (id-in r19 "function beta"))
+(supply-now r19 "-" (list (sig r19-alpha "a")) '("a.js"))
+(want "V11 beta's src arrives as text in a record: a.js does not project (unexportable-block), and alpha's fact, which does not list beta, is stale"
+      (begin (forge-record! r19 (format "(set ~s src ~s)" r19-beta "function beta() {}\n"))
+             (let ((x (ask r19 'export-code (fresh-dir! "text-src"))))
+               (list (sig-of r19 r19-alpha) (head-of x) (and (pair? x) (assq 'reason (cddr x))))))
+      (list absent-stale-1 '(error projection-invalid) '(reason unexportable-block)))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nsupply complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

@@ -60,7 +60,8 @@
         (only (theourgia wire) encode-record storable-encode)
         (only (theourgia log) log-publish! segment-sha)
         (only (theourgia request) ev-actor ev-payload actor-sub)
-        (only (theourgia code-project) code-field))
+        (only (theourgia code-project) code-field)
+        (only (theourgia digest) sha256 bytevector->hex))
 
 (define failures 0)
 (define rows 0)
@@ -1010,6 +1011,29 @@
     ;; read's items mode
     (cons 'read (seeded (lambda (st x s) (census-ask st 'read (census-get s 'B) "--recursive"))))
     (cons 'refs (seeded (lambda (st x s) (census-ask st 'refs (census-get s 'E)))))
+    ;; A writer's diagnostics need a projected file and a supply for that
+    ;; writer first: one python file is imported, exported from the
+    ;; writer's view, and one diagnostic supplied against it.
+    (cons 'diagnostics
+          (seeded (lambda (st x s)
+                    (let ((w (census-get s 'writer)) (in (string-append x "/diag-in"))
+                          (out (string-append x "/diag-out")) (f (string-append x "/diag.sexp")))
+                      (mkdir-p! in)
+                      (mkdir-p! out)
+                      (census-write! (string-append in "/m.py") "def marmot():\n    pass\n")
+                      (census-ask st 'import-code in)
+                      (census-ask st 'export-code out "--working" "--writer" w)
+                      (let* ((bytes (call-with-port (open-file-input-port (string-append out "/m.py")) get-bytevector-all))
+                             (m (cadr (cadr (census-ask st 'grep "def marmot"))))
+                             (id (cadr m)))
+                        (census-write! f (format "~s\n~s\n"
+                                                 (list 'supply 'diagnostics (list 'writer w) '(language "python")
+                                                       '(source (vscode "1.140.0"))
+                                                       (list 'files (list (list "m.py" (bytevector->hex (sha256 bytes)))))
+                                                       '(replaces ("m.py")))
+                                                 (list 'diagnostic id 'warning "w" '(range 0 3) (list 'depends (list id)))))
+                        (census-ask st 'supply "diagnostics" f "--for" w)
+                        (census-ask st 'diagnostics "--writer" w))))))
     (cons 'reach (seeded (lambda (st x s) (census-ask st 'reach (census-get s 'E) "--rel" "calls" "--depth" "2"))))
     (cons 'search (seeded (lambda (st x s) (census-ask st 'search "needle"))))
     (cons 'grep (seeded (lambda (st x s) (census-ask st 'grep "needle"))))
@@ -1172,7 +1196,7 @@
 
 (want "F58 these verbs answer with tagged items"
       (census-class 'tagged)
-      '(commit conflicts def diff drafts grep import-code log refs search tag whereis))
+      '(commit conflicts def diagnostics diff drafts grep import-code log refs search tag whereis))
 (want "F58 these verbs answer with items that carry no tag"
       (census-class 'untagged)
       '(read))
@@ -1189,7 +1213,7 @@
 ;; is filtered out as not a real tag.
 (want "F58 each tagged verb's heads, and how many of its items carry none"
       (census-detail 'tagged)
-      '((commit (ok) . 0) (conflicts (orphan) . 0) (def (ok) . 0)
+      '((commit (ok) . 0) (conflicts (orphan) . 0) (def (ok) . 0) (diagnostics (diagnostic) . 0)
         (diff (added changed removed) . 0) (drafts (draft) . 0) (grep (match) . 0)
         (import-code (ok) . 0) (log (entry) . 0) (refs (ref) . 0) (search (hit) . 0)
         (tag (tag) . 0) (whereis (def export) . 0)))

@@ -104,7 +104,7 @@
         ;; so a version could never be restored into a named writer's
         ;; slot from the command line. Same shape as the `eval` entry
         ;; below -- a handler reading an option this table does not list.
-        ((read drafts discard restore export-code export-md) '("--writer"))
+        ((read drafts discard restore export-code export-md diagnostics) '("--writer"))
         ;; `--for` names whose view a supply was projected from, and so
         ;; whose table it fills; "-" when absent.
         ((supply) '("--for"))

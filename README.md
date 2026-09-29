@@ -689,6 +689,29 @@ Lists that writer's live drafts. Each carries `block`, `writer`,
 moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
 (whether the draft's bytes differ from what is committed).
 
+Once an editor has supplied diagnostics for the writer (see "Derived data
+from an editor"), each draft also carries `(diagnostics <n>)`, the
+diagnostics on its block that are still fresh in the writer's working view,
+and the answer carries `(via ...)` and `(stale <n>)` for them. A writer with
+no such table gets the answer it always got.
+
+### `diagnostics`
+
+    (diagnostics ("--writer" <name>))
+
+It answers:
+
+    (ok (items (diagnostic <id> <severity> "<message>" (at <start> <end>)) ...))
+
+The diagnostics an editor supplied for this writer (`supply diagnostics
+--for <writer>`), judged against the writer's working view. `<severity>` is
+`error`, `warning`, `information` or `hint`. `(at <start> <end>)` is a byte
+range of the block's own src, so an edit of another block does not move it;
+a range the editor gave inside a marker line, or across two blocks, is
+`(at unmappable)`. Items are ordered by block and then by start. The answer
+carries `(via ...)` for the diagnostics it lists and `(stale <n>)` for those
+dropped because what they were computed from has changed.
+
 ### `discard`
 
     (discard <block> ("--writer" <name>))

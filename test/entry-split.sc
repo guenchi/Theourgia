@@ -99,7 +99,7 @@
 ;; ---- F46-8: core.sc answers as the old program did on a338bcd (oracle bytes) --
 (printf "== F46-8: core.sc, the oracle rows ==\n")
 (define verbs-line
-  "(verbs describe init insert set move del link unlink write restore commit drafts discard batch split-suggest import-code export-code def import-md export-md supply adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts)")
+  "(verbs describe init insert set move del link unlink write restore commit drafts diagnostics discard batch split-suggest import-code export-code def import-md export-md supply adopt check snapshot publish outline read refs reach whereis search grep log tag diff conflicts)")
 (let ((d (row-dir!)))
   (want "F46-8 core.sc with an empty argv prints the usage line on stdout, the machine-home line on stderr, exit 1"
         (let ((r (run-in d "core.sc" "")))
