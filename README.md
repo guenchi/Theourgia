@@ -129,12 +129,13 @@ as a write's state section says when it cannot describe a block.
 `--signature` answers the signature an editor supplied for the block (see
 "Derived data from an editor"):
 
-    (ok (signature "<text>") (via (vscode "<version>" "<languageId>")))
-    (ok (signature absent))
+    (ok (signature "<text>") (stale <n>) (via (vscode "<version>" "<languageId>")))
+    (ok (signature absent) (stale <n>) (via))
 
 from the committed store's facts, or with `--working` from the writer's own
-facts judged against its working view. A fact that no longer matches what it
-was computed from is not used, and `(stale <n>)` counts those. `--signature`
+facts judged against its working view; with no table at all it is
+`(ok (signature absent))`. A fact that no longer matches what it was computed
+from is not used, and `(stale <n>)` counts those about this block. `--signature`
 with `--md`, `--recursive` or `--working-info` is refused with
 `(error bad-request incompatible-signature-options)`.
 
@@ -199,9 +200,9 @@ provenance that supplied them:
 
     (ref (from <id>) (rel calls) (via (vscode "<version>" "<languageId>")))
 
-The answer then carries `(via ...)` for them, and `(stale <n>)` for the
-supplied calls into this block that were dropped because what they were
-computed from has changed.
+Once a calls table was read the answer carries `(stale <n>)`, the supplied
+calls into this block that were dropped because what they were computed from
+has changed, and `(via ...)` for the rows it shows.
 
 ### `reach`
 
@@ -215,10 +216,13 @@ The blocks this block reaches over the edges an editor supplied under
 `<rel>` (`calls` when not given), following them outward, up to `<n>` hops
 (1 when not given). The block itself is at depth 0; every block is listed
 once, at the fewest hops that reach it, so a cycle ends. An edge written with
-`link` is not followed: those are `refs`' to show. `(stale <n>)` is always
-there and counts the supplied edges out of the blocks the walk went on from
-that were dropped because what they were computed from has changed;
-`(via ...)` names the provenances of the edges that reached a block.
+`link` is not followed: those are `refs`' to show. A relation no supply
+produces edges of -- today every name but `calls` -- is refused with
+`(error unknown-relation (rel <rel>))`. Once a calls table was read,
+`(stale <n>)` counts the supplied edges out of the blocks the walk went on
+from that were dropped because what they were computed from has changed,
+and `(via ...)` names the provenances of the edges that reached a block;
+with no table the answer is `(ok (reached ((<id> 0))))`.
 
 ### `search`
 
@@ -267,9 +271,9 @@ Keywords an editor supplied (see "Derived data from an editor") are
 searched only for a block with no keywords of its own author's, and score as
 src does, 2 or 1, below any author's keywords; a hit found there names
 `derived-keywords` among its fields. When a table of such keywords was read,
-the `scanned` clause names `derived-keywords` too, and the answer carries
-`(via ...)` for the keywords it used and `(stale <n>)` for the facts it could
-not use.
+the `scanned` clause names `derived-keywords` too, and the answer ends with
+`(stale <n>)`, the keyword facts it could not use, and `(via ...)` for the
+keywords behind the hits it shows.
 
 Only a `code` or `library` block has names at all -- a name is something defined
 or carried, not a field anyone may set -- so `search` and `whereis` ask the same
@@ -600,9 +604,9 @@ before the field existed. Without the option the listing is unchanged.
 
 `--with-signatures` appends `  :: <signature>` to each row an editor
 supplied a signature for (after the keywords' brackets when both are asked
-for), from the committed store's facts. The answer then carries
-`(via ...)` for the signatures it printed and `(stale <n>)` for the facts
-it could not use.
+for), from the committed store's facts. Once a table was read the answer
+ends with `(stale <n>)`, the signature facts it could not use, and
+`(via ...)` for the signatures it printed.
 
 ## Drafts, and committing them
 
@@ -692,7 +696,7 @@ moment), `fresh` (whether `based-on` is still `now`) and `unchanged`
 Once an editor has supplied diagnostics for the writer (see "Derived data
 from an editor"), each draft also carries `(diagnostics <n>)`, the
 diagnostics on its block that are still fresh in the writer's working view,
-and the answer carries `(via ...)` and `(stale <n>)` for them. A writer with
+and the answer ends with `(stale <n>)` and `(via ...)` for them. A writer with
 no such table gets the answer it always got.
 
 ### `diagnostics`
@@ -708,9 +712,9 @@ The diagnostics an editor supplied for this writer (`supply diagnostics
 `error`, `warning`, `information` or `hint`. `(at <start> <end>)` is a byte
 range of the block's own src, so an edit of another block does not move it;
 a range the editor gave inside a marker line, or across two blocks, is
-`(at unmappable)`. Items are ordered by block and then by start. The answer
-carries `(via ...)` for the diagnostics it lists and `(stale <n>)` for those
-dropped because what they were computed from has changed.
+`(at unmappable)`. Items are ordered by block and then by start. Once a table
+was read the answer ends with `(stale <n>)`, the diagnostics dropped because
+what they were computed from has changed, and `(via ...)` for those it lists.
 
 ### `discard`
 
@@ -1038,6 +1042,16 @@ in, the language's comment wrapping and the ordered list of the file's
 blocks. A fact whose inputs changed is not used, and the answers that
 read facts count it. A change in a file a fact does not list is not seen
 until the next supply.
+
+Every answer that consulted a table of facts ends, after its own clauses,
+with `(stale <n>)` and then `(via <provenance> ...)`, and only then: an
+answer that read no table is the answer it was before tables existed.
+`stale` counts the stale facts among those that answer consulted -- the
+facts about one block for `read --signature`, the calls into one block for
+`refs`, the whole table for `outline` and `search` -- so each verb's count
+is its own; it may be 0. `via` names the distinct provenances of the facts
+the answer used, and may be empty; a stale fact's provenance is never named.
+A signature fact's `(kind <k>)` is kept in the table and not shown.
 
 ## Checking, snapshotting, adopting
 

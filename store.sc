@@ -1480,7 +1480,8 @@
           ;; does not know which one it has.
           (cons (quote defs-names) (defs-index-name-count state)))
     (if (and (pair? derived) (car derived))
-        (list (cons (quote derived-via) (cadr (car derived)))
+        (list (cons (quote derived-tables) (car (car derived)))
+              (cons (quote derived-via) (cadr (car derived)))
               (cons (quote derived-stale) (caddr (car derived))))
         (quote ()))))
 

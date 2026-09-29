@@ -55,7 +55,7 @@
           (only (theourgia request) req-id-ok?)
           (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
                 derived-signature derived-signature-table derived-keyword-table
-                derived-calls-into derived-reach derived-facts)
+                derived-calls-into derived-reach derived-facts supplied-relations)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -651,7 +651,7 @@
                                                x))
                                          (cdr (cadr answer)))))
                         (cddr answer)
-                        (derived-clauses (map cadr used) stale)))))))))
+                        (derived-clauses tables (map cadr used) stale)))))))))
 
   ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
   ;; committed state's table ("-") against the committed state, or with
@@ -666,9 +666,9 @@
                       (values "-" (reduction-for store state)))))
       (if (not (state-read view id))
           (unknown-id view id)
-          (let-values (((text vias stale) (derived-signature store table-writer view id)))
+          (let-values (((text vias stale tables) (derived-signature store table-writer view id)))
             (append (list 'ok (list 'signature (or text 'absent)))
-                    (derived-clauses vias stale))))))
+                    (derived-clauses tables vias stale))))))
 
   (define (one-write store actor intent req . check)
     (let ((answers (with-store-write store (lambda (state view) (list intent))
@@ -1140,7 +1140,7 @@
                           (lambda ()
                             (let-values (((facts stale tables) (writer-diagnostics store w)))
                               (append (items (map car facts))
-                                      (derived-clauses (map cadr facts) stale))))))))))
+                                      (derived-clauses tables (map cadr facts) stale))))))))))
       (cons 'discard
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))
@@ -1298,7 +1298,7 @@
                                       ;; THE VIA NAMES WHAT WAS PRINTED: the
                                       ;; lookup notes a provenance only for a
                                       ;; row the listing drew.
-                                      (let-values (((lookup stale) (derived-signature-table store "-" st)))
+                                      (let-values (((lookup stale tables) (derived-signature-table store "-" st)))
                                         (let* ((used '())
                                                (signature-of
                                                  (lambda (id)
@@ -1306,7 +1306,7 @@
                                                      (and e (begin (set! used (cons (cadr e) used)) (car e)))))))
                                           (let ((listing (outline-text st (and depth (count-argument depth))
                                                                        with-keywords signature-of)))
-                                            (append (text listing) (derived-clauses (reverse used) stale)))))))))))))))
+                                            (append (text listing) (derived-clauses tables (reverse used) stale)))))))))))))))
       ;; A FILE-LEVEL BLOCK HOLDS ALMOST NOTHING. Its own `src` is the
       ;; front matter and whatever sits above the first heading, which is
       ;; usually empty -- everything a reader wants is in the sections
@@ -1421,7 +1421,7 @@
                             ;; AN EDITOR'S CALLS EDGES INTO THIS BLOCK FOLLOW
                             ;; THE STORE'S OWN ROWS, their via the provenance
                             ;; that supplied them rather than a symbol.
-                            (let-values (((edges stale)
+                            (let-values (((edges stale tables)
                                           (derived-calls-into store "-" (reduction-for store state) (car args))))
                               (append
                                 (items (map (lambda (r)
@@ -1431,11 +1431,13 @@
                                             (append (cadr a)
                                                     (map (lambda (e) (list (car e) 'calls (caddr e)))
                                                          (list-sort (lambda (x y) (string<? (car x) (car y))) edges)))))
-                                (derived-clauses (map caddr edges) stale)))
+                                (derived-clauses tables (map caddr edges) stale)))
                             a)))))))
       ;; OVER THE EDGES AN EDITOR SUPPLIED ONLY: an edge a writer linked by
-      ;; hand is `refs`' to show. The stale count is always there, so a walk
-      ;; that reached nothing says whether it had edges it could not use.
+      ;; hand is `refs`' to show, and a relation no supply produces is
+      ;; refused by name rather than answered as the block alone. Once a
+      ;; table was read the stale count is there even when 0, so a walk that
+      ;; reached nothing says whether it had edges it could not use.
       (cons 'reach
             (lambda (store actor args req options state writer cwd)
               (let ((rel (argument-option options "--rel")) (depth (argument-option options "--depth")))
@@ -1445,14 +1447,17 @@
                     (guarded
                       (lambda ()
                         (let ((view (reduction-for store state)) (id (car args)))
-                          (if (not (state-read view id))
-                              (unknown-id view id)
-                              (let-values (((reached vias stale)
-                                            (derived-reach store "-" view id
-                                                           (string->symbol (or rel "calls"))
-                                                           (if depth (count-argument depth) 1))))
-                                (append (list 'ok (list 'reached reached) (list 'stale stale))
-                                        (derived-clauses vias 0)))))))))))
+                          (cond
+                            ((not (state-read view id)) (unknown-id view id))
+                            ((not (memq (string->symbol (or rel "calls")) supplied-relations))
+                             (list 'error 'unknown-relation (list 'rel (string->symbol rel))))
+                            (else
+                             (let-values (((reached vias stale tables)
+                                           (derived-reach store "-" view id
+                                                          (string->symbol (or rel "calls"))
+                                                          (if depth (count-argument depth) 1))))
+                               (append (list 'ok (list 'reached reached))
+                                       (derived-clauses tables vias stale))))))))))))
       ;; NEVER: A NAME CAN BE IN A LIBRARY WITHOUT BEING DEFINED THERE, AND
       ;; THE ANSWER SAYS WHICH IT IS. Three of this tree's own libraries
       ;; define nothing -- they re-export what igropyr defines -- so an answer
@@ -1544,8 +1549,9 @@
                                            (list (list 'truncated (list 'hits omitted)))
                                            '())
                                        (scan-clauses r (null? hits))
-                                       (let ((via (assq 'derived-via r)) (stale (assq 'derived-stale r)))
-                                         (if via (derived-clauses (cdr via) (cdr stale)) '())))))))))
+                                       (let ((tables (assq 'derived-tables r)) (via (assq 'derived-via r))
+                                             (stale (assq 'derived-stale r)))
+                                         (if tables (derived-clauses (cdr tables) (cdr via) (cdr stale)) '())))))))))
       ;; NEVER: THE ITEMS ARE `match`, NOT `hit`, AND THE TAG IS THE ONLY
       ;; THING THAT SAYS SO. A grep line and a search hit have the same
       ;; arity and the same types in the same places -- an id, an integer, a

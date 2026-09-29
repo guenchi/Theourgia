@@ -2235,8 +2235,11 @@
     ;; it runs for `eval`: the poll that asks whether it has ended, and the
     ;; signal sent at its deadline. Each is a stage so a fault can be aimed
     ;; at the one call and not at the daemon starts that also wait and signal.
+    ;; `derived` is the write of a table of facts an editor supplied, beside
+    ;; the store and never in it: a fault aimed there shows that a failed
+    ;; write leaves the table a reader had.
     '(deliver-barrier commit registry publish snapshot repair report working index conn client
-      eval-cleanup presence presence-decision mcp-wait mcp-signal admission))
+      eval-cleanup presence presence-decision mcp-wait mcp-signal admission derived))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that

@@ -40,7 +40,7 @@
 (library (theourgia derived)
   (export supply-derived clear-derived derived-facts derived-kinds derived-clauses
           derived-signature derived-signature-table derived-keyword-table
-          derived-calls-into derived-reach
+          derived-calls-into derived-reach supplied-relations
           table-file-name percent-encode read-supply-header)
   (import (rnrs)
           (only (theourgia reduce) state-read reduce-applied-cut)
@@ -57,6 +57,10 @@
   ;; ---- names ----------------------------------------------------------------
 
   (define derived-kinds '(signatures calls diagnostics))
+  ;; THE RELATIONS A SUPPLY PRODUCES EDGES OF: `reach` walks these and
+  ;; refuses any other name. uses and guards are reserved but no supply
+  ;; produces them yet.
+  (define supplied-relations '(calls))
   (define severities '(error warning information hint))
 
   ;; EVERY BYTE OUTSIDE [A-Za-z0-9_.] IS %XX, so a writer name or a language
@@ -341,6 +345,11 @@
                                                (append payload (list (list 'at (caddr m) (cadddr m)))))
                                               ((and (eq? (car m) 'unmappable) (equal? (cadr m) subject))
                                                (append payload (list '(at unmappable))))
+                                              ;; A RANGE THAT MAPS TO NO BLOCK AT ALL -- in a file with
+                                              ;; no blocks -- lands here too. R1 v11 holds it
+                                              ;; unreachable (no fact can name a block of such a file);
+                                              ;; code-markers1's row for a file with no blocks is a
+                                              ;; tripwire, not a measurement.
                                               (else (malformed n 'id-range-mismatch)))))
                                         payload)))
                               (make-fact own payload
@@ -431,34 +440,38 @@
     (let-values (((fresh stale tables) (derived-facts* store kind writer view relevant?)))
       (values fresh (length stale) tables)))
 
-  ;; WHAT AN ANSWER THAT READ FACTS CARRIES: `(via <provenance> ...)`, the
-  ;; distinct provenances of the facts it USED, only when it used one; and
-  ;; `(stale <n>)` only when facts it would have read were dropped. A stale
-  ;; fact's provenance is never named: it was not used.
-  (define (derived-clauses vias stale)
-    (append (let ((distinct (let loop ((vs vias) (out '()))
-                              (cond ((null? vs) (reverse out))
-                                    ((member (car vs) out) (loop (cdr vs) out))
-                                    (else (loop (cdr vs) (cons (car vs) out)))))))
-              (if (null? distinct) '() (list (cons 'via distinct))))
-            (if (> stale 0) (list (list 'stale stale)) '())))
+  ;; WHAT AN ANSWER THAT CONSULTED A TABLE CARRIES, after its body and in
+  ;; this order for every verb: `(stale <n>)`, the stale facts among those
+  ;; the answer consulted (possibly 0), then `(via <provenance> ...)`, the
+  ;; distinct provenances of the facts it USED (possibly none). A stale
+  ;; fact's provenance is never named: it was not used. An answer that read
+  ;; no table carries neither, and is the answer it was before tables
+  ;; existed.
+  (define (derived-clauses tables vias stale)
+    (if (= tables 0)
+        '()
+        (list (list 'stale stale)
+              (cons 'via (let loop ((vs vias) (out '()))
+                           (cond ((null? vs) (reverse out))
+                                 ((member (car vs) out) (loop (cdr vs) out))
+                                 (else (loop (cdr vs) (cons (car vs) out)))))))))
 
   (define (payload-about? tag id)
     (lambda (payload) (and (eq? (car payload) tag) (equal? (cadr payload) id))))
   (define (payload-tagged? tag)
     (lambda (payload) (eq? (car payload) tag)))
 
-  ;; ONE BLOCK'S SIGNATURE. -> (values "<text>" | #f, (<via> ...), <stale>)
+  ;; ONE BLOCK'S SIGNATURE. -> (values "<text>" | #f, (<via> ...), <stale>, <tables read>)
   ;; When two fresh facts give one block a signature (two languages' tables,
   ;; say), the first in table order is the answer.
   (define (derived-signature store writer view id)
     (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-about? 'signature id))))
       (if (null? facts)
-          (values #f '() stale)
-          (values (caddr (car (car facts))) (list (cadr (car facts))) stale))))
+          (values #f '() stale tables)
+          (values (caddr (car (car facts))) (list (cadr (car facts))) stale tables))))
 
   ;; EVERY BLOCK'S SIGNATURE, for a listing.
-  ;; -> (values <lookup: id -> (<text> <via>) | #f> <stale>)
+  ;; -> (values <lookup: id -> (<text> <via>) | #f> <stale> <tables read>)
   (define (derived-signature-table store writer view)
     (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-tagged? 'signature))))
       (let ((t (make-hashtable string-hash string=?)))
@@ -467,7 +480,7 @@
                       (unless (hashtable-contains? t id)
                         (hashtable-set! t id (list (caddr (car f)) (cadr f))))))
                   facts)
-        (values (lambda (id) (hashtable-ref t id #f)) stale))))
+        (values (lambda (id) (hashtable-ref t id #f)) stale tables))))
 
   ;; EVERY BLOCK'S DERIVED KEYWORDS, for search.
   ;; -> (list <lookup: id -> (("<word>" ...) <via>) | #f> <tables read> <stale>)
@@ -487,17 +500,17 @@
         (list (lambda (id) (hashtable-ref t id #f)) tables stale))))
 
   ;; THE SUPPLIED EDGES INTO ONE BLOCK, for `refs`.
-  ;; -> (values ((<from> <to> <via>) ...) <stale>)
+  ;; -> (values ((<from> <to> <via>) ...) <stale> <tables read>)
   (define (derived-calls-into store writer view id)
     (let-values (((facts stale tables)
                   (derived-facts store 'calls writer view
                                  (lambda (p) (and (eq? (car p) 'calls) (equal? (caddr p) id))))))
-      (values (map (lambda (f) (list (cadr (car f)) (caddr (car f)) (cadr f))) facts) stale)))
+      (values (map (lambda (f) (list (cadr (car f)) (caddr (car f)) (cadr f))) facts) stale tables)))
 
   ;; WHAT A BLOCK REACHES OVER SUPPLIED EDGES OF ONE RELATION, outward, up to
   ;; `depth` hops; the block itself is at depth 0, and every block is listed
   ;; once, at the fewest hops that reach it.
-  ;; -> (values ((<id> <depth>) ...) (<via> ...) <stale>)
+  ;; -> (values ((<id> <depth>) ...) (<via> ...) <stale> <tables read>)
   ;; The vias are those of the edges that reached a block; the stale count
   ;; is of the edges out of the blocks the walk went on from, dropped
   ;; because what they were computed from has changed.
@@ -510,7 +523,8 @@
         (let walk ((frontier (list id)) (d 0) (seen (list (list id 0))) (vias '()) (expanded '()))
           (if (or (null? frontier) (>= d depth))
               (values (reverse seen) (reverse vias)
-                      (length (filter (lambda (p) (member (cadr p) expanded)) stale)))
+                      (length (filter (lambda (p) (member (cadr p) expanded)) stale))
+                      tables)
               (let step ((ns frontier) (next '()) (seen seen) (vias vias))
                 (if (null? ns)
                     (walk (reverse next) (+ d 1) seen vias (append expanded frontier))
