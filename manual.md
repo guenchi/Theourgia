@@ -1,14 +1,16 @@
 # Theourgia manual
 
-This file is generated from the store it describes: the prose is its blocks and the reference is what `describe` answers, so neither can drift from the thing it documents.
-
 ## Installing
 
-One set of prerequisites: Chez Scheme, and igropyr. There is no Python anywhere in this, and no build step beyond what Chez does itself.
+One set of prerequisites: Chez Scheme, igropyr, and libuv. No build step when run from source; objects are one command.
 
-### npm
+Chez Scheme 10.x, measured on 10.1 and 10.3; the minimum is an open release item.
 
-`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the prerequisites; when one is missing it prints the platform's install line.
+macOS: `brew install chezscheme libuv`
+Debian / Ubuntu: `apt install chezscheme libuv1-dev`
+Fedora: `dnf install chez-scheme libuv-devel`
+Arch: `pacman -S chez-scheme libuv`
+FreeBSD: `pkg install chez-scheme libuv`
 
 ### Homebrew
 
@@ -20,6 +22,10 @@ brew install theourgia
 ```
 
 The tap arrives with the 1.0 release.
+
+### npm
+
+`npm i -g theourgia` installs the wrapper scripts and the sources. It only checks the prerequisites; when one is missing it prints the platform's install line. The npm package arrives with the 1.0 release.
 
 ### From source
 
