@@ -227,9 +227,12 @@
   (and (pair? f) (eq? (car f) 'define) (pair? (cdr f))
        (if (pair? (cadr f)) (caadr f) (cadr f))))
 ;; The row above sees behaviour only; this one reads the text. The seam is
-;; a meta-cond on a value read at EXPANSION, its ordinary branch defines
-;; forced-key as the constant #f, and the variable's name appears nowhere
-;; else in the library -- so an ordinary build has no code that reads it.
+;; a meta-cond of exactly two clauses on a value read at EXPANSION, its
+;; ordinary branch defines forced-key as the constant #f, and the
+;; variable's name occurs three times in the file's text -- two comments
+;; and the one getenv, inside the injection clause -- so an ordinary build
+;; has no code that reads it, and a further clause or read that names it
+;; changes the count.
 (define table-body (library-body (forms-of "../platform-numbers.sc")))
 (define seam-form (find (lambda (f) (and (pair? f) (eq? (car f) 'meta-cond))) table-body))
 (define (holds-string? x str)
@@ -241,9 +244,14 @@
                                         (pair? (cddr f)) (eq? (caddr f) 'inject-mode)))
                        table-body)
                  #t)
-            (length (filter (lambda (f) (holds-string? f "THEOURGIA_PLATFORM_KEY")) table-body))
+            (and seam-form (length (cdr seam-form)))
+            (let ((text (call-with-input-file "../platform-numbers.sc" get-string-all)) (k "THEOURGIA_PLATFORM_KEY"))
+              (let loop ((i 0) (n 0))
+                (cond ((> (+ i (string-length k)) (string-length text)) n)
+                      ((string=? (substring text i (+ i (string-length k))) k) (loop (+ i 1) (+ n 1)))
+                      (else (loop (+ i 1) n)))))
             (and seam-form (holds-string? (cadr seam-form) "THEOURGIA_PLATFORM_KEY")))
-      (list '(eq? inject-mode 'on) '(else (define (forced-key) #f)) #t 1 #t))
+      (list '(eq? inject-mode 'on) '(else (define (forced-key) #f)) #t 2 3 #t))
 
 ;; ---- P4: the probe, compiled here, against this platform's row -----------------
 ;;
@@ -433,11 +441,9 @@
     ("../ffi.sc" EOVERFLOW (platform-number (quote EOVERFLOW)))
     ("../ffi.sc" EPERM (platform-number (quote EPERM)))
     ("../ffi.sc" EROFS (platform-number (quote EROFS)))
-    ("../ffi.sc" ESRCH (platform-number (quote ESRCH)))
     ("../ffi.sc" EWOULDBLOCK (platform-number (quote EWOULDBLOCK)))
     ("../ffi.sc" FD_CLOEXEC (platform-number (quote FD_CLOEXEC)))
     ("../ffi.sc" FIOCLEX (platform-number (quote FIOCLEX)))
-    ("../ffi.sc" F_DUPFD (platform-number (quote F_DUPFD)))
     ("../ffi.sc" F_GETFD (platform-number (quote F_GETFD)))
     ("../ffi.sc" LOCK_EX (platform-number (quote LOCK_EX)))
     ("../ffi.sc" LOCK_NB (platform-number (quote LOCK_NB)))
@@ -507,10 +513,17 @@
     ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
     ("../ffi.sc" waitpid-status (platform-type-size (quote int)))
     ("../mcp/server.sc" kill-at-deadline (platform-number (quote SIGKILL)))))
-(want "PN-P6 (a) the reads of the table and the struct helpers are exactly the enumerated ones"
+;; compared as MULTISETS: the same read twice in one definition is two
+;; entries, and replacing one of them with a literal leaves one too few
+(define (multiset-minus xs ys)
+  (let loop ((xs xs) (ys ys) (out '()))
+    (cond ((null? xs) (reverse out))
+          ((member (car xs) ys) (loop (cdr xs) (let drop ((ys ys)) (if (equal? (car ys) (car xs)) (cdr ys) (cons (car ys) (drop (cdr ys))))) out))
+          (else (loop (cdr xs) ys (cons (car xs) out))))))
+(want "PN-P6 (a) the reads of the table and the struct helpers are exactly the enumerated ones, counted"
       (let ((got (read-sites)))
-        (list (filter (lambda (x) (not (member x expected-read-sites))) got)
-              (filter (lambda (x) (not (member x got))) expected-read-sites)))
+        (list (multiset-minus got expected-read-sites)
+              (multiset-minus expected-read-sites got)))
       '(() ()))
 
 ;; (e) A NUMBER READ INTO A DEFINITION IS USED: a definition of a VALUE
@@ -518,10 +531,17 @@
 ;; written back as a literal while the read stayed, which (a) alone would
 ;; not see. A procedure's reads are its own use, and some are called only
 ;; from other files, so procedures are not counted.
+;; references outside quotations, the defining form itself left out
 (define (symbol-count sym forms)
   (let count ((x forms))
-    (cond ((eq? x sym) 1) ((pair? x) (+ (count (car x)) (count (cdr x)))) (else 0))))
-(define all-bodies (apply append (map (lambda (f) (library-body (forms-of f))) scanned-files)))
+    (cond ((eq? x sym) 1)
+          ((and (pair? x) (eq? (car x) 'quote)) 0)
+          ((and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (eq? (cadr x) sym)) 0)
+          ((pair? x) (+ (count (car x)) (count (cdr x))))
+          (else 0))))
+;; the whole files, a library's export clause included: an exported value is
+;; used by whoever imports it
+(define all-bodies (apply append (map forms-of scanned-files)))
 ;; a top-level (define NAME <not a lambda>)
 (define (value-definition? n)
   (exists (lambda (f) (and (pair? f) (eq? (car f) 'define) (pair? (cdr f)) (eq? (cadr f) n)
@@ -534,7 +554,7 @@
               expected-read-sites)
     (reverse out)))
 (want "PN-P6 (e) every definition that holds a read is referred to beyond its own definition"
-      (filter (lambda (n) (<= (symbol-count n all-bodies) 1)) read-definitions)
+      (filter (lambda (n) (zero? (symbol-count n all-bodies))) read-definitions)
       '())
 
 (define (upper-name? s)
