@@ -27,21 +27,20 @@
 ;;; likes, and it has no notion of a partial write. So the descriptor is
 ;;; owned here, from open to close.
 ;;;
-;;; CONSTANTS ARE MEASURED, NOT REMEMBERED. Compiled against the system
-;;; headers on each platform rather than taken from a table:
+;;; CONSTANTS ARE MEASURED, NOT REMEMBERED, AND NONE IS WRITTEN HERE.
+;;; Every flag, errno, request number, struct size, offset and width this
+;;; file passes to or reads from the kernel is the platform's row in
+;;; (theourgia platform-numbers): the output of test/probe/layout.c,
+;;; compiled against the system headers on that platform.
 ;;;
-;;;   macOS 15.3 (arm64)  O_RDONLY 0  O_WRONLY 1  O_RDWR 2  O_APPEND 8
-;;;                       LOCK_SH 1  LOCK_EX 2  LOCK_NB 4  LOCK_UN 8
-;;;                       SEEK_SET 0  SEEK_CUR 1  SEEK_END 2
-;;;                       EINTR 4  EIO 5  EEXIST 17
-;;;                       F_FULLFSYNC 51  sizeof(off_t) 8
-;;;   FreeBSD 15.0        identical for all of the above except
-;;;                       F_FULLFSYNC, which that platform does not
-;;;                       define at all and which is never issued there
-;;;
-;;; A third platform means compiling the same program there. The values
-;;; agreeing across two Unixes is exactly what makes assuming a third
-;;; tempting, and exactly what would make a wrong one hard to notice.
+;;; This file once held them as literals, measured on macOS and FreeBSD,
+;;; with this warning: the values agreeing across two Unixes is exactly
+;;; what makes assuming a third tempting, and exactly what would make a
+;;; wrong one hard to notice. The third, Linux, disagreed on seven of
+;;; them -- O_APPEND among them, so a segment opened for append was
+;;; written from its start -- and none of it announced itself until a
+;;; Linux machine ran the core. A fifth platform means compiling the
+;;; probe there and adding its row.
 ;;;
 ;;; open(2) IS VARIADIC AND ITS MODE IS NOT PASSED FROM HERE. The third
 ;;; argument lives in the `...`, so a fixed-arity foreign declaration
@@ -397,7 +396,33 @@
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
           (only (igropyr util) string-contains?)
+          (only (theourgia platform-numbers)
+                platform-number platform-field platform-field-present?
+                platform-struct-size platform-struct-value platform-type-size)
           (theourgia trace))
+
+  ;; ---- a platform's struct fields, at the row's offsets and sizes ----------
+  ;;
+  ;; Every read or write of a field inside a struct the kernel fills or
+  ;; reads goes through these, so the offset and the width both come from
+  ;; the platform's row (theourgia platform-numbers). SIGNEDNESS IS THE
+  ;; READER'S, from the C type: the rows carry none, and st_size (off_t)
+  ;; is the one field read signed.
+  (define (row-uint-ref bv sname fname)
+    (bytevector-uint-ref bv (platform-field sname fname 'offset) (native-endianness)
+                         (platform-field sname fname 'size)))
+  (define (row-sint-ref bv sname fname)
+    (bytevector-sint-ref bv (platform-field sname fname 'offset) (native-endianness)
+                         (platform-field sname fname 'size)))
+  (define (row-uint-set! bv sname fname value)
+    (bytevector-uint-set! bv (platform-field sname fname 'offset) value (native-endianness)
+                          (platform-field sname fname 'size)))
+
+  ;; A pid the kernel writes back (posix_spawn's first argument), at the
+  ;; width of the row's pid_t, read unsigned as it always was.
+  (define (make-pid-buffer) (make-bytevector (platform-type-size 'pid_t) 0))
+  (define (pid-buffer-ref bv)
+    (bytevector-uint-ref bv 0 (native-endianness) (platform-type-size 'pid_t)))
 
   ;; Host adapters for the datum projection. Admission lives in source-lex;
   ;; all source-reader callers must admit the entire source before opening.
@@ -731,7 +756,7 @@
   ;; run anything, and a raise there would read as a different failure.
   (define (path-executable? path)
     (and (string? path)
-         (= 0 (c-access path 1))
+         (= 0 (c-access path (platform-number 'X_OK)))
          (let ((buf (make-bytevector stat-buffer-size 0)))
            (and (>= (c-stat path buf) 0)
                 (= (bitwise-and (st-mode-of buf) S_IFMT) S_IFREG)))))
@@ -866,8 +891,8 @@
 
   ;; ---- processes ----------------------------------------------------------
 
-  (define ESRCH 3)
-  (define EPERM 1)
+  (define ESRCH (platform-number 'ESRCH))
+  (define EPERM (platform-number 'EPERM))
 
   ;; A NEW SESSION, SO THE GUARDIAN CAN SIGNAL THE WHOLE GROUP LATER.
   ;; Answers the new session id, or raises with the errno: a child that
@@ -917,17 +942,17 @@
 
   ;; ---- resource limits ----------------------------------------------------
   ;;
-  ;; `struct rlimit` is two 64-bit values, current then maximum, on every
-  ;; platform this tree builds on. It is passed as bytes rather than
-  ;; described to Chez because a record layout is what the kernel reads,
-  ;; and this way the two fields cannot be swapped by a declaration that
-  ;; looks right.
-  (define RLIMIT_CPU 0)
+  ;; `struct rlimit`, current then maximum, at the sizes and offsets the
+  ;; platform's row gives (two 64-bit values on every measured row). It is
+  ;; passed as bytes rather than described to Chez because a record layout
+  ;; is what the kernel reads, and this way the two fields cannot be
+  ;; swapped by a declaration that looks right.
+  (define RLIMIT_CPU (platform-number 'RLIMIT_CPU))
 
   (define (rlimit-bytes cur max)
-    (let ((bv (make-bytevector 16 0)))
-      (bytevector-u64-native-set! bv 0 cur)
-      (bytevector-u64-native-set! bv 8 max)
+    (let ((bv (make-bytevector (platform-struct-size 'rlimit) 0)))
+      (row-uint-set! bv 'rlimit 'rlim_cur cur)
+      (row-uint-set! bv 'rlimit 'rlim_max max)
       bv))
 
   (define (setrlimit! resource cur max)
@@ -935,9 +960,9 @@
       (if (= r 0) 0 (errno))))
 
   (define (getrlimit resource)
-    (let ((bv (make-bytevector 16 0)))
+    (let ((bv (make-bytevector (platform-struct-size 'rlimit) 0)))
       (if (= 0 (c-getrlimit resource bv))
-          (cons (bytevector-u64-native-ref bv 0) (bytevector-u64-native-ref bv 8))
+          (cons (row-uint-ref bv 'rlimit 'rlim_cur) (row-uint-ref bv 'rlimit 'rlim_max))
           (cons #f (errno)))))
 
   ;; ---- resident size, per platform ----------------------------------------
@@ -952,20 +977,21 @@
   ;; using nothing" are opposite facts, and a sampler that treats the
   ;; first as the second reports a healthy child for a process that has
   ;; gone.
-  (define PROC_PIDTASKINFO 4)
-
   (define c-proc-pidinfo
     (and (foreign-entry? "proc_pidinfo")
          (foreign-procedure "proc_pidinfo" (int int integer-64 u8* int) int)))
 
+  ;; macOS only: PROC_PIDTASKINFO and proc_taskinfo exist on no other row,
+  ;; so they are read here, in the one branch that runs there, and never
+  ;; when the library is initialised. pti_resident_size's offset and the
+  ;; struct's size are the row's; the buffer is at least 256 bytes.
   (define (rss-darwin pid)
     (and c-proc-pidinfo
-         (let ((bv (make-bytevector 256 0)))
-           (let ((n (c-proc-pidinfo pid PROC_PIDTASKINFO 0 bv 256)))
+         (let* ((size (max 256 (platform-struct-size 'proc_taskinfo)))
+                (bv (make-bytevector size 0)))
+           (let ((n (c-proc-pidinfo pid (platform-number 'PROC_PIDTASKINFO) 0 bv size)))
              (and (> n 0)
-                  ;; pti_resident_size is the second 64-bit field of
-                  ;; proc_taskinfo, after pti_virtual_size.
-                  (bytevector-u64-native-ref bv 8))))))
+                  (row-uint-ref bv 'proc_taskinfo 'pti_resident_size))))))
 
   (define (rss-linux pid)
     (let ((path (string-append "/proc/" (number->string pid) "/statm")))
@@ -1013,11 +1039,12 @@
   ;; a layout. sysctl reports 1088 bytes there; a kernel that returns a
   ;; different size is one this offset was never measured against, and
   ;; answering #f is the honest response to that.
-  (define CTL_KERN 1)
-  (define KERN_PROC 14)
-  (define KERN_PROC_PID 1)
-  (define KI_RSSIZE-OFFSET 264)
-  (define KINFO_PROC-SIZE 1088)
+  ;;
+  ;; The offset, the size and the sysctl names are the FreeBSD row's (the
+  ;; probe's reading repeats both measurements above: ki_rssize at 264, 8
+  ;; bytes, the struct 1088). They exist on no Linux row, so they are read
+  ;; here, in the branch that runs on FreeBSD, and never when the library
+  ;; is initialised.
 
   (define c-sysctl
     (and (foreign-entry? "sysctl")
@@ -1031,14 +1058,14 @@
          (let ((mib (make-bytevector 16 0))
                (buf (make-bytevector 4096 0))
                (len (make-bytevector 8 0)))
-           (bytevector-u32-native-set! mib 0 CTL_KERN)
-           (bytevector-u32-native-set! mib 4 KERN_PROC)
-           (bytevector-u32-native-set! mib 8 KERN_PROC_PID)
+           (bytevector-u32-native-set! mib 0 (platform-number 'CTL_KERN))
+           (bytevector-u32-native-set! mib 4 (platform-number 'KERN_PROC))
+           (bytevector-u32-native-set! mib 8 (platform-number 'KERN_PROC_PID))
            (bytevector-u32-native-set! mib 12 pid)
            (bytevector-u64-native-set! len 0 4096)
            (and (= 0 (c-sysctl mib 4 buf len 0 0))
-                (= (bytevector-u64-native-ref len 0) KINFO_PROC-SIZE)
-                (* (bytevector-u64-native-ref buf KI_RSSIZE-OFFSET) (c-getpagesize))))))
+                (= (bytevector-u64-native-ref len 0) (platform-struct-size 'kinfo_proc))
+                (* (row-uint-ref buf 'kinfo_proc 'ki_rssize) (c-getpagesize))))))
 
   ;; NEVER: AND ZERO IS NOT A READING. Every branch below can answer 0 for a
   ;; process that is on its way out -- Linux prints `0 0 0 0 0 0 0` in
@@ -1094,7 +1121,7 @@
   ;;
   ;; NOTE: `F_DUPFD` gives the lowest free descriptor AT OR ABOVE the number
   ;; asked for, which is exactly "somewhere that is not 0, 1 or 2".
-  (define F_DUPFD 0)
+  (define F_DUPFD (platform-number 'F_DUPFD))
 
   ;; NEVER: THE DESCRIPTOR HANDED IN IS THIS PROCEDURE'S TO ACCOUNT FOR. On
   ;; the success path it is closed after being duplicated higher up; when
@@ -1193,7 +1220,7 @@
            (width (foreign-sizeof 'void*))
            (cells (foreign-alloc (* width (+ 1 (length argv)))))
            (strings (map c-string argv))
-           (pid-out (make-bytevector 4 0))
+           (pid-out (make-pid-buffer))
            (envp (foreign-ref 'void* (foreign-entry "environ") 0)))
       (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
         (foreign-set! 'void* cells (* i width) (car ps)))
@@ -1202,7 +1229,7 @@
         (for-each foreign-free strings)
         (foreign-free cells)
         (if (zero? rc)
-            (bytevector-u32-native-ref pid-out 0)
+            (pid-buffer-ref pid-out)
             (raise (fs-err 'spawn (car argv) rc))))))
 
   ;; ---- a descriptor a child must not inherit ------------------------------
@@ -1220,17 +1247,17 @@
   ;; variadic and F_SETFD's flags are its variadic argument, which a
   ;; fixed-arity declaration does not pass where the callee reads it on
   ;; every platform (the note on open(2) at the top of this file). FIOCLEX
-  ;; takes no third argument and sets the one flag there is. Its value,
-  ;; _IO('f', 1), is 0x20006601, measured from macOS's <sys/filio.h> and on
-  ;; FreeBSD 15.0 by a compiled probe (2026-09-29): the same on both. The
-  ;; getter asks fcntl(F_GETFD), which also takes no third argument.
+  ;; takes no third argument and sets the one flag there is. Its value is
+  ;; the one the platform's row gives (0x20006601 on macOS and FreeBSD, 0x5451 on
+  ;; Linux). The getter asks fcntl(F_GETFD), which also takes no third
+  ;; argument.
   ;;
   ;; A failure raises unreadable-entry naming the descriptor's path, like
   ;; every other failure on a descriptor this library opened. The injected
   ;; cloexec-fail stands where the ioctl would and skips it.
-  (define FIOCLEX #x20006601)
-  (define F_GETFD 1)
-  (define FD_CLOEXEC 1)
+  (define FIOCLEX (platform-number 'FIOCLEX))
+  (define F_GETFD (platform-number 'F_GETFD))
+  (define FD_CLOEXEC (platform-number 'FD_CLOEXEC))
 
   (define (fd-close-on-exec! fd)
     (let-values (((rc code)
@@ -1248,13 +1275,13 @@
       (not (zero? (fxand flags FD_CLOEXEC)))))
 
   ;; THE NUMBER OF PROCESSORS ONLINE, READ IN ONE PLACE: sysconf, which is not
-  ;; variadic. _SC_NPROCESSORS_ONLN is 58, measured from macOS's <unistd.h>
-  ;; and on FreeBSD 15.0 by a compiled probe (2026-09-29): the same on both.
+  ;; variadic. _SC_NPROCESSORS_ONLN is the platform row's (58 on macOS and
+  ;; FreeBSD, 84 on Linux).
   ;; THEOURGIA_EVAL_SLOTS_DEFAULT, a positive integer, replaces the reading:
   ;; a test seam, so a row can ask for a pool of a known size on any
   ;; machine; empty, it is unset (env-or). -> a positive integer, or #f when
   ;; the seam is set and not one, or the kernel gave no answer.
-  (define _SC_NPROCESSORS_ONLN 58)
+  (define _SC_NPROCESSORS_ONLN (platform-number '_SC_NPROCESSORS_ONLN))
 
   (define (online-processors)
     (let ((seam (env-or "THEOURGIA_EVAL_SLOTS_DEFAULT")))
@@ -1286,17 +1313,19 @@
   ;; this file does not forbid it: that note is about open(2), whose mode
   ;; sits in the variadic part a fixed-arity declaration cannot reach.
   ;; posix_spawn_file_actions_addopen takes its mode as a named argument.
-  ;; The values are read from macOS's <sys/fcntl.h> (O_WRONLY 0x1, O_CREAT
-  ;; 0x200, O_TRUNC 0x400); FreeBSD 15's are to be measured there before
-  ;; this ships to it, as the other constants in this file were.
-  ;; posix_spawn_file_actions_t is pointer-sized on both (measured above).
+  ;; The flags are the platform row's (O_CREAT 0x200 and O_TRUNC 0x400 on
+  ;; macOS and FreeBSD, 0x40 and 0x200 on Linux, where 0x200 is O_TRUNC's
+  ;; neighbour's value on the BSDs -- which is why no flag is written
+  ;; down here). posix_spawn_file_actions_t is a pointer-sized handle on
+  ;; the BSDs and an 80-byte struct on glibc; it is allocated at the row's
+  ;; size.
   ;;
   ;; -> (values pid #f) when the program was started, or (values #f errno)
   ;; when posix_spawnp answered non-zero -- a file action that could not be
   ;; carried out included. Nothing ran in that case, and the caller says so.
-  (define spawn-O_WRONLY #x1)
-  (define spawn-O_CREAT #x200)
-  (define spawn-O_TRUNC #x400)
+  (define spawn-O_WRONLY (platform-number 'O_WRONLY))
+  (define spawn-O_CREAT (platform-number 'O_CREAT))
+  (define spawn-O_TRUNC (platform-number 'O_TRUNC))
 
   (define (spawn-captured! argv bindings stdin-path stdout-path stderr-path)
     (unless (and (pair? argv) (for-all string? argv))
@@ -1346,8 +1375,12 @@
                  (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
                  (strings (map (lambda (a) (own! (c-string a))) argv))
                  (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
-                 (actions (own! (foreign-alloc (max width 16))))
-                 (pid-out (make-bytevector 4 0)))
+                 ;; AT LEAST THE ROW'S SIZE: a handle on the BSDs (8 bytes), a
+                 ;; struct on glibc (80). An allocation smaller than the type
+                 ;; lets posix_spawn_file_actions_init write past its end.
+                 (actions (own! (foreign-alloc
+                                  (max width 16 (platform-struct-value 'posix_spawn 'file-actions-size)))))
+                 (pid-out (make-pid-buffer)))
             (do ((ps envp-list (cdr ps)) (i 0 (+ i 1))) ((null? ps))
               (foreign-set! 'void* envp (* i width) (car ps)))
             (foreign-set! 'void* envp (* (length envp-list) width) 0)
@@ -1365,7 +1398,7 @@
                                      (c (if (zero? b) (c-fa-open actions 2 stderr-path out-flags #o600) b)))
                                 (if (zero? c) (c-spawn pid-out (car argv) actions 0 cells envp) c)))))))
               (if (zero? rc)
-                  (values (bytevector-u32-native-ref pid-out 0) #f)
+                  (values (pid-buffer-ref pid-out) #f)
                   (values #f rc)))))
         (lambda ()
           (when destroy! (destroy!) (set! destroy! #f))
@@ -1398,13 +1431,13 @@
   ;;
   ;; KEY: WNOHANG MEASURED: 0x1 on macOS (sys/wait.h, MacOSX.sdk) and on
   ;; FreeBSD 15; it is 1 wherever this ships.
-  (define WNOHANG 1)
+  (define WNOHANG (platform-number 'WNOHANG))
 
   (define (reap-children!)
     (if (not (foreign-entry? "waitpid"))
         0
         (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
-              (status (make-bytevector 4 0)))
+              (status (make-bytevector (platform-type-size 'int) 0)))
           (let loop ((n 0))
             (let ((r (c-waitpid -1 status WNOHANG)))
               (if (> r 0) (loop (+ n 1)) n))))))
@@ -1424,13 +1457,13 @@
     (let ((injected (waitpid-fault)))
       (when injected (raise (fs-err 'waitpid pid injected))))
     (let ((c-waitpid (foreign-procedure "waitpid" (int u8* int) int))
-          (status (make-bytevector 4 0)))
+          (status (make-bytevector (platform-type-size 'int) 0)))
       (let ((r (c-waitpid pid status WNOHANG)))
         (cond
           ((= r 0) #f)
           ((< r 0) (raise (fs-err 'waitpid pid (errno))))
           (else
-           (let* ((w (bytevector-s32-native-ref status 0))
+           (let* ((w (bytevector-sint-ref status 0 (native-endianness) (platform-type-size 'int)))
                   (sig (fxand w #x7f)))
              (if (= sig 0)
                  (list 'exit (fxand (fxsra w 8) #xff))
@@ -1458,17 +1491,18 @@
   ;; name a platform never defined is how a platform assumption becomes a
   ;; general one; it is asked only where it was measured, and everywhere
   ;; else the answer is `unknown`.
-  (define PC_CASE_SENSITIVE 11)
-
   ;; #t, #f, or 'unknown -- and a caller that cannot find out must not
   ;; guess, because guessing "insensitive" would fold keys on a
   ;; filesystem where two spellings really are two stores.
+  ;; _PC_CASE_SENSITIVE is macOS's alone (absent on every other row), so it
+  ;; is read inside the darwin branch, never when the library is
+  ;; initialised.
   (define (path-case-sensitive? path)
     (if (or (not (string=? (machine-kind) "darwin"))
             (not (foreign-entry? "pathconf")))
         'unknown
         (let* ((c-pathconf (foreign-procedure "pathconf" (string int) long))
-               (r (c-pathconf path PC_CASE_SENSITIVE)))
+               (r (c-pathconf path (platform-number '_PC_CASE_SENSITIVE))))
           (cond ((> r 0) #t)
                 ((= r 0) #f)
                 (else 'unknown)))))
@@ -1489,77 +1523,60 @@
   ;; blocking client needs are here, in the layer that already owns the
   ;; libc surface, and `(theourgia client)` imports nothing else.
   ;;
-  ;; KEY: EVERY CONSTANT BELOW WAS COMPILED AND PRINTED ON THE PLATFORM IT
-  ;; DESCRIBES, 2026-09-18, not read from a table:
+  ;; KEY: EVERY NUMBER BELOW IS THE PLATFORM ROW'S (theourgia
+  ;; platform-numbers), measured by test/probe/layout.c on each platform,
+  ;; and none is written here. The shapes differ, which is why: on macOS
+  ;; and FreeBSD sockaddr_un is 106 bytes with a one-byte sun_len at 0,
+  ;; a one-byte sun_family at 1 and sun_path's 104 bytes at 2, and
+  ;; SOL_SOCKET, SO_RCVTIMEO and SO_SNDTIMEO are 65535, 4102 and 4101; on
+  ;; Linux it is 110 bytes with no sun_len, a two-byte sun_family at 0 and
+  ;; 108 bytes of path at 2, and the three options are 1, 20 and 21. An
+  ;; address built from the wrong row connects to the wrong path bytes,
+  ;; quietly; that is what the rows end.
   ;;
-  ;;                        macOS 25.3.0 arm64   FreeBSD 15.0-RELEASE amd64
-  ;;   AF_UNIX                      1                       1
-  ;;   SOCK_STREAM                  1                       1
-  ;;   sizeof sockaddr_un         106                     106
-  ;;   sun_len          offset 0, 1 byte        offset 0, 1 byte
-  ;;   sun_family       offset 1, 1 byte        offset 1, 1 byte
-  ;;   sun_path         offset 2, 104 bytes     offset 2, 104 bytes
-  ;;   SOL_SOCKET               65535                   65535
-  ;;   SO_RCVTIMEO/SNDTIMEO   4102/4101               4102/4101
-  ;;   sizeof timeval              16                      16
-  ;;   tv_sec           offset 0, 8 bytes       offset 0, 8 bytes
-  ;;   tv_usec          offset 8, 4 bytes       offset 8, 8 bytes
-  ;;
-  ;; NOTE: THE ONE DIFFERENCE IS tv_usec's WIDTH, AND IT NEEDS NO BRANCH.
-  ;; The field sits at offset 8 of a 16-byte struct on both, so one
-  ;; little-endian 64-bit store puts the value in the low four bytes and
-  ;; zeros above it: on FreeBSD those four bytes are the rest of the
-  ;; field, on macOS they are padding. This holds for any microsecond
-  ;; count below 2^32, which is every timeout this client can express.
-  ;;
-  ;; NEVER: LINUX IS NOT MEASURED, and it is NOT the same shape: it has no
-  ;; sun_len, its sun_family is two bytes at offset 0, and SOL_SOCKET
-  ;; and the two timeout options have different values. Rather than ship
-  ;; a guess that would connect to the wrong address quietly, the layout
-  ;; below refuses to build an address on a platform it has not been
-  ;; measured on. The first Linux machine to run `client-socket.sc` gets
-  ;; a named refusal, not a silent misconnect.
-  (define AF_UNIX 1)
-  (define SOCK_STREAM 1)
-  (define SOL_SOCKET 65535)
-  (define SO_RCVTIMEO 4102)
-  (define SO_SNDTIMEO 4101)
-  (define SOCKADDR_UN_SIZE 106)
-  (define SUN_PATH_OFFSET 2)
-  (define SUN_PATH_MAX 104)
+  ;; NOTE: THE ADDRESS LENGTH IS THE WHOLE STRUCT on every row, and
+  ;; sun_len, where the row has one, says the same, as it always did on
+  ;; the BSDs; Linux accepts the whole struct. SUN_LEN (the path's own
+  ;; length) is not what is passed; the probe's SUN_LEN sample is kept as
+  ;; a reading, and a row of the suite checks it against the offset.
+  (define AF_UNIX (platform-number 'AF_UNIX))
+  (define SOCK_STREAM (platform-number 'SOCK_STREAM))
+  (define SOL_SOCKET (platform-number 'SOL_SOCKET))
+  (define SO_RCVTIMEO (platform-number 'SO_RCVTIMEO))
+  (define SO_SNDTIMEO (platform-number 'SO_SNDTIMEO))
+  (define SOCKADDR_UN_SIZE (platform-struct-size 'sockaddr_un))
+  (define SUN_PATH_OFFSET (platform-field 'sockaddr_un 'sun_path 'offset))
+  (define SUN_PATH_MAX (platform-field 'sockaddr_un 'sun_path 'size))
 
   (define (sun-path-max) SUN_PATH_MAX)
 
-  (define (bsd-socket-layout?)
-    (let ((k (machine-kind)))
-      (or (string=? k "darwin") (string=? k "freebsd"))))
-
   ;; NOTE: THE LENGTH LIMIT IS PART OF THE ABI, NOT A STYLE RULE. `sun_path`
-  ;; holds 104 bytes INCLUDING the terminator, and a path that does not
-  ;; fit is not truncated by the kernel into something harmless -- it
-  ;; binds or connects to a different name. Scratch directories are long
-  ;; enough for this to happen in practice, so it is refused here, by
-  ;; name, with both numbers in the message.
+  ;; holds SUN_PATH_MAX bytes INCLUDING the terminator (104 on the BSDs,
+  ;; 108 on Linux), and a path that does not fit is not truncated by the
+  ;; kernel into something harmless -- it binds or connects to a
+  ;; different name. Scratch directories are long enough for this to
+  ;; happen in practice, so it is refused here, by name, with both
+  ;; numbers in the message.
   (define (sockaddr-un path)
-    (unless (bsd-socket-layout?)
-      (assertion-violation 'sockaddr-un
-        "the sockaddr_un layout has only been measured on darwin and freebsd"
-        (machine-kind)))
     (let* ((bytes (string->utf8 path))
            (n (bytevector-length bytes)))
       (when (>= n SUN_PATH_MAX)
         (assertion-violation 'sockaddr-un
           "socket path does not fit in sun_path" (list path n SUN_PATH_MAX)))
       (let ((sa (make-bytevector SOCKADDR_UN_SIZE 0)))
-        (bytevector-u8-set! sa 0 SOCKADDR_UN_SIZE)
-        (bytevector-u8-set! sa 1 AF_UNIX)
+        (when (platform-field-present? 'sockaddr_un 'sun_len)
+          (row-uint-set! sa 'sockaddr_un 'sun_len SOCKADDR_UN_SIZE))
+        (row-uint-set! sa 'sockaddr_un 'sun_family AF_UNIX)
         (bytevector-copy! bytes 0 sa SUN_PATH_OFFSET n)
         sa)))
 
+  ;; `struct timeval` at the row's size, each field at its own offset and
+  ;; width: tv_usec is 4 bytes on macOS and 8 on FreeBSD and Linux, and
+  ;; the fresh buffer's padding stays zero either way.
   (define (timeval-bytes ms)
-    (let ((tv (make-bytevector 16 0)))
-      (bytevector-u64-native-set! tv 0 (div ms 1000))
-      (bytevector-u64-native-set! tv 8 (* 1000 (mod ms 1000)))
+    (let ((tv (make-bytevector (platform-struct-size 'timeval) 0)))
+      (row-uint-set! tv 'timeval 'tv_sec (div ms 1000))
+      (row-uint-set! tv 'timeval 'tv_usec (* 1000 (mod ms 1000)))
       tv))
 
   ;; A DEADLINE ON BOTH DIRECTIONS, so a client cannot be parked forever
@@ -1570,7 +1587,7 @@
     (let ((tv (timeval-bytes ms)))
       (for-each
         (lambda (opt)
-          (when (= -1 (c-setsockopt fd SOL_SOCKET opt tv 16))
+          (when (= -1 (c-setsockopt fd SOL_SOCKET opt tv (bytevector-length tv)))
             (raise (fs-err 'setsockopt "socket" (errno)))))
         (list SO_RCVTIMEO SO_SNDTIMEO))))
 
@@ -1638,42 +1655,44 @@
               ((string=? needle (substring hay i (+ i n))) i)
               (else (loop (+ i 1)))))))
 
-  (define O_RDONLY 0)
-  (define O_WRONLY 1)
-  (define O_RDWR   2)
-  (define O_APPEND 8)
-  (define LOCK_SH 1)
-  (define LOCK_EX 2)
-  (define LOCK_NB 4)
-  (define LOCK_UN 8)
-  (define SEEK_SET 0)
-  (define SEEK_CUR 1)
-  (define SEEK_END 2)
-  (define EINTR 4)
-  (define EIO 5)
-  (define EEXIST 17)
-  ;; flock's "somebody else holds it" under LOCK_NB. Measured on macOS 25.3
-  ;; (35); FreeBSD's sys/errno.h gives 35 (EAGAIN), Linux's 11, and those two
-  ;; are UNMEASURED until test/facade-ffi.sc's contention row runs there.
-  (define EWOULDBLOCK (if (eq? platform-os 'linux) 11 35))
+  ;; NEVER: O_APPEND IS NOT 8 EVERYWHERE. It is 8 on macOS and FreeBSD and
+  ;; 1024 on Linux, where 8 is no flag at all: a segment opened for append
+  ;; with the BSD value writes every record at offset 0, over the start of
+  ;; the segment. Every number here is the platform row's for that reason.
+  (define O_RDONLY (platform-number 'O_RDONLY))
+  (define O_WRONLY (platform-number 'O_WRONLY))
+  (define O_RDWR (platform-number 'O_RDWR))
+  (define O_APPEND (platform-number 'O_APPEND))
+  (define LOCK_SH (platform-number 'LOCK_SH))
+  (define LOCK_EX (platform-number 'LOCK_EX))
+  (define LOCK_NB (platform-number 'LOCK_NB))
+  (define LOCK_UN (platform-number 'LOCK_UN))
+  (define SEEK_SET (platform-number 'SEEK_SET))
+  (define SEEK_CUR (platform-number 'SEEK_CUR))
+  (define SEEK_END (platform-number 'SEEK_END))
+  (define EINTR (platform-number 'EINTR))
+  (define EIO (platform-number 'EIO))
+  (define EEXIST (platform-number 'EEXIST))
+  ;; flock's "somebody else holds it" under LOCK_NB: 35 on macOS and
+  ;; FreeBSD (EAGAIN), 11 on Linux, as the rows read it.
+  (define EWOULDBLOCK (platform-number 'EWOULDBLOCK))
   ;; THE THREE WAYS AN OPEN FAILS THAT A BARRIER HAS TO SURVIVE,
   ;; named because an injected fault says which one it is: the file is
   ;; gone, this process may not read it, or this process has no
   ;; descriptor left. The first two are reachable from a fixture with
   ;; rm and chmod; the third is not reachable at all without this seam,
   ;; which is why the seam exists.
-  (define ENOENT 2)
-  (define EACCES 13)
+  (define ENOENT (platform-number 'ENOENT))
+  (define EACCES (platform-number 'EACCES))
   ;; A write on a descriptor opened read-only: the kernel refuses it, so the
   ;; syscall ran (the record's real-failure case). 9 on macOS, FreeBSD and
   ;; Linux; measured here by facade-ffi's real-syscall row.
-  (define EBADF 9)
+  (define EBADF (platform-number 'EBADF))
   ;; waitpid(2) on a pid that is not a child of this process: 10 on macOS,
   ;; FreeBSD and Linux (sys/errno.h). Exported so a row reads it by name
   ;; (F100b Q7, H4).
-  (define ECHILD 10)
-  (define EMFILE 24)
-  (define F_FULLFSYNC 51)
+  (define ECHILD (platform-number 'ECHILD))
+  (define EMFILE (platform-number 'EMFILE))
   (define macos? (eq? platform-os 'macos))
 
   ;; ---- errors -----------------------------------------------------------
@@ -1784,7 +1803,7 @@
   ;; syscall (file-ensure!'s and file-create-exclusive!'s create, which
   ;; cannot pass a mode through open(2)'s variadic argument). A condition
   ;; with no class here keeps errno #f.
-  (define EROFS 30)
+  (define EROFS (platform-number 'EROFS))
   (define (condition-errno e)
     ;; THE SUBTYPE FIRST: a read-only-file error is also a protection error,
     ;; and asked the other way round it read as EACCES (F100a review r1).
@@ -1827,11 +1846,11 @@
   ;; `unreadable-entry` naming the path, never a shorter list or a shorter
   ;; buffer.
 
-  (define ENOTDIR 20)
-  (define EISDIR 21)
-  (define ELOOP (if (eq? platform-os 'linux) 40 62))
-  (define EOVERFLOW (if (eq? platform-os 'linux) 75 84))
-  (define ENAMETOOLONG (if (eq? platform-os 'linux) 36 63))
+  (define ENOTDIR (platform-number 'ENOTDIR))
+  (define EISDIR (platform-number 'EISDIR))
+  (define ELOOP (platform-number 'ELOOP))
+  (define EOVERFLOW (platform-number 'EOVERFLOW))
+  (define ENAMETOOLONG (platform-number 'ENAMETOOLONG))
 
   ;; TWO FIELDS, TWO READERS. The REASON is the system's own message, for a
   ;; person reading `check` -- which file, and why, in the words the system
@@ -1942,12 +1961,10 @@
   ;;                      gid 4, padding1 4, rdev 8, four timespecs 64), whose
   ;;                      total is the 224 measured below.
   ;;   Linux x86-64       48 (glibc's field list).
-  ;; NEVER: FreeBSD's AND Linux's ARE UNMEASURED until test/facade-ffi.sc's
-  ;; row "size-entry answers absent for ENOENT and the size otherwise" runs
-  ;; there; that row is the check of this offset on whichever platform the
-  ;; suite runs.
-  (define st-size-offset
-    (case platform-os ((macos) 96) ((linux) 48) (else 112)))
+  ;; The offset is the platform row's (96 on macOS, 48 on both Linux, 112
+  ;; on FreeBSD), read as off_t is: signed, at its width. test/facade-ffi.sc's
+  ;; row "size-entry answers absent for ENOENT and the size otherwise" is
+  ;; still the check of it on whichever platform the suite runs.
   (define (size-entry path)
     (unless (string? path)
       (assertion-violation 'size-entry "path must be a string" path))
@@ -1957,7 +1974,7 @@
                         (values -1 (stat-fault-errno))
                         (let ((rc (c-stat path buf))) (values rc (and (< rc 0) (errno)))))))
         (cond
-          ((>= rc 0) (bytevector-s64-native-ref buf st-size-offset))
+          ((>= rc 0) (row-sint-ref buf 'stat 'st_size))
           ((absence-errno? code) 'absent)
           (else (unreadable! path code))))))
 
@@ -2104,8 +2121,9 @@
                          (loop (+ got n)))))))))))))
 
   ;; -> the names in the directory, without "." and "..", or absent
-  (define dirent-name-offset
-    (case platform-os ((macos) 21) ((linux) 19) ((freebsd) 24) (else 19)))
+  ;; d_name's offset is the platform row's: 21 on macOS, 19 on Linux, 24
+  ;; on FreeBSD.
+  (define dirent-name-offset (platform-field 'dirent 'd_name 'offset))
   (define x86-macos? (and macos? (memq (machine-type) '(a6osx ta6osx)) #t))
   (define c-opendir
     (foreign-procedure (if x86-macos? "opendir$INODE64" "opendir") (string) uptr))
@@ -3067,8 +3085,10 @@
       (else
        (let ((rc (c-fsync fd)))
          (when (< rc 0) (fail! fsync-op subject)))
+       ;; F_FULLFSYNC is macOS's alone (absent on every other row), so it is
+       ;; read here, in the branch that runs there.
        (when macos?
-         (let ((rc (c-fcntl fd F_FULLFSYNC 0)))
+         (let ((rc (c-fcntl fd (platform-number 'F_FULLFSYNC) 0)))
            (when (< rc 0) (fail! fullfsync-op subject))))
        (trace-event! 'fsync subject #f)
        (void))))
@@ -3282,13 +3302,13 @@
   ;; touched. st_ino agrees on both, and that agreement is measured and
   ;; not assumed.
   ;;
-  ;; A THIRD PLATFORM MEANS COMPILING THE PROGRAM THERE. The buffer is
-  ;; oversized so that a wrong guess cannot smash the heap, but an
-  ;; oversized buffer does not make wrong offsets right: the values
-  ;; would simply be some other fields, silently.
-  (define stat-buffer-size 512)
-  (define st-dev-offset 0)
-  (define st-ino-offset 8)
+  ;; EVERY PLATFORM'S OFFSETS AND WIDTHS ARE ITS ROW'S (theourgia
+  ;; platform-numbers), measured by compiling test/probe/layout.c there;
+  ;; a platform without a row is refused before this runs. The buffer is
+  ;; at least 512 bytes, over every measured struct stat (128 to 224), so
+  ;; a wrong row cannot smash the heap -- but an oversized buffer does not
+  ;; make wrong offsets right, which is why the offsets are measured.
+  (define stat-buffer-size (max 512 (platform-struct-size 'stat)))
 
   ;; THE ONE NAME A PATH HAS. Several spellings reach one file --
   ;; a trailing slash, a `.`, a symlink, a relative path -- and anything
@@ -3303,15 +3323,16 @@
   ;; NOTE: IT ANSWERS #f FOR A PATH THAT IS NOT THERE, rather than raising:
   ;; a caller asking "what is this really called" about something that
   ;; does not exist has an answer to give, and it is not an error.
-  ;; `PATH_MAX` is 1024 on macOS and 4096 on Linux; the buffer is the
-  ;; larger.
+  ;; `PATH_MAX` is the row's (1024 on macOS and FreeBSD, 4096 on Linux);
+  ;; the buffer is at least 4096 and at least PATH_MAX.
   (define (real-path path)
     (guard (e (#t #f))
-      (let* ((buf (make-bytevector 4096 0))
+      (let* ((size (max 4096 (platform-number 'PATH_MAX)))
+             (buf (make-bytevector size 0))
              (rc (c-realpath path buf)))
         (and (not (eqv? rc 0))
              (let loop ((i 0))
-               (cond ((>= i 4096) #f)
+               (cond ((>= i size) #f)
                      ((zero? (bytevector-u8-ref buf i))
                       (utf8->string (let ((out (make-bytevector i)))
                                       (bytevector-copy! buf 0 out 0 i)
@@ -3356,10 +3377,11 @@
   ;;   FreeBSD 15.0-RELEASE offset 24, 16 bits: C1ED 11A4 81A4 41ED  ok
   ;;                        offset 4:           reads 0
   ;;
-  ;; NEVER: LINUX IS NOT MEASURED. There is no Linux host to hand; its entry
-  ;; is read from the glibc field list above and nothing else. `DS-1` in
-  ;; `daemon-socket.sc` is what will say so, on the first machine that
-  ;; runs it there.
+  ;; LINUX IS NOW MEASURED, and the field list above was right for x86_64
+  ;; only: the probe's rows read st_mode at 24 (4 bytes) on x86_64 and at
+  ;; 16 (4 bytes) on aarch64, whose glibc uses the generic layout. A rule
+  ;; keyed on "linux" alone read st_uid on aarch64. The offset and width
+  ;; now come from the platform's row, key (system, machine, libc).
   ;;
   ;; NOTE: AND ON FreeBSD A 32-BIT READ AT 24 ALSO MATCHED, because the two
   ;; bytes after the 16-bit field happen to be zero for these four kinds.
@@ -3372,19 +3394,20 @@
   ;; turn and asks this predicate about each; an offset wrong on some
   ;; platform fails there, rather than showing up as a daemon unlinking
   ;; something it does not own.
-  (define S_IFMT   #xF000)
-  (define S_IFSOCK #xC000)
-  (define S_IFDIR  #x4000)
-  (define S_IFREG  #x8000)
-  (define S_IFLNK  #xA000)
+  (define S_IFMT (platform-number 'S_IFMT))
+  (define S_IFSOCK (platform-number 'S_IFSOCK))
+  (define S_IFDIR (platform-number 'S_IFDIR))
+  (define S_IFREG (platform-number 'S_IFREG))
+  (define S_IFLNK (platform-number 'S_IFLNK))
 
   ;; st_mode out of a filled stat buffer; the offsets are the ones stated
   ;; above for each platform.
+  ;; st_mode at the row's offset and width: 4 and 2 bytes on macOS, 24
+  ;; and 4 on Linux x86_64, 16 and 4 on Linux aarch64, 24 and 2 on
+  ;; FreeBSD. The aarch64 offset is the one a system-wide "linux" rule got
+  ;; wrong: it read st_uid, and an existing directory was not one.
   (define (st-mode-of buf)
-    (cond
-      (macos? (bytevector-u16-native-ref buf 4))
-      ((string=? (machine-kind) "linux") (bytevector-u32-native-ref buf 24))
-      (else (bytevector-u16-native-ref buf 24))))
+    (row-uint-ref buf 'stat 'st_mode))
 
   (define (st-mode path)
     (let ((buf (make-bytevector stat-buffer-size 0)))
@@ -3406,10 +3429,8 @@
     (let ((buf (make-bytevector stat-buffer-size 0)))
       (let ((rc (c-stat path buf)))
         (when (< rc 0) (unreadable! path (errno)))
-        (values (if macos?
-                    (bytevector-u32-native-ref buf st-dev-offset)
-                    (bytevector-u64-native-ref buf st-dev-offset))
-                (bytevector-u64-native-ref buf st-ino-offset)))))
+        (values (row-uint-ref buf 'stat 'st_dev)
+                (row-uint-ref buf 'stat 'st_ino)))))
 
   ;; Version hints invalidate derived indexes; they never prove a record.
   ;; ctime catches replacements and same-length edits even if mtime is restored.
