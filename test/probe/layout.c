@@ -28,7 +28,9 @@
  * and sysconf requests, flock and seek, the file type bits, the socket
  * and signal numbers, the rlimit resources, the errno values, and the
  * sizes of the posix_spawn types, struct dirent, struct timeval and
- * struct rlimit. A constant a platform does not define prints as absent.
+ * struct rlimit, the sizes of pid_t and int, and the process-size structs
+ * ffi.sc reads per system (proc_taskinfo on macOS, kinfo_proc on the BSDs).
+ * A constant, struct or field a platform does not have prints as absent.
  *
  * NOTE: IT MEASURES, IT DOES NOT CHECK. There is no expected value in this
  * file; the table built from its runs is what the code is then written
@@ -37,6 +39,7 @@
 
 #define _DEFAULT_SOURCE 1
 #include <stddef.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -56,8 +59,16 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <time.h>
+#if defined(__FreeBSD__)
+#include <sys/param.h>
+#include <sys/user.h>
+#endif
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/sysctl.h>
+#endif
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/proc_info.h>
 #endif
 #if defined(__GLIBC__)
 #include <gnu/libc-version.h>
@@ -91,7 +102,7 @@ int main(void) {
   int exited = 0x0300;
   int signalled = 0x0009;
 
-  printf("(layout-probe 2)\n");
+  printf("(layout-probe 3)\n");
   if (uname(&u) == 0) {
     printf("(machine \"%s\") (system \"%s\") (release \"%s\")\n", u.machine, u.sysname, u.release);
   }
@@ -178,6 +189,32 @@ int main(void) {
   FIELD(struct rlimit, rlim_max);
   printf("  (RLIM_INFINITY %llu))\n", (unsigned long long)RLIM_INFINITY);
 
+  printf("(types (pid_t (size %lu)) (int (size %lu)))\n", (unsigned long)sizeof(pid_t), (unsigned long)sizeof(int));
+
+  /*
+   * The process-size readings ffi.sc makes per system: proc_taskinfo on
+   * macOS, kinfo_proc on the BSDs.
+   */
+#if defined(__APPLE__)
+  printf("(struct proc_taskinfo (size %lu)\n", (unsigned long)sizeof(struct proc_taskinfo));
+  FIELD(struct proc_taskinfo, pti_virtual_size);
+  FIELD(struct proc_taskinfo, pti_resident_size);
+  printf("  )\n");
+#else
+  printf("(struct proc_taskinfo absent)\n");
+#endif
+#if defined(__APPLE__) || defined(__FreeBSD__)
+  printf("(struct kinfo_proc (size %lu)\n", (unsigned long)sizeof(struct kinfo_proc));
+#if defined(__FreeBSD__)
+  FIELD(struct kinfo_proc, ki_rssize);
+#else
+  printf("  (field ki_rssize absent)\n");
+#endif
+  printf("  )\n");
+#else
+  printf("(struct kinfo_proc absent)\n");
+#endif
+
   printf("(struct posix_spawn (attr-size %lu) (file-actions-size %lu))\n",
          (unsigned long)sizeof(posix_spawnattr_t), (unsigned long)sizeof(posix_spawn_file_actions_t));
 
@@ -186,6 +223,26 @@ int main(void) {
          WEXITSTATUS(exited), WIFEXITED(exited) ? 1 : 0, WTERMSIG(signalled), WIFSIGNALED(signalled) ? 1 : 0);
 
   printf("(constants\n");
+#ifdef X_OK
+  printf("  (X_OK %ld)\n", (long)(X_OK));
+#else
+  printf("  (X_OK absent)\n");
+#endif
+#ifdef F_OK
+  printf("  (F_OK %ld)\n", (long)(F_OK));
+#else
+  printf("  (F_OK absent)\n");
+#endif
+#ifdef PATH_MAX
+  printf("  (PATH_MAX %ld)\n", (long)(PATH_MAX));
+#else
+  printf("  (PATH_MAX absent)\n");
+#endif
+#ifdef PROC_PIDTASKINFO
+  printf("  (PROC_PIDTASKINFO %ld)\n", (long)(PROC_PIDTASKINFO));
+#else
+  printf("  (PROC_PIDTASKINFO absent)\n");
+#endif
 #ifdef O_RDONLY
   printf("  (O_RDONLY %ld)\n", (long)(O_RDONLY));
 #else
