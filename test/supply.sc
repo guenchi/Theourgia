@@ -61,11 +61,22 @@
 (mkdir-p! root)
 (putenv "THEOURGIA_HOME" (string-append root "/home"))
 
+;; The parent directory is made when it is missing: a mutant that writes no
+;; table leaves no derived/, and a row that plants a table there then
+;; compares what the readers make of it rather than stopping the fixture.
 (define (write-bytes! path bv)
+  (let loop ((i (- (string-length path) 1)))
+    (cond ((< i 1) #f)
+          ((char=? (string-ref path i) #\/) (mkdir-p! (substring path 0 i)))
+          (else (loop (- i 1)))))
   (call-with-port (open-file-output-port path (file-options no-fail)) (lambda (p) (put-bytevector p bv))))
 (define (write! path s) (write-bytes! path (string->utf8 s)))
+;; #f when there is no file; #vu8() when it is empty, where get-bytevector-all
+;; answers the eof object.
 (define (bytes-of path)
-  (and (file-exists? path) (call-with-port (open-file-input-port path) get-bytevector-all)))
+  (and (file-exists? path)
+       (let ((b (call-with-port (open-file-input-port path) get-bytevector-all)))
+         (if (eof-object? b) (make-bytevector 0) b))))
 (define (text-of path) (let ((b (bytes-of path))) (if (bytevector? b) (utf8->string b) (and b ""))))
 (define (sha-of path) (bytevector->hex (sha256 (bytes-of path))))
 (define (contains? text needle)
@@ -171,7 +182,8 @@
 ;; table that does not read is a reading for the row, not a stop.
 (define (table-datum path)
   (let ((b (bytes-of path)))
-    (and b (guard (e (#t #f)) (storable-decode (string->sexpr-extended (utf8->string b)))))))
+    (and b (let ((d (guard (e (#t #f)) (storable-decode (string->sexpr-extended (utf8->string b))))))
+             (and (list? d) (= 5 (length d)) d)))))
 ;; A TABLE THAT DOES NOT READ ANSWERS (unreadable-table), NOT A CONDITION.
 ;; The rows that take facts apart would otherwise stop the fixture at the
 ;; first table a mutant corrupted, and every row after it -- the one aimed
@@ -183,7 +195,7 @@
                 (list? (cadddr (list-ref d 4))))
            (cadddr (list-ref d 4)))
           (else '(unreadable-table)))))
-(define (facts? x) (and (list? x) (for-all (lambda (f) (and (pair? f) (eq? (car f) 'fact))) x)))
+(define (facts? x) (and (list? x) (for-all (lambda (f) (and (list? f) (= 6 (length f)) (eq? (car f) 'fact))) x)))
 ;; `f` of each fact of the table at `path`, or the table's refusal value as it is.
 (define (fact-column f path)
   (let ((fs (table-facts path))) (if (facts? fs) (map f fs) fs)))
@@ -470,6 +482,10 @@
 ;; listing puts first.
 (define own-writers (make-hashtable string-hash string=?))
 (define (own-writer st) (hashtable-ref own-writers st #f))
+;; The name for a path: a store made with other than one writer directory
+;; has no own writer, and a row naming its segment then reads no file
+;; rather than stopping the fixture.
+(define (own-writer-name st) (or (own-writer st) "no-own-writer"))
 (define (forge-own! st payload-text) (forge-record-as! st (own-writer st) payload-text))
 ;; 'forged, or the refusal forge-record-as! answered.
 (define (forged st payload-text)
@@ -647,7 +663,8 @@
 ;; than the fixture stopping here.
 (define (rewrite-table-from! bytes path change)
   (let ((d (guard (e (#t #f)) (storable-decode (string->sexpr-extended (utf8->string bytes))))))
-    (if (not (and (list? d) (= 5 (length d))))
+    (if (not (and (list? d) (= 5 (length d))
+                  (let ((body (list-ref d 4))) (and (list? body) (= 4 (length body)) (list? (cadddr body))))))
         (begin (write-bytes! path bytes) 'not-a-table)
         (let ((body (change (list-ref d 4))))
           (write-bytes! path (string->utf8 (sexpr->string-extended
@@ -878,9 +895,9 @@
             (let ((x (ask r7b 'export-code (fresh-dir! "x")))) (and (pair? x) (assq 'reason (cddr x)))))
       (list 'forged absent-stale-1 '(reason unexportable-block)))
 (want "D23 a record forged for a writer with no segment is refused by name, and nothing is appended elsewhere"
-      (let ((before (bytes-of (string-append r7b "/writers/" (own-writer r7b) "/000001.sexp"))))
+      (let ((before (bytes-of (string-append r7b "/writers/" (own-writer-name r7b) "/000001.sexp"))))
         (in-order (forge-record-as! r7b "nobody" (format "(set ~s title ~s)" r7b-beta "t"))
-                  (equal? (bytes-of (string-append r7b "/writers/" (own-writer r7b) "/000001.sexp")) before)))
+                  (equal? (bytes-of (string-append r7b "/writers/" (own-writer-name r7b) "/000001.sexp")) before)))
       (list '(forge-refused (writer "nobody")) #t))
 
 ;; ---- D30, D24: who holds the path ---------------------------------------------------------
@@ -898,10 +915,13 @@
 (want "D30 b.js's mode changed by a record: nothing holds b.js as a text file, gamma's fact is stale"
       (in-order (forged r8 (format "(set ~s mode datum)" r8-b)) (sig-of r8 r8-gamma))
       (list 'forged absent-stale-1))
+;; With no derived/ to move away, the thunk already sees none.
 (define (without-derived st thunk)
   (let ((d (string-append st "/derived")) (away (string-append st "/derived-away")))
-    (rename-file d away)
-    (let ((v (thunk))) (rename-file away d) v)))
+    (if (not (file-directory? d))
+        (thunk)
+        (begin (rename-file d away)
+               (let ((v (thunk))) (rename-file away d) v)))))
 (want "D24 c.js's file block deleted: delta's fact is stale; check and a read of delta answer as they do with no table at all"
       (in-order (head-of (ask r8 'del r8-c)) (sig-of r8 r8-delta)
             (equal? (list (ask r8 'check) (ask r8 'read r8-delta))
@@ -1366,7 +1386,7 @@
 (define rf (make-store! "rf"))
 (define rf-alpha (id-in rf "function alpha"))
 (define rf-beta (id-in rf "function beta"))
-(define rf-writer (own-writer rf))
+(define rf-writer (own-writer-name rf))
 (define rf-check-before (ask rf 'check))
 (want "D10 setup: the store has one writer directory, holding the segment the helper appends to"
       (in-order (length (directory-list (string-append rf "/writers")))
