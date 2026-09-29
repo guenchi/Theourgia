@@ -374,11 +374,40 @@ Carry out several changes as one request. (daemon)
 
 ### The MCP shell
 
-theourgia-mcp --store <path> speaks MCP over stdio. One tool per verb, named theourgia_<verb>, with a single argv array as arguments. The shell asks the core what verbs exist on every call, so a verb added to a newer build appears without restarting the server. Core refusals are successful tool results, not JSON-RPC errors: the agent reads the store's own words, not a transport-level failure. eval is not offered as a tool; init is not offered either, because the store must already exist before the MCP server starts.
+`theourgia-mcp --store <path>` speaks MCP `2025-11-25` over stdio. Register it once:
+
+```
+claude mcp add theourgia -- theourgia-mcp --store /path/to/store --actor <name> --writer <name>
+```
+
+Or in a client's JSON configuration:
+
+```json
+{
+  "mcpServers": {
+    "theourgia": {
+      "command": "theourgia-mcp",
+      "args": ["--store", "/path/to/store", "--actor", "<name>", "--writer", "<name>"]
+    }
+  }
+}
+```
+
+One tool per verb, named `theourgia_<verb>`, each taking `{"argv": [...]}` with the command line's own arguments as an array of strings. The shell asks the core what verbs exist on every call, so a verb added to a newer build appears without restarting the server.
+
+The core's answer arrives as S-expression text, byte for byte. A core refusal is a successful tool result, not a JSON-RPC error: `(error unknown-id ...)` is the store's answer to the question asked, delivered with `isError: false`. Only the shell's own failures use the JSON-RPC error channel: a frame it could not parse, a frame past the size limit, or a connection that was made and then lost. A lost connection says the request may have been carried out, because it may have been; a request that reached nobody says it was not.
+
+`eval` is not offered as a tool; it is available only through the local CLI. `init` is not offered either, because the store must exist before the MCP server starts.
 
 ### One writer per session
 
-A writer id is held by one live agent at a time. A later session may bind the same id and carry on with its drafts, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. A host giving several agents the same actor must give each its own --writer.
+A writer id is held by one live agent at a time. The id is derived from the actor name by default, or set explicitly with `THEOURGIA_WRITER` in the environment or `--writer` on the command line; the MCP shell's initialize response names which writer the session is using.
+
+A later session may bind the same id and carry on with its drafts, but two agents writing under one id at the same moment overwrite each other silently. There is no lock and no refusal: the rule is stated here, and the failure it prevents is silent. A host giving several agents the same actor must give each its own `--writer`.
+
+### One store per machine
+
+One store per project or per person, on one machine. The machine registry records which stores are where. Moving a store to another machine requires adopt, which transfers its entry in the registry. Two machines writing one store is not supported.
 
 ### The memory recipe
 
