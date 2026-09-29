@@ -235,9 +235,13 @@
 ;; to the count. Comments are not code and are not counted.
 (define table-body (library-body (forms-of "../platform-numbers.sc")))
 (define seam-form (find (lambda (f) (and (pair? f) (eq? (car f) 'meta-cond))) table-body))
-;; how many times a string occurs as a datum in the forms
+;; how many times a string occurs as a datum in the forms, inside vectors too
 (define (string-count x str)
-  (let count ((x x)) (cond ((string? x) (if (string=? x str) 1 0)) ((pair? x) (+ (count (car x)) (count (cdr x)))) (else 0))))
+  (let count ((x x))
+    (cond ((string? x) (if (string=? x str) 1 0))
+          ((pair? x) (+ (count (car x)) (count (cdr x))))
+          ((vector? x) (count (vector->list x)))
+          (else 0))))
 (want "PN-P3 the seam in the text: an expansion-time meta-cond, #f in its ordinary branch, the variable read nowhere else"
       (list (and seam-form (cadr seam-form) (car (cadr seam-form)))
             (and seam-form (assq 'else (cdr seam-form)))
@@ -758,5 +762,5 @@
       '((#t #t) (#t #t) (#t #t) (#t #t)))
 
 (sh "rm -rf " (quoted here))
-(printf "rows: ~a\n~a failures\nplatform-numbers complete\n" rows bad)
+(printf "rows: ~a\n~a failures\nplatform-rows complete\n" rows bad)
 (exit (if (zero? bad) 0 1))
