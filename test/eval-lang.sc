@@ -1304,6 +1304,20 @@
         (list (head-of a) (rec-value r "CHEZSCHEMELIBDIRS") (rec-value r "CHEZSCHEMELIBEXTS"))
         (list 'ok #f ".sls")))
 
+;; {libdirs} AS A WHOLE argv ARGUMENT is the same text the default env puts
+;; after the projection in CHEZSCHEMELIBDIRS, so the two are read against
+;; each other.
+(let* ((r (make-recorder!))
+       (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\" \"{libdirs}\")))")) SC SRC-C "--lang" "chez"))
+       (pwd (let ((l (rec-lines r ".pwd"))) (and (pair? l) (car l))))
+       (dirs (rec-value r "CHEZSCHEMELIBDIRS")))
+  (want "C3f {libdirs} as a whole argv argument is the launcher's library path: the text the default env puts after the projection"
+        (list (head-of a)
+              (let ((l (rec-lines r ".argv")))
+                (and (= 2 (length l)) (string? dirs) pwd (not (string=? (cadr l) "{libdirs}"))
+                     (equal? dirs (string-append pwd ":" (cadr l))))))
+        (list 'ok #t)))
+
 ;; ---- C4: what the operator's variable may not be; nothing runs ----------------------
 ;; Each value names a recorder as argv[0] where it can, so a value wrongly
 ;; taken would run it and leave its record.
@@ -1333,6 +1347,26 @@
 (let ((a (ask (chez-var "((") SC SRC-C "--lang" "chez")))
   (want "C4d without THEOURGIA_RUNNERS, --lang chez answers runners-disabled before its configuration is read"
         a '(error runners-disabled)))
+;; THE CONFIGURATION IS READ BEFORE ADMISSION: with the one slot held, an
+;; invalid value is answered as itself, not as eval-busy; and on a fresh run
+;; root it makes nothing, the admission directory included.
+(want "C4e with the one slot held, an invalid THEOURGIA_RUNNER_CHEZ answers runner-config-invalid at once, not eval-busy"
+      (let* ((r (fresh-run! "slots-chez"))
+             (ready (string-append r ".ready")) (go (string-append r ".go"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (hold-until ready go)
+                    "--lang" "shell" "--timeout-ms" "60000"))
+             (ready-seen (within 15000 (lambda () (file-exists? ready))))
+             (x (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON " " (chez-var "((")) SC SRC-C
+                     "--lang" "chez" "--timeout-ms" "500")))
+        (sh "touch " (quoted go))
+        (ended-at (car a) 20000)
+        (list (and ready-seen #t) (config-refusal x)))
+      (list #t (refused-with 'not-one-datum)))
+(want "C4f on a fresh run root, an invalid THEOURGIA_RUNNER_CHEZ is refused and the run root stays empty (no admission directory)"
+      (let* ((r (fresh-run! "chez-noadmit"))
+             (x (ask (slots-env r ON " " (chez-var "((")) SC SRC-C "--lang" "chez")))
+        (list (config-refusal x) (directory-list r)))
+      (list (refused-with 'not-one-datum) '()))
 
 ;; ---- C5: the launcher never loads from the projection; the interpreter does ----------
 (define marker-c5a (string-append outside "/c5a"))
@@ -1513,7 +1547,7 @@
             (let ((d (library-defines "../eval-runner.sc" '(chez-runner-text))))
               (and d (holds-datum? (cddr d) '(getenv "THEOURGIA_RUNNER_CHEZ")))))
       (list #t #t))
-(want "D2 docs: README states chez's default runner, the field-wise replacement, empty is unset, an interpreter and a compiler example with {file} as $1, and the reach sentence in place of the old one"
+(want "D2 docs: README states chez's default runner, the field-wise replacement, empty is unset, an interpreter and a compiler example with {file} as $1, the reach sentence in place of the old one, and the argv placeholders"
       (map (lambda (t) (has-substring? readme (squash t)))
            (list "(runner ((argv (\"scheme\" \"--script\" \"{file}\")) (source-name \"__eval.ss\") (env ((\"CHEZSCHEMELIBDIRS\" \"{dir}:{libdirs}\") (\"CHEZSCHEMELIBEXTS\" \".sc:.ss:.sls:.scm\")))))"
                  "The fields it names replace the table's, field by field, and a named field replaces the table's whole"
@@ -1521,8 +1555,9 @@
                  "THEOURGIA_RUNNER_CHEZ='((argv (\"petite\" \"--script\" \"{file}\")))'"
                  "THEOURGIA_RUNNER_CHEZ='((argv (\"sh\" \"-c\" \"goeteia build \\\"$1\\\" && ./a.out\" \"compile\" \"{file}\")))'"
                  "nothing the projection holds is ever loaded as a library by the launcher; a runner configured to search it, as `chez` is, loads from it after exec, and that is the runner's reach."
+                 "In `argv`, `{file}`, `{dir}` and `{libdirs}` -- the launcher's own library path, as written for it -- are replaced only as whole arguments"
                  "is ever loaded as a library."))
-      '(#t #t #t #t #t #t #f))
+      '(#t #t #t #t #t #t #t #f))
 (want "C every chez run above left no eval-* directory behind" (eval-dirs) '())
 
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
