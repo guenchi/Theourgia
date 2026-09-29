@@ -214,7 +214,27 @@ describe('I9 a cut writer is a note of its own, said as a cut', () => {
     const said = incompleteWarning(answer.notes as Note[]);
     assert.match(said, /writer zzzzzzzz could not be read/);
     assert.match(said, /writer w was read only up to record 7/);
-    assert.strictEqual(incompleteWarning([NOTE]), `Incomplete: writer zzzzzzzz could not be read (${PATH}: Permission denied). What you see is what the other writers wrote, within the usual limits.`);
+    assert.strictEqual(incompleteWarning([NOTE]), `Incomplete: writer zzzzzzzz could not be read (${PATH}: Permission denied). What you see is what could be read, within the usual limits.`);
+  });
+
+  /*
+   * A WRITER STOPPED AT A SEGMENT IT CANNOT READ, in the shape the core gives
+   * it: the bare triple, the path a segment file, no cut clause -- the same
+   * form as a writer it could not read at all, while the records before the
+   * segment are delivered. The warning names the writer as before and claims
+   * nothing about what of it is shown.
+   */
+  it('says of a writer stopped at an unreadable segment only what could be read, not "what the other writers wrote"', () => {
+    const segment = '(unreadable (writer "w") (path "/s/writers/w/000003.sexp") (reason "Input/output error"))';
+    const answer = interpret(raw(`(ok (text "- a.1  Alpha\\n") (incomplete ${segment}))\n`), 'outline', 'text', ['--wire']);
+    assert.deepStrictEqual(answer.notes, [{ writer: 'w', path: '/s/writers/w/000003.sexp', reason: 'Input/output error' }]);
+    const said = incompleteWarning(answer.notes as Note[]);
+    assert.strictEqual(
+      said,
+      'Incomplete: writer w could not be read (/s/writers/w/000003.sexp: Input/output error). What you see is what ' +
+        'could be read, within the usual limits.'
+    );
+    assert.doesNotMatch(said, /the other writers/);
   });
 
   it('merges notes once each, a cut and an unreadable note of one writer kept apart, two cuts apart by where', () => {

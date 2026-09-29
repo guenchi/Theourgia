@@ -99,11 +99,15 @@ export interface Note {
   path: string;
   reason: string;
   /*
-   * PRESENT FOR A CUT, absent for a writer that could not be read at all.
-   * A cut is a writer whose log was read up to a record and not past it,
-   * because what follows is damaged: `kind` is the log's own name for the
-   * damage and `after` the last record kept. The writer's records up to
-   * there ARE in the reading.
+   * PRESENT FOR A CUT. A cut is a writer whose log was read up to a record
+   * and not past it, because what follows is damaged: `kind` is the log's
+   * own name for the damage and `after` the last record kept. The writer's
+   * records up to there ARE in the reading.
+   *
+   * NOTE: ABSENCE DOES NOT MEAN NOTHING OF THE WRITER WAS READ. A writer
+   * stopped at a segment it cannot read is reported without this clause,
+   * in the same form as a writer that could not be read at all, while its
+   * records before that segment are in the reading (log.sc, `cut-note`).
    */
   cut?: { kind: string; after: number };
 }
@@ -114,8 +118,8 @@ export interface Note {
  * The core appends `(incomplete (unreadable (writer w) (path p) (reason
  * r)) ...)` to every answer built from a load that could not read a
  * writer, whatever the answer's head: an `ok`, a `check`, a refusal.
- * The rows beside it are still the store's answer -- everything the
- * other writers wrote -- so the clause is taken out here, once, and
+ * The rows beside it are still the store's answer -- what could be read
+ * -- so the clause is taken out here, once, and
  * travels beside the body as notes. A parser handed the body never meets
  * it, and a view handed the notes cannot mistake the reading for a
  * complete one.
@@ -179,7 +183,8 @@ function notesOf(clause: Datum, verb: string, detail: string): Note[] {
   return parts.map((part, index) => {
     /*
      * TWO KINDS OF NOTE: `(unreadable (writer w) (path p) (reason r))`, a
-     * writer nothing could be read of, and `(cut (writer w) (path p)
+     * writer the reading could not read, wholly or past a segment it
+     * cannot read, and `(cut (writer w) (path p)
      * (reason r) (kind k) (after n))`, a writer read up to record n. Any
      * other kind is refused by name, as before: a note this build does not
      * know how to say is not one it may leave out.

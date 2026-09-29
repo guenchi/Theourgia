@@ -128,7 +128,7 @@ export interface ChildListing {
    * THE WRITERS THIS LISTING COULD NOT SEE, from every answer it was built
    * from (the outline or subtree, the marks, the blocks). Null when every
    * writer was read. The rows are still the store's answer; the notes say
-   * whose writing is not in them.
+   * whose writing is not wholly in them.
    */
   notes: Note[] | null;
 }
@@ -451,9 +451,9 @@ export class StoreModel {
     const out = new Map<string, StructuralMark[]>();
     /*
      * NEVER: A READING THAT COULD NOT SEE A WRITER DOES NOT KNOW THAT
-     * WRITER'S MARKS. The marks read here are the other writers' only, so
-     * "none" would draw every block as sound on the strength of an answer
-     * that says it is not the whole store.
+     * WRITER'S MARKS. The marks read here are those of what could be read,
+     * so "none" would draw every block as sound on the strength of an
+     * answer that says it is not the whole store.
      */
     let complete = (answer.notes ?? null) === null;
     for (const item of answer.answers) {

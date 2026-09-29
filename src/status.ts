@@ -81,7 +81,7 @@ export interface StatusFacts {
  *
  * NEVER: THE WORD IS NOT "UNREADABLE". Said of a reading it sounds like the
  * store itself cannot be read, which is the opposite of what happened:
- * everything the other writers wrote is here. The sentence names the
+ * everything that could be read is here. The sentence names the
  * writer that could not be read, where, and why, and claims no
  * completeness for the rest either -- a listing is bounded by its depth
  * and a search by its hit limit whatever the writers.
@@ -95,13 +95,15 @@ export function incompleteWarning(notes: Note[]): string {
     )
     .join('; ');
   /*
-   * A CUT WRITER'S RECORDS UP TO THE CUT ARE IN THE READING, so "what the
-   * other writers wrote" would say less than was shown; the sentence for a
-   * reading with no cut is unchanged.
+   * NEVER: "WHAT THE OTHER WRITERS WROTE". A cut writer's records up to the
+   * cut are in the reading, and so are those of a writer stopped at a
+   * segment it cannot read -- which the core reports in the same bare
+   * (writer, path, reason) as a writer it could not read at all (log.sc,
+   * `cut-note`: segment-unreadable "keeps the triple it has always had").
+   * Nothing in the note tells the two apart, so no note may claim that
+   * nothing of its writer is shown.
    */
-  return notes.some((note) => note.cut !== undefined)
-    ? `Incomplete: ${who}. What you see is what could be read, within the usual limits.`
-    : `Incomplete: ${who}. What you see is what the other writers wrote, within the usual limits.`;
+  return `Incomplete: ${who}. What you see is what could be read, within the usual limits.`;
 }
 
 export interface StatusLine {

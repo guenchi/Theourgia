@@ -275,7 +275,7 @@ const AT_LEAST: Array<[string, number]> = [
    * writer beside a cut, notes merged by whether and where they are cut, and
    * an unknown note kind still refused.
    */
-  ['incomplete.test.ts', 28],
+  ['incomplete.test.ts', 29],
   ['integrity.test.ts', 55],
   /*
    * ADDED in plugin-r2: reading a search answer and a verb catalogue,

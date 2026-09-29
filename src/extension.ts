@@ -217,8 +217,8 @@ export interface ViewModes {
 /*
  * THE BANNER OVER AN EDITOR WHOSE TEXT CAME FROM A READING THAT COULD NOT SEE
  * EVERY WRITER: a decoration before the first line, as information. The text
- * itself is not touched -- what is shown is what the other writers wrote,
- * and what is saved is what the person writes.
+ * itself is not touched -- what is shown is what could be read, and what is
+ * saved is what the person writes.
  */
 function showIncompleteBanner(editor: vscode.TextEditor, notes: Note[], keep: vscode.Disposable[]): void {
   const banner = vscode.window.createTextEditorDecorationType({
