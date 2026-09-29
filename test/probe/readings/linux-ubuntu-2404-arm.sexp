@@ -1,4 +1,4 @@
-(layout-probe 4)
+(layout-probe 5)
 (machine "aarch64") (system "Linux") (release "6.17.0-1022-azure")
 (libc "glibc 2.39")
 (pointer-size 8)
@@ -115,6 +115,7 @@
   (CTL_KERN absent)
   (KERN_PROC absent)
   (KERN_PROC_PID absent)
+  (KERN_PROC_ENV absent)
   (EPERM 1)
   (ENOENT 2)
   (ESRCH 3)

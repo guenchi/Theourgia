@@ -1,4 +1,4 @@
-(layout-probe 4)
+(layout-probe 5)
 (machine "amd64") (system "FreeBSD") (release "15.0-RELEASE")
 (libc "freebsd 15")
 (pointer-size 8)
@@ -117,6 +117,7 @@
   (CTL_KERN 1)
   (KERN_PROC 14)
   (KERN_PROC_PID 1)
+  (KERN_PROC_ENV 35)
   (EPERM 1)
   (ENOENT 2)
   (ESRCH 3)

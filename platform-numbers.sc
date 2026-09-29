@@ -66,7 +66,7 @@
   (list
     ;; Linux x86_64, glibc 2.39: GitHub Actions ubuntu-latest, run 36600347509 (linux-ubuntu-latest.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "x86_64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -183,6 +183,7 @@
         (CTL_KERN absent)
         (KERN_PROC absent)
         (KERN_PROC_PID absent)
+        (KERN_PROC_ENV absent)
         (EPERM 1)
         (ENOENT 2)
         (ESRCH 3)
@@ -212,7 +213,7 @@
         ))
     ;; Linux aarch64, glibc 2.39: GitHub Actions ubuntu-24.04-arm, run 36600347509 (linux-ubuntu-2404-arm.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "aarch64") (system "Linux") (release "6.17.0-1022-azure")
       (libc "glibc 2.39")
       (pointer-size 8)
@@ -329,6 +330,7 @@
         (CTL_KERN absent)
         (KERN_PROC absent)
         (KERN_PROC_PID absent)
+        (KERN_PROC_ENV absent)
         (EPERM 1)
         (ENOENT 2)
         (ESRCH 3)
@@ -358,7 +360,7 @@
         ))
     ;; FreeBSD 15.0 amd64: the Paris server (freebsd-15-paris.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "amd64") (system "FreeBSD") (release "15.0-RELEASE")
       (libc "freebsd 15")
       (pointer-size 8)
@@ -477,6 +479,7 @@
         (CTL_KERN 1)
         (KERN_PROC 14)
         (KERN_PROC_PID 1)
+        (KERN_PROC_ENV 35)
         (EPERM 1)
         (ENOENT 2)
         (ESRCH 3)
@@ -506,7 +509,7 @@
         ))
     ;; Darwin arm64, macOS 25.3: the development machine (darwin-arm64-local.sexp).
     '(
-      (layout-probe 4)
+      (layout-probe 5)
       (machine "arm64") (system "Darwin") (release "25.3.0")
       (libc "darwin")
       (pointer-size 8)
@@ -628,6 +631,7 @@
         (CTL_KERN 1)
         (KERN_PROC 14)
         (KERN_PROC_PID 1)
+        (KERN_PROC_ENV absent)
         (EPERM 1)
         (ENOENT 2)
         (ESRCH 3)

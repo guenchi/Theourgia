@@ -1,4 +1,4 @@
-(layout-probe 4)
+(layout-probe 5)
 (machine "arm64") (system "Darwin") (release "25.3.0")
 (libc "darwin")
 (pointer-size 8)
@@ -120,6 +120,7 @@
   (CTL_KERN 1)
   (KERN_PROC 14)
   (KERN_PROC_PID 1)
+  (KERN_PROC_ENV absent)
   (EPERM 1)
   (ENOENT 2)
   (ESRCH 3)

@@ -103,7 +103,7 @@ int main(void) {
   int exited = 0x0300;
   int signalled = 0x0009;
 
-  printf("(layout-probe 4)\n");
+  printf("(layout-probe 5)\n");
   if (uname(&u) == 0) {
     printf("(machine \"%s\") (system \"%s\") (release \"%s\")\n", u.machine, u.sysname, u.release);
   }
@@ -523,6 +523,11 @@ int main(void) {
   printf("  (KERN_PROC_PID %ld)\n", (long)(KERN_PROC_PID));
 #else
   printf("  (KERN_PROC_PID absent)\n");
+#endif
+#ifdef KERN_PROC_ENV
+  printf("  (KERN_PROC_ENV %ld)\n", (long)(KERN_PROC_ENV));
+#else
+  printf("  (KERN_PROC_ENV absent)\n");
 #endif
 #ifdef EPERM
   printf("  (EPERM %ld)\n", (long)(EPERM));
