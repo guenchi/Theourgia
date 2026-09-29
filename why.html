@@ -26,7 +26,9 @@ header .wrap{position:relative;z-index:1}
 .hero-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.4fr);align-items:center;gap:36px}
 .hero-grid .cta{margin-bottom:0}
 .hero-text .tag{margin-bottom:30px}
-.hero-mark{display:block;width:56px;height:56px}
+.hero-title{display:flex;align-items:center;gap:14px;margin:10px 0 16px}
+.hero-title h1{margin:0}
+.hero-mark{display:block;flex:none;width:52px;height:52px}
 .hero-intro{aspect-ratio:16/9;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--bg);box-shadow:0 12px 40px rgba(60,50,30,.10)}
 .hero-intro iframe{display:block;width:100%;height:100%;border:0}
 h1{font-size:54px;letter-spacing:-1.2px;margin:10px 0 16px}
@@ -91,6 +93,7 @@ footer .sp{margin-left:auto}
 .diagram svg{width:100%;height:auto;display:block}
 @media (max-width:760px){
   h1{font-size:38px}
+  .hero-mark{width:38px;height:38px}
   header{padding:56px 0 40px}
   .tag{font-size:18px}
   .grid2{grid-template-columns:1fr;gap:24px}
