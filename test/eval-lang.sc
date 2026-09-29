@@ -1229,7 +1229,9 @@
 
 ;; A RECORDING INTERPRETER: a shell script that writes its argv, its
 ;; environment, the source's basename and the source's contents to files
-;; outside the run root, then exits 0.
+;; outside the run root, then exits 0 -- whatever its first argument is: the
+;; launcher rows hand it "--env" there, which no command below reads as an
+;; option.
 (define recorders 0)
 (define (make-recorder!)
   (set! recorders (+ recorders 1))
@@ -1241,8 +1243,9 @@
             "{ for a in \"$@\"; do printf '%s\\n' \"$a\"; done; } > " (quoted (string-append base ".argv")) "\n"
             "env > " (quoted (string-append base ".env")) "\n"
             "pwd -P > " (quoted (string-append base ".pwd")) "\n"
-            "basename \"$1\" > " (quoted (string-append base ".base")) "\n"
-            "cat \"$1\" > " (quoted (string-append base ".src")) "\n"))
+            "printf '%s\\n' \"${1##*/}\" > " (quoted (string-append base ".base")) "\n"
+            "cat < \"$1\" > " (quoted (string-append base ".src")) " 2>/dev/null\n"
+            "exit 0\n"))
     (sh "chmod 755 " (quoted script))
     base))
 (define (rec-script base) (string-append base ".sh"))
@@ -1260,7 +1263,13 @@
 (define (rec-names base) (map car (rec-env base)))
 (define (rec-value base name) (let ((p (assoc name (rec-env base)))) (and p (cdr p))))
 (define sh-own-names '("PATH" "HOME" "LANG" "PWD" "SHLVL" "_" "OLDPWD"))
-(define (names-within? names allowed) (and (member "PATH" names) (for-all (lambda (n) (member n allowed)) names) #t))
+;; EVERY NAME THE LAUNCHER KEEPS IS THERE -- PATH, HOME and LANG, as far as
+;; this fixture's own environment has them -- and nothing outside `allowed`.
+(define kept-names (filter getenv '("PATH" "HOME" "LANG")))
+(define (names-within? names allowed)
+  (and (for-all (lambda (k) (member k names)) kept-names)
+       (for-all (lambda (n) (member n allowed)) names)
+       #t))
 (define (theourgia-name? n) (and (>= (string-length n) 10) (string=? (substring n 0 10) "THEOURGIA_")))
 (define SRC-C "(import (lib a)) (display (f))")
 (let* ((r (make-recorder!))
@@ -1283,15 +1292,21 @@
   (want "C3b a source-name override: the source is written as run.ss, {file} names it, and it holds the source's text"
         (list (head-of a) (rec-lines r ".base") (text-of-file (string-append r ".src")))
         (list 'ok '("run.ss") SRC-C)))
-(let ((a (ask (with-var "((env ((\"FOO\" \"bar\"))))") SC
-              "(write (list (command-line) (getenv \"FOO\") (getenv \"CHEZSCHEMELIBDIRS\") (getenv \"CHEZSCHEMELIBEXTS\")))"
-              "--lang" "chez")))
-  (want "C3c an env-only override: the table's argv and source name stay (scheme --script .../__eval.ss); the environment is the override's whole, so the table's pairs are gone"
-        (let ((d (datum-of (stdout-of a))))
-          (list (head-of a)
-                (and (pair? d) (pair? (car d)) (string? (caar d)) (ends-with? (caar d) "/source/__eval.ss"))
-                (and (pair? d) (cdr d))))
-        (list 'ok #t '("bar" #f #f))))
+;; THE TABLE'S argv IS RECORDED AS A WHOLE: a recorder named `scheme` is put
+;; first on PATH, which is where the launcher looks the interpreter up, while
+;; THEOURGIA_SCHEME keeps the launcher itself on the real Chez.
+(let* ((r (make-recorder!))
+       (bin (string-append r "-bin"))
+       (_ (sh "mkdir -p " (quoted bin) " && cp " (quoted (rec-script r)) " " (quoted (string-append bin "/scheme"))))
+       (a (ask (string-append (with-var "((env ((\"FOO\" \"bar\"))))")
+                              " THEOURGIA_SCHEME=" (quoted scheme-path) " PATH=" (quoted bin) ":\"$PATH\"")
+               SC SRC-C "--lang" "chez")))
+  (want "C3c an env-only override: the table's argv (scheme --script <file>) and source name stay, recorded whole; the environment is the override's whole, so the table's pairs are gone"
+        (list (head-of a)
+              (let ((l (rec-lines r ".argv")))
+                (and (= 2 (length l)) (string=? (car l) "--script") (ends-with? (cadr l) "/source/__eval.ss")))
+              (rec-value r "FOO") (rec-value r "CHEZSCHEMELIBDIRS") (rec-value r "CHEZSCHEMELIBEXTS"))
+        (list 'ok #t "bar" #f #f)))
 (let* ((r (make-recorder!))
        (a (ask (with-var (string-append "((argv (\"" (rec-script r) "\" \"{file}\")) (env ()))")) SC SRC-C "--lang" "chez")))
   (want "C3d an explicit (env ()) is an override, not absence: the interpreter has PATH, HOME and LANG only"
@@ -1468,24 +1483,41 @@
               (let ((o (stdout-of a))) (and (prefix? o "hi /") (ends-with? o "/tree\n"))))
         (list #t 'ok #t)))
 
+;; THE CONTROL: node through the table's own entry, with no env field, sees
+;; the kept names and nothing else.
+(let ((a (ask ON S "console.log(Object.keys(process.env).sort().join(' '))" "--lang" "javascript")))
+  (want "C6 control: node with the table's entry (no env field) sees exactly the kept names, PATH, HOME and LANG as this fixture has them (node present)"
+        (list (have? "node") (head-of a) (stdout-of a))
+        (list #t 'ok (string-append (let loop ((ns (list-sort string<? kept-names)) (acc ""))
+                                      (cond ((null? ns) acc)
+                                            ((string=? acc "") (loop (cdr ns) (car ns)))
+                                            (else (loop (cdr ns) (string-append acc " " (car ns))))))
+                                    "\n"))))
+
 ;; ---- the launcher's arguments, read by the launcher itself --------------------------
 ;; The launcher is started directly, as the supervisor starts it, with a
 ;; recording interpreter; `go` on its stdin.
+;; -> (status . stdout): the status as text, and what the launcher printed
+;; before it became the interpreter -- (ready <pgid>) or nothing.
 (define (launcher-run . args)
-  (sh-out "printf 'go\\n' | " (quoted scheme-path) " --script " (quoted launcher-abs) " "
-          (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
-          " >/dev/null 2>&1; echo $?"))
+  (let* ((out (string-append root "/launcher-out"))
+         (status (sh-out "printf 'go\\n' | " (quoted scheme-path) " --script " (quoted launcher-abs) " "
+                         (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+                         " > " (quoted out) " 2>/dev/null; echo $?")))
+    (cons status (text-of-file out))))
 (let* ((r (make-recorder!))
        (status (launcher-run "5" "--env" "A=1" "--env" "B=" "--env" "C=x=y z --" "--" (rec-script r) "--env" "--" "tail")))
   (want "G1 the launcher: pairs up to the first standalone --, each split at its first =, an empty value kept; everything after -- is the interpreter's verbatim"
-        (list status (rec-lines r ".argv") (rec-value r "A") (rec-value r "B") (rec-value r "C"))
-        (list "0\n" '("--env" "--" "tail") "1" "" "x=y z --")))
+        (list (car status) (prefix? (cdr status) "(ready ")
+              (rec-lines r ".argv") (rec-value r "A") (rec-value r "B") (rec-value r "C"))
+        (list "0\n" #t '("--env" "--" "tail") "1" "" "x=y z --")))
 (for-each
   (lambda (c)
     (let ((r (make-recorder!)))
-      (want (string-append "G2 the launcher, " (car c) ": exit " (cadr c) " before ready, and the interpreter never ran")
-            (list (apply launcher-run (map (lambda (a) (if (equal? a "REC") (rec-script r) a)) (caddr c))) (rec-ran? r))
-            (list (string-append (cadr c) "\n") #f))))
+      (want (string-append "G2 the launcher, " (car c) ": exit " (cadr c) " before ready (nothing printed), and the interpreter never ran")
+            (let ((s (apply launcher-run (map (lambda (a) (if (equal? a "REC") (rec-script r) a)) (caddr c)))))
+              (list (car s) (cdr s) (rec-ran? r)))
+            (list (string-append (cadr c) "\n") "" #f))))
   (list (list "a pair with no =" "3" '("5" "--env" "NOEQ" "--" "REC"))
         (list "a pair with an empty name" "3" '("5" "--env" "=v" "--" "REC"))
         (list "no -- at all (usage)" "2" '("5" "--env" "A=1" "REC"))
@@ -1558,6 +1590,13 @@
                  "In `argv`, `{file}`, `{dir}` and `{libdirs}` -- the launcher's own library path, as written for it -- are replaced only as whole arguments"
                  "is ever loaded as a library."))
       '(#t #t #t #t #t #t #t #f))
+;; BEFORE THE EXPORT, NOT AFTER IT: a store that cannot be exported (L8's) is
+;; refused for the directory; a check made after the export would answer the
+;; exporter's projection-failed instead.
+(let ((a (ask (string-append ON " THEOURGIA_RUN=" (quoted run-colon)) B SRC-C "--lang" "chez")))
+  (want "U1b under the same run root, a store the exporter refuses answers projection-directory-unrepresentable: the check precedes the export"
+        (list (head-of a) (clause-of a 'reason) (eval-dirs-of run-colon))
+        (list '(error spawn-refused) '(reason projection-directory-unrepresentable) '())))
 (want "C every chez run above left no eval-* directory behind" (eval-dirs) '())
 
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
