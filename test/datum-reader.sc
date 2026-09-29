@@ -78,5 +78,26 @@
       (want "CD-06 fixed P1 output matches independent Chez reference" (datum-print datum) (cdr row))
       (parameterize ((pretty-line-length 12) (pretty-one-line-limit 4) (print-radix 16) (print-length 1) (print-level 1))
         (want "CD-06 caller print defaults cannot change output" (datum-print datum) (cdr row))))) golden)
+;; THE PRINTER'S VERSIONS, read from ffi.sc as data: the accepted list is
+;; exactly the three measured by test/probe/printprobe.ss, the printer
+;; refuses any other, and this Chez is one of them.
+(define ffi-body
+  (let ((lib (call-with-input-file "../ffi.sc"
+               (lambda (p) (let loop ((x (read p))) (if (and (pair? x) (eq? (car x) 'library)) x (loop (read p))))))))
+    (cdddr lib)))
+(define (ffi-definition name)
+  (find (lambda (f) (and (pair? f) (eq? (car f) 'define) (pair? (cdr f))
+                         (eq? (if (pair? (cadr f)) (caadr f) (cadr f)) name)))
+        ffi-body))
+(want "CD-20 the printer accepts exactly the Chez versions it was measured on, and refuses any other"
+      (list (ffi-definition 'printer-measured-versions)
+            (and (member '(unless (member (scheme-version) printer-measured-versions)
+                            (raise '(error unsupported-printer-version)))
+                         (cddr (ffi-definition 'source-datum-print)))
+                 #t)
+            (and (member (scheme-version) (cadr (caddr (ffi-definition 'printer-measured-versions)))) #t))
+      (list '(define printer-measured-versions
+               '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.1"))
+            #t #t))
 (printf "~a failures\ndatum-reader complete\n" bad)
 (exit (if (zero? bad) 0 1))
