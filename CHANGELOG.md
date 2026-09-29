@@ -1,9 +1,18 @@
 # Changelog
 
-## 0.1.0 — 2026-09-29
+## 1.0.0 — 2026-09-29
 
 First published version. It needs the theourgia core installed on the machine
 (see README, "Before you start").
+
+* Supplying what the editor knows: three commands collect signatures,
+  keywords, call edges and diagnostics from VS Code's language servers
+  over the store's code projection and hand them to the core, which keeps
+  them beside the blocks with where they came from; answers built on them
+  say which editor supplied them and how many are stale.
+* Everything listed under 0.1.0 below.
+
+## 0.1.0 — 2026-09-29 (not published)
 
 * An outline tree of the store, opened level by level; blocks open as
   markdown documents and save through a durable working draft and an

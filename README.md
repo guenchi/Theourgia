@@ -26,7 +26,7 @@ commands need commit 5230bb6 or later, which has `supply`; an older core
 answers it as an unknown verb, and the command shows that answer. VS Code
 1.138 is what the suites run on, and the extension claims nothing older.
 
-**Platforms.** 0.1.0 is packaged for macOS on Apple Silicon only: the
+**Platforms.** 1.0.0 is packaged for macOS on Apple Silicon only: the
 extension's save queue takes a file lock through a small native module,
 built for the machine that packages the extension, and this first package
 was built here. Packages for Intel macOS and for Linux (x86-64 and arm64)
