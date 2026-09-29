@@ -601,11 +601,17 @@
 ;; theourgia/ and igropyr/), CHEZSCHEMELIBDIRS unset, so it finds them by the
 ;; default "." -- and "." made absolute is a name holding ":". Its run root is
 ;; not writable: a directory made before the refusal would change the answer.
+;; Its admission pool is made first, while it still is, since the admission
+;; comes before the runner: slot files 0 to 255, more than any pool this row
+;; meets, so the evaluation is admitted and reaches the refusal the row is
+;; about.
 (define colon-dir (string-append root "/lib:colon"))
 (define run18 (string-append root "/run18"))
 (sh "mkdir -p " (quoted colon-dir) " " (quoted run18)
     " && ln -s " (quoted (string-append libdir "/theourgia")) " " (quoted (string-append colon-dir "/theourgia"))
     " && ln -s " (quoted (string-append libdir "/igropyr")) " " (quoted (string-append colon-dir "/igropyr"))
+    " && mkdir -p " (quoted (string-append run18 "/admission"))
+    " && i=0 && while [ $i -lt 256 ]; do : > " (quoted (string-append run18 "/admission")) "/$i; i=$((i+1)); done"
     " && chmod 500 " (quoted run18))
 (let ((a (ask-without-libdirs-under run18 colon-dir "" S "echo x\n" "--lang" "shell")))
   (want "L18 a working directory holding a colon, libraries by the default dot: spawn-refused (reason library-directory-unrepresentable) naming it, on an unwritable run root, nothing made"
@@ -894,7 +900,7 @@
 (define (ended-at pid ms) (within ms (lambda () (and (not (alive? pid)) (wall-ms)))))
 (define (answer-in out) (guard (e (#t 'UNREADABLE)) (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d))))
 (define (scratch-count r)
-  (length (filter (lambda (f) (and (> (string-length f) 5) (string=? (substring f 0 5) "eval-") (not (string=? f "eval-slots"))))
+  (length (filter (lambda (f) (and (> (string-length f) 5) (string=? (substring f 0 5) "eval-")))
                   (directory-list r))))
 (define (slots-env r . more) (apply string-append "THEOURGIA_RUN=" (quoted r) " " more))
 ;; A HOLDER'S SOURCE: it says it is running, then holds its slot until the row
@@ -1087,14 +1093,14 @@
               (ask (slots-env r "THEOURGIA_EVAL_SLOTS=two") SL "(+ 1 2)")))
       '((error bad-request (reason eval-slots)) (error bad-request (reason eval-slots))))
 
-;; THE SLOT FILES ARE MADE WHERE THEY CANNOT BE: an eval-slots directory that
+;; THE SLOT FILES ARE MADE WHERE THEY CANNOT BE: an admission directory that
 ;; can be searched and not written, holding no slot. The creation's failure
 ;; is the table's unwritable. The instrument is checked first: a file this
 ;; process tries to create there must be refused (a process that bypasses
 ;; permissions would make the row say nothing).
-(want "L15 an eval-slots directory that can be searched and not written, and holds no slot, answers unwritable"
+(want "L15 an admission directory that can be searched and not written, and holds no slot, answers unwritable"
       (let* ((r (fresh-run! "slots-unwritable"))
-             (d (string-append r "/eval-slots"))
+             (d (string-append r "/admission"))
              (_ (sh "mkdir -p " (quoted d) "; chmod 555 " (quoted d)))
              (denied (not (= 0 (sh "touch " (quoted (string-append d "/probe")) " 2>/dev/null"))))
              (a (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1") SL "(+ 1 2)")))
@@ -1111,32 +1117,68 @@
                       SL "(+ 1 2)")))
       '(error unreadable))
 
-;; THE MARK, MEASURED THROUGH THE SPAWN THE WORKER AND THE RUNNER USE
-;; (proc-spawn!, by spawn-worker!): two descriptors on one file, one marked,
-;; and `test -e /dev/fd/<n>` run for each. The unmarked one is the control:
-;; if the child cannot see it, the instrument observes nothing and the row
-;; is red for that.
+;; THE MARK, MEASURED THREE WAYS, on two descriptors of one file, one marked.
+;; (a) THE MARK ITSELF: a child made by Chez's `system` (/bin/sh) runs
+;; `test -e /dev/fd/<n>` for each; it must see the unmarked one (0, the
+;; control) and not the marked one (1); the getter must read the mark.
+;; (b) THE WORKER'S SPAWN PATH (proc-spawn!, by spawn-worker!: libuv), a
+;; reading: libuv's child closes every descriptor it did not set up --
+;; measured on macOS here, and on FreeBSD 15.0 with libuv 1.52.0 by a
+;; compiled probe (2026-09-29) -- so its child sees neither, and there the
+;; slot needs no mark. The row asserts only that the marked one is never
+;; seen. A LIMIT: through that path the signal-9 row above cannot tell a
+;; missing mark apart, on either platform.
+;; (c) THE TREE'S OWN posix_spawn PATH (ffi.sc spawn-captured!, which sets
+;; no POSIX_SPAWN_CLOEXEC_DEFAULT): its child inherits every descriptor not
+;; marked, so where it sees the unmarked one, the marked one must be
+;; unseen -- here the mark is the protection.
 (define cloexec-probe (string-append root "/cloexec-probe.sc"))
 (put! cloexec-probe
       (string-append
-        "(import (chezscheme) (only (theourgia ffi) fd-open fd-close-on-exec! fd-close-on-exec?)\n"
+        "(import (chezscheme) (only (theourgia ffi) fd-open fd-close-on-exec! fd-close-on-exec? spawn-captured! waitpid-status)\n"
         "        (only (theourgia sched) start-scheduler receive self)\n"
         "        (only (theourgia proc) spawn-worker!))\n"
         "(define plain (fd-open \"/etc/hosts\" '(read)))\n"
         "(define marked (fd-open \"/etc/hosts\" '(read)))\n"
         "(fd-close-on-exec! marked)\n"
-        "(define (probe fd)\n"
-        "  (spawn-worker! \"/bin/sh\" (list \"sh\" \"-c\" (string-append \"test -e /dev/fd/\" (number->string fd))) '() self)\n"
-        "  (receive (`(worker-exit ,r ,status ,signal) status) (after 10000 'no-exit)))\n"
+        "(define (test-argv fd) (list \"/bin/sh\" \"-c\" (string-append \"test -e /dev/fd/\" (number->string fd))))\n"
+        "(define (seen-by-system fd) (system (caddr (test-argv fd))))\n"
+        "(define (seen-by-ffi fd)\n"
+        "  (let-values (((pid err) (spawn-captured! (test-argv fd) '() #f \"/dev/null\" \"/dev/null\")))\n"
+        "    (if (not pid)\n"
+        "        (list 'spawn-failed err)\n"
+        "        (let loop ((i 0))\n"
+        "          (let ((s (waitpid-status pid)))\n"
+        "            (cond ((and s (eq? (car s) 'exit)) (cadr s))\n"
+        "                  (s s)\n"
+        "                  ((> i 1000) 'no-exit)\n"
+        "                  (else (sleep (make-time 'time-duration 10000000 0)) (loop (+ i 1)))))))))\n"
+        "(define (seen-by-worker fd)\n"
+        "  (spawn-worker! \"/bin/sh\" (test-argv fd) '() self)\n"
+        "  (receive (after 10000 'no-exit) (`(worker-exit ,r ,status ,signal) status)))\n"
+        "(define before (list (seen-by-system plain) (seen-by-system marked) (seen-by-ffi plain) (seen-by-ffi marked)))\n"
         "(start-scheduler\n"
         "  (lambda ()\n"
-        "    (let* ((p (probe plain)) (m (probe marked)))\n"
-        "      (write (list (fd-close-on-exec? plain) (fd-close-on-exec? marked) p m))\n"
+        "    (let* ((p (seen-by-worker plain)) (m (seen-by-worker marked)))\n"
+        "      (write (append (list (fd-close-on-exec? plain) (fd-close-on-exec? marked)) before (list p m)))\n"
         "      (newline) (flush-output-port (current-output-port))\n"
         "      (exit 0))))\n"))
-(want "L15 fd-close-on-exec!: the marked descriptor answers #t and a child spawned the worker's way cannot see it; the unmarked one (the control) it can"
-      (datum-of (sh-out (quoted scheme-path) " --script " (quoted cloexec-probe) " 2>/dev/null < /dev/null"))
-      '(#f #t 0 1))
+;; -> (getter-plain getter-marked system-plain system-marked ffi-plain
+;; ffi-marked worker-plain worker-marked); 0 seen, 1 unseen.
+(let ((r (datum-of (sh-out (quoted scheme-path) " --script " (quoted cloexec-probe) " 2>/dev/null < /dev/null"))))
+  (define (at i) (and (list? r) (= (length r) 8) (list-ref r i)))
+  (printf "L15 information: seen by a child (0 seen, 1 unseen) -- ffi.sc's posix_spawn: unmarked ~a, marked ~a; libuv's spawn: unmarked ~a, marked ~a~a\n"
+          (at 4) (at 5) (at 6) (at 7)
+          (if (eqv? (at 6) 1) " (libuv closes every descriptor it did not set up)" ""))
+  (want "L15 fd-close-on-exec!: the getter reads the mark, and a child made by Chez's system sees the unmarked descriptor and not the marked one"
+        (list (at 0) (at 1) (at 2) (at 3))
+        '(#f #t 0 1))
+  (want "L15 the worker's spawn path (libuv) never shows the marked descriptor"
+        (and (eqv? (at 7) 1) (memv (at 6) '(0 1)) #t)
+        #t)
+  (want "L15 ffi.sc's posix_spawn path shows the unmarked descriptor and not the marked one: there the mark is the protection"
+        (list (at 4) (at 5))
+        '(0 1)))
 
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
 (printf "\n~a failures\nrows: ~a\neval-lang complete\n" bad rows)

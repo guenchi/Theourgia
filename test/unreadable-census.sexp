@@ -40,7 +40,7 @@
   ("ffi.sc" (hold-point!) file-exists? 1 keep a "the hold seam's release file (injection only, F100b item 7): not writer layout; a test's own marker")
   ("ffi.sc" (file-is-directory?) file-is-directory? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
   ("ffi.sc" (file-is-regular?) file-is-regular? 1 convert a "the predicate itself: now entry-type, so an unreadable path raises (R1)")
-  ("ffi.sc" (mkdir-p!) file-is-directory? 2 convert a "generic helper mkdir-p!: the predicate is now entry-type and raises on an unreadable path (R1: converted unconditionally)")
+  ("ffi.sc" (mkdir-p-body!) file-is-directory? 2 convert a "generic helper mkdir-p! (its body, mkdir-p-body!, shared with mkdir-p-unrecorded!): the predicate is now entry-type and raises on an unreadable path (converted unconditionally)")
   ("ffi.sc" (mkdir-one!) file-is-directory? 1 convert a "generic helper mkdir-one!: the predicate is now entry-type and raises on an unreadable path (R1)")
   ("ffi.sc" (rss-linux) file-exists? 1 keep a "not writer layout: /proc on linux")
   ("ffi.sc" (path-version) file-is-regular? 1 convert a "generic helper path-version: the predicate is now entry-type and raises on an unreadable path (R1)")
@@ -1142,15 +1142,15 @@
    unrelated a
    "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read. The decode's own guard went with F111: utf8->string never raises"
    (e (#t #f)))
-  ("client.sc" (eval-admit!) 1 guard
+  ("eval-admission.sc" (eval-admit!) 1 guard
    (#t)
    unrelated a
-   "client: the evaluation admission's slot, released before the mark's failure goes on"
+   "eval-admission: the evaluation admission's slot, released before the mark's failure goes on"
    (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e))))
-  ("client.sc" (eval-admit!) 2 guard
+  ("eval-admission.sc" (eval-admit!) 2 guard
    (#t)
    unrelated a
-   "client: the evaluation admission's slot, released before the mark's failure goes on"
+   "eval-admission: the evaluation admission's slot, released before the mark's failure goes on"
    (x (#t #f)))
   )
 

@@ -744,7 +744,7 @@
               (equal? (without-incomplete (cadr missing)) (cadr healthy))
               (and (pair? eval-usage-form) (eq? (car eval-usage-form) 'eval))
               (car healthy) (cadr healthy))
-        (list 1 '(error bad-request) '() 0 #t
+        (list 1 '(error bad-request) 'no-clause 0 #t
               #t
               1 (list 'error 'bad-request '(reason eval-arguments) (list 'usage eval-usage-form)))))
 (let* ((c (fresh-store!)) (st (car c)) (w (cadr c))

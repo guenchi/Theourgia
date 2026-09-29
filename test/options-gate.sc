@@ -1689,7 +1689,7 @@
       '("admission.sc" "answers.sc" "arguments.sc" "baseline.sc" "client.sc"
         "code-markers.sc" "code-project.sc" "code-suggest.sc" "core.sc" "crc32.sc"
         "daemon.sc" "datum-code.sc" "datum-match.sc" "datum-metadata.sc"
-        "datum-project.sc" "digest.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
+        "datum-project.sc" "digest.sc" "eval-admission.sc" "eval-context.sc" "eval-runner-exec.sc" "eval-runner.sc"
         "eval-supervise.sc"
         "eval-worker.sc" "evidence-index.sc" "ffi.sc" "incomplete.sc" "json.sc"
         "languages.sc" "log.sc" "markers.sc" "md.sc" "net.sc"

@@ -536,7 +536,7 @@
                                            (list 'create (string-append wd "/draft.lock"))))))))
 
 ;; THE SLOT FILES ARE NOT THE REQUEST'S WRITES. The same evaluation, on a run
-;; root that has no pool yet: the admission makes eval-slots/ and its files
+;; root that has no pool yet: the admission makes admission/ and its files
 ;; there, and the written clause still names only the draft's lock and its
 ;; working directory. A slot creation recorded as a write would appear in it.
 (let* ((s (m1-store!))
@@ -547,7 +547,7 @@
   (want "AG-slots on a run root with no pool yet: the pool is made, and the written clause names the draft's lock and directory only"
         (list (m1-run (string-append "THEOURGIA_LOCAL=1 THEOURGIA_RUN=" fresh " THEOURGIA_EVAL_SLOTS=1")
                       "../core.sc" (list "eval" "--working" "--latest" "--writer" w "--store" s "(car '())"))
-              (file-exists? (string-append fresh "/eval-slots/0")))
+              (file-exists? (string-append fresh "/admission/0")))
         (list (list 1 (list 'error 'eval-exception '(kind raised) '(message "Evaluation raised an exception")
                             (list 'written (list (list 'mkdir (string-append wd "/working"))
                                                  (list 'create (string-append wd "/draft.lock"))))))

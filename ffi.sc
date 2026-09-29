@@ -2900,7 +2900,7 @@
   ;; preemption hands to every other actor (actor.sc:459-469), so it would
   ;; suppress the notes of whatever actor ran during the hold. Its callers
   ;; are hold-point!, which exists only in an injection build, and the eval
-  ;; admission's slot files (client.sc eval-admit!), which are
+  ;; admission's slot files (eval-admission.sc eval-admit!), which are
   ;; administration and not the request's writes.
   (define (file-ensure-unrecorded! path) (file-ensure-body! path #f))
 
