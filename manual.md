@@ -164,7 +164,7 @@ $ theourgia insert --store store --under root --title "..."
 
 > **What adopt does to a clone** instance.sexp binds a store to the machine and the directory it was made in, so the first write from a clone is refused rather than accepted into a second copy of the same writer's log. adopt mints a new writer id and leaves the history where it is: the clone keeps every block it was given, and its own records go under the new id from then on. Reading never needed any of this -- outline, read, search and eval answer from a fresh clone straight away. Every answer above came from a clone of this site; the outline is abridged and the titles passed to insert are left out, and nothing else is changed.
 
-## 32 verbs
+## 38 verbs
 
 Every verb below, with its usage line and its one-sentence description, is rendered from what the store answers to describe. Nothing on this page is typed by hand, so it cannot drift from the binary that produced it. The tag on the right of each signature says where the verb runs: local in the client process, or daemon over the socket.
 
@@ -183,10 +183,22 @@ refs <id>
 List the relations a block takes part in. (daemon)
 
 ```
-search <query>
+search <query> [--all]
 ```
 
 Find blocks whose title, keywords or text match every word given. (daemon)
+
+```
+grep <pattern> [--under <id>] [--all]
+```
+
+List the lines that contain a pattern, literally. (daemon)
+
+```
+whereis <name>
+```
+
+Say where a name is defined, and which libraries carry it. (daemon)
 
 ```
 log [<id>]
@@ -370,6 +382,34 @@ batch <intents>
 
 Carry out several changes as one request. (daemon)
 
+### Evaluating
+
+```
+eval [--lang <language>] [--cut <cut>] [--under <library>] [--working] [--latest] [--writer <name>] [--timeout-ms <n>] [--memory-bytes <n>] [--output-bytes <n>] <source>
+```
+
+Evaluate source against the store. (child)
+
+### Derived data from an editor
+
+```
+supply <kind> <file> [--for <writer>] [--clear]
+```
+
+Keep facts an editor computed from an export-code projection. (daemon)
+
+```
+reach <id> [--rel <rel>] [--depth <n>]
+```
+
+List the blocks a block reaches over the edges an editor supplied. (daemon)
+
+```
+diagnostics [--writer <name>]
+```
+
+List the diagnostics an editor supplied for a writer's working view. (daemon)
+
 ## Working with agents
 
 ### The MCP shell
@@ -397,7 +437,7 @@ One tool per verb, named `theourgia_<verb>`, each taking `{"argv": [...]}` with 
 
 The core's answer arrives as S-expression text, byte for byte. A core refusal is a successful tool result, not a JSON-RPC error: `(error unknown-id ...)` is the store's answer to the question asked, delivered with `isError: false`. Only the shell's own failures use the JSON-RPC error channel: a frame it could not parse, a frame past the size limit, or a connection that was made and then lost. A lost connection says the request may have been carried out, because it may have been; a request that reached nobody says it was not.
 
-`eval` is not offered as a tool; it is available only through the local CLI. `init` is not offered either, because the store must exist before the MCP server starts.
+`eval` is offered as `theourgia_eval`. The shell runs `core.sc eval` as its own child, not through the daemon: the store's server never runs user code. Transport options (`--store`, `--wire`, `--socket`, `--actor`) are refused with `transport-option-in-rpc`; the writer defaults to the session's unless `--writer` is given; a language other than Scheme runs only where the shell was started with `THEOURGIA_RUNNERS=on`; a lost evaluation is a protocol error naming the reason. `init` is not offered, because the store must exist before the MCP server starts.
 
 ### One writer per session
 
