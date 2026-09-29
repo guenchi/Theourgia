@@ -307,7 +307,10 @@ function saysNobodyKnows(datum: Datum): boolean {
       isSym(datum[1], 'working-unavailable') ||
       isSym(datum[1], 'transport-unknown') ||
       isSym(datum[1], 'unreadable') ||
-      isSym(datum[1], 'incomplete'))
+      isSym(datum[1], 'incomplete') ||
+      isSym(datum[1], 'reset-pending') ||
+      isSym(datum[1], 'stale-epoch') ||
+      isSym(datum[1], 'writer-stopped'))
   );
 }
 
@@ -375,7 +378,21 @@ export const RETRYABLE_REFUSALS = [
    * for names this build has never heard of, not a resting place for one
    * it has. Ruled by the main session.
    */
-  'serve-path-occupied'
+  'serve-path-occupied',
+  /*
+   * NOTE: TWO LOG CONDITIONS THAT MEAN "NOT NOW" (first read on 9f806bb,
+   * when the census learned `make-log-error`). `active-operation`, log.sc:1895
+   * `claim-store!`: another operation in the store's process holds it, and
+   * nothing of this one has started. `temp`, log.sc:186 `create-temp!`: no
+   * temporary name could be had after 64 tries. It is reached from
+   * `atomic-write!`, which can follow an append (`session-commit!` writes the
+   * registry after it, log.sc:6095 and 4511), so it does not say the write
+   * did not land. Both are sent again under the same id -- which the request
+   * ledger answers as a replay if the append landed -- and parked for a
+   * person after RETRY_CAP in a row.
+   */
+  'active-operation',
+  'temp'
 ] as const;
 
 /*
@@ -446,7 +463,16 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
     'a symbol in the file this extension wrote does not start at the beginning of a line, or the file\'s lines ' +
     'end in CR alone, which the core does not cut by; nothing was cut',
   'symbols-empty':
-    'the symbols file this extension wrote named no symbol; nothing was cut'
+    'the symbols file this extension wrote named no symbol; nothing was cut',
+  /*
+   * NOTE: `meta`, log.sc:1810 and 1819 (`open-load-body`, first read on
+   * 9f806bb): the store directory has no meta.sexp, or one not in format 1,
+   * so the core cannot open it and nothing was written. It is the directory
+   * that is wrong, as with `store-not-found`.
+   */
+  meta:
+    'the store directory in theourgia.store is not a store this core can open: its meta.sexp is missing or not ' +
+    'in the format this core reads. The save is kept and goes again when the setting changes'
 };
 
 /*
@@ -685,7 +711,7 @@ function saysAnOperatorSettledIt(datum: Datum): boolean {
  * reddens on the mark: the core growing a name is a thing to look at,
  * not a thing to guess about.
  */
-const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refused'> = {
+const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-by-operator' | 'refused'> = {
   /*
    * The one refusal no retry can settle, and the one that says somebody
    * else already did the work.
@@ -752,7 +778,21 @@ const REFUSALS: Record<string, 'req-mismatch' | 'executed-by-operator' | 'refuse
    * thing that fails when the binding breaks. If it does arrive, the
    * write did not happen.
    */
-  'writer-required': 'refused'
+  'writer-required': 'refused',
+  /*
+   * NOTE: THREE ANSWERS NO RETRY CAN SETTLE, kept for a person as
+   * `req-mismatch` is (first read on 9f806bb, when the census learned the
+   * consed and the log-condition constructors). `incomplete-request`,
+   * store.sc:3699 `request-answer`: the store holds this request partly
+   * carried out, a plan whose members are not all written, and this client
+   * finishes no plan. `registry-malformed`, log.sc:3133 and 3137
+   * `registry-as-read`: the machine's registry does not parse, so the store
+   * cannot be opened. `manifest`, log.sc:523 `read-manifest`: a writer's
+   * manifest is not valid. Waiting mends none of them.
+   */
+  'incomplete-request': 'kept-for-a-person',
+  'registry-malformed': 'kept-for-a-person',
+  manifest: 'kept-for-a-person'
 };
 
 /*
@@ -936,7 +976,85 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   unknown:
     'write-outcome->answer, store.sc:2671 -- it IS a write answer, and it is handled before ' +
     'classification: `unknown` is the absence of a determination, so the request is kept and ' +
-    'retried rather than settled at all'
+    'retried rather than settled at all',
+  /*
+   * NOTE: THREE LOG CONDITIONS OF THE WRITE SESSION (first read on 9f806bb,
+   * when the census learned `make-log-error`). Once a write has started, a
+   * failure escaping it is answered `unknown` instead (store.sc:3126-3132,
+   * the write guard), so these heads arrive for a request whose write had
+   * not started; `writer-stopped` is raised before the append. They are
+   * still taken as nobody-knows, the conservative reading, by ruling:
+   * pending, same request id, sent again -- and a resend under the same id
+   * replays if anything landed.
+   */
+  'reset-pending':
+    'log.sc:2320, `session-applied!` -- a session reset is pending when an applied frontier is reported; ' +
+    'after the write started the store answers `unknown` instead (store.sc:3126-3132). `saysNobodyKnows` ' +
+    'takes it before settlement: pending, same request id, sent again; a resend under the same id replays ' +
+    'if anything landed',
+  'stale-epoch':
+    'log.sc:2323, 2822 and 2840, `session-applied!`, `session-reset-done!` and `session-reject!` -- the ' +
+    'session epoch moved under the report; after the write started the store answers `unknown` instead ' +
+    '(store.sc:3126-3132). `saysNobodyKnows` takes it before settlement: pending, same request id, sent ' +
+    'again; a resend under the same id replays if anything landed',
+  'writer-stopped':
+    'log.sc:5543, `session-append!` -- the session was stopped by an earlier failure and refuses this ' +
+    'append before it is written. `saysNobodyKnows` takes it before settlement, by ruling the conservative ' +
+    'reading: pending, same request id, sent again; a resend under the same id replays if anything landed',
+  /*
+   * NOTE: RECORDS, NOT ANSWERS (first read on 9f806bb, when the census
+   * learned `make-log-error`, `note!` and `cut!`). Each is made as an element
+   * of a writer's integrity list (`scan-segment`, `validate`) or of a
+   * discovery (`unreadable-discovery`), returned and never raised. They reach
+   * this extension, if at all, inside a `check` answer or an `(incomplete
+   * ...)` clause -- except the two whose rows say otherwise: `segment-
+   * unreadable` and `metadata-unreadable` are also `adopt`'s refusal heads.
+   */
+  'torn-in-sealed': 'log.sc:616, `scan-segment` -- an integrity record in a writer\'s list, returned, never raised',
+  frame: 'log.sc:636, 656 and 662, `scan-segment` -- an integrity record, returned, never raised',
+  seq: 'log.sc:641, `scan-segment` -- an integrity record, returned, never raised',
+  crc: 'log.sc:652, `scan-segment` -- an integrity record, returned, never raised',
+  'metadata-unreadable':
+    'log.sc:940, `unreadable-discovery` -- the record of a writer whose metadata could not be read, listed ' +
+    'in the `(incomplete ...)` clause, returned, never raised. As a head it is only `adopt`\'s refusal ' +
+    '(log.sc:5169 and 5233, turned into `(error ...)` at rpc.sc:1089), and this extension sends no `adopt`',
+  'retired-malformed': 'log.sc:1114, `validate` (`cut!`) -- an integrity record, returned, never raised',
+  'retired-missing-segment': 'log.sc:1210, `validate` (`note!`) -- an integrity record, returned, never raised',
+  'retired-mismatch': 'log.sc:1224, `validate` (`note!`) -- an integrity record, returned, never raised',
+  'manifest-missing-segment': 'log.sc:1252, `validate` (`cut!`) -- an integrity record, returned, never raised',
+  'segment-unreadable':
+    'log.sc:1266, `validate` (`cut!`) -- the cut of a writer at a segment it cannot read, returned, never ' +
+    'raised; a session refused for it answers `writer-unreadable` (log.sc:2148, ' +
+    '`segment-unreadable-refusal`), not this kind. As a head it is only `adopt`\'s refusal (log.sc:5233, ' +
+    'turned into `(error ...)` at rpc.sc:1089), and this extension sends no `adopt`',
+  /*
+   * NOTE: ADOPT'S OWN REFUSALS (read on 9f806bb when the census learned its
+   * `(list 'refused <kind> ...)` lists). rpc.sc:1089 answers `adopt` with
+   * `(cons 'error (cdr a))`. This extension lists `adopt` among the verbs it
+   * may send but sends it nowhere; the tripwire in refusals.test.ts is red
+   * the day it does.
+   */
+  'owner-unreadable':
+    'log.sc:2934, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1089); a write refused ' +
+    'for it answers `(error refused owner-unreadable ...)` (store.sc:2663), whose head is `refused`. This ' +
+    'extension sends no `adopt`',
+  'registry-unreadable':
+    'log.sc:5169, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1089); this ' +
+    'extension sends no `adopt`',
+  'not-needed':
+    'log.sc:5253, `adopt-decided!` -- `adopt`\'s answer that nothing needs adopting (rpc.sc:1089); this ' +
+    'extension sends no `adopt`',
+  /*
+   * NOTE: READ ONCE THE CENSUS READ QUASIQUOTE (9f806bb). The thin client
+   * relays a daemon that could not start as `serve-start-failed` with this
+   * as its kind (see `asItsKind`), never as this head.
+   */
+  'serve-busy':
+    'daemon.sc:410 -- a daemon refusing to start while another holds the socket; relayed by the thin ' +
+    'client as the kind of `serve-start-failed`, never as this head',
+  'manifest-hash': 'log.sc:1279, `validate` (`cut!`) -- an integrity record, returned, never raised',
+  'manifest-range': 'log.sc:1295, `validate` (`cut!`) -- an integrity record, returned, never raised',
+  'retired-beyond-file': 'log.sc:1590, `validate` (`note!`) -- an integrity record, returned, never raised',
 };
 
 export function classifyRefusal(datum: Datum): Settlement {
@@ -1008,7 +1126,13 @@ export function classifyRefusal(datum: Datum): Settlement {
      */
     return { verdict: 'executed-by-operator', note: describeRefusal(datum) };
   }
-  if (known === 'req-mismatch') {
+  /*
+   * NOTE: KEPT FOR A PERSON IS THE SETTLEMENT `req-mismatch` HAS: the entry
+   * stays, the drain stops at it, and the record beside the file is marked
+   * unresolved. These share that outcome, not that meaning; the sentence
+   * shown is the answer's own.
+   */
+  if (known === 'req-mismatch' || known === 'kept-for-a-person') {
     return { verdict: 'req-mismatch' };
   }
   /*

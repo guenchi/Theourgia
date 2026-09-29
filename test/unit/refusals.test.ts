@@ -44,11 +44,16 @@
 
 import * as assert from 'assert';
 import {execFileSync} from 'child_process';
-import {readFileSync, readdirSync} from 'fs';
+import {mkdtempSync, readFileSync, readdirSync, writeFileSync} from 'fs';
 import * as path from 'path';
 import * as ts from 'typescript';
-import { NOT_A_WRITES_ANSWER, classifyRefusal } from '../../src/saver';
+import * as os from 'os';
+import { Client } from '../../src/client';
+import { Outbox } from '../../src/outbox';
+import { NOT_A_WRITES_ANSWER, SETTINGS_REFUSALS, Saver, classifyRefusal } from '../../src/saver';
+import { RawResult } from '../../src/transport';
 import { initWire, parseAnswers } from '../../src/wire';
+import { IGNORED_DURABILITY } from '../support/ignored-durability';
 
 /*
  * THE PIN IS NAMED IN EVERY FAILURE. A reading taken against an
@@ -97,16 +102,47 @@ function coreSources(): { directory: string; files: string[] } {
   return { directory: directory as string, files };
 }
 
-function kindsTheCoreMakes(): Map<string, string> {
+function censusRows(): string[] {
   const {files}=coreSources();
   const output=execFileSync(process.env.THEOURGIA_SCHEME??'scheme',
     ['--script',path.join(__dirname,'../support/core-refusals.ss'),...files],{encoding:'utf8'});
+  return output.trim().split('\n');
+}
+
+function kindsTheCoreMakes(): Map<string, string> {
   const found=new Map<string,string>();
-  for(const row of output.trim().split('\n')) {
+  for(const row of censusRows()) {
+    if(row.startsWith('#'))continue;
     const [file,kind]=row.split('\t');if(kind)found.set(kind,path.basename(file));
   }
   return found;
 }
+
+/*
+ * THE CONSTRUCTOR CALLS WHOSE KIND THE CENSUS CANNOT READ, one row each:
+ * `#variable`, the constructor, the file.
+ */
+function variableRows(): string[][] {
+  return censusRows().filter((row) => row.startsWith('#variable\t')).map((row) => row.split('\t').slice(1));
+}
+
+/*
+ * THE KINDS MADE AS A LOG CONDITION THAT IS RAISED, from the `#raised` rows.
+ */
+function raisedKinds(): Set<string> {
+  return new Set(censusRows().filter((row) => row.startsWith('#raised\t')).map((row) => row.split('\t')[1]));
+}
+
+/*
+ * THE KINDS NOT_A_WRITES_ANSWER EXCUSES AS "RETURNED, NEVER RAISED": records
+ * in a writer's integrity list. Named here, not read off the rows' prose, so
+ * that the cell below asks a question of the core.
+ */
+const RETURNED_ONLY = [
+  'torn-in-sealed', 'frame', 'seq', 'crc',
+  'retired-malformed', 'retired-missing-segment', 'retired-mismatch',
+  'manifest-missing-segment', 'manifest-hash', 'manifest-range', 'retired-beyond-file'
+];
 
 describe('U-ref every refusal the core can make is sorted by name, not by default', () => {
   before(async () => {
@@ -125,6 +161,83 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
       `only ${kinds.size} refusal kinds were found in the core, which is too few to be reading ` +
         'its sources; the literal error constructors may have changed'
     );
+  });
+
+  /*
+   * THE ONE LOG CONDITION MADE FROM A KIND THE CENSUS CANNOT READ: the
+   * `note!` in log.sc's `validate`, whose kinds are the literal ones its
+   * callers pass (read through `note!` and `cut!`) or one read off a caught
+   * condition. A second such call is a kind nobody has sorted, and this
+   * turns red rather than the census missing it.
+   */
+  it('finds exactly one log condition made from a kind it cannot read', () => {
+    assert.deepStrictEqual(
+      variableRows().map(([constructor, file]) => [constructor, path.basename(file)]),
+      [
+        ['make-log-error', 'log.sc'],
+        ['list-refused', 'log.sc'],
+        ['list-refused', 'log.sc']
+      ]
+    );
+  });
+
+  /*
+   * AN EXCUSE BY NAME IS CHECKED AGAINST THE CORE'S OWN RAISES: a kind excused
+   * as a returned record that the core now raises would otherwise keep its
+   * row and pass.
+   */
+  it('finds none of the kinds excused as returned records raised', () => {
+    const raised = raisedKinds();
+    assert.ok(raised.has('meta') && raised.has('writer-stopped'), `the #raised rows are not being read: ${[...raised]}`);
+    assert.deepStrictEqual(RETURNED_ONLY.filter((kind) => raised.has(kind)), []);
+    assert.deepStrictEqual(
+      RETURNED_ONLY.filter((kind) => NOT_A_WRITES_ANSWER[kind] === undefined),
+      [],
+      'a kind named here has no row to excuse it'
+    );
+  });
+
+  /*
+   * THE SCANNER MATCHES A CONSTRUCTOR ONLY AT A LIST'S HEAD. Read on a small
+   * file of the shapes a walk over every pair would mistake for calls: a
+   * constructor's name in a list's tail, and in an export list. Only the one
+   * real call counts.
+   *
+   * NOTE: A BINDING IS NOT COVERED. `(let ((make-log-error f)) ...)` stands as a
+   * list with the name at its head, which no walk over forms can tell from a
+   * call; the core has none, and the census states that it cannot show itself
+   * complete.
+   */
+  it('matches a constructor only at the head of a list, not in a tail or an export list', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'theourgia-census-shapes-'));
+    const file = path.join(dir, 'shapes.sc');
+    writeFileSync(
+      file,
+      [
+        '(library (shapes) (export make-log-error log-error?) (import (chezscheme))',
+        "  (define (a) (list make-log-error 'fake-tail))",
+        "  (define (b) (vector 1 make-log-error 'fake-middle 2))",
+        "  (define (c) (raise (make-log-error 'real-kind #f #f #f '()))))",
+        ''
+      ].join('\n')
+    );
+    const rows = execFileSync(process.env.THEOURGIA_SCHEME ?? 'scheme', ['--script', path.join(__dirname, '../support/core-refusals.ss'), file], {
+      encoding: 'utf8'
+    })
+      .trim()
+      .split('\n')
+      .map((row) => row.split('\t').slice(0, 2).join(' '));
+    assert.deepStrictEqual(rows, ['#raised real-kind', `${file} real-kind`]);
+  });
+
+  it('reads the kinds the request ledger conses and the log conditions make', () => {
+    const kinds = kindsTheCoreMakes();
+    for (const kind of [
+      'incomplete-request', 'meta', 'crc', 'writer-stopped', 'segment-unreadable',
+      'serve-busy', 'owner-unreadable', 'not-needed', 'registry-unreadable'
+    ]) {
+      assert.ok(kinds.has(kind), `the census does not read ${kind}`);
+    }
   });
 
   it('has a verdict or a stated provenance for every one of them', () => {
@@ -176,6 +289,113 @@ describe('U-ref every refusal the core can make is sorted by name, not by defaul
  * starts sending the one or passing the other, which is the day those rows
  * become false.
  */
+/*
+ * THE KINDS FIRST READ THROUGH THE CONSED AND LOG-CONDITION CONSTRUCTORS,
+ * each answered to a save through a real Saver: where it lands is the
+ * family it was sorted into, not a reading of the tables.
+ */
+describe('U-ref the kinds the ledger conses and the log conditions raise, each in its family', () => {
+  before(async () => {
+    await initWire();
+  });
+
+  const CHECK = '(check (store "s") (writers (("w" (end 7) (torn #f) (integrity ())))) (snapshots ()) (registry outside-store) (verdict ok))\n';
+
+  interface Answered {
+    req: string;
+    status: string;
+    message: string;
+    kept: boolean;
+    queued: number | null;
+    state: string | null;
+    settled: string[];
+    sets: string[];
+  }
+
+  /*
+   * ONE SAVE ANSWERED WITH THE KIND, then one retry: what the Saver did with
+   * it, the entry's state after the save, what the settler was told, and the
+   * request id each write went out under.
+   */
+  async function saveAnswered(kind: string): Promise<Answered> {
+    const sets: string[] = [];
+    const client = new Client({
+      kind: 'test',
+      send: async (verb: string, args: string[]): Promise<RawResult> => {
+        const argv = [verb, ...args];
+        if (verb === 'check') {
+          return { argv, rc: 0, stdout: CHECK, stderr: '' };
+        }
+        const at = args.indexOf('--req');
+        sets.push(at < 0 ? '(no --req)' : args[at + 1]);
+        return { argv, rc: 1, stdout: `(error ${kind} (detail "x"))\n`, stderr: '' };
+      }
+    });
+    const outbox = new Outbox(path.join(mkdtempSync(path.join(os.tmpdir(), 'theourgia-family-')), 'outbox.json'));
+    outbox.load();
+    const settled: string[] = [];
+    const saver = new Saver(
+      client,
+      outbox,
+      (req, settlement) => {
+        settled.push(settlement.verdict);
+        if (settlement.verdict !== 'req-mismatch') {
+          outbox.resolve(req, settlement.verdict === 'confirmed' ? settlement.cursor : null);
+        }
+      },
+      IGNORED_DURABILITY
+    );
+    const outcome = await saver.save('a.2', 'title', 'T');
+    const state = outbox.entries.length > 0 ? outbox.entries[0].state : null;
+    await saver.retry();
+    return {
+      req: outcome.req,
+      status: outcome.status,
+      message: outcome.message,
+      kept: outcome.keptForAPerson === true,
+      queued: outbox.pendingCount,
+      state,
+      settled,
+      sets
+    };
+  }
+
+  it('keeps pending, and sends again under the same id, what the write session raises', async () => {
+    for (const kind of ['reset-pending', 'stale-epoch', 'writer-stopped']) {
+      const r = await saveAnswered(kind);
+      assert.deepStrictEqual([kind, r.status, r.state, r.queued, r.settled], [kind, 'pending', 'pending', 1, []]);
+      assert.match(r.message, /cannot say whether this save ran/, kind);
+      assert.deepStrictEqual(r.sets, [r.req, r.req], `${kind}: the retry did not go out again under the save's own request id`);
+    }
+  });
+
+  it('sends again later, under the same id, what says "not now"', async () => {
+    for (const kind of ['active-operation', 'temp']) {
+      const r = await saveAnswered(kind);
+      assert.deepStrictEqual([kind, r.status, r.state, r.queued, r.settled], [kind, 'pending', 'pending', 1, []]);
+      assert.match(r.message, new RegExp(`not taking writes just now \\(${kind}\\)`), kind);
+      assert.deepStrictEqual(r.sets, [r.req, r.req], `${kind}: the retry did not go out again under the save's own request id`);
+    }
+  });
+
+  it('parks at once, naming the setting, a store the core cannot open, and a retry does not send it', async () => {
+    const r = await saveAnswered('meta');
+    assert.deepStrictEqual([r.status, r.kept, r.state, r.queued, r.settled], ['refused', true, 'parked', 1, []]);
+    assert.strictEqual(r.message, SETTINGS_REFUSALS.meta);
+    assert.deepStrictEqual(r.sets, [r.req], 'a parked entry was sent again by a plain retry');
+  });
+
+  it('keeps for a person, with the settlement that marks the record unresolved, what no retry can settle', async () => {
+    for (const kind of ['incomplete-request', 'registry-malformed', 'manifest']) {
+      const r = await saveAnswered(kind);
+      assert.deepStrictEqual([kind, r.status, r.kept, r.queued, r.state], [kind, 'refused', true, 1, 'sent']);
+      assert.deepStrictEqual(r.settled, ['req-mismatch', 'req-mismatch'], `${kind}: the settler was not told to keep it`);
+      assert.deepStrictEqual(r.sets, [r.req, r.req], `${kind}: the kept entry did not go out again under its own request id`);
+      assert.match(r.message, new RegExp(kind), kind);
+    }
+  });
+});
+
 describe('re-pin: what this extension sends keeps these answers out of its reach', () => {
   const SRC = path.join(__dirname, '..', '..', '..', 'src');
   const sources = (): Array<{ name: string; text: string }> =>
@@ -222,6 +442,20 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
     assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
     assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
     assert.strictEqual(verbs.has('publish'), false, 'this extension now sends publish, so candidate-unreadable can answer it');
+  });
+
+  /*
+   * `adopt` IS AMONG THE VERBS THIS CLIENT MAY SEND (client.ts, KNOWN_VERBS)
+   * AND IS SENT NOWHERE. Its refusals -- owner-unreadable, registry-unreadable,
+   * not-needed, and segment-unreadable and metadata-unreadable as heads -- are
+   * excused in NOT_A_WRITES_ANSWER on that ground; the day something sends it,
+   * they need a verdict.
+   */
+  it('sends no `adopt` (the only verb whose answers carry its refusals as heads)', () => {
+    const { verbs, unread } = verbsSent();
+    assert.deepStrictEqual(unread, [], 'a request whose verb this cell cannot read');
+    assert.ok(verbs.has('read') && verbs.has('commit'), `the scan did not find the requests it exists to read: ${[...verbs]}`);
+    assert.strictEqual(verbs.has('adopt'), false, 'this extension now sends adopt, so its refusals can answer it');
   });
 
   /*

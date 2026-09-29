@@ -228,9 +228,15 @@ const AT_LEAST: Array<[string, number]> = [
   ['real-core.test.ts', 20],
   /*
    * ADDED in round 39: the refusal kinds the core makes, read from the
-   * core, against the table that sorts them.
+   * core, against the table that sorts them. RAISED 8 -> 14 when the
+   * census learned the consed and the log-condition constructors: the one
+   * unreadable kind pinned (1), the new routes read (1), and the kinds they
+   * found each landing in its family through a real Saver (4). RAISED 14 ->
+   * 16 by its review: no kind excused as a returned record is raised (1),
+   * `adopt` is sent nowhere (1), and a constructor matched only at a list's
+   * head (1).
    */
-  ['refusals.test.ts', 8],
+  ['refusals.test.ts', 17],
   /*
    * ADDED in plugin-r2: the gate that keeps comments in ASCII, and the
    * cell that proves the gate can tell a comment from a string.
