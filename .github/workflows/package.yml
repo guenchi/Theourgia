@@ -18,8 +18,8 @@
 #   unit     per target: the unit suite against a real core, on that
 #            platform. The core is theourgia and igropyr at the revisions
 #            the suite is pinned to, checked out from GitHub, on Chez Scheme
-#            10.1.0 built from its release source on every system (the
-#            core's datum printer refuses any other version), with libuv and
+#            10.1.0 built from its release source on every system (one of
+#            the versions the core's datum printer accepts), with libuv and
 #            OpenSSL 3. The suite's full log is uploaded
 #            whatever the suite's result, so a red is read and not only
 #            counted. A setup step that fails before the suite leaves no
@@ -29,10 +29,10 @@
 #            so nothing is published while a platform's suite is red. It
 #            never runs on a push.
 #
-# NOTE: THE UNIT JOB IS ALSO THE CORE'S FIRST RUN ON LINUX. The core's Linux
-# struct layouts are read from the glibc x86-64 field list and have not been
-# measured there; a red on a Linux target may be the core's, and is read
-# from the log before it is called the extension's.
+# NOTE: THE UNIT JOB IS ALSO WHERE THE CORE MEETS LINUX FOR THIS EXTENSION.
+# The core's Linux rows (struct layouts, constants, errnos) were measured on
+# these runners, but a red on a Linux target may still be the core's, and
+# is read from the log before it is called the extension's.
 #
 # NOTE: THE PIN IS WRITTEN HERE AND IN THE LOCAL RUNS. When the suite is
 # re-pinned, the two revisions below move with it.
@@ -60,7 +60,7 @@ permissions:
 # of its dependencies declare node >= 22.
 env:
   NODE_VERSION: 22
-  CORE_REV: c01a8468d43ea8b7e4b4d1db29e0b91d436608dc
+  CORE_REV: fe8c1005fd8f26fde6e27f4108966d0a82e60a14
   IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
   CHEZ_VERSION: 10.1.0
 
@@ -188,10 +188,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libuv1-dev libssl-dev build-essential
       # Chez Scheme ${CHEZ_VERSION} from its release source, on every system:
-      # the core's datum printer refuses any other version (ffi.sc,
-      # `source-datum-print`), and a package manager ships whatever version
-      # is current (Homebrew had 10.4.1). The release carries the boot files
-      # that build it on every architecture; it installs `scheme`.
+      # the core's datum printer accepts only the versions it was measured
+      # on (10.1.0, 10.3.0 and 10.4.1; ffi.sc, `printer-measured-versions`),
+      # and a package manager ships whatever version is current. One version
+      # built the same way everywhere keeps the targets' readings comparable.
+      # The release carries the boot files that build it on every
+      # architecture; it installs `scheme`.
       - name: Chez Scheme ${{ env.CHEZ_VERSION }}
         working-directory: ${{ runner.temp }}
         run: |

@@ -328,7 +328,7 @@ function saysNobodyKnows(datum: Datum): boolean {
  *
  * From the transport, and this is the part with a proof behind it: the
  * thin client answers `not-sent` only when it can show that not one byte
- * left. `client.sc` says so in its own words (client.sc:384) -- "A REQUEST THAT
+ * left. `client.sc` says so in its own words (client.sc:380) -- "A REQUEST THAT
  * DEMONSTRABLY DID NOT LEAVE IS `not-sent`, AND THE PROOF IS A COUNT" --
  * and `theourgia.sc` (`settle`, theourgia.sc:354) relays such an answer unchanged rather than
  * wrapping it, because wrapping a known outcome in `transport-unknown`
@@ -338,10 +338,10 @@ function saysNobodyKnows(datum: Datum): boolean {
  *
  * NOTE: `write-failed` HAS EXACTLY ONE MEANING AT THIS LAYER, and it is
  * worth saying why, because in the core it has two. A write that fails
- * after bytes have gone out is caught by the guard at client.sc:360-362
+ * after bytes have gone out is caught by the guard at client.sc:356-358
  * and becomes `(transport-error <errno>)`, which `theourgia.sc`'s
  * `settle` turns into `transport-unknown`; only the zero-byte case
- * (client.sc:393-397, `exchange-on`) arrives here under its own name. NEVER: There is no
+ * (client.sc:389-393, `exchange-on`) arrives here under its own name. NEVER: There is no
  * cell for the two-meaning case because this extension cannot produce
  * that input -- the distinction is made inside the core, and a cell here
  * would be measuring the core's classifier through a keyhole.
@@ -509,9 +509,9 @@ function whereAndWhy(datum: Datum): string {
  * NOTE: THE SAME RELAY THAT BRINGS `detach-failed` COULD BRING ANY NAME. Before
  * f5ebd58 a daemon that failed to start was answered with the LAST `(error
  * ...)` of the log the client had just written, whatever that was (then
- * client.sc:555, `last-error-in`). Since then the client answers
+ * client.sc:551, `last-error-in`). Since then the client answers
  * `serve-start-failed` with the kind of the last report carrying this start's
- * token (client.sc:623-635 `exited-answer`, client.sc:668-683
+ * token (client.sc:619-631 `exited-answer`, client.sc:664-679
  * `select-report`), read below. The set of names that could arrive this
  * way was the set of names the core could write to a startup log -- not a
  * list this extension can hold, and a list it held would be wrong the
@@ -541,7 +541,7 @@ export const RETRY_CAP = 5;
  * A FAILED START IS JUDGED BY WHAT FAILED. (the F100b re-pin, ruled by the
  * main session 2026-09-27) On f5ebd58 the thin client answers every failed
  * start as `(error serve-start-failed (kind K) <the report's clauses> ...)`
- * (client.sc:559-635): K is the daemon's own startup report -- which on
+ * (client.sc:555-631): K is the daemon's own startup report -- which on
  * 877f0da reached this extension as its own head -- or `exited` or `timeout`.
  * So a store that does not exist, met by the request that starts the daemon,
  * arrived as a retryable start failure: five attempts, and the sentence that
@@ -800,7 +800,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia c01a846; re-read row by row at
+ * is made in the pinned core (theourgia fe8c100; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
@@ -810,9 +810,10 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
  * 2026-09-27/r7/relocation.md, from 9f806bb to 5230bb6 in archive/
  * theourgia-vsc-derived-supply-2026-09-29/repin/relocation-5230bb6.md, and from
  * 5230bb6 to c01a846 in archive/theourgia-vsc-repin-platform-numbers-2026-09-29/
- * relocation-c01a846.md). The reason is the provenance, not a
- * guess about intent: if the grep does not find it, the row says so
- * rather than inventing a story.
+ * relocation-c01a846.md, and from c01a846 to fe8c100 in archive/
+ * theourgia-vsc-repin-fe8c100-2026-09-29/relocation-fe8c100.md). The
+ * reason is the provenance, not a guess about intent: if the grep does
+ * not find it, the row says so rather than inventing a story.
  *
  * NOTE: AND THIS TABLE IS A STOPGAP, said here so it is not mistaken for
  * knowledge. Which refusals a given verb can produce is a fact about the
@@ -847,7 +848,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'incomplete-reduction':
     'incomplete.sc:123 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
-    'refused only to a verb that does not declare it accepts one: rpc.sc:1936 `undeclared-verbs` (export-code ' +
+    'refused only to a verb that does not declare it accepts one: rpc.sc:1921 `undeclared-verbs` (export-code ' +
     'export-md import-md import-code def snapshot, and supply). Of these this extension sends only export-code and ' +
     'supply, from the supply commands, which show the refusal by name (src/supply.ts); no save sends one, and ' +
     'every verb a save sends declares, and is answered with an `(incomplete ...)` clause instead',
@@ -874,7 +875,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:552): local evaluator exception',
   'eval-context': 'eval-worker.sc:325, 332: local evaluator context',
   'eval-denied': 'eval-worker.sc:335: local evaluator capability refusal',
-  'launcher-unavailable': 'ffi.sc:484 (execvp; and 510, execve): local executable launch',
+  'launcher-unavailable': 'ffi.sc:496 (execvp; and 522, execve): local executable launch',
   'transport-store-mismatch': 'daemon.sc:1577: rejected socket envelope before dispatch',
   'unknown-tag': 'resolve-cut, store.sc:2138: historical query cut lookup',
   'tag-unsettled': 'resolve-cut, store.sc:2140: historical query cut lookup',
@@ -886,7 +887,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'would-delete': 'import-md, project.sc:710 -- the markdown import path',
   'invalid-candidate': 'publish-validated!, log.sc:4322 -- publication, not a block write',
   'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1228 -- a log segment candidate that is not there; this extension never sends `publish`',
-  'unknown-verb': 'dispatch-verb, rpc.sc:2019 -- dispatch, before any verb runs',
+  'unknown-verb': 'dispatch-verb, rpc.sc:2004 -- dispatch, before any verb runs',
   /*
    * NOTE: THREE KINDS FIRST READ ON 659fea2. `would-cycle` refuses a MOVE
    * that would put a block under its own descendant; this extension sends
@@ -935,7 +936,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'daemon.sc:330 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
-    'rpc-dispatch-parsed, rpc.sc:1877-1921, by answers.sc\'s table (`guarded`, rpc.sc:108, now ' +
+    'rpc-dispatch-parsed, rpc.sc:1862-1906, by answers.sc\'s table (`guarded`, rpc.sc:108, now ' +
     're-raises it) -- an entry the verb could not read. answers.sc:106 answers it bare only when the ' +
     'verb had written nothing; after an append it is `(error incomplete (failed ...) (written ...))` ' +
     '(answers.sc:107). `saysNobodyKnows` still takes the bare one before settlement, exactly as ' +
@@ -1094,7 +1095,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'eval-busy':
     'eval-admission.sc:120 -- `eval` found no free slot within its wait; this extension does not send eval',
   'platform-unmeasured':
-    'platform-numbers.sc:793 -- written to standard error when the core loads on a platform with no measured ' +
+    'platform-numbers.sc:797 -- written to standard error when the core loads on a platform with no measured ' +
     'row, exit 75, before any verb runs; never an answer. The transport reads it as the core failing to start ' +
     '(describeStderr), and a save is kept with that sentence',
 };

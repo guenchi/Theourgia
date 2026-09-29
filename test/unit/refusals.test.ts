@@ -491,7 +491,7 @@ describe('re-pin: what this extension sends keeps these answers out of its reach
    * missing a writer, and `working-draft-unreadable` is reached only through
    * a writer's working view (`export-md`, `export-code --working`, `supply
    * --for`, derived.sc's working readers); the export and supply verbs are on
-   * the core's own list (rpc.sc:1936). The list is READ FROM THE PINNED CORE, not copied
+   * the core's own list (rpc.sc:1921). The list is READ FROM THE PINNED CORE, not copied
    * here, so a verb the core adds to it is checked without an edit in this
    * file. A tripwire, not a measurement.
    *

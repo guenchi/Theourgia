@@ -1183,7 +1183,7 @@ describe('plugin-r2 T6 the real-core fixture owns its run root', function () {
 
   /*
    * WHERE THE USER'S OWN SOCKETS LIVE, spelled the way the core spells
-   * it (`run-root`, client.sc:72-74) rather than the way this file would like to.
+   * it (`run-root`, client.sc:73-75) rather than the way this file would like to.
    * NEVER: Not read from `THEOURGIA_RUN`: this process may well have one
    * set, and then this would be measuring the fixture's directory
    * against itself and could never fail.

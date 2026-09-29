@@ -473,7 +473,7 @@ export function daemonsUnder(runRoot: string): number[] {
  * list rather than composed here.
  *
  * NOTE: THE NAME UNDER THE RUN ROOT IS A DIGEST OF THE STORE'S REAL PATH
- * (the rule at client.sc:76, `store-key` at :228) -- resolved through symlinks, with the components
+ * (the rule at client.sc:77, `store-key` at :229) -- resolved through symlinks, with the components
  * below the longest existing prefix appended. A cell that worked it out
  * for itself would be a second implementation of that rule, and the one
  * that was wrong would create an obstruction in a directory the core is
