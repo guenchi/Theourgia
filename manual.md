@@ -439,6 +439,8 @@ The core's answer arrives as S-expression text, byte for byte. A core refusal is
 
 `eval` is offered as `theourgia_eval`. The shell runs `core.sc eval` as its own child, not through the daemon: the store's server never runs user code. Transport options (`--store`, `--wire`, `--socket`, `--actor`) are refused with `transport-option-in-rpc`; the writer defaults to the session's unless `--writer` is given; a language other than Scheme runs only where the shell was started with `THEOURGIA_RUNNERS=on`; a lost evaluation is a protocol error naming the reason. `init` is not offered, because the store must exist before the MCP server starts.
 
+The tool list the shell reports to a client is taken from the store's daemon when the client connects, once per session. After a core upgrade, stop the store's daemon first — the next request starts one from the new core — then restart the agent's session. A session restarted while the old daemon still runs keeps the old tool list and sees none of the new verbs.
+
 ### One writer per session
 
 A writer id is held by one live agent at a time. The id is derived from the actor name by default, or set explicitly with `THEOURGIA_WRITER` in the environment or `--writer` on the command line; the MCP shell's initialize response names which writer the session is using.
