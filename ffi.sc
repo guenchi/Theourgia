@@ -1192,6 +1192,75 @@
       (close-quietly null-fd)
       (close-quietly log-fd)))
 
+  ;; ---- this process's environment, for a child ---------------------------
+  ;;
+  ;; THIS PROCESS'S ENVIRONMENT, as the addresses of its "NAME=value" C
+  ;; strings, for a spawn's envp. Where libc exports `environ` -- macOS,
+  ;; Linux -- they are its entries, the process's own pointers, byte for
+  ;; byte. FreeBSD keeps `environ` in the executable's startup code, and a
+  ;; Chez binary does not export it (foreign-entry? answers #f for environ,
+  ;; __environ and _environ with libc loaded), so there the environment is
+  ;; read through sysctl {CTL_KERN, KERN_PROC, KERN_PROC_ENV, pid}: one
+  ;; NUL-separated block, copied into memory `own!` records for the caller
+  ;; to free, and an address for each entry in it. Any other platform
+  ;; without `environ` is refused by name, as before.
+  ;;
+  ;; NOTE: THE SYSCTL READS THE ENVIRONMENT THE PROCESS WAS STARTED WITH.
+  ;; A variable set later with putenv or setenv would not be in it. Nothing
+  ;; in this core sets its own environment -- a child's additions travel
+  ;; as spawn-captured!'s bindings -- so the two reads give the same list.
+  (define (environment-entries own! who)
+    (cond
+      ((foreign-entry? "environ")
+       (let ((width (foreign-sizeof 'void*))
+             (environ-at (foreign-ref 'void* (foreign-entry "environ") 0)))
+         ;; A NULL environ is an empty environment, not an array to read.
+         (if (= environ-at 0)
+             '()
+             (let loop ((i 0) (out '()))
+               (let ((entry (foreign-ref 'void* environ-at (* i width))))
+                 (if (= entry 0)
+                     (reverse out)
+                     (loop (+ i 1) (cons entry out))))))))
+      ((string=? (machine-kind) "freebsd") (sysctl-environment-entries own! who))
+      (else (assertion-violation who "no environ in libc" (machine-kind)))))
+
+  ;; The FreeBSD branch of the above. The block's size is asked first and
+  ;; read with room to spare; an environment that grew in between is asked
+  ;; for again, three times at most, and a failure is raised with the
+  ;; errno as a spawn failure would be.
+  (define (sysctl-environment-entries own! who)
+    (let* ((int-size (platform-type-size 'int))
+           (size-t-size (foreign-sizeof 'size_t))
+           (mib (make-bytevector (* 4 int-size) 0))
+           (len (make-bytevector size-t-size 0)))
+      (bytevector-uint-set! mib 0 (platform-number 'CTL_KERN) (native-endianness) int-size)
+      (bytevector-uint-set! mib int-size (platform-number 'KERN_PROC) (native-endianness) int-size)
+      (bytevector-uint-set! mib (* 2 int-size) (platform-number 'KERN_PROC_ENV) (native-endianness) int-size)
+      (bytevector-uint-set! mib (* 3 int-size) (get-process-id) (native-endianness) int-size)
+      (let retry ((tries 0))
+        (bytevector-uint-set! len 0 0 (native-endianness) size-t-size)
+        (unless (= 0 (c-sysctl mib 4 #f len 0 0))
+          (raise (fs-err 'spawn "kern.proc.env" (errno))))
+        (let* ((room (+ 256 (bytevector-uint-ref len 0 (native-endianness) size-t-size)))
+               (buf (make-bytevector room 0)))
+          (bytevector-uint-set! len 0 room (native-endianness) size-t-size)
+          (cond
+            ((= 0 (c-sysctl mib 4 buf len 0 0))
+             (let* ((n (bytevector-uint-ref len 0 (native-endianness) size-t-size))
+                    (block (own! (foreign-alloc (+ n 1)))))
+               (do ((i 0 (+ i 1))) ((= i n)) (foreign-set! 'unsigned-8 block i (bytevector-u8-ref buf i)))
+               (foreign-set! 'unsigned-8 block n 0)
+               ;; an entry starts at 0 and after each NUL; empty ones are skipped
+               (let loop ((i 0) (start 0) (out '()))
+                 (cond
+                   ((= i n) (reverse (if (< start n) (cons (+ block start) out) out)))
+                   ((= 0 (bytevector-u8-ref buf i))
+                    (loop (+ i 1) (+ i 1) (if (< start i) (cons (+ block start) out) out)))
+                   (else (loop (+ i 1) start out))))))
+            ((< tries 2) (retry (+ tries 1)))
+            (else (raise (fs-err 'spawn "kern.proc.env" (errno)))))))))
+
   ;; ---- starting a daemon without becoming one -----------------------------
   ;;
   ;; NEVER: NOT `execvp`. `exec-argv!` REPLACES this process, which is right
@@ -1221,30 +1290,41 @@
   ;; answers #f for every one of these symbols in a process that has not
   ;; touched the library yet, which reads exactly like "this platform
   ;; does not have it". The library is loaded by the time any of this
-  ;; runs; the check below is about the platform, and says so.
+  ;; runs; the check in environment-entries is about the platform, and
+  ;; FreeBSD, which lacks it, reads the environment through sysctl.
   (define (spawn-detached! argv)
     (unless (and (pair? argv) (for-all string? argv))
       (assertion-violation 'spawn-detached! "argv must be a non-empty list of strings" argv))
     (unless (foreign-entry? "posix_spawnp")
       (assertion-violation 'spawn-detached! "no posix_spawnp in libc" (machine-kind)))
-    (unless (foreign-entry? "environ")
-      (assertion-violation 'spawn-detached! "no environ in libc" (machine-kind)))
-    (let* ((c-spawn (foreign-procedure "posix_spawnp"
-                                       (u8* string void* void* void* void*) int))
-           (width (foreign-sizeof 'void*))
-           (cells (foreign-alloc (* width (+ 1 (length argv)))))
-           (strings (map c-string argv))
-           (pid-out (make-pid-buffer))
-           (envp (foreign-ref 'void* (foreign-entry "environ") 0)))
-      (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
-        (foreign-set! 'void* cells (* i width) (car ps)))
-      (foreign-set! 'void* cells (* (length argv) width) 0)
-      (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
-        (for-each foreign-free strings)
-        (foreign-free cells)
-        (if (zero? rc)
-            (pid-buffer-ref pid-out)
-            (raise (fs-err 'spawn (car argv) rc))))))
+    ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, a raise part-way through
+    ;; included; the environment's own entries are never freed.
+    (let ((owned '()))
+      (define (own! p) (set! owned (cons p owned)) p)
+      (dynamic-wind
+        (lambda () #f)
+        (lambda ()
+          (let* ((c-spawn (foreign-procedure "posix_spawnp"
+                                             (u8* string void* void* void* void*) int))
+                 (width (foreign-sizeof 'void*))
+                 (entries (environment-entries own! 'spawn-detached!))
+                 (envp (own! (foreign-alloc (* width (+ 1 (length entries))))))
+                 (cells (own! (foreign-alloc (* width (+ 1 (length argv))))))
+                 (strings (map (lambda (a) (own! (c-string a))) argv))
+                 (pid-out (make-pid-buffer)))
+            (do ((ps entries (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* envp (* i width) (car ps)))
+            (foreign-set! 'void* envp (* (length entries) width) 0)
+            (do ((ps strings (cdr ps)) (i 0 (+ i 1))) ((null? ps))
+              (foreign-set! 'void* cells (* i width) (car ps)))
+            (foreign-set! 'void* cells (* (length argv) width) 0)
+            (let ((rc (c-spawn pid-out (car argv) 0 0 cells envp)))
+              (if (zero? rc)
+                  (pid-buffer-ref pid-out)
+                  (raise (fs-err 'spawn (car argv) rc))))))
+        (lambda ()
+          (for-each foreign-free owned)
+          (set! owned '())))))
 
   ;; ---- a descriptor a child must not inherit ------------------------------
   ;;
@@ -1316,7 +1396,7 @@
   ;; pipes: nothing here can fill and block while the caller is not reading.
   ;;
   ;; THE ENVIRONMENT IS THE CALLER'S WITH `bindings` REPLACING ITS OWN. Each
-  ;; binding is (name . value); an entry of `environ` whose name is one of
+  ;; binding is (name . value); an entry of the environment whose name is one of
   ;; them is left out, and the binding is added, so the child's getenv sees
   ;; the binding whatever the caller's environment held. Appending instead
   ;; would leave two entries of one name, and which one a getenv answers is
@@ -1352,11 +1432,10 @@
       (assertion-violation 'spawn-captured! "the stream paths must be strings" (list stdin-path stdout-path stderr-path)))
     (unless (foreign-entry? "posix_spawnp")
       (assertion-violation 'spawn-captured! "no posix_spawnp in libc" (machine-kind)))
-    (unless (foreign-entry? "environ")
-      (assertion-violation 'spawn-captured! "no environ in libc" (machine-kind)))
     ;; EVERY ALLOCATION IS RELEASED ON EVERY PATH, a raise part-way through
     ;; included: each one is recorded as it is made and freed on the way
-    ;; out. The kept environ entries are the caller's and are never freed.
+    ;; out. Entries read from `environ` are the process's own and are never
+    ;; freed; a block read through sysctl is owned here and freed.
     ;; AND THE FILE ACTIONS ARE DESTROYED WHENEVER THEY WERE INITIALISED: libc
     ;; owns copies of their paths, and freeing the handle's storage without
     ;; destroying it would leak those. The destroy is in the same unwind as
@@ -1373,18 +1452,8 @@
                  (c-fa-destroy (foreign-procedure "posix_spawn_file_actions_destroy" (void*) int))
                  (width (foreign-sizeof 'void*))
                  (names (map (lambda (b) (string->utf8 (string-append (car b) "="))) bindings))
-                 ;; A NULL environ is an empty environment, not an array to read.
-                 (environ-at (foreign-ref 'void* (foreign-entry "environ") 0))
-                 (kept (if (= environ-at 0)
-                           '()
-                           (let loop ((i 0) (out '()))
-                             (let ((entry (foreign-ref 'void* environ-at (* i width))))
-                               (if (= entry 0)
-                                   (reverse out)
-                                   (loop (+ i 1)
-                                         (if (exists (lambda (n) (c-bytes-prefix? entry n)) names)
-                                             out
-                                             (cons entry out))))))))
+                 (kept (filter (lambda (entry) (not (exists (lambda (n) (c-bytes-prefix? entry n)) names)))
+                               (environment-entries own! 'spawn-captured!)))
                  (added (map (lambda (b) (own! (c-string (string-append (car b) "=" (cdr b))))) bindings))
                  (envp-list (append kept added))
                  (envp (own! (foreign-alloc (* width (+ 1 (length envp-list))))))
