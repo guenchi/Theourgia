@@ -401,7 +401,7 @@ scene({tag:['feat','Feature 4 / 7'],title:'Same question, same context, every ti
   this.budget=el(`<div class="abs chip" style="background:var(--fg);color:#fff">budget: 6,000 tokens</div>`,r);
   this.mach=el(`<div class="abs" style="width:190px;height:190px;border-radius:50%;background:var(--acc);color:#fff;display:flex;align-items:center;justify-content:center;font:800 32px var(--mono);box-shadow:0 12px 40px rgba(18,176,156,.35)">context</div>`,r);
   const shelves=[['Must read — constraints','var(--acc2)','#e3f6ef'],['Evidence · counterexamples · background','var(--gold)','#fff4d6'],['Left out — with the reason','var(--dim)','var(--bg2)']];
-  this.sh=shelves.map(([n,c,bg])=>el(`<div class="abs" style="width:720px;height:170px;border-radius:18px;border:3px solid ${c};background:${bg};padding:14px 20px"><div class="lbl" style="color:${c};font-size:19px">${n}</div><div class="items" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div></div>`,r));
+  this.sh=shelves.map(([n,c,bg])=>el(`<div class="abs" style="width:800px;min-height:170px;border-radius:18px;border:3px solid ${c};background:${bg};padding:14px 20px"><div class="lbl" style="color:${c};font-size:19px">${n}</div><div class="items" style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px"></div></div>`,r));
   const items=[[0,'premise P1 + its deps'],[0,'open ruling R4'],[0,'def retry (authoritative)'],[0,'def backoff (used by retry)'],[1,'evidence: load test'],[1,'counterexample C2'],[1,'background: ops ¶3'],[2,'ADR-9 · superseded'],[2,'note N7 · over budget']];
   this.items=items.map(([s,txt])=>({s,e:el(`<span class="chip" style="font-size:19px;padding:8px 12px;background:#fff;border:2px solid var(--line);color:var(--fg)">${txt}</span>`,this.sh[s].querySelector('.items'))}));
   this.barred=el(`<div class="abs" style="font:800 30px var(--mono);color:var(--red);border:4px solid var(--red);border-radius:10px;padding:4px 12px;transform-origin:center">BARRED</div>`,r);
@@ -413,11 +413,12 @@ scene({tag:['feat','Feature 4 / 7'],title:'Same question, same context, every ti
   const B=P(t,5,5.5);
   S(this.task,{o:B,x:150,y:300});S(this.budget,{...pop(t,5.6),x:150,y:520});this.budget.style.opacity=pop(t,5.6).o;
   S(this.mach,{o:B,x:600,y:420,s:t>6.2&&t<10?1+.05*Math.sin((t-6.2)*9):1});
-  this.sh.forEach((s,i)=>S(s,{o:P(t,5.3+i*.15,5.7+i*.15),x:1030,y:250+i*195}));
+  // shelves grow with their chips (fonts differ in width between machines), so stack them by measured height
+  let sy=240;this.sh.forEach((s,i)=>{S(s,{o:P(t,5.3+i*.15,5.7+i*.15),x:980,y:sy});sy+=s.offsetHeight+22});
   this.items.forEach((it,i)=>{const a=6.3+i*.42;const p=pop(t,a);S(it.e,{o:p.o,s:p.s})});
   // the superseded block tries the must-read shelf and is refused
   const ba=6.3+7*.42;
-  S(this.barred,{o:P(t,ba-.5,ba-.35)*(1-P(t,ba+.6,ba+.9)),x:1560,y:300,r:-12,s:L(1.6,1,P(t,ba-.5,ba-.3,eo))});
+  S(this.barred,{o:P(t,ba-.5,ba-.35)*(1-P(t,ba+.6,ba+.9)),x:1590,y:290,r:-12,s:L(1.6,1,P(t,ba-.5,ba-.3,eo))});
 }});
 
 // ============================== FEATURE 5 ==================================

@@ -49,7 +49,7 @@ del retires a block: the reduction stops treating it as live, and the record of 
 
 ### One graph over code and prose
 
-The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text.
+The split between a code repository and a documentation store is a filesystem accident, not a property of the knowledge. A section of a design, a Scheme macro, a function in another language and a decision record are all blocks: each has its own id, its own history and its own edges, and each can be read without reading whatever it sits next to. import-code reads a directory of source into the store; with --datum it reads Scheme as data rather than as text. A Scheme definition imported as a library block is a block the store can evaluate against and follow by name; for other languages the editor supplies what its language server knows (signatures, keywords, call edges, diagnostics), and every answer built on those facts names the editor that supplied them and counts the facts the source has since outrun.
 
 #### A name is a block
 
