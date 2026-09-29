@@ -33,7 +33,8 @@
 ;; For each file named on stdin (one path per line): read every top-level datum the way the
 ;; core's source reader does (a #!chezscheme prefix, get-datum/annotations), print each with the
 ;; core's source-datum-print parameters (without its version check), and write one line per
-;; file: <md5-free byte length> <datum count> <path>, plus the printed text to <out>/<n>.txt.
+;; file: <n> <datum count> <path>, n the file's zero-based index, plus the printed text to
+;; <out>/<n>.txt.
 (import (chezscheme))
 (define out (cadr (command-line)))
 (define (print-datum datum)
