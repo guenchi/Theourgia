@@ -1499,7 +1499,7 @@
   ;; refusal at the door rather than a different answer.
   ;; `derived`, when given, is a procedure the caller supplies: given the
   ;; state searched, it answers an editor's keywords for it as
-  ;; (<lookup: id -> (("<word>" ...) <via>) | #f> <tables read> <stale>).
+  ;; (<lookup: id -> ((("<word>" ...) <via>) ...) | #f> <tables read> <stale>).
   ;; This library does not read those tables itself; the caller does.
   (define (store-search-report store query limit . derived)
     (if (not (or (eq? limit #f)
@@ -1581,8 +1581,10 @@
                                ;; none is searched on the editor's words at
                                ;; the source's tier, below any author's.
                                (authored (exists (lambda (k) (> (string-length k) 0)) kws))
+                               ;; the editor's words in groups, one per fact:
+                               ;; ((("<word>" ...) <provenance>) ...)
                                (dk (and alive (not authored) (derived-words id)))
-                               (dks (if dk (car dk) (quote ())))
+                               (dks (if dk (apply append (map car dk)) (quote ())))
                                ;; The tier a field reaches is the best any
                                ;; token reaches in it.
                                ;; ONE MATRIX, TWO PROJECTIONS OF IT.
@@ -1675,9 +1677,13 @@
                                  (every-token-hit?
                                    (list title-row src-row kw-row dk-row
                                          name-row doc-row body-row)))
+                               ;; THE PROVENANCES OF THE GROUPS A TOKEN WAS FOUND
+                               ;; IN, not of every group the block has.
                                (ignored-derived
                                  (when (and alive every-token dk-tier)
-                                   (hashtable-set! derived-used id (cadr dk)))))
+                                   (hashtable-set! derived-used id
+                                     (map cadr (filter (lambda (g) (collapse-field-row (row field-tier (car g))))
+                                                       dk))))))
                           (loop (cdr ds)
                                 (if (and alive every-token)
                                     (cons (list id
@@ -1773,9 +1779,9 @@
                                    unreadable-here
                                    (and derived
                                         (list (cadr derived)
-                                              (filter (lambda (v) v)
-                                                      (map (lambda (h) (hashtable-ref derived-used (car h) #f))
-                                                           shown))
+                                              (apply append
+                                                     (map (lambda (h) (hashtable-ref derived-used (car h) (quote ())))
+                                                          shown))
                                               (caddr derived)))))
                   sorted))))))
 

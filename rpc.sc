@@ -55,7 +55,7 @@
           (only (theourgia request) req-id-ok?)
           (only (theourgia derived) supply-derived clear-derived derived-kinds derived-clauses
                 derived-signature derived-signature-table derived-keyword-table
-                derived-calls-into derived-reach derived-facts supplied-relations)
+                derived-calls-into derived-reach derived-facts* supplied-relations)
           (theourgia arguments) (theourgia project) (theourgia md))
 
   ;; ---- answers --------------------------------------------------------------
@@ -613,10 +613,10 @@
   ;; view, `w` being working-state's answer. Ordered by block and then by
   ;; start, a diagnostic that does not map to a range of its block first
   ;; among its block's; two at one start keep the order they were kept in.
-  ;; -> (values ((<payload> <via>) ...) <stale> <tables read>)
+  ;; -> (values ((<payload> <via>) ...) (<stale payload> ...) <tables read>)
   (define (writer-diagnostics store w)
     (let-values (((facts stale tables)
-                  (derived-facts store 'diagnostics (cadr w) (caddr w) (lambda (p) (eq? (car p) 'diagnostic)))))
+                  (derived-facts* store 'diagnostics (cadr w) (caddr w) (lambda (p) (eq? (car p) 'diagnostic)))))
       (let ((start (lambda (f) (let ((at (list-ref (car f) 4))) (if (eq? (cadr at) 'unmappable) -1 (cadr at))))))
         (values (list-sort (lambda (a b)
                              (let ((ia (cadr (car a))) (ib (cadr (car b))))
@@ -626,14 +626,16 @@
 
   ;; A DRAFT'S DIAGNOSTICS ARE COUNTED IN `drafts` once the writer has a
   ;; table of them: each draft item gains (diagnostics <n>), the fresh ones
-  ;; on its block, and the answer the via and stale clauses of the facts
-  ;; counted. A writer with no such table gets the answer it always got.
+  ;; on its block, and the answer the stale and via clauses of the facts on
+  ;; the drafted blocks -- the ones this answer consulted. A writer with no
+  ;; such table, or the writer named "-" (whose name is the committed
+  ;; table's), gets the answer it always got.
   (define (with-draft-diagnostics store state writer answer)
     (if (not (and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
                   (eq? (car (cadr answer)) 'items)))
         answer
         (let ((w (working-state store state writer)))
-          (if (not (and (pair? w) (eq? 'ok (car w))))
+          (if (not (and (pair? w) (eq? 'ok (car w)) (not (equal? (cadr w) "-"))))
               answer
               (let-values (((facts stale tables) (writer-diagnostics store w)))
                 (if (= tables 0)
@@ -641,7 +643,8 @@
                     (let* ((drafted (filter (lambda (x) (and (pair? x) (eq? (car x) 'draft))) (cdr (cadr answer))))
                            (block-of (lambda (x) (cadr (assq 'block (cdr x)))))
                            (on (lambda (id) (filter (lambda (f) (equal? (cadr (car f)) id)) facts)))
-                           (used (apply append (map (lambda (x) (on (block-of x))) drafted))))
+                           (used (apply append (map (lambda (x) (on (block-of x))) drafted)))
+                           (stale-here (filter (lambda (p) (member (cadr p) (map block-of drafted))) stale)))
                       (append
                         (list 'ok
                               (cons 'items
@@ -651,7 +654,12 @@
                                                x))
                                          (cdr (cadr answer)))))
                         (cddr answer)
-                        (derived-clauses tables (map cadr used) stale)))))))))
+                        (derived-clauses tables (map cadr used) (length stale-here))))))))))
+
+  ;; THE WRITER NAMED "-" CANNOT HAVE TABLES OF ITS OWN: "-" names the
+  ;; committed state's tables, so its working view would be judged against
+  ;; facts supplied for another view. The working readers refuse it.
+  (define reserved-writer '(error reserved-writer (writer "-")))
 
   ;; ONE BLOCK'S SIGNATURE, from the table of the view asked about: the
   ;; committed state's table ("-") against the committed state, or with
@@ -662,6 +670,7 @@
                   (if working?
                       (let ((w (working-state store state writer)))
                         (unless (and (pair? w) (eq? 'ok (car w))) (raise w))
+                        (when (equal? (cadr w) "-") (raise reserved-writer))
                         (values (cadr w) (caddr w)))
                       (values "-" (reduction-for store state)))))
       (if (not (state-read view id))
@@ -1134,13 +1143,15 @@
               (if (not (null? args))
                   (usage '(diagnostics ["--writer" <name>]))
                   (let ((w (working-state store state writer)))
-                    (if (not (and (pair? w) (eq? 'ok (car w))))
-                        w
-                        (guarded
-                          (lambda ()
-                            (let-values (((facts stale tables) (writer-diagnostics store w)))
-                              (append (items (map car facts))
-                                      (derived-clauses tables (map cadr facts) stale))))))))))
+                    (cond
+                      ((not (and (pair? w) (eq? 'ok (car w)))) w)
+                      ((equal? (cadr w) "-") reserved-writer)
+                      (else
+                       (guarded
+                         (lambda ()
+                           (let-values (((facts stale tables) (writer-diagnostics store w)))
+                             (append (items (map car facts))
+                                     (derived-clauses tables (map cadr facts) (length stale))))))))))))
       (cons 'discard
             (lambda (store actor args req options state writer cwd)
               (if (= 1 (length args))

@@ -165,8 +165,8 @@
   ;;
   ;; An empty [o, o) belongs, in this order, to the block whose source
   ;; piece ENDS at o (the earliest in file order), to the block whose
-  ;; source piece begins at o, or to the block the control at o precedes,
-  ;; at that piece's src start. A cursor at the end of a block's last line
+  ;; source piece begins at o, to the block whose source o lies inside, or
+  ;; to the block the control at o precedes, at that piece's src start. A cursor at the end of a block's last line
   ;; is in that block, not in the next one.
   ;;
   ;; An escape "@" belongs to the src position of the byte it was inserted
@@ -188,12 +188,16 @@
       ((= s e)
        (let ((ending (find (lambda (p) (and (source? p) (= (end-of p) s))) pieces))
              (beginning (find (lambda (p) (and (source? p) (= (start-of p) s))) pieces))
-             (control (let ((p (holding s))) (and p (not (source? p)) p))))
+             (inside (holding s)))
          (cond
            (ending (list 'mapped (id-of ending) (src-at ending s) (src-at ending s)))
            (beginning (list 'mapped (id-of beginning) (src-start-of beginning) (src-start-of beginning)))
-           ((and control (id-of control))
-            (list 'mapped (id-of control) (list-ref control 4) (list-ref control 4)))
+           ;; STRICTLY INSIDE A BLOCK'S SOURCE: a cursor in the middle of a
+           ;; line is at that byte of the block's src.
+           ((and inside (source? inside))
+            (list 'mapped (id-of inside) (src-at inside s) (src-at inside s)))
+           ((and inside (id-of inside))
+            (list 'mapped (id-of inside) (list-ref inside 4) (list-ref inside 4)))
            (else '(none)))))
       (else
        (let ((from (holding s)))

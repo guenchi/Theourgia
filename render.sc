@@ -54,15 +54,21 @@
   ;; UNWRAPPED. A text or items answer is shown as its body alone, and that
   ;; used to drop every clause after the body; the one saying the answer
   ;; is missing a writer's records is the one a reader must not lose (K10).
-  ;; So are `via` and `stale`: an answer built from facts an editor supplied
-  ;; says where they came from, and how many it could not use, in every
-  ;; rendering. They follow the body in the order the answer holds them.
+  ;; So are `stale` and `via` after a TEXT body: an answer built from facts
+  ;; an editor supplied says how many it could not use and where the others
+  ;; came from. NOT after ITEMS: a reader of an items answer takes every line
+  ;; as an item (the VS Code plugin parses a search's lines and rejects the
+  ;; whole answer at the first line that is not a hit), so there the two
+  ;; travel only in --wire.
   (define kept-clauses '(incomplete via stale))
+  (define kept-after-items '(incomplete))
   (define (render-human answer)
     (let* ((clauses (if (and (pair? answer) (list? answer))
                         (filter (lambda (x) (and (pair? x) (memq (car x) kept-clauses))) (cdr answer))
                         '()))
-           (tail (apply string-append (map render-wire clauses))))
+           (tail (apply string-append (map render-wire clauses)))
+           (items-tail (apply string-append
+                              (map render-wire (filter (lambda (x) (memq (car x) kept-after-items)) clauses)))))
       (cond
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'text))
@@ -74,6 +80,6 @@
                  (else (string-append text "\n" tail)))))
         ((and (pair? answer) (eq? (car answer) 'ok) (pair? (cdr answer)) (pair? (cadr answer))
               (eq? (caadr answer) 'items))
-         (string-append (apply string-append (map render-wire (cdadr answer))) tail))
+         (string-append (apply string-append (map render-wire (cdadr answer))) items-tail))
         (else (render-wire answer)))))
 )

@@ -1052,6 +1052,15 @@ facts about one block for `read --signature`, the calls into one block for
 is its own; it may be 0. `via` names the distinct provenances of the facts
 the answer used, and may be empty; a stale fact's provenance is never named.
 A signature fact's `(kind <k>)` is kept in the table and not shown.
+Without `--wire`, a listing (`outline`) prints the two clauses after its
+text; an answer that is a list of items (`search`, `refs`, `diagnostics`,
+`drafts`) prints only its items, so a reader that takes every line as an
+item is not handed one that is not, and the clauses are in `--wire`.
+
+The writer named `-` is the committed store's name in these tables, so the
+readers of a writer's own facts -- `read --signature --working` and
+`diagnostics` -- refuse it, `(error reserved-writer (writer "-"))`, and
+`drafts` for it carries no diagnostics count.
 
 ## Checking, snapshotting, adopting
 

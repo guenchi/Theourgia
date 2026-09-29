@@ -1917,7 +1917,9 @@
           (reverse out)
           (let ((p (rec-payload (car recs))))
             (loop (cdr recs)
-                  (if (and (list? p) (= 4 (length p)) (memq (car p) '(link unlink))
+                  ;; FOUR OR MORE: a record with a surplus argument still
+                  ;; applies (the reducer reads the first three).
+                  (if (and (list? p) (>= (length p) 4) (memq (car p) '(link unlink))
                            (memq (caddr p) reserved-relation-names)
                            (event-applied? r (cons (rec-writer (car recs)) (rec-seq (car recs)))))
                       (cons (list (cadr p) (caddr p) (cadddr p)

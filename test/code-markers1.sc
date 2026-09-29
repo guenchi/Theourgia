@@ -87,6 +87,9 @@
             (rng (bytevector-length m-out) (bytevector-length m-out)))
       (list '(mapped "writer.1" 50 50) '(mapped "writer.2" 5 5) '(mapped "writer.3" 0 0)
             (list 'mapped "writer.3" (bytevector-length m-b3) (bytevector-length m-b3))))
+(want "CT-20 empty ranges strictly inside a source piece: in the prefix, in b1's body, in b3's escaped line before the escape"
+      (list (rng 3 3) (rng (+ p1 3) (+ p1 3)) (rng (+ q3 1) (+ q3 1)))
+      '((mapped "writer.1" 3 3) (mapped "writer.1" 33 33) (mapped "writer.3" 1 1)))
 (want "CT-20 (10) empty ranges inside the @file line and inside b2's @block line: the block each precedes, at its piece's start"
       (list (rng (+ f0 3) (+ f0 3)) (rng (+ m2 3) (+ m2 3)))
       '((mapped "writer.1" 30 30) (mapped "writer.2" 0 0)))

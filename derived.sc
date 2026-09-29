@@ -38,7 +38,7 @@
 ;;; a buffer that was not the disk, or before a draft or a commit, is refused
 ;;; `supply-stale` naming the file.
 (library (theourgia derived)
-  (export supply-derived clear-derived derived-facts derived-kinds derived-clauses
+  (export supply-derived clear-derived derived-facts derived-facts* derived-kinds derived-clauses
           derived-signature derived-signature-table derived-keyword-table
           derived-calls-into derived-reach supplied-relations
           table-file-name percent-encode read-supply-header)
@@ -222,9 +222,20 @@
   ;; Checksummed like the evidence checkpoint: a table that does not read,
   ;; whose digest or identity is wrong, or whose facts are not facts, is
   ;; ABSENT as a whole, never used in part.
+  ;; A FACT IS USED ONLY WITH ITS STAMPS: a fact without one would be fresh
+  ;; for ever, so a table holding one is not a table this library wrote.
+  (define (stamp? s) (and (list? s) (= 2 (length s)) (string? (car s)) (hex64? (cadr s))))
   (define (fact? f)
-    (and (list? f) (= 6 (length f)) (eq? (car f) 'fact) (string? (cadr f)) (pair? (caddr f))
-         (list? (list-ref f 3)) (list? (list-ref f 4)) (pair? (list-ref f 5))))
+    (and (list? f) (= 6 (length f)) (eq? (car f) 'fact) (string? (cadr f))
+         (let ((p (caddr f)))
+           (and (list? p) (>= (length p) 3) (memq (car p) '(signature keywords calls diagnostic))
+                (string? (cadr p))))
+         (let ((deps (list-ref f 3)))
+           (and (list? deps) (pair? deps) (for-all stamp? deps)
+                (equal? (car (car deps)) (cadr (caddr f)))))
+         (let ((files (list-ref f 4))) (and (list? files) (pair? files) (for-all stamp? files)))
+         (let ((v (list-ref f 5)))
+           (and (list? v) (= 3 (length v)) (eq? (car v) 'vscode) (for-all string? (cdr v))))))
   (define (make-fact own-file payload dep-stamps file-stamps via)
     (list 'fact own-file payload dep-stamps file-stamps via))
   (define (fact-own-file f) (cadr f))
@@ -241,7 +252,7 @@
              (and body (eq? (car x) 'derived-table) (eqv? (cadr x) 1)
                   (equal? (caddr x) (store-id-of store)) (equal? (cadddr x) (digest body))
                   (list? body) (= 4 (length body))
-                  (eq? (car body) kind) (equal? (cadr body) writer)
+                  (eq? (car body) kind) (equal? (cadr body) writer) (string? (caddr body))
                   (or (not language) (equal? (caddr body) language))
                   (list? (cadddr body)) (for-all fact? (cadddr body))
                   body)))))
@@ -327,12 +338,14 @@
                  (map-in-order (lambda (nf)
                         (let* ((n (car nf)) (subject (cadr nf)) (payload (caddr nf))
                                (deps (cadddr nf)) (range (list-ref nf 4)))
+                          ;; EVERY ID THE FACT NAMES IS KNOWN before any is asked
+                          ;; about its file, so one line answers one reason
+                          ;; whatever the order of its depends.
+                          (for-each (lambda (id) (unless (file-of id) (malformed n 'unknown-id)))
+                                    (if (eq? (car payload) 'calls) (append deps (list (caddr payload))) deps))
                           (for-each (lambda (id)
-                                      (unless (file-of id) (malformed n 'unknown-id))
                                       (unless (assoc (file-of id) files) (malformed n 'dependency-file-not-listed)))
                                     deps)
-                          (when (eq? (car payload) 'calls)
-                            (unless (file-of (caddr payload)) (malformed n 'unknown-id)))
                           (let ((own (file-of subject)))
                             (unless (member own replaces) (malformed n 'own-file-not-replaced))
                             (let ((payload
@@ -483,19 +496,18 @@
         (values (lambda (id) (hashtable-ref t id #f)) stale tables))))
 
   ;; EVERY BLOCK'S DERIVED KEYWORDS, for search.
-  ;; -> (list <lookup: id -> (("<word>" ...) <via>) | #f> <tables read> <stale>)
-  ;; A block's words from several fresh facts are joined, the via of the
-  ;; first kept for each; whether a block with author keywords uses them is
-  ;; the search's rule, not this one's.
+  ;; -> (list <lookup: id -> ((("<word>" ...) <via>) ...) | #f> <tables read> <stale>)
+  ;; A block's words are kept in groups, one per fact, each with the
+  ;; provenance that supplied it, so a hit names the provenance of the
+  ;; words it was found by; whether a block with author keywords uses them
+  ;; is the search's rule, not this one's.
   (define (derived-keyword-table store writer view)
     (let-values (((facts stale tables) (derived-facts store 'signatures writer view (payload-tagged? 'keywords))))
       (let ((t (make-hashtable string-hash string=?)))
         (for-each (lambda (f)
-                    (let* ((id (cadr (car f))) (old (hashtable-ref t id #f)))
-                      (hashtable-set! t id
-                                      (if old
-                                          (list (append (car old) (caddr (car f))) (cadr old))
-                                          (list (caddr (car f)) (cadr f))))))
+                    (let ((id (cadr (car f))))
+                      (hashtable-set! t id (append (hashtable-ref t id '())
+                                                   (list (list (caddr (car f)) (cadr f)))))))
                   facts)
         (list (lambda (id) (hashtable-ref t id #f)) tables stale))))
 
