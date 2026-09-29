@@ -466,10 +466,14 @@
   ;; files and 22249 forms: 10.3.0 and 10.4.1 print every file
   ;; byte-identical to 10.1.0 (the record is
   ;; archive/theourgia-chez-printer-2026-09-29 in the workspace root
-  ;; repository). NEVER: a new Chez is added here only after the probe
-  ;; reads it identical on the same corpus.
+  ;; repository). 10.4.0, which FreeBSD 15.0's packages install, printed
+  ;; the corpus's theourgia and igropyr files -- 302 of the 702 -- byte-
+  ;; identical to 10.1.0 in GitHub Actions run 36633940820 (a FreeBSD 15.0
+  ;; VM). NEVER: a new Chez is added here only after the probe reads it
+  ;; identical on the same corpus.
   (define printer-measured-versions
-    '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.1"))
+    '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.0"
+      "Chez Scheme Version 10.4.1"))
   (define (source-datum-print datum)
     (unless (member (scheme-version) printer-measured-versions)
       (raise '(error unsupported-printer-version)))
