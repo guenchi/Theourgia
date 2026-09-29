@@ -2575,12 +2575,15 @@
 ;; ---- X26 two shells, a pool of one: evaluations take turns -----------------------------------------
 ;; The inverse of X15. With THEOURGIA_EVAL_SLOTS=1 the second evaluation waits
 ;; for the first's slot. Observed directly, not by elapsed time: each source
-;; leaves a marker of its own for the 2 s it runs and, at its end, counts the
-;; markers there -- one when they took turns, two when both were let in.
+;; leaves a marker of its own for the 2 s it runs and counts the markers
+;; there twenty times while it runs, every 0.1 s -- always one when they took
+;; turns; two, within 0.1 s of the later start, when both were let in. (Two
+;; sources started more than 2 s apart would not overlap without any pool;
+;; the sends are made back to back, so only a stall of that length hides it.)
 (want "X26 two shells, THEOURGIA_EVAL_SLOTS=1: two sleep 2 sent together take turns, neither running while the other runs"
       (let* ((m (string-append here "/x26"))
              (_ (system (string-append "rm -rf " m "; mkdir -p " m)))
-             (src (string-append "touch " m "/in.$$; sleep 2; ls " m " | grep -c '^in[.]' > " m "/seen.$$; rm -f " m "/in.$$"))
+             (src (string-append "touch " m "/in.$$; i=0; while [ $i -lt 20 ]; do ls " m " | grep -c '^in[.]' >> " m "/seen.$$; sleep 0.1; i=$((i+1)); done; rm -f " m "/in.$$"))
              (a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=1 " ""))
              (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=1 " ""))
              (open! (lambda (s) (send-frame! s hello) (read-frame s) (send-frame! s ready)
@@ -2590,10 +2593,11 @@
              (_ (send-frame! b (eval-call (list "--lang" "shell" "--timeout-ms" "10000" src))))
              (ra (read-frame a)) (rb (read-frame b)))
         (for-each (lambda (s) (close-input! s) (let dr () (unless (eof-object? (read-frame s)) (dr)))) (list a b))
-        (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok")
-              (begin (system (string-append "cat " m "/seen.* > " m "/all 2>/dev/null"))
-                     (file-text (string-append m "/all")))))
-      '(#t #t "1\n1\n"))
+        (system (string-append "cat " m "/seen.* > " m "/all 2>/dev/null"))
+        (let ((counts (filter (lambda (l) (> (string-length l) 0)) (lines-of-text (file-text (string-append m "/all"))))))
+          (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok")
+                (>= (length counts) 40) (for-all (lambda (l) (string=? l "1")) counts))))
+      '(#t #t #t #t))
 
 ;; ---- X16 the reaper does not run while a child is owned ------------------------------------------------
 ;; Deterministic: the shell holds after the spawn and before its first poll;

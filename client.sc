@@ -284,14 +284,17 @@
   ;;
   ;; NEVER: NO ATTEMPT AFTER THE BUDGET. The slots are tried at once, then
   ;; every 100 ms, each sleep cut to what is left of timeout-ms, and the
-  ;; budget is checked after every sleep BEFORE the next attempt: a slot
-  ;; that comes free after timeout-ms is not taken, and a refusal waits
-  ;; timeout-ms, not the next whole step. The wait is measured on the
-  ;; monotonic clock, as the MCP shell's watchdog is, so a step of the wall
-  ;; clock neither stretches it nor cuts it short.
+  ;; budget is read before EVERY attempt, each slot's included: a slot that
+  ;; comes free after timeout-ms is not taken, and a refusal waits
+  ;; timeout-ms, not the next whole step. The one exception is the very
+  ;; first attempt, on the first slot, which is made whatever the clock
+  ;; reads: a millisecond boundary crossed at the start must not refuse a
+  ;; request with a 1 ms budget on an empty pool. The wait is measured on
+  ;; the monotonic clock, as the MCP shell's watchdog is, so a step of the
+  ;; wall clock neither stretches it nor cuts it short.
   (define (monotonic-ms)
     (let ((t (current-time 'time-monotonic)))
-      (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+      (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
 
   (define (eval-admit! timeout-ms)
     (let ((k (eval-slots-count)))
@@ -309,9 +312,10 @@
               (define (elapsed) (- (monotonic-ms) start))
               (define (busy waited)
                 (values #f (list 'error 'eval-busy (list 'slots k) (list 'waited-ms waited))))
-              (let try ()
+              (let try ((first? #t))
                 (let ((held (let scan ((i 0))
                               (and (< i k)
+                                   (or (and first? (= i 0)) (< (elapsed) timeout-ms))
                                    (or (lock-try-acquire! (slot i) 'exclusive)
                                        (scan (+ i 1)))))))
                   (if held
@@ -329,7 +333,7 @@
                               (let ((waited (elapsed)))
                                 (if (>= waited timeout-ms)
                                     (busy waited)
-                                    (try))))))))))))))
+                                    (try #f))))))))))))))
 
   ;; ---- one call: connect, send a frame, read one answer, close -------------
   ;;
