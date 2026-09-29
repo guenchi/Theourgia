@@ -24,10 +24,15 @@ directory holding both `theourgia/` and `igropyr/`:
     export CHEZSCHEMELIBEXTS=".sc::.sls::.scm"
     scheme --script theourgia.sc init --store /path/to/store
 
-**Platforms: the ones with a measured row.** Every number the code hands
-to the kernel or reads back from it -- open flags, errno values, struct
-sizes and field offsets -- is taken from a table of MEASURED rows,
-`platform-numbers.sc`, one per platform: macOS on arm64, Linux on x86_64
+**Platforms: the ones with a measured row.** The numbers the code hands
+to the kernel or reads back from it that differ between platforms --
+open flags, errno values, signal numbers, struct sizes and field offsets
+-- are taken from a table of MEASURED rows, `platform-numbers.sc`, one per
+platform. What POSIX fixes stays in the code (permission bits, the wait
+status encoding, the file-type mask operation), a C scalar the rows do
+not measure (`size_t`) takes Chez's width for its machine type, and the
+signal names an evaluation reports are those whose numbers every row
+shares. The rows: macOS on arm64, Linux on x86_64
 and on aarch64 with glibc, and FreeBSD 15 on amd64. The row is chosen when
 the programs start, from Chez's machine type and, on Linux, from the C
 library the process has mapped. On any other platform -- another
