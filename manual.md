@@ -37,7 +37,7 @@ library-root/
   igropyr/
 ```
 
-Compile both into one output directory:
+Compile both into one output directory. On a Homebrew machine the interpreter is `chez`; the lines below say `scheme` for the upstream build.
 
 ```
 scheme --script theourgia/build.ss library-root objects
@@ -412,6 +412,50 @@ One store per project or per person, on one machine. The machine registry record
 ### The memory recipe
 
 To use a store as persistent memory for Claude Code sessions: turn off the built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 or in settings.json), register the store as an MCP server, and inject an outline at session start with a SessionStart hook that runs theourgia outline --depth 1. CLAUDE.md then carries the recall and write instructions: search to find, read to retrieve, insert to add (under the right section, with title, keywords, and text following the block protocol), and write+commit to update an existing block rather than duplicating it. The full recipe is in docs/claude-code-memory.md in the repository.
+
+## The VS Code extension
+
+### Before you start
+
+The extension drives the theourgia core installed on the machine. Install the core first (from source today; a Homebrew tap arrives with the 1.0 release), then configure the settings:
+
+| Setting | What it is |
+|---|---|
+| `theourgia.corePath` | The directory holding the core (a checkout or a product directory). Required. |
+| `theourgia.libDirs` | Extra directories for `CHEZSCHEMELIBDIRS`, after `corePath`. |
+| `theourgia.store` | The store directory. Required. |
+| `theourgia.actor` | The name recorded with every write. Defaults to the OS user name. |
+| `theourgia.writer` | The draft space this window writes into. Defaults to the actor. |
+| `theourgia.scheme` | The Chez Scheme executable. Defaults to `scheme`. |
+| `theourgia.timeoutMs` | How long one request may take. Defaults to 30000. |
+
+### Installing the extension
+
+Install the `.vsix` package from the command line:
+
+```
+code --install-extension theourgia-darwin-arm64-0.1.0.vsix
+```
+
+The Visual Studio Marketplace listing arrives when the extension is published there.
+
+### What it does
+
+An outline tree of the store appears in the side bar. Opening a node shows the blocks directly under it. A block opens as a markdown buffer with its heading and body.
+
+Saving writes a durable working draft first, then sends a commit carrying the block's version. If the baseline has moved since the draft was taken, the commit is refused and the refusal hands back the winner's content. A save whose answer is lost is kept and can be retried; the request id, cursor and body are recorded before the commit is sent.
+
+Right-clicking a node and choosing "Open as Document" composes the block and everything under it into one read-only markdown document. Each block's heading level is its depth under the opened block. The document is re-read from the store each time it is opened.
+
+The tree has a second mode, Files, showing the directory tree that export would write. "New File Here" creates a document at that path. "Move to Directory" and "Rename File" write the block's path, guarded by its version: a block that changed after the listing is refused and the view refreshes.
+
+A text-mode code block opens as its source in the language its `lang` field names. "Go to Definition" asks the store's `whereis` which block defines a name. "Suggest a Split" asks the core where a source file on disk could be divided into blocks, using the editor's own symbols for the cuts.
+
+When a writer's log cannot be read, the outline shows every other writer's blocks and says which one is missing, the path and the reason. The conflict count, the search results and the status bar all carry the same note until every writer is readable again.
+
+### Platforms
+
+0.1.0 is packaged for macOS on Apple Silicon. The extension takes a file lock through a small native module built for the packaging machine. Packages for Intel macOS and for Linux (x86-64 and arm64) are built by the repository's GitHub Actions workflow, each on its own platform; one is published only when the unit suite has passed on every target against a real core. There is no Windows package.
 
 ## Limits
 
