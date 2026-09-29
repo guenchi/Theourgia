@@ -1817,9 +1817,13 @@
 ;; command line and the RPC route parse a request's options before they ask
 ;; whether its verb exists, so a key in the verb tables would answer a request
 ;; for the unknown verb `mcp` from the shell's options.
-(want "W7 PIN a request for the unknown verb mcp, with --log or with --writer, is answered unknown-verb as on the base"
-      (list (contains? (cli-answer wstore '("mcp" "--log")) "(error unknown-verb")
-            (contains? (cli-answer wstore '("mcp" "--writer")) "(error unknown-verb"))
+;; NOTE: THE OPTION IS GIVEN TWICE, WITH VALUES. cli-answer appends --store
+;; and --wire after the argv, so a lone "--log" would take "--store" as its
+;; value under a verb key and parse cleanly; only a second occurrence makes
+;; a key for mcp answer before the verb is judged (duplicate-option).
+(want "W7 PIN a request for the unknown verb mcp, with --log or --writer given twice, is answered unknown-verb as on the base, not duplicate-option"
+      (list (contains? (cli-answer wstore '("mcp" "--log" "a" "--log" "b")) "(error unknown-verb")
+            (contains? (cli-answer wstore '("mcp" "--writer" "a" "--writer" "b")) "(error unknown-verb"))
       '(#t #t))
 (want "W7 --writer is an option of the shell's parser, a positional of serve's table and of the verb mcp, and the daemon's usage is unchanged"
       (list (parse-shell-arguments '("--writer" "w"))
