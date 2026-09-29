@@ -34,6 +34,15 @@ jobs:
           repository: guenchi/Igropyr
           ref: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
           path: lib/igropyr
+      - uses: actions/checkout@v4
+        with:
+          ref: c01a8468d43ea8b7e4b4d1db29e0b91d436608dc
+          path: probe/theourgia
+      - uses: actions/checkout@v4
+        with:
+          repository: guenchi/Igropyr
+          ref: 8db79ad78fedcc4accac7435b582e478418dafc8
+          path: probe/igropyr
       - name: the suite on FreeBSD 15.0
         uses: vmactions/freebsd-vm@v1
         with:
@@ -63,6 +72,14 @@ jobs:
             printf '%s\n' 'echo "me $$"' 'ps -A -ww -o pid=,pgid=,stat=,command= | wc -l' 'ps -A -ww -o pid=,pgid=,stat=,command= | awk -v p=$$ "\$1==p"' 'ps -ww -o pid=,pgid=,stat=,command= -p $$' 'ps -A -o user= | sort | uniq -c' > /tmp/diag.sh
             su -m tester -c 'sh /tmp/diag.sh'
             ps -A -ww -o pid=,pgid=,stat=,command= | tail -5
+            # THE PRINTER ON THIS CHEZ: the archived corpus's theourgia (c01a846)
+            # and igropyr (8db79ad) files, in the archive's order, through the
+            # probe; each <k>.txt is compared by index with the 10.1.0 reading.
+            mkdir -p "$W/printout"; chown tester "$W/printout"
+            cut -d' ' -f2 harness/.github/printprobe-subset.txt | sed "s#^#$W/probe/#" > "$W/printprobe-corpus.txt"
+            su -m tester -c "scheme --script $W/lib/theourgia/test/probe/printprobe.ss $W/printout < $W/printprobe-corpus.txt > $W/printprobe-index.txt 2> $W/printprobe.err" || true
+            (cd "$W/printout" && md5 -r *.txt) > "$W/printprobe.md5"
+            echo "printprobe: $(wc -l < "$W/printprobe-index.txt") files, $(wc -l < "$W/printprobe.md5") outputs"; tail -3 "$W/printprobe.err"
             cd lib/theourgia/test
             su -m tester -c "HOME=/home/tester THEOURGIA_LIBDIR=$W/lib THEOURGIA_TEST_ROOT=$W/testroot; export HOME THEOURGIA_LIBDIR THEOURGIA_TEST_ROOT; . ./env.sh; sh run-fixtures.sh $W/out > $W/suite.log 2>&1; echo \$? > $W/suite.rc" || true
             cd "$W"
@@ -77,3 +94,6 @@ jobs:
             out
             suite.log
             suite.rc
+            printprobe.md5
+            printprobe-index.txt
+            printprobe.err
