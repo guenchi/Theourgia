@@ -23,8 +23,10 @@ this design.
 repository (the `read --wire` version clause that move and rename check);
 on an older core those two commands are refused by name. The three supply
 commands need commit 5230bb6 or later, which has `supply`; an older core
-answers it as an unknown verb, and the command shows that answer. VS Code
-1.138 is what the suites run on, and the extension claims nothing older.
+answers it as an unknown verb, and the command shows that answer. The core
+requires Chez Scheme 10.1.0 exactly; with another Chez its datum export,
+`def` and `eval` refuse (`unsupported-printer-version`). VS Code 1.138 is
+what the suites run on, and the extension claims nothing older.
 
 **Platforms.** 1.0.0 is packaged for macOS on Apple Silicon only: the
 extension's save queue takes a file lock through a small native module,

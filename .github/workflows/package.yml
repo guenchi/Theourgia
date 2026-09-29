@@ -18,7 +18,9 @@
 #   unit     per target: the unit suite against a real core, on that
 #            platform. The core is theourgia and igropyr at the revisions
 #            the suite is pinned to, checked out from GitHub, on Chez Scheme
-#            10 with libuv and OpenSSL 3. The suite's full log is uploaded
+#            10.1.0 built from its release source on every system (the
+#            core's datum printer refuses any other version), with libuv and
+#            OpenSSL 3. The suite's full log is uploaded
 #            whatever the suite's result, so a red is read and not only
 #            counted. A setup step that fails before the suite leaves no
 #            log, and the upload step then fails too, saying so.
@@ -174,28 +176,29 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: extension/package-lock.json
-      # Homebrew installs Chez Scheme's executable as `chez`, not `scheme`;
-      # the core and the real-core cells both take THEOURGIA_SCHEME.
-      - name: Chez Scheme, libuv and OpenSSL (macOS)
+      - name: libuv and OpenSSL (macOS)
         if: runner.os == 'macOS'
-        run: |
-          brew install chezscheme libuv openssl@3
-          echo "THEOURGIA_SCHEME=$(brew --prefix)/bin/chez" >> "$GITHUB_ENV"
-      # Chez Scheme 10 from its release source: the distribution's package
-      # is older than the 10 igropyr requires. The release carries the boot
-      # files that build it on either architecture. The -dev packages, not
-      # the runtime ones: Ubuntu 24.04 renamed those (libuv1t64, libssl3t64),
-      # and the -dev ones bring them and the bare libuv.so igropyr also tries.
-      - name: Chez Scheme, libuv and OpenSSL (Linux)
+        run: brew install libuv openssl@3
+      # The -dev packages, not the runtime ones: Ubuntu 24.04 renamed those
+      # (libuv1t64, libssl3t64), and the -dev ones bring them and the bare
+      # libuv.so igropyr also tries.
+      - name: libuv, OpenSSL and a build toolchain (Linux)
         if: runner.os == 'Linux'
-        working-directory: ${{ runner.temp }}
         run: |
           sudo apt-get update
           sudo apt-get install -y libuv1-dev libssl-dev build-essential
+      # Chez Scheme ${CHEZ_VERSION} from its release source, on every system:
+      # the core's datum printer refuses any other version (ffi.sc,
+      # `source-datum-print`), and a package manager ships whatever version
+      # is current (Homebrew had 10.4.1). The release carries the boot files
+      # that build it on every architecture; it installs `scheme`.
+      - name: Chez Scheme ${{ env.CHEZ_VERSION }}
+        working-directory: ${{ runner.temp }}
+        run: |
           curl -fsSL "https://github.com/cisco/ChezScheme/releases/download/v${CHEZ_VERSION}/csv${CHEZ_VERSION}.tar.gz" | tar -xz
           cd "csv${CHEZ_VERSION}"
           ./configure --threads --disable-x11 --disable-curses
-          make -j"$(nproc)"
+          make -j"$(getconf _NPROCESSORS_ONLN)"
           sudo make install
       # Readings, so a log says what it was taken on.
       - name: What this run is on
