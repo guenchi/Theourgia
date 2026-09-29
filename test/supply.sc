@@ -31,6 +31,7 @@
         (only (theourgia code-project) code-files code-field code-children)
         (only (theourgia render) render-human)
         (only (theourgia languages) register-language!)
+        (only (theourgia derived) percent-encode)
         (only (theourgia reduce) state-hash reduce-applied-cut)
         (only (theourgia evidence-index) index-checkpoint! index-forget-memory!)
         (only (theourgia wire) storable-decode storable-encode string->sexpr-extended sexpr->string-extended)
@@ -576,7 +577,9 @@
 
 ;; ---- D8: a table that cannot be trusted is not used at all ---------------------------
 (define r1-table (string-append r1 "/derived/signatures-%2D-javascript.sexp"))
-(define r1-table-bytes (bytes-of r1-table))
+;; #vu8() when there is no table: the rows below then read red rather
+;; than stopping the fixture.
+(define r1-table-bytes (or (bytes-of r1-table) #vu8()))
 (define (readings st id) (list (ask st 'read id) (ask st 'check) (ask st 'outline)))
 (define r1-readings (readings r1 r1-alpha))
 (define (replace-all text from to)
@@ -620,7 +623,34 @@
 (want "D8 (iv) a checksummed table whose language is not a string: nothing is used, and the readers answer"
       (in-order (sig-of r1 r1-alpha) (head-of (outline-with-signatures r1)))
       (list '(ok (signature absent)) 'ok))
+(rewrite-table! r1-table (lambda (body) (list (car body) (cadr body) (caddr body)
+                                              (map (lambda (f) (let ((p (caddr f)))
+                                                                 (if (eq? (car p) 'signature)
+                                                                     (list (car f) (cadr f) (list (car p) (cadr p) 123 (cadddr p))
+                                                                           (list-ref f 3) (list-ref f 4) (list-ref f 5))
+                                                                     f)))
+                                                   (cadddr body)))))
+(want "D8 (v) a checksummed table whose signature is not text: nothing is used"
+      (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
+      (list '(ok (signature absent)) '(ok (signature absent))))
 (write-bytes! r1-table r1-table-bytes)
+;; A TABLE IS USED ONLY BY THE STORE AND THE WRITER IT NAMES ITSELF FOR: the
+;; same bytes under another store, or under another writer's file name, are
+;; not consulted.
+(define r1c-bare (make-store! "r1c-bare"))
+(define r1c-bare-alpha (id-in r1c-bare "function alpha"))
+(want "D8 identity: r1's table copied into another store answers nothing there; copied under w1's file name in r1, w1 reads nothing from it"
+      (in-order
+        (begin (mkdir-p! (string-append r1c-bare "/derived"))
+               (write-bytes! (string-append r1c-bare "/derived/signatures-%2D-javascript.sexp") r1-table-bytes)
+               (sig-of r1c-bare r1c-bare-alpha))
+        (begin (write-bytes! (string-append r1 "/derived/signatures-w1-javascript.sexp") r1-table-bytes)
+               (sig-of r1 r1-alpha "--working" "--writer" "w1")))
+      (list '(ok (signature absent)) '(ok (signature absent))))
+(delete-file (string-append r1 "/derived/signatures-w1-javascript.sexp"))
+(want "D8 a table's file name escapes every byte outside [A-Za-z0-9_.], a per cent sign and a multibyte character included"
+      (in-order (percent-encode "a%b/\xE9;") (percent-encode "-") (percent-encode "w_1.x"))
+      '("a%25b%2F%C3%A9" "%2D" "w_1.x"))
 (want "D8 control: the table's own bytes put back, both answer again"
       (in-order (sig-of r1 r1-alpha) (sig-of r1 r1-gamma))
       (list (present "alpha(): number") (present "gamma(): number" "1.141.0")))
@@ -679,6 +709,10 @@
 (want "D14 gamma's keyword field reads back as its author wrote it"
       (let ((b (ask r2 'read r2-gamma))) (cdr (assq 'keywords (cdr (assq 'fields (cadr b))))))
       "authored-word")
+(want "D5 alpha's src changed: its editor words (two facts, both listing alpha) are stale; okapi finds nothing and the search counts both, naming no provenance"
+      (in-order (head-of (ask r2 'set r2-alpha "src" "function alpha() {\n  return 7;\n}\n"))
+                (let ((a (ask r2 'search "okapi"))) (list (hits a) (assq 'stale (cdr a)) (assq 'via (cdr a)))))
+      (list 'ok (list '() '(stale 2) '(via))))
 
 ;; ---- D13: the writer's working view, pinned ----------------------------------------
 ;; w1 drafts beta; alpha is then changed and committed, so the latest
@@ -909,6 +943,13 @@
       (let ((a (ask r12 'refs r12-gamma))) (list (refs-items a) (refs-clauses a)))
       (list (list (list 'ref (list 'from r12-alpha) '(rel calls) '(via (vscode "1.140.0" "javascript"))))
             (list '(stale 0) supplied-via)))
+(want "D6 reach with no --depth walks one hop: alpha and gamma"
+      (ask r12 'reach r12-alpha)
+      (list 'ok (list 'reached (list (list r12-alpha 0) (list r12-gamma 1))) '(stale 0) supplied-via))
+(want "D6 the human rendering of refs with a supplied row is item lines only"
+      (let ((ls (filter (lambda (l) (> (string-length l) 0)) (lines-of (render-human (ask r12 'refs r12-gamma))))))
+        (list (length ls) (for-all (lambda (l) (has-substring? l "(ref ")) ls)))
+      '(1 #t))
 (want "D6 reach refuses a depth that is not a count, and answers unknown-id for an id the store does not hold"
       (in-order (head-of (ask r12 'reach r12-alpha "--depth" "two")) (head-of (ask r12 'reach "nope.1")))
       '(usage (error unknown-id)))
@@ -933,6 +974,22 @@
       (in-order (ask r13 'reach r13-beta) (ask r13 'reach r13-alpha "--rel" "explains" "--depth" "2"))
       (list (list 'ok (list 'reached (list (list r13-beta 0))) '(stale 0) '(via))
             '(error unknown-relation (rel explains))))
+;; A branch: alpha calls beta and delta, delta calls beta; beta is one hop
+;; away, not two.
+(define r13c (make-store! "r13c"))
+(define r13c-alpha (id-in r13c "function alpha"))
+(define r13c-beta (id-in r13c "function beta"))
+(define r13c-delta (id-in r13c "function delta"))
+(want "D6 in a branching graph each block is at its fewest hops: beta and delta at 1, beta not again at 2"
+      (in-order (supply-calls r13c (list (calls r13c-alpha r13c-beta r13c-beta) (calls r13c-alpha r13c-delta r13c-delta)
+                                         (calls r13c-delta r13c-beta r13c-beta))
+                              '("a.js" "c.js"))
+                (ask r13c 'reach r13c-alpha "--depth" "2"))
+      (list '(ok (supplied (facts 3) (files 2)))
+            (list 'ok (list 'reached (cons (list r13c-alpha 0)
+                                           (list-sort (lambda (x y) (string<? (car x) (car y)))
+                                                      (list (list r13c-beta 1) (list r13c-delta 1)))))
+                  '(stale 0) supplied-via)))
 (define r13b (make-store! "r13b"))
 (define r13b-alpha (id-in r13b "function alpha"))
 (want "D16 with no calls table, reach answers the block alone and carries neither clause; an unknown relation is refused there too"
@@ -1124,7 +1181,7 @@
 (define s13 (bytes-offset w2-b "return 13"))
 (want "D17 w2 supplies its own diagnostic: each writer reads back only its own, with its own draft counts"
       (let-values (((text bytes) (diagnostics-supply r17 "w2" "javascript" (list (diag r17-gamma s13 (+ s13 9))) '("b.js") "b.js")))
-        (list (supply-in r17 text "diagnostics" "--for" "w2")
+        (in-order (supply-in r17 text "diagnostics" "--for" "w2")
               (diag-items r17 "w2") (length (diag-items r17 "w1")) (draft-counts r17 "w2")))
       (list '(ok (supplied (facts 1) (files 1)))
             (list (list 'diagnostic r17-gamma 'error "m" '(at 21 30))) 3 (list (list r17-gamma 1))))
@@ -1137,13 +1194,48 @@
     (want "D7 a fresh supply after alpha grew: beta's range moved in the projected file, and its at is the same block-relative one"
           (let-values (((text* ignored) (diagnostics-supply r17 "w1" "javascript"
                                                              (list (diag r17-beta s12* (+ s12* 9) r17-alpha)) '("a.js") "a.js")))
-            (list (> s12* s12) (supply-in r17 text* "diagnostics" "--for" "w1") (diag-items r17 "w1")))
+            (in-order (> s12* s12) (supply-in r17 text* "diagnostics" "--for" "w1") (diag-items r17 "w1")))
           (list #t '(ok (supplied (facts 1) (files 1))) (list (list 'diagnostic r17-beta 'error "m" '(at 20 29)))))))
 
 (want "D7 w2 discards its only draft: drafts counts no stale diagnostic, since it consulted none (gamma is not drafted), while diagnostics counts the one on gamma"
       (in-order (head-of (ask r17 'discard r17-gamma "--writer" "w2"))
             (ask r17 'drafts "--writer" "w2") (diag-answer r17 "w2"))
       (list 'ok '(ok (items) (stale 0) (via)) '(ok (items) (stale 1) (via))))
+(define r17-w1-table (string-append r17 "/derived/diagnostics-w1-javascript.sexp"))
+(define r17-w1-bytes (or (bytes-of r17-w1-table) #vu8()))
+(want "D7 w1's own table does not read: drafts gives its drafts no count and the answer no clause, as with no table"
+      (in-order (begin (write! r17-w1-table "(derived-table 1") 'damaged)
+                (let ((a (ask r17 'drafts "--writer" "w1"))) (list (sorted-counts (draft-counts r17 "w1")) (length a))))
+      (list 'damaged (list (sorted-counts (list (list r17-alpha #f) (list r17-beta #f))) 2)))
+(write-bytes! r17-w1-table r17-w1-bytes)
+;; The committed state's tables are named for "-", and drafts --writer -
+;; does not read them: its answer is the one it gave before there was one.
+(define r17-drafts-dash (ask r17 'drafts "--writer" "-"))
+(want "D7 a diagnostics table for the committed store (writer -): drafts --writer - answers as it did before the table"
+      (in-order (let* ((d (export-in r17))
+                       (files (map (lambda (n) (list n (sha-of (string-append d "/" n)))) (projection-files d))))
+                  (supply-in r17 (line (list 'supply 'diagnostics '(writer "-") '(language "javascript")
+                                             '(source (vscode "1.140.0")) (list 'files files) '(replaces ("b.js"))))
+                             "diagnostics"))
+                (file-exists? (string-append r17 "/derived/diagnostics-%2D-javascript.sexp"))
+                (equal? (ask r17 'drafts "--writer" "-") r17-drafts-dash))
+      (list '(ok (supplied (facts 0) (files 1))) #t #t))
+(want "D7 diagnostics of the information and hint severities are kept and listed by start"
+      (let-values (((text bytes) (diagnostics-supply r17 "w2" "javascript" '() '() "b.js")))
+        (let ((s (bytes-offset bytes "return alpha")))
+          (let-values (((text* ignored)
+                        (diagnostics-supply r17 "w2" "javascript"
+                                            (list (line (list 'diagnostic r17-gamma 'hint "h" (list 'range (+ s 7) (+ s 12)) (list 'depends (list r17-gamma))))
+                                                  (line (list 'diagnostic r17-gamma 'information "i" (list 'range s (+ s 6)) (list 'depends (list r17-gamma)))))
+                                            '("b.js") "b.js")))
+            (in-order (supply-in r17 text* "diagnostics" "--for" "w2") (diag-items r17 "w2")))))
+      (list '(ok (supplied (facts 2) (files 1)))
+            (list (list 'diagnostic r17-gamma 'information "i" '(at 21 27))
+                  (list 'diagnostic r17-gamma 'hint "h" '(at 28 33)))))
+(want "D7 the human rendering of diagnostics is item lines only"
+      (let ((ls (filter (lambda (l) (> (string-length l) 0)) (lines-of (render-human (diag-answer r17 "w2"))))))
+        (list (length ls) (for-all (lambda (l) (has-substring? l "(diagnostic ")) ls)))
+      '(2 #t))
 
 ;; ==== what the exporter refuses, a fact's file has no key for ====
 ;; An unsafe path, and a child whose src is not bytes: the exporter refuses

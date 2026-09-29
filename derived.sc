@@ -313,11 +313,26 @@
   ;; A FACT IS USED ONLY WITH ITS STAMPS: a fact without one would be fresh
   ;; for ever, so a table holding one is not a table this library wrote.
   (define (stamp? s) (and (list? s) (= 2 (length s)) (string? (car s)) (hex64? (cadr s))))
+  ;; A PAYLOAD IS ONE OF THE SHAPES A SUPPLY STORES, whole: a table whose
+  ;; checksum is right and whose facts say something else was not written
+  ;; by this library, and a reader would hand its values on as they are.
+  (define (at? a)
+    (and (list? a) (eq? (car a) 'at)
+         (or (equal? (cdr a) '(unmappable))
+             (and (= 3 (length a)) (exact-offset? (cadr a)) (exact-offset? (caddr a)) (<= (cadr a) (caddr a))))))
+  (define (payload? p)
+    (and (list? p) (pair? p) (pair? (cdr p)) (string? (cadr p))
+         (case (car p)
+           ((signature)
+            (and (= 4 (length p)) (string? (caddr p))
+                 (let ((k (cadddr p))) (and (list? k) (= 2 (length k)) (eq? (car k) 'kind) (symbol? (cadr k))))))
+           ((keywords) (and (= 3 (length p)) (pair? (caddr p)) (strings? (caddr p))))
+           ((calls) (and (= 3 (length p)) (string? (caddr p))))
+           ((diagnostic) (and (= 5 (length p)) (memq (caddr p) severities) (string? (cadddr p)) (at? (list-ref p 4))))
+           (else #f))))
   (define (fact? f)
     (and (list? f) (= 6 (length f)) (eq? (car f) 'fact) (string? (cadr f))
-         (let ((p (caddr f)))
-           (and (list? p) (>= (length p) 3) (memq (car p) '(signature keywords calls diagnostic))
-                (string? (cadr p))))
+         (payload? (caddr f))
          (let ((deps (list-ref f 3)))
            (and (list? deps) (pair? deps) (for-all stamp? deps)
                 (equal? (car (car deps)) (cadr (caddr f)))))
