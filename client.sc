@@ -25,7 +25,7 @@
           ensure-daemon! serve-log-path start-budget-ms socket-dir-refusal
           request-frame envelope-version answer-field readable-shape?
           exit-code? symbol-char? wire-safe-spelling? verb-spelling-error
-          next-attempt-token select-report)
+          next-attempt-token select-report eval-admit! eval-slots-count)
   (import (rnrs base) (rnrs control) (rnrs bytevectors) (rnrs unicode)
           ;; NOTE: `write` AND `call-with-string-output-port` ARE HERE FOR ONE
           ;; REASON: `wire-safe-spelling?` asks the writer whether a symbol
@@ -45,7 +45,11 @@
                 entry-type read-entry
                 ;; F100b point 6: the pid wait, the hold seam, the record.
                 waitpid-status hold-point! theourgia-fault
-                with-mutation-record mutation-record)
+                with-mutation-record mutation-record
+                ;; The admission of evaluations: the slot files, their locks,
+                ;; the mark that keeps a lock from a child, the pool's size.
+                mkdir-p-unrecorded! file-ensure-unrecorded! lock-try-acquire! lock-release!
+                lock-fd fd-close-on-exec! online-processors)
           (only (theourgia answers) classify-failure)
           (only (theourgia render) render-wire)
           (only (theourgia digest) sha256 bytevector->hex))
@@ -230,6 +234,83 @@
 
   (define (socket-path store)
     (string-append (run-root) "/" (store-key store) "/socket"))
+
+  ;; ---- the admission of evaluations ---------------------------------------
+  ;;
+  ;; KEY: A BOUND ON HOW MANY EVALUATIONS RUN AT ONCE, AT THE ENTRANCE EVERY
+  ;; core.sc EVALUATION PASSES. Without it N shells give N evaluations, each
+  ;; within its own quotas. The bound is K slots, K files
+  ;; <run root>/eval-slots/<i>; an evaluation runs while it holds an
+  ;; exclusive flock on one of them, and the lock is released by the system
+  ;; when the process that took it ends -- so a holder that dies frees its
+  ;; slot, and a reused pid cannot hold one.
+  ;;
+  ;; NEVER: A CHILD DOES NOT INHERIT THE SLOT. The descriptor is marked
+  ;; close-on-exec as soon as the lock is taken, before the worker or the
+  ;; runner is spawned (proc-spawn! marks nothing): a runner outliving its
+  ;; supervisor would otherwise hold the slot. A mark that fails releases
+  ;; the lock and raises, as the descriptor's failure.
+  ;;
+  ;; NEVER: THE SLOT FILES ARE ADMINISTRATION, NOT THE REQUEST'S WRITES. The
+  ;; directory and the files are made, when absent, with the unrecorded
+  ;; variants, so a first use of a run root does not appear in an unrelated
+  ;; refusal's written clause. They are never removed or replaced while held.
+  ;;
+  ;; NOTE: WHAT THIS BOUNDS: cooperating clients of one run root, the command
+  ;; line and MCP shells alike. It is not a machine-wide bound on process
+  ;; trees: an evaluation library called directly, or a worker started by
+  ;; hand, does not pass here; two run roots are two pools; and the slot is
+  ;; released when core.sc ends even if a descendant it orphaned is still
+  ;; running. K is operator configuration, and two processes with different
+  ;; K on one root see different ranges -- a mismatch is not detected.
+
+  ;; K: THEOURGIA_EVAL_SLOTS in this process's environment, else the online
+  ;; processors (ffi.sc's one reading, with its test seam). -> a positive
+  ;; integer, or #f when the value is not one -- never unlimited by accident.
+  (define (eval-slots-count)
+    (let ((v (env-or "THEOURGIA_EVAL_SLOTS")))
+      (if v
+          (let ((n (string->number v 10)))
+            (and n (exact? n) (integer? n) (> n 0) n))
+          (online-processors))))
+
+  ;; -> (values <lock> #f) once a slot is held, or (values #f <refusal>):
+  ;; (error bad-request (reason eval-slots)) for a K that is not a positive
+  ;; integer, (error eval-busy (slots K) (waited-ms n)) when no slot came
+  ;; free within timeout-ms, retried every 100 ms. The wait is not part of
+  ;; the evaluation's own deadline, which starts at ready. A filesystem
+  ;; condition making the slots raises, for the request's table.
+  (define (eval-admit! timeout-ms)
+    (let ((k (eval-slots-count)))
+      (if (not k)
+          (values #f '(error bad-request (reason eval-slots)))
+          (let ((dir (string-append (run-root) "/eval-slots")))
+            (define (slot i) (string-append dir "/" (number->string i)))
+            (mkdir-p-unrecorded! dir)
+            (let make ((i 0))
+              (when (< i k)
+                (file-ensure-unrecorded! (slot i))
+                (make (+ i 1))))
+            (hold-point! 'eval-admission)
+            (let ((start (wall-clock-ms)))
+              (let try ()
+                (let ((held (let scan ((i 0))
+                              (and (< i k)
+                                   (or (lock-try-acquire! (slot i) 'exclusive)
+                                       (scan (+ i 1)))))))
+                  (cond
+                    (held
+                     (guard (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e)))
+                       (parameterize ((theourgia-stage 'admission))
+                         (fd-close-on-exec! (lock-fd held))))
+                     (values held #f))
+                    ((>= (- (wall-clock-ms) start) timeout-ms)
+                     (values #f (list 'error 'eval-busy (list 'slots k)
+                                      (list 'waited-ms (- (wall-clock-ms) start)))))
+                    (else
+                     (sleep (make-time 'time-duration 100000000 0))
+                     (try))))))))))
+
   ;; ---- one call: connect, send a frame, read one answer, close -------------
   ;;
   ;; NEVER: THIS IS ALL THE CLIENT KNOWS ABOUT THE PROTOCOL. It does not read

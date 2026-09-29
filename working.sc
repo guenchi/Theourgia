@@ -547,9 +547,10 @@
   ;; landing mid-run changes neither.
   ;;
   ;; NOTE: THE LOCK IS HELD ONLY FOR THE COPY. Nothing holds it during the
-  ;; evaluation -- §7.6 is explicit that a run takes no lock -- so what
-  ;; this returns is a snapshot of that moment and says nothing about the
-  ;; moment after it.
+  ;; evaluation -- section 7.6 is explicit that a run takes no store or
+  ;; draft lock (its admission slot, under the run root, is neither) -- so
+  ;; what this returns is a snapshot of that moment and says nothing about
+  ;; the moment after it.
   ;;
   ;; NOTE: FOUR FIELDS, NOT ONE. The bytes are what the evaluation reads;
   ;; the version and the base are what the answer reports back, so a

@@ -859,6 +859,169 @@
               (and (list? built) (list? pinned) (equal? (list-sort string<? built) (list-sort string<? pinned)))))
       (list #t #t))
 
+;; ---- L15: the evaluation admission --------------------------------------------
+;; Every evaluation takes one of K slots of its run root's pool before its cut,
+;; view, projection or scratch, and holds it until its process ends. Each row
+;; has a run root of its own, so its pool starts empty.
+(define SL (make-store! "slots" (list (cons "a.sh" "echo slots\n"))))
+(define (wall-ms)
+  (let ((t (current-time 'time-utc))) (+ (* 1000 (time-second t)) (quotient (time-nanosecond t) 1000000))))
+(define (pause-ms ms) (sleep (make-time 'time-duration (* (mod ms 1000) 1000000) (div ms 1000))))
+(define (within ms ok?)
+  (let ((end (+ (wall-ms) ms)))
+    (let loop () (let ((v (ok?))) (cond (v v) ((> (wall-ms) end) #f) (else (pause-ms 50) (loop)))))))
+(define (fresh-run! name)
+  (let ((d (string-append root "/" name))) (sh "rm -rf " (quoted d) "; mkdir -p " (quoted d)) d))
+;; An evaluation started in the background: -> (pid out). The pid is the
+;; evaluating process's own (env, when given, execs it).
+(define (bg env store source . args)
+  (set! n (+ n 1))
+  (let ((in (string-append root "/in-" (number->string n))) (out (string-append root "/out-" (number->string n)))
+        (pidf (string-append root "/pid-" (number->string n))))
+    (put! in source)
+    (sh "THEOURGIA_LOCAL=1 THEOURGIA_HOME=" (quoted home) " THEOURGIA_RUN=" (quoted run) " " env " "
+        (quoted scheme-path) " --script ../core.sc eval "
+        (apply string-append (map (lambda (a) (string-append (quoted a) " ")) args))
+        "--store " (quoted store) " --wire < " (quoted in) " > " (quoted out) " 2> " (quoted (string-append out ".err"))
+        " & echo $! > " (quoted pidf))
+    (list (within 5000 (lambda () (let ((t (text-of-file pidf))) (and (> (string-length t) 1) (string->number (substring t 0 (- (string-length t) 1)))))))
+          out)))
+(define (alive? pid) (and pid (= 0 (sh "kill -0 " (number->string pid) " 2>/dev/null"))))
+;; -> the wall clock when the process was seen gone, or #f
+(define (ended-at pid ms) (within ms (lambda () (and (not (alive? pid)) (wall-ms)))))
+(define (answer-in out) (guard (e (#t 'UNREADABLE)) (let ((d (call-with-input-file out read))) (if (eof-object? d) 'NO-ANSWER d))))
+(define (scratch-count r)
+  (length (filter (lambda (f) (and (> (string-length f) 5) (string=? (substring f 0 5) "eval-") (not (string=? f "eval-slots"))))
+                  (directory-list r))))
+(define (slots-env r . more) (apply string-append "THEOURGIA_RUN=" (quoted r) " " more))
+
+;; THE SECOND WAITS, AND MAKES NOTHING WHILE IT WAITS. A holds the only slot
+;; (its runner has written its ready file); B is held at its admission, whose
+;; .held file says it got there, and the scratch listing is read then: only
+;; A's. Released, B waits for the slot, and ends after A.
+(want "L15 K=1: a second evaluation waits for the slot, has no scratch while it waits, and runs after the first ends"
+      (let* ((r (fresh-run! "slots-wait"))
+             (ready (string-append r ".ready")) (rel (string-append r ".release"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 3; echo first")
+                    "--lang" "shell" "--timeout-ms" "15000"))
+             (_ (within 15000 (lambda () (file-exists? ready))))
+             (b (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON " THEOURGIA_INJECT=on THEOURGIA_HOLD=eval-admission:" rel)
+                    SL "echo second" "--lang" "shell" "--timeout-ms" "20000"))
+             (held (within 20000 (lambda () (file-exists? (string-append rel ".held")))))
+             (scratch (scratch-count r))
+             (_ (sh "touch " (quoted rel)))
+             (a-end (ended-at (car a) 20000))
+             (b-end (ended-at (car b) 30000)))
+        (list (and held #t) scratch
+              (has-substring? (format "~s" (answer-in (cadr a))) "first")
+              (has-substring? (format "~s" (answer-in (cadr b))) "second")
+              (and a-end b-end (>= b-end a-end))))
+      '(#t 1 #t #t #t))
+
+(want "L15 K=1: a second evaluation whose timeout ends while the first holds the slot answers eval-busy, with K and the time it waited"
+      (let* ((r (fresh-run! "slots-busy"))
+             (ready (string-append r ".ready"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 4")
+                    "--lang" "shell" "--timeout-ms" "15000"))
+             (_ (within 15000 (lambda () (file-exists? ready))))
+             (busy (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo x" "--lang" "shell" "--timeout-ms" "500"))
+             (_ (ended-at (car a) 20000))
+             (waited (let ((c (clause-of busy 'waited-ms))) (and c (cadr c)))))
+        (list (head-of busy) (clause-of busy 'slots) (and (integer? waited) (<= 500 waited 3500))))
+      '((error eval-busy) (slots 1) #t))
+
+;; NEVER: THE RUNNER DOES NOT HOLD THE SLOT. The holder is killed with SIGKILL
+;; while its runner sleeps on; a runner that had inherited the lock's
+;; descriptor would keep the slot, and the third evaluation would be busy.
+(want "L15 K=1: the holder killed while its runner sleeps frees the slot at once; the runner does not hold it"
+      (let* ((r (fresh-run! "slots-kill"))
+             (ready (string-append r ".ready"))
+             (a (bg (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL (string-append "touch " ready "; sleep 31.5")
+                    "--lang" "shell" "--timeout-ms" "60000"))
+             (_ (within 15000 (lambda () (file-exists? ready))))
+             (_ (when (car a) (sh "kill -9 " (number->string (car a)))))
+             (_ (ended-at (car a) 5000))
+             (third (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 " ON) SL "echo third" "--lang" "shell" "--timeout-ms" "1500")))
+        (sh "pkill -f 'sleep 31.5' 2>/dev/null")
+        (list (head-of third) (has-substring? (format "~s" third) "third")))
+      '(ok #t))
+
+;; THE POOL'S SIZE UNSET: the online processors, through the one reading and
+;; its seam. Two holders fill a pool of two, and the third is busy.
+(want "L15 THEOURGIA_EVAL_SLOTS unset, THEOURGIA_EVAL_SLOTS_DEFAULT=2: two evaluations hold the pool and a third is busy with (slots 2)"
+      (let* ((r (fresh-run! "slots-default"))
+             (env (string-append "env -u THEOURGIA_EVAL_SLOTS THEOURGIA_EVAL_SLOTS_DEFAULT=2 THEOURGIA_RUN=" (quoted r) " " ON))
+             (ra (string-append r ".a")) (rb (string-append r ".b"))
+             (a (bg env SL (string-append "touch " ra "; sleep 4") "--lang" "shell" "--timeout-ms" "15000"))
+             (b (bg env SL (string-append "touch " rb "; sleep 4") "--lang" "shell" "--timeout-ms" "15000"))
+             (_ (within 15000 (lambda () (and (file-exists? ra) (file-exists? rb)))))
+             (third (ask env SL "echo x" "--lang" "shell" "--timeout-ms" "500")))
+        (ended-at (car a) 20000) (ended-at (car b) 20000)
+        (list (head-of third) (clause-of third 'slots)))
+      '((error eval-busy) (slots 2)))
+
+;; The reading is asked inside a guard: a library without it (the base, a
+;; mutant) makes this row red, not the fixture's end.
+(let ((n-online (guard (e (#t 'NOT-AVAILABLE)) ((eval 'online-processors (environment '(theourgia ffi)))))))
+  (printf "L15 information: the online processors, read by the pool's own reading: ~a\n" n-online)
+  (want "L15 CONTROL: the pool's own reading of the online processors is a positive integer on this machine"
+        (and (integer? n-online) (> n-online 0))
+        #t))
+
+(want "L15 a K that is not a positive integer is refused eval-slots, whatever else the request says"
+      (let ((r (fresh-run! "slots-bad")))
+        (list (ask (slots-env r "THEOURGIA_EVAL_SLOTS=0") SL "(+ 1 2)")
+              (ask (slots-env r "THEOURGIA_EVAL_SLOTS=two") SL "(+ 1 2)")))
+      '((error bad-request (reason eval-slots)) (error bad-request (reason eval-slots))))
+
+;; THE SLOT FILES ARE MADE WHERE THEY CANNOT BE: an eval-slots directory that
+;; can be searched and not written, holding no slot. The creation's failure
+;; is the table's unwritable.
+(want "L15 an eval-slots directory that can be searched and not written, and holds no slot, answers unwritable"
+      (let* ((r (fresh-run! "slots-unwritable"))
+             (d (string-append r "/eval-slots"))
+             (_ (sh "mkdir -p " (quoted d) "; chmod 555 " (quoted d)))
+             (a (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1") SL "(+ 1 2)")))
+        (sh "chmod 755 " (quoted d))
+        (head-of a))
+      '(error unwritable))
+
+;; A MARK THAT FAILS is the descriptor's failure, unreadable-entry. (That the
+;; slot is released before the answer is not observable from outside: the
+;; process ends with its answer, and the system releases the lock then.)
+(want "L15 the close-on-exec mark failing on the slot's descriptor answers unreadable"
+      (let ((r (fresh-run! "slots-cloexec")))
+        (head-of (ask (slots-env r "THEOURGIA_EVAL_SLOTS=1 THEOURGIA_INJECT=on THEOURGIA_FAULT=cloexec-fail@admission")
+                      SL "(+ 1 2)")))
+      '(error unreadable))
+
+;; THE MARK, MEASURED THROUGH THE SPAWN THE WORKER AND THE RUNNER USE
+;; (proc-spawn!, by spawn-worker!): two descriptors on one file, one marked,
+;; and `test -e /dev/fd/<n>` run for each. The unmarked one is the control:
+;; if the child cannot see it, the instrument observes nothing and the row
+;; is red for that.
+(define cloexec-probe (string-append root "/cloexec-probe.sc"))
+(put! cloexec-probe
+      (string-append
+        "(import (chezscheme) (only (theourgia ffi) fd-open fd-close-on-exec! fd-close-on-exec?)\n"
+        "        (only (theourgia sched) start-scheduler receive self)\n"
+        "        (only (theourgia proc) spawn-worker!))\n"
+        "(define plain (fd-open \"/etc/hosts\" '(read)))\n"
+        "(define marked (fd-open \"/etc/hosts\" '(read)))\n"
+        "(fd-close-on-exec! marked)\n"
+        "(define (probe fd)\n"
+        "  (spawn-worker! \"/bin/sh\" (list \"sh\" \"-c\" (string-append \"test -e /dev/fd/\" (number->string fd))) '() self)\n"
+        "  (receive (`(worker-exit ,r ,status ,signal) status)))\n"
+        "(start-scheduler\n"
+        "  (lambda ()\n"
+        "    (let* ((p (probe plain)) (m (probe marked)))\n"
+        "      (write (list (fd-close-on-exec? plain) (fd-close-on-exec? marked) p m))\n"
+        "      (newline) (flush-output-port (current-output-port))\n"
+        "      (exit 0))))\n"))
+(want "L15 fd-close-on-exec!: the marked descriptor answers #t and a child spawned the worker's way cannot see it; the unmarked one (the control) it can"
+      (datum-of (sh-out (quoted scheme-path) " --script " (quoted cloexec-probe) " 2>/dev/null < /dev/null"))
+      '(#f #t 0 1))
+
 (sh "chmod -R u+rwX " (quoted root) " 2>/dev/null; rm -rf " (quoted root))
 (printf "\n~a failures\nrows: ~a\neval-lang complete\n" bad rows)
 (exit (if (= bad 0) 0 1))

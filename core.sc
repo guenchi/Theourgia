@@ -37,7 +37,7 @@
         ;; nothing here has a peer to be linked to.
         (only (theourgia render) answer-printing!)
         (only (theourgia client) socket-path answer-field readable-shape? exit-code?
-              verb-spelling-error)
+              verb-spelling-error eval-admit!)
         (only (theourgia ffi) env-or entry-type with-mutation-record mutation-record)
         (only (theourgia answers) classify-failure combine-report)
         (only (theourgia working) working-snapshot working-baseline)
@@ -301,7 +301,10 @@
 ;; while the evaluation runs cannot change what was evaluated.
 ;;
 ;; NOTE: AND THE LOCK IS HELD ONLY FOR THE COPY. The run itself takes no
-;; lock; what crosses into the worker is bytes, not a handle.
+;; store or draft lock; what crosses into the worker is bytes, not a
+;; handle. The one lock an evaluation holds is its admission slot
+;; (client.sc eval-admit!), which is neither: it is under the run root, it
+;; bounds how many evaluations run at once, and it ends with this process.
 ;; WHICH COMMITTED STATE THE EVALUATION STANDS ON.
 ;;
 ;; NEVER: `--working` IS PINNED BY DEFAULT, and that is the whole of the
@@ -464,6 +467,10 @@
                          (list 'usage eval-usage))))
       ((not (runners-enabled?))
        (done '(error runners-disabled)))
+      ;; THE ADMISSION comes after the last of this branch's own refusals and
+      ;; before the source is read, the view taken or the scratch claimed:
+      ;; a slot of the run root's pool, held until this process ends.
+      ((admit! timeout) => done)
       (else
        (let ((source (read-source nodes)))
          (if (> (string-length source) 1048576)
@@ -495,6 +502,15 @@
       p
       (string-append (current-directory) "/" p)))
 
+;; THE SLOT THIS PROCESS HOLDS, kept for as long as it runs: the lock is
+;; released by the system when the process ends, and nothing here releases
+;; it before. -> the refusal, or #f once a slot is held.
+(define admission-slot #f)
+(define (admit! timeout)
+  (let-values (((slot refusal) (eval-admit! timeout)))
+    (set! admission-slot slot)
+    refusal))
+
 (define (eval-and-exit! argv)
   (let ((nodes (parse-arguments 'eval (cdr argv))))
     (if (and (pair? nodes) (eq? (car nodes) 'error))
@@ -508,27 +524,36 @@
          (let-values (((key heard) (eval-scope store)))
          (if (foreign-lang nodes)
              (eval-foreign-and-exit! nodes (foreign-lang nodes) key heard timeout memory output)
-         (let ((cut (eval-cut nodes key))
-              (under (or (argument-option nodes "--under") ""))
-              (wire? (eval-wire? nodes)))
+         (let ((under (or (argument-option nodes "--under") ""))
+               (wire? (eval-wire? nodes)))
           (cond
             ;; NEVER: TWO ANSWERS TO ONE QUESTION. `--cut` names a coordinate
             ;; and `--latest` asks for whichever one is current; a rule
             ;; giving one of them precedence would make the other silently
             ;; do nothing, which is the defect this batch just removed.
+            ;;
+            ;; THE PRE-ADMISSION REFUSALS COME FIRST, BEFORE ANY LOAD: a
+            ;; request refused here does not queue for an evaluation slot,
+            ;; and nothing has been read that an answer could carry. They
+            ;; used to be checked after the cut's baseline load and carry
+            ;; what it heard; the admission reordered them.
             ((and (argument-option nodes "--latest") (argument-option nodes "--cut"))
              (finish (list 'error 'bad-request '(reason cut-and-latest)
                            (list 'usage eval-usage))
                      wire?))
-            ;; THESE EXITS COME AFTER THE CUT'S BASELINE LOAD, so they too carry
-            ;; what this process heard (F77c code review r3); with nothing heard
-            ;; the answer is unchanged.
             ((not (and timeout memory output))
-             (finish (with-heard-clause
-                       (list 'error 'bad-request '(reason eval-arguments)
-                             (list 'usage eval-usage))
-                       (heard))
+             (finish (list 'error 'bad-request '(reason eval-arguments)
+                           (list 'usage eval-usage))
                      wire?))
+            (else
+            ;; THE ADMISSION (client.sc eval-admit!): a slot of the run root's
+            ;; pool, held until this process ends, before the cut, the view,
+            ;; the projection or the scheduler. A refusal there is the answer.
+            (let ((refusal (admit! timeout)))
+            (if refusal
+                (finish (with-heard-clause refusal (heard)) wire?)
+            (let ((cut (eval-cut nodes key)))
+          (cond
             ((and (pair? cut) (eq? (car cut) 'refused))
              (finish (with-heard-clause (append (cadr cut) '((during cut))) (heard)) wire?))
             (else
@@ -583,7 +608,7 @@
                                          (mutation-record))
                                        (heard))
                                        wire?))))))
-                           before-scheduler)))))))))))))))
+                           before-scheduler))))))))))))))))))))
 
 ;; NOTE: THE INTERPRETER NAMED BY `THEOURGIA_SCHEME`, or else whatever
 ;; `scheme` resolves to on PATH. IT IS NOT NECESSARILY THE ONE THIS PROCESS

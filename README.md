@@ -1485,6 +1485,7 @@ the committed store except by reading it.
     (error eval-exception (kind raised) (value <v>))
     (error eval-exception (kind raised) (reason unwritable-value) (type <t>))
     (error bad-request (reason ...) (usage (eval ...)))
+    (error eval-busy (slots <K>) (waited-ms <n>))
 
 NEVER: **What the evaluation prints is DATA, carried in a field.** Text that
 reads exactly like an answer still arrives inside `(stdout ...)`; it can
@@ -1523,6 +1524,24 @@ pin and evaluates against the current committed state. An explicit
 with `(error bad-request (reason cut-and-latest) ...)` rather than
 resolved by a precedence rule -- a rule would make one of the two
 spellings silently do nothing.
+
+**How many run at once.** Every evaluation first takes one of K slots of
+its run root's pool -- K is `THEOURGIA_EVAL_SLOTS`, else the number of online
+processors -- and holds it until its process ends; a slot is an exclusive
+lock on a file under `<run root>/eval-slots/`, released by the system when
+the holder ends, a killed one included. The descriptor is never inherited by
+the worker or the runner. With no slot free the evaluation waits, trying
+every 100 ms, for up to its own `--timeout-ms`, and then answers
+`(error eval-busy (slots K) (waited-ms n))`; that wait is not part of the
+evaluation's own deadline. A K that is not a positive integer is
+`(error bad-request (reason eval-slots))`. The refusals that need no store --
+`cut-and-latest`, `eval-arguments`, and for `--lang` `lang-and-cut`,
+`lang-and-under`, `no-runner` and `runners-disabled` -- come before the slot,
+so a refused request does not queue. The pool bounds cooperating clients of
+ONE run root, the command line and MCP shells alike; it is not a machine-wide
+bound: two run roots are two pools, two processes given different K on one
+root are not reconciled, and a descendant an evaluation orphaned is not
+counted once its core.sc has ended.
 
 **Whose working view.** `--writer <name>` names the writer; without it,
 `THEOURGIA_WRITER` when it is set and not empty; never the actor -- the
@@ -1744,6 +1763,8 @@ the transport's tag rather than on the answer's text.
 | `THEOURGIA_HOME` | `ffi.sc` | where the machine registry and its lock live. Falls back to `HOME` |
 | `THEOURGIA_RUN` | `daemon.sc` | the run root holding daemon sockets. Falls back to `$HOME/.theourgia/run` |
 | `THEOURGIA_LOCAL` | `core.sc` | `1` answers in process even when a daemon's socket is there |
+| `THEOURGIA_EVAL_SLOTS` | `client.sc` | how many evaluations one run root runs at once (the admission pool, `### eval`); a positive integer. Unset or empty, the number of online processors. Anything else answers `(error bad-request (reason eval-slots))` |
+| `THEOURGIA_EVAL_SLOTS_DEFAULT` | `ffi.sc` | a test seam: a positive integer read in place of the online processors when `THEOURGIA_EVAL_SLOTS` is unset, so a row can ask for a pool of a known size on any machine |
 | `THEOURGIA_WIRE` | `core.sc` | `1` makes `eval` answer in wire form, as `--wire` does; read for `eval` only, and any other value, or none, leaves the mode to `--wire`. The MCP shell sets it for the `eval` child it runs |
 | `THEOURGIA_MCP_PREPARATION_MS` | `mcp/server.sc` | a test seam: the preparation allowance, in milliseconds, in how long the MCP shell waits for an `eval` child (twice the timeout plus this; 70000 when unset). A value that is not a positive integer is refused at start with the usage line, exit 2 |
 | `THEOURGIA_RUNNERS` | `core.sc` | `on` turns on `eval --lang`'s runners for another language; any other value, or none, leaves them off (`runners-disabled`). For an MCP caller the environment that counts is the MCP shell's -- the host's configuration for it -- since the shell's `eval` child inherits it; the daemon's is never consulted |
@@ -1761,7 +1782,7 @@ them at all.**
 | `THEOURGIA_FAULT` | `<fault>@<stage>` picks which fault, at run time, in a build that has them |
 | `THEOURGIA_NOFLOCK` | `1` removes the product's lock while keeping the barrier, so rows asserting mutual exclusion can be shown to fail without it. NEVER: Exists only inside the `THEOURGIA_INJECT=on` branch |
 | `THEOURGIA_BARRIER` | `<name>:<fifo>` parks a process at a named point until a controller writes to the fifo |
-| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery) and `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll). An unknown stage or a malformed entry is refused when the library loads |
+| `THEOURGIA_HOLD` | the fixtures' hold seam: `<stage>:<path>`, several joined by `;`. At a named stage the process creates `<path>.held`, without recording it, and waits, polling every 20 ms, until `<path>` exists. The stages are `client-scan`, `report-write`, `bind`, `write-after-create`, `publish-after-link`, `store-start`, `after-discovery` (a load, right after discovery), `after-barrier` (a load, between the delivery barrier and delivery), `mcp-child-wait` (the MCP shell, after starting an `eval` child and before its first poll) and `eval-admission` (an evaluation, after making its pool's slot files and before it tries their locks). An unknown stage or a malformed entry is refused when the library loads |
 | `THEOURGIA_HOLD_MS` | how long a hold waits before it goes on anyway and writes `(theourgia hold-expired <stage>)` on stderr: an exact non-negative integer of milliseconds, 30000 when unset; anything else is refused when the library loads |
 | `THEOURGIA_TEST_ROOT` | where fixtures may create stores and write transcripts. Under `test/run-fixtures.sh` it is a directory the runner makes for the run, `<base>/run-<token>`, and removes at its end. Read only by `test/` |
 | `THEOURGIA_TEST_SOCK` | where fixtures put sockets, and the lock file and `serve.log` the product keeps beside one: a directory the runner makes with `mktemp -d /tmp/ths.XXXXXX`, at most 20 bytes so a socket path fits in `sun_path`, and removes at its end. Read only by `test/` |

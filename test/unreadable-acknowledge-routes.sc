@@ -695,11 +695,12 @@
           (list (list baseline-discovered baseline-barrier view-discovered view-barrier)
                 rc (head-of a) (clause-of a 'path) (incomplete-paths a))
           (list '(#t #t #t #t) 1 '(error unreadable) (list 'path seg2) (list (mirror-dir st))))))
-;; Eval, the EARLY exits carry the parent's notes too (code review r3's S;
-;; MR-35, MR-36): bad limits and an oversized source are answered after the
-;; cut's baseline load, which heard M. Each is run twice: with M unreadable
-;; (the answer plus one clause naming M) and on the healthy store (the base
-;; answer exactly, no clause -- the wrap adds nothing when nothing was heard).
+;; Eval, the EARLY exits (code review r3's S; MR-35, MR-36). An oversized
+;; source is answered after the cut's baseline load, which heard M, so it
+;; carries the parent's notes. Bad limits are answered BEFORE any load
+;; since the evaluation admission put the pre-admission refusals first, so
+;; with M unreadable it carries no clause. Each is run twice: with M
+;; unreadable and on the healthy store (the base answer exactly, no clause).
 (define (eval-early st w args in)
   (let ((out (string-append root "/eval-early.out")))
     (let ((rc (sh "THEOURGIA_LOCAL=1 scheme --script ../core.sc eval --store " (quoted st)
@@ -737,13 +738,13 @@
        (_ (chmod! "000" (mirror-dir st)))
        (missing (eval-early st w '("--timeout-ms" "0" "1") #f)))
   (chmod! "700" (mirror-dir st))
-  (want "Eval bad limits: answered after the baseline, with M unreadable the refusal carries one clause naming M; healthy it is the base answer"
+  (want "Eval bad limits: answered before any load, so with M unreadable the refusal carries no clause and is the healthy answer exactly"
         (list (car missing) (head-of (cadr missing)) (incomplete-paths (cadr missing))
               (incomplete-clause-count (cadr missing))
               (equal? (without-incomplete (cadr missing)) (cadr healthy))
               (and (pair? eval-usage-form) (eq? (car eval-usage-form) 'eval))
               (car healthy) (cadr healthy))
-        (list 1 '(error bad-request) (list (mirror-dir st)) 1 #t
+        (list 1 '(error bad-request) '() 0 #t
               #t
               1 (list 'error 'bad-request '(reason eval-arguments) (list 'usage eval-usage-form)))))
 (let* ((c (fresh-store!)) (st (car c)) (w (cadr c))

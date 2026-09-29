@@ -2553,8 +2553,10 @@
 ;; between them cannot pass a serialized pair; the bound after them is
 ;; 3.5 s from the later send, where one-after-the-other needs over 4.
 (want "X15 two shells' sleep 2, sent within 100 ms of each other, both answer ok within 3.5 s of the first send"
-      (let* ((a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
-             (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on " ""))
+      ;; THE POOL IS SET TO TWO, explicitly: the overlap is about the shells,
+      ;; and on a machine with one processor the default pool would be one.
+      (let* ((a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=2 " ""))
+             (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=2 " ""))
              (open! (lambda (s) (send-frame! s hello) (read-frame s) (send-frame! s ready)
                             (send-frame! s (eval-call '("(+ 1 1)"))) (read-frame s)))
              (_ (begin (open! a) (open! b)))
@@ -2569,6 +2571,25 @@
         (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok")
               (<= (- sent-b sent-a) 100) (< (- done sent-a) 3500)))
       '(#t #t #t #t))
+
+;; ---- X26 two shells, a pool of one: evaluations take turns -----------------------------------------
+;; The inverse of X15. With THEOURGIA_EVAL_SLOTS=1 the second evaluation waits
+;; for the first's slot, so the later answer arrives at least 4 s after the
+;; first send (two sleeps of 2 s, one after the other).
+(want "X26 two shells, THEOURGIA_EVAL_SLOTS=1: two sleep 2 sent together take turns, the later answer at least 4 s after the first send"
+      (let* ((a (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=1 " ""))
+             (b (start-shell* xstore #f "env THEOURGIA_RUNNERS=on THEOURGIA_EVAL_SLOTS=1 " ""))
+             (open! (lambda (s) (send-frame! s hello) (read-frame s) (send-frame! s ready)
+                            (send-frame! s (eval-call '("(+ 1 1)"))) (read-frame s)))
+             (_ (begin (open! a) (open! b)))
+             (sent-a (let ((t (wall-ms))) (send-frame! a (eval-call '("--lang" "shell" "--timeout-ms" "10000" "sleep 2"))) t))
+             (_ (send-frame! b (eval-call '("--lang" "shell" "--timeout-ms" "10000" "sleep 2"))))
+             (ra (read-frame a)) (rb (read-frame b))
+             (done (wall-ms)))
+        (for-each (lambda (s) (close-input! s) (let dr () (unless (eof-object? (read-frame s)) (dr)))) (list a b))
+        (list (starts-with-text? (text-of ra) "(ok") (starts-with-text? (text-of rb) "(ok")
+              (>= (- done sent-a) 4000)))
+      '(#t #t #t))
 
 ;; ---- X16 the reaper does not run while a child is owned ------------------------------------------------
 ;; Deterministic: the shell holds after the spawn and before its first poll;

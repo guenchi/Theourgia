@@ -1142,6 +1142,16 @@
    unrelated a
    "select-report: a line that does not parse, or has text after its datum (M2b1 review r1, F1), is skipped, not fatal (H3); not a filesystem read. The decode's own guard went with F111: utf8->string never raises"
    (e (#t #f)))
+  ("client.sc" (eval-admit!) 1 guard
+   (#t)
+   unrelated a
+   "client: the evaluation admission's slot, released before the mark's failure goes on"
+   (e (#t (guard (x (#t #f)) (lock-release! held)) (raise e))))
+  ("client.sc" (eval-admit!) 2 guard
+   (#t)
+   unrelated a
+   "client: the evaluation admission's slot, released before the mark's failure goes on"
+   (x (#t #f)))
   )
 
 (raw-accessors

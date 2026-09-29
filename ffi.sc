@@ -390,6 +390,8 @@
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
           unix-socket-connect fd-read socket-timeout! sun-path-max
           redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
+          fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
+          file-ensure-unrecorded!
           process-id wall-clock-ms machine-home env-or)
   (import (chezscheme)
           (only (igropyr platform)
@@ -609,19 +611,26 @@
   ;; the platform layer's job like every other name-space change, and it
   ;; is traced for the same reason the others are -- the crash model
   ;; rebuilds surviving entries from the trace.
-  (define (mkdir-p! path)
+  (define (mkdir-p! path) (mkdir-p-body! path #t))
+
+  ;; THE SAME, WITHOUT A NOTE, for directories that are administration and
+  ;; not the request's writes -- the eval admission's slot directory. It is
+  ;; mkdir-p! in every other respect, the failures included.
+  (define (mkdir-p-unrecorded! path) (mkdir-p-body! path #f))
+
+  (define (mkdir-p-body! path record?)
     (unless (and (string? path) (> (string-length path) 0))
       (assertion-violation 'mkdir-p! "path must be a non-empty string" path))
     (let loop ((i 1))
       (cond
         ((> i (string-length path))
          (unless (file-is-directory? path)
-           (mkdir-one! path))
+           (mkdir-one! path record?))
          path)
         ((or (= i (string-length path)) (char=? (string-ref path i) #\/))
          (let ((prefix (substring path 0 i)))
            (unless (or (string=? prefix "") (file-is-directory? prefix))
-             (mkdir-one! prefix)))
+             (mkdir-one! prefix record?)))
          (loop (+ i 1)))
         (else (loop (+ i 1))))))
 
@@ -633,7 +642,7 @@
   ;; NOTE: WITH mkdir(2)'S OWN ERRNO (F100 D1), and noted only when this
   ;; call made the directory. The injected mkdir-fail stands where the
   ;; syscall would and skips it, so it creates nothing and notes nothing.
-  (define (mkdir-one! path)
+  (define (mkdir-one! path record?)
     (let-values (((rc code)
                   (let ((injected (mkdir-fault path)))
                     (if injected
@@ -642,7 +651,7 @@
                           (values rc (and (< rc 0) (errno))))))))
       (cond
         ((>= rc 0)
-         (note! (list 'mkdir path))
+         (when record? (note! (list 'mkdir path)))
          (trace-event! 'create path #f))
         ((file-is-directory? path) (void))
         (else (raise (fs-err 'mkdir path code))))))
@@ -1195,6 +1204,61 @@
         (if (zero? rc)
             (bytevector-u32-native-ref pid-out 0)
             (raise (fs-err 'spawn (car argv) rc))))))
+
+  ;; ---- a descriptor a child must not inherit ------------------------------
+  ;;
+  ;; NEVER: A DESCRIPTOR IS INHERITED BY EVERY CHILD UNLESS IT IS MARKED, and
+  ;; nothing in proc-spawn! marks one. A lock whose descriptor a child
+  ;; inherits is held for as long as that child lives, whatever its parent
+  ;; does -- so a lock that must end with its process is marked here.
+  ;;
+  ;; NOTE: THE MARK IS SET WITH ioctl(FIOCLEX), NOT fcntl(F_SETFD). fcntl is
+  ;; variadic and F_SETFD's flags are its variadic argument, which a
+  ;; fixed-arity declaration does not pass where the callee reads it on
+  ;; every platform (the note on open(2) at the top of this file). FIOCLEX
+  ;; takes no third argument and sets the one flag there is. Its value,
+  ;; _IO('f', 1), is 0x20006601, measured from macOS's <sys/filio.h> and on
+  ;; FreeBSD 15.0 by a compiled probe (2026-09-29): the same on both. The
+  ;; getter asks fcntl(F_GETFD), which also takes no third argument.
+  ;;
+  ;; A failure raises unreadable-entry naming the descriptor's path, like
+  ;; every other failure on a descriptor this library opened. The injected
+  ;; cloexec-fail stands where the ioctl would and skips it.
+  (define FIOCLEX #x20006601)
+  (define F_GETFD 1)
+  (define FD_CLOEXEC 1)
+
+  (define (fd-close-on-exec! fd)
+    (let-values (((rc code)
+                  (let ((injected (cloexec-fault)))
+                    (if injected
+                        (values -1 injected)
+                        (let ((rc ((foreign-procedure "ioctl" (int unsigned-long) int) fd FIOCLEX)))
+                          (values rc (and (< rc 0) (errno))))))))
+      (when (< rc 0) (unreadable! (subject-of fd '()) code))
+      fd))
+
+  (define (fd-close-on-exec? fd)
+    (let ((flags ((foreign-procedure "fcntl" (int int) int) fd F_GETFD)))
+      (when (< flags 0) (unreadable! (subject-of fd '()) (errno)))
+      (not (zero? (fxand flags FD_CLOEXEC)))))
+
+  ;; THE NUMBER OF PROCESSORS ONLINE, READ IN ONE PLACE: sysconf, which is not
+  ;; variadic. _SC_NPROCESSORS_ONLN is 58, measured from macOS's <unistd.h>
+  ;; and on FreeBSD 15.0 by a compiled probe (2026-09-29): the same on both.
+  ;; THEOURGIA_EVAL_SLOTS_DEFAULT, a positive integer, replaces the reading:
+  ;; a test seam, so a row can ask for a pool of a known size on any
+  ;; machine. -> a positive integer, or #f when the seam is not one or the
+  ;; kernel gave no answer.
+  (define _SC_NPROCESSORS_ONLN 58)
+
+  (define (online-processors)
+    (let ((seam (getenv "THEOURGIA_EVAL_SLOTS_DEFAULT")))
+      (if seam
+          (let ((n (string->number seam 10)))
+            (and n (exact? n) (integer? n) (> n 0) n))
+          (let ((n ((foreign-procedure "sysconf" (int) long) _SC_NPROCESSORS_ONLN)))
+            (and (> n 0) n)))))
 
   ;; ---- starting a child whose three streams are files ---------------------
   ;;
@@ -2168,7 +2232,7 @@
     ;; signal sent at its deadline. Each is a stage so a fault can be aimed
     ;; at the one call and not at the daemon starts that also wait and signal.
     '(deliver-barrier commit registry publish snapshot repair report working index conn client
-      eval-cleanup presence presence-decision mcp-wait mcp-signal))
+      eval-cleanup presence presence-decision mcp-wait mcp-signal admission))
 
   ;; A STAGE IS PART OF MAKING SOMETHING DURABLE, not a decoration a
   ;; caller may leave off. A staged fault never matches a call that
@@ -2274,7 +2338,7 @@
          conn-raise store-raise writer-raise writer-raise-late
          writer-hold writer-hold-long conn-hold conn-hold-long close-fail
          lseek-fail mkdir-fail client-extra-child store-raise-early
-         reload-raise probe-raise unlink-fail waitpid-fail kill-fail))
+         reload-raise probe-raise unlink-fail waitpid-fail kill-fail cloexec-fail))
 
      (define fault-name-checked
        (when (and fault-name (not (memq fault-name known-faults)))
@@ -2341,7 +2405,7 @@
      ;; waitpid-fail and kill-fail are mkdir-fail's kind as well: EIO unless
      ;; :errno= names another.
      (define errno-faults '(open-fail stat-fail read-fail-after readdir-fail-after lseek-fail mkdir-fail
-                            waitpid-fail kill-fail))
+                            waitpid-fail kill-fail cloexec-fail))
      (define errno-required-faults '(open-fail read-fail-after readdir-fail-after))
 
      ;; THE PATHLESS FAULTS TAKE NO PATH, so their whole argument is the
@@ -2349,7 +2413,7 @@
      ;; the others carry before it, it was missed and EIO was injected
      ;; instead of the errno named; anything else after the stage is refused
      ;; at load, as an unknown qualifier is.
-     (define pathless-faults '(waitpid-fail kill-fail))
+     (define pathless-faults '(waitpid-fail kill-fail cloexec-fail))
 
      (define-values (fault-arg-head fault-errno-text)
        (cond
@@ -2406,7 +2470,7 @@
              (assertion-violation 'theourgia-ffi
                "this fault needs :errno=<name> (EMFILE EACCES ENOENT ENOTDIR EIO ELOOP EOVERFLOW) or a positive integer"
                fault-spec)))
-         (when (and (memq fault-name '(stat-fail lseek-fail mkdir-fail waitpid-fail kill-fail)) (eq? fault-errno 'unknown))
+         (when (and (memq fault-name '(stat-fail lseek-fail mkdir-fail waitpid-fail kill-fail cloexec-fail)) (eq? fault-errno 'unknown))
            (assertion-violation 'theourgia-ffi
              "this fault's :errno= names no errno this file knows"
              fault-spec))))
@@ -2531,7 +2595,7 @@
      ;; exactly like a hold that never came.
      (define known-hold-stages
        '(client-scan report-write bind write-after-create publish-after-link store-start
-         after-discovery after-barrier mcp-child-wait))
+         after-discovery after-barrier mcp-child-wait eval-admission))
      (define (split-at-semicolons s)
        (let loop ((i 0) (from 0) (out '()))
          (cond
@@ -2706,6 +2770,14 @@
             (in-fault-stage?)
             (eq? (unbox fault-state) 'fresh)
             (begin (set-box! fault-state 'done) (or fault-errno EIO))))
+     ;; The descriptor refused as an invalid one would be: EBADF unless
+     ;; :errno= names another.
+     (define (cloexec-fault)
+       (and fault-name
+            (eq? fault-name 'cloexec-fail)
+            (in-fault-stage?)
+            (eq? (unbox fault-state) 'fresh)
+            (begin (set-box! fault-state 'done) (or fault-errno EBADF))))
 
      ;; -> an errno to fail the open with, or #f
      ;;
@@ -2797,6 +2869,7 @@
      (define (mkdir-fault path) #f)
      (define (waitpid-fault) #f)
      (define (kill-fault) #f)
+     (define (cloexec-fault) #f)
      (define (unlink-fault path) #f)
      (define (read-fault path produced) #f)
      (define (readdir-fault path produced) #f)
