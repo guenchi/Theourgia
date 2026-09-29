@@ -153,4 +153,88 @@
       (list (contains? (outline-text) "delta") (contains? (outline-text) "gamma"))
       '(#t #f))
 
+;; ---- the version a read hands back ------------------------------------
+;;
+;; NEVER: THE VERSION IS THE TOKEN `--if-unchanged` COMPARES, not a hash of
+;; what the read printed. So the rows compare it with `block-hash` of the
+;; state and then spend it: a write carrying the version a read gave is
+;; accepted, and one carrying the version from before that write is refused.
+(define (plain-read id)
+  (rpc-dispatch store (list 'read id) "t"))
+;; The version clause of an answer, or #f. Rows that build on a version
+;; read it through this, so a tree that gives none reads red row by row
+;; instead of stopping the file.
+(define (version-of a)
+  (and (list? a) (>= (length a) 3) (pair? (caddr a)) (eq? 'version (car (caddr a)))
+       (pair? (cdr (caddr a))) (cadr (caddr a))))
+
+(let ((a (plain-read code-id)))
+  (want "VR-10 a plain read answers the record, then (version <block-hash>) as the third element"
+        (list (length a) (cdr (assq 'id (cadr a))) (car (caddr a))
+              (equal? (cadr (caddr a)) (block-hash (open-and-reduce store) code-id)))
+        (list 3 code-id 'version #t))
+  (want "VR-10 the version is a string of 64 hex digits"
+        (let ((v (cadr (caddr a))))
+          (and (string? v) (= 64 (string-length v))
+               (for-all (lambda (c) (or (char<=? #\0 c #\9) (char<=? #\a c #\f))) (string->list v))))
+        #t))
+
+(let* ((before (or (version-of (plain-read code-id)) "none"))
+       (set-a (rpc-dispatch store (list 'set code-id "src" "# module doc\ndef beta(x):\n    return x + 0\n"
+                                        "--if-unchanged" before) "t"))
+       (after (or (version-of (plain-read code-id)) "none"))
+       (after-is-current (equal? after (block-hash (open-and-reduce store) code-id)))
+       (stale (rpc-dispatch store (list 'set code-id "src" "# module doc\ndef beta(x):\n    return x + 1\n"
+                                        "--if-unchanged" before) "t"))
+       (fresh (rpc-dispatch store (list 'set code-id "src" "# module doc\ndef beta(x):\n    return x + 2\n"
+                                        "--if-unchanged" after) "t")))
+  (want "VR-11 the version a read gave is accepted by --if-unchanged, and changes after that write"
+        (list (car set-a) (equal? before after) after-is-current)
+        '(ok #f #t))
+  (want "VR-11 the version from before the write is refused changed, and the one after it is accepted"
+        (list (and (pair? stale) (car stale)) (and (pair? stale) (pair? (cdr stale)) (cadr stale)) (car fresh))
+        '(error changed ok)))
+
+(let ((a (rpc-dispatch store (list 'read file-id "--recursive") "t")))
+  (want "VR-12 read --recursive keeps its items and gains one trailing (versions ...) clause"
+        (list (length a) (car (cadr a)) (car (caddr a)))
+        '(3 items versions))
+  (want "VR-12 one pair per item, in item order, each the version a plain read of that block gives"
+        (let ((pairs (cadr (caddr a)))
+              (item-ids (map (lambda (r) (cdr (assq 'id r))) (cdr (cadr a)))))
+          (list (equal? (map car pairs) item-ids) (> (length pairs) 1)
+                (for-all (lambda (p) (equal? (cdr p) (version-of (plain-read (car p))))) pairs)))
+        '(#t #t #t)))
+
+(want "VR-13 del is accepted" (car (rpc-dispatch store (list 'del datum-id) "t")) 'ok)
+(let ((a (plain-read datum-id)))
+  (want "VR-13 a deleted block is read as before: the record alone, with no version"
+        (list (car a) (length a) (cdr (assq 'deleted (cadr a))))
+        '(ok 2 #t)))
+(let ((a (plain-read "nosuch.1")))
+  (want "VR-14 an absent id is still refused, with no version clause"
+        (list (car a) (and (list? a) (assq 'version (filter pair? (cdr a)))))
+        '(error #f)))
+
+;; THE BAND WHERE A BLOCK IS WRITTEN AND CANNOT BE HASHED (nesting-depth.sc
+;; ND-02: 59 levels). It was read before there was a version, and it still
+;; is; the version says it is unavailable and why, as a write's state
+;; section does, rather than the whole answer becoming an internal error.
+(define (nested-vector n)
+  (let loop ((i 0) (v 0)) (if (= i n) v (loop (+ i 1) (vector v)))))
+(define deep-id
+  (guard (e (#t #f))
+   (let ((before (ids)))
+    (with-store-write store
+      (lambda (s v)
+        (list (list 'insert 'root #f (list '(kind . section) (cons 'depth-probe (nested-vector 59))))))
+      "t")
+    (let ((new (filter (lambda (id) (not (member id before))) (ids))))
+      (and (= 1 (length new)) (car new))))))
+(let ((a (plain-read (or deep-id "nosuch.2"))))
+  (want "VR-15 a block too deep to hash is read as before, with (version unavailable (reason ...))"
+        (list (car a) (length a) (cdr (assq 'id (cadr a))) (car (caddr a)) (cadr (caddr a))
+              (car (caddr (caddr a))))
+        (list 'ok 3 deep-id 'version 'unavailable 'reason)))
+
 (printf "rows: ~a\n~a failures\nview-rpc complete\n" rows bad)

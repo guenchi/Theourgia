@@ -30,7 +30,7 @@
           batch-answer
           store-check store-adopt! store-search store-search-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-conflicts store-evidence
           make-write-request write-request? store-successors store-intervals
-          request-verdict)
+          request-verdict failure-text)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs sorting)
           (rnrs exceptions) (rnrs conditions) (rnrs io ports) (rnrs files)
           (only (theourgia md) md-refs)

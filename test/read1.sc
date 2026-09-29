@@ -285,9 +285,13 @@
 (want "read of a document answers one block whose body is empty"
       (text-of (answer doc1 "--md"))
       "")
+;; ONE BLOCK, AND THEN ITS VERSION: the record is the only item of data,
+;; and the one clause after it is the version --if-unchanged compares.
 (want "and without --md it is still one block"
-      (length (cdr (answer doc1)))
-      1)
+      (let ((a (answer doc1)))
+        (list (length (filter (lambda (x) (not (and (pair? x) (eq? (car x) 'version)))) (cdr a)))
+              (and (pair? (cadr a)) (assq 'id (cadr a)) #t)))
+      '(1 #t))
 
 (printf "\n== --recursive answers the subtree ==\n")
 (want "the document and every section under it, in document order"

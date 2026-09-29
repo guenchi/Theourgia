@@ -182,6 +182,23 @@
   ;; a list of items the first time someone read a block with two fields.
   (define (items xs) (list 'ok (cons 'items xs)))
 
+  ;; THE VERSION A READ HANDS BACK IS THE TOKEN `--if-unchanged` COMPARES:
+  ;; `block-hash` of the block in the state read, the same string a write
+  ;; is checked against. A deleted block has no version to offer, and its
+  ;; answer is the one it always was; an absent id never reaches here.
+  ;;
+  ;; NEVER: A BLOCK THAT CANNOT BE HASHED IS STILL READ. A value nested
+  ;; deeply enough is written and readable while its hash cannot be
+  ;; encoded (nesting-depth.sc's middle band), and the read answered it
+  ;; before there was a version. So the version is a part of the answer
+  ;; that may be missing, as a write's state section is: the reason says
+  ;; why, and the record comes back as it always did.
+  (define (read-version state id)
+    (let ((b (state-read state id)))
+      (and b (not (cdr (assq 'deleted b)))
+           (guard (e (#t (list 'unavailable (list 'reason (failure-text e)))))
+             (block-hash state id)))))
+
   ;; THE CLAUSES A MACHINE READS, AND WHY THE CORE DOES NOT GATE THEM.
   ;;
   ;; These appear only under `--wire`, and that is the RENDERER's doing, not
@@ -1212,13 +1229,23 @@
                               (ids (subtree-ids state (car rest))))
                          (if (not ids)
                              (unknown-id state (car rest))
-                             (items (map (lambda (id) (view-read state id)) ids)))))))
+                             ;; The items are the records a plain read gives,
+                             ;; unchanged; the versions are one clause after
+                             ;; them, in item order, so a reader of the items
+                             ;; reads what it read before.
+                             (append (items (map (lambda (id) (view-read state id)) ids))
+                                     (list (list 'versions
+                                                 (filter cdr (map (lambda (id) (cons id (read-version state id)))
+                                                                  ids))))))))))
                   (else
                    (guarded
                      (lambda ()
                        (let* ((state (reduction-for store state))
-                              (b (view-read state (car rest))))
-                         (if b (cons 'ok (list b)) (unknown-id state (car rest)))))))))))
+                              (b (view-read state (car rest)))
+                              (v (and b (read-version state (car rest)))))
+                         (cond ((not b) (unknown-id state (car rest)))
+                               (v (list 'ok b (cons 'version (if (string? v) (list v) v))))
+                               (else (list 'ok b)))))))))))
       (cons 'refs
             (lambda (store actor args req options state writer cwd)
               (if (not (= 1 (length args)))

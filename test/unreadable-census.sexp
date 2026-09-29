@@ -797,6 +797,11 @@
    refuse c
    "K1, a mixed handler: refuse/c names its non-filesystem branches (a thrown refusal, log-error, the internal fallback); its filesystem branches PROPAGATE -- an unreadable-entry or a durable-error is raised to rpc-dispatch-parsed's table (F100b point 1; the unreadable-entry branch was answered here from F77a); the incomplete-reduction branch is F77c"
    (e ((and (list? e) (pair? e) (eq? (car e) (quote error))) e) ((unreadable-entry? e) (raise e)) ((fs-error? e) (raise e)) ((log-error? e) (describe-log-error e)) (#t (list (quote error) (quote internal) (list (quote condition) (cond ((and (vector? e) (= 3 (vector-length e)) (eq? (vector-ref e 0) (quote sexpr-error))) (vector-ref e 1)) ((message-condition? e) (condition-message e)) (else "unexpected failure")))))))
+  ("rpc.sc" (read-version) 1 guard
+   (#t)
+   unrelated c
+   "read-version: an in-memory hash over a state already obtained; a value too deep to encode answers the version unavailable, as state-section does"
+   (e (#t (list (quote unavailable) (list (quote reason) (failure-text e))))))
   ("rpc.sc" (parse-batch) 1 guard
    (#t)
    unrelated a

@@ -112,10 +112,21 @@ differences — and is never an error.
 
 It answers:
 
-    (ok (<block>))        |  (ok (items <block> ...))  |  (ok (text "<markdown>"))
+    (ok <block> (version "<hash>"))
+    (ok (items <block> ...) (versions ((<id> . "<hash>") ...)))
+    (ok (text "<markdown>"))
 
 What a block says. Without options it is one block as data; `--md` gives its own
 bytes — the heading line it was written with, then its body.
+
+**The version is the token `--if-unchanged` compares**: the block's hash in the
+state that was read, so a caller that read a block can write it back only if
+nobody changed it in between. It comes after the block, so a reader of the block
+reads what it read before. `--recursive` gives one pair per block in item order,
+after the items. A deleted block has no version, read alone or in a subtree, and
+`--md` and `--working` answer as they did. A block whose value is nested too
+deeply to hash is still read; its version is `(version unavailable (reason ...))`,
+as a write's state section says when it cannot describe a block.
 
 A file-level block holds almost nothing of its own: its body is the front matter
 and whatever sits above the first heading, which in most documents is nothing at all.
