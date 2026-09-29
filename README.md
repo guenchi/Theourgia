@@ -1740,6 +1740,19 @@ needs to be able to end it.
 request waited for the store's lock past its five-second budget because
 something else was holding it. That is an ordinary state of the world.
 
+**While a daemon serves a store, write through it.** The daemon answers
+reads from the state it last folded and published; it does not watch the
+store. Before each answer from that state it checks whether the store
+changed underneath it -- a record another process appended directly,
+through `(theourgia log)` or `THEOURGIA_LOCAL=1`, or a segment a pull
+brought in -- and if so asks for the store to be folded again. The answer
+that noticed the change is still given from the earlier state, so a read
+of the new record can answer `unknown-id` once; the reads after the fold
+is published see it. A write is not answered from that state: the store
+process decides it on the store as it stands under the lock. A fold that
+fails keeps the earlier state. Writing one store from two machines is a
+separate design.
+
 **`THEOURGIA_TRACE=1`** makes the daemon write its filesystem and
 dispatch events as `(trace <op> <path> <detail>)` lines on stderr.
 
