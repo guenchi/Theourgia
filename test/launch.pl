@@ -252,7 +252,7 @@ sub census_run {
     open(STDIN, '<', '/dev/null');
     {
       no warnings 'exec';
-      exec { 'ps' } 'ps', '-A', '-ww', '-o', 'pid=,pgid=,stat=,command=';
+      exec { 'ps' } 'ps', '-A', '-ww', '-o', 'pid=', '-o', 'pgid=', '-o', 'stat=', '-o', 'command=';
     }
     POSIX::_exit(127);
   }

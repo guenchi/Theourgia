@@ -578,7 +578,7 @@
 ;; this process's pid, so no other run's daemon can match it.
 (define f18-daemon-pids
   (let* ((out (string-append scratch "/f18-ps.txt")))
-    (sh (string-append "ps -axo pid=,command= | grep -F '" (product-file "theourgiad.sc") " serve '"
+    (sh (string-append "ps -ax -o pid= -o command= | grep -F '" (product-file "theourgiad.sc") " serve '"
                        " | grep -v grep | awk '{print $1}' > " out))
     (let ((t (file-text out)))
       (let loop ((p (open-string-input-port t)) (acc '()))

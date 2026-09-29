@@ -451,13 +451,13 @@ esac
 # turned the count into "none left running" beside a live leak.
 snapshot() {
   [ -n "$snap_dir" ] || return 1
-  bps -A -ww -o pid=,ppid=,command= > "$snap_dir/.ps-argv" 2>/dev/null || return 1
+  bps -A -ww -o pid= -o ppid= -o command= > "$snap_dir/.ps-argv" 2>/dev/null || return 1
   if [ -n "$env_flag" ]; then
-    bps -A $env_flag -ww -o pid=,ppid=,command= > "$snap_dir/.ps-env" 2>/dev/null || return 1
+    bps -A $env_flag -ww -o pid= -o ppid= -o command= > "$snap_dir/.ps-env" 2>/dev/null || return 1
   else
     : > "$snap_dir/.ps-env" 2>/dev/null || return 1
   fi
-  bps -A -ww -o pid=,ppid=,command= > "$snap_dir/.ps-argv2" 2>/dev/null || return 1
+  bps -A -ww -o pid= -o ppid= -o command= > "$snap_dir/.ps-argv2" 2>/dev/null || return 1
   [ -s "$snap_dir/.ps-argv" ] && [ -s "$snap_dir/.ps-argv2" ] || return 1
   if [ -n "$env_flag" ]; then [ -s "$snap_dir/.ps-env" ] || return 1; fi
   return 0
