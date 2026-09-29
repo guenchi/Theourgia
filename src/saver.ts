@@ -274,7 +274,7 @@ export interface SaverOptions {
 /*
  * NOTE: AND `transport-unknown` IS THE THIRD, for the same reason and not
  * by analogy. The daemon answers it when the process that owns the
- * store (or a writer) dies while a connection is open (daemon.sc:1518, 1681-1684) -- the
+ * store (or a writer) dies while a connection is open (daemon.sc:1519, 1682-1685) -- the
  * request may already have been applied, and the connection is closed
  * before anything can say. NEVER: It must NOT be classified as a refusal:
  * that path resolves the entry out of the queue and releases its send
@@ -322,9 +322,9 @@ function saysNobodyKnows(datum: Datum): boolean {
  * the same request again, under the SAME id, on the next drain.
  *
  * From the store: `draining` is a daemon that has been asked to stop and
- * is refusing new work while it finishes what it has (daemon.sc:304);
+ * is refusing new work while it finishes what it has (daemon.sc:305);
  * `store-busy` is the store's lock still held by somebody else past the
- * waiting budget (daemon.sc:329).
+ * waiting budget (daemon.sc:330).
  *
  * From the transport, and this is the part with a proof behind it: the
  * thin client answers `not-sent` only when it can show that not one byte
@@ -381,12 +381,12 @@ export const RETRYABLE_REFUSALS = [
   'serve-path-occupied',
   /*
    * NOTE: TWO LOG CONDITIONS THAT MEAN "NOT NOW" (first read on 9f806bb,
-   * when the census learned `make-log-error`). `active-operation`, log.sc:1895
+   * when the census learned `make-log-error`). `active-operation`, log.sc:1902
    * `claim-store!`: another operation in the store's process holds it, and
    * nothing of this one has started. `temp`, log.sc:186 `create-temp!`: no
    * temporary name could be had after 64 tries. It is reached from
    * `atomic-write!`, which can follow an append (`session-commit!` writes the
-   * registry after it, log.sc:6095 and 4511), so it does not say the write
+   * registry after it, log.sc:6102 and 4518), so it does not say the write
    * did not land. Both are sent again under the same id -- which the request
    * ledger answers as a replay if the append landed -- and parked for a
    * person after RETRY_CAP in a row.
@@ -465,7 +465,7 @@ export const SETTINGS_REFUSALS: Record<string, string> = {
   'symbols-empty':
     'the symbols file this extension wrote named no symbol; nothing was cut',
   /*
-   * NOTE: `meta`, log.sc:1810 and 1819 (`open-load-body`, first read on
+   * NOTE: `meta`, log.sc:1817 and 1826 (`open-load-body`, first read on
    * 9f806bb): the store directory has no meta.sexp, or one not in format 1,
    * so the core cannot open it and nothing was written. It is the directory
    * that is wrong, as with `store-not-found`.
@@ -788,7 +788,7 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
    * consed and the log-condition constructors). `incomplete-request`,
    * store.sc:3748 `request-answer`: the store holds this request partly
    * carried out, a plan whose members are not all written, and this client
-   * finishes no plan. `registry-malformed`, log.sc:3133 and 3137
+   * finishes no plan. `registry-malformed`, log.sc:3140 and 3144
    * `registry-as-read`: the machine's registry does not parse, so the store
    * cannot be opened. `manifest`, log.sc:523 `read-manifest`: a writer's
    * manifest is not valid. Waiting mends none of them.
@@ -800,15 +800,17 @@ const REFUSALS: Record<string, 'req-mismatch' | 'kept-for-a-person' | 'executed-
 
 /*
  * NOTE: KINDS THE CORE HAS THAT A WRITE'S ANSWER IS NOT, each with where it
- * is made in the pinned core (theourgia 5230bb6; re-read row by row at
+ * is made in the pinned core (theourgia c01a846; re-read row by row at
  * each re-pin: from 877f0da to f5ebd58 in archive/theourgia-vsc-repin-
  * f5ebd58-2026-09-27/not-a-writes-answer-relocation.md, from f5ebd58
  * to cba98ae in archive/theourgia-vsc-repin-cba98ae-2026-09-27/
  * relocation.md, from cba98ae to 659fea2 in archive/theourgia-vsc-
  * delivery-plugin-r3-split-symbols-2026-09-29/relocation.md, and from
  * 659fea2 to 9f806bb in archive/theourgia-vsc-delivery-plugin-r3-item-53-
- * 2026-09-27/r7/relocation.md, and from 9f806bb to 5230bb6 in archive/
- * theourgia-vsc-derived-supply-2026-09-29/repin/relocation-5230bb6.md). The reason is the provenance, not a
+ * 2026-09-27/r7/relocation.md, from 9f806bb to 5230bb6 in archive/
+ * theourgia-vsc-derived-supply-2026-09-29/repin/relocation-5230bb6.md, and from
+ * 5230bb6 to c01a846 in archive/theourgia-vsc-repin-platform-numbers-2026-09-29/
+ * relocation-c01a846.md). The reason is the provenance, not a
  * guess about intent: if the grep does not find it, the row says so
  * rather than inventing a story.
  *
@@ -843,7 +845,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     "rpc.sc, the `publish` verb's arm (`publish <writer> <segment> <file>`) -- a log segment's " +
     'candidate that cannot be read; this extension never sends `publish`',
   'incomplete-reduction':
-    'incomplete.sc:110 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
+    'incomplete.sc:123 (`incomplete-reduction-answer`, classified at answers.sc:104) -- `(error ' +
     'incomplete-reduction (notes (unreadable (writer w) (path p) (reason r)) ...))`, a store missing a writer, ' +
     'refused only to a verb that does not declare it accepts one: rpc.sc:1936 `undeclared-verbs` (export-code ' +
     'export-md import-md import-code def snapshot, and supply). Of these this extension sends only export-code and ' +
@@ -853,7 +855,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     "working.sc:684, `draft-body` -- a writer's draft whose datum does not read, reached through " +
     '`working-state`, whose callers are rpc.sc:92 `working-export` (`export-md`, and `export-code` with ' +
     '`--working`), derived.sc:778, 799, 817 and 837 (`supply --for`, and the readers of derived facts in a ' +
-    "writer's working view), and eval-runner.sc:224-226 (`eval --working`). This extension sends two of them, " +
+    "writer's working view), and eval-runner.sc:341-343 (`eval --working`). This extension sends two of them, " +
     '`export-code --working` and `supply --for`, ' +
     'both only from the diagnostics supply, which shows the refusal by name (src/supply.ts); no save sends any',
   incomplete:
@@ -869,11 +871,11 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'client does, and it always names the log',
   'working-unavailable': 'working.sc:246, 250, 271, 460: uncertain W storage result; handled by nobodyKnows before settlement',
   'eval-value': 'eval-worker.sc:244: local evaluator value serialization',
-  'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:531): local evaluator exception',
+  'eval-exception': 'eval-worker.sc:211 (and eval-supervise.sc:552): local evaluator exception',
   'eval-context': 'eval-worker.sc:325, 332: local evaluator context',
   'eval-denied': 'eval-worker.sc:335: local evaluator capability refusal',
-  'launcher-unavailable': 'ffi.sc:456 (execvp; and 482, execve): local executable launch',
-  'transport-store-mismatch': 'daemon.sc:1576: rejected socket envelope before dispatch',
+  'launcher-unavailable': 'ffi.sc:484 (execvp; and 510, execve): local executable launch',
+  'transport-store-mismatch': 'daemon.sc:1577: rejected socket envelope before dispatch',
   'unknown-tag': 'resolve-cut, store.sc:2138: historical query cut lookup',
   'tag-unsettled': 'resolve-cut, store.sc:2140: historical query cut lookup',
   'cut-unavailable': 'store-diff, store.sc:2157: historical query cut validation',
@@ -882,7 +884,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'ambiguous-identity': 'match-by-signature, project.sc:1324 -- the markdown import path',
   'position-mismatch': 'match-sections, project.sc:1206 -- the markdown import path',
   'would-delete': 'import-md, project.sc:710 -- the markdown import path',
-  'invalid-candidate': 'publish-validated!, log.sc:4315 -- publication, not a block write',
+  'invalid-candidate': 'publish-validated!, log.sc:4322 -- publication, not a block write',
   'no-candidate': 'the `publish` verb\'s arm, rpc.sc:1228 -- a log segment candidate that is not there; this extension never sends `publish`',
   'unknown-verb': 'dispatch-verb, rpc.sc:2019 -- dispatch, before any verb runs',
   /*
@@ -898,7 +900,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'this extension sends no move, and no batch of its holds one',
   'runners-disabled': 'core.sc:470 -- `eval` with a language runner while runners are off; this extension does not send eval',
   'projection-failed':
-    'eval-runner.sc:295 -- the projection an `eval` runs against could not be made; this extension does not send eval',
+    'eval-runner.sc:414 -- the projection an `eval` runs against could not be made; this extension does not send eval',
   'no-such-intent':
     'resolve-from, store.sc:3823, from run-items! (store.sc:3439-3440) and run-intents! (store.sc:4105-4106) -- ' +
     'a batch intent\'s `(from n)` naming an intent the batch does not have; this extension\'s one batch is a ' +
@@ -921,16 +923,16 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * each and what this client does instead of settling it.
    */
   'transport-unknown':
-    'daemon.sc:1518 and 1681-1684 -- the process that owns the store (or a writer) died while this connection was ' +
+    'daemon.sc:1519 and 1682-1685 -- the process that owns the store (or a writer) died while this connection was ' +
     'open, so the request may already have been applied and the connection is closed before ' +
     'anything can say. `saysNobodyKnows` takes it before settlement: the entry is marked ' +
     'pending, keeps its request id and its cursor, and goes again on the next drain',
   draining:
-    'daemon.sc:304 -- the daemon has been asked to stop and is refusing new work while it ' +
+    'daemon.sc:305 -- the daemon has been asked to stop and is refusing new work while it ' +
     'finishes what it has. Taken before settlement as a retryable refusal: the entry stays, ' +
     'under the same request id, and is parked for a person after RETRY_CAP in a row',
   'store-busy':
-    'daemon.sc:329 -- the store lock was still held by somebody else past the waiting budget. ' +
+    'daemon.sc:330 -- the store lock was still held by somebody else past the waiting budget. ' +
     'Taken before settlement as a retryable refusal, exactly as `draining` is',
   unreadable:
     'rpc-dispatch-parsed, rpc.sc:1877-1921, by answers.sc\'s table (`guarded`, rpc.sc:108, now ' +
@@ -954,35 +956,35 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * so an `eval` request cannot leave this process at all.
    */
   'eval-worker-unavailable':
-    'eval-worker.sc:158 (handshake) and eval-supervise.sc:319 (no-ready) -- TWO sites, not ' +
+    'eval-worker.sc:158 (handshake) and eval-supervise.sc:340 (no-ready) -- TWO sites, not ' +
     'one: the worker says it when its handshake fails, and the supervisor says it when no ' +
     "worker became ready before its deadline (`ready-ms`, 5000 in the pinned core). Both answer " +
     'an `eval`, which this extension cannot send',
   'spawn-refused':
-    'eval-supervise.sc:329 -- the worker process could not be started at all. It answers an ' +
+    'eval-supervise.sc:350 -- the worker process could not be started at all. It answers an ' +
     '`eval`; the same tag also appears in proc.sc:87 as a process DEATH REASON rather than an ' +
     'answer, which is a different thing wearing the same word',
   'eval-limit':
-    'limit-answer, eval-supervise.sc:467 -- an evaluation reached its time, memory or output ' +
+    'limit-answer, eval-supervise.sc:488 -- an evaluation reached its time, memory or output ' +
     'budget. It answers an `eval`, which this extension cannot send',
   'eval-worker-exit':
-    'finish, eval-supervise.sc:479 -- the worker ended without a complete protocol line. It ' +
+    'finish, eval-supervise.sc:500 -- the worker ended without a complete protocol line. It ' +
     'answers an `eval`, which this extension cannot send',
   /*
    * NEVER: AND THIS ONE IS NOT AN ANSWER TO ANYTHING. It is printed on the
-   * daemon's BOOT path, before it can serve: `store-loop` (daemon.sc:1045)
+   * daemon's BOOT path, before it can serve: `store-loop` (daemon.sc:1046)
    * tries to open the store, and on failure sends main a `startup-failed`
-   * (daemon.sc:1079-1088) -- the table's answer where it classifies the
+   * (daemon.sc:1080-1088) -- the table's answer where it classifies the
    * condition, `store-not-found` for a missing store, and this kind only for
    * a condition the table does not classify -- and main writes it as the
-   * start's report (`startup-report!`, daemon.sc:233). NOTE: It runs BEFORE `(send main-pid '(ready))`, so
+   * start's report (`startup-report!`, daemon.sc:234). NOTE: It runs BEFORE `(send main-pid '(ready))`, so
    * at that moment no connection exists for it to be an answer on. Since
    * F100b the client reads that report and answers the START with it:
    * `(error serve-start-failed (kind store-load-failed) ...)` -- the head a
    * save sees is `serve-start-failed`, never this one.
    */
   'store-load-failed':
-    'store-loop, daemon.sc:1086 -- the daemon\'s startup report when the store cannot be ' +
+    'store-loop, daemon.sc:1087 -- the daemon\'s startup report when the store cannot be ' +
     'opened for a reason the answers table does not classify, before it signals ready; the ' +
     'client relays it as the kind of `serve-start-failed`, never as this head',
   unknown:
@@ -1000,17 +1002,17 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * replays if anything landed.
    */
   'reset-pending':
-    'log.sc:2320, `session-applied!` -- a session reset is pending when an applied frontier is reported; ' +
+    'log.sc:2327, `session-applied!` -- a session reset is pending when an applied frontier is reported; ' +
     'after the write started the store answers `unknown` instead (store.sc:3173-3179). `saysNobodyKnows` ' +
     'takes it before settlement: pending, same request id, sent again; a resend under the same id replays ' +
     'if anything landed',
   'stale-epoch':
-    'log.sc:2323, 2822 and 2840, `session-applied!`, `session-reset-done!` and `session-reject!` -- the ' +
+    'log.sc:2330, 2829 and 2847, `session-applied!`, `session-reset-done!` and `session-reject!` -- the ' +
     'session epoch moved under the report; after the write started the store answers `unknown` instead ' +
     '(store.sc:3173-3179). `saysNobodyKnows` takes it before settlement: pending, same request id, sent ' +
     'again; a resend under the same id replays if anything landed',
   'writer-stopped':
-    'log.sc:5543, `session-append!` -- the session was stopped by an earlier failure and refuses this ' +
+    'log.sc:5550, `session-append!` -- the session was stopped by an earlier failure and refuses this ' +
     'append before it is written. `saysNobodyKnows` takes it before settlement, by ruling the conservative ' +
     'reading: pending, same request id, sent again; a resend under the same id replays if anything landed',
   /*
@@ -1029,15 +1031,15 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
   'metadata-unreadable':
     'log.sc:940, `unreadable-discovery` -- the record of a writer whose metadata could not be read, listed ' +
     'in the `(incomplete ...)` clause, returned, never raised. As a head it is only `adopt`\'s refusal ' +
-    '(log.sc:5169 and 5233, turned into `(error ...)` at rpc.sc:1190), and this extension sends no `adopt`',
+    '(log.sc:5176 and 5240, turned into `(error ...)` at rpc.sc:1190), and this extension sends no `adopt`',
   'retired-malformed': 'log.sc:1114, `validate` (`cut!`) -- an integrity record, returned, never raised',
   'retired-missing-segment': 'log.sc:1210, `validate` (`note!`) -- an integrity record, returned, never raised',
   'retired-mismatch': 'log.sc:1224, `validate` (`note!`) -- an integrity record, returned, never raised',
   'manifest-missing-segment': 'log.sc:1252, `validate` (`cut!`) -- an integrity record, returned, never raised',
   'segment-unreadable':
     'log.sc:1266, `validate` (`cut!`) -- the cut of a writer at a segment it cannot read, returned, never ' +
-    'raised; a session refused for it answers `writer-unreadable` (log.sc:2148, ' +
-    '`segment-unreadable-refusal`), not this kind. As a head it is only `adopt`\'s refusal (log.sc:5233, ' +
+    'raised; a session refused for it answers `writer-unreadable` (log.sc:2155, ' +
+    '`segment-unreadable-refusal`), not this kind. As a head it is only `adopt`\'s refusal (log.sc:5240, ' +
     'turned into `(error ...)` at rpc.sc:1190), and this extension sends no `adopt`',
   /*
    * NOTE: ADOPT'S OWN REFUSALS (read on 9f806bb when the census learned its
@@ -1047,14 +1049,14 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * the day it does.
    */
   'owner-unreadable':
-    'log.sc:2934, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1190); a write refused ' +
+    'log.sc:2941, `verify-instance` -- as a head only `adopt`\'s refusal (rpc.sc:1190); a write refused ' +
     'for it answers `(error refused owner-unreadable ...)` (store.sc:2710), whose head is `refused`. This ' +
     'extension sends no `adopt`',
   'registry-unreadable':
-    'log.sc:5169, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1190); this ' +
+    'log.sc:5176, `adopt-preflight` through `unreadable-refusal` -- `adopt`\'s refusal (rpc.sc:1190); this ' +
     'extension sends no `adopt`',
   'not-needed':
-    'log.sc:5253, `adopt-decided!` -- `adopt`\'s answer that nothing needs adopting (rpc.sc:1190); this ' +
+    'log.sc:5260, `adopt-decided!` -- `adopt`\'s answer that nothing needs adopting (rpc.sc:1190); this ' +
     'extension sends no `adopt`',
   /*
    * NOTE: READ ONCE THE CENSUS READ QUASIQUOTE (9f806bb). The thin client
@@ -1062,7 +1064,7 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
    * as its kind (see `asItsKind`), never as this head.
    */
   'serve-busy':
-    'daemon.sc:410 -- a daemon refusing to start while another holds the socket; relayed by the thin ' +
+    'daemon.sc:411 -- a daemon refusing to start while another holds the socket; relayed by the thin ' +
     'client as the kind of `serve-start-failed`, never as this head',
   'manifest-hash': 'log.sc:1279, `validate` (`cut!`) -- an integrity record, returned, never raised',
   'manifest-range': 'log.sc:1295, `validate` (`cut!`) -- an integrity record, returned, never raised',
@@ -1091,6 +1093,10 @@ export const NOT_A_WRITES_ANSWER: Record<string, string> = {
     'information hint)`, whose first element the census reads as a head',
   'eval-busy':
     'eval-admission.sc:120 -- `eval` found no free slot within its wait; this extension does not send eval',
+  'platform-unmeasured':
+    'platform-numbers.sc:793 -- written to standard error when the core loads on a platform with no measured ' +
+    'row, exit 75, before any verb runs; never an answer. The transport reads it as the core failing to start ' +
+    '(describeStderr), and a save is kept with that sentence',
 };
 
 export function classifyRefusal(datum: Datum): Settlement {

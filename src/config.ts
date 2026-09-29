@@ -212,7 +212,7 @@ export function environmentFor(
      * This command line starts the thin client, and the client starts
      * the daemon -- with `THEOURGIA_SCHEME`, or failing that with
      * whatever `scheme` resolves to on PATH (theourgia.sc:149, used at :173
-     * and :385; and core.sc:630-631 on the in-process route). So a user who set
+     * and :385; and core.sc:635-636 on the in-process route). So a user who set
      * this setting BECAUSE
      * `scheme` is not on their PATH got a client from the path they gave
      * and a daemon that could not be started at all.

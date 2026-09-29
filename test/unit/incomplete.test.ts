@@ -219,20 +219,23 @@ describe('I9 a cut writer is a note of its own, said as a cut', () => {
 
   /*
    * A WRITER STOPPED AT A SEGMENT IT CANNOT READ, in the shape the core gives
-   * it: the bare triple, the path a segment file, no cut clause -- the same
-   * form as a writer it could not read at all, while the records before the
-   * segment are delivered. The warning names the writer as before and claims
-   * nothing about what of it is shown.
+   * it (incomplete.sc, `incomplete-note-clauses`): a cut note whose kind is
+   * segment-unreadable, the path the segment file and `after` the last record
+   * read before it. The warning says where the writer stops, and claims
+   * nothing about the other writers.
    */
-  it('says of a writer stopped at an unreadable segment only what could be read, not "what the other writers wrote"', () => {
-    const segment = '(unreadable (writer "w") (path "/s/writers/w/000003.sexp") (reason "Input/output error"))';
+  it('says of a writer stopped at an unreadable segment where it stops, not "what the other writers wrote"', () => {
+    const segment =
+      '(cut (writer "w") (path "/s/writers/w/000003.sexp") (reason "Input/output error") (kind segment-unreadable) (after 12))';
     const answer = interpret(raw(`(ok (text "- a.1  Alpha\\n") (incomplete ${segment}))\n`), 'outline', 'text', ['--wire']);
-    assert.deepStrictEqual(answer.notes, [{ writer: 'w', path: '/s/writers/w/000003.sexp', reason: 'Input/output error' }]);
+    assert.deepStrictEqual(answer.notes, [
+      { writer: 'w', path: '/s/writers/w/000003.sexp', reason: 'Input/output error', cut: { kind: 'segment-unreadable', after: 12 } }
+    ]);
     const said = incompleteWarning(answer.notes as Note[]);
     assert.strictEqual(
       said,
-      'Incomplete: writer w could not be read (/s/writers/w/000003.sexp: Input/output error). What you see is what ' +
-        'could be read, within the usual limits.'
+      'Incomplete: writer w was read only up to record 12, its log being cut there (segment-unreadable at ' +
+        '/s/writers/w/000003.sexp: Input/output error). What you see is what could be read, within the usual limits.'
     );
     assert.doesNotMatch(said, /the other writers/);
   });

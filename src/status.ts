@@ -96,12 +96,12 @@ export function incompleteWarning(notes: Note[]): string {
     .join('; ');
   /*
    * NEVER: "WHAT THE OTHER WRITERS WROTE". A cut writer's records up to the
-   * cut are in the reading, and so are those of a writer stopped at a
-   * segment it cannot read -- which the core reports in the same bare
-   * (writer, path, reason) as a writer it could not read at all (log.sc,
-   * `cut-note`: segment-unreadable "keeps the triple it has always had").
-   * Nothing in the note tells the two apart, so no note may claim that
-   * nothing of its writer is shown.
+   * cut are in the reading, a writer stopped at a segment it cannot read
+   * among them: the core's note now carries where it stops (log.sc,
+   * `cut-note`: `(cut segment-unreadable <after>)`), and it is said above as
+   * a cut. A bare (writer, path, reason) still does not say how much of its
+   * writer was read, so no note may claim that nothing of its writer is
+   * shown.
    */
   return `Incomplete: ${who}. What you see is what could be read, within the usual limits.`;
 }

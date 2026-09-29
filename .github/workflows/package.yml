@@ -60,7 +60,7 @@ permissions:
 # of its dependencies declare node >= 22.
 env:
   NODE_VERSION: 22
-  CORE_REV: 5230bb6da9f3701a3d5be842473eb4f9694e5641
+  CORE_REV: c01a8468d43ea8b7e4b4d1db29e0b91d436608dc
   IGROPYR_REV: 56ca0db9c8bb1c32bafa1e1472852a6186ada31b
   CHEZ_VERSION: 10.1.0
 

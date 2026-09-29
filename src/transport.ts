@@ -104,6 +104,16 @@ export function buildArgv(config: CoreConfig, verb: string, args: string[]): str
 const MISSING_LIBRARY = /library \(([^)]*)\) not found/;
 
 /*
+ * A PLATFORM THE CORE HAS NO MEASURED ROW FOR. The core refuses to run at
+ * start-up, before any verb: it writes `(error platform-unmeasured (system
+ * "S") (machine "M") [(libc "L")] (remedy "..."))` to its standard error and
+ * exits 75 (platform-numbers.sc). No answer ever reaches the standard output,
+ * so this is read as the core failing to start, and the sentence carries the
+ * core's own remedy.
+ */
+const PLATFORM_UNMEASURED = /\(error platform-unmeasured \(system "([^"]*)"\) \(machine "([^"]*)"\)(?: \(libc "([^"]*)"\))? \(remedy "([^"]*)"\)\)/;
+
+/*
  * HOW LONG A CHILD IS GIVEN TO STOP AFTER BEING ASKED. Long enough for
  * one to flush and exit, short enough that a caller who has already
  * waited out the whole timeout is not waiting again.
@@ -119,6 +129,14 @@ export const GRACE_MS = 2000;
  * on theourgia.libDirs.
  */
 export function describeStderr(stderr: string): string | null {
+  const platform = PLATFORM_UNMEASURED.exec(stderr);
+  if (platform !== null) {
+    const libc = platform[3] === undefined ? '' : `, C library ${platform[3]}`;
+    return (
+      `the core has no measured platform numbers for this machine (system ${platform[1]}, machine ${platform[2]}${libc}), ` +
+      `so it does not run here; the core says: ${platform[4]}`
+    );
+  }
   const found = MISSING_LIBRARY.exec(stderr);
   if (found === null) {
     return null;

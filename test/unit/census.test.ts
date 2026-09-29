@@ -358,7 +358,12 @@ const AT_LEAST: Array<[string, number]> = [
    * A number that goes down is meant to be argued for, which is what
    * this comment is.
    */
-  ['transport.test.ts', 26],
+  /*
+   * RAISED at the re-pin that brought the core's platform numbers, 26 -> 27:
+   * a platform the core has not measured is said as the core failing to
+   * start, with the core's remedy.
+   */
+  ['transport.test.ts', 27],
   ['tripwire.test.ts', 7],
   ['two-hosts.test.ts', 8],
   ['wire.test.ts', 9]
