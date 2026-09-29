@@ -387,7 +387,7 @@
           hold-point! hold-sleeper-set!
           source-reader-open source-reader-next source-reader-at source-reader-observer!
           source-datum-print exec-argv! exec-argv-env! path-executable? rmdir!
-          unix-socket-connect fd-read socket-timeout! sun-path-max
+          unix-socket-connect fd-read socket-timeout! sun-path-max sockaddr-un
           redirect-stdio! spawn-detached! spawn-captured! reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
